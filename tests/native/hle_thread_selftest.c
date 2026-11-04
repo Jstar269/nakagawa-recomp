@@ -1170,6 +1170,26 @@ static void test_title_config_hle_bindings(void) {
     expect(sr_hle_test_display_set_mode(&cpu) == 0u,
            "DisplaySetMode keeps its PSP success result");
     s_title_hle_probe = 0;
+    /* PSPAutotests tests/display/setmode.expected (recorded on a PSP): only mode 0 at 480x272 is
+     * accepted; the mode check wins over the size check. */
+    {
+        static const struct { uint32_t mode, w, h, want; } cells[] = {
+            {0u, 0u, 0u, 0x80000104u},          {0u, 512u, 272u, 0x80000104u},
+            {0u, 960u, 544u, 0x80000104u},      {0u, 240u, 136u, 0x80000104u},
+            {0xffffffffu, 480u, 272u, 0x80000107u}, {1u, 480u, 272u, 0x80000107u},
+            {2u, 480u, 272u, 0x80000107u},      {1u, 720u, 480u, 0x80000107u},
+            {1u, 720u, 503u, 0x80000107u},      {0u, 480u, 272u, 0u},
+        };
+        for (size_t i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
+            CpuState mode_cpu;
+            memset(&mode_cpu, 0, sizeof(mode_cpu));
+            mode_cpu.r[4] = cells[i].mode;
+            mode_cpu.r[5] = cells[i].w;
+            mode_cpu.r[6] = cells[i].h;
+            expect(sr_hle_test_display_set_mode(&mode_cpu) == cells[i].want,
+                   "DisplaySetMode returns the PSP-recorded result for each setmode cell");
+        }
+    }
     expect(s_title_hle_guest_calls == 0u,
            "DisplaySetMode dispatches no guest body for any title configuration");
 
@@ -5425,9 +5445,12 @@ static void test_ms0_unified_namespace(void) {
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = PATH_ADDR;
     cpu.r[5] = STAT_ADDR;
+    for (uint32_t i = 0; i < 0x58u; i++) MEM_W8(STAT_ADDR + i, 0xcc);
     expect(sr_hle_test_io_getstat(&cpu) == 0u &&
-               MEM_R32(STAT_ADDR) == (0x1000u | 0x0124u),
-           "sceIoGetstat sees the unified directory via the host ms0 leg");
+               MEM_R32(STAT_ADDR) == 0x11ffu && MEM_R32(STAT_ADDR + 4u) == 0x10u,
+           "sceIoGetstat sees the unified directory via the host ms0 leg with the PSP's FAT mode and attr");
+    expect(MEM_R32(STAT_ADDR + 0x40u) == 0xccccccccu && MEM_R32(STAT_ADDR + 0x54u) == 0xccccccccu,
+           "sceIoGetstat leaves st_private untouched on the ms0 leg (stat.expected: private=cccccccc)");
 
     fd_guest_copy(PATH_ADDR, file_guest, sizeof(file_guest));
     memset(&cpu, 0, sizeof cpu);
@@ -5436,6 +5459,60 @@ static void test_ms0_unified_namespace(void) {
     expect(sr_hle_test_io_getstat(&cpu) == 0u &&
                (MEM_R32(STAT_ADDR + 8u) == (uint32_t)(sizeof(payload) - 1u)),
            "sceIoGetstat size matches the file written under unified ms0 root");
+    expect(MEM_R32(STAT_ADDR) == 0x21ffu && MEM_R32(STAT_ADDR + 4u) == 0x20u,
+           "sceIoGetstat reports the PSP's FAT mode 0x21ff and attr 0x0020 for an ms0 file");
+
+    /* stat.expected "getstat vs dread": the listing reports the same mode and attr as sceIoGetstat. */
+    fd_guest_copy(0x09181000u, dir_guest, sizeof(dir_guest));
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = 0x09181000u;
+    uint32_t ms_dir_fd = sr_hle_test_io_dopen(&cpu);
+    int ms_dread_file = 0;
+    for (int guard = 0; guard < 16; guard++) {
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = ms_dir_fd;
+        cpu.r[5] = 0x09180000u;
+        if (sr_hle_test_io_dread(&cpu) != 1u) break;
+        if (MEM_R8(0x09180000u + 0x58u) == 'U')
+            ms_dread_file = MEM_R32(0x09180000u) == 0x21ffu && MEM_R32(0x09180000u + 4u) == 0x20u &&
+                            MEM_R32(0x09180000u + 8u) == (uint32_t)(sizeof(payload) - 1u);
+    }
+    expect(ms_dread_file, "sceIoDread lists an ms0 file with sceIoGetstat's mode 0x21ff and attr 0x0020");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = ms_dir_fd;
+    (void)sr_hle_test_io_dclose(&cpu);
+
+    /* The runtime treats ms0:, fatms0: and device-less paths as the same Memory Stick (sr_ms0_classify),
+     * so a listing opened on any of them reports sceIoGetstat's FAT shape; a directory entry gets
+     * 0x11ff / attr 0x0010 and a file 0x21ff / attr 0x0020. */
+    {
+        static const char ms_alias_dirs[3][16] = {"ms0:/", "fatms0:/TESTDIR", "TESTDIR"};
+        static const char ms_alias_names[3][16] = {"TESTDIR", "UNIFIED.TXT", "UNIFIED.TXT"};
+        for (int alias = 0; alias < 3; alias++) {
+            fd_guest_copy(0x09181000u, ms_alias_dirs[alias], 16u);
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = 0x09181000u;
+            uint32_t alias_fd = sr_hle_test_io_dopen(&cpu);
+            int alias_shape = 0;
+            for (int guard = 0; guard < 16; guard++) {
+                memset(&cpu, 0, sizeof cpu);
+                cpu.r[4] = alias_fd;
+                cpu.r[5] = 0x09180000u;
+                if (sr_hle_test_io_dread(&cpu) != 1u) break;
+                if (MEM_R8(0x09180000u + 0x58u) == (uint32_t)(unsigned char)ms_alias_names[alias][0]) {
+                    uint32_t want_mode = alias == 0 ? 0x11ffu : 0x21ffu;
+                    uint32_t want_attr = alias == 0 ? 0x10u : 0x20u;
+                    alias_shape = MEM_R32(0x09180000u) == want_mode && MEM_R32(0x09180000u + 4u) == want_attr;
+                }
+            }
+            expect(alias_shape, alias == 0 ? "an ms0:/ listing reports the FAT directory shape 0x11ff attr 0x10"
+                                           : alias == 1 ? "a fatms0: listing reports the FAT file shape 0x21ff attr 0x20"
+                                                        : "a device-less listing reports the FAT file shape 0x21ff attr 0x20");
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = alias_fd;
+            (void)sr_hle_test_io_dclose(&cpu);
+        }
+    }
 
     fd_guest_copy(PATH2_ADDR, file_guest2, sizeof(file_guest2));
     memset(&cpu, 0, sizeof cpu);
@@ -11675,8 +11752,8 @@ static void test_pinned_handlers_1814_1815_1816(void) {
     cpu.r[5] = GARBAGE;
     cpu.r[6] = GARBAGE;
     cpu.r[7] = GARBAGE;
-    expect(sr_syscall(&cpu, 0x0e20f177u) == 0u,
-           "sceDisplaySetMode accepts any mode and size and still returns 0 (pins current behaviour)");
+    expect(sr_syscall(&cpu, 0x0e20f177u) == 0x80000107u,
+           "sceDisplaySetMode refuses a garbage mode with 0x80000107 (setmode.expected)");
 }
 
 static void test_psp_measured_cpu_clock_user_mode_20261024(void) {
@@ -15011,6 +15088,8 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
                MEM_R32(dirent_addr + 8u) == 6u &&
                MEM_R8(dirent_addr + 0x58u) == 'c',
            "full disc0 directory enumeration returns the indexed child");
+    expect(MEM_R32(dirent_addr) == 0x2124u && MEM_R32(dirent_addr + 4u) == 0x20u,
+           "a disc0 listing keeps its 0x124 mode bits; only Memory Stick listings take the FAT 0x21ff");
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = dir_fd;
     cpu.r[5] = dirent_addr;
@@ -19290,6 +19369,248 @@ static void test_exit_delete_lifecycle_and_join_result(void) {
     }
 }
 
+/* sceKernelCreateThread / sceKernelStartThread argument contracts through production dispatch.
+ * Every expected value is a cell of PSPAutotests tests/threads/threads/create.expected or
+ * start.expected (2ed7c9c5, recorded on a PSP). */
+enum {
+    CTC_NAME = 0x08301000u,
+    CTC_ARG = 0x08310000u,
+    CTC_ENTRY = 0x08804000u,
+};
+
+static uint32_t ctc_create(uint32_t name, uint32_t entry, uint32_t prio, uint32_t stack,
+                           uint32_t attr) {
+    s_cpu->r[4] = name;
+    s_cpu->r[5] = entry;
+    s_cpu->r[6] = prio;
+    s_cpu->r[7] = stack;
+    s_cpu->r[8] = attr;
+    return sr_syscall(s_cpu, NID_SCE_KERNEL_CREATE_THREAD);
+}
+
+static uint32_t ctc_start(uint32_t uid, uint32_t arglen, uint32_t argp) {
+    s_cpu->r[4] = uid;
+    s_cpu->r[5] = arglen;
+    s_cpu->r[6] = argp;
+    return sr_syscall(s_cpu, NID_SCE_KERNEL_START_THREAD);
+}
+
+static void ctc_remove(uint32_t uid) {
+    s_cpu->r[4] = uid;
+    (void)sr_syscall(s_cpu, NID_SCE_KERNEL_TERMINATE_DELETE);
+}
+
+static void test_create_thread_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *cur = fixture_thread(0x195u, TH_RUNNING, 40);
+    s_cur = (int)(cur - s_tcb);
+    title_hle_write_cstr(CTC_NAME, "create");
+
+    uint32_t uid = ctc_create(CTC_NAME, CTC_ENTRY, 0x20u, 0x10000u, 0u);
+    expect((int32_t)uid > 0, "CreateThread accepts a normal create");
+    ctc_remove(uid);
+
+    /* "Names": NULL fails with 0x80020001; blank and 64-character names create. */
+    expect(ctc_create(0u, CTC_ENTRY, 0x20u, 0x10000u, 0u) == 0x80020001u,
+           "CreateThread NULL name returns 0x80020001");
+    title_hle_write_cstr(CTC_NAME + 0x100u, "");
+    uint32_t blank_uid = ctc_create(CTC_NAME + 0x100u, CTC_ENTRY, 0x20u, 0x10000u, 0u);
+    expect((int32_t)blank_uid > 0, "CreateThread accepts a blank name");
+    ctc_remove(blank_uid);
+    title_hle_write_cstr(CTC_NAME + 0x200u,
+                         "1234567890123456789012345678901234567890123456789012345678901234");
+    uint32_t long_uid = ctc_create(CTC_NAME + 0x200u, CTC_ENTRY, 0x20u, 0x10000u, 0u);
+    expect((int32_t)long_uid > 0, "CreateThread accepts a 64-character name");
+    TCB *lt = tcb_by_uid(long_uid);
+    expect(lt && strcmp(lt->name, "1234567890123456789012345678901") == 0,
+           "CreateThread cuts a long name to 31 characters");
+    ctc_remove(long_uid);
+
+    /* "Attributes": bits outside 0xf8f060ff fail with ILLEGAL_ATTR; the rest create. */
+    static const uint32_t bad_attrs[] = {0x100u, 0x200u, 0x400u, 0x600u, 0x800u, 0xf00u, 0x1000u,
+                                         0x8000u, 0xf000u, 0x10000u, 0x20000u, 0x40000u,
+                                         0x80000u, 0xf0000u, 0x1000000u, 0x2000000u,
+                                         0x4000000u, 0xf000000u};
+    for (size_t i = 0; i < sizeof(bad_attrs) / sizeof(bad_attrs[0]); i++)
+        expect(ctc_create(CTC_NAME, CTC_ENTRY, 0x20u, 0x10000u, bad_attrs[i]) == 0x80020191u,
+               "CreateThread refuses an attribute bit outside the user mask");
+    static const uint32_t good_attrs[] = {0x1u, 0x10u, 0x50u, 0x2000u, 0x4000u, 0x6000u,
+                                          0x100000u, 0x200000u, 0x400000u, 0x800000u,
+                                          0xf00000u, 0x8000000u, 0x10000000u, 0x40000000u,
+                                          0x80000000u, 0xf0000000u};
+    for (size_t i = 0; i < sizeof(good_attrs) / sizeof(good_attrs[0]); i++) {
+        uint32_t made = ctc_create(CTC_NAME, CTC_ENTRY, 0x20u, 0x10000u, good_attrs[i]);
+        expect((int32_t)made > 0, "CreateThread accepts a user-mask attribute");
+        ctc_remove(made);
+    }
+
+    /* "Stack size": under 0x200 is ILLEGAL_STACK_SIZE, a size that cannot be had is NO_MEMORY. */
+    static const uint32_t bad_stacks[] = {0u, 1u, 0x100u, 0x1ffu};
+    for (size_t i = 0; i < sizeof(bad_stacks) / sizeof(bad_stacks[0]); i++)
+        expect(ctc_create(CTC_NAME, CTC_ENTRY, 0x20u, bad_stacks[i], 0u) == 0x80020194u,
+               "CreateThread refuses a stack size under 0x200 with ILLEGAL_STACK_SIZE");
+    static const uint32_t huge_stacks[] = {0xffffffffu, 0xffff0000u, 0x20000000u};
+    for (size_t i = 0; i < sizeof(huge_stacks) / sizeof(huge_stacks[0]); i++)
+        expect(ctc_create(CTC_NAME, CTC_ENTRY, 0x20u, huge_stacks[i], 0u) == 0x80020190u,
+               "CreateThread answers NO_MEMORY for a stack that cannot be allocated");
+    static const uint32_t good_stacks[] = {0x200u, 0x1000u, 0x100000u};
+    for (size_t i = 0; i < sizeof(good_stacks) / sizeof(good_stacks[0]); i++) {
+        uint32_t made = ctc_create(CTC_NAME, CTC_ENTRY, 0x20u, good_stacks[i], 0u);
+        expect((int32_t)made > 0, "CreateThread accepts a stack size of 0x200 and up");
+        TCB *mt = tcb_by_uid(made);
+        expect(mt && mt->stack_size == good_stacks[i], "CreateThread reports the requested stack size");
+        ctc_remove(made);
+    }
+    uint32_t odd = ctc_create(CTC_NAME, CTC_ENTRY, 0x20u, 0x01000001u, 0u);
+    TCB *ot = tcb_by_uid(odd);
+    expect((int32_t)odd > 0 && ot && ot->stack_size == 0x01000100u,
+           "CreateThread rounds a 0x01000001 stack to 0x100 granularity");
+    ctc_remove(odd);
+
+    /* "Priorities": 8..0x77 only. */
+    static const uint32_t bad_prios[] = {0u, 6u, 7u, 0x78u, 0xffffffffu};
+    for (size_t i = 0; i < sizeof(bad_prios) / sizeof(bad_prios[0]); i++)
+        expect(ctc_create(CTC_NAME, CTC_ENTRY, bad_prios[i], 0x200u, 0u) == 0x80020193u,
+               "CreateThread refuses a priority outside 8..0x77 with ILLEGAL_PRIORITY");
+    static const uint32_t good_prios[] = {8u, 0x77u};
+    for (size_t i = 0; i < sizeof(good_prios) / sizeof(good_prios[0]); i++) {
+        uint32_t made = ctc_create(CTC_NAME, CTC_ENTRY, good_prios[i], 0x200u, 0u);
+        TCB *pt = tcb_by_uid(made);
+        expect((int32_t)made > 0 && pt && pt->init_priority == (int)good_prios[i],
+               "CreateThread accepts the priority range ends");
+        ctc_remove(made);
+    }
+
+    /* "Entry": NULL creates, a non-memory address fails with 0x800200d3. */
+    uint32_t null_entry = ctc_create(CTC_NAME, 0u, 0x20u, 0x10000u, 0u);
+    expect((int32_t)null_entry > 0, "CreateThread accepts a NULL entry");
+    ctc_remove(null_entry);
+    expect(ctc_create(CTC_NAME, 0xdeadbeefu, 0x20u, 0x10000u, 0u) == 0x800200d3u,
+           "CreateThread refuses an entry that is not memory with 0x800200d3");
+
+    /* "Two with same name". */
+    uint32_t one = ctc_create(CTC_NAME, CTC_ENTRY, 0x20u, 0x1000u, 0u);
+    uint32_t two = ctc_create(CTC_NAME, CTC_ENTRY, 0x20u, 0x1000u, 0u);
+    expect((int32_t)one > 0 && (int32_t)two > 0 && one != two,
+           "CreateThread accepts two threads with one name");
+    ctc_remove(one);
+    ctc_remove(two);
+}
+
+static void test_start_thread_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *cur = fixture_thread(0x195u, TH_RUNNING, 40);
+    s_cur = (int)(cur - s_tcb);
+    title_hle_write_cstr(CTC_NAME, "start");
+    for (uint32_t i = 0; i < 0x700u; i++) MEM_W8(CTC_ARG + i, (uint8_t)(0x40u + i));
+
+    uint32_t target = ctc_create(CTC_NAME, CTC_ENTRY, 0x30u, 0x800u, 0u);
+    TCB *t = tcb_by_uid(target);
+    expect((int32_t)target > 0 && t, "StartThread contract: a 0x800-stack target is created");
+    if (!t) return;
+
+    /* "Argument length": a length that is negative as an int fails with 0x800200d3 and leaves the
+     * thread dormant (the cell's argc stays -1: the thread never ran). */
+    expect(ctc_start(target, 0xffffffffu, CTC_ARG) == 0x800200d3u && t->state == TH_DORMANT,
+           "StartThread refuses a -1 argument length with 0x800200d3 and stays dormant");
+    expect(ctc_start(target, 0x80000000u, CTC_ARG) == 0x800200d3u && t->state == TH_DORMANT,
+           "StartThread refuses a 0x80000000 argument length with 0x800200d3 and stays dormant");
+    /* "Argument pointers": a block that is not memory fails with 0x800200d3. */
+    expect(ctc_start(target, 4u, 0xdeadbeefu) == 0x800200d3u && t->state == TH_DORMANT,
+           "StartThread refuses a 0xdeadbeef argument block with 0x800200d3 and stays dormant");
+    expect(ctc_start(target, 4u, 0x80000000u) == 0x800200d3u && t->state == TH_DORMANT,
+           "StartThread refuses a 0x80000000 argument block with 0x800200d3 and stays dormant");
+    /* A NULL block with a length starts the thread with no argument ("With NULL ptr": 0, argc 0). */
+    expect(ctc_start(target, 8u, 0u) == 0u && t->state == TH_READY && t->arglen == 0u && t->argp == 0u,
+           "StartThread with a NULL block starts the thread with no argument");
+    expect(ctc_start(target, 0u, 0u) == 0x800201a4u, "StartThread twice returns NOT_DORMANT");
+    ctc_remove(target);
+
+    /* "Argument length": the block sits at stack + size - 0x100 - round16(len). */
+    static const struct { uint32_t len, offset; } placed[] = {
+        {1u, 0x6f0u}, {2u, 0x6f0u}, {4u, 0x6f0u}, {8u, 0x6f0u}, {80u, 0x6b0u}, {90u, 0x6a0u}, {0x600u, 0x100u},
+    };
+    for (size_t i = 0; i < sizeof(placed) / sizeof(placed[0]); i++) {
+        uint32_t uid = ctc_create(CTC_NAME, CTC_ENTRY, 0x30u, 0x800u, 0u);
+        TCB *pt = tcb_by_uid(uid);
+        expect(pt && ctc_start(uid, placed[i].len, CTC_ARG) == 0u,
+               "StartThread accepts an argument block");
+        expect(pt && pt->argp == pt->stack_base + placed[i].offset && (pt->argp & 0xfu) == 0u &&
+               memcmp(SR_HOST(pt->argp), SR_HOST(CTC_ARG), placed[i].len) == 0,
+               "StartThread copies the block to the PSP-measured stack offset");
+        /* PSP-NULLCODE-001 (docs/HARDWARE_ORACLE.md): a four-byte block at argv 0x0b7eecf0 enters with
+         * sp 0x0b7eecb0, 0x40 under the block. */
+        expect(pt && pt->saved.r[29] == pt->argp - 0x40u,
+               "StartThread enters the thread with sp 0x40 below the copied block");
+        ctc_remove(uid);
+    }
+
+    /* A block in the scratchpad is memory a user thread can read: it is accepted and copied. Only the
+     * 0xdeadbeef and 0x80000000 blocks are measured as refused (above); kernel-segment blocks are
+     * unmeasured and not pinned here. */
+    {
+        uint32_t uid = ctc_create(CTC_NAME, CTC_ENTRY, 0x30u, 0x800u, 0u);
+        TCB *pt = tcb_by_uid(uid);
+        for (uint32_t i = 0; i < 4u; i++) MEM_W8(0x00010000u + i, (uint8_t)(0xa0u + i));
+        expect(pt && ctc_start(uid, 4u, 0x00010000u) == 0u && pt->argp != 0u &&
+                   memcmp(SR_HOST(pt->argp), SR_HOST(0x00010000u), 4u) == 0,
+               "StartThread accepts and copies a block in the scratchpad");
+        ctc_remove(uid);
+    }
+
+    /* "Thread IDs". */
+    expect(ctc_start(0u, 0u, 0u) == 0x80020197u, "StartThread(0) returns ILLEGAL_THID");
+    expect(ctc_start(0xdeadbeefu, 0u, 0u) == 0x80020198u, "StartThread(unknown) returns UNKNOWN_THID");
+    expect(ctc_start(target, 0u, 0u) == 0x80020198u, "StartThread(deleted) returns UNKNOWN_THID");
+    expect(ctc_start(cur->uid, 0u, 0u) == 0x800201a4u, "StartThread(current) returns NOT_DORMANT");
+}
+
+/* sceKernelGetThreadId returns the calling thread's UID. PSPAutotests threads/start.expected records
+ * "Current: 800201a4" (StartThread(GetThreadId()) is NOT_DORMANT, so the id names the running thread),
+ * and start.c checks inside the thread that the UID word at the stack base and in k0 equals
+ * sceKernelGetThreadId() (no ERROR/WARNING line in start.expected). */
+static void test_get_thread_id_names_calling_thread(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *main_thread = fixture_thread(0x195u, TH_RUNNING, 40);
+    s_cur = (int)(main_thread - s_tcb);
+    title_hle_write_cstr(CTC_NAME, "gettid");
+    uint32_t uid = ctc_create(CTC_NAME, CTC_ENTRY, 0x30u, 0x1000u, 0u);
+    TCB *t = tcb_by_uid(uid);
+    expect((int32_t)uid > 0 && t, "GetThreadId test thread is created");
+    if (!t) return;
+    s_cpu->r[4] = 0u;
+    expect(sr_syscall(s_cpu, 0x293b45b8u) == main_thread->uid,
+           "sceKernelGetThreadId returns the calling thread's UID");
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    expect(sr_syscall(s_cpu, 0x293b45b8u) == uid &&
+           MEM_R32(t->stack_base) == uid && MEM_R32(t->k0_init + SCHED_K0_UID) == uid,
+           "sceKernelGetThreadId returns the UID the stack base and k0 block carry");
+    expect(ctc_start(uid, 0u, 0u) == 0x800201a4u,
+           "StartThread(GetThreadId()) of the running thread is NOT_DORMANT");
+    s_cur = (int)(main_thread - s_tcb);
+    t->state = TH_DORMANT;
+    ctc_remove(uid);
+}
+
+/* PSPAutotests tests/gpu/ge/queue.expected (recorded on a PSP), "sceGeListUpdateStallAddr": an id
+ * that names no list returns 0x80000100 (the "Bad ID" cell passes 0; "Not Enqueued" passes a
+ * dequeued list's id). */
+static void test_ge_update_stall_unknown_id(void) {
+    reset_fixture();
+    sr_hle_init();
+    static const uint32_t ids[] = {0u, 1u, 0x1337u, 0xffffffffu};
+    for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
+        s_cpu->r[4] = ids[i];
+        s_cpu->r[5] = 0x08800100u;
+        expect(sr_syscall(s_cpu, 0xe0d68148u) == 0x80000100u,
+               "sceGeListUpdateStallAddr answers 0x80000100 for an id that names no list");
+    }
+}
+
 #define NID_SCE_KERNEL_WAIT_THREAD_END 0x278c0df5u
 #define NID_SCE_KERNEL_WAIT_THREAD_END_CB 0x840e8133u
 
@@ -19527,7 +19848,7 @@ static void test_refer_thread_status(void) {
         THREAD_ENTRY = 0x08001234u,
         THREAD_PRIORITY = 37u,
         THREAD_STACK_SIZE = 0x1800u,
-        THREAD_ATTR = 0x1000u,
+        THREAD_ATTR = 0x2000u,   /* 0x1000 is refused with ILLEGAL_ATTR on a PSP */
         NID_REFER_THREAD_STATUS = 0x17c1684eu,
         TEST_ILLEGAL_ADDR = 0x80000103u,
         TEST_UNKNOWN_THID = 0x80020198u,
@@ -19607,6 +19928,12 @@ static uint32_t sfs_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1, 
     return sr_syscall(cpu, nid);
 }
 
+/* A PSP refuses a NULL thread name (create.expected), so the creates below pass a real one. */
+static uint32_t sfs_thread_name(void) {
+    title_hle_write_cstr(SFS_ARG_ADDR + 0x100u, "sfs-thread");
+    return SFS_ARG_ADDR + 0x100u;
+}
+
 static uint32_t sfs_free(CpuState *cpu, uint32_t uid) {
     return sfs_call(cpu, SFS_NID_GET_STACK_FREE, uid, 0u, 0u, 0u);
 }
@@ -19655,7 +19982,7 @@ static void sfs_main_fn(CpuState *cpu) {
            "stack free: the caller's own UID sees the same used stack as UID 0");
 
     /* Created, never started: its own stack, filled at creation ("Created"). */
-    const uint32_t created = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+    const uint32_t created = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, sfs_thread_name(), SFS_IDLE_ENTRY,
                                       0x30u, 0u);
     TCB *ct = tcb_by_uid(created);
     expect(ct && ct->stack_size == 0x1000u && MEM_R32(ct->stack_base) == created &&
@@ -19669,7 +19996,7 @@ static void sfs_main_fn(CpuState *cpu) {
            "stack free: a created thread answers its own untouched stack, not the caller's");
 
     /* NO_FILLSTACK: nothing is filled and the free size is 0. */
-    const uint32_t nofill = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+    const uint32_t nofill = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, sfs_thread_name(), SFS_IDLE_ENTRY,
                                      0x30u, SFS_ATTR_NO_FILLSTACK);
     TCB *nt = tcb_by_uid(nofill);
     expect(nt && MEM_R8(nt->stack_base + SFS_SKIP) == 0u && MEM_R8(nt->k0_init - 1u) == 0u &&
@@ -19679,7 +20006,7 @@ static void sfs_main_fn(CpuState *cpu) {
            "stack free: a NO_FILLSTACK thread answers 0");
 
     /* Ready, started with a 4-byte argument block, then suspended ("Ready", "Suspended"). */
-    const uint32_t ready = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+    const uint32_t ready = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, sfs_thread_name(), SFS_IDLE_ENTRY,
                                     0x30u, 0u);
     MEM_W32(SFS_ARG_ADDR, 0x01020304u);   /* no 0xFF byte in the copied argument */
     expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, ready, 4u, SFS_ARG_ADDR, 0u) == 0u,
@@ -19694,7 +20021,7 @@ static void sfs_main_fn(CpuState *cpu) {
            "stack free: a suspended thread answers its free size");
 
     /* A stronger thread runs at StartThread, measures itself and finishes ("Finished"). */
-    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_WORKER_ENTRY,
+    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, sfs_thread_name(), SFS_WORKER_ENTRY,
                                      0x10u, 0u);
     expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, worker, 0u, 0u, 0u) == 0u,
            "stack free: the stronger thread starts");
@@ -19793,7 +20120,7 @@ static void cts_main_fn(CpuState *cpu) {
     expect(main_check == sp - self->stack_base && main_check > 0x00030000u,
            "check stack: the main thread reads $sp minus its stack's low end, above 0x30000");
 
-    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, CTS_WORKER_ENTRY,
+    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, sfs_thread_name(), CTS_WORKER_ENTRY,
                                      0x10u, 0u);
     expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, worker, 0u, 0u, 0u) == 0u,
            "check stack: the 0x1000-byte worker starts");
@@ -36240,7 +36567,14 @@ static uint32_t oracle_syscall4(CpuState *cpu, uint32_t nid,
     cpu->r[5] = a1;
     cpu->r[6] = a2;
     cpu->r[7] = a3;
+    if (nid == ORACLE_NID_CREATE_THREAD) cpu->r[8] = 0u;   /* the oracle creates are default-attribute */
     return sr_syscall(cpu, nid);
+}
+
+/* A PSP refuses a NULL thread name (create.expected), so the oracle creates pass a real one. */
+static uint32_t oracle_thread_name(void) {
+    title_hle_write_cstr(0x08301800u, "oracle-thread");
+    return 0x08301800u;
 }
 
 static int oracle_setup_owner(TCB **out_owner) {
@@ -36360,7 +36694,7 @@ static int oracle_thread_lifecycle_case(uint32_t *out0, uint32_t *out1,
     TCB *owner = NULL;
     if (!oracle_setup_owner(&owner)) return ORACLE_UNAVAILABLE;
     s_exit_argument = 0x42;
-    uint32_t thid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t thid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                     ORACLE_THREAD_ENTRY, 32, 0x4000u);
     if (thid & 0x80000000u) {
         fprintf(stderr, "psp-oracle thread-lifecycle unavailable: CreateThread returned 0x%08x\n", thid);
@@ -36406,7 +36740,7 @@ static int oracle_thread_delete_case(uint32_t *out0, uint32_t *out1,
     uint32_t current_delete = oracle_syscall4(s_cpu, ORACLE_NID_DELETE_THREAD,
                                               current_uid, 0, 0, 0);
 
-    uint32_t term_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t term_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *term_target = tcb_by_uid(term_target_uid);
     if (!term_target) return ORACLE_UNAVAILABLE;
@@ -36432,7 +36766,7 @@ static int oracle_thread_delete_case(uint32_t *out0, uint32_t *out1,
     uint32_t term_post_wake = oracle_syscall4(s_cpu, ORACLE_NID_WAKEUP_THREAD,
                                               term_target_uid, 0, 0, 0);
 
-    uint32_t exit_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t exit_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *exit_target = tcb_by_uid(exit_target_uid);
     if (!exit_target) return ORACLE_UNAVAILABLE;
@@ -36497,7 +36831,7 @@ static int oracle_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
     /* The host oracle uses the production scheduler's real target lifecycle,
        while the joiner body is represented by the same observable state that
        the guest entry has after returning from its inner WaitThreadEnd. */
-    uint32_t error_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t error_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                 ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *error_target = tcb_by_uid(error_target_uid);
     if (!error_target) return ORACLE_UNAVAILABLE;
@@ -36530,7 +36864,7 @@ static int oracle_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
     uint32_t error_outer = oracle_syscall4(s_cpu, ORACLE_NID_WAIT_THREAD_END,
                                            error_joiner->uid, 0, 0, 0);
 
-    uint32_t positive_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t positive_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                    ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *positive_target = tcb_by_uid(positive_target_uid);
     if (!positive_target) return ORACLE_UNAVAILABLE;
@@ -36635,7 +36969,7 @@ static int oracle_thread_delete_exit_pair_case(uint32_t *out0, uint32_t *out1,
     TCB *owner = NULL;
     if (!oracle_setup_owner(&owner)) return ORACLE_UNAVAILABLE;
 
-    uint32_t error_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t error_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                 ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *error_target = tcb_by_uid(error_target_uid);
     if (!error_target) return ORACLE_UNAVAILABLE;
@@ -36644,7 +36978,7 @@ static int oracle_thread_delete_exit_pair_case(uint32_t *out0, uint32_t *out1,
     s_oracle_thread_action = ORACLE_THREAD_ACTION_SLEEP;
     run_worker(error_target);
 
-    uint32_t error_joiner_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t error_joiner_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                 ORACLE_THREAD_ENTRY, 16, 0x4000u);
     TCB *error_joiner = tcb_by_uid(error_joiner_uid);
     if (!error_joiner) return ORACLE_UNAVAILABLE;
@@ -36676,7 +37010,7 @@ static int oracle_thread_delete_exit_pair_case(uint32_t *out0, uint32_t *out1,
     }
     (void)oracle_syscall4(s_cpu, ORACLE_NID_DELETE_THREAD, error_joiner_uid, 0, 0, 0);
 
-    uint32_t positive_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t positive_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                    ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *positive_target = tcb_by_uid(positive_target_uid);
     if (!positive_target) return ORACLE_UNAVAILABLE;
@@ -36685,7 +37019,7 @@ static int oracle_thread_delete_exit_pair_case(uint32_t *out0, uint32_t *out1,
     s_oracle_thread_action = ORACLE_THREAD_ACTION_SLEEP;
     run_worker(positive_target);
 
-    uint32_t positive_joiner_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t positive_joiner_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                    ORACLE_THREAD_ENTRY, 16, 0x4000u);
     TCB *positive_joiner = tcb_by_uid(positive_joiner_uid);
     if (!positive_joiner) return ORACLE_UNAVAILABLE;
@@ -45876,6 +46210,10 @@ static int hle_selftest_main(int argc, char **argv) {
     test_hle_syscall_return_clears_link();
     test_kernel_import_sweep_display_multi();
     test_start_thread_error_semantics();
+    test_create_thread_contract();
+    test_start_thread_contract();
+    test_get_thread_id_names_calling_thread();
+    test_ge_update_stall_unknown_id();
     test_exit_delete_lifecycle_and_join_result();
     test_wait_thread_end_invalid_targets();
     test_wait_thread_end_already_ended();

@@ -74,8 +74,8 @@ Assisted-by: Codex (GPT-6 Luna)
 - Name the tool and, in parentheses, the model it ran. Both are required: a line without the model
   is incomplete, so find out which model a tool used before you commit. A contributor names
   whatever tool they used, such as Cursor or Gemini CLI. The tools the maintainer's own agents use
-  are Claude Code, Codex, Antigravity, OpenCode, Kilo, Cline, Codebuff, GitHub Copilot, and Jules
-  (Google's coding agent); the maintainer adds a new tool to this list before using it.
+  are Claude Code, Codex, Antigravity, OpenCode, Kilo, Cline, Codebuff, GitHub Copilot,
+  Android Studio, and Jules (Google's coding agent); the maintainer adds a new tool to this list before using it.
 - Use the same form for every tool. A uniform, honest record is the point: it lets anyone
   see which changes had AI help without inferring it.
 - `Assisted-by:` is a disclosure, not authorship. Do not add `Co-Authored-By:` for an AI

@@ -1042,6 +1042,7 @@ def build_title2(plan: Plan) -> Asm:
     a.load_addr_literal(5, worker_entry)
     a.i(0x09, 0, 6, 10)                  # higher priority than the entry thread
     a.li(7, 0x2000)
+    a.i(0x09, 0, 8, 0)                   # t0 = attr (none): the fifth argument is read from $t0
     a.call_literal(s_create_th)
     a.rr(2, 0, 18, 0, 0x21)              # s2 = real worker UID
     a.bltz(2, "failure")
