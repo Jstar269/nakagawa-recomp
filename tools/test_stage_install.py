@@ -264,6 +264,12 @@ class AppIdentityTests(unittest.TestCase):
         self.assertEqual(calls[:2], ["(void)nk_platform_init_utf8_main(&argc, &argv);",
                                      "player_host_set_app_identity();"])
 
+    def test_shortcut_path_reaches_the_shell_with_backslashes(self):
+        # MSYS2's Python joins paths with '/', and the shell's property store refuses those.
+        from pathlib import PurePosixPath
+        self.assertEqual(stage_install._shell_path(PurePosixPath("D:/Games/My Apps/Nakagawa Recomp.lnk")),
+                         "C:\\Users\\a b\\Nakagawa Recomp.lnk")
+
     def test_app_user_model_id_follows_the_windows_rules(self):
         # Windows: at most 128 characters, no spaces, dot-separated sections.
         value = stage_install.APP_USER_MODEL_ID

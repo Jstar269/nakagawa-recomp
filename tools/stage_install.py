@@ -381,11 +381,17 @@ _READ_APP_ID_SCRIPT = (
 )
 
 
+def _shell_path(path: Path) -> str:
+    """A path as the Windows shell parses it. MSYS2's Python joins with '/', and
+    SHGetPropertyStoreFromParsingName refuses those (E_INVALIDARG)."""
+    return str(path).replace("/", "\\")
+
+
 def read_shortcut_app_id(shortcut: Path) -> str:
     """The AppUserModelID a .lnk carries, or "" when it has none (Windows only)."""
     if os.name != "nt":
         raise InstallError("INSTALL_SHORTCUT_UNSUPPORTED: shortcuts are read on Windows only")
-    environment = {**os.environ, "NK_LNK": str(shortcut), "NK_APP_ID_CS": _APP_ID_CSHARP}
+    environment = {**os.environ, "NK_LNK": _shell_path(shortcut), "NK_APP_ID_CS": _APP_ID_CSHARP}
     result = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", _READ_APP_ID_SCRIPT],
         capture_output=True, text=True, env=environment, check=False)
@@ -403,7 +409,7 @@ def write_shortcut(shortcut: Path, dest: Path, arguments: str = DEFAULT_ARGUMENT
     dest = dest.resolve()
     environment = os.environ.copy()
     environment.update({
-        "NK_LNK": str(shortcut),
+        "NK_LNK": _shell_path(shortcut),
         "NK_TARGET": str(dest / "bin" / "nakagawa_player.exe"),
         "NK_ARGS": arguments,
         "NK_WORKDIR": str(dest / "bin"),
