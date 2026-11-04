@@ -61,7 +61,7 @@ NkOverlayAction nk_overlay_page_menu(NkUi *ui, NkOverlayState *state, const NkOv
             if (nonempty(model->disc_id) != NULL) {
                 nk_ui_text_role(ui, MENU_ID_DISC, model->disc_id, NK_UI_TYPE_DATA, theme->muted);
             }
-            /* Ace Mode is on for this run: what it does, in words. Nothing when authentic. */
+            /* Enhanced or Ace is on for this run: its name and what it does. Nothing when Authentic. */
             if (nonempty(model->ace_caption) != NULL) {
                 NkUiTextStyle caption = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
                 nk_ui_text(ui, MENU_ID_ACE,

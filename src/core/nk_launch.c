@@ -1543,7 +1543,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         bool ace_on = strcmp(ace, "off") != 0;
         if (ace_on && session->config.headless_accept_presented_frames > 0u) {
             snprintf(session->last_error, sizeof(session->last_error),
-                     "Ace Mode is on; the acceptance checkpoint needs an authentic run.");
+                     "Enhanced or Ace is on; the acceptance checkpoint needs an Authentic run.");
             return NK_ERROR_GENERIC;
         }
         snprintf(env_ace, sizeof(env_ace), "SR_ACE=%s", ace);

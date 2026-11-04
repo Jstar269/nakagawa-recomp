@@ -101,7 +101,8 @@ static AceUiFrame frame_full(int w, int h, float scale) {
     f.display_scale = scale;
     f.now_s = 1.0;
     f.reduce_motion = 1;
-    f.notice = "16x filtering \xC2\xB7 crisp keyboard \xC2\xB7 speed readout";
+    f.notice_head = "Enhanced";
+    f.notice ="16x filtering \xC2\xB7 crisp keyboard \xC2\xB7 speed readout";
     f.notice_alpha = 1.0f;
     f.readout = "\xE2\x96\xB2 87%  26 FPS  PC LIMITED";
     f.readout_warning = 1;

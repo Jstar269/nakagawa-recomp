@@ -2177,7 +2177,7 @@ class NativePlayerUiTests(unittest.TestCase):
         "ace": str(0x4540), "ace_open": str(0x4541), "ace_mode": str(0x4542),
     }
     # From Resolution, Down runs through the Game card's six rows (the last is the
-    # one Ace Mode row, which opens its page) to the button row, which it enters at
+    # one Play mode row, which opens Settings > Enhanced) to the button row, which it enters at
     # Third-party notices.
     TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 6
 
@@ -2220,25 +2220,28 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(self.screens(tabs), [("settings", "1"), ("library", "3")],
                          "the ABOUT tab on Settings closes it and opens About")
 
-    def test_next_ui_ace_mode_switch_is_saved_and_its_page_opens(self) -> None:
-        """Ace Mode (src/rt/ace.h): off by default. Settings has one Ace Mode row (#2007);
-        it opens the page, where the switch turns Ace Mode on for the library and saves it."""
+    def test_next_ui_play_mode_is_saved_and_its_page_opens(self) -> None:
+        """The play modes (#2055): Authentic by default. Settings has one Play mode row
+        (#2007); it opens Settings > Enhanced, whose play mode row makes Enhanced the library's
+        default and saves it."""
         focus = self.SETTINGS_FOCUS
         run = self.next_ui_run(
             "settings",
             ("WAIT_MS=100",) + ("KEY_DOWN",) * 5 +
             ("KEY_RETURN", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
         )
-        self.assertIn(focus["ace_open"], self.focus_trail(run), "Down reaches the Ace Mode row")
-        self.assertNotIn(focus["ace"], self.focus_trail(run), "there is no second Ace Mode row")
+        self.assertIn(focus["ace_open"], self.focus_trail(run), "Down reaches the Play mode row")
+        self.assertNotIn(focus["ace"], self.focus_trail(run), "there is no second Play mode row")
         self.assertEqual([view for view, _ in self.screens(run)],
                          ["settings", "ace_settings", "settings"])
         settings = run["settings"]
         assert isinstance(settings, dict)
-        ace = settings.get("ace")
-        assert isinstance(ace, dict), settings
-        self.assertIs(ace.get("enabled"), True, "Ace Mode switched on on its page and saved")
-        self.assertEqual(ace.get("af"), 16, "the features keep their defaults")
+        enhanced = settings.get("enhanced")
+        assert isinstance(enhanced, dict), settings
+        self.assertEqual(enhanced.get("default"), "enhanced",
+                         "Enhanced chosen on its page and saved")
+        self.assertEqual(enhanced.get("af"), "16", "the parts keep their defaults")
+        self.assertNotIn("ace", settings, "the development builds' key is not written")
         pad = self.next_ui_run(
             "settings",
             ("WAIT_MS=100",) + ("PAD_DPAD_DOWN",) * 5 +
@@ -2246,9 +2249,10 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         pad_settings = pad["settings"]
         assert isinstance(pad_settings, dict)
-        pad_ace = pad_settings.get("ace")
-        assert isinstance(pad_ace, dict), pad_settings
-        self.assertIs(pad_ace.get("enabled"), True, "a controller's d-pad and south do the same")
+        pad_enhanced = pad_settings.get("enhanced")
+        assert isinstance(pad_enhanced, dict), pad_settings
+        self.assertEqual(pad_enhanced.get("default"), "enhanced",
+                         "a controller's d-pad and south do the same")
         page = self.next_ui_run(
             "settings",
             ("WAIT_MS=100",) + ("KEY_DOWN",) * 5 + ("KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE",
@@ -2258,7 +2262,7 @@ class NativePlayerUiTests(unittest.TestCase):
                          ["settings", "ace_settings", "settings"])
         trail = self.focus_trail(page)
         self.assertEqual(trail[-2:], [focus["ace_mode"], focus["ace_open"]],
-                         "the page opens on its switch and Back focuses the row that opened it")
+                         "the page opens on its play mode and Back focuses the row that opened it")
 
     def test_a_dedicated_data_root_keeps_everything_out_of_the_default_profile(self) -> None:
         """--user-data-root=<folder> opens the player on a second profile, for example a

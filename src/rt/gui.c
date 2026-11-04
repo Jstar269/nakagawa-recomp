@@ -430,6 +430,7 @@ static void gui_ace_ui_pass(const Sdl3VkUiPass *p) {
     if (ace->notice && s_ace_first_frame_ns && now - s_ace_first_frame_ns < ACE_NOTICE_NS) {
         double left = (double)(ACE_NOTICE_NS - (now - s_ace_first_frame_ns)) / 1e9;
         double shown = (double)(now - s_ace_first_frame_ns) / 1e9;
+        f.notice_head = ace_tier_name();
         f.notice = s_ace_words[0] ? s_ace_words : "On";
         /* It eases in and out over NK_UI_MOTION_BASE, or cuts with Reduce motion. */
         f.notice_alpha = 1.0f;
@@ -1512,16 +1513,16 @@ static int gui_pause_compose(int w, int h, int rgba) {
         model.disc_id = getenv("SR_DISC_ID");
         model.scaling = gui_pause_scaling_to_overlay(sdl3vk_present_scaling());
         model.hud_on = sdl3vk_hud_is_enabled() != 0;
-        /* Ace Mode (ace.h): the menu says what it does; the readout is a live switch while the
-         * in-game UI can draw it. Nothing in an authentic run. */
+        /* Enhanced or Ace (ace.h): the menu says what it does; the readout is a live switch while
+         * the in-game UI can draw it. Nothing in an authentic run. */
         static char ace_caption[200];
         ace_caption[0] = '\0';
         if (g_ace_on) {
             char words[160];
             if (ace_feature_words(words, sizeof(words)) > 0)
-                snprintf(ace_caption, sizeof(ace_caption), "Ace Mode on: %s", words);
+                snprintf(ace_caption, sizeof(ace_caption), "%s: %s", ace_tier_name(), words);
             else
-                snprintf(ace_caption, sizeof(ace_caption), "Ace Mode on");
+                snprintf(ace_caption, sizeof(ace_caption), "%s", ace_tier_name());
         }
         model.ace_caption = ace_caption;
         model.ace_readout = s_ace_ui_ready ? (ace_effective()->readout ? 2 : 1) : 0;

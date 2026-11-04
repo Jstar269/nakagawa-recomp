@@ -452,9 +452,9 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 nk_ui_end_container(ui);
             }
             /* Enhancements, apart from what to expect of the game as released:
-               Ace Mode for every game (src/rt/ace.h), and an optional enhancement
-               made for this game (60 FPS game logic, docs/ENHANCEMENT_CONTRACT.md
-               section 9). Off, and Authentic, are the original game. */
+               the play mode for every game (Authentic, Enhanced or Ace; src/rt/ace.h),
+               and Ace's 60 FPS game logic made for this game
+               (docs/ENHANCEMENT_CONTRACT.md section 9). Authentic is the original game. */
             if ((title->enhancement_shown || title->ace_shown) &&
                 nk_ui_card_begin(ui, TITLE_ID_ENH_CARD, sizing_grow(), sizing_fit(),
                                  NK_UI_SPACE_3)) {
@@ -466,8 +466,8 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                     if (title->enhancement_shown) nk_ui_tag(ui, TITLE_ID_ENH_TAG, "Experimental");
                     nk_ui_end_container(ui);
                 }
-                /* Ace Mode (src/rt/ace.h): library default, on, or authentic for this game;
-                   then the 60 FPS switch on the same row where the game has a package. */
+                /* The play mode (#2055): library default, Authentic, Enhanced or Ace for this
+                   game; its Enhanced options; then Ace's 60 FPS switch on the same row. */
                 {
                     float inner = width - 2.0f * gutter - NK_UI_DETAIL_GAP - aside -
                                   2.0f * NK_UI_SPACE_5;
@@ -478,27 +478,26 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                     row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
                     if (nk_ui_flow_begin(ui, &buttons, TITLE_ID_ACE_ROW, &row, inner)) {
                         if (title->ace_shown) {
-                            const char *ace = safe_text(title->ace_label, "Ace Mode");
+                            const char *ace = safe_text(title->ace_label, "Play mode");
                             nk_ui_flow_item(ui, &buttons, nk_ui_button_width(ui, ace, 0u));
                             if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_ACE, ace,
                                              NK_UI_BUTTON_NOT_DEFAULT |
                                                  (title->ace_in_effect ? NK_UI_BUTTON_PRIMARY : 0u) |
                                                  (title->ace_enabled ? 0u
                                                                      : NK_UI_BUTTON_DISABLED))) {
-                                result = action(PLAYER_UI_ACTION_CYCLE_ACE, model->title_index,
+                                result = action(PLAYER_UI_ACTION_CYCLE_PLAY_MODE, model->title_index,
                                                 PLAYER_UI_PRIMARY_NONE);
                             }
                         }
-                        if (title->smooth_shown) {
-                            const char *smooth = safe_text(title->smooth_label, "Smooth motion");
-                            nk_ui_flow_item(ui, &buttons, nk_ui_button_width(ui, smooth, 0u));
-                            if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_SMOOTH, smooth,
+                        if (title->options_shown) {
+                            const char *options = "Enhanced options";
+                            nk_ui_flow_item(ui, &buttons, nk_ui_button_width(ui, options, 0u));
+                            if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_PLAY_OPTIONS, options,
                                              NK_UI_BUTTON_NOT_DEFAULT |
-                                                 (title->smooth_on ? NK_UI_BUTTON_PRIMARY : 0u) |
-                                                 (title->smooth_enabled ? 0u
-                                                                        : NK_UI_BUTTON_DISABLED))) {
-                                result = action(PLAYER_UI_ACTION_CYCLE_SMOOTH, model->title_index,
-                                                PLAYER_UI_PRIMARY_NONE);
+                                                 (title->options_enabled ? 0u
+                                                                         : NK_UI_BUTTON_DISABLED))) {
+                                result = action(PLAYER_UI_ACTION_OPEN_PLAY_OPTIONS,
+                                                model->title_index, PLAYER_UI_PRIMARY_NONE);
                             }
                         }
                         if (title->enhancement_shown) {
@@ -514,7 +513,7 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                         }
                         nk_ui_flow_end(ui, &buttons);
                     }
-                    /* What Ace Mode turns on, then what it did last time: one paragraph of
+                    /* What the play mode turns on, then what it did last time: one paragraph of
                        two lines at most. Beside the 60 FPS paragraph it has one line, the last
                        session when there is one (the button already says the state), so the
                        card fits the smallest window. */
@@ -538,10 +537,10 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 }
                 if (title->enhancement_shown) {
                     nk_ui_text_role(ui, TITLE_ID_ENH_TEXT,
-                                    "An optional enhancement made for this game: its logic runs "
-                                    "60 times a second instead of 30, from its own package. Off "
-                                    "plays the original game as released. If this PC falls "
-                                    "behind, it says SLOWED.",
+                                    "Ace's improvement made for this game: its logic runs 60 "
+                                    "times a second instead of 30, from its own package. Off "
+                                    "plays the original game logic. If this PC falls behind, "
+                                    "it says SLOWED.",
                                     NK_UI_TYPE_BODY_S, theme->paper);
                     if (title->enhancement_problem != NULL &&
                         title->enhancement_problem[0] != '\0') {

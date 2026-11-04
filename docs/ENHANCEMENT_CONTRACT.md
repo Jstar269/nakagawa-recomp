@@ -265,20 +265,34 @@ python tools/enhancement_package.py --compare-rates stock/samples.csv enhanced/s
 
 Sample specs and routes name guest addresses, so they stay private with the package; the check itself is generic.
 
-## 10. Ace Mode: the Project-Authored, Library-Wide Mode
+## 10. Play Modes: Authentic, Enhanced and Ace
 
-Ace Mode is one launcher switch that turns on presentation features for every game, with a per-title choice on the
-title page (#1272, #1273). It is project-authored code in the player and the runtime (section 7), not a package: no
-loader, no AOT change, no guest hook. The runtime part is `src/rt/ace.h`; the in-game UI is
-`src/rt/gpu_sdl3vk/ace_ui.h`.
+The player offers three play modes per game (#2055):
+
+- **Authentic** is the standard: the game as released, recreating the PSP as closely as the project can. It is the
+  default for a new library.
+- **Enhanced** turns on the project-authored improvements that work for any game: texture filtering, crisp system
+  text, the speed readout, the game badge and smooth motion today. Each one is a *part* that can be turned off for
+  the library or for a single game.
+- **Ace** is Enhanced plus the improvements made for that game alone. Today that is the title's 60 FPS game logic
+  package (section 9). The player offers Ace only for a title with a usable package; its own parts can be turned off
+  for that game too.
+
+The parts are project-authored code in the player and the runtime (section 7), not a package: no loader, no AOT change,
+no guest hook. Ace's per-title package is the one exception, and section 9 governs it. The runtime keeps the
+development name: `src/rt/ace.h` serves both Enhanced and Ace runs, and the in-game UI is `src/rt/gpu_sdl3vk/ace_ui.h`.
+Code identifiers that say `ace` mean "Enhanced or Ace"; every name a player reads says Enhanced or Ace.
 
 ### 10.1. The Launch Line
 
-The launcher always exports `SR_ACE`, so an inherited value cannot opt a launch in: `off`, or
-`v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2`. Every key is required, in any order, each once; a value
-for a feature this build does not carry (`wide=fill`, `smooth=match`) refuses the line. So does anything else: Ace
-is off for the run and one `ACE_MODE: refused (<reason>)` line says why. Unset is off. With Ace on the launcher also
-exports `SR_ACE_REPORT`, the per-run report under `<user data>/ace/`.
+The launcher always exports `SR_ACE`, so an inherited value cannot opt a launch in: `off` for Authentic, or
+`v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2`. `tier` (`enhanced` or `ace`) only names the
+run, in the game badge, the pause menu and the stamps; a line without it is an Enhanced run. Every other key is
+required, in any order, each once; a value for a feature this build does not carry (`wide=fill`, `smooth=match`)
+refuses the line. So does anything else: the run is Authentic and one `ACE_MODE: refused (<reason>)` line says why.
+Unset is off. With Enhanced or Ace on, the launcher also exports `SR_ACE_REPORT`, the per-run report under
+`<user data>/ace/`. Ace's 60 FPS game logic is not on this line: it selects the title's enhanced package variant
+(section 9.4).
 
 ### 10.2. Authentic Is Untouched
 
@@ -301,21 +315,33 @@ the samplers and the pool; `display-smoke` keeps its image hash.
 
 ### 10.4. Stamps and Evidence
 
-An Ace run prints `ACE_MODE: on (...)` at start and `ACE_MODE: exit (...)` at an ordinary exit, and its flight
-recorder bundle carries `runtime.enhancements` (`assets/flight_recorder_schema.json`); an authentic bundle's bytes are
-unchanged. `tools/flight_diff.py` refuses to compare any bundle that carries the block, `tools/boot_gate.py` refuses an
-Ace run's log, the acceptance checkpoint refuses an Ace run (`reason=ace_mode`), and the launcher never starts one.
+An Enhanced or Ace run prints `ACE_MODE: on (tier=..., ...)` at start and `ACE_MODE: exit (...)` at an ordinary exit,
+and its flight recorder bundle carries `runtime.enhancements` (`assets/flight_recorder_schema.json`); an Authentic
+bundle's bytes are unchanged. `tools/flight_diff.py` refuses to compare any bundle that carries the block,
+`tools/boot_gate.py` refuses an Enhanced or Ace run's log, the acceptance checkpoint refuses both
+(`reason=ace_mode`), and the launcher never starts either for it.
 
-### 10.5. Per-Title Choice
+### 10.5. Per-Title Choice and Precedence
 
-`settings.json` keeps the library's choice in `"ace"` and a sparse `"ace_titles"` map. A title's `authentic` turns
-everything off, its 60 FPS game logic included; its `ace` turns Ace on whatever the library says; otherwise the
-library's switch decides. A feature takes the title's value where it has one, else the library's.
+The library's default is Authentic or Enhanced. Ace is never a library default: it depends on a package only some titles
+have, and a player turns it on title by title where they want it. Each title follows the library or chooses one of the
+three modes for itself (its page's Play mode button, or Settings > Enhanced opened from its page). What a title launches
+with resolves in this order:
+
+1. **The mode.** The title's own choice, else the library's default. Authentic turns everything off, its 60 FPS game
+   logic included, and the line is `off`.
+2. **Each Enhanced part, for Enhanced and Ace alike.** The title's own value where it has one, else the library's. So
+   Ace includes Enhanced, with the title's own choices first.
+3. **Ace's parts.** The title's 60 FPS game logic is on unless the title turned it off. A title whose package has gone
+   is blocked, not quietly played without it, until the package is back or the part or Ace is turned off.
 
 A title that launches its 60 FPS game logic gets `smooth=off` on its line, whatever the settings say: logic and
 interpolation are refused together, not stacked (#1272).
 
-Ultrawide (a host-only wide mirror of the GE's draws) is designed and tracked in #1272; it is not part of this build.
+A part is one row of the player's part table (`src/player/player_state.c`): its key, its values (each part has an off
+value, 0) and the words a row shows. The settings file, the launch line and both settings pages walk that table, so a
+new part is one more row and no new switch. Ultrawide (a host-only wide mirror of the GE's draws) is designed and
+tracked in #1272; it is not part of this build, and the line always carries `wide=off`.
 
 ### 10.6. Smooth Motion
 
@@ -339,3 +365,34 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
   present latches no input and serves no capture.
 - **Stamps.** The report adds `presents` (real, between, held, superseded) and `present_interval_ms`. Section 10.4
   applies: the run is refused as evidence.
+
+### 10.7. Settings
+
+`settings.json` keeps the library's choice in `"enhanced"` and a sparse `"title_play"` map, every value by name:
+
+```json
+"enhanced": {"default": "enhanced", "af": "16", "text": "on", "readout": "off", "notice": "on", "smooth": "off"},
+"title_play": {"ULUS10000": {"mode": "ace", "af": "8"}, "ULES00000": {"mode": "library", "logic_60": "off"}}
+```
+
+A title's `mode` is `library`, `authentic`, `enhanced` or `ace`; a part it does not name follows the library; its
+`"logic_60": "off"` turns Ace's 60 FPS game logic off. An entry that follows the library everywhere is not written.
+Reading never makes a choice more permissive: in an `"enhanced"` block, a part it does not name or a word this build
+does not know is off, and a default other than `enhanced` is Authentic; a title's unknown mode follows the library,
+and an unknown part value is off. A file with no `"enhanced"` block starts from the fresh defaults: Authentic, with
+16x filtering, crisp text and the game badge set for when the player turns Enhanced on.
+
+Development builds after v0.0.1 saved `"ace"`, `"ace_titles"` and `"enhancement_60hz_discs"`. The player reads them only
+when `"enhanced"` is absent, maps them as below, and writes the new keys from then on:
+
+- `"ace"`: `"enabled": true` is an Enhanced library default, `false` Authentic; its feature values become the library's
+  parts (a value those builds did not know keeps the fresh default, as they did).
+- `"ace_titles"`: mode `ace` is Enhanced, `authentic` Authentic, anything else follows the library; the title's
+  feature values become its parts.
+- `"enhancement_60hz_discs"`: each disc becomes plain Ace: every Enhanced part as the library has it (the documented
+  defaults unless the old `"ace"` block changed them), any value of its own from `"ace_titles"` kept, plus its 60 FPS
+  game logic. Its parts can be turned off one by one afterwards. A disc chosen Authentic stays Authentic: its 60 FPS
+  game logic was not in effect while Authentic was chosen.
+
+`tests/native/test_player_state.c` (`test_play_mode_settings`, `test_play_mode_settings_mapping`) checks the names,
+the precedence, the off switches at both levels and this mapping.

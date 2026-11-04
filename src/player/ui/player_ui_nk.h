@@ -130,8 +130,10 @@ typedef enum {
     PLAYER_UI_ACTION_REPORT_PROBLEM,   /* the title page's Report a problem */
     PLAYER_UI_ACTION_CHECK_INPUT_AGAIN, /* the title page checks its files again (#308) */
     PLAYER_UI_ACTION_TOGGLE_60FPS,     /* the title page's 60 FPS game logic switch */
-    PLAYER_UI_ACTION_CYCLE_ACE,        /* the title page's Ace Mode: library, on, authentic */
-    PLAYER_UI_ACTION_CYCLE_SMOOTH,     /* the title page's smooth motion: library, on, off */
+    PLAYER_UI_ACTION_CYCLE_PLAY_MODE,  /* the title page's play mode: library default,
+                                          Authentic, Enhanced, Ace (#2055) */
+    PLAYER_UI_ACTION_OPEN_PLAY_OPTIONS, /* the title page's Enhanced options: Settings >
+                                           Enhanced for that game */
     PLAYER_UI_ACTION_CYCLE_SORT,        /* the library's next sort */
     PLAYER_UI_ACTION_FIND_OPEN,         /* open the library's find box */
     PLAYER_UI_ACTION_FIND_KEY,          /* an on-screen key: title_index is a codepoint, or
@@ -251,25 +253,22 @@ typedef struct {
     bool enhancement_enabled;
     bool enhancement_session;   /* on for this session by --experimental-60hz */
     const char *enhancement_problem;
-    /* Ace Mode (src/rt/ace.h) on the title page's ENHANCEMENTS card: the button's words
-       ("Ace Mode: On (library default)"), whether Ace is in effect for the title, whether the
-       button can change it now (as enhancement_enabled), what it turns on in words, and the
-       last session's line from the runtime's report ("" for none). A demo has no card. */
+    /* The play mode (#2055; src/rt/ace.h) on the title page's ENHANCEMENTS card: the button's
+       words ("Play mode: Enhanced (library default)"), whether Enhanced or Ace is in effect
+       for the title, whether the button can change it now (as enhancement_enabled), what it
+       turns on in words, and the last session's line from the runtime's report ("" for
+       none). A demo has no card. The 60 FPS switch shows while Ace is in effect. */
     bool ace_shown;
     const char *ace_label;
     bool ace_in_effect;
     bool ace_enabled;
     const char *ace_line;
     const char *ace_last_session;
-    bool ace_badge;             /* the library card's ACE badge */
-    /* Smooth motion (#1272) beside the Ace Mode button: shown while Ace is in effect for the
-       title; the button's words ("Smooth motion: On (library default)"); lit when on; and
-       whether it can change now. It is disabled, and says so, while the title's 60 FPS game
-       logic is on: the two are refused together. */
-    bool smooth_shown;
-    const char *smooth_label;
-    bool smooth_on;
-    bool smooth_enabled;
+    const char *play_badge;     /* the library card's badge: "Ace", "Enhanced" or NULL */
+    /* Enhanced options beside the play mode: Settings > Enhanced for this game, where each
+       part follows the library or has the game's own value. */
+    bool options_shown;
+    bool options_enabled;
     /* Disc verification: one sentence about how the image compares with the
        user's disc list, under the title page's tags; NULL when not checked. The
        card's badge carries the short word. */
@@ -540,19 +539,26 @@ typedef enum {
     PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE, /* Automatic, 100, 125, 150, 200% */
     PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST,  /* Automatic, On, Off */
     PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE,      /* Standard, Large, Larger (100, 125, 150%) */
-    PLAYER_UI_SETTINGS_OPEN_ACE,             /* Settings > Ace Mode */
-    PLAYER_UI_SETTINGS_TOGGLE_ACE,           /* the library's Ace Mode switch */
-    PLAYER_UI_SETTINGS_CYCLE_ACE_FILTERING,  /* 16x, 8x, 4x, 2x, Off */
-    PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT,
-    PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT,
-    PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE,
-    PLAYER_UI_SETTINGS_TOGGLE_ACE_SMOOTH,    /* smooth motion: Off, On (x2) */
+    PLAYER_UI_SETTINGS_OPEN_ACE,             /* Settings > Enhanced, the library's page */
+    PLAYER_UI_SETTINGS_CYCLE_PLAY_MODE,      /* that page's play mode: the library's default,
+                                                or the title's choice on a title's page */
+    PLAYER_UI_SETTINGS_CYCLE_ENHANCED_PART,  /* the part in the action's title_index */
     PLAYER_UI_SETTINGS_OPEN_PROBLEM_REPORT,  /* Settings > Problem report: lists the files */
     PLAYER_UI_SETTINGS_CREATE_REPORT,        /* write the bundle on this PC */
     PLAYER_UI_SETTINGS_OPEN_REPORT_FOLDER,
     PLAYER_UI_SETTINGS_OPEN_DATA_FOLDER,     /* the folder holding the library, games and settings */
     PLAYER_UI_SETTINGS_OPEN_LOGS             /* the folder holding the logs */
 } PlayerUiSettingsOp;
+
+/* Settings > Enhanced's rows after the play mode: one per Enhanced part (player_state.h
+   PlayerEnhancedPart), in that order. */
+#define PLAYER_UI_ENHANCED_ROWS 12
+typedef struct {
+    const char *name;           /* "Texture filtering" */
+    const char *value;          /* "16x", "Off", "Library (On)" on a title's page */
+    const char *sentence;
+    bool on;                    /* in effect for the page: lit */
+} PlayerUiEnhancedRow;
 
 #define PLAYER_UI_REPORT_LINES 24u   /* PLAYER_REPORT_MAX_FILES */
 
@@ -606,14 +612,16 @@ typedef struct {
     int system_scale_pct;               /* the display's scale */
     bool system_high_contrast;
     bool system_reduced_motion;
-    /* Ace Mode (VIEW_ACE_SETTINGS and the GAME card's row): the library's switch and each
-       feature's value in words */
-    bool ace_enabled;
-    const char *ace_filtering;      /* "16x" ... "Off" */
-    bool ace_text;
-    bool ace_readout;
-    bool ace_notice;
-    bool ace_smooth;                /* smooth motion (x2) */
+    /* Settings > Enhanced (VIEW_ACE_SETTINGS, #2055) and the GAME card's row. The page is the
+       library's, or one title's when enhanced_title is set. Its first row is the play mode;
+       then one row per Enhanced part, so a new part needs no change to the page. */
+    bool enhanced_library_on;       /* the library's default is Enhanced */
+    const char *enhanced_title;     /* the game's name on its own page; NULL for the library */
+    const char *enhanced_mode;      /* "Enhanced", "Ace", "Library (Authentic)" */
+    const char *enhanced_mode_sentence;
+    bool enhanced_on;               /* Enhanced or Ace in effect: the part rows can change */
+    int enhanced_row_count;
+    PlayerUiEnhancedRow enhanced_rows[PLAYER_UI_ENHANCED_ROWS];
     const char *controller_line;    /* "Keyboard ready" or the pad's name */
     const char *saves_folder;
     const char *notice;             /* a settings notice (a failed save), or NULL */
@@ -910,8 +918,8 @@ enum {
     PLAYER_UI_ID_TITLE_OPEN_INPUT_FOLDER = 0x2008u,
     PLAYER_UI_ID_TITLE_REPORT = 0x2020u,
     PLAYER_UI_ID_TITLE_60FPS = 0x2009u,
-    PLAYER_UI_ID_TITLE_ACE = 0x200Au,                /* the ENHANCEMENTS card's Ace Mode */
-    PLAYER_UI_ID_TITLE_SMOOTH = 0x200Bu,             /* the ENHANCEMENTS card's smooth motion */
+    PLAYER_UI_ID_TITLE_ACE = 0x200Au,                /* the ENHANCEMENTS card's play mode */
+    PLAYER_UI_ID_TITLE_PLAY_OPTIONS = 0x200Bu,       /* the ENHANCEMENTS card's Enhanced options */
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
@@ -976,14 +984,11 @@ enum {
     PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE = 0x452Du,
     PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST = 0x452Eu,
     PLAYER_UI_ID_SETTINGS_TEXT_SIZE = 0x452Fu,
-    PLAYER_UI_ID_SETTINGS_ACE = 0x4540u,              /* the GAME card's Ace Mode switch */
-    PLAYER_UI_ID_SETTINGS_ACE_OPEN = 0x4541u,         /* the GAME card's row that opens the page */
-    PLAYER_UI_ID_SETTINGS_ACE_MODE = 0x4542u,         /* the page's own switch */
-    PLAYER_UI_ID_SETTINGS_ACE_FILTERING = 0x4543u,
-    PLAYER_UI_ID_SETTINGS_ACE_TEXT = 0x4544u,
-    PLAYER_UI_ID_SETTINGS_ACE_READOUT = 0x4545u,
-    PLAYER_UI_ID_SETTINGS_ACE_NOTICE = 0x4546u,
-    PLAYER_UI_ID_SETTINGS_ACE_SMOOTH = 0x4547u,
+    PLAYER_UI_ID_SETTINGS_ACE = 0x4540u,              /* retired: the GAME card's old switch */
+    PLAYER_UI_ID_SETTINGS_ACE_OPEN = 0x4541u,         /* the GAME card's row that opens Enhanced */
+    PLAYER_UI_ID_SETTINGS_ACE_MODE = 0x4542u,         /* the Enhanced page's play mode */
+    /* + the part (PlayerEnhancedPart): 0x4543 to 0x454E, PLAYER_UI_ENHANCED_ROWS of them */
+    PLAYER_UI_ID_SETTINGS_ENHANCED_PART = 0x4543u,
     PLAYER_UI_ID_SETTINGS_PROBLEM_REPORT = 0x4550u,   /* Settings: opens the Problem report page */
     PLAYER_UI_ID_REPORT_CREATE = 0x4551u,
     PLAYER_UI_ID_REPORT_FOLDER = 0x4552u,
