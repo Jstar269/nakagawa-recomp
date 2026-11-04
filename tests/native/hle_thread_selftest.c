@@ -29794,16 +29794,18 @@ static void test_td24d_hle_batch(void) {
                MEM_R32(TD24D_RB_ADDR + 12u) == 0u,
            "sceMpegFlushAllStream flushes ring packet counters");
 
-    /* AvcDecodeFlush clears packet counters via mpeg struct */
+    /* AvcDecodeFlush flushes the video decoder and leaves the ring alone (#286): a guest PSMF
+     * player fills the ring, calls it, and expects the packets to still be there. Only
+     * FlushAllStream clears the ring counters. */
     MEM_W32(TD24D_RB_ADDR + 4u, 12u);
     MEM_W32(TD24D_RB_ADDR + 8u, 22u);
     MEM_W32(TD24D_RB_ADDR + 12u, 32u);
     expect(td24b_dispatch4(NID_SCE_MPEG_AVC_DECODE_FLUSH, TD24D_MPEG_DESC, 0u, 0u, 0u) == 0u,
            "sceMpegAvcDecodeFlush succeeds on valid MPEG descriptor");
-    expect(MEM_R32(TD24D_RB_ADDR + 4u) == 0u &&
-               MEM_R32(TD24D_RB_ADDR + 8u) == 0u &&
-               MEM_R32(TD24D_RB_ADDR + 12u) == 0u,
-           "sceMpegAvcDecodeFlush flushes ring packet counters");
+    expect(MEM_R32(TD24D_RB_ADDR + 4u) == 12u &&
+               MEM_R32(TD24D_RB_ADDR + 8u) == 22u &&
+               MEM_R32(TD24D_RB_ADDR + 12u) == 32u,
+           "sceMpegAvcDecodeFlush leaves the ring counters alone");
 
     /* FlushStream is registered next to them; it only validates its arguments and leaves the
      * shared ring counters alone. The stream-id check lives in mpeg.c, which this harness does
