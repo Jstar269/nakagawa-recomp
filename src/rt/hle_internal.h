@@ -802,7 +802,6 @@ typedef enum {
     IO_RAW_BOUNDARY_ASYNC_CALLBACK,
     IO_RAW_BOUNDARY_DREAD,
     IO_RAW_BOUNDARY_DCLOSE,
-    IO_RAW_BOUNDARY_READ_PAST_END,
 } IoRawDeviceBoundary;
 
 typedef struct {
@@ -811,6 +810,8 @@ typedef struct {
     int used;
 } IoCwd;
 #define IO_UMD_POSITION_REFUSED 0x8001b003u
+/* A raw UMD read whose position is already past the last sector (PSP-IO-EOF-002). */
+#define IO_UMD_READ_AT_END 0x80210002u
 #define SR_DATA_STATE_READY         2
 
 /* Devices whose reads the archive VFS may serve: the disc (disc0:, umd:) and the

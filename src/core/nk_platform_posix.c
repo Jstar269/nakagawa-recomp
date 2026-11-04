@@ -397,6 +397,19 @@ bool nk_platform_file_lock_acquire(NkFileLock *lock, const char *path, unsigned 
     return true;
 }
 
+/* There is no single-instance guard on POSIX yet (#2006 added the Windows one): every start
+   reports NK_INSTANCE_ACQUIRED, and a second player opens beside the first. */
+NkInstanceResult nk_platform_single_instance_acquire(NkSingleInstance *instance,
+                                                     const char *name) {
+    (void)name;
+    if (instance) memset(instance, 0, sizeof(*instance));
+    return NK_INSTANCE_ACQUIRED;
+}
+
+void nk_platform_single_instance_release(NkSingleInstance *instance) {
+    if (instance) memset(instance, 0, sizeof(*instance));
+}
+
 void nk_platform_file_lock_release(NkFileLock *lock) {
     if (!lock || !lock->held) return;
     flock(lock->fd, LOCK_UN);
