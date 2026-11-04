@@ -565,6 +565,74 @@ def _eret_vector(words: tuple[int, ...]) -> int:
     return _PROBE_BASE + 4 * (len(words) - 6)
 
 
+def _jalr(rs: int) -> int: return (rs << 21) | (_RA << 11) | 0x09
+
+
+def _longjmp_through_a_computed_call() -> tuple[int, ...]:
+    """_longjmp_into_live_frame with F calling G through `jalr $t9`: a generated dispatch site.
+
+    G is native, so it runs under the site's own boundary; G calls longjmp, whose return
+    lands in F's setjmp call, past the dispatch site. Natively F's setjmp returns again:
+    v0 = 0x107. The `jal G` after longjmp is never run: it makes G an entry.
+    """
+    t, g, setjmp, longjmp, done = 0x1020, 0x104C, 0x1068, 0x1078, 0x103C
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x40), _sw(_RA, 0x3C, _SP),        # 0x1010 F
+        _jal(setjmp), _addiu(_A0, _SP, 0x10),                # 0x1018 setjmp(&buf)
+        _i(0x05, _V0, 0, (done - (t + 4)) >> 2), _NOP,       # 0x1020 bne v0, zero, done
+        _lui(_T9, 0), _ori(_T9, _T9, g),                     # 0x1028
+        _jalr(_T9), _addiu(_A0, _SP, 0x10),                  # 0x1030 G(&buf), computed
+        _addiu(_V0, 0, 0x0DE0),                              # 0x1038 only if G returned
+        _addiu(_V0, _V0, 0x100),                             # 0x103c done
+        _lw(_RA, 0x3C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x40),
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x104c G
+        _jal(longjmp), _addiu(_A1, 0, 7),                    # 0x1054
+        _lw(_RA, 0x1C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _sw(_SP, 0, _A0), _sw(_RA, 4, _A0),                  # 0x1068 setjmp
+        _jr(_RA), _addu(_V0, 0, 0),
+        _lw(_SP, 0, _A0), _lw(_RA, 4, _A0),                  # 0x1078 longjmp
+        _jr(_RA), _addu(_V0, _A1, 0),
+        _jal(g), _NOP,                                       # 0x1088 never run
+    ])
+    assert len(words) == (0x1090 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
+# _inline_call_into_a_piece: H's `jal K` (K unregistered, so the interpreter runs it inline),
+# K's `j P` (P native) and P's return into the rest of H, at H's resume after `jal K`.
+_INLINE_H, _INLINE_K, _INLINE_P = 0x1030, 0x1050, 0x1058
+
+
+def _inline_call_into_a_piece() -> tuple[int, ...]:
+    """H calls K inline, K hands H's frame to the native piece P, and P returns into H.
+
+    G calls H (G native, H omitted: a checked dispatch site), or the host enters H directly
+    (the probe's "host-entry" mode, as thread start does). H lowers $sp, calls K, adds 0x10
+    and returns; K does `j P`; P adds 1 and returns to H's resume after `jal K`, a PC no
+    call boundary holds. Natively that is H's own continuation (G sees v0 = 0x111, the host
+    0x11). The runtime cannot resume interpreted H there, so it must stop by name. Before
+    (#1935): P ran under no resume check, the interpreter handed back as if H had returned,
+    and the rest of H was dropped (v0 = 0x101, or 0x1 at the host).
+    """
+    h, k, p = _INLINE_H, _INLINE_K, _INLINE_P
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1010 G
+        _jal(h), _NOP,                                       # 0x1018
+        _addiu(_V0, _V0, 0x100),                             # 0x1020 G's continuation
+        _lw(_RA, 0x1C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1030 H
+        _jal(k), _NOP,
+        _addiu(_V0, _V0, 0x10),                              # 0x1040 the rest of H
+        _lw(_RA, 0x1C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _j(p), _NOP,                                         # 0x1050 K
+        _addiu(_V0, _V0, 1), _jr(_RA), _NOP,                 # 0x1058 P
+        _jal(p), _NOP,                                       # never run: makes P an entry
+    ])
+    assert words[(k - _PROBE_BASE) // 4] == _j(p) and words[(p - _PROBE_BASE) // 4] == \
+        _addiu(_V0, _V0, 1), "the fixture's labels moved"
+    return words
+
+
 def _alloca_switch_chain(*, reach: str) -> tuple[int, ...]:
     """A function that frees an alloca from memory, entered through a switch case.
 
@@ -916,11 +984,18 @@ static SrCoro *g_probe_main;
 static CpuState g_probe_state;
 static size_t g_probe_top;
 static int g_probe_ran;
+static uint32_t g_probe_host_entry;
 
 static void probe_body(void *arg) {
     (void)arg;
     RecompFn fn = sr_lookup(0x00001000u);
-    if (sr_coro_stack_remaining(&g_probe_top) && fn) {
+    if (g_probe_host_entry) {
+        /* "host-entry ADDR": enter ADDR as thread start does, whichever tier runs it. */
+        if (sr_coro_stack_remaining(&g_probe_top)) {
+            dispatch_from_host(&g_probe_state, g_probe_host_entry);
+            g_probe_ran = 1;
+        }
+    } else if (sr_coro_stack_remaining(&g_probe_top) && fn) {
 #ifdef SR_TAIL_DRAIN
         sr_call_body(fn, &g_probe_state);   /* complete the entry's TAIL chain (#855) */
 #else
@@ -981,8 +1056,10 @@ int main(int argc, char **argv) {
     const int pair = argc > 2 && strncmp(argv[2], "pair", 4) == 0;
     /* "no-bounds": the scheduler is on but no stack-bounds query is installed. */
     const int no_bounds = argc > 2 && strcmp(argv[2], "no-bounds") == 0;
+    g_probe_host_entry = argc > 3 && strcmp(argv[2], "host-entry") == 0
+        ? (uint32_t)strtoul(argv[3], NULL, 0) : 0u;
 #ifdef SR_TAIL_DRAIN
-    if (argc > 2 && !neighbour && !pair && !no_bounds) {   /* a broken protocol (#855) must stop with its named fault */
+    if (argc > 2 && !neighbour && !pair && !no_bounds && !g_probe_host_entry) {   /* a broken protocol (#855) must stop with its named fault */
         CpuState other;
         memset(&other, 0, sizeof other);
         if (strcmp(argv[2], "recorded-twice") == 0) {
@@ -1034,11 +1111,12 @@ int main(int argc, char **argv) {
     sr_dispatch_host_stack_remaining = NULL;
     if (!g_probe_ran) return 22;
     printf("DEPTH_PROBE n=%lu native_bytes=%zu samples=%lu v0=%u v1=0x%08x a0=%u sp=0x%08x "
-           "unwinds=%lu\n",
+           "unwinds=%lu fatal=%d\n",
            n, g_probe_top > g_probe_min ? g_probe_top - g_probe_min : (size_t)0,
            g_probe_samples, (unsigned)g_probe_state.r[2], (unsigned)g_probe_state.r[3],
            (unsigned)g_probe_state.r[4], (unsigned)g_probe_state.r[29],
-           (unsigned long)sr_aot_return_unwind_count());
+           (unsigned long)sr_aot_return_unwind_count(),
+           g_probe_state.flow_kind == SR_FLOW_FATAL);
     return 0;
 }
 """
@@ -1158,9 +1236,11 @@ def _build_depth_probe(
     return exe, compile_result.stderr + compile_result.stdout
 
 
-def _run_depth_probe(exe: Path, iterations: int) -> tuple[int, str, dict[str, int]]:
+def _run_depth_probe(exe: Path, iterations: int,
+                     *mode: str) -> tuple[int, str, dict[str, int]]:
     run = subprocess.run(
-        [str(exe), str(iterations)], cwd=ROOT, capture_output=True, text=True, timeout=120,
+        [str(exe), str(iterations), *mode],
+        cwd=ROOT, capture_output=True, text=True, timeout=120,
     )
     fields: dict[str, int] = {}
     for line in run.stdout.splitlines():
@@ -1910,6 +1990,74 @@ class GeneratedCallDepthTests(unittest.TestCase):
                     self.assertEqual(rc, 0, output)
                     self.assertEqual(fields.get("v0"), v0, output)
                     self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_a_longjmp_from_a_native_callee_of_a_computed_call_reaches_the_setjmp_frame(self):
+        # F calls native G through `jalr $t9`, a generated dispatch site, and G's longjmp
+        # returns into F's setjmp call. Natively the unwind passes the site and F's setjmp
+        # returns again. Before (#1935): dispatch_call gave G a dispatch-owned boundary, a
+        # wall to the unwind, and the run stopped at AOT_RETURN_TARGET_MISMATCH.
+        words = _longjmp_through_a_computed_call()
+        generated, results = self._probe(words, (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertNotIn("AOT_RETURN_TARGET_MISMATCH", output)
+        self.assertEqual(fields.get("v0"), 0x107, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        self.assertGreater(fields.get("unwinds", 0), 0, output)
+        body = generated[generated.index("void f_00001010(CpuState *s) {"):]
+        body = body[:body.index("\n}")]
+        self.assertIn("if (dispatch_call_checked(s, ", body, "F's jalr is a dispatch site")
+        self.assertIn("void f_0000104c(CpuState *s) {", generated, "G is native")
+        # N3: a native callee of a dispatch site owns a dispatch-owned boundary again.
+        self._assert_mutant_fails(
+            "N3-a-dispatch-sites-native-callee-walls-the-unwind", words, (0,),
+            {"recomp.c": ("        ? !call_boundary->site_boundary", "        ? 1")},
+            lambda r: "AOT_RETURN_TARGET_MISMATCH" in r[0][1] and r[0][2].get("v0") != 0x107,
+        )
+
+    def test_a_return_into_an_interpreted_callers_inline_call_stops_by_name(self):
+        # Interpreted H runs `jal K` inline, K hands H's frame to the native piece P with
+        # `j P`, and P returns to H's resume after `jal K`. No call boundary resumes there and
+        # the interpreter's frame for H is gone, so the run must end in the named stop, under
+        # a checked dispatch site (G calls H) and under a host entry (H is the entry).
+        # Before (#1935): no stop; the rest of H was dropped and the run went on (at the
+        # site G returned with v0 = 0x101; at the host the entry returned with v0 = 1).
+        omit = tuple(f"--omit-aot=0x{a:08x}" for a in (_INLINE_H, _INLINE_K))
+        with scratch_dir.TemporaryDirectory(prefix="depth_probe_") as tmp:
+            exe, output = _build_depth_probe(_inline_call_into_a_piece(), Path(tmp),
+                                             codegen_args=omit)
+            self.assertIsNotNone(exe, output)
+            generated = (Path(tmp) / "probe_0.c").read_text(encoding="utf-8")
+            site = _run_depth_probe(exe, 0)
+            host = _run_depth_probe(exe, 0, "host-entry", f"0x{_INLINE_H:08x}")
+        self.assertNotIn(f"void f_{_INLINE_H:08x}(CpuState *s) {{", generated, "H is native")
+        self.assertNotIn(f"void f_{_INLINE_K:08x}(CpuState *s) {{", generated, "K is native")
+        self.assertIn(f"void f_{_INLINE_P:08x}(CpuState *s) {{", generated, "P is interpreted")
+        rest_of_h = _INLINE_H + 16
+        expected = {
+            "site": f"linked call at 0x00001018 resumed at 0x00001020 but its guest jr $ra "
+                    f"target was 0x{rest_of_h:08x}",
+            "host": f"a host-entered guest body returned to 0x{rest_of_h:08x} "
+                    f"instead of the host",
+        }
+        for name, (rc, output, fields) in (("site", site), ("host", host)):
+            with self.subTest(name):
+                self.assertIn(f"SEMANTIC_BOUNDARY: AOT_RETURN_TARGET_MISMATCH: {expected[name]}",
+                              output)
+                self.assertGreater(fields.get("interp", 0), 0, output)
+                if name == "host":   # dispatch_from_host ends the run at the stop
+                    self.assertEqual(rc, 1, output)
+                    self.assertNotIn("DEPTH_PROBE", output, "the run went on past the stop")
+                    continue
+                # Under the site the stop is the state's fatal flow, which the probe hands
+                # back to its host, and no guest code ran after P: not the rest of H, not
+                # G's continuation (+0x100), not the entry's slot that copies $sp to $v1.
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("fatal"), 1, output)
+                self.assertEqual(fields.get("v0"), 1, output)
+                self.assertEqual(fields.get("v1"), 0, output)
+        self.assertIn(f"if (dispatch_call_checked(s, 0x{_INLINE_H:08x}u, 0x00001020u)) return;",
+                      generated)
 
     def test_another_way_out_of_the_switch_head_keeps_its_restore(self):
         # F's other path never runs. Before (#1935): a sibcall on it, or a $sp load on it,
