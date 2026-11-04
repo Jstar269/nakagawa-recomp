@@ -1778,6 +1778,81 @@ static int coherence_run_mip_level_dirty_same_state(void) {
     return ok;
 }
 
+/* A notified write over a whole mip chain that leaves its bytes as they were (a title's
+ * whole-cache writeback, once a frame) must not decode the chain again: the byte shadow covers
+ * every level, as it does a single-level texture. A later change to level 1 that the content
+ * hash does not sample (bytes 16-63 of a 4 KiB level: tex_hash reads 16 of every 64) must
+ * still reach the draw, so level 1's bytes are compared, not only level 0's. The chain is 64x64
+ * and 32x32 8888 at constant level 1, drawn at level-1 texel (8, 0). */
+static int coherence_run_mip_shadow_reuse(void) {
+    const uint32_t base = 0x04000000u | 0x00160000u, stride = 512u, rgb = 0x00FFFFFFu;
+    const uint32_t level0 = 0x04050000u, level1 = 0x04054000u;
+    const uint32_t first = 0xFF2080C0u, changed = 0xFF40C020u;     /* ABGR */
+    const CohMipCase c = { "shadow-reuse", 0x004u, 1u, 1u, 16u, 8, 0, 1, 0, 0, 0.0f, 0 };
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    uint32_t *tex0 = (uint32_t *)SR_HOST(level0), *tex1 = (uint32_t *)SR_HOST(level1);
+    for (unsigned i = 0; i < 64u * 64u; i++) tex0[i] = 0xFF0000FFu;
+    for (unsigned i = 0; i < 32u * 32u; i++) tex1[i] = first;
+    sr_gpu_vram_dirty(level0, 64u * 64u * 4u);
+    sr_gpu_vram_dirty(level1, 32u * 32u * 4u);
+    coherence_reset_targets();
+    memset(fb, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(coherence_mip_list(&c, 0), 0);      /* the state, no draw */
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_MIP_RESET);
+    dl[0] = (0xA0u << 24) | (level0 & 0x00FFFFFFu);                 /* TEXADDR0 */
+    dl[1] = (0xA8u << 24) | 64u | ((level0 & 0xFF000000u) >> 8);    /* TEXBUFWIDTH0 */
+    dl[2] = (0xB8u << 24) | (6u << 8) | 6u;                         /* TEXSIZE0 64x64 */
+    dl[3] = (0xA1u << 24) | (level1 & 0x00FFFFFFu);
+    dl[4] = (0xA9u << 24) | 32u | ((level1 & 0xFF000000u) >> 8);
+    dl[5] = (0xB9u << 24) | (5u << 8) | 5u;                         /* TEXSIZE1 32x32 */
+    dl[6] = 0x0Fu << 24;
+    dl[7] = 0x0Cu << 24;
+    ge_run_list(COH_MIP_RESET, 0);
+
+    GeVtx p0 = { (float)COH_MIP_X, (float)COH_MIP_Y, 1.0f, 1.0f, 16.25f, 0.25f, 1.0f,
+                 255, 255, 255, 255 };
+    GeVtx p1 = { (float)(COH_MIP_X + 8), (float)(COH_MIP_Y + 8), 1.0f, 1.0f, 18.25f, 2.25f, 1.0f,
+                 255, 255, 255, 255 };
+    unsigned long decodes[3];
+    uint64_t avoided0 = s_cnt_shadow_avoided;
+    int ok = 1;
+    for (int d = 0; d < 3; d++) {
+        if (d == 1) {
+            sr_gpu_vram_dirty(level0, 64u * 64u * 4u);              /* bytes unchanged */
+            sr_gpu_vram_dirty(level1, 32u * 32u * 4u);
+        } else if (d == 2) {
+            for (unsigned u = 4u; u < 16u; u++) tex1[u] = changed;  /* row 0 bytes 16-63 */
+            sr_gpu_vram_dirty(level1 + 16u, 48u);
+        }
+        unsigned long before = s_cnt_texup;
+        ok = ok && hook_sprite(&p0, &p1, 0) && submit_pending();
+        decodes[d] = s_cnt_texup - before;
+        p0.x += 16.0f; p1.x += 16.0f;
+    }
+    ok = ok && s_cur && target_readback(s_cur);
+    uint32_t px[3];
+    for (int d = 0; d < 3; d++) px[d] = fb[COH_MIP_Y * stride + COH_MIP_X + 16u * (uint32_t)d] & rgb;
+    const uint64_t avoided = s_cnt_shadow_avoided - avoided0;
+    if (!ok || px[0] != (first & rgb) || px[1] != (first & rgb) || px[2] != (changed & rgb) ||
+        decodes[0] != 1u || decodes[1] != 0u || decodes[2] != 1u || avoided != 1u) {
+        fprintf(stderr,
+                "gpu coherence selftest [mip-shadow-reuse]: draws=%d pixels=%06x %06x %06x (want "
+                "%06x %06x %06x) decodes=%lu %lu %lu (want 1 0 1) shadow reuses=%llu (want 1)%s\n",
+                ok, px[0], px[1], px[2], first & rgb, first & rgb, changed & rgb, decodes[0],
+                decodes[1], decodes[2], (unsigned long long)avoided,
+                decodes[1] ? " -- an unchanged chain decoded again" :
+                px[2] != (changed & rgb) ? " -- the shadow did not compare level 1" : "");
+        ok = 0;
+    }
+    coherence_mip_reset_state();
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS mip %-22s decodes=1 0 1 shadow-reuses=1\n",
+                   "shadow-reuse");
+    return ok;
+}
+
 /* One GPU draw through the hooks, after the state of `c`: a size x size quad at (COH_MIP_X,
  * COH_MIP_Y) whose texel coordinates run from 0.25 by `span` texels across it (`vspan` down
  * it, or `span` when 0), at 1/w = `rw`
@@ -1951,6 +2026,7 @@ static int coherence_run_mip_levels(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         if (!coherence_run_mip_case(&cases[i])) ok = 0;
     if (!coherence_run_mip_level_dirty_same_state()) ok = 0;
+    if (!coherence_run_mip_shadow_reuse()) ok = 0;
     if (!coherence_run_mip_lod()) ok = 0;
     if (!coherence_run_mip_slope_change()) ok = 0;
     coherence_mip_reset_state();

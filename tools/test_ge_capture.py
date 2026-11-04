@@ -154,7 +154,7 @@ class TestGeCaptureWiring(unittest.TestCase):
         self.assertIn("stats_emit(1)", gpu)
         self.assertIn('getenv("SR_GPU_TEX_SHADOW_DISABLE")', gpu)
         self.assertIn("TEX_SHADOW_MAX_BYTES", gpu)
-        self.assertIn("memcmp(e->shadow, src, e->bytes) == 0", gpu)
+        self.assertIn("memcmp(e->shadow + off, src[l], tex_level_bytes(e, l)) == 0", gpu)
         self.assertIn("memcmp(e->shadow_clut, s_ge->clutram", gpu)
         for phase in CPU_PHASES:
             self.assertIn(f'"{phase}"', replay)
