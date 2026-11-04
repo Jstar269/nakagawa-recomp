@@ -23,7 +23,7 @@
     "tools/build_public_export.py": 5,
     "tools/ci_paths.py": 9,
     "tools/ci_trust_verdict.py": 5,
-    "tools/codegen.py": 7,
+    "tools/codegen.py": 6,
     "tools/compat_overrides.py": 5,
     "tools/compiler_compare.py": 1,
     "tools/contrib_check.py": 3,
@@ -34,7 +34,6 @@
     "tools/import_audit_gate.py": 1,
     "tools/import_fixtures.py": 2,
     "tools/library_build.py": 7,
-    "tools/library_sweep.py": 14,
     "tools/lint_docs.py": 1,
     "tools/llvm_ir.py": 16,
     "tools/microtest_gate.py": 5,
@@ -42,10 +41,8 @@
     "tools/nk_cli.py": 16,
     "tools/nk_core/decrypt_tool.py": 1,
     "tools/nk_core/fonts.py": 5,
-    "tools/nk_core/iso_inspect.py": 17,
+    "tools/nk_core/iso_inspect.py": 1,
     "tools/nk_core/prereq_fetcher.py": 5,
-    "tools/nk_doctor_checks.py": 19,
-    "tools/nk_doctor_core.py": 12,
     "tools/package_notices.py": 1,
     "tools/perf_attribution.py": 2,
     "tools/pgf_writer.py": 1,
@@ -56,7 +53,6 @@
     "tools/provenance_refresh.py": 3,
     "tools/psp_import_table.py": 8,
     "tools/psp_oracle/insn_trace.py": 2,
-    "tools/psp_oracle/protocol.py": 11,
     "tools/psp_oracle/user_mode_imports.py": 2,
     "tools/psp_oracle/verify_vfpu_addr.py": 1,
     "tools/psp_threading_oracle/analyzer.py": 2,
@@ -153,5 +149,5 @@
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 561
+  "total_errors": 488
 }

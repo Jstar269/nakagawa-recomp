@@ -116,17 +116,53 @@ class Report:
             )
         )
 
-    def pass_(self, code: str, summary: str, **kwargs: object) -> None:
-        self.add("PASS", code, summary, **kwargs)
+    def pass_(
+        self,
+        code: str,
+        summary: str,
+        *,
+        path: Path | str | None = None,
+        detail: str | None = None,
+        remediation: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        self.add("PASS", code, summary, path=path, detail=detail, remediation=remediation, metadata=metadata)
 
-    def warn(self, code: str, summary: str, **kwargs: object) -> None:
-        self.add("WARN", code, summary, **kwargs)
+    def warn(
+        self,
+        code: str,
+        summary: str,
+        *,
+        path: Path | str | None = None,
+        detail: str | None = None,
+        remediation: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        self.add("WARN", code, summary, path=path, detail=detail, remediation=remediation, metadata=metadata)
 
-    def fail(self, code: str, summary: str, **kwargs: object) -> None:
-        self.add("FAIL", code, summary, **kwargs)
+    def fail(
+        self,
+        code: str,
+        summary: str,
+        *,
+        path: Path | str | None = None,
+        detail: str | None = None,
+        remediation: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        self.add("FAIL", code, summary, path=path, detail=detail, remediation=remediation, metadata=metadata)
 
-    def info(self, code: str, summary: str, **kwargs: object) -> None:
-        self.add("INFO", code, summary, **kwargs)
+    def info(
+        self,
+        code: str,
+        summary: str,
+        *,
+        path: Path | str | None = None,
+        detail: str | None = None,
+        remediation: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        self.add("INFO", code, summary, path=path, detail=detail, remediation=remediation, metadata=metadata)
 
     def counts(self) -> dict[str, int]:
         counts = {name: 0 for name in ("PASS", "WARN", "FAIL", "INFO")}
