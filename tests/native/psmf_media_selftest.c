@@ -4272,6 +4272,9 @@ static int eof_drain(uint32_t avc) {
 /* mode 0: no QueryStreamOffset; the callback runs short only at the movie's end.
  * mode 1: no QueryStreamOffset; the callback runs short once in mid-movie and more puts follow.
  * mode 2: QueryStreamOffset first; a dry GetAvcAu follows a mid-movie short put. */
+/* CHECK with the case's name in its message. */
+#define EF_CHECK(x, text) do { char ef_msg_[192]; snprintf(ef_msg_, sizeof ef_msg_, text, tag[mode]); \
+                                CHECK((x), ef_msg_); } while (0)
 static void test_mpeg_feed_end_without_stream_size(int mode) {
     static const char *const tag[3] = {"no size", "short mid-movie", "with size"};
     uint32_t size = 0;
@@ -4332,30 +4335,30 @@ static void test_mpeg_feed_end_without_stream_size(int mode) {
     }
     int pictures = 0;
     if (mode) {
-        CHECK(s_ef_next == s_ef_short_at && s_ef_next < packets,
-              "mpeg-eof (%s): the callback ran short in mid-movie", tag[mode]);
+        EF_CHECK(s_ef_next == s_ef_short_at && s_ef_next < packets,
+              "mpeg-eof (%s): the callback ran short in mid-movie");
         if (mode == 1) {
-            CHECK(eof_put() == 8u, "mpeg-eof (%s): the next put goes in whole", tag[mode]);
+            EF_CHECK(eof_put() == 8u, "mpeg-eof (%s): the next put goes in whole");
             pictures += eof_drain(avc);
             pictures += eof_drain(avc);
-            CHECK(!ctx->streamEnded && !ctx->videoEnd,
-                  "mpeg-eof (%s): a short put followed by more puts does not end the stream", tag[mode]);
+            EF_CHECK(!ctx->streamEnded && !ctx->videoEnd,
+                  "mpeg-eof (%s): a short put followed by more puts does not end the stream");
         } else {
             pictures += eof_drain(avc);
             pictures += eof_drain(avc);
-            CHECK(!ctx->streamEnded && !ctx->videoEnd,
-                  "mpeg-eof (%s): with the size known, a short put does not end the stream early", tag[mode]);
+            EF_CHECK(!ctx->streamEnded && !ctx->videoEnd,
+                  "mpeg-eof (%s): with the size known, a short put does not end the stream early");
         }
         eof_put_until_short();
     }
-    CHECK(s_ef_next == packets, "mpeg-eof (%s): the whole movie went in", tag[mode]);
+    EF_CHECK(s_ef_next == packets, "mpeg-eof (%s): the whole movie went in");
     for (int guard = 0; guard < 16 && !ctx->videoEnd; guard++) pictures += eof_drain(avc);
-    CHECK(pictures == AV_PICTURES, "mpeg-eof (%s): every picture comes out, the last one included", tag[mode]);
-    CHECK(ctx->videoEnd, "mpeg-eof (%s): the video ends", tag[mode]);
-    CHECK(guest_mpeg_import(NID_MPEG_RINGBUFFER_AVAIL, EF_RING, 0u, 0u, 0u, 0u) == packets,
-          "mpeg-eof (%s): the ring reads empty at the end", tag[mode]);
-    CHECK(guest_mpeg_import(NID_MPEG_GET_AVC_AU, EF_DESC, avc, EF_AU, EF_ATTR, 0u) == SCE_MPEG_ERROR_NO_DATA,
-          "mpeg-eof (%s): after the end GetAvcAu says there is no data", tag[mode]);
+    EF_CHECK(pictures == AV_PICTURES, "mpeg-eof (%s): every picture comes out, the last one included");
+    EF_CHECK(ctx->videoEnd, "mpeg-eof (%s): the video ends");
+    EF_CHECK(guest_mpeg_import(NID_MPEG_RINGBUFFER_AVAIL, EF_RING, 0u, 0u, 0u, 0u) == packets,
+          "mpeg-eof (%s): the ring reads empty at the end");
+    EF_CHECK(guest_mpeg_import(NID_MPEG_GET_AVC_AU, EF_DESC, avc, EF_AU, EF_ATTR, 0u) == SCE_MPEG_ERROR_NO_DATA,
+          "mpeg-eof (%s): after the end GetAvcAu says there is no data");
     mpeg_finish();
     free(source);
     free(image);
