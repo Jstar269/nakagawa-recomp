@@ -9,7 +9,7 @@
 // The harness #includes recomp.c and cpu_lle.c for direct access to the same
 // helpers the generated code and the interpreter call, and links the real
 // guest_interp.c so the interpreter lane is exercised, not modeled. The stub
-// block below mirrors src/rt/heap_selftest.c: symbols recomp.c references
+// block below mirrors tests/native/heap_selftest.c: symbols recomp.c references
 // that live in scheduler/HLE translation units we deliberately do not link.
 //
 // Failing-before evidence (PR 2, spec section 11): on the base tree there is
@@ -134,7 +134,7 @@ void f_08810820(CpuState *s);
 void f_08810840(CpuState *s);
 void f_08810860(CpuState *s);
 
-/* Measured pre-exception Status for campaign psp-hw-20260917 (PSP-A1-01,
+/* Measured pre-exception Status (PSP-A1-01,
  * PSP-A2-01, PSP-A3-01): KSU user, IE 1, IM 0x86, EXL 0 before entry. The
  * model preserves every pre-exception bit and sets only EXL, so the measured
  * frame 0x00088613 = 0x00088611 | SR_STATUS_EXL is reproduced exactly. */
@@ -220,8 +220,8 @@ static void test_exception_ce_badvaddr(void) {
     CHECK(s.cop0[SR_CP0_BADVADDR] == 0xDEAD0001u, "BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
 }
 
-/* Hardware-measured exception-entry cells (campaign psp-hw-20260917,
- * PSP-3000 / 6.61, user-mode PRX probes via PSPLink; fixtures
+/* Hardware-measured exception-entry cells (PSP-3000 / 6.61,
+ * user-mode PRX probes via PSPLink; fixtures
  * fixtures/psp_oracle/probe_exception_a1.c..a3.c, cells in
  * docs/HARDWARE_ORACLE.md "CPU exception entry"). These checks pin the
  * measured fields only: EPC, Cause.BD/ExcCode for Bp/AdEL, BadVAddr, and the
@@ -255,7 +255,7 @@ static void test_hw_psp_a1_01_break_plain(void) {
     CHECK(s.cop0[SR_CP0_EPC] == 0x08810000u, "PSP-A1-01 EPC=0x%08x, want the break pc",
           s.cop0[SR_CP0_EPC]);
     /* The measured Cause cells name BD/ExcCode exactly; bit 28 (CE) read 1 in
-     * this single-console campaign but is undefined for non-CpU exceptions, so
+     * the single console measured but is undefined for non-CpU exceptions, so
      * only BD and ExcCode are asserted. */
     CHECK((s.cop0[SR_CP0_CAUSE] & ~(SR_CAUSE_CE_MASK)) == 0x00000024u,
           "PSP-A1-01 Cause=0x%08x, want BD 0 + ExcCode 9 (CE undefined)",
@@ -532,8 +532,8 @@ static void test_hw_psp_a3_06_unaligned_no_fault(void) {
     CHECK(s.flow_kind == SR_FLOW_NONE, "PSP-A3-06 helpers must not set flow");
 }
 
-/* PSP-A3-08/09/10/11: VFPU load/store alignment (campaign psp-hw-20260917,
- * PSP-3000 / 6.61, THREAD_ATTR_USER | THREAD_ATTR_VFPU probes via PSPLink;
+/* PSP-A3-08/09/10/11: VFPU load/store alignment (PSP-3000 / 6.61,
+ * THREAD_ATTR_USER | THREAD_ATTR_VFPU probes via PSPLink;
  * fixtures exception-a3-vfpu-lvs/lvq4/lvq8/svq4/vfpu-aligned, cells in
  * docs/HARDWARE_ORACLE.md "VFPU load/store alignment cells"). lv.s needs
  * width 4, lv.q/sv.q need width 16, and lvl/lvr/svl/svr bypass with width 0
@@ -605,7 +605,7 @@ static void test_hw_psp_a3_08_11_vfpu_alignment(void) {
           "PSP-A3-10 must transfer to the vector, not continue");
 }
 
-/* PSP-A3-08/09/10/11 through the interpreter lane: the VFPU widths above must
+/* PSP-A3-08/09/10/11 through the interpreter path: the VFPU widths above must
  * fault (or bypass) at the actual lv.s/lv.q/sv.q/lvl.q op, not only in the
  * decision function. Misaligned forms raise AdEL/AdES with EPC at the access
  * and BadVAddr holding the effective address; the aligned quad and the
@@ -727,8 +727,8 @@ static void test_hw_psp_a3_08_11_vfpu_through_interpreter(void) {
     CHECK(s.flow_kind == SR_FLOW_NONE, "interp lvr.q at +4 must not set flow");
 }
 
-/* PSP-A3-12/13/14/15: VFPU remaining alignment cells (campaign psp-hw-20260917,
- * PSP-3000 / 6.61, THREAD_ATTR_USER | THREAD_ATTR_VFPU probes via PSPLink;
+/* PSP-A3-12/13/14/15: VFPU remaining alignment cells (PSP-3000 / 6.61,
+ * THREAD_ATTR_USER | THREAD_ATTR_VFPU probes via PSPLink;
  * fixtures exception-a3-vfpu-svs/svq8/lvq-delay/lvl-odd, cells in
  * docs/HARDWARE_ORACLE.md "VFPU remaining alignment cells"). sv.s needs width
  * 4 with the store code, sv.q at +8 needs width 16 with the store code, the
@@ -840,7 +840,7 @@ static void test_hw_psp_a3_15_lvl_odd_no_fault(void) {
           "base+1 must still fault for a halfword: the bypass is width-relative");
 }
 
-/* PSP-A3-12/13/14/15 through the interpreter lane: the new widths must fault
+/* PSP-A3-12/13/14/15 through the interpreter path: the new widths must fault
  * (or bypass) at the actual sv.s/sv.q/lv.q/lvl.q op. The stub sr_vfpu_interp
  * here returns OTHER without touching state, so a non-faulting VFPU op reports
  * UNSUPPORTED (not EXCEPTION) with flow NONE -- "ok" means "does not fault". */
@@ -1339,7 +1339,7 @@ static void test_cop0_traps(void) {
     CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u, "delay trap must set BD");
 }
 
-/* Interpreter lane with the LLE gate on: syscall/break trap, eret returns,
+/* Interpreter path with the LLE gate on: syscall/break trap, eret returns,
  * COP0 round-trips; with the gate off the old UNSUPPORTED stands. */
 static void test_interp_lane(void) {
     CpuState s;

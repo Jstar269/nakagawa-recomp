@@ -79,8 +79,9 @@ int ace_parse(const char *spec, AceConfig *out, char *why, size_t why_cap) {
                 if (strcmp(v, "off") == 0) { c.smooth = ACE_SMOOTH_OFF; ok = 1; }
                 else if (strcmp(v, "match") == 0) { c.smooth = ACE_SMOOTH_MATCH; ok = 1; }
                 else if (strcmp(v, "x2") == 0) { c.smooth = ACE_SMOOTH_X2; ok = 1; }
-                if (ok && c.smooth && !ACE_HAS_SMOOTH) {
-                    why_set(why, why_cap, "smooth is not part of this build"); return 0;
+                if (ok && ((c.smooth && !ACE_HAS_SMOOTH) ||
+                           (c.smooth == ACE_SMOOTH_MATCH && !ACE_HAS_SMOOTH_MATCH))) {
+                    why_set(why, why_cap, "this smooth mode is not part of this build"); return 0;
                 }
                 break;
             }
@@ -144,6 +145,9 @@ static uint32_t s_last_flip_vcount, s_last_flip_fb;
 static int s_have_flip;
 static uint64_t s_rate_vblanks[ACE_RATE_COUNT];
 static uint64_t s_limited_windows;
+static AcePace s_pace;
+static AcePaceStats s_pace_stats;
+static uint32_t s_pace_vcount;
 
 #define ACE_TARGETS 8
 typedef struct { uint32_t fb, bytes, draws, seen, touched; int used; } AceTarget;
@@ -161,6 +165,9 @@ static void observation_reset(void) {
     s_last_flip_vcount = s_last_flip_fb = 0; s_have_flip = 0;
     memset(s_rate_vblanks, 0, sizeof(s_rate_vblanks));
     s_limited_windows = 0;
+    ace_pace_reset(&s_pace);
+    memset(&s_pace_stats, 0, sizeof(s_pace_stats));
+    s_pace_vcount = 0;
     memset(s_targets, 0, sizeof(s_targets));
     s_target_clock = 0;
 }
@@ -499,6 +506,9 @@ int ace_flip(uint32_t fb, uint32_t bytes, uint32_t vcount, uint64_t now_ns) {
     if (new_frame) { s_counters.new_frames++; s_win_frames++; }
     if (ace_det_flip(&s_det, vcount, new_frame))
         fprintf(stderr, "ACE_RATE: %s\n", ace_rate_name(s_det.stable));
+    s_pace_vcount = vcount;
+    if (s_pace.held && new_frame) s_pace_stats.superseded++;
+    ace_pace_flip(&s_pace, new_frame, s_det.stable, s_eff.smooth, now_ns);
     if (!s_win_started) {
         s_win_started = 1;
         s_win_start_ns = now_ns;
@@ -532,6 +542,86 @@ AceRate ace_rate_stable(void) { return g_ace_on ? s_det.stable : ACE_RATE_NONE; 
 
 void ace_counters(AceCounters *out) {
     if (out) *out = s_counters;
+}
+
+/* ---- smooth motion: which frame each present shows ------------------------------------------- */
+
+void ace_pace_reset(AcePace *p) {
+    if (p) memset(p, 0, sizeof(*p));
+}
+
+void ace_pace_flip(AcePace *p, int new_frame, AceRate rate, int smooth, uint64_t now_ns) {
+    p->reflip = p->held && !new_frame;
+    p->held = 0;
+    p->flip_ns = now_ns;
+    if (!smooth || !new_frame) p->show = ACE_SHOW_REAL;
+    else p->show = rate == ACE_RATE_K2 ? ACE_SHOW_BETWEEN : ACE_SHOW_KEEP;
+}
+
+AceShow ace_pace_take(AcePace *p) {
+    AceShow show = p->show;
+    p->show = ACE_SHOW_REAL;
+    return show;
+}
+
+void ace_pace_shown_between(AcePace *p, uint32_t vcount, uint64_t now_ns) {
+    p->held = 1;
+    p->held_after = vcount;
+    p->held_ns = now_ns;
+}
+
+AcePresentKind ace_pace_flip_kind(const AcePace *p) {
+    return p->reflip ? ACE_PRESENT_HELD : ACE_PRESENT_REAL;
+}
+
+int ace_pace_vblank(AcePace *p, uint32_t vcount) {
+    if (!p->held || vcount == p->held_after) return 0;
+    p->held = 0;
+    return 1;
+}
+
+AceShow ace_smooth_take(void) {
+    return g_ace_on ? ace_pace_take(&s_pace) : ACE_SHOW_REAL;
+}
+
+void ace_smooth_shown_between(uint64_t now_ns) {
+    if (g_ace_on) ace_pace_shown_between(&s_pace, s_pace_vcount, now_ns);
+}
+
+int ace_smooth_vblank(uint32_t vcount) {
+    return g_ace_on && ace_pace_vblank(&s_pace, vcount);
+}
+
+void ace_pace_stats_add(AcePaceStats *s, AcePresentKind kind, uint64_t now_ns) {
+    if ((unsigned)kind >= ACE_PRESENT_KINDS) return;
+    s->kind[kind]++;
+    if (s->last_ns && now_ns > s->last_ns) {
+        uint64_t ns = now_ns - s->last_ns;
+        uint64_t bin = ns / 1000000u;
+        s->interval[bin < ACE_PACE_BINS ? bin : ACE_PACE_BINS - 1u]++;
+        s->interval_count++;
+        s->interval_sum_ns += ns;
+    }
+    s->last_ns = now_ns;
+}
+
+void ace_smooth_note_present(AcePresentKind kind, uint64_t now_ns) {
+    if (!g_ace_on) return;
+    if (kind == ACE_PRESENT_REAL) {
+        kind = ace_pace_flip_kind(&s_pace);
+        s_pace.reflip = 0;
+    }
+    ace_pace_stats_add(&s_pace_stats, kind, now_ns);
+    if (kind == ACE_PRESENT_HELD && now_ns > s_pace.held_ns) {
+        uint64_t ns = now_ns - s_pace.held_ns;
+        s_pace_stats.hold_count++;
+        s_pace_stats.hold_sum_ns += ns;
+        if (ns > s_pace_stats.hold_max_ns) s_pace_stats.hold_max_ns = ns;
+    }
+}
+
+void ace_pace_stats(AcePaceStats *out) {
+    if (out) *out = s_pace_stats;
 }
 
 /* ---- the per-run report -------------------------------------------------------------------- */
@@ -588,6 +678,27 @@ size_t ace_report_json(char *out, size_t cap) {
     ACE_PUT("}},\n");
     ACE_PUT("  \"frames\": {\"flips\": %llu, \"new\": %llu},\n",
             (unsigned long long)s_counters.flips, (unsigned long long)s_counters.new_frames);
+    if (s_req.smooth) {
+        const AcePaceStats *ps = &s_pace_stats;
+        ACE_PUT("  \"presents\": {\"real\": %llu, \"between\": %llu, \"held\": %llu, "
+                "\"superseded\": %llu},\n",
+                (unsigned long long)ps->kind[ACE_PRESENT_REAL],
+                (unsigned long long)ps->kind[ACE_PRESENT_BETWEEN],
+                (unsigned long long)ps->kind[ACE_PRESENT_HELD],
+                (unsigned long long)ps->superseded);
+        ACE_PUT("  \"added_delay_ms\": {\"mean\": %.2f, \"max\": %.2f},\n",
+                ps->hold_count ? (double)ps->hold_sum_ns / (double)ps->hold_count / 1e6 : 0.0,
+                (double)ps->hold_max_ns / 1e6);
+    }
+    if (s_pace_stats.interval_count) {
+        const AcePaceStats *ps = &s_pace_stats;
+        ACE_PUT("  \"present_interval_ms\": {\"count\": %llu, \"mean\": %.2f, \"bins\": [",
+                (unsigned long long)ps->interval_count,
+                (double)ps->interval_sum_ns / (double)ps->interval_count / 1e6);
+        for (uint32_t i = 0; i < ACE_PACE_BINS; i++)
+            ACE_PUT("%s%llu", i ? ", " : "", (unsigned long long)ps->interval[i]);
+        ACE_PUT("]},\n");
+    }
     ACE_PUT("  \"pc_limited_seconds\": %llu\n}\n", (unsigned long long)s_limited_windows);
 #undef ACE_PUT
     return used;

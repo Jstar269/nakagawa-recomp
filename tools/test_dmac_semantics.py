@@ -258,7 +258,7 @@ class TestDmacSkipProducer(unittest.TestCase):
                             "static void probe_emit_durable(int emulated, const char *line, size_t length) "
                             "{ (void)length; emit(emulated, line); }\n" +
                             record + body +
-                            "int main(void) { dmac_invalid_emit_skips(1, 7u, 0x80020190u); return 0; }\n",
+                            "int main(void) { dmac_invalid_emit_skips(1, 3u, 0x80020190u); return 0; }\n",
                             encoding="utf-8",
                         )
                         built = subprocess.run(

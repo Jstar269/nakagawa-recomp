@@ -51,7 +51,7 @@ static void cell_parse(void) {
         { "v1;af;text=on;readout=off;notice=on;wide=off;smooth=off", "field is not key=value" },
         { "v1;af=;text=on;readout=off;notice=on;wide=off;smooth=off", "field is not key=value" },
         { "v1;af=16;text=on;readout=off;notice=on;wide=fill;smooth=off", "wide is not part of this build" },
-        { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=match", "smooth is not part of this build" },
+        { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=match", "this smooth mode is not part of this build" },
         { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "line too long" },
     };
@@ -401,8 +401,70 @@ static void cell_report(const char *dir) {
     if (f) fclose(f);
 }
 
+/* A 30 Hz title's frames: the flip shows the in-between, the next VBLANK the frame. */
+static void cell_pace(void) {
+    AceConfig c;
+    char why[64];
+    AcePace p;
+    CHECK(ace_parse("v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2", &c, why, sizeof(why)) == 1 &&
+          c.smooth == ACE_SMOOTH_X2, "smooth=x2 is part of this build");
+    ace_pace_reset(&p);
+    /* Off: every present is today's and nothing is ever held. */
+    ace_pace_flip(&p, 1, ACE_RATE_K2, 0, 100u);
+    CHECK(ace_pace_take(&p) == ACE_SHOW_REAL && !ace_pace_vblank(&p, 11u), "smooth off holds nothing");
+    /* 30 Hz: flip at 10, in-between shown; nothing in its own VBLANK; the frame at 11. */
+    ace_pace_flip(&p, 1, ACE_RATE_K2, 1, 100u);
+    CHECK(ace_pace_take(&p) == ACE_SHOW_BETWEEN, "a new 30 Hz frame is interpolated");
+    CHECK(ace_pace_take(&p) == ACE_SHOW_REAL, "the verdict is taken once");
+    ace_pace_shown_between(&p, 10u, 0u);
+    CHECK(!ace_pace_vblank(&p, 10u), "the held frame waits for the next VBLANK");
+    CHECK(ace_pace_vblank(&p, 11u), "the held frame shows on the next VBLANK");
+    CHECK(!ace_pace_vblank(&p, 12u), "a held frame shows once");
+    /* A present that was dropped holds nothing. */
+    ace_pace_flip(&p, 1, ACE_RATE_K2, 1, 200u);
+    CHECK(!ace_pace_vblank(&p, 13u), "no in-between shown, nothing held");
+    /* A flip replaces a frame still held: a stale frame is never shown after a newer one. */
+    ace_pace_shown_between(&p, 14u, 0u);
+    ace_pace_flip(&p, 1, ACE_RATE_K2, 1, 300u);
+    CHECK(!ace_pace_vblank(&p, 15u), "a later flip replaces the held frame");
+    (void)ace_pace_take(&p);
+    /* Every other class shows its frames as they come and keeps a copy. */
+    static const AceRate others[] = { ACE_RATE_NONE, ACE_RATE_K1, ACE_RATE_K3, ACE_RATE_K4,
+                                      ACE_RATE_STATIC, ACE_RATE_VARIABLE };
+    for (size_t i = 0; i < sizeof(others) / sizeof(others[0]); i++) {
+        ace_pace_flip(&p, 1, others[i], 1, 400u);
+        CHECK(ace_pace_take(&p) == ACE_SHOW_KEEP, "class %d is not interpolated", (int)others[i]);
+    }
+    /* A second flip of an unchanged frame is no new frame: there is nothing to make. */
+    ace_pace_flip(&p, 0, ACE_RATE_K2, 1, 500u);
+    CHECK(ace_pace_take(&p) == ACE_SHOW_REAL, "an unchanged frame is not interpolated");
+    CHECK(ace_pace_flip_kind(&p) == ACE_PRESENT_REAL, "nothing was held: a real present");
+    /* A title that flips each frame twice: the second flip shows the held frame, and its
+     * VBLANK has nothing left to show. */
+    ace_pace_flip(&p, 1, ACE_RATE_K2, 1, 600u);
+    (void)ace_pace_take(&p);
+    ace_pace_shown_between(&p, 20u, 601u);
+    ace_pace_flip(&p, 0, ACE_RATE_K2, 1, 617u);
+    CHECK(ace_pace_take(&p) == ACE_SHOW_REAL && ace_pace_flip_kind(&p) == ACE_PRESENT_HELD,
+          "a re-flip of the held frame is its held present");
+    CHECK(!ace_pace_vblank(&p, 21u), "a re-flipped frame is not shown again");
+    CHECK(p.held_ns == 601u, "the added delay runs from the in-between's present");
+    /* The report's numbers. */
+    AcePaceStats st;
+    memset(&st, 0, sizeof(st));
+    ace_pace_stats_add(&st, ACE_PRESENT_BETWEEN, 1000000000ull);
+    ace_pace_stats_add(&st, ACE_PRESENT_HELD, 1016683000ull);
+    ace_pace_stats_add(&st, ACE_PRESENT_BETWEEN, 1033366000ull);
+    ace_pace_stats_add(&st, ACE_PRESENT_REAL, 2033366000ull);
+    CHECK(st.kind[ACE_PRESENT_BETWEEN] == 2u && st.kind[ACE_PRESENT_HELD] == 1u &&
+          st.kind[ACE_PRESENT_REAL] == 1u, "presents counted by kind");
+    CHECK(st.interval_count == 3u && st.interval[16] == 2u && st.interval[ACE_PACE_BINS - 1u] == 1u,
+          "intervals fall in 1 ms bins, the last open-ended");
+}
+
 int main(int argc, char **argv) {
     cell_parse();
+    cell_pace();
     cell_switch();
     cell_detector();
     cell_feed();

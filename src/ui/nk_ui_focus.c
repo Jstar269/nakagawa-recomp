@@ -117,6 +117,13 @@ static long nk_ui_focus_pick(const NkUiFocusEntry *entries, size_t count,
             if (!same_row && (from->flags & NK_UI_FOCUS_ROW_MEMBER) != 0u) {
                 continue;
             }
+            /* A control on another row that sits under or over the source is reached
+               with up and down. Left and right must not pick it just because the
+               centres differ by a few pixels, which a change of label width can do. */
+            if (!same_row && nk_ui_focus_overlap(from->rect.x, from->rect.x + from->rect.w,
+                                                 cand->rect.x, cand->rect.x + cand->rect.w)) {
+                continue;
+            }
             main_axis = fabsf(dx);
             cross = same_row ? 0.0f : fabsf(dy);
         } else {

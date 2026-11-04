@@ -11,6 +11,7 @@
 #include "nk_ui_widgets.h"
 #include "scr_shared.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -70,6 +71,44 @@ static bool settings_row(NkUi *ui, uint32_t k, NkUiId button, const char *name,
     return pressed;
 }
 
+/* The game's frames come at 60 Hz (the PSP's 59.94 Hz): a display shows them evenly only when
+   its rate is a whole multiple of that. Half a hertz covers the 59.94 family and the rounding
+   displays report, and is far from the nearest uneven rate (75, 90, 144, 165). */
+#define REFRESH_TOLERANCE_HZ 0.5
+#define REFRESH_TITLE_HZ 60.0
+#define REFRESH_TITLE_NTSC_HZ (60000.0 / 1001.0)
+
+static bool refresh_is_multiple_of(double hz, double base) {
+    double n = floor(hz / base + 0.5);
+    return n >= 1.0 && fabs(hz - n * base) <= REFRESH_TOLERANCE_HZ;
+}
+
+PlayerUiRefreshAdvice player_ui_refresh_advice(double refresh_hz) {
+    if (!(refresh_hz > 0.0) || !isfinite(refresh_hz)) return PLAYER_UI_REFRESH_SILENT;
+    if (refresh_is_multiple_of(refresh_hz, REFRESH_TITLE_HZ) ||
+        refresh_is_multiple_of(refresh_hz, REFRESH_TITLE_NTSC_HZ)) {
+        return PLAYER_UI_REFRESH_SILENT;
+    }
+    return PLAYER_UI_REFRESH_ADVISORY;
+}
+
+void player_ui_refresh_advisory_text(double refresh_hz, char *out, size_t out_size) {
+    if (out == NULL || out_size == 0u) return;
+    out[0] = '\0';
+    if (player_ui_refresh_advice(refresh_hz) != PLAYER_UI_REFRESH_ADVISORY) return;
+    if (fabs(refresh_hz - floor(refresh_hz + 0.5)) < 0.005) {
+        (void)snprintf(out, out_size,
+                       "Your display runs at %.0f Hz, which is not a multiple of the game's 60 Hz. "
+                       "Motion can stutter slightly. For even motion, set it to 60, 120 or 180 Hz.",
+                       refresh_hz);
+    } else {
+        (void)snprintf(out, out_size,
+                       "Your display runs at %.2f Hz, which is not a multiple of the game's 60 Hz. "
+                       "Motion can stutter slightly. For even motion, set it to 60, 120 or 180 Hz.",
+                       refresh_hz);
+    }
+}
+
 static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float width,
                           float height, PlayerUiAction *result) {
     const NkUiTheme *theme = nk_ui_theme(ui);
@@ -102,10 +141,13 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
     {
         NkUiLayout head = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(),
                                       NK_UI_SPACE_1);
+        char advisory[192];
+        player_ui_refresh_advisory_text(model->display_refresh_hz, advisory, sizeof(advisory));
         if (nk_ui_begin_container(ui, SET_ID_HEAD, &head, NULL)) {
             /* The SETTINGS tab names the page, so a short window drops the
-               heading to keep every row on screen. */
-            if (height >= 680.0f) {
+               heading to keep every row on screen; the advisory line needs
+               that room sooner. */
+            if (height >= (advisory[0] != '\0' ? 780.0f : 680.0f)) {
                 nk_ui_text_role(ui, SET_ID_TEXT + 0u, "SETTINGS", NK_UI_TYPE_DISPLAY,
                                 theme->paper);
             }
@@ -116,6 +158,10 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                             NK_UI_TYPE_BODY_S,
                             model->notice != NULL && model->notice[0] != '\0'
                                 ? theme->warning : theme->muted);
+            if (advisory[0] != '\0') {
+                nk_ui_text_role(ui, SET_ID_TEXT + 2u, advisory, NK_UI_TYPE_BODY_S,
+                                theme->warning);
+            }
             nk_ui_end_container(ui);
         }
     }
@@ -285,10 +331,10 @@ static void settings_problem_report(NkUi *ui, const PlayerUiSettingsModel *model
     nk_ui_text_role(ui, FLOW_ID_TITLE, "Problem report", NK_UI_TYPE_TITLE, theme->paper);
     switch (step) {
         case PLAYER_UI_REPORT_PREVIEWING:
-            lead = "Listing what the report would hold...";
+            lead = "Listing what the report would hold…";
             break;
         case PLAYER_UI_REPORT_CREATING:
-            lead = "Writing the report. Checking the build tools can take a minute...";
+            lead = "Writing the report. Checking the build tools can take a minute…";
             break;
         case PLAYER_UI_REPORT_DONE:
             lead = "The report is written. Open the ZIP and look through it before you attach "
@@ -399,7 +445,7 @@ static void settings_shorten_words(const char *in, char *out, size_t cap, size_t
             size_t head = 12u;
             size_t tail = max_word - head - 3u;
             while (tail > 0u && ((unsigned char)in[word - tail] & 0xC0u) == 0x80u) --tail;
-            (void)snprintf(out + used, cap - used, "%.*s...%.*s", (int)head, in, (int)tail,
+            (void)snprintf(out + used, cap - used, "%.*s…%.*s", (int)head, in, (int)tail,
                            in + word - tail);
         } else {
             (void)snprintf(out + used, cap - used, "%.*s", (int)word, in);
@@ -430,7 +476,7 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
     nk_ui_text_role(ui, FLOW_ID_TITLE, "Updates", NK_UI_TYPE_TITLE, theme->paper);
     switch (step) {
         case PLAYER_UI_UPDATE_CHECKING:
-            (void)snprintf(lead, sizeof(lead), "Asking GitHub for the newest version...");
+            (void)snprintf(lead, sizeof(lead), "Asking GitHub for the newest version…");
             break;
         case PLAYER_UI_UPDATE_CURRENT:
             (void)snprintf(lead, sizeof(lead), "You have the newest version.");
@@ -441,14 +487,14 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
             lead_rgba = theme->ready;
             break;
         case PLAYER_UI_UPDATE_DOWNLOADING:
-            (void)snprintf(lead, sizeof(lead), "Downloading version %s...", version);
+            (void)snprintf(lead, sizeof(lead), "Downloading version %s…", version);
             break;
         case PLAYER_UI_UPDATE_DOWNLOADED:
             (void)snprintf(lead, sizeof(lead), "Version %s is downloaded and checked.", version);
             lead_rgba = theme->ready;
             break;
         case PLAYER_UI_UPDATE_INSTALLING:
-            (void)snprintf(lead, sizeof(lead), "Unpacking version %s...", version);
+            (void)snprintf(lead, sizeof(lead), "Unpacking version %s…", version);
             break;
         case PLAYER_UI_UPDATE_INSTALLED:
             (void)snprintf(lead, sizeof(lead), "Version %s is ready to start.", version);
@@ -729,8 +775,8 @@ static void settings_accessibility(NkUi *ui, const PlayerUiSettingsModel *model,
 
 /* Settings > Ace Mode (src/rt/ace.h): the library's switch and each feature, a sentence beside
    each that says what it does and what it costs. While the switch is off the feature rows are
-   dim and cannot be focused; their values are kept. Features this build does not carry
-   (ultrawide, smooth motion) have no row. */
+   dim and cannot be focused; their values are kept. Ultrawide, which this build does not
+   carry, has no row. */
 static void settings_ace(NkUi *ui, const PlayerUiSettingsModel *model, float inner,
                          PlayerUiAction *result) {
     const NkUiTheme *theme = nk_ui_theme(ui);
@@ -753,7 +799,9 @@ static void settings_ace(NkUi *ui, const PlayerUiSettingsModel *model, float inn
             {"Speed readout", settings_on_off(model->ace_readout),
              "Shows the game's speed and frame rate in a corner, over the game's own HUD."},
             {"Game badge", settings_on_off(model->ace_notice),
-             "Says Ace Mode is on for a few seconds when a game starts."}
+             "Says Ace Mode is on for a few seconds when a game starts."},
+            {"Smooth motion", settings_on_off(model->ace_smooth),
+             "Shows 30 FPS games at 60 with frames drawn between. Adds about 17 ms of delay."}
         };
         WizardColumn column = scr_wizard_column(ui, rows, sizeof(rows) / sizeof(rows[0]), inner - 32.0f);
         if (scr_wizard_value(ui, PLAYER_UI_ID_SETTINGS_ACE_MODE, SET_ID_TEXT + 0x400u, rows[0].name,
@@ -780,6 +828,11 @@ static void settings_ace(NkUi *ui, const PlayerUiSettingsModel *model, float inn
                                rows[4].name, rows[4].value, rows[4].sentence, model->ace_notice,
                                off, inner - 32.0f, &column)) {
             *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE);
+        }
+        if (scr_wizard_value_state(ui, PLAYER_UI_ID_SETTINGS_ACE_SMOOTH, SET_ID_TEXT + 0x414u,
+                               rows[5].name, rows[5].value, rows[5].sentence, model->ace_smooth,
+                               off, inner - 32.0f, &column)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ACE_SMOOTH);
         }
         nk_ui_end_container(ui);
     }
