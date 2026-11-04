@@ -1341,7 +1341,7 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_ACCESSIBILITY_SETTINGS:
             return 4; /* interface size, high contrast, reduce motion, back */
         case VIEW_ACE_SETTINGS:
-            return 6; /* Ace Mode, filtering, crisp text, readout, badge, done */
+            return 7; /* Ace Mode, filtering, crisp text, readout, badge, smooth motion, done */
         case VIEW_PROBLEM_REPORT:
             return 3; /* create, open folder, back */
         case VIEW_ONLINE_SETTINGS:
@@ -1458,6 +1458,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->ace.text = true;
     settings->ace.readout = false;
     settings->ace.notice = true;
+    settings->ace.smooth = 0;
     memset(settings->ace_titles, 0, sizeof(settings->ace_titles));
     settings->ace_title_count = 0;
 }
@@ -1490,9 +1491,22 @@ static bool ace_af_valid(int64_t af) {
     return af == 0 || af == 2 || af == 4 || af == 8 || af == 16;
 }
 
+/* Smooth motion is saved by name ("off", "x2"), as a PlayerAceSettings.smooth value 0 or 1;
+   -1 for anything else (smooth=match is not offered, so it is not read either). */
+static int ace_smooth_parse(const char *name) {
+    if (!name) return -1;
+    if (strcmp(name, "off") == 0) return 0;
+    if (strcmp(name, "x2") == 0) return 1;
+    return -1;
+}
+
+static const char *ace_smooth_name(int smooth) {
+    return smooth == 1 ? "x2" : "off";
+}
+
 static bool ace_title_differs(const PlayerAceTitle *t) {
     return t->mode != PLAYER_ACE_TITLE_LIBRARY || t->af >= 0 || t->text >= 0 ||
-           t->readout >= 0 || t->notice >= 0;
+           t->readout >= 0 || t->notice >= 0 || t->smooth >= 0;
 }
 
 static int ace_title_index(const PlayerSettings *settings, const char *key) {
@@ -1537,6 +1551,7 @@ static void ace_title_read(const NkJsonNode *obj, PlayerAceTitle *entry) {
     entry->text = ace_tristate(nk_json_obj_get(obj, "text"));
     entry->readout = ace_tristate(nk_json_obj_get(obj, "readout"));
     entry->notice = ace_tristate(nk_json_obj_get(obj, "notice"));
+    entry->smooth = ace_smooth_parse(nk_json_get_string(nk_json_obj_get(obj, "smooth")));
 }
 
 static const char *player_system_choice_key(PlayerSystemChoice choice) {
@@ -1818,6 +1833,8 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
             if (nk_json_get_bool(nk_json_obj_get(ace, "text"), &b)) app->settings.ace.text = b;
             if (nk_json_get_bool(nk_json_obj_get(ace, "readout"), &b)) app->settings.ace.readout = b;
             if (nk_json_get_bool(nk_json_obj_get(ace, "notice"), &b)) app->settings.ace.notice = b;
+            int smooth = ace_smooth_parse(nk_json_get_string(nk_json_obj_get(ace, "smooth")));
+            if (smooth >= 0) app->settings.ace.smooth = smooth;
         }
         NkJsonNode *titles = nk_json_obj_get(root, "ace_titles");
         if (titles && nk_json_is_object(titles)) {
@@ -2095,14 +2112,15 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
         fprintf(f, "%s\"%s\"", i ? ", " : "", app->settings.enhancement_60hz_discs[i]);
     }
     fprintf(f, "],\n");
-    /* Keys for Ace features this build does not carry (wide, smooth) are not written. */
+    /* A key for an Ace feature this build does not carry (wide) is not written. */
     fprintf(f, "  \"ace\": {\"enabled\": %s, \"af\": %d, \"text\": %s, \"readout\": %s, "
-               "\"notice\": %s},\n",
+               "\"notice\": %s, \"smooth\": \"%s\"},\n",
             app->settings.ace.enabled ? "true" : "false",
             ace_af_valid(app->settings.ace.af) ? app->settings.ace.af : 16,
             app->settings.ace.text ? "true" : "false",
             app->settings.ace.readout ? "true" : "false",
-            app->settings.ace.notice ? "true" : "false");
+            app->settings.ace.notice ? "true" : "false",
+            ace_smooth_name(app->settings.ace.smooth));
     fprintf(f, "  \"ace_titles\": {");
     for (int i = 0; i < app->settings.ace_title_count; i++) {
         const PlayerAceTitle *t = &app->settings.ace_titles[i];
@@ -2115,7 +2133,8 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
         if (t->af >= 0) { fprintf(f, "%s\"af\": %d", first ? "" : ", ", t->af); first = false; }
         if (t->text >= 0) { fprintf(f, "%s\"text\": %s", first ? "" : ", ", t->text ? "true" : "false"); first = false; }
         if (t->readout >= 0) { fprintf(f, "%s\"readout\": %s", first ? "" : ", ", t->readout ? "true" : "false"); first = false; }
-        if (t->notice >= 0) { fprintf(f, "%s\"notice\": %s", first ? "" : ", ", t->notice ? "true" : "false"); }
+        if (t->notice >= 0) { fprintf(f, "%s\"notice\": %s", first ? "" : ", ", t->notice ? "true" : "false"); first = false; }
+        if (t->smooth >= 0) { fprintf(f, "%s\"smooth\": \"%s\"", first ? "" : ", ", ace_smooth_name(t->smooth)); }
         fprintf(f, "}");
     }
     fprintf(f, "},\n");
@@ -2863,6 +2882,11 @@ void player_ace_resolve(const PlayerSettings *settings, const char *disc_id,
     out->text = title && title->text >= 0 ? title->text == 1 : settings->ace.text;
     out->readout = title && title->readout >= 0 ? title->readout == 1 : settings->ace.readout;
     out->notice = title && title->notice >= 0 ? title->notice == 1 : settings->ace.notice;
+    out->smooth = title && title->smooth >= 0 ? title->smooth : settings->ace.smooth == 1;
+}
+
+void player_ace_apply_logic_60(PlayerAceResolved *ace, bool logic_60) {
+    if (ace && logic_60) ace->smooth = 0;
 }
 
 bool player_ace_launch_line(const PlayerAceResolved *ace, char *out, size_t cap) {
@@ -2871,9 +2895,10 @@ bool player_ace_launch_line(const PlayerAceResolved *ace, char *out, size_t cap)
     if (!ace || !ace->on) {
         n = snprintf(out, cap, "off");
     } else {
-        n = snprintf(out, cap, "v1;af=%d;text=%s;readout=%s;notice=%s;wide=off;smooth=off",
+        n = snprintf(out, cap, "v1;af=%d;text=%s;readout=%s;notice=%s;wide=off;smooth=%s",
                      ace_af_valid(ace->af) ? ace->af : 0, ace->text ? "on" : "off",
-                     ace->readout ? "on" : "off", ace->notice ? "on" : "off");
+                     ace->readout ? "on" : "off", ace->notice ? "on" : "off",
+                     ace->smooth == 1 ? "x2" : "off");
     }
     if (n <= 0 || (size_t)n >= cap) { out[0] = '\0'; return false; }
     return true;
@@ -2981,6 +3006,14 @@ void player_app_toggle_ace_notice(PlayerApp *app) {
     maybe_persist_settings(app);
 }
 
+void player_app_toggle_ace_smooth(PlayerApp *app) {
+    if (!app) return;
+    app->settings.ace.smooth = app->settings.ace.smooth == 1 ? 0 : 1;
+    player_dev_log_add(app, "settings", "Ace Mode smooth motion %s",
+                       app->settings.ace.smooth == 1 ? "x2" : "off");
+    maybe_persist_settings(app);
+}
+
 bool player_app_ace_last_session(const PlayerApp *app, int game_index, char *out, size_t cap) {
     char user_root[NK_MAX_PATH];
     if (out && cap) out[0] = '\0';
@@ -3008,7 +3041,7 @@ void player_app_cycle_title_ace_mode(PlayerApp *app, int game_index) {
     } else {
         memset(&entry, 0, sizeof(entry));
         if (!player_disc_id_key(app->games[game_index].disc_id, entry.key)) return;
-        entry.af = entry.text = entry.readout = entry.notice = -1;
+        entry.af = entry.text = entry.readout = entry.notice = entry.smooth = -1;
     }
     entry.mode = entry.mode == PLAYER_ACE_TITLE_LIBRARY ? PLAYER_ACE_TITLE_ON
                : entry.mode == PLAYER_ACE_TITLE_ON ? PLAYER_ACE_TITLE_AUTHENTIC
@@ -3022,6 +3055,33 @@ void player_app_cycle_title_ace_mode(PlayerApp *app, int game_index) {
     /* Authentic turns 60 FPS game logic off, which selects the other package variant. */
     player_app_select_package_variant(app, game_index);
     if (game_index == app->selected_game_index) app->request_package_status_retry = true;
+}
+
+int player_app_title_ace_smooth(const PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return -1;
+    const PlayerAceTitle *title =
+        player_settings_ace_title(&app->settings, app->games[game_index].disc_id);
+    return title ? title->smooth : -1;
+}
+
+void player_app_cycle_title_ace_smooth(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return;
+    PlayerAceTitle entry;
+    const PlayerAceTitle *saved =
+        player_settings_ace_title(&app->settings, app->games[game_index].disc_id);
+    if (saved) {
+        entry = *saved;
+    } else {
+        memset(&entry, 0, sizeof(entry));
+        if (!player_disc_id_key(app->games[game_index].disc_id, entry.key)) return;
+        entry.af = entry.text = entry.readout = entry.notice = entry.smooth = -1;
+    }
+    /* Library default, then On (x2), then Off, then back to the library's. */
+    entry.smooth = entry.smooth < 0 ? 1 : entry.smooth == 1 ? 0 : -1;
+    ace_title_store(&app->settings, &entry);
+    player_dev_log_add(app, "settings", "Ace Mode smooth motion for %s: %s", entry.key,
+                       entry.smooth < 0 ? "library default" : ace_smooth_name(entry.smooth));
+    maybe_persist_settings(app);
 }
 
 void player_app_toggle_update_check_at_start(PlayerApp *app) {
@@ -4603,6 +4663,8 @@ void player_launch_work_run(PlayerLaunchWork *work) {
     {
         PlayerAceResolved ace;
         player_ace_resolve(&work->settings, game->disc_id, &ace);
+        /* The enhanced 60 FPS build and interpolation are refused together (#1272). */
+        player_ace_apply_logic_60(&ace, game->enhancement_package_id[0] != '\0');
         if (work->headless_accept_presented_frames > 0u) ace.on = false;
         if (!player_ace_launch_line(&ace, session->config.ace_spec,
                                     sizeof(session->config.ace_spec))) {

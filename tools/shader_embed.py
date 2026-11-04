@@ -28,6 +28,8 @@ SHADERS = (
     ("vert", Path("shaders/psp.vert"), Path("psp_vert.inc")),
     ("frag", Path("shaders/psp.frag"), Path("psp_frag.inc")),
     ("vert", Path("shaders/psp_tnl.vert"), Path("psp_tnl_vert.inc")),
+    ("comp", Path("shaders/ace_match.comp"), Path("ace_match_comp.inc")),
+    ("comp", Path("shaders/ace_compose.comp"), Path("ace_compose_comp.inc")),
 )
 UI_SHADERS = (
     ("vert", Path("shaders/ui.vert"), Path("shaders/ui_vert.inc")),
