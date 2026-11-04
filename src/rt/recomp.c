@@ -1974,9 +1974,15 @@ _Static_assert(SR_PHYS(SR_HOST_RETURN_PC) >= 0x0C000000u,
 #define SR_CODE_CAPTURE_HEADER 32u
 static char s_code_capture_last[64];   /* the last capture's file name (the self-test reads it) */
 
+/* A word a capture may hold: main RAM that no executable span owns, outside every bound image
+ * except a translated capture's. A capture's image owns only the words its translation reached,
+ * so a call the game makes into the rest of it (an entry no earlier target led to) is captured
+ * again; that capture lies inside the earlier one's window, and tools/code_capture.py merges
+ * the two when their bytes agree, so the next build seeds both targets (#1933). */
 static int code_capture_word_free(uint32_t address) {
     return address >= SR_RAM_BASE && SR_PHYS(address) == address && sr_inrange_n(address, 4u) &&
-           !sr_exec_span_owns_fetch(address) && sr_module_code_fetch_authority(address) < 0;
+           !sr_exec_span_owns_fetch(address) &&
+           (sr_module_code_fetch_authority(address) < 0 || sr_module_code_capture_covers(address));
 }
 
 static void code_capture_put32(unsigned char *out, uint32_t value) {

@@ -413,7 +413,10 @@ own data files and call it. No translation covers that code, so the call stops a
 `SR_CODE_CAPTURE=<folder>` makes such a stop also write one capture to the folder, and print one more
 line, `CODE_CAPTURE: wrote code_capture_<target>_<digest>.nkcap [lo,hi) target=...`. The capture
 holds the target and the main RAM around it, up to 64 KiB on each side, that no executable span and
-no bound module owns. The run still stops. Rebuild with the folder:
+no bound module owns. A bound translation of earlier captures owns only the words it translated. A
+call into the rest of its image, an entry no earlier target led to, is captured again. That capture
+lies inside the earlier window, and the two merge when their bytes agree, so the next build seeds
+both targets. The run still stops. Rebuild with the folder:
 
 ```powershell
 python tools/code_capture.py info <folder>           # the images the captures make

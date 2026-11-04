@@ -1527,6 +1527,9 @@ RecompFn sr_module_code_lookup(uint32_t pc, int *in_bound_image);
 /* Fetch authority: -1 when no bound image owns pc, else 1/0 for whether one of the
  * owning image's executable spans covers pc's complete fetch slot. */
 int  sr_module_code_fetch_authority(uint32_t pc);
+/* 1 when a bound image covers pc and that image is the translation of code captures (#1933):
+ * tools/code_capture.py names each such image code_capture_<load>_<fnv1a64>. */
+int  sr_module_code_capture_covers(uint32_t pc);
 void sr_module_code_reset(void);   /* drop every registration and binding (fixtures) */
 /* Instruction-cache maintenance over guest [lo, hi): unbind each code overlay there whose
  * identifying bytes are no longer in memory, then bind each one whose bytes are. Returns
