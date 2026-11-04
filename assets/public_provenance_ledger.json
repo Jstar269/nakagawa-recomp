@@ -13757,6 +13757,17 @@
       }
     },
     {
+      "path": "tools/library_regress.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "library-regress-net-1730",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/library_sweep.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -16079,6 +16090,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "all-games-library-build-20261029",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_library_regress.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "library-regress-net-1730",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
