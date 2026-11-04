@@ -982,6 +982,7 @@ def _enhancement_store_lines() -> list[str]:
                     f'{stock}, {scaled}, {len(row["requires"])}u, {req}, 0u, 0}},')
     out += ["static NkEnhSite nk_enh_sites[] = {", *rows, "};"]
     out += [
+        "static int nk_enh_stopped;",
         "static void nk_enh_text(const NkEnhSite *e, uint32_t bits, char *out, size_t n) {",
         "    if (e->is_float) { float f; memcpy(&f, &bits, sizeof f); snprintf(out, n, \"%.9g\", (double)f); }",
         "    else snprintf(out, n, \"%d\", (int)(int32_t)bits);",
@@ -996,6 +997,7 @@ def _enhancement_store_lines() -> list[str]:
         '        fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: site %s at 0x%08x stores %s (0x%08x), '
         "not one of the package's stock values; the run stops here\\n\", "
         "e->id, (unsigned)e->pc, a, (unsigned)bits);",
+        "        nk_enh_stopped = 1;",
         "        exit(1);",
         "    }",
         "    if (e->applied < 16u) {",
@@ -1025,6 +1027,24 @@ def _enhancement_store_lines() -> list[str]:
         "    }",
         "    return 1;",
         "}",
+        "static void nk_enh_report_unreached(void) {",
+        "    unsigned i;",
+        "    if (nk_enh_stopped) return;",
+        "    for (i = 0; i < sizeof nk_enh_sites / sizeof nk_enh_sites[0]; i++) {",
+        "        const NkEnhSite *e = &nk_enh_sites[i];",
+        "        if (e->nstock > 0u && e->applied == 0u)",
+        '            fprintf(stderr, "ENHANCEMENT_DATA_SITE_NOT_REACHED: site %s at 0x%08x stored no value '
+        'in this run; whatever it should have rescaled stayed stock\\n", e->id, (unsigned)e->pc);',
+        "    }",
+        "}",
+        "/* With the toggle on, a store site that never runs is reported when the process exits. */",
+        "void nk_enh_sites_start(void) {",
+        "    static int registered;",
+        "    if (nk_enhancement_on() && !registered) {",
+        "        registered = 1;",
+        "        (void)atexit(nk_enh_report_unreached);",
+        "    }",
+        "}",
         "/* End of enhancement store sites. */",
         "",
     ]
@@ -1046,6 +1066,8 @@ def _number_enhancement_store_sites() -> None:
                 "pairs": [tuple(pair) for pair in rw.get("stock_values", ())],
                 "requires": list(rw.get("requires", ())),
             })
+            for note in enhancement_package.store_value_overlaps(site["id"], rw):
+                sys.stderr.write(f"warning: enhancement {note}\n")
         rw["site_index"] = index[site["id"]]
 
 
@@ -5506,6 +5528,8 @@ def _registration_lines(elf, ranges, known, base_name, num_files, emitted, resum
     )
     if ENHANCEMENT_PKG_META is not None:
         main_out.append("    if (nk_enhancement_on()) nk_enhancement_apply_data();")
+        if ENHANCEMENT_STORE_SITES:
+            main_out.append("    nk_enh_sites_start();")
     main_out.append(f'    fprintf(stderr, "sr_register_all: starting {len(emitted)} registrations\\n");')
     for i in range(num_files):
         main_out.append(f"    sr_register_chunk_{i}();")

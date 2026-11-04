@@ -671,7 +671,8 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             0x0000160C: nop,
         }
 
-    def _run_codegen(self, elf_path: Path, out_c: Path, extra_args: list[str] | None = None) -> tuple[int, str, dict[str, bytes]]:
+    @staticmethod
+    def _run_codegen(elf_path: Path, out_c: Path, extra_args: list[str] | None = None) -> tuple[int, str, dict[str, bytes]]:
         argv = [
             "codegen.py",
             str(elf_path),
@@ -1985,6 +1986,7 @@ class TestEnhancementStoreSites(unittest.TestCase):
     SWC1 = 0xE4820000   # swc1 f2, 0(a0)
     SW = 0xAC850000     # sw a1, 0(a0)
     SW_SELF = 0xAC840000  # sw a0, 0(a0): the value register is also the base
+    SW_ZERO = 0xAC800000  # sw zero, 0(a0)
     ADDIU = 0x2406001E  # addiu a2, zero, 30
 
     def _site(self, sid: str, word: int, **extra: Any) -> dict[str, Any]:
@@ -2034,6 +2036,7 @@ class TestEnhancementStoreSites(unittest.TestCase):
         self._refused(self.SW, "needs stock_values")
         self._refused(self.SW, "no defined rewrite", transform="step_x0.5", stock_values=[8])
         self._refused(self.SW_SELF, "base register", stock_values=[8])
+        self._refused(self.SW_ZERO, r"must not be \$zero", stock_values=[0])
         self._refused(self.SWC1, "duplicate", stock_values=[1.0, 1.0])
         self._refused(self.SWC1, "duplicate", stock_values=[0.1, 0.10000000149011612])
         self._refused(self.SWC1, "not finite", stock_values=[float("nan")])
@@ -2082,6 +2085,30 @@ class TestEnhancementStoreSites(unittest.TestCase):
         with self.assertRaisesRegex(EnhancementPackageError, "names sites that declare stock_values"):
             validate_package(self._package([store, dict(other, requires=["D_COUNT"])],
                                            data_sites=[data_site]))
+        data_file = {"id": "F_TABLE", "path": "data/param/table.csv", "sha256": "c" * 64,
+                     "format": "csv", "header_row": 0, "first_data_row": 1,
+                     "cells": [{"column": "Wait", "transform": "count_x2"}]}
+        with self.assertRaisesRegex(EnhancementPackageError, "names sites that declare stock_values"):
+            validate_package(self._package([store, dict(other, requires=["F_TABLE"])],
+                                           data_files=[data_file]))
+
+    def test_stock_values_refused_on_a_two_word_site(self) -> None:
+        lui, ori = 0x3C0141F0, 0x34210000   # lui at, 0x41f0; ori at, at, 0: 30.0f
+        words = {0x1000: lui, 0x1004: ori}
+        pair = self._site("P_PAIR", lui, function="pair", word_count=2, transform="step_x0.5",
+                          stock_digest=compute_stock_words_digest([lui, ori]))
+        pkg = self._package([pair])
+
+        def resolve(package: dict[str, Any]) -> dict[int, Any]:
+            resolved: dict[int, Any] = verify_and_resolve_sites(
+                package, executable_sha256="a" * 64, symbol_to_addr={"pair": 0x1000},
+                read_words_fn=lambda a, n: [words[a + 4 * i] for i in range(n)] if a in words else None)
+            return resolved
+
+        self.assertEqual(sorted(resolve(pkg)), [0x1000, 0x1004])
+        pkg["sites"][0]["stock_values"] = [30]
+        with self.assertRaisesRegex(EnhancementPackageError, "stock_values belongs only to swc1 and sw"):
+            resolve(pkg)
 
     # -- compile and run ---------------------------------------------------------------
 
@@ -2109,8 +2136,13 @@ class TestEnhancementStoreSites(unittest.TestCase):
         out_dir = tmp / "out"
         out_dir.mkdir()
         rc, output, files = TestEnhancementAotCodegenAndCache._run_codegen(
-            self, tmp / "synth.elf", out_dir / "out.c", [f"--enhancement-package={tmp / 'store.json'}"])  # type: ignore[arg-type]
+            tmp / "synth.elf", out_dir / "out.c", [f"--enhancement-package={tmp / 'store.json'}"])
         self.assertEqual(rc, 0, output)
+        # 30 scales to 60, which is also a stock value: a build-time warning, not a refusal.
+        self.assertIn("warning: enhancement site F_STORE: stock value 30 scales to 60, which is also a "
+                      "stock value; a path that stores an already scaled value again would scale it twice",
+                      output)
+        self.assertEqual(output.count("warning: enhancement site"), 1, output)
         return {name: data.decode("utf-8") for name, data in files.items()}
 
     @staticmethod
@@ -2130,6 +2162,8 @@ class TestEnhancementStoreSites(unittest.TestCase):
             tmp = Path(tmp_dir)
             files = self._generate(tmp)
             main, chunk = files["out.c"], files["out_0.c"]
+            register_all = main[main.index("void sr_register_all(void)"):]
+            self.assertIn("    nk_enh_sites_start();\n", register_all[:register_all.index("\n}")])
             begin = main.index("/* Enhancement store sites. */")
             end = main.index("/* End of enhancement store sites. */")
             block = main[begin:end]
@@ -2145,6 +2179,7 @@ class TestEnhancementStoreSites(unittest.TestCase):
                 f"static void run_g(CpuState *s) {{\n{self._statement(chunk, 0x1300)}\n}}\n"
                 "int main(int argc, char **argv) {\n"
                 "    CpuState s; memset(&s, 0, sizeof s); s.r[4] = 4;\n"
+                "    nk_enh_sites_start();\n"
                 "    for (int i = 1; i < argc; i++) {\n"
                 "        char k = argv[i][0]; long v = k == 'G' ? 0 : strtol(argv[i] + 2, NULL, 0);\n"
                 "        mem[1] = 0xdeadbeefu;\n"
@@ -2168,6 +2203,10 @@ class TestEnhancementStoreSites(unittest.TestCase):
                 return subprocess.run([str(exes[on]), *args], capture_output=True, text=True)
 
             f30, f60, f120 = (f"0x{_f32_bits_of(v):08x}" for v in (30.0, 60.0, 120.0))
+            f_unreached, i_unreached = (
+                f"ENHANCEMENT_DATA_SITE_NOT_REACHED: site {sid} at 0x{pc} stored no value in this run; "
+                "whatever it should have rescaled stayed stock"
+                for sid, pc in (("F_STORE", "00001100"), ("I_STORE", "00001200")))
             # Toggle on, a stock value: the doubled value is stored, the register is not changed.
             res = run(1, f"F:{f30}", "I:9", "I:-9")
             self.assertEqual(res.returncode, 0, res.stderr)
@@ -2184,6 +2223,7 @@ class TestEnhancementStoreSites(unittest.TestCase):
             self.assertEqual(res.stdout.splitlines(), [f"F {f120[2:]} {f60[2:]}"])
             self.assertIn("ENHANCEMENT_DATA_MISMATCH: site F_STORE at 0x00001100 stores 1 (0x3f800000), "
                           "not one of the package's stock values; the run stops here", res.stderr)
+            self.assertNotIn("NOT_REACHED", res.stderr)   # the stop is the report
             res = run(1, "I:10")
             self.assertEqual(res.returncode, 1)
             self.assertIn("ENHANCEMENT_DATA_MISMATCH: site I_STORE at 0x00001200 stores 10 (0x0000000a), "
@@ -2200,11 +2240,12 @@ class TestEnhancementStoreSites(unittest.TestCase):
             res = run(1, *(f"F:{f30}" for _ in range(20)))
             self.assertEqual(res.returncode, 0, res.stderr)
             lines = res.stderr.splitlines()
-            self.assertEqual(len(lines), 17, res.stderr)
+            self.assertEqual(len(lines), 18, res.stderr)
             self.assertTrue(all(line == "ENHANCEMENT_DATA_APPLIED: site F_STORE at 0x00001100: 30 -> 60"
                                 for line in lines[:16]))
             self.assertEqual(lines[16],
                              "ENHANCEMENT_DATA_APPLIED: site F_STORE: later applications are not logged")
+            self.assertEqual(lines[17], i_unreached)
             # requires: stock until the required site has applied, one line per run.
             res = run(1, "G", "G", f"F:{f30}", "G")
             self.assertEqual(res.returncode, 0, res.stderr)
@@ -2212,7 +2253,19 @@ class TestEnhancementStoreSites(unittest.TestCase):
             self.assertEqual(res.stderr.splitlines(), [
                 "ENHANCEMENT_SITE_GATED: site G_COUNT at 0x00001300 runs stock: F_STORE has not applied",
                 "ENHANCEMENT_DATA_APPLIED: site F_STORE at 0x00001100: 30 -> 60",
+                i_unreached,
             ])
+            # A store site that never runs is reported at exit, one line per site; a site
+            # without stock_values (G_COUNT) is not a store site and has nothing to report.
+            res = run(1, "G")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stderr.splitlines(), [
+                "ENHANCEMENT_SITE_GATED: site G_COUNT at 0x00001300 runs stock: F_STORE has not applied",
+                f_unreached, i_unreached,
+            ])
+            res = run(1)
+            self.assertEqual(res.stderr.splitlines(), [f_unreached, i_unreached])
+            self.assertEqual(run(0).stderr, "")
 
     def test_package_without_store_keys_emits_no_store_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

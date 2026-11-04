@@ -1450,6 +1450,29 @@ def _store_value_pairs(site: Mapping[str, Any], rewrite: dict[str, Any]) -> list
     return pairs
 
 
+def store_value_overlaps(site_id: str, rewrite: Mapping[str, Any]) -> list[str]:
+    """One note per stock value of a store site whose scaled value is also a stock value.
+
+    The run-time check cannot tell that value, stored again after it was scaled, from a fresh
+    stock value, so a path that re-stores it would scale it twice. It is not refused, because
+    the rows of one table can hold both v and 2v; the package author checks that no such path
+    exists.
+    """
+    pairs = rewrite.get("stock_values", ())
+    stock = {bits for bits, _scaled in pairs}
+
+    def text(bits: int) -> str:
+        if rewrite["kind"] == "scale_f_store":
+            return f"{_f32(bits):g}"
+        return str(bits - (1 << 32) if bits & 0x80000000 else bits)
+
+    return [
+        f"site {site_id}: stock value {text(bits)} scales to {text(scaled)}, which is also a stock "
+        "value; a path that stores an already scaled value again would scale it twice"
+        for bits, scaled in pairs if scaled in stock
+    ]
+
+
 def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
     """The one defined rewrite of a verified stock word, with a store site's stock values."""
     rewrite = _plan_word_rewrite(site, w)
