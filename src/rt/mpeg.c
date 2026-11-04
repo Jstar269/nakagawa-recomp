@@ -154,6 +154,10 @@ typedef struct {
     uint32_t totalPackets;       /* streamSize/packetSize: whole-movie packet count */
     uint32_t fedPackets;         /* cumulative packets the game has put into the ring */
     int streamEnded;             /* the fed stream ran out with the whole movie in: nothing follows */
+    /* A put whose fill callback returned fewer packets than it was asked for, and fedPackets after
+     * it: with no stream size known, that and no put since is the end of the feed (#286). */
+    int feedShort;
+    uint32_t feedShortAt;
     uint32_t videoDryAt, audioDryAt; /* fedPackets when a getter last found nothing to hand out */
     uint32_t headerAddr;         /* guest address of the PSMF header passed to QueryStreamOffset */
     int h264;                    /* host H.264 backend id (-1 = none) */
@@ -336,7 +340,17 @@ static void mpeg_audio_feed(Mpeg *ctx, const uint8_t *bytes, uint32_t len) {
  * packets past that count, from the start of the file, as slowly as it likes. The stream has ended
  * once a title that was told there is no data comes back without having put anything. */
 static int mpeg_feed_stopped(const Mpeg *ctx, uint32_t *dryAt) {
-    if (!ctx->totalPackets || ctx->fedPackets < ctx->totalPackets) return 0;
+    /* UNMEASURED MODEL (#286). A guest PSMF player that parses the header with its own psmf
+     * module never calls sceMpegQueryStreamOffset, so the stream size stays unknown. Its feed has
+     * ended when the last put's fill callback returned fewer packets than it was asked for (the
+     * source ran out) and no packet has been put since; the caller asks only after a
+     * sceMpegGetAvcAu found no complete access unit. The demux then closes its last unit and the
+     * ring's last packets leave with it, so the ring reads empty, which such a player waits for.
+     * Reference: PPSSPP reads end of data as end of stream (its MediaEngine read callback returns
+     * 0 bytes and FFmpeg's demuxer takes that as EOF). No PSP measurement covers this yet: a probe
+     * of the last-unit behaviour needs a game-context AV load on the PSP. */
+    if (!ctx->totalPackets) return ctx->feedShort && ctx->feedShortAt == ctx->fedPackets;
+    if (ctx->fedPackets < ctx->totalPackets) return 0;
     if (*dryAt == ctx->fedPackets) return 1;
     *dryAt = ctx->fedPackets;
     return 0;
@@ -508,6 +522,7 @@ static void analyze(uint32_t buffer, Mpeg *ctx) {
      * timestamp which only covers the first segment). */
     ctx->totalPackets = ctx->streamSize / 2048u;
     ctx->streamEnded = 0;
+    ctx->feedShort = 0;
     ctx->videoDryAt = ctx->audioDryAt = 0;
 }
 
@@ -777,6 +792,7 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
 
     uint32_t addedTotal = 0;
     uint32_t writePos = state.writePos;
+    int callbackShort = 0;   /* the fill callback returned fewer packets than it was asked for */
     while (addedTotal < addWanted) {
         uint32_t chunk = addWanted - addedTotal;
         if (total && chunk > total - writePos) chunk = total - writePos;
@@ -794,6 +810,7 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
             break;
         }
         if (got > chunk) got = chunk;
+        if (cb && got < chunk) callbackShort = 1;
         if (got == 0) break;
 
         uint32_t gotBytes;
@@ -821,6 +838,12 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
         rb_set(ring, RB_packetsRead, state.packetsRead + addedTotal);
         rb_set(ring, RB_packetsWritePos, writePos);
         if (ctx) ctx->fedPackets += addedTotal;
+    }
+    if (ctx && callbackShort) {
+        ctx->feedShort = 1;
+        ctx->feedShortAt = ctx->fedPackets;
+    } else if (ctx && addedTotal) {
+        ctx->feedShort = 0;
     }
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
@@ -868,7 +891,8 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
      * decoded out. The one picture the PSP's own YCbCr decoder holds back is not among them:
      * sceMpegAvcDecodeStopYCbCr hands it over, as on the PSP. */
     int held = ctx->streamEnded && ctx->h264Frames + ctx->ycbcrLag < ctx->h264Units;
-    if (!held && ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets &&
+    /* With no stream size known, the feed's end is the one mpeg_feed_stopped found (#286). */
+    if (!held && (ctx->totalPackets ? ctx->fedPackets >= ctx->totalPackets : ctx->streamEnded) &&
         rb_get(ring, RB_packetsAvail) == 0) ctx->videoEnd = 1;
     if (!held && (rb_get(ring, RB_packetsRead) == 0 || rb_get(ring, RB_packetsAvail) == 0)) {
         g_mpeg_nodata++;
@@ -1900,6 +1924,7 @@ uint32_t mpeg_flush_all_stream(uint32_t mpegAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     ctx->isAnalyzed = 0;
+    ctx->feedShort = 0;   /* the game refills from a new position */
     for (int i = 0; i < 8; i++) {
         if (ctx->streams[i].used) ctx->streams[i].needsReset = 1;
     }
