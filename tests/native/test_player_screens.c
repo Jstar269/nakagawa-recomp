@@ -2859,8 +2859,7 @@ static void test_psp_fonts_page(void) {
               strstr(dump, "Optional.") != NULL && strstr(dump, "flash0:/font") != NULL &&
               strstr(dump, "Copying the fonts from your PSP") != NULL &&
               /* #2005: what a player without the PSP's fonts sees, before they decide. */
-              strstr(dump, "every game still runs") != NULL &&
-              strstr(dump, "Japanese and Korean text is smaller") != NULL &&
+              strstr(dump, "Cyrillic") != NULL && strstr(dump, "narrower") != NULL &&
               strstr(dump, "Japanese: synthetic fallback") != NULL &&
               strstr(dump, "Korean: synthetic fallback") != NULL &&
               strstr(dump, "Latin 16: synthetic fallback") != NULL &&
@@ -4485,7 +4484,7 @@ static void test_remove_from_library(void) {
     remove.has_saves = true;
     remove.saves_bytes = 2048u;
     remove.has_disc_copy = true;
-    remove.disc_copy_bytes = 3u * 1024u * 1024u;
+    remove.disc_copy_bytes = 5u * 1024u * 1024u;
     remove.logical_width = 1280.0f;
     remove.logical_height = 800.0f;
     nk_ui_begin(ui, 0.0);
@@ -4512,8 +4511,9 @@ static void test_remove_from_library(void) {
     action = activate_remove_button(PLAYER_UI_ID_REMOVE_SAVES, &remove);
     CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES, "the saves box toggles");
     /* #2003: the decrypted files and disc copy have their own box, also unticked. */
-    CHECK(strstr(dump, "Also delete the decrypted files and disc copy (3.0 MB)") != NULL &&
-              strstr(dump, "They stay, so adding this game again is quicker.") != NULL,
+    /* Button labels draw in capitals; each wrapped line is its own text run. */
+    CHECK(strstr(dump, "ALSO DELETE THE DECRYPTED FILES AND DISC COPY") != NULL &&
+              strstr(dump, "5.0 MB") != NULL && strstr(dump, "They stay") != NULL,
           "the disc copy box starts unticked with its size and says the files stay");
     action = activate_remove_button(PLAYER_UI_ID_REMOVE_DISC_COPY, &remove);
     CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_DISC_COPY && action.title_index == 3u,
@@ -4555,7 +4555,7 @@ static void test_remove_from_library(void) {
     (void)player_ui_screen_remove(ui, &remove);
     (void)nk_ui_end(ui);
     (void)nk_ui_dump(ui, dump, sizeof(dump));
-    CHECK(strstr(dump, "disc copy") == NULL, "files another image uses offer no disc copy box");
+    CHECK(strstr(dump, "DISC COPY") == NULL, "files another image uses offer no disc copy box");
     remove.files_shared = false;
     remove.has_disc_copy = false;
     remove.delete_disc_copy = false;
