@@ -30,7 +30,17 @@
 #include <direct.h>
 #endif
 
+/* The selftest seams of videorec.h; the Makefile defines this too. */
+#ifndef SR_VIDEOREC_SELFTEST
+#define SR_VIDEOREC_SELFTEST 1
+#endif
 #include "videorec.h"
+
+/* Scratch files go beneath the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a
+ * scratch run never writes the checkout's build/ tree. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
 
 #define W 64u
 #define H 36u
@@ -332,7 +342,7 @@ static void test_ffmpeg(const char *root) {
 }
 
 int main(int argc, char **argv) {
-    const char *root = argc > 1 ? argv[1] : "build/videorec_selftest";
+    const char *root = argc > 1 ? argv[1] : SR_SELFTEST_BUILD_ROOT "/videorec_selftest";
     make_dir(root);
     test_timeline(root);
     test_order_and_pass(root);

@@ -142,7 +142,7 @@ fbcap-selftest:
 # on PATH it also encodes FFV1 and muxes; without it that part reports SKIP. No GPU or game input.
 native-core-tests: videorec-selftest
 videorec-selftest:
-	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -DSR_VIDEOREC_SELFTEST \
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -DSR_VIDEOREC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-o $(BUILD_DIR)/videorec_selftest.exe tests/native/videorec_selftest.c src/rt/videorec.c
 	$(BUILD_DIR)/videorec_selftest.exe $(BUILD_DIR)/videorec_selftest
 
