@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 127)
+        self.assertEqual(len(routes), 128)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 138, 139}
-                         | {150, 151},
+                         | {150, 151, 152},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -2515,6 +2515,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(routes.get("sas-init"), "117")
         self.assertEqual(routes.get("at3-delay-sweep"), "150")
         self.assertEqual(routes.get("mpeg-ycbcr"), "151")
+        self.assertEqual(routes.get("sas-adsr"), "152")
 
     def test_thread_k0_block_route_has_its_own_case_id(self) -> None:
         routes = dict(re.findall(
