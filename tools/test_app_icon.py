@@ -223,18 +223,23 @@ class VersionInfoScriptTests(unittest.TestCase):
         self.assertIn("FILEFLAGS 0x2L", text, "a -dev build is marked pre-release")
         self.assertIn("FILEFLAGS 0x0L", make_app_icon.render_version_rc("x", "x.exe", "1.0.0"))
 
-    def test_script_is_reproducible_and_plain_ascii(self) -> None:
+    def test_script_is_reproducible_and_holds_no_host_detail(self) -> None:
         first = make_app_icon.render_version_rc("Nakagawa Recomp", "nakagawa_player.exe", "0.0.2-dev")
         self.assertEqual(first, make_app_icon.render_version_rc("Nakagawa Recomp", "nakagawa_player.exe", "0.0.2-dev"))
-        first.encode("ascii")
+        first.encode("utf-8")
         self.assertNotIn("\r", first)
         self.assertNotIn(str(ROOT), first, "no absolute path in the script")
 
     def test_quotes_and_backslashes_are_escaped_and_odd_text_refused(self) -> None:
         self.assertEqual(make_app_icon._rc_string('a "b" c\\d'), '"a ""b"" c\\\\d"')
-        for bad in ("", "tab\there", "café"):
+        for bad in ("", "tab\there", "lone\ud800surrogate"):
             with self.assertRaises(make_app_icon.ResourceError, msg=repr(bad)):
                 make_app_icon._rc_string(bad)
+        self.assertEqual(make_app_icon._rc_string("café モン"), '"café モン"')
+
+    def test_script_declares_its_utf8_code_page_before_any_string(self) -> None:
+        text = make_app_icon.render_version_rc("café (Nakagawa Recomp)", "x.exe", "1.0.0")
+        self.assertLess(text.index("#pragma code_page(65001)"), text.index("VALUE"))
 
 
 class VersionInfoCommandLineTests(unittest.TestCase):
@@ -251,7 +256,7 @@ class VersionInfoCommandLineTests(unittest.TestCase):
             done = self.run_tool(out, "--manifest", str(TITLE_MANIFEST),
                                  "--original-filename", "hst-ucus98701-v1.exe")
             self.assertEqual(done.returncode, 0, done.stderr)
-            text = out.read_text("ascii")
+            text = out.read_text("utf-8")
         self.assertIn(f'VALUE "FileDescription", "{display_name} (Nakagawa Recomp)"', text)
         self.assertIn('VALUE "OriginalFilename", "hst-ucus98701-v1.exe"', text)
         self.assertIn('VALUE "ProductName", "Nakagawa Recomp"', text)
@@ -261,7 +266,7 @@ class VersionInfoCommandLineTests(unittest.TestCase):
             out = Path(tmp) / "t.rc"
             self.assertEqual(self.run_tool(out, "--title-name", "mygame",
                                            "--original-filename", "mygame.exe").returncode, 0)
-            self.assertIn('"mygame (Nakagawa Recomp)"', out.read_text("ascii"))
+            self.assertIn('"mygame (Nakagawa Recomp)"', out.read_text("utf-8"))
 
     def test_a_manifest_without_a_name_fails_the_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -319,11 +324,12 @@ class VersionInfoWindowsExecutableTests(unittest.TestCase):
         return exe
 
     def version_info(self, exe: Path) -> dict[str, str]:
-        command = ("(Get-Item -LiteralPath $env:NK_VI_EXE).VersionInfo | "
+        command = ("[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+                   "(Get-Item -LiteralPath $env:NK_VI_EXE).VersionInfo | "
                    "Select-Object FileDescription,ProductName,FileVersion,ProductVersion,"
                    "CompanyName,LegalCopyright,OriginalFilename | ConvertTo-Json")
         done = subprocess.run([self.powershell, "-NoProfile", "-Command", command],
-                              capture_output=True, text=True, check=True,
+                              capture_output=True, text=True, encoding="utf-8", check=True,
                               env={**os.environ, "NK_VI_EXE": str(exe)})
         return json.loads(done.stdout)
 
@@ -345,6 +351,13 @@ class VersionInfoWindowsExecutableTests(unittest.TestCase):
             info = self.version_info(exe)
         self.assertEqual(info["FileDescription"], f"{display_name} (Nakagawa Recomp)")
         self.assertEqual(info["OriginalFilename"], "hst-ucus98701-v1.exe")
+
+    def test_non_ascii_titles_read_back_exactly(self) -> None:
+        for title in ("café", "モンスターハンター", "Tennis éè 🎾"):
+            with self.subTest(title=title), tempfile.TemporaryDirectory() as tmp:
+                exe = self.build_exe(Path(tmp), "title.exe", "--title-name", title)
+                self.assertEqual(self.version_info(exe)["FileDescription"],
+                                 f"{title} (Nakagawa Recomp)")
 
     def test_the_icon_survives_next_to_the_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
