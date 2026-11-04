@@ -4334,6 +4334,28 @@ static void test_mpeg_atrac_au_decode(void) {
           "mpeg-atrac: FlushStream keeps the frame the game holds");
     CHECK(mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u,
           "mpeg-atrac: FlushStream keeps the frames still queued");
+    /* sceMpegAvcDecodeFlush (0x4571cc64) through the production handler flushes the video decoder
+     * and leaves the ring alone. A guest PSMF player fills the ring with the whole movie, then calls
+     * it on entering its decode state and reads sceMpegRingbufferAvailableSize next; a reset there
+     * read as an empty ring, and that player stopped its video without asking for an access unit
+     * (#286). PPSSPP's handler (a2001917, Core/HLE/sceMpeg.cpp) does not touch the ring either;
+     * only sceMpegFlushAllStream clears its counters. */
+    const uint32_t avc_decode_flush_nid = 0x4571cc64u;
+    avail_before = MEM_R32(AT_RING + 12u);
+    read_before = MEM_R32(AT_RING + 4u);
+    uint32_t write_before = MEM_R32(AT_RING + 8u);
+    uint32_t free_before = mpeg_ringbuffer_available_size(AT_RING);
+    CHECK(avail_before != 0u || read_before != 0u || write_before != 0u,
+          "mpeg-atrac: the ring holds fed packets before AvcDecodeFlush");
+    CHECK(guest_mpeg_import(avc_decode_flush_nid, AT_DESC, 0u, 0u, 0u, 0u) == 0u,
+          "mpeg-atrac: AvcDecodeFlush returns 0");
+    CHECK(MEM_R32(AT_RING + 12u) == avail_before && MEM_R32(AT_RING + 4u) == read_before &&
+              MEM_R32(AT_RING + 8u) == write_before,
+          "mpeg-atrac: AvcDecodeFlush leaves the ring counters alone");
+    CHECK(mpeg_ringbuffer_available_size(AT_RING) == free_before,
+          "mpeg-atrac: after AvcDecodeFlush the ring reports the same free space");
+    CHECK(guest_mpeg_import(avc_decode_flush_nid, 0u, 0u, 0u, 0u, 0u) == 0x80020003u,
+          "mpeg-atrac: AvcDecodeFlush refuses a null context pointer");
     CHECK(guest_mpeg_import(flush_stream_nid, AT_DESC, sid + 1000u, 0u, 0u, 0u) == SCE_MPEG_ERROR_INVALID_VALUE,
           "mpeg-atrac: FlushStream refuses a stream id the context never issued");
     CHECK(guest_mpeg_import(flush_stream_nid, 0u, sid, 0u, 0u, 0u) == 0x80020003u,
