@@ -298,8 +298,8 @@ class TestProductionSmoke(unittest.TestCase):
         # typed production dispatcher, targeting the omitted guest address with
         # the native continuation kept separate from $ra.
         self.assertIn(
-            f"dispatch_call(s, 0x{generator.HELPER:08x}u, "
-            f"0x{generator.ENTRY + 0x10:08x}u);",
+            f"if (dispatch_call_checked(s, 0x{generator.HELPER:08x}u, "
+            f"0x{generator.ENTRY + 0x10:08x}u)) return;",
             omitted_text,
         )
         self.assertNotIn(f"f_{generator.HELPER:08x}(", omitted_text)

@@ -269,11 +269,19 @@ PLAYER_SRCS := src/player/main.c src/player/player_host.c src/player/player_stat
 PLAYER_UI_TEST_SRCS := src/player/player_ui_test.c
 PLAYER_INCLUDES := -Isrc/player -Isrc/player/ui -Isrc/ui -Ithird_party/clay -Isrc/core -Isrc/core/generated -Isrc/rt -Ithird_party/monocypher $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
 
-# Both icon objects come from this one rule; windres finds the icon beside the script.
+# Both icon objects come from one rule over a per-target generated script: the player's
+# says "Nakagawa Recomp", a title's "<display name> (Nakagawa Recomp)" from its manifest
+# (or GAME_NAME when the build has no manifest). The version is NK_PLAYER_VERSION.
+# windres finds the icon through --include-dir.
 ifeq ($(OS),Windows_NT)
-$(sort $(PLAYER_ICON_OBJ) $(TITLE_ICON_OBJ)): %/nakagawa_icon.o: assets/brand/nakagawa.rc assets/brand/nakagawa.ico
-	@"$(PYTHON)" -c "from pathlib import Path; Path('$(@D)').mkdir(parents=True, exist_ok=True)"
-	$(WINDRES) --input-format=rc --output-format=coff -i $< -o $@
+NK_VERSION_RESOURCE_TOOL := tools/make_app_icon.py
+NK_VERSION_RESOURCE_DEPS := $(NK_VERSION_RESOURCE_TOOL) src/player/ui/player_ui_nk.h
+$(BUILD_ROOT)/nakagawa_icon.rc: $(NK_VERSION_RESOURCE_DEPS)
+	"$(PYTHON)" $(NK_VERSION_RESOURCE_TOOL) --version-rc $@ --original-filename "$(notdir $(PLAYER_EXE))" --player
+$(BUILD_DIR)/nakagawa_icon.rc: $(NK_VERSION_RESOURCE_DEPS) $(strip $(TITLE_MANIFEST))
+	"$(PYTHON)" $(NK_VERSION_RESOURCE_TOOL) --version-rc $@ --original-filename "$(GAME_NAME)$(EXE_EXT)" $(if $(strip $(TITLE_MANIFEST)),--manifest "$(strip $(TITLE_MANIFEST))",--title-name "$(GAME_NAME)")
+$(sort $(PLAYER_ICON_OBJ) $(TITLE_ICON_OBJ)): %/nakagawa_icon.o: %/nakagawa_icon.rc assets/brand/nakagawa.rc assets/brand/nakagawa.ico
+	$(WINDRES) --input-format=rc --output-format=coff --include-dir=assets/brand -i $< -o $@
 endif
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check

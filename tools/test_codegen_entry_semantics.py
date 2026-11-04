@@ -252,6 +252,7 @@ void test_mem_w32(uint32_t addr, uint32_t value);
 #define sr_end(s, addr, size) ((void)0)
 void dispatch(CpuState *s, uint32_t target);
 void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
+int dispatch_call_checked(CpuState *s, uint32_t target, uint32_t resume_pc);
 void sr_register(uint32_t addr, void (*fn)(CpuState *));
 void sr_exec_span_reset(void);
 int sr_exec_span_register(uint32_t start, uint32_t end);
@@ -289,6 +290,11 @@ void dispatch(CpuState *s, uint32_t target) {{
 void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {{
     (void)resume_pc;
     dispatch(s, target);
+}}
+/* A generated call site's checked form: these stand-ins never abandon a caller. */
+int dispatch_call_checked(CpuState *s, uint32_t target, uint32_t resume_pc) {{
+    dispatch_call(s, target, resume_pc);
+    return 0;
 }}
 
 int main(void) {{
@@ -574,6 +580,7 @@ void test_mem_w32(uint32_t addr, uint32_t value);
 #define sr_end(s, addr, size) ((void)0)
 void dispatch(CpuState *s, uint32_t target);
 void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
+int dispatch_call_checked(CpuState *s, uint32_t target, uint32_t resume_pc);
 void sr_register(uint32_t addr, void (*fn)(CpuState *));
 void sr_exec_span_reset(void);
 int sr_exec_span_register(uint32_t start, uint32_t end);
@@ -613,6 +620,11 @@ void dispatch(CpuState *s, uint32_t actual) {{ dispatch_target(s, actual); }}
 void dispatch_call(CpuState *s, uint32_t actual, uint32_t resume_pc) {{
     (void)resume_pc;
     dispatch_target(s, actual);
+}}
+/* A generated call site's checked form: these stand-ins never abandon a caller. */
+int dispatch_call_checked(CpuState *s, uint32_t target, uint32_t resume_pc) {{
+    dispatch_call(s, target, resume_pc);
+    return 0;
 }}
 
 int main(void) {{

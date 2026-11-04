@@ -1018,7 +1018,7 @@ typedef struct {
     char name[32];
 } MsgPipe;
 
-/* ---- mailboxes (sceKernel*Mbx), campaign psp-hw-20260917 + PSPSDK ABI ---- */
+/* ---- mailboxes (sceKernel*Mbx), PSP-measured + PSPSDK ABI ---- */
 
 #define MBX_MAX 32
 #define MBX_MAX_WAITERS 64

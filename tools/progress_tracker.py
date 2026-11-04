@@ -57,10 +57,10 @@ BUILD = REPO / "build" / "hst"
 LOGS = REPO / "logs"
 OUT = REPO / "progress.json"
 
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 # Verifier definitions
 # Each returns (units_positive, units_negative) — negatives are regressions.
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 
 
 def _log_lines(name: str) -> list[str]:
@@ -232,9 +232,9 @@ def _artifact_fresh(path: Path, against: list[Path]) -> bool:
     return True
 
 
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 # Verifier registry — stable IDs consumed by progress.json readers
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 
 
 @dataclass
@@ -302,7 +302,7 @@ def verify_all() -> list[Item]:
     latest = latest_log()
     run_meta = _run_metadata(latest)
 
-    # ─ Phase 1: Pipeline ─
+    # - Phase 1: Pipeline -
     items += [
         Item("P1.1", "prxload.py succeeds", 1, 4, _check_prxload()),
         Item("P1.2", "imports.py emits *_imports.toml", 1, 3,
@@ -316,7 +316,7 @@ def verify_all() -> list[Item]:
              verified_by="not executed this session"),
     ]
 
-    # ─ Phase 2: Runtime RT ─
+    # - Phase 2: Runtime RT -
     items += [
         Item("P2.1", "alloc_block / thread tables seeded", 2, 2,
              _check_log(last_log=latest, patterns=[r"THREAD_SEED_OK"])),
@@ -346,7 +346,7 @@ def verify_all() -> list[Item]:
                                   r"gegpu: full GPU GE active"])),
     ]
 
-    # ─ Phase 3: MIPS→C ─
+    # - Phase 3: MIPS->C -
     items += [
         Item("P3.1", "Out-of-SSA / register aliasing", 3, 3,
              _check_recomp_chunks()),  # proxy: emits
@@ -366,7 +366,7 @@ def verify_all() -> list[Item]:
              _check_no_retired_caps()),
     ]
 
-    # ─ Phase 4: Game Data ─
+    # - Phase 4: Game Data -
     items += [
         Item("P4.1", "Allocator freelist seeded at MEM[0x30b000]",
              4, 1,
@@ -394,7 +394,7 @@ def verify_all() -> list[Item]:
         Item("P4.8", "Texture cache init", 4, 2, "pending"),
     ]
 
-    # ─ Phase 5: Frame Rendering ─
+    # - Phase 5: Frame Rendering -
     items += [
         Item("P5.1", "GE display list submitted", 5, 3,
              _check_ge_list_submitted(last_log=latest)),
@@ -404,7 +404,7 @@ def verify_all() -> list[Item]:
              _check_present_actually_fires(last_log=latest)),
     ]
 
-    # ─ Phase 6: Main Loop ─
+    # - Phase 6: Main Loop -
     items += [
         Item("P6.1", "Frame 0 → Frame 1 transition", 6, 2,
              _check_multi_frame(last_log=latest)),
@@ -419,7 +419,7 @@ def verify_all() -> list[Item]:
              _check_main_loop_progression(last_log=latest)),
     ]
 
-    # ─ Phase 7: Endgame ─
+    # - Phase 7: Endgame -
     items += [
         Item("P7.1", "Input mapped", 7, 1, "pending"),
         Item("P7.2", "Audio thread produces samples", 7, 1, "pending"),
@@ -447,9 +447,9 @@ def verify_all() -> list[Item]:
     return items
 
 
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 # Verifier bodies
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 
 
 def _check_prxload() -> str:
@@ -989,7 +989,7 @@ def _apply_regressions(items: list[Item], last_log: str | None) -> None:
                 it.status = "regressed"
                 it.notes.append("main loop progression halted")
 
-    # vkCmdDraw≥1 but vkQueuePresent=0 → P5.3 only stays regressed if no FBSNAP frames
+    # vkCmdDraw≥1 but vkQueuePresent=0 -> P5.3 only stays regressed if no FBSNAP frames
     # were captured. Snapshots can only be saved from sceDisplaySetFrameBuf, after the
     # Vulkan present chain runs -- so their existence is proof of present.
     has_draw = any("vkCmdDraw:" in l for l in lines)
@@ -1002,7 +1002,7 @@ def _apply_regressions(items: list[Item], last_log: str | None) -> None:
                 it.notes.append(f"draws={count_pattern(last_log, 'vkCmdDraw:')} presents=0")
 
 
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 # Coverage axes — A. codegen coverage, B. HLE NID coverage,
 # C. GE command coverage, D. VFPU opcode coverage, E. subsystem matrix,
 # F. playability milestone index (= verify_all()/aggregate() above).
@@ -1013,7 +1013,7 @@ def _apply_regressions(items: list[Item], last_log: str | None) -> None:
 # logs/stderr_run*.log (they degrade to "unknown" counts otherwise, not a
 # crash — a clean checkout with no local build must still be able to run
 # `progress_tracker.py axes`).
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 
 SRC_RT = REPO / "src" / "rt"
 TOOLS = REPO / "tools"
@@ -1313,9 +1313,9 @@ def render_progress_markdown(axes: dict, milestone: dict | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 # Score aggregation
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 
 
 def aggregate(items: list[Item]) -> dict:
@@ -1349,9 +1349,9 @@ def aggregate(items: list[Item]) -> dict:
     }
 
 
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 # CLI
-# ──────────────────────────────────────────────────────────────
+# --------------------------------------------------------------
 
 
 def main(argv: list[str]) -> int:

@@ -70,8 +70,7 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
      "Shows a lit, rotating cube that answers the stick and buttons, with sound.", ""},
     {"showcase-breakout-v1", "Partially works", PLAYER_UI_TIER_PLAYABLE,
      "Plays a full game of Breakout with sound and keeps your high score.", ""},
-    /* Playable: the owner played full matches and Story Mode on 2026-10-24
-       (#1297). */
+    /* Playable: full matches and Story Mode were played through (#1297). */
     {"UCUS98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
      "Plays full matches and Story Mode.",
      "Known issues: some sound effects can drop out while loading."},
@@ -179,6 +178,7 @@ struct PlayerUiNk {
     int remove_index;
     char remove_disc[NK_MAX_DISC_ID_LEN];
     bool remove_delete_saves;
+    bool remove_delete_disc_copy;
     bool remove_focus_pending;
     /* STOP GAME asks first: the title page the question was asked from. */
     int stop_index;
@@ -1501,6 +1501,7 @@ static bool player_ui_open_remove(PlayerUiNk *player, const PlayerApp *app, int 
     snprintf(player->remove_disc, sizeof(player->remove_disc), "%s",
              app->games[index].disc_id);
     player->remove_delete_saves = false;
+    player->remove_delete_disc_copy = false;
     player->remove_focus_pending = true;
     return true;
 }
@@ -1985,7 +1986,7 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->status_rgba = PLAYER_UI_READY;
         out->status_marker = "●";
     }
-    /* An older Nakagawa built this package (owner, 2026-10-29): it still
+    /* An older Nakagawa built this package: it still
        plays, and the cards say what a rebuild would do, that it is queued or
        running, or that its disc is missing. */
     PlayerRebuildCard rebuild;
@@ -2846,6 +2847,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             model.has_saves = player->remove_plan.has_saves;
             model.saves_bytes = player->remove_plan.saves_bytes;
             model.delete_saves = player->remove_delete_saves;
+            model.has_disc_copy = player->remove_plan.has_disc_copy;
+            model.disc_copy_bytes = player->remove_plan.disc_copy_bytes;
+            model.delete_disc_copy = player->remove_delete_disc_copy;
             model.files_shared = player->remove_plan.files_shared;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
@@ -2855,6 +2859,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES) {
                 player->remove_delete_saves = !player->remove_delete_saves;
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_DISC_COPY) {
+                player->remove_delete_disc_copy = !player->remove_delete_disc_copy;
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM) {
                 /* The removal runs after this frame; the library then

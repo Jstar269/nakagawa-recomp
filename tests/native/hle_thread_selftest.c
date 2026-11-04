@@ -12714,7 +12714,7 @@ static void test_delay_advances_unified_timeline(void) {
 /* sceDisplayGetFramePerSec returns a single-precision float through $f0.  The
  * integer return convention reports success in $v0, so a guest reading the
  * float must see the measured 60000/1001 bits -- never stale/poisoned state
- * (issue #80 display-clock campaign). */
+ * (issue #80). */
 static void test_display_frame_per_sec_float_return(void) {
     reset_fixture();
     sr_hle_init();
@@ -16563,7 +16563,7 @@ static void wsv_cb_coro_body(void *arg) {
     selftest_park_on_scheduler();
 }
 
-/* PSP-B1-01 (psp-hw-20260917), project-authored synthetic probe on PSP-3000, firmware 6.61. */
+/* PSP-B1-01: project-authored synthetic probe run on a PSP-3000, firmware 6.61. */
 static void b1_expect(uint32_t actual, uint32_t expected, const char *scenario) {
     char msg[256];
     snprintf(msg, sizeof msg, "B1 %s: expected 0x%08x, actual 0x%08x",
@@ -16618,7 +16618,8 @@ static void test_sema_hardware_codes(void) {
     s_cur = -1;
 }
 
-/* PSP-B1-01 / PSP-B2-01 (psp-hw-20260917): LwMutex return codes and workarea
+/* Measured on a PSP-3000, firmware 6.61 (PSP-B1-01 / PSP-B2-01,
+ * docs/HARDWARE_ORACLE.md): LwMutex return codes and workarea
  * writes. The workarea lives at a fixed guest address; the fixture thread is the
  * owner, and "another owner" is simulated by writing a foreign uid. */
 #define B1_LW_WORKAREA 0x00250300u
@@ -17156,7 +17157,7 @@ static void test_expired_timed_sema_wait_enters_strict_priority(uint32_t nid,
              "%s slice C (C): the guest receives SCE_KERNEL_ERROR_WAIT_TIMEOUT (0x800201a8)", who);
     expect(s_slc_ret == SLC_WAIT_TIMEOUT, msg);
     expect(MEM_R32(SLC_TIMEOUT_PTR) == 0u,
-           "PSP-B2-01 (psp-hw-20260917): timed semaphore wait clears timeout");
+           "Measured (PSP-B2-01): timed semaphore wait clears timeout");
     snprintf(msg, sizeof msg,
              "%s slice C (F): earlier promotion manufactured no success result", who);
     expect(s_slc_ret != 0u, msg);
@@ -17202,7 +17203,7 @@ static void test_expired_timed_object_waits_enter_strict_priority(void) {
 }
 
 /* -------------------------------------------------------------------------
- * PSP-B2-01 / PSP-B3-01 (psp-hw-20260917): the cancel/release wake family.
+ * Measured (PSP-B2-01 / PSP-B3-01): the cancel/release wake family.
  * -------------------------------------------------------------------------
  * Hardware cells, entered through the production NIDs:
  *
@@ -17214,7 +17215,8 @@ static void test_expired_timed_object_waits_enter_strict_priority(void) {
  *                                   returns 0; on the running caller (0) it
  *                                   returns 0x80020197.
  *
- * Before this campaign the three NIDs were unregistered entirely (a guest call
+ * Before the cancel/release family was implemented the three NIDs were
+ * unregistered entirely (a guest call
  * stopped at the HLE boundary), and the waiter side had no way to observe a
  * non-satisfaction wake. The waiter runs on its own coroutine exactly like the
  * strict-priority fixture above; the main fixture thread plays the canceller.
@@ -17567,7 +17569,7 @@ static void test_cancel_release_wake_results(void) {
  * UIDs answer UNKNOWN_EVFID; DeleteEventFlag ends a blocked wait. Every call
  * enters through the production NID.
  *
- * Codes: PSP-B1-01 (psp-hw-20260917) unknown-ID codes, 8002019A event flag,
+ * Codes: PSP-B1-01 unknown-ID codes, 8002019A event flag,
  * 80020199 semaphore, 800201CA and 800201C4 for a missing LwMutex. Cells:
  * PSPAutotests tests/threads/events clear.expected L15-L19, refer.expected
  * L23-L25, wait.expected L31-L35, delete.expected L5-L7. A UID of another kind
@@ -17884,7 +17886,7 @@ static void test_evf_typed_uids_and_delete(void) {
 }
 
 /* -------------------------------------------------------------------------
- * PSP-B2-01 / PSP-B3-01 (psp-hw-20260917) second round: init restore, delete,
+ * PSP-B2-01 / PSP-B3-01 second round: init restore, delete,
  * single-wait rejection, LwMutex handoff/timeout, msgpipe modes, dormant
  * threads and waitType. Each cell enters through the production NID.
  * ------------------------------------------------------------------------- */
@@ -27369,6 +27371,45 @@ static void test_dcache_maintenance_notifies_renderer(void) {
     ge_set_gpu_hooks(NULL);
 }
 
+/* Instruction-cache maintenance (#1979). The three Icache NIDs are registered in production
+ * and in this harness (hle_register_icache_handlers); each is entered here through
+ * sr_syscall with a literal NID. The cells pin what the handlers do today: a normal range,
+ * a zero-length range and a range running past 0xffffffff all return 0 without a fault, and
+ * the all-cache forms ignore their arguments. They are synthetic checks of current
+ * behaviour, not PSP measurements: no hardware result is claimed. */
+static void icache_set_args(CpuState *cpu, uint32_t addr, uint32_t length) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = addr;
+    cpu->r[5] = length;
+}
+
+static void test_icache_maintenance_returns_zero_for_every_range(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+
+    icache_set_args(&cpu, 0x08abc000u, 0x2000u);
+    expect(sr_syscall(&cpu, 0x920f104au) == 0u, "sceKernelIcacheInvalidateAll returns 0 for a normal range");
+    icache_set_args(&cpu, 0x08abc000u, 0x2000u);
+    expect(sr_syscall(&cpu, 0xd8779ac6u) == 0u, "sceKernelIcacheClearAll returns 0 for a normal range");
+    icache_set_args(&cpu, 0x08abc000u, 0x2000u);
+    expect(sr_syscall(&cpu, 0xc2df770eu) == 0u, "sceKernelIcacheInvalidateRange returns 0 for a normal range");
+
+    icache_set_args(&cpu, 0x08abc000u, 0u);
+    expect(sr_syscall(&cpu, 0x920f104au) == 0u, "sceKernelIcacheInvalidateAll returns 0 for a zero length");
+    icache_set_args(&cpu, 0x08abc000u, 0u);
+    expect(sr_syscall(&cpu, 0xd8779ac6u) == 0u, "sceKernelIcacheClearAll returns 0 for a zero length");
+    icache_set_args(&cpu, 0x08abc000u, 0u);
+    expect(sr_syscall(&cpu, 0xc2df770eu) == 0u, "sceKernelIcacheInvalidateRange returns 0 for a zero length");
+
+    icache_set_args(&cpu, 0xfffffff0u, 0x100u);
+    expect(sr_syscall(&cpu, 0x920f104au) == 0u, "sceKernelIcacheInvalidateAll returns 0 for a range past 0xffffffff");
+    icache_set_args(&cpu, 0xfffffff0u, 0x100u);
+    expect(sr_syscall(&cpu, 0xd8779ac6u) == 0u, "sceKernelIcacheClearAll returns 0 for a range past 0xffffffff");
+    icache_set_args(&cpu, 0xfffffff0u, 0x100u);
+    expect(sr_syscall(&cpu, 0xc2df770eu) == 0u, "sceKernelIcacheInvalidateRange returns 0 for a range past 0xffffffff");
+}
+
 /* Host-memory safety for the production GE block-transfer command path.  The
  * temporary arena deliberately commits one complete maximum-transfer window after
  * the modeled 192 MiB guest arena.  That makes the historical later-row write
@@ -29853,16 +29894,18 @@ static void test_td24d_hle_batch(void) {
                MEM_R32(TD24D_RB_ADDR + 12u) == 0u,
            "sceMpegFlushAllStream flushes ring packet counters");
 
-    /* AvcDecodeFlush clears packet counters via mpeg struct */
+    /* AvcDecodeFlush flushes the video decoder and leaves the ring alone (#286): a guest PSMF
+     * player fills the ring, calls it, and expects the packets to still be there. Only
+     * FlushAllStream clears the ring counters. */
     MEM_W32(TD24D_RB_ADDR + 4u, 12u);
     MEM_W32(TD24D_RB_ADDR + 8u, 22u);
     MEM_W32(TD24D_RB_ADDR + 12u, 32u);
     expect(td24b_dispatch4(NID_SCE_MPEG_AVC_DECODE_FLUSH, TD24D_MPEG_DESC, 0u, 0u, 0u) == 0u,
            "sceMpegAvcDecodeFlush succeeds on valid MPEG descriptor");
-    expect(MEM_R32(TD24D_RB_ADDR + 4u) == 0u &&
-               MEM_R32(TD24D_RB_ADDR + 8u) == 0u &&
-               MEM_R32(TD24D_RB_ADDR + 12u) == 0u,
-           "sceMpegAvcDecodeFlush flushes ring packet counters");
+    expect(MEM_R32(TD24D_RB_ADDR + 4u) == 12u &&
+               MEM_R32(TD24D_RB_ADDR + 8u) == 22u &&
+               MEM_R32(TD24D_RB_ADDR + 12u) == 32u,
+           "sceMpegAvcDecodeFlush leaves the ring counters alone");
 
     /* FlushStream is registered next to them; it only validates its arguments and leaves the
      * shared ring counters alone. The stream-id check lives in mpeg.c, which this harness does
@@ -35299,7 +35342,7 @@ static void test_vpl_blocking_waits(void) {
 
 /* =========================================================================
  * Mailbox object model tests (issue #339)
- * Measured anchors from docs/HARDWARE_ORACLE.md (campaign psp-hw-20260917):
+ * Measured anchors from docs/HARDWARE_ORACLE.md:
  * unknown id 0x8002019B, timeout 0x800201A8 with remaining 0, Cancel waiters
  * 0x800201A9, empty poll 0x800201B2, FIFO circular next links, attr 0x400
  * ascending msgPriority, waitType 5.
@@ -46478,6 +46521,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_mip_cells_match_psp();
     test_ge_block_transfer_span_atomicity();
     test_dcache_maintenance_notifies_renderer();
+    test_icache_maintenance_returns_zero_for_every_range();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_inline_stores_match_full_bodies();

@@ -3494,7 +3494,8 @@ static void mbx_remove_thread_waiters(uint32_t thread_uid) {
 }
 Sync s_sync[128];
 
-/* PSP-B2-01 / PSP-B3-01 (psp-hw-20260917): cancel/release family, measured by
+/* Measured on a PSP-3000, firmware 6.61 (PSP-B2-01 / PSP-B3-01,
+ * docs/HARDWARE_ORACLE.md): cancel/release family, measured by
  * fixtures wait-b2 and kernel-b3. One definition for the production registry
  * and the executable selftest (same rule as the msgpipe helpers above). */
 static void hle_register_cancel_release_handlers(void) {
