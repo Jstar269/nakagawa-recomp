@@ -50,7 +50,6 @@ def capture_matrix(player_exe: Path | None = None):
         ("native_03_iso_inspecting.png", ["--view=inspecting", "--width=1280", "--height=720"]),
         ("native_04_supported_game.png", ["--view=supported", "--width=1280", "--height=720"]),
         ("native_05_unsupported_game.png", ["--view=unsupported", "--width=1280", "--height=720"]),
-        ("native_06_preparing.png", ["--view=preparing", "--width=1280", "--height=720"]),
         ("native_07_ready_library.png", ["--view=library", "--width=1280", "--height=720"]),
         ("native_08_settings.png", ["--view=settings", "--width=1280", "--height=720"]),
         ("native_09_missing_source_error.png", ["--view=error", "--width=1280", "--height=720"]),
