@@ -2181,6 +2181,8 @@ static void test_null_code_pointer_is_not_the_offset0_function(const char *self_
 #define HOSTRET_INTERP_RET   (HOSTRET_EXEC_START + 0x10u)  /* jr ra ; nop */
 #define HOSTRET_CALL_PC      (HOSTRET_EXEC_START + 0x20u)  /* the caller's jal (its bytes are not run) */
 #define HOSTRET_RESUME       (HOSTRET_CALL_PC + 8u)        /* addiu v1, v1, 1 ; jr t1 ; nop */
+#define HOSTRET_STRAY_INTERP (HOSTRET_EXEC_START + 0x30u)  /* addu ra, t1, zero ; jr ra ; nop */
+#define HOSTRET_STRAY_TAIL_ENTRY 0x00670040u
 #define HOSTRET_EXEC_END     (HOSTRET_EXEC_START + 0x40u)
 
 static void hostret_aot_body(CpuState *s) {
@@ -2195,6 +2197,11 @@ static void hostret_stray_body(CpuState *s) {
 /* A computed TAIL transfer out of a native body (emit_tail_transfer, resume form). */
 static void hostret_tail_body(CpuState *s) {
     sr_tail_record(s, HOSTRET_INTERP, NULL, 0u, 0u);
+}
+
+/* The same TAIL step into interpreted code whose `jr $ra` goes past the host (#2016). */
+static void hostret_stray_tail_body(CpuState *s) {
+    sr_tail_record(s, HOSTRET_STRAY_INTERP, NULL, 0u, 0u);
 }
 
 static void hostret_callee_body(CpuState *s) {
@@ -2222,11 +2229,13 @@ static void hostret_setup(void) {
     own_synthetic_aot_word(HOSTRET_STRAY_ENTRY);
     own_synthetic_aot_word(HOSTRET_TAIL_ENTRY);
     own_synthetic_aot_word(HOSTRET_CALLER_ENTRY);
+    own_synthetic_aot_word(HOSTRET_STRAY_TAIL_ENTRY);
     own_synthetic_aot_word(PROBE_RA);
     sr_register(HOSTRET_AOT_ENTRY, hostret_aot_body);
     sr_register(HOSTRET_STRAY_ENTRY, hostret_stray_body);
     sr_register(HOSTRET_TAIL_ENTRY, hostret_tail_body);
     sr_register(HOSTRET_CALLER_ENTRY, hostret_caller_body);
+    sr_register(HOSTRET_STRAY_TAIL_ENTRY, hostret_stray_tail_body);
     sr_register(PROBE_RA, interp_handoff_body);
     MEM_W32(HOSTRET_INTERP, 0x24021234u);
     MEM_W32(HOSTRET_INTERP + 4u, 0x03e00008u);
@@ -2236,6 +2245,9 @@ static void hostret_setup(void) {
     MEM_W32(HOSTRET_RESUME, 0x24630001u);
     MEM_W32(HOSTRET_RESUME + 4u, 0x01200008u);
     MEM_W32(HOSTRET_RESUME + 8u, 0x00000000u);
+    MEM_W32(HOSTRET_STRAY_INTERP, 0x0120f821u);
+    MEM_W32(HOSTRET_STRAY_INTERP + 4u, 0x03e00008u);
+    MEM_W32(HOSTRET_STRAY_INTERP + 8u, 0x00000000u);
     CHECK(sr_exec_span_register(HOSTRET_EXEC_START, HOSTRET_EXEC_END),
           "host-return executable span registration failed");
 }
@@ -2294,6 +2306,31 @@ static void test_host_entries_return_through_the_host_return_address(const char 
               s.pc == SR_HOST_RETURN_PC,
           "an interpreted host-entered body did not return to the host (result=%d v0=0x%08x "
           "pc=0x%08x)", result, s.r[2], s.pc);
+
+    /* An interpreted body that returns anywhere but the host is the same named mismatch
+     * (#2016), not a handoff to whatever native body its $ra names: here t1's, which counts
+     * its runs. Before, the interpreter entered that body and the host entry "returned". */
+    g_interp_handoff_hits = 0;
+    s = hostret_state();
+    result = dispatch_call_try(&s, HOSTRET_STRAY_INTERP, SR_HOST_RETURN_PC);
+    CHECK(result == SR_GUEST_INTERP_RETURN_TARGET_MISMATCH && s.flow_kind == SR_FLOW_FATAL &&
+              s.flow_target == PROBE_RA && g_interp_handoff_hits == 0,
+          "an interpreted host-entered body that returned past the host was accepted "
+          "(result=%d flow=%u target=0x%08x handoffs=%d)",
+          result, s.flow_kind, s.flow_target, g_interp_handoff_hits);
+    sr_cpu_clear_flow(&s);
+
+    /* The same return reached by a TAIL step out of a native host-entered body: it is the
+     * host entry's return, so the host entry's end check stops it by name. */
+    g_interp_handoff_hits = 0;
+    s = hostret_state();
+    result = dispatch_call_try(&s, HOSTRET_STRAY_TAIL_ENTRY, SR_HOST_RETURN_PC);
+    CHECK(result < 0 && s.flow_kind == SR_FLOW_FATAL && s.flow_target == PROBE_RA &&
+              g_interp_handoff_hits == 0 && sr_aot_return_boundary_top == NULL,
+          "a TAIL-stepped interpreted return past the host was accepted "
+          "(result=%d flow=%u target=0x%08x handoffs=%d)",
+          result, s.flow_kind, s.flow_target, g_interp_handoff_hits);
+    sr_cpu_clear_flow(&s);
 
     /* A native body that TAIL-steps into interpreted code, which then returns to the host:
      * the interpreter must hand back instead of fetching from SR_HOST_RETURN_PC. A failed

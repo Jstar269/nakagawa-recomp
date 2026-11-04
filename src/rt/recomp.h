@@ -1670,6 +1670,16 @@ int sr_aot_return_boundary_scope_end(CpuState *s,
  * hands back to the native caller instead of running its continuation a second time. */
 int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target);
 
+/* The innermost live linked call of `s` with a resume PC, above the floor: its callee's entry
+ * $sp and its resume PC. Returns 0 when there is none. Interpreted code entered by a TAIL step
+ * runs inside that call, so a `jr $ra` that leaves at or above that $sp is its return (#2016). */
+int sr_aot_return_boundary_innermost(CpuState *s, uint32_t *call_sp, uint32_t *resume_pc);
+
+/* Record an interpreted `jr $ra` target on the innermost live linked call of `s`, as
+ * SR_AOT_RETURN_CAPTURE does for a native one, so that call's end check resolves a return
+ * elsewhere exactly as it does for native code (#2016). Returns 0 when there is no such call. */
+int sr_aot_return_boundary_capture_return(CpuState *s, uint32_t target);
+
 /* Generated `jr $ra` captures before its delay slot. Keep the hot transfer path
  * inline: one target store per return, with the linked-call comparison at the
  * boundary after the native body returns. A return address of 0 is a null code pointer

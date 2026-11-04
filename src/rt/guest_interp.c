@@ -1445,12 +1445,68 @@ static int sp_load_leaves_frame(uint32_t opcode, uint32_t before, uint32_t after
     return boundary == NULL || after < before || after >= boundary->entry_sp;
 }
 
+/* Where a `jr $ra` leaves the call this run is part of (#2016). A native body's `jr $ra` is
+ * structurally its return; an interpreted one may instead return from a call the interpreter
+ * ran inline. The call's frame tells them apart: its callee was entered at `ref_sp` and
+ * holds its frame below it, so a `jr $ra` that leaves $sp there or above has left the
+ * callee's frame (the rule sr_aot_return_boundary_resume_live_frame applies to native code),
+ * unless it returns from an inline call the callee made without a frame of its own. Those
+ * calls' link addresses are kept in `flat_links`; any other inline call is made below
+ * `ref_sp` and its return needs no record. With a call boundary the reference is that call;
+ * without one (a TAIL step) it is the innermost live native linked call. */
+#define SR_GUEST_INTERP_FLAT_LINKS 16u
+
+typedef struct {
+    uint32_t link[SR_GUEST_INTERP_FLAT_LINKS];
+    unsigned depth;
+    int overflowed;   /* an inline call's link was not kept: a return it matched cannot be told */
+} SrGuestInterpFlatLinks;
+
+static int interp_return_reference(CpuState *s, const SrGuestInterpCallBoundary *boundary,
+                                   uint32_t *ref_sp, uint32_t *resume_pc) {
+    if (boundary != NULL) {
+        *ref_sp = boundary->entry_sp;
+        *resume_pc = boundary->resume_pc;
+        return 1;
+    }
+    return sr_aot_return_boundary_innermost(s, ref_sp, resume_pc);
+}
+
+/* A `jr $ra` to `target` with $sp at `sp`: 1 when it leaves the call's callee for somewhere
+ * other than the call's resume PC (a return to the resume PC is taken at the loop top). */
+static int interp_returns_elsewhere(CpuState *s, const SrGuestInterpCallBoundary *boundary,
+                                    SrGuestInterpFlatLinks *links, uint32_t target,
+                                    uint32_t sp) {
+    uint32_t ref_sp = 0u, resume_pc = 0u;
+    if (!interp_return_reference(s, boundary, &ref_sp, &resume_pc)) return 0;
+    if (target == resume_pc || sp < ref_sp) return 0;
+    for (unsigned index = links->depth; index > 0u; index--) {
+        if (links->link[index - 1u] == target) {
+            links->depth = index - 1u;   /* an inline return, or a longjmp among inline calls */
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void interp_note_inline_call(CpuState *s, const SrGuestInterpCallBoundary *boundary,
+                                    SrGuestInterpFlatLinks *links, uint32_t link) {
+    uint32_t ref_sp = 0u, resume_pc = 0u;
+    if (!interp_return_reference(s, boundary, &ref_sp, &resume_pc) || s->r[29] < ref_sp) return;
+    if (links->depth == SR_GUEST_INTERP_FLAT_LINKS) {
+        links->overflowed = 1;
+        return;
+    }
+    links->link[links->depth++] = link;
+}
+
 static SrGuestInterpResult sr_guest_interp_run_internal(
     CpuState *s,
     uint32_t entry,
     const SrGuestInterpCallBoundary *boundary,
     SrGuestInterpFault *fault) {
     uint32_t pc = entry;
+    SrGuestInterpFlatLinks flat_links = { .depth = 0u, .overflowed = 0 };
     unsigned long long instruction_count = 0u;
     const int log_dispatch = getenv("SR_DISPLOG") != NULL;
     /* Whether this run has loaded $sp out of the stack its call allocated (#1935). */
@@ -1682,6 +1738,37 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                 s->pc = pc;
                 continue;
             }
+            if (transfer.taken && transfer.link_register >= 0) {
+                interp_note_inline_call(s, boundary, &flat_links, pc + 8u);
+            }
+            /* `jr $ra` (#2016). A return out of the callee to anywhere but its resume PC is a
+             * longjmp. Running on from its target would run frames that belong to native
+             * callers still on the host stack, and a frame that returns again never comes
+             * back here: it loops. Under a call boundary, whose caller runs its own
+             * continuation, it is the named mismatch stop a native callee of that call gets.
+             * Under a TAIL step it is the innermost native call's return, which that call's end
+             * check resolves as it resolves a native `jr $ra`: an unwind, a longjmp into a live
+             * frame, or the named stop. */
+            if ((opcode >> 21) == 31u && (opcode & 0x3fu) == 0x08u &&
+                interp_returns_elsewhere(s, boundary, &flat_links, transfer.target, s->r[29])) {
+                if (flat_links.overflowed) {
+                    /* An unkept inline link may be the one this return matches. */
+                    set_fault(fault, pc, opcode, transfer.target, 1);
+                    return SR_GUEST_INTERP_UNSUPPORTED;
+                }
+                if (log_dispatch) {
+                    fprintf(stderr,
+                            "GUEST_INTERP_RETURN_ELSEWHERE pc=0x%08" PRIx32 " target=0x%08" PRIx32
+                            " sp=0x%08" PRIx32 "\n",
+                            pc, transfer.target, s->r[29]);
+                }
+                if (boundary == NULL && sr_aot_return_boundary_capture_return(s, transfer.target)) {
+                    s->pc = transfer.target;
+                    return SR_GUEST_INTERP_CALL_RETURN;
+                }
+                set_fault(fault, pc, opcode, transfer.target, 1);
+                return SR_GUEST_INTERP_RETURN_TARGET_MISMATCH;
+            }
             pc = transfer.taken ? transfer.target : pc + 8u;
             s->pc = pc;
             continue;
@@ -1758,6 +1845,7 @@ const char *sr_guest_interp_result_name(SrGuestInterpResult result) {
     case SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE:
         return "host-stack-bounds-unavailable";
     case SR_GUEST_INTERP_NULL_CODE_POINTER: return "null-code-pointer";
+    case SR_GUEST_INTERP_RETURN_TARGET_MISMATCH: return "return-target-mismatch";
     default: return "unknown";
     }
 }

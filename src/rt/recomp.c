@@ -1976,6 +1976,29 @@ static int dispatch_run_interp(
         dispatch_report_null_code_pointer(s, fault.pc);
         return (int)interp_result;
     }
+    if (interp_result == SR_GUEST_INTERP_RETURN_TARGET_MISMATCH) {
+        /* An interpreted callee returned past its call (#2016), as a native callee of a
+         * dispatch-owned boundary does: the same named stop (sr_aot_return_boundary_end). */
+        const uint32_t resume_pc = call_boundary != NULL ? call_boundary->resume_pc : 0u;
+        if (resume_pc == SR_HOST_RETURN_PC) {
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: AOT_RETURN_TARGET_MISMATCH: a host-entered guest body "
+                    "returned to 0x%08" PRIx32 " instead of the host (interpreted jr $ra at "
+                    "0x%08" PRIx32 "); stopping\n",
+                    fault.address, fault.pc);
+        } else {
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: AOT_RETURN_TARGET_MISMATCH: linked call at 0x%08" PRIx32
+                    " resumed at 0x%08" PRIx32 " but its guest jr $ra target was 0x%08" PRIx32
+                    " (interpreted jr $ra at 0x%08" PRIx32 "); stopping before the AOT "
+                    "continuation\n",
+                    resume_pc - 8u, resume_pc, fault.address, fault.pc);
+        }
+        dispatch_record_semantic_stop_issue("aot-return-target-mismatch", 1034u);
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = fault.address;
+        return (int)interp_result;
+    }
     fprintf(stderr,
             "  INTERP_REJECT: target=0x%08" PRIx32 " result=%s fault_pc=0x%08" PRIx32 " "
             "opcode=%s0x%08" PRIx32 " address=0x%08" PRIx32 "\n",
@@ -2166,6 +2189,27 @@ int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target) {
     return 1;
 }
 
+int sr_aot_return_boundary_innermost(CpuState *s, uint32_t *call_sp, uint32_t *resume_pc) {
+    const SrAotReturnBoundary *top = sr_aot_return_boundary_top;
+    if (sr_aot_return_boundary_depth <= sr_aot_return_boundary_floor || top == NULL ||
+        top->state != s || !top->has_resume_pc) {
+        return 0;
+    }
+    *call_sp = top->call_sp;
+    *resume_pc = top->resume_pc;
+    return 1;
+}
+
+int sr_aot_return_boundary_capture_return(CpuState *s, uint32_t target) {
+    SrAotReturnBoundary *top = sr_aot_return_boundary_top;
+    if (sr_aot_return_boundary_depth <= sr_aot_return_boundary_floor || top == NULL ||
+        top->state != s || !top->has_resume_pc) {
+        return 0;
+    }
+    top->observed_target = UINT64_C(0x100000000) | target;
+    return 1;
+}
+
 /* A guest `jr $ra` that returns past its own caller (#1034). Hand-written routines do
  * this: a branch-and-link into a block that restores the enclosing frame's $ra and $sp
  * and returns straight to that frame's caller, so the linked call never resumes. When
@@ -2308,7 +2352,10 @@ int sr_aot_return_boundary_end(CpuState *s) {
          * so everything it needs is read now. */
         const uint32_t target = (uint32_t)boundary->observed_target;
         const uint32_t resume_pc = boundary->resume_pc;
-        const SrGuestInterpCallBoundary call = { .resume_pc = resume_pc };
+        /* The frame is the callee's, entered at the call's $sp: a `jr $ra` that leaves it
+         * there or above is its return (#2016). It owes no $sp restore. */
+        const SrGuestInterpCallBoundary call = {
+            .resume_pc = resume_pc, .entry_sp = boundary->call_sp };
         /* A host wrapper of an abandoned body (the stack census) may have restored its own
          * entry $sp on the way out; the frame runs on the $sp the guest restored. */
         s->r[29] = boundary->resume_sp;

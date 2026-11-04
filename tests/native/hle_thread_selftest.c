@@ -890,6 +890,14 @@ int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target) {
     (void)s; (void)target;
     return 0;
 }
+int sr_aot_return_boundary_innermost(CpuState *s, uint32_t *call_sp, uint32_t *resume_pc) {
+    (void)s; (void)call_sp; (void)resume_pc;
+    return 0;
+}
+int sr_aot_return_boundary_capture_return(CpuState *s, uint32_t target) {
+    (void)s; (void)target;
+    return 0;
+}
 /* recomp.c's null-code-pointer stops (#1375). Not linked here; a stand-in that ends the run
  * the same way, so a regression cannot fall through into the harness. */
 void sr_null_return_address(CpuState *s) {
