@@ -563,6 +563,8 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run HLE thread selftest": "CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest",
     "Build and run flash0 font device selftest": 'PYTHONPATH=tools "$py" -m unittest -v test_flash0_font',
     "Build and run the Media Foundation H.264 media selftest": "CC=gcc VULKAN_SDK=/ucrt64 psmf-media-selftest",
+    "Build and run the vendored FFmpeg H.264 media selftest on Windows":
+        "CC=gcc VULKAN_SDK=/ucrt64 H264_FFMPEG=1 psmf-media-selftest",
     "Build and run synthetic VFPU fuzzer (shard 0 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Build and run synthetic VFPU fuzzer (shard 1 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Prove the fuzz shards cover every case exactly once": 'NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests',
@@ -675,6 +677,38 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         makefile = read_makefile(ROOT)
         self.assertIn("ifeq ($(OS),Windows_NT)\nH264_FFMPEG ?= 0\nelse\nH264_FFMPEG ?= 1\nendif", makefile)
         self.assertIn("ifeq ($(OS),Windows_NT)\nPSMF_MEDIA_LIBS := -lmfplat -lole32", makefile)
+
+    def test_ffmpeg_h264_subset_builds_and_decodes_on_windows(self) -> None:
+        """The vendored FFmpeg subset's _WIN32 branches compile, and the subset decodes there.
+
+        Linux CI never compiles those branches, so a header only they include (as
+        libavutil/file_open.c includes libavutil/wchar_filename.h) went missing unnoticed. The
+        Windows step builds the subset with H264_FFMPEG=1 in its own build directory, so the
+        Media Foundation objects of build/windows-runtime are not mixed with it, and fails on
+        any SKIP line as the Media Foundation step does.
+        """
+        name = "Build and run the vendored FFmpeg H.264 media selftest on Windows"
+        if name not in self.steps:
+            self.fail(f"windows_runtime has no {name!r} step")
+        self.assertEqual(self.part_of(name), "selftests")
+        step = "\n".join(cast(list[str], self.steps[name]))
+        self.assertIn("shell: msys2 {0}", step)
+        self.assertIn("set -euo pipefail", step)
+        self.assertNotIn("continue-on-error", step)
+        self.assertIn("BUILD_DIR=build/windows-h264-ffmpeg", step)
+        self.assertNotIn("BUILD_DIR=build/windows-runtime", step)
+        self.assertIn("H264_FFMPEG=1 psmf-media-selftest 2>&1 | tee \"$log\"", step)
+        self.assertIn("if grep -F 'SKIP:' \"$log\"; then", step)
+        self.assertRegex(step, r"(?m)^\s+exit 1$")
+        # The subset's one _WIN32-only include is carried, byte-identical at the pin.
+        header = ROOT / "src" / "rt" / "h264_ffmpeg_sub" / "libavutil" / "wchar_filename.h"
+        self.assertTrue(header.is_file(), "libavutil/wchar_filename.h is missing from the subset")
+        provenance = (ROOT / "src" / "rt" / "h264_ffmpeg_sub" / "PROVENANCE.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "| `libavutil/wchar_filename.h` | imported byte-identical | "
+            "`142d50e7c3c91b70ba70b254fb135d22d38b037f` |",
+            provenance,
+        )
 
     def test_every_serial_gate_runs_in_exactly_one_declared_part_with_its_command(self) -> None:
         self.assertEqual(len(self.parts), len(set(self.parts)))
