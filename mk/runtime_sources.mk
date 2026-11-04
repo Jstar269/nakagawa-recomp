@@ -42,10 +42,12 @@ PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 # main.c attaches to a parent terminal console or logs to the logs folder. The UI test binary keeps
 # the console subsystem because its harness reads stdout.
 PLAYER_GUI_LDFLAGS  := -mwindows
-# The app icon as a Windows resource object (assets/brand/nakagawa.rc), linked into the
-# player and each title executable; SDL gives every window the executable's first icon
-# group. Other systems set the same picture at run time (nk_ui_app_icon_rgba in
-# src/ui/nk_ui_widgets.c), so they link no icon object.
+# The app icon (assets/brand/nakagawa.rc) and the VERSIONINFO that gives Task Manager and
+# Explorer a friendly name, as one Windows resource object linked into the player and each
+# title executable; SDL gives every window the executable's first icon group. Each object
+# is compiled from its own generated script (tools/make_app_icon.py) because the
+# player and every title name themselves differently. Other systems set the same picture
+# at run time (nk_ui_app_icon_rgba in src/ui/nk_ui_widgets.c), so they link no object.
 WINDRES             ?= windres
 PLAYER_ICON_OBJ     := $(BUILD_ROOT)/nakagawa_icon.o
 TITLE_ICON_OBJ      = $(BUILD_DIR)/nakagawa_icon.o
