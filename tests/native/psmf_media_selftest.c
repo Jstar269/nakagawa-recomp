@@ -2326,6 +2326,103 @@ static void test_mpeg_ycbcr_guest_decode(void) {
     mpeg_finish();
 }
 
+/* After sceMpegAvcDecodeStopYCbCr (via_flush 0) or sceMpegAvcDecodeFlush (via_flush 1) in
+ * mid-stream, the next sceMpegAvcDecodeYCbCr is a first call after the decoder starts: 0 with init
+ * 0, as PSP-MPEG-001 measured for a fresh decoder, and the call after it hands over the first
+ * access unit taken after the stop.  The host decoder still holds the picture of the unit taken
+ * just before the stop (here its data reaches the host only after the stop, as a picture a
+ * holding decoder gives up late) and that picture is dropped.  The model is unmeasured on the
+ * PSP after a stop in mid-stream (#279, #286). */
+static void test_mpeg_ycbcr_restart_after_stop(int via_flush) {
+    enum {
+        RS_DESC = 0x08100000u, RS_DATA = 0x08110000u, RS_YCBCR = 0x08130000u, RS_PTR = 0x08160000u,
+        RS_INIT = 0x08170000u, RS_AU = 0x08180000u, RS_MODE = 0x08190000u,
+    };
+    static const char *const tag[2] = {"stop", "flush"};
+    const uint32_t avc_decode_flush_nid = 0x4571cc64u;
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES], es_len = 0;
+    static uint8_t es[65536];
+    char msg[160];
+#define RS_CHECK(x, text) do { snprintf(msg, sizeof msg, text, tag[via_flush]); CHECK((x), msg); } while (0)
+    s_fixture_textured = 1;
+    int built = build_stream(es, sizeof(es), au_off, au_len, &es_len);
+    s_fixture_textured = 0;
+    RS_CHECK(built, "ycbcr-restart (%s): the textured I_PCM stream builds");
+    if (!built) return;
+    MEM_W32(RS_DESC, 0u);
+    RS_CHECK(mpeg_create(RS_DESC, RS_DATA, 0x10000u, 0, 64u, 0, 0) == 0, "ycbcr-restart (%s): a context");
+    Mpeg *ctx = mpeg_find(RS_DESC);
+    if (!ctx) return;
+    ctx->streamWidth = 64u;
+    ctx->streamHeight = 64u;
+    ctx->h264 = sr_h264_create();
+    ctx->h264Init = 1;
+    if (ctx->h264 < 0) {
+        fprintf(stderr, "SKIP: the YCbCr restart contract needs a real H.264 backend\n");
+        mpeg_finish();
+        return;
+    }
+    MEM_W32(RS_MODE, 0u);
+    MEM_W32(RS_MODE + 4u, 3u);
+    RS_CHECK(guest_mpeg_import(NID_INIT_YCBCR, RS_DESC, 1u, 64u, 64u, RS_YCBCR) == 0u &&
+                 guest_mpeg_import(NID_DECODE_MODE, RS_DESC, RS_MODE, 0u, 0u, 0u) == 0u,
+             "ycbcr-restart (%s): a 64x64 buffer and RGBA8888 output");
+    MEM_W32(RS_PTR, RS_YCBCR);
+    memset(SR_HOST(RS_AU), 0, 24u);
+    uint32_t init[4] = {0xdeadbeefu, 0xdeadbeefu, 0xdeadbeefu, 0xdeadbeefu}, status = 0xdeadbeefu;
+
+    /* The movie runs: two units taken, the first unit's picture handed over. */
+    RS_CHECK(sr_h264_submit_au(ctx->h264, es + au_off[0], au_len[0]) == 0,
+             "ycbcr-restart (%s): the first unit reaches the decoder");
+    for (int i = 0; i < 2; i++) {
+        MEM_W32(RS_INIT, 0xdeadbeefu);
+        guest_mpeg_import(NID_DECODE_YCBCR, RS_DESC, RS_AU, RS_PTR, RS_INIT, 0u);
+        init[i] = MEM_R32(RS_INIT);
+    }
+    /* A low-delay host decoder has given the first unit's picture (init 1); Media Foundation
+     * holds it until more input arrives (init 0).  Either way the first call gave none. */
+    RS_CHECK(init[0] == 0u && (init[1] == 0u || init[1] == 1u) && ctx->h264Frames == (int)init[1],
+             "ycbcr-restart (%s): the first call gives no picture, the second at most the first unit's");
+
+    /* The guest stops in mid-stream; the decoder has given no picture for the second unit. */
+    if (via_flush) {
+        RS_CHECK(guest_mpeg_import(avc_decode_flush_nid, RS_DESC, 0u, 0u, 0u, 0u) == 0u,
+                 "ycbcr-restart (%s): AvcDecodeFlush takes the context");
+    } else {
+        MEM_W32(RS_INIT, 0xdeadbeefu);
+        RS_CHECK(guest_mpeg_import(NID_STOP_YCBCR, RS_DESC, RS_PTR, RS_INIT, 0u, 0u) == 0u,
+                 "ycbcr-restart (%s): DecodeStopYCbCr returns 0");
+        status = MEM_R32(RS_INIT);
+        RS_CHECK(status == 0u, "ycbcr-restart (%s): with no picture to give the stop reports status 0");
+    }
+
+    /* The held unit's picture reaches the host late, then the restarted movie's first unit. */
+    RS_CHECK(sr_h264_submit_au(ctx->h264, es + au_off[1], au_len[1]) == 0 &&
+                 sr_h264_submit_au(ctx->h264, es + au_off[2], au_len[2]) == 0,
+             "ycbcr-restart (%s): the late and the new unit reach the decoder");
+    MEM_W32(RS_INIT, 0xdeadbeefu);
+    RS_CHECK(guest_mpeg_import(NID_DECODE_YCBCR, RS_DESC, RS_AU, RS_PTR, RS_INIT, 0u) == 0u,
+             "ycbcr-restart (%s): the first DecodeYCbCr after the restart returns 0");
+    init[2] = MEM_R32(RS_INIT);
+    RS_CHECK(init[2] == 0u,
+             "ycbcr-restart (%s): the first DecodeYCbCr after the restart gives init 0, not the held picture");
+    /* The whole restarted movie is in the decoder: its first unit's picture comes next. */
+    ctx->streamEnded = 1;
+    MEM_W32(RS_INIT, 0xdeadbeefu);
+    guest_mpeg_import(NID_DECODE_YCBCR, RS_DESC, RS_AU, RS_PTR, RS_INIT, 0u);
+    init[3] = MEM_R32(RS_INIT);
+    RS_CHECK(init[3] == 1u && ctx->h264Frames == 3,
+             "ycbcr-restart (%s): the next call hands over the restarted movie's first picture");
+    RS_CHECK(ctx->ycbcrAuCount == 1u,
+             "ycbcr-restart (%s): only the last unit's time waits for its picture");
+    if (init[2] != 0u || init[3] != 1u)
+        fprintf(stderr, "ycbcr-restart (%s): init %u %u %u %u, status %u, frames %d, times %u\n",
+                tag[via_flush], init[0], init[1], init[2], init[3], status, ctx->h264Frames,
+                ctx->ycbcrAuCount);
+#undef RS_CHECK
+    mpeg_finish();
+}
+
 /* The PCM access-unit and AU-mode boundaries of sceMpeg. */
 static void test_mpeg_pcm_and_au_mode(void) {
     enum { PM_DESC = 0x08100000u, PM_DATA = 0x08110000u, PM_SIZE = 0x08120000u };
@@ -4966,6 +5063,8 @@ int main(int argc, char **argv) {
     test_mpeg_ycbcr_measured_contract();
     test_mpeg_ycbcr_picture_time_by_bytes();
     test_mpeg_ycbcr_guest_decode();
+    test_mpeg_ycbcr_restart_after_stop(0);
+    test_mpeg_ycbcr_restart_after_stop(1);
     test_mpeg_pcm_and_au_mode();
     test_mpeg_userdata_imports();
     test_mpeg_csc_swizzled_vram_mirrors();
