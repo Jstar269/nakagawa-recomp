@@ -191,6 +191,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ge_transition_diff.py` | Offline diff for the narrow GE transition trace. |
 | `ge_replay_metrics.py` | Strict parsers for aggregate GE replay CPU-profile summaries. |
 | `ge_stat_windows.py` | Read the runtime's `SR_GESTAT` windows by the vblank that closed them, for gates such as the showcase smoke. |
+| `ge_draw_identity.py` | Draw-identity census from an `SR_GEWATCH` log: how many of each frame's transform PRIMs pair with the previous frame's, by exact key, order and the motion design's matcher. |
 | `perf_summary_diff.py` | Compare two runtime performance summaries within a tolerance. |
 | `perf_attribution.py` | Present cadence (flips, re-presents, vblanks per new frame, implied fps) and cost shares for one `SR_PERF` run, or a diff of two runs. |
 | `pgf_writer.py` | Deterministic PGF writer for project-generated glyph bitmaps (a fixture generator, never an authenticity claim). |
