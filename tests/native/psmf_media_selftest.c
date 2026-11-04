@@ -55,6 +55,7 @@ uint32_t sr_hle_test_psmf_summary_count(void);
 int sr_hle_test_psmf_summary_rejects_truncation(void);
 void sr_hle_test_psmf_log_tick(uint32_t guest);
 void sr_hle_test_psmf_log_release(uint32_t guest);
+void sr_hle_test_register_mpeg_ring_handlers(void);
 int sr_hle_test_psmf_stream_contract(const uint8_t *data, uint32_t size,
                                     uint32_t fragment_bytes,
                                     const char *expected_reason,
@@ -4316,6 +4317,243 @@ static void test_mpeg_last_unit_keeps_its_ring_packets(void) {
     free(image);
 }
 
+/* A guest PSMF player that parses the header with its own psmf module never calls
+ * sceMpegQueryStreamOffset, so the stream size is unknown (#286). It puts the movie through its
+ * fill callback until the callback returns fewer packets than it was asked for, then takes access
+ * units until the ring reads empty. These cases drive the production handlers through sr_syscall
+ * with a fill callback registered as guest code; the callback serves the movie and, at a chosen
+ * packet, once returns fewer packets than it was asked for, as a reader that ran short does. */
+#define NID_MPEG_QUERY_STREAM_OFFSET 0x21ff80e4u
+#define NID_MPEG_RINGBUFFER_PUT      0xb240a59eu
+#define NID_MPEG_RINGBUFFER_AVAIL    0xb5f6dc87u
+#define NID_MPEG_GET_AVC_AU          0xfe246728u
+#define NID_MPEG_FLUSH_ALL_STREAM    0x707b7629u
+#define EF_CALLBACK_ERROR            0x80020001u   /* any negative return of a fill callback */
+enum {
+    EF_DESC = 0x08600000u, EF_DATA = 0x08610000u, EF_RING = 0x08630000u, EF_HDR = 0x08640000u,
+    EF_AU = 0x08641000u, EF_ATTR = 0x08641100u, EF_OFF = 0x08641110u, EF_INIT = 0x08641120u,
+    EF_YCPTR = 0x08641310u, EF_YCBCR = 0x08400000u, EF_RING_DATA = 0x086c0000u,
+    EF_CALLBACK = 0x087f0000u,
+};
+static const uint8_t *s_ef_source;
+static uint32_t s_ef_packets, s_ef_next, s_ef_short_at;
+static uint32_t s_ef_put_calls;          /* callback calls in the current put */
+static int s_ef_error_armed, s_ef_error_seen;
+static void eof_fill_callback_body(CpuState *s) {
+    const uint32_t dst = s->r[4], want = s->r[5];
+    /* A put that meets the ring's end calls the callback a second time for the ring's start;
+     * when armed, that second call fails, after the first call's packets went in. */
+    if (++s_ef_put_calls == 2u && s_ef_error_armed) {
+        s_ef_error_armed = 0;
+        s_ef_error_seen = 1;
+        s->r[2] = EF_CALLBACK_ERROR;
+        SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+        return;
+    }
+    uint32_t give = s_ef_packets - s_ef_next;
+    if (give > want) give = want;
+    if (s_ef_short_at > s_ef_next && s_ef_short_at < s_ef_next + give) give = s_ef_short_at - s_ef_next;
+    memcpy(SR_HOST(dst), s_ef_source + (size_t)s_ef_next * MPEG_PACKET_SIZE, (size_t)give * MPEG_PACKET_SIZE);
+    s_ef_next += give;
+    s->r[2] = give;
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+}
+/* One sceMpegRingbufferPut of up to 8 packets, as the guest's reader asks; returns what went in. */
+static uint32_t eof_put(void) {
+    uint32_t free_packets = guest_mpeg_import(NID_MPEG_RINGBUFFER_AVAIL, EF_RING, 0u, 0u, 0u, 0u);
+    uint32_t n = free_packets < 8u ? free_packets : 8u;
+    s_ef_put_calls = 0u;
+    return n ? guest_mpeg_import(NID_MPEG_RINGBUFFER_PUT, EF_RING, n, free_packets, 0u, 0u) : 0u;
+}
+/* Puts until the callback returns fewer packets than it was asked for. */
+static void eof_put_until_short(void) {
+    for (int guard = 0; guard < 4096; guard++)
+        if (eof_put() < 8u) return;
+}
+/* Takes and decodes access units until GetAvcAu finds none; returns the pictures that came out. */
+static int eof_drain(uint32_t avc) {
+    int pictures = 0;
+    for (int guard = 0; guard < 8 * AV_PICTURES; guard++) {
+        uint32_t r = guest_mpeg_import(NID_MPEG_GET_AVC_AU, EF_DESC, avc, EF_AU, EF_ATTR, 0u);
+        if (r != 0u) {
+            CHECK(r == SCE_MPEG_ERROR_NO_DATA, "mpeg-eof: GetAvcAu only ever says there is no data");
+            return pictures;
+        }
+        MEM_W32(EF_INIT, 0u);
+        uint32_t d = guest_mpeg_import(NID_DECODE_YCBCR, EF_DESC, EF_AU, EF_YCPTR, EF_INIT, 0u);
+        CHECK(d == 0u || d == SCE_MPEG_ERROR_NO_DATA, "mpeg-eof: an access unit decodes, or its picture comes later");
+        pictures += MEM_R32(EF_INIT) == 1u;
+    }
+    return pictures;
+}
+/* mode 0: no QueryStreamOffset; the callback runs short only at the movie's end.
+ * mode 1: no QueryStreamOffset; the callback runs short once in mid-movie and more puts follow.
+ * mode 2: QueryStreamOffset first; a dry GetAvcAu follows a mid-movie short put.
+ * mode 3: a mid-movie short put, then sceMpegFlushAllStream.
+ * mode 4: a mid-movie short put, then sceMpegQueryStreamOffset.
+ * mode 5: a ring smaller than the movie; a put that meets the ring's end gets an error from the
+ *         callback's second call, after the first call's packets went in. */
+/* CHECK with the case's name in its message. */
+#define EF_CHECK(x, text) do { char ef_msg_[192]; snprintf(ef_msg_, sizeof ef_msg_, text, tag[mode]); \
+                                CHECK((x), ef_msg_); } while (0)
+static void test_mpeg_feed_end_without_stream_size(int mode) {
+    static const char *const tag[6] = {"no size", "short mid-movie", "with size", "flush forgets",
+                                       "new offset forgets", "error after a wrap"};
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "mpeg-eof: the A/V container builds"); return; }
+    const uint32_t ps = size - 2048u;
+    const uint32_t packets = (ps + MPEG_PACKET_SIZE - 1u) / MPEG_PACKET_SIZE;
+    const uint32_t pad = packets * MPEG_PACKET_SIZE - ps;
+    /* The ring has room past the movie, as a guest's does, so the last put asks for more
+     * packets than are left and the callback runs short. */
+    const uint32_t ring_packets = mode == 5 ? 45u : packets + 32u;
+    uint8_t *source = calloc(packets, MPEG_PACKET_SIZE);
+    if (!source || (pad && pad < 6u) || EF_RING_DATA + ring_packets * MPEG_PACKET_SIZE > EF_CALLBACK) {
+        CHECK(0, "mpeg-eof: the movie and its padding fit the fixture");
+        free(source);
+        free(image);
+        return;
+    }
+    memcpy(source, image + 2048u, ps);
+    if (pad) {
+        uint8_t *tail = source + ps;
+        tail[0] = 0x00; tail[1] = 0x00; tail[2] = 0x01; tail[3] = 0xbe;
+        tail[4] = (uint8_t)((pad - 6u) >> 8); tail[5] = (uint8_t)(pad - 6u);
+        memset(tail + 6, 0xff, pad - 6u);
+    }
+    s_ef_source = source;
+    s_ef_packets = packets;
+    s_ef_next = 0u;
+    s_ef_short_at = mode && mode != 5 ? packets / 2u + 3u : 0u;
+    s_ef_error_armed = mode == 5;
+    s_ef_error_seen = 0;
+    MEM_W32(EF_CALLBACK, 0u);
+    CHECK(sr_exec_span_register(EF_CALLBACK, EF_CALLBACK + 4u), "mpeg-eof: the fill callback is guest code");
+    sr_register(EF_CALLBACK, eof_fill_callback_body);
+    sr_hle_test_register_mpeg_ring_handlers();
+
+    memcpy(SR_HOST(EF_HDR), image, 2048u);
+    memcpy(SR_HOST(EF_HDR + 4u), "0015", 4u);
+    be32_at((uint8_t *)SR_HOST(EF_HDR + 12u), packets * MPEG_PACKET_SIZE);
+    MEM_W32(EF_DESC, 0u);
+    CHECK(mpeg_ringbuffer_construct(EF_RING, ring_packets, EF_RING_DATA,
+                                    ring_packets * MPEG_RING_BYTES_PER_PKT, EF_CALLBACK, 0u) == 0u &&
+              mpeg_create(EF_DESC, EF_DATA, 0x10000u, EF_RING, 512u, 0u, 0u) == 0u,
+          "mpeg-eof: the ring with its fill callback and the context are set up");
+    if (mode == 2)
+        CHECK(guest_mpeg_import(NID_MPEG_QUERY_STREAM_OFFSET, EF_DESC, EF_HDR, EF_OFF, 0u, 0u) == 0u,
+              "mpeg-eof: QueryStreamOffset reads the header");
+    uint32_t avc = mpeg_regist_stream(EF_DESC, MPEG_AVC_STREAM, 0u);
+    Mpeg *ctx = mpeg_find(EF_DESC);
+    CHECK(ctx && ctx->totalPackets == (mode == 2 ? packets : 0u),
+          "mpeg-eof: the stream size is known only after QueryStreamOffset");
+    CHECK(guest_mpeg_import(NID_INIT_YCBCR, EF_DESC, 1u, 480u, 272u, EF_YCBCR) == 0u,
+          "mpeg-eof: the YCbCr buffer is set up");
+    MEM_W32(EF_YCPTR, EF_YCBCR);
+
+    eof_put_until_short();
+    if (!ctx || ctx->h264 < 0) {
+        fprintf(stderr, "SKIP: the end of a feed needs a real H.264 backend\n");
+        mpeg_finish();
+        free(source);
+        free(image);
+        return;
+    }
+    int pictures = 0;
+    if (mode == 3 || mode == 4) {
+        /* No guest call can tell these two resets apart from their absence: after a flush the
+         * ring is empty and GetAvcAu returns NO_DATA before it asks whether the feed stopped, and
+         * the next put sets or clears the flag whatever it was; after a stream offset the stream's
+         * size decides.  So the check is of the state the reset promises: the next feed starts
+         * without the old short put. */
+        EF_CHECK(ctx->feedShort && s_ef_next == s_ef_short_at,
+                 "mpeg-eof (%s): the callback ran short in mid-movie");
+        if (mode == 3)
+            EF_CHECK(guest_mpeg_import(NID_MPEG_FLUSH_ALL_STREAM, EF_DESC, 0u, 0u, 0u, 0u) == 0u,
+                     "mpeg-eof (%s): FlushAllStream takes the context");
+        else
+            EF_CHECK(guest_mpeg_import(NID_MPEG_QUERY_STREAM_OFFSET, EF_DESC, EF_HDR, EF_OFF, 0u, 0u) == 0u,
+                     "mpeg-eof (%s): QueryStreamOffset reads the header");
+        EF_CHECK(!ctx->feedShort, "mpeg-eof (%s): the short put is forgotten");
+        mpeg_finish();
+        free(source);
+        free(image);
+        return;
+    }
+    if (mode == 5) {
+        /* Takes and puts interleave, so a put meets the ring's end.  The callback's error after
+         * packets went in is not the source running out: the put keeps what went in, and a
+         * GetAvcAu that then finds no complete unit does not end the feed.  The units are only
+         * taken after the error, not decoded: the check is of the feed, and the end of the movie
+         * is covered by the other cases. */
+        int checked = 0;
+        for (int guard = 0; guard < 4096 && s_ef_next < packets && !checked; guard++) {
+            pictures += eof_drain(avc);
+            const int seen = s_ef_error_seen;
+            const uint32_t went_in = eof_put();
+            if (!seen && s_ef_error_seen) {
+                uint32_t r = 0u;
+                for (int take = 0; take < 64 && r == 0u; take++)
+                    r = guest_mpeg_import(NID_MPEG_GET_AVC_AU, EF_DESC, avc, EF_AU, EF_ATTR, 0u);
+                EF_CHECK(went_in > 0u && went_in < 8u && r == SCE_MPEG_ERROR_NO_DATA,
+                         "mpeg-eof (%s): the put keeps what went in, and GetAvcAu then finds no unit");
+                EF_CHECK(!ctx->streamEnded && !ctx->feedShort && s_ef_next < packets,
+                         "mpeg-eof (%s): an error after packets went in does not end the feed");
+                checked = 1;
+            }
+        }
+        EF_CHECK(checked, "mpeg-eof (%s): a put met the ring's end and the callback's second call failed");
+        mpeg_finish();
+        free(source);
+        free(image);
+        return;
+    }
+    if (mode == 1 || mode == 2) {
+        EF_CHECK(s_ef_next == s_ef_short_at && s_ef_next < packets,
+              "mpeg-eof (%s): the callback ran short in mid-movie");
+        if (mode == 1) {
+            EF_CHECK(eof_put() == 8u, "mpeg-eof (%s): the next put goes in whole");
+            pictures += eof_drain(avc);
+            pictures += eof_drain(avc);
+            EF_CHECK(!ctx->streamEnded && !ctx->videoEnd,
+                  "mpeg-eof (%s): a short put followed by more puts does not end the stream");
+        } else {
+            pictures += eof_drain(avc);
+            pictures += eof_drain(avc);
+            EF_CHECK(!ctx->streamEnded && !ctx->videoEnd,
+                  "mpeg-eof (%s): with the size known, a short put does not end the stream early");
+        }
+        eof_put_until_short();
+    }
+    EF_CHECK(s_ef_next == packets, "mpeg-eof (%s): the whole movie went in");
+    for (int guard = 0; guard < 16 && !ctx->videoEnd; guard++) pictures += eof_drain(avc);
+    /* As a guest player does at the end of a movie, DecodeStopYCbCr hands over a picture the
+     * decoder still holds (status 1), if it holds one. */
+    MEM_W32(EF_INIT, 0xdeadbeefu);
+    EF_CHECK(guest_mpeg_import(NID_STOP_YCBCR, EF_DESC, EF_YCPTR, EF_INIT, 0u, 0u) == 0u &&
+                 MEM_R32(EF_INIT) <= 1u,
+             "mpeg-eof (%s): DecodeStopYCbCr takes the end of the movie");
+    pictures += (int)MEM_R32(EF_INIT);
+    /* A YCbCr call can take more than one decoded frame and write one picture, so the count is
+     * of access units handed out and frames decoded, not of pictures written. */
+    if (ctx->h264Units != AV_PICTURES || ctx->h264Frames != AV_PICTURES || !ctx->videoEnd)
+        fprintf(stderr, "mpeg-eof (%s): units %d, frames %d of %d (pictures written %d), streamEnded %d, "
+                        "videoEnd %d, ring free %u of %u\n", tag[mode], ctx->h264Units, ctx->h264Frames,
+                AV_PICTURES, pictures, ctx->streamEnded, ctx->videoEnd,
+                guest_mpeg_import(NID_MPEG_RINGBUFFER_AVAIL, EF_RING, 0u, 0u, 0u, 0u), ring_packets);
+    EF_CHECK(ctx->h264Units == AV_PICTURES && ctx->h264Frames == AV_PICTURES,
+             "mpeg-eof (%s): every access unit is handed out and decoded, the last one included");
+    EF_CHECK(ctx->videoEnd, "mpeg-eof (%s): the video ends");
+    EF_CHECK(guest_mpeg_import(NID_MPEG_RINGBUFFER_AVAIL, EF_RING, 0u, 0u, 0u, 0u) == ring_packets,
+          "mpeg-eof (%s): the ring reads empty at the end");
+    EF_CHECK(guest_mpeg_import(NID_MPEG_GET_AVC_AU, EF_DESC, avc, EF_AU, EF_ATTR, 0u) == SCE_MPEG_ERROR_NO_DATA,
+          "mpeg-eof (%s): after the end GetAvcAu says there is no data");
+    mpeg_finish();
+    free(source);
+    free(image);
+}
+
 /* The sceMpeg ATRAC path a guest PSMF player drives (#286): the registered ATRAC3+ stream is
  * demultiplexed from the ring packets, GetAtracAu hands out one frame per call, and AtracDecode
  * writes exactly what the ATRAC3+ decoder produces for that frame.  Before any data, and after
@@ -5087,6 +5325,12 @@ int main(int argc, char **argv) {
     test_mpeg_looped_stream_feeds_past_header_size(4u, 0);
     test_mpeg_looped_stream_feeds_past_header_size(0u, 1);
     test_mpeg_last_unit_keeps_its_ring_packets();
+    test_mpeg_feed_end_without_stream_size(0);
+    test_mpeg_feed_end_without_stream_size(1);
+    test_mpeg_feed_end_without_stream_size(2);
+    test_mpeg_feed_end_without_stream_size(3);
+    test_mpeg_feed_end_without_stream_size(4);
+    test_mpeg_feed_end_without_stream_size(5);
     test_mpeg_avc_decode_detail();
     test_psmf_contract_fragmentation_and_malformed_rejection();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
