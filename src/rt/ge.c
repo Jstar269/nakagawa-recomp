@@ -3317,7 +3317,7 @@ static void ge_time_transfer(uint32_t src, uint64_t bytes) {
 
 /* One triangle into the current target, or, during a wing pass (s_wing), into that wing
  * canvas: a host-only draw, so it charges no GE time and leaves guest depth alone. */
-static void raster_tri_draw(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
+static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     if (vtx_nonfinite(A, B, C)) return;
     const int wing = s_wing != NULL;
     if (s_ge_timing_model && !wing) ge_time_tri(A, B, C);   /* before the GPU hook: both backends charge alike */
@@ -3544,8 +3544,8 @@ static void raster_tri_draw(const Vtx *A, const Vtx *B, const Vtx *C, int persp)
 
 static void wide_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp);
 
-static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
-    raster_tri_draw(A, B, C, persp);
+static void raster_tri_and_wings(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
+    raster_tri(A, B, C, persp);
     if (__builtin_expect(s_wide_d != 0, 0)) wide_tri(A, B, C, persp);
 }
 
@@ -4586,8 +4586,8 @@ static void fill_rect_clear_fast(int xa, int ya, int xb, int yb, int r, int g, i
 
 /* Rasterise a sprite (axis-aligned rect from two corner vertices). Used by both modes;
  * persp=1 recovers UV from the over-w storage and depth-tests with the second vertex's z.
- * During a wing pass (s_wing) it draws into that canvas, host-only, like raster_tri_draw. */
-static void fill_sprite_draw(const Vtx *p0, const Vtx *p1, int persp) {
+ * During a wing pass (s_wing) it draws into that canvas, host-only, like raster_tri. */
+static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     if (vtx_nonfinite(p0, p1, NULL)) return;
     const int wing = s_wing != NULL;
     if (s_ge_timing_model && !wing) ge_time_sprite(p0, p1);
@@ -4691,8 +4691,8 @@ static void fill_sprite_draw(const Vtx *p0, const Vtx *p1, int persp) {
 
 static void wide_sprite(const Vtx *p0, const Vtx *p1, int persp);
 
-static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
-    fill_sprite_draw(p0, p1, persp);
+static void fill_sprite_and_wings(const Vtx *p0, const Vtx *p1, int persp) {
+    fill_sprite(p0, p1, persp);
     if (__builtin_expect(s_wide_d != 0, 0)) wide_sprite(p0, p1, persp);
 }
 
@@ -4758,13 +4758,13 @@ static void wide_pass(GeWideSlot *w, int x0, int x1, const Vtx *v, int sprite, i
     if (!wide_sw_canvas(w)) return;
     w->fmt = (int)(ge.fbfmt & 3);
     s_wing = w; s_wing_x0 = x0; s_wing_x1 = x1;
-    if (sprite) fill_sprite_draw(&v[0], &v[1], persp);
-    else        raster_tri_draw(&v[0], &v[1], &v[2], persp);
+    if (sprite) fill_sprite(&v[0], &v[1], persp);
+    else        raster_tri(&v[0], &v[1], &v[2], persp);
     s_wing = NULL;
 }
 
 /* A transform-mode triangle that leaves the screen is drawn again in each wing it reaches.
- * Its positions are first snapped to the 28.4 grid raster_tri_draw snaps to, so the whole-
+ * Its positions are first snapped to the 28.4 grid raster_tri snaps to, so the whole-
  * pixel shift is exact and the canvas rasterizes the triangle the guest's draw would give on
  * a wider screen. Through-mode triangles stay in the centre. */
 static void wide_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
@@ -4803,7 +4803,7 @@ static void wide_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     const int ya = (int)fminf(p0->y, p1->y), yb = (int)fmaxf(p0->y, p1->y);
     Vtx v[2] = { *p0, *p1 };
     if (persp) {
-        /* fill_sprite_draw's rectangle is the truncated corners; truncating them here, before
+        /* fill_sprite's rectangle is the truncated corners; truncating them here, before
          * the shift, keeps that rectangle and its texture span exact in the canvas, and a
          * GPU backend's floor then agrees with it even where the canvas x is negative. */
         const float x0 = (float)(int)p0->x, x1 = (float)(int)p1->x;
@@ -4952,7 +4952,7 @@ static int model_to_through(const ModelVtx *m,Vtx *v){
 }
 
 static void submit_model_triangle(const ModelVtx *a,const ModelVtx *b,const ModelVtx *c,int through){
-    if(through){Vtx x,y,z;if(!model_to_through(a,&x)||!model_to_through(b,&y)||!model_to_through(c,&z))return;raster_tri(&x,&y,&z,0);return;}
+    if(through){Vtx x,y,z;if(!model_to_through(a,&x)||!model_to_through(b,&y)||!model_to_through(c,&z))return;raster_tri_and_wings(&x,&y,&z,0);return;}
     CVtx cv[3],cl[4];transform_model_vtx_clip(a,&cv[0]);transform_model_vtx_clip(b,&cv[1]);transform_model_vtx_clip(c,&cv[2]);
     if(ge.cull_enable&&!ge.clear&&(ge.cull&1)==0){CVtx t=cv[0];cv[0]=cv[1];cv[1]=t;}
     /* Non-finite first, exactly as the triangle path above: a NaN clip position, screen
@@ -4963,11 +4963,11 @@ static void submit_model_triangle(const ModelVtx *a,const ModelVtx *b,const Mode
     if((!ge.depth_clip&&zp+zn>0)||zp>=3||zn>=3)return;
     if(clip_d_nearz(&cv[0])>=0&&clip_d_nearz(&cv[1])>=0&&clip_d_nearz(&cv[2])>=0){
         if(cv[0].cw<=NEAR_W||cv[1].cw<=NEAR_W||cv[2].cw<=NEAR_W)return;
-        Vtx x,y,z;project_cvtx(&cv[0],&x);project_cvtx(&cv[1],&y);project_cvtx(&cv[2],&z);raster_tri(&x,&y,&z,1);
+        Vtx x,y,z;project_cvtx(&cv[0],&x);project_cvtx(&cv[1],&y);project_cvtx(&cv[2],&z);raster_tri_and_wings(&x,&y,&z,1);
     }else{
         int n=clip_poly_near(cv,3,cl);Vtx p[4];int bad[4]={1,1,1,1};
         for(int i=0;i<n&&i<4;i++){bad[i]=cl[i].nf||cl[i].cw<=NEAR_W||clip_vtx_out_of_range(&cl[i]);if(!bad[i])project_cvtx(&cl[i],&p[i]);}
-        for(int i=2;i<n&&i<4;i++)if(!bad[0]&&!bad[i-1]&&!bad[i])raster_tri(&p[0],&p[i-1],&p[i],1);
+        for(int i=2;i<n&&i<4;i++)if(!bad[0]&&!bad[i-1]&&!bad[i])raster_tri_and_wings(&p[0],&p[i-1],&p[i],1);
     }
 }
 
@@ -5562,7 +5562,7 @@ static void draw_prim_through(const DrawPrimCtx *c) {
             if (assembly_started)
                 primitive_profile_end(GE_PRIM_PROFILE_ASSEMBLY, assembly_started);
             primitive_profile_finish_total();
-            raster_tri(&a,&b,&c,0);
+            raster_tri_and_wings(&a,&b,&c,0);
         }
     } else if (type == 6) {   /* sprites */
         for (int i = 1; i < count; i += 2) {
@@ -5601,7 +5601,7 @@ static void draw_prim_through(const DrawPrimCtx *c) {
             if (s_gelog&&(ge.tex_enable&&!ge.clear)) { static int sn=0; if(sn++<12)
                 fprintf(stderr,"  texspr (%.0f,%.0f)-(%.0f,%.0f) uv(%.0f,%.0f)-(%.0f,%.0f) tex=0x%08" PRIx32 " %dx%d fmt=%" PRIu32 " bufw=%" PRIu32 "\n",
                     p0.x,p0.y,p1.x,p1.y,p0.u,p0.v,p1.u,p1.v,ge.tex_addr,ge.tex_w,ge.tex_h,ge.tex_fmt,ge.tex_bufw); }
-            fill_sprite(&p0,&p1,0);
+            fill_sprite_and_wings(&p0,&p1,0);
         }
     }
     s_primitive_profile_counting = 0;
@@ -5955,7 +5955,7 @@ static void draw_prim_xform_triangles(const DrawPrimCtx *c, int rt) {
             if (assembly_started)
                 primitive_profile_end(GE_PRIM_PROFILE_ASSEMBLY, assembly_started);
             primitive_profile_finish_total();
-            raster_tri(&a,&b,&c,1);
+            raster_tri_and_wings(&a,&b,&c,1);
         } else if (dec == D_CLIP) {
             int m = clip_m;
             if (m >= 3) {
@@ -5990,7 +5990,7 @@ static void draw_prim_xform_triangles(const DrawPrimCtx *c, int rt) {
                 }
                 for (int k = 2; k < m && k < 4; k++)
                     if (!bad[0] && !bad[k-1] && !bad[k])
-                        raster_tri(&p[0], &p[k-1], &p[k], 1);
+                        raster_tri_and_wings(&p[0], &p[k-1], &p[k], 1);
             }
             if (m < 3)
                 primitive_profile_finish_total();
@@ -6025,7 +6025,7 @@ static void draw_prim_xform_sprites(const DrawPrimCtx *c) {
         Vtx p0, p1;
         if (!transform_vtx_3d(prim_vtx_addr(vbase,ibase,idxfmt,i-1,vf.stride),&vf,&p0)) continue;
         if (!transform_vtx_3d(prim_vtx_addr(vbase,ibase,idxfmt,i,  vf.stride),&vf,&p1)) continue;
-        fill_sprite(&p0,&p1,1);
+        fill_sprite_and_wings(&p0,&p1,1);
     }
 }
 
@@ -6149,14 +6149,14 @@ static void ge_imm_draw(int type, const Vtx *a, const Vtx *b, const Vtx *c, int 
     } else if (type == 1 || type == 2) {
         draw_line_vtx(a, b, 0);
     } else if (type == 6) {
-        fill_sprite(a, b, 0);
+        fill_sprite_and_wings(a, b, 0);
     } else {
         /* Same submission-order culling as the through-mode PRIM path (draw_prim). */
         Vtx ta = *a, tb = *b;
         if (ge.cull_enable && !ge.clear && (((ge.cull & 1u) == 0u) ^ flip)) {
             Vtx t = ta; ta = tb; tb = t;
         }
-        raster_tri(&ta, &tb, c, 0);
+        raster_tri_and_wings(&ta, &tb, c, 0);
     }
 
     ge.tex_enable = old_tex;
