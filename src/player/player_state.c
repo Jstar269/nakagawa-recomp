@@ -3843,7 +3843,7 @@ void player_app_set_folder_open_error(PlayerApp *app, const char *path, const ch
 }
 
 void player_app_set_library_write_error(PlayerApp *app) {
-    player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+    player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
                          "The game could not be saved to your library. Free some disk "
                          "space and check that your user data folder can be written to, "
                          "then try again.",
@@ -3855,7 +3855,7 @@ void player_app_set_link_open_error(PlayerApp *app, const char *url, const char 
     if (!app) return;
     back = app->active_view == VIEW_ERROR ? VIEW_LIBRARY : app->active_view;
     player_app_set_error_with_details(
-        app, "LINK_OPEN_FAILED", "Couldn't Open the Link",
+        app, "LINK_OPEN_FAILED", "Couldn't open the link",
         "Nakagawa couldn't open your web browser. Copy the address in the details "
         "into a browser yourself.",
         url ? url : "", "Back", back);
