@@ -3152,6 +3152,7 @@ void hle_fd_init(void) {
     s_io_dispatch_epoch = 0;
     s_io_async_sequence = 0;
     atomic_store_explicit(&s_io_raw_device_boundary_reported, 0u, memory_order_release);
+    hle_io_assign_reset();
     for (uint8_t stream = 0; stream < 3; stream++) {
         Fd *f = &s_fds[stream];
         f->used = 1;

@@ -1323,6 +1323,7 @@ extern uint64_t s_io_async_sequence;
 extern IoCwd s_io_cwds[64];
 IoCwd *io_cwd_find(uint32_t thread_uid, int create);
 void hle_fd_init(void);
+void hle_io_assign_reset(void);   /* sceIoAssign alias table (hle_io.c) */
 int hle_fd_is_file(uint32_t fd);
 int hle_fd_is_raw_device(uint32_t fd);
 uint32_t hle_io_raw_device_boundary(IoRawDeviceBoundary operation, const char *api, const char *path, uint32_t fd);

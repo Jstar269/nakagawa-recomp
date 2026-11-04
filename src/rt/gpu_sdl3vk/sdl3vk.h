@@ -17,6 +17,7 @@
 #ifndef SR_SDL3VK_H
 #define SR_SDL3VK_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include "nk_input_profile.h"
@@ -39,6 +40,15 @@ bool sdl3vk_raise_window(void);
  * IMMEDIATE, then FIFO as the guaranteed fallback. available may be NULL when
  * count == 0. */
 int sdl3vk_pick_present_mode(int vsync, const int *available, int count);
+
+/* The one stderr line the presenter prints each time it creates or recreates the swapchain
+ * (pure, Vulkan-free like the picker): the present mode in use, why it was chosen (the
+ * SR_VSYNC setting and what the surface offers) and the surface's full mode list, so a
+ * tearing report can be classified from the log. `chosen` is the mode the swapchain was
+ * created with, `recreated` is nonzero when an earlier swapchain was replaced. Writes a
+ * NUL-terminated line without a newline and returns its length, truncated to cap - 1. */
+int sdl3vk_present_mode_line(int vsync, const int *available, int count, int chosen,
+                             int recreated, char *out, size_t cap);
 
 /* Surface-format choice for the swapchain (pure, no device needed), Vulkan-free like the
  * present-mode picker. `query` is the VkResult of vkGetPhysicalDeviceSurfaceFormatsKHR as an

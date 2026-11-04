@@ -7,6 +7,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 /* Deterministic present-source capture regression (issue #57): arms captures, drives the
  * production present path with synthetic pixels (CPU framebuffer and GPU render-target
@@ -29,6 +30,38 @@ int main(void) {
         assert(sdl3vk_pick_present_mode(0, fifo_immediate, 2) == 0);
         assert(sdl3vk_pick_present_mode(0, fifo_only, 1) == 2);
         assert(sdl3vk_pick_present_mode(0, NULL, 0) == 2);
+        /* VSync off prefers MAILBOX over IMMEDIATE wherever the surface lists them. */
+        static const int all_immediate_first[] = { 2, 3, 0, 1, 1000361000 };
+        assert(sdl3vk_pick_present_mode(0, all_immediate_first, 5) == 1);
+        assert(sdl3vk_pick_present_mode(1, all_immediate_first, 5) == 2);
+    }
+    /* The present-mode stderr line names the mode, the reason and the surface's list. */
+    {
+        static const int all_modes[] = { 2, 3, 1, 0, 1000361000 };
+        static const int fifo_immediate[] = { 2, 0 };
+        static const int fifo_only[] = { 2 };
+        char line[256];
+        int n = sdl3vk_present_mode_line(0, all_modes, 5, 1, 0, line, sizeof(line));
+        assert(n == (int)strlen(line));
+        assert(strcmp(line, "sdl3vk: swapchain created: present mode MAILBOX (VSync off; the "
+                            "surface offers MAILBOX, which does not tear); surface offers FIFO "
+                            "FIFO_RELAXED MAILBOX IMMEDIATE FIFO_LATEST_READY") == 0);
+        sdl3vk_present_mode_line(1, all_modes, 5, 2, 1, line, sizeof(line));
+        assert(strncmp(line, "sdl3vk: swapchain recreated: present mode FIFO (VSync on);", 58) == 0);
+        sdl3vk_present_mode_line(0, fifo_immediate, 2, 0, 1, line, sizeof(line));
+        assert(strstr(line, "present mode IMMEDIATE (VSync off; the surface offers no MAILBOX, "
+                            "and IMMEDIATE can tear); surface offers FIFO IMMEDIATE") != NULL);
+        sdl3vk_present_mode_line(0, fifo_only, 1, 2, 0, line, sizeof(line));
+        assert(strstr(line, "present mode FIFO (VSync off, but the surface offers neither MAILBOX "
+                            "nor IMMEDIATE, so FIFO keeps VSync); surface offers FIFO") != NULL);
+        sdl3vk_present_mode_line(0, NULL, 0, 2, 0, line, sizeof(line));
+        assert(strstr(line, "surface offers none") != NULL);
+        static const int odd[] = { 7 };
+        sdl3vk_present_mode_line(1, odd, 1, 2, 0, line, sizeof(line));
+        assert(strstr(line, "surface offers mode7") != NULL);
+        char tiny[16];
+        n = sdl3vk_present_mode_line(0, all_modes, 5, 1, 0, tiny, sizeof(tiny));
+        assert(n == 15 && strlen(tiny) == 15);
     }
     /* Surface-format pick (issue #884): VK_INCOMPLETE (5) is a success code, so the first 32
      * formats of a 40-format surface still count; BGRA8 UNORM (44) wins when present, else
