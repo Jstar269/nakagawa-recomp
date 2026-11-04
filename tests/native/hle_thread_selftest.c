@@ -3910,6 +3910,7 @@ static void test_io_assign_through_syscall(void) {
     };
     static const char probe_guest[] = "fatms0:/NAKAGAWA_IO_ASSIGN.TXT";
     static const char probe_ms0[] = "ms0:/NAKAGAWA_IO_ASSIGN.TXT";
+    sr_hle_test_register_iofilemgr();   /* the production IoFileMgr registration run */
     bool registered = sr_hle_test_is_registered(0xb2a628c1u) &&
                       sr_hle_test_is_registered(0x6d08a871u);
     expect(registered, "sceIoAssign and sceIoUnassign are registered IoFileMgr imports");
