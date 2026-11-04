@@ -886,6 +886,7 @@ static void ke_io(void)
 #define KU_FILES 2u
 #define KU_FILE_ROWS 5u
 #define KU_ROWS (1u + KU_FILES * KU_FILE_ROWS + 3u + 1u)
+#define KU_WORDS_MAX 16u
 static const char *const k_ku_paths[KU_FILES] = {
     "disc0:/UMD_DATA.BIN", "disc0:/PSP_GAME/PARAM.SFO",
 };
@@ -903,15 +904,18 @@ static const uint32_t k_ku_words[KU_ROWS] = {
 };
 static uint8_t s_ku_buf[KU_BUF] __attribute__((aligned(64)));
 
-static void ku_sentinel(uint32_t *w, uint32_t count)
+/* Words first .. first + count - 1 of a KU_WORDS_MAX-word row become HLE_SENTINEL. */
+static void ku_sentinel(uint32_t *w, uint32_t first, uint32_t count)
 {
-    for (uint32_t i = 0; i < count; i++) w[i] = HLE_SENTINEL;
+    for (uint32_t i = 0; i < KU_WORDS_MAX; i++) {
+        if (i >= first && i - first < count) w[i] = HLE_SENTINEL;
+    }
 }
 
 static void ku_skip(unsigned row, uint32_t result)
 {
-    uint32_t w[16];
-    ku_sentinel(w, k_ku_words[row]);
+    uint32_t w[KU_WORDS_MAX];
+    ku_sentinel(w, 0u, k_ku_words[row]);
     hle_record(k_ku_rows[row], "SKIP", result, w, k_ku_words[row]);
 }
 
@@ -948,16 +952,16 @@ static void ku_state(unsigned row)
 static void ku_file(unsigned f)
 {
     const unsigned base = 1u + f * KU_FILE_ROWS;
-    uint32_t w[16];
+    uint32_t w[KU_WORDS_MAX];
 
     /* open: the descriptor, Lseek END 0 (low, high), which is the size, then Lseek SET 0. */
     hle_step(k_ku_rows[base]);
     const SceUID fd = sceIoOpen(k_ku_paths[f], PSP_O_RDONLY, 0);
     if (fd < 0) {
-        ku_sentinel(w, 4u);
+        ku_sentinel(w, 0u, 4u);
         w[0] = (uint32_t)fd;
         hle_record(k_ku_rows[base], "PASS", (uint32_t)fd, w, 4u);
-        for (unsigned r = base + 1u; r < base + KU_FILE_ROWS; r++) ku_skip(r, (uint32_t)fd);
+        for (unsigned r = 1; r < KU_FILE_ROWS; r++) ku_skip(base + r, (uint32_t)fd);
         return;
     }
     const SceOff size = sceIoLseek(fd, 0, PSP_SEEK_END);
@@ -996,7 +1000,7 @@ static void ku_file(unsigned f)
         ku_read(fd, 16u, &w[5]);
         w[7] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
     } else {
-        ku_sentinel(&w[4], 4u);
+        ku_sentinel(w, 4u, 4u);
     }
     w[8] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_END);
     {
@@ -1037,14 +1041,14 @@ static void ku_file(unsigned f)
 static void ku_raw(void)
 {
     const unsigned base = 1u + KU_FILES * KU_FILE_ROWS;
-    uint32_t w[16];
+    uint32_t w[KU_WORDS_MAX];
 
     /* raw-open: umd0: PSP_O_RDONLY: the descriptor and Lseek END 0 (low, high), the last
        sector (PSP-UMDRAW-001). */
     hle_step(k_ku_rows[base]);
     const SceUID fd = sceIoOpen("umd0:", PSP_O_RDONLY, 0);
     if (fd < 0) {
-        ku_sentinel(w, 3u);
+        ku_sentinel(w, 0u, 3u);
         w[0] = (uint32_t)fd;
         hle_record(k_ku_rows[base], "PASS", (uint32_t)fd, w, 3u);
         ku_skip(base + 1u, (uint32_t)fd);
@@ -1069,7 +1073,7 @@ static void ku_raw(void)
         ku_off(&w[4], sceIoLseek(fd, last + 2, PSP_SEEK_SET));
         w[6] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
     } else {
-        ku_sentinel(&w[1], 6u);
+        ku_sentinel(w, 1u, 6u);
     }
     ku_off(&w[7], sceIoLseek(fd, 1, PSP_SEEK_END));
     w[9] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
@@ -1095,7 +1099,7 @@ static void ku_raw(void)
         ku_read(fd, 1u, &w[9]);
         w[11] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
     } else {
-        ku_sentinel(w, 12u);
+        ku_sentinel(w, 0u, 12u);
     }
     w[12] = (uint32_t)sceIoClose(fd);
     hle_record(k_ku_rows[base + 2u], "PASS", (uint32_t)fd, w, 13u);

@@ -9071,6 +9071,9 @@ class KernelSemanticsProbeTests(unittest.TestCase):
             # IoFileMgrForUser and ThreadManForUser
             "sceIoOpen", "sceIoClose", "sceIoWrite", "sceIoRead", "sceIoLseek", "sceIoLseek32",
             "sceIoGetstat", "sceIoDopen", "sceIoDclose", "sceIoMkdir", "sceIoRemove", "sceIoRmdir",
+            # io-umd-eof: the two pinned UMD state reads and the cache calls around its reads
+            "sceUmdCheckMedium", "sceUmdGetDriveStat",
+            "sceKernelDcacheWritebackInvalidateRange", "sceKernelDcacheInvalidateRange",
             "sceKernelDelayThread", "sceKernelGetSystemTimeLow", "sceKernelSleepThread",
             "sceKernelExitThread", "sceKernelWakeupThread", "sceKernelWaitThreadEnd",
             "sceKernelDeleteThread", "sceKernelGetThreadId",
@@ -9084,6 +9087,8 @@ class KernelSemanticsProbeTests(unittest.TestCase):
         literals = set(re.findall(r'"((?:ms0|host0|flash0|disc0|umd0):[^"]*)"', self.code))
         self.assertEqual(literals, {"ms0:/NKKSEM00", "host0:/kernel_semantics_log.txt",
                                     "ms0:/NKKSEM01", "host0:/io_seek_eof_log.txt",
+                                    "host0:/io_umd_eof_log.txt", "disc0:/UMD_DATA.BIN",
+                                    "disc0:/PSP_GAME/PARAM.SFO", "umd0:",
                                     "host0:/nakagawa_transport_write.bin"})
         io = self.bodies["ks_io"]
         for call in re.findall(r"\b(sceIo(?:Open|Mkdir|Remove|Rmdir|Getstat))\(([^,)]+)", io):
@@ -9176,7 +9181,7 @@ class KernelSemanticsProbeTests(unittest.TestCase):
         self.assertEqual(spec.ordered_cases[:-1], tuple(parse_golden.KERNEL_SEM_ROWS))
         named = re.findall(r'"((?:subintr|ctrl|vmem|io|wlan)-[a-z0-9-]+)"', self.code)
         self.assertEqual({row for row in named if not row.startswith("io-eof-")}
-                         - {"ctrl-mode", "ctrl-cycle", "io-precheck", "io-seek-eof"},
+                         - {"ctrl-mode", "ctrl-cycle", "io-precheck", "io-seek-eof", "io-umd-eof"},
                          set(parse_golden.KERNEL_SEM_ROWS))
         run = self.bodies["hle_run"]
         order = [run.index(call) for call in (
@@ -9227,6 +9232,117 @@ class KernelSemanticsProbeTests(unittest.TestCase):
         self.assertEqual(named, set(rows))
         self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "io-seek-eof").name,
                          "io_seek_eof_log.txt")
+
+    def test_io_umd_eof_route_registry_and_stream_shape(self) -> None:
+        # CASE=io-umd-eof (137, PSP-IO-EOF-002): #1380's UMD cells, read-only, built from the
+        # same file with only its own section compiled in.
+        self.assertIn("else ifeq ($(CASE),io-umd-eof)\nCASE_ID = 137\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),io-umd-eof)\nTARGET = $(BUILD_DIR)/io_umd_eof\n"
+                      "OBJS = $(BUILD_DIR)/probe_kernel_semantics.o "
+                      "$(BUILD_DIR)/threadman_user_imports.o\n", self.makefile)
+        start = self.makefile.index("ifeq ($(CASE),io-umd-eof)\nLIBS += -lpspumd\n")
+        block = self.makefile[start:self.makefile.index("\nendif\n", start)]
+        # Exactly sceUmdCheckMedium and sceUmdGetDriveStat: never sceUmdActivate or any
+        # other call that changes the drive.
+        self.assertEqual(re.findall(r"--exact-library (\w+=[0-9A-Fx,]+)", block),
+                         ["sceUmdUser=0x46EBB729,0x6B4A146C"])
+        self.assertEqual(sorted(re.findall(r"--forbid-library (\w+)", block)),
+                         ["InterruptManager", "KUBridge", "SystemCtrlForUser", "sceCtrl",
+                          "sceOpenPSID", "sceSuspendForUser", "sceWlanDrv"])
+        self.assertIn("#define KS_CASE_IO_UMD_EOF 137\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "io-umd-eof"\n'
+                      '#define HLE_TEST_ID "PSP-IO-EOF-002"\n'
+                      '#define HLE_LOG "host0:/io_umd_eof_log.txt"', self.probe)
+        run = self.bodies["hle_run"]
+        self.assertLess(run.index("ku_io();"), run.index("ks_subintr_order();"))
+        spec, counts = CAMPAIGN_PROBE_CASES["io-umd-eof"]
+        self.assertEqual(spec.test_id, "PSP-IO-EOF-002")
+        self.assertEqual(spec.terminal_case, "io-umd-eof-done")
+        rows = tuple(row for row, _ in parse_golden.IO_UMD_EOF_ROWS)
+        self.assertEqual(spec.ordered_cases[:-1], rows)
+        table = cast(re.Match[str], re.search(r"k_ku_rows\[KU_ROWS\] = \{([^}]*)\}", self.code))
+        sizes = cast(re.Match[str], re.search(r"k_ku_words\[KU_ROWS\] = \{([^}]*)\}", self.code))
+        self.assertEqual(tuple(re.findall(r'"([a-z0-9-]+)"', table.group(1))), rows)
+        self.assertEqual([counts[row] for row in rows],
+                         [int(w.rstrip("u")) for w in re.findall(r"\d+u", sizes.group(1))])
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "io-umd-eof").name,
+                         "io_umd_eof_log.txt")
+
+    def test_io_umd_eof_is_read_only_and_bounded(self) -> None:
+        section = self.code[self.code.index("#define KU_FILL"):self.code.index("static void ku_io(void)")]
+        section += self.bodies["ku_io"]
+        # Read-only opens only, and no call that writes, removes, renames or controls a device.
+        for call in ("sceIoWrite", "sceIoRemove", "sceIoMkdir", "sceIoRmdir", "sceIoRename",
+                     "sceIoIoctl", "sceIoDevctl", "sceIoChstat", "sceUmdActivate",
+                     "sceUmdDeactivate", "PSP_O_WRONLY", "PSP_O_RDWR", "PSP_O_CREAT",
+                     "PSP_O_TRUNC"):
+            self.assertNotIn(call, section, call)
+        opens = re.findall(r"sceIoOpen\(([^,]+), ([^,]+), 0\)", section)
+        self.assertEqual(opens, [("k_ku_paths[f]", "PSP_O_RDONLY"), ('"umd0:"', "PSP_O_RDONLY")])
+        # Every read goes through ku_read into the 32 KiB buffer; raw counts are sectors, at
+        # most two (2 x 2048 bytes), and file reads ask for 16 bytes.
+        self.assertIn("#define KU_BUF 0x8000u\n", self.probe)
+        self.assertEqual(section.count("sceIoRead("), 1)
+        self.assertIn("sceIoRead(fd, s_ku_buf, count)", section)
+        counts = [int(n) for n in re.findall(r"ku_read\(fd, (\d+)u", section)]
+        self.assertTrue(counts and max(counts) <= 16, counts)
+        raw = self.bodies["ku_raw"]
+        self.assertTrue(all(int(n) <= 2 for n in re.findall(r"ku_read\(fd, (\d+)u", raw)))
+        # No disc byte is recorded: a read records its count and a changed-byte count only.
+        read = self.bodies["ku_read"]
+        self.assertIn("w[0] = (uint32_t)got;", read)
+        self.assertIn("w[1] = changed;", read)
+        self.assertEqual(re.findall(r"s_ku_buf\[(\w+)\]", section), ["KU_BUF", "i"])
+        self.assertIn("changed += s_ku_buf[i] != KU_FILL;", read)
+
+
+class HleUtilityNoneProbeTests(unittest.TestCase):
+    """CASE=hle-utility-none (140, PSP-HLE-UTILITY-NONE-001) in probe_hle_measure.c: #1386's
+    utility dialog calls at NONE. The build imports no InitStart, so no dialog can open."""
+
+    probe: ClassVar[str]
+    makefile: ClassVar[str]
+    imports: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_hle_measure.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        cls.imports = (fixture / "hle_utility_imports.S").read_text(encoding="utf-8")
+
+    def test_route_and_registry(self) -> None:
+        self.assertIn("else ifeq ($(CASE),hle-utility-none)\nCASE_ID = 140\n", self.makefile)
+        self.assertIn("#define HLE_CASE_UTILITY_NONE 140\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "hle-utility-none"\n'
+                      '#define HLE_TEST_ID "PSP-HLE-UTILITY-NONE-001"\n'
+                      '#define HLE_LOG "host0:/hle_utility_none_log.txt"', self.probe)
+        spec, counts = CAMPAIGN_PROBE_CASES["hle-utility-none"]
+        rows = tuple(row for row, _ in parse_golden.HLE_UTILITY_NONE_ROWS)
+        self.assertEqual(spec.ordered_cases[:-1], rows)
+        self.assertEqual(spec.terminal_case, "hle-utility-none-done")
+        self.assertEqual({counts[row] for row in rows}, {7})
+        section = self.probe[self.probe.index("#if PSP_ORACLE_CASE == HLE_CASE_UTILITY_NONE\n\n"):
+                             self.probe.index("#endif /* HLE_CASE_UTILITY_NONE */")]
+        self.assertEqual(tuple(re.findall(r'\{"(utility-none-[a-z]+)"', section)), rows)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "hle-utility-none").name,
+                         "hle_utility_none_log.txt")
+
+    def test_no_init_start_is_imported_or_called(self) -> None:
+        block = self.imports[self.imports.index("#if PSP_ORACLE_CASE == 140\n"):]
+        block = block[:block.index("#endif")]
+        names = re.findall(r"IMPORT_FUNC\s+\"sceUtility\", 0x[0-9A-F]{8}, (\w+)", block)
+        self.assertEqual(len(names), 15)
+        self.assertFalse([n for n in names if "InitStart" in n], names)
+        self.assertTrue(all(n.endswith(("GetStatus", "Update", "ShutdownStart")) for n in names))
+        start = self.makefile.index("ifeq ($(CASE),hle-utility-none)\nUSER_MODE_IMPORT_GATE_ARGS")
+        gate = self.makefile[start:self.makefile.index("\nendif\n", start)]
+        pinned = {int(n, 16) for n in re.search(r"sceUtility=([0-9A-Fx,]+)", gate).group(1).split(",")}
+        declared = {int(n, 16) for n in re.findall(r"0x([0-9A-F]{8}), \w+", block)}
+        self.assertEqual(pinned, declared | {0xA5DA2406, 0x34B78343})
+        section = self.probe[self.probe.index("#if PSP_ORACLE_CASE == HLE_CASE_UTILITY_NONE\n\n"):
+                             self.probe.index("#endif /* HLE_CASE_UTILITY_NONE */")]
+        self.assertNotIn("InitStart(", section)
 
 
 class GeMipProbeTests(unittest.TestCase):
