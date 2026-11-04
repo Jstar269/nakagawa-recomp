@@ -887,6 +887,52 @@ One console is one data point; see §11. Nothing here closes issue #70
     zero-filled: they read back as the stick's previous contents.
   - *Read past the end.* A seek to 0x40 answers 0x40, a 4-byte read there answers 0, and the position stays 0x40.
 
+- **PSP-3000 single-case runs of the `hle-utility-none` and `io-umd-eof` probes on commit `999f3ce3`
+  (2026-11-04)**: system software 6.61, ARK-5.1.0 (owner); PSPLink `pspver` 6.6.0 through Nakagawa Link, in the
+  XMB context, operator-declared model PSP-3000, a game disc in the drive. `hle-utility-none` ran on boot 115 and
+  `io-umd-eof` on boot 116, one launch per boot, each boot a cold reset to the XMB. `999f3ce3` carries both cases
+  (case 137, the `KS_CASE_IO_UMD_EOF` section of `fixtures/psp_oracle/probe_kernel_semantics.c`, and case 140,
+  the `HLE_CASE_UTILITY_NONE` section of `fixtures/psp_oracle/probe_hle_measure.c`). Each case was one runner
+  invocation after the `transport-write` preflight, which passed (PSP-TRANSPORT-001 is not re-cited). Both case
+  envelopes are acceptance-eligible with 0 blockers: evidence class `PSP_HARDWARE`, source commit binding
+  `MATCH` on a clean committed tree, and a strict golden sequence, all PASS (`io-umd-eof`: 15 records and the
+  done record; `hle-utility-none`: 5 records and the done record). `io-umd-eof` only reads: it opens
+  `disc0:/UMD_DATA.BIN` (file a), `disc0:/PSP_GAME/PARAM.SFO` (file b) and the raw device `umd0:`, all
+  `PSP_O_RDONLY`. The rows cite results and positions relative to each file's size and to the disc's last
+  sector; the sizes, the last sector's number and the bytes read stay with the raw envelopes and host0 logs in
+  the private campaign directory. An earlier run of the same `io-umd-eof` cells from `11ec52e8` (boot 114, the
+  same day) agreed on every call result and position, but it is not acceptance-eligible (its tree was committed
+  after the build) and its buffer counts predate the cache fix in `999f3ce3`, so it is not cited.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-04, `999f3ce3`) |
+  | --- | --- | --- | --- |
+  | `PSP-IO-EOF-002` | `umd-eof-state-before`, `umd-eof-a-open`, `umd-eof-a-seek-past`, `umd-eof-a-read-past`, `umd-eof-a-seek-negative`, `umd-eof-a-seek-wide`, `umd-eof-b-open`, `umd-eof-b-seek-past`, `umd-eof-b-read-past`, `umd-eof-b-seek-negative`, `umd-eof-b-seek-wide`, `umd-eof-raw-open`, `umd-eof-raw-seek-past`, `umd-eof-raw-read-end`, `umd-eof-state-after`, `io-umd-eof-done` | File sizes, the last sector's number and the bytes read; writes (UMD media is read-only); `umd1:`, `isofs:` and ISO files on the Memory Stick; other discs | MEASURED (`io-umd-eof`) |
+  | `PSP-HLE-UTILITY-NONE-001` | `utility-none-savedata`, `utility-none-msgdialog`, `utility-none-netconf`, `utility-none-gamedata`, `utility-none-sharing`, `hle-utility-none-done` | Every call after an `InitStart` (the INIT, RUNNING, FINISHED and SHUTDOWN states and their timing); a process in game context | MEASURED (`hle-utility-none`) |
+
+  What the records establish, on this console and this disc:
+  - *Seeks on a `disc0:` file (#1380).* On both files, from position 8: `sceIoLseek` 16 past the end from
+    `SEEK_END`, 0x1000 past the end from `SEEK_SET`, -1 from `SEEK_SET`, one before the start from `SEEK_END`,
+    and 0xFFFFFFFF and 0x100000000 from `SEEK_SET` each answer 0x80010005 with 0xFFFFFFFF in the high word, and
+    `SEEK_CUR` 0 afterwards still answers 8; `sceIoLseek32` 16 past the end from `SEEK_END` and -1 from
+    `SEEK_SET` answer 0x80010005 and leave the position. `SEEK_END` 0 answers the size. This differs from the
+    Memory Stick (`PSP-IO-EOF-001`, `PSP-KERNEL-SEM-001`), where a seek before the start answers 0x80010016 and
+    one past the end is accepted.
+  - *Reads at the end of a `disc0:` file.* After the refused seek the position is still 8, and a 16-byte read
+    there answers 16. From 4 before the end a 16-byte read answers 4, changes only 4 bytes of the buffer, and
+    leaves the position at the size; a 16-byte read at the end answers 0. Each file closes with 0.
+  - *The raw device `umd0:`.* `SEEK_END` 0 answers the last sector. From sector 16, `SEEK_SET` to one and two
+    past the last sector, `SEEK_END` +1 and `SEEK_SET` 0x100000000 answer 0x8001B003 with 0xFFFFFFFF in the
+    high word, and `sceIoLseek32` to one past the last sector answers 0x8001B003; the position stays 16 after
+    each. From the last sector, a one-sector read answers 1 and a two-sector read answers 1, and each changes
+    exactly 2048 bytes of the buffer. After either read, `SEEK_CUR` 0 answers 0x8001B003. After the two-sector
+    read, `SEEK_SET` to one past the last sector answers 0x8001B003 as well, a one-sector read then answers
+    0x80210002 and changes no byte, and `SEEK_CUR` 0 still answers 0x8001B003. The device closes with 0.
+  - *UMD state.* `sceUmdCheckMedium` answers 1 and `sceUmdGetDriveStat` 0x32 before and after the cells.
+  - *Utility dialogs with none started (#1386).* With no `InitStart` in this process, savedata, the message
+    dialog, netconf, gamedata install and game sharing each answer 0x80110005 (WRONG_TYPE) to `GetStatus`,
+    `Update(1)`, `GetStatus`, `ShutdownStart`, `GetStatus`, a second `ShutdownStart` and `GetStatus`, in that
+    order.
+
 - **PSP-3000 single-case run of the `module-start` probe on commit `fd2a75fd` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000. `fd2a75fd` is the commit that adds the probe (case 124,
   `fixtures/psp_oracle/probe_module_start.c`). The case was one runner invocation after the `transport-write`
@@ -3082,6 +3128,8 @@ not expected PSP values.
 | `module-start` | `PSP-MODULE-START-001` | `MEASURED` (2026-10-29, `fd2a75fd`; single launch, not in the campaign queue) | Module lifecycle: a module with its own `module_start` records that thread's status, the free memory before and after it returns, whether its UID still answers, and the thread list |
 | `kernel-semantics` | `PSP-KERNEL-SEM-001` | `MEASURED` (2026-10-31, `0c3cf0da`, boot 84; single launch, not in the campaign queue) | #1287, #1390, #1383, #1380, #1382: VBLANK sub-interrupt delivery order, controller read consumption, peek counts, analog by sampling mode and cycle spacing, volatile-lock types and partition-5 allocations, Memory Stick exclusive create and seeks past 4 GiB in a probe-owned directory, WLAN switch and power state; never the MAC or OpenPSID |
 | `io-seek-eof` | `PSP-IO-EOF-001` | `MEASURED` (2026-11-02, `f484ef58`, boot 100; single launch, not in the campaign queue) | #1380: Memory Stick opens of a missing file without `PSP_O_CREAT`, seeks before the start from each whence and through `sceIoLseek32`, a write after a seek past the end (sizes, position, tail) and a read past the end, in a probe-owned directory; the gap bytes stay private |
+| `io-umd-eof` | `PSP-IO-EOF-002` | `MEASURED` (2026-11-04, `999f3ce3`, boot 116; single launch, not in the campaign queue) | #1380: read-only, a game disc in the drive: seeks past the end and before the start of two `disc0:` files and of the raw device `umd0:` through `sceIoLseek` and `sceIoLseek32`, each with the position after it, reads across and at the end (count, bytes changed, position), and the UMD state before and after; sizes, the last sector's number and the bytes read stay private |
+| `hle-utility-none` | `PSP-HLE-UTILITY-NONE-001` | `MEASURED` (2026-11-04, `999f3ce3`, boot 115, XMB context; single launch, not in the campaign queue) | #1386: `GetStatus`, `Update(1)` and `ShutdownStart` of savedata, the message dialog, netconf, gamedata install and game sharing with no `InitStart`; no dialog is started |
 | `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
 | `dma-timing` | `PSP-DMAC-002` | `MEASURED` (2026-10-29, `0e40e7d3`, `281a21a4` and `1310e632`; single launches, not in the campaign queue) | #303: `sceDmacMemcpy` / `sceDmacTryMemcpy` per-call duration by size (0x10 to 0x100000) and main-RAM/VRAM pair, relative-alignment cost, BUSY against the NULL and zero-size checks, what a refused Try copies, the order of queued callers, the busy window, and the sizes a pending transfer lets through. 202 result records in the last build. |
 | `ge-raster` | `PSP-GE-RASTER-001` | `MEASURED` (2026-10-29, `990748ec`; single launch, not in the campaign queue) | #343: the raw pixels of a 16x4 window after 189 project-written display lists: blend factors and equations, alpha, colour, stencil and depth tests, texture functions, formats, CLUT modes and row pitch, wrap and clamp, triangle, line and point coverage, 16-bit framebuffers, dithering, pixel masks, logic operations, clear mode, and transform-mode triangles, sprites and fog. 945 result records. |

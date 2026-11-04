@@ -88,6 +88,11 @@ display-smoke-run: display-smoke
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) vramdump --build-dir $(DISPLAY_SMOKE_DIR)
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) flight --build-dir $(DISPLAY_SMOKE_DIR)
 
+# display-smoke-picture-gate runs the picture gate (#1845) headless: no reference gives SKIP, a run
+# accepted as the reference then matches at 0.00%, and a one-pixel change to it is reported.
+display-smoke-picture-gate: display-smoke
+	"$(PYTHON)" tools/picture_gate.py display-smoke --build-dir $(DISPLAY_SMOKE_DIR)
+
 display-smoke-gui:
 	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui

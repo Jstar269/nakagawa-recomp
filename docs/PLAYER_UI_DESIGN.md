@@ -630,9 +630,13 @@ Drawn by the runtime over the frozen game frame under the `scrim` while the game
 - Menu (480 px card): `GAME PAUSED` eyebrow in `muted`, the game's name in `TITLE` (two lines at most, else
   "Paused"), the disc ID in `DATA` `muted`, then a full-width column of buttons: RESUME (primary, 52 px, the
   default focus), SETTINGS, CONTROLS, QUIT TO LIBRARY. Prompts: MOVE, SELECT, RESUME.
-- Settings (640 px): Settings rows as in C6. Game scaling is a segmented control (SHARP, INTEGER, SMOOTH; left and
-  right step it, Confirm cycles it), the performance HUD a toggle. A `FOOTNOTE` says the changes apply now and last
-  until the game closes; the player's Settings keep the saved values. BACK.
+- Settings (640 px, or 880 px with shorter rows when the window is under 720 px high): Settings rows as in C6, in
+  this order. Fullscreen is a toggle, shown only when the game window can change mode. Game scaling is a segmented
+  control (SHARP, INTEGER, SMOOTH; left and right step it, Confirm cycles it). Frame pacing is a segmented control
+  with the library's two choices (PSP TIMING, NO EXTRA CAP), shown only when one of them is in force, so a
+  developer's numeric `SR_FPS_CAP` gets no row. The performance HUD is a toggle, and Ace Mode's speed readout one
+  more in an Ace run that can draw it. A `FOOTNOTE` says the changes apply now and last until the game closes; the
+  player's Settings keep the saved values. BACK.
 - Controls (640 px, or 880 px in two side-by-side tables when the window is under 720 px high and there are more
   than six rows): a PSP / KEYBOARD / CONTROLLER header in `EYEBROW` and 38 px rows (34 px when split) with `line`
   dividers; an unbound control shows an em dash. The rows describe the mapping in force: the window's own key
