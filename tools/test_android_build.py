@@ -21,16 +21,20 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 ANDROID = ROOT / "android"
 
 
-def _make_assignments(*paths: Path) -> dict[str, list[str]]:
-    """Every `NAME :=|?=|= value` in the files, continuation lines joined, in order."""
+def _make_assignments(*texts: str) -> dict[str, list[str]]:
+    """Every `NAME :=|?=|= value` in the texts, continuation lines joined, in order."""
     out: dict[str, list[str]] = {}
-    for path in paths:
-        text = path.read_text(encoding="utf-8").replace("\\\n", " ")
+    for text in texts:
+        text = text.replace("\\\n", " ")
         for line in text.splitlines():
             match = re.match(r"^([A-Za-z0-9_]+)\s*(?::=|\?=|=)\s*(.*)$", line)
             if match:
@@ -64,7 +68,7 @@ def _cmake_list(text: str, name: str) -> list[str]:
 class AndroidRuntimeInventoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
-        self.make = _make_assignments(ROOT / "Makefile", ROOT / "mk" / "nk_ui.mk")
+        self.make = _make_assignments(read_makefile(ROOT))
         # The Android runtime is a POSIX build: the POSIX platform backend, and the H.264 subset
         # (H264_FFMPEG=1 off Windows) rather than the empty list.
         self.choose = {"PLAYER_PLATFORM_SRC": "posix", "H264_SUB_SRCS": "nk_h264_api.c"}
@@ -82,7 +86,7 @@ class AndroidRuntimeInventoryTests(unittest.TestCase):
         self.assertEqual(len(cmake_rt), len(set(cmake_rt)), "a runtime source is listed twice")
 
     def test_ge_atrac_and_h264_sources_match(self) -> None:
-        self.assertIn("$(RT_GE_O): src/rt/ge.c", (ROOT / "Makefile").read_text(encoding="utf-8"))
+        self.assertIn("$(RT_GE_O): src/rt/ge.c", read_makefile(ROOT))
         self.assertEqual(_cmake_list(self.cmake, "NK_RUNTIME_GE_SOURCE"), ["src/rt/ge.c"])
         self.assertEqual(_cmake_list(self.cmake, "NK_RUNTIME_ATRAC3P_SOURCES"),
                          _expand(self.make["ATRAC3P_SRCS"][0], self.make, self.choose))

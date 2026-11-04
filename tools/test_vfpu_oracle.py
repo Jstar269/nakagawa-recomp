@@ -14,12 +14,16 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ROOT / "fixtures" / "vfpu_oracle" / "vfpu_oracle_cases.h"
 PROBE = ROOT / "fixtures" / "vfpu_oracle" / "vfpu_probe.c"
 HOST = ROOT / "src" / "rt" / "vfpu_oracle_host.c"
-MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8", errors="replace")
+MAKEFILE = read_makefile(ROOT, errors="replace")
 
 
 class SharedInputVectorTests(unittest.TestCase):
