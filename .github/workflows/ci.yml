@@ -1806,6 +1806,24 @@ jobs:
           mingw32-make --no-print-directory GAME_NAME=ci BUILD_DIR=build/windows-runtime \
             CC=gcc VULKAN_SDK=/ucrt64 psmf-media-selftest-csc-mutant
 
+      - name: Build and run the vendored FFmpeg H.264 media selftest on Windows
+        # The vendored FFmpeg H.264 subset (src/rt/h264_ffmpeg_sub) has _WIN32 branches that the
+        # Linux job never compiles, so a header only they include can go missing unnoticed.
+        # H264_FFMPEG=1 builds the subset with the Windows headers into its own build directory,
+        # and the selftest then selects the FFmpeg backend explicitly and decodes the fixture
+        # through it (Media Foundation stays the default Windows decoder).
+        if: matrix.part == 'selftests'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          log="$(cygpath -u "$RUNNER_TEMP")/psmf-media-selftest-ffmpeg.log"
+          mingw32-make --no-print-directory -j4 GAME_NAME=ci BUILD_DIR=build/windows-h264-ffmpeg \
+            CC=gcc VULKAN_SDK=/ucrt64 H264_FFMPEG=1 psmf-media-selftest 2>&1 | tee "$log"
+          if grep -F 'SKIP:' "$log"; then
+            echo "psmf-media-selftest skipped its decode checks: the FFmpeg backend created no H.264 decoder" >&2
+            exit 1
+          fi
+
       # The synthetic VFPU fuzzer's cases run as two shards: shard k admits the cases with
       # index % 2 == k (src/rt/vfpu_fuzz.c). Together they admit every case exactly once,
       # which the "Prove the fuzz shards" step checks from the binary. A shard fails unless

@@ -27,7 +27,11 @@ Decision: maintainer, 2026-10-24, on issue #283 (pinned FFmpeg H.264 subset, fol
   (`avcodec_find_decoder`, `avcodec_open2`, `avcodec_send_packet`, `avcodec_receive_frame`)
   was linked against the resulting static libraries, and the archive members the linker pulled
   in (72 translation units) plus every header and included template those units read
-  (from FFmpeg's own dependency files) are the 208 files below.
+  (from FFmpeg's own dependency files) are 208 of the files below. Those dependency files come
+  from a non-Windows configure, so they miss the one header a pulled-in unit reads only under
+  `_WIN32`: `libavutil/file_open.c` includes `libavutil/wchar_filename.h` there. That header
+  was added on 2026-11-04 for the Windows `H264_FFMPEG=1` build, byte-exact at the
+  same pin, making 209.
 
 ## What is deliberately not here
 
@@ -59,7 +63,7 @@ Legend:
 | `nk_h264_api.h` | AUTHORED API layer | n/a |
 | `nk_h264_api.c` | AUTHORED API layer | n/a |
 
-### Imported files (209)
+### Imported files (210)
 
 | File | Kind | Upstream n4.4 blob SHA |
 | --- | --- | --- |
@@ -271,6 +275,7 @@ Legend:
 | `libavutil/version.h` | imported byte-identical | `f888dbb2dc12e3f7180fe4ec639b453d924272e0` |
 | `libavutil/video_enc_params.c` | imported byte-identical | `635176ab91d0f70b3e5550683d9ac594223caa54` |
 | `libavutil/video_enc_params.h` | imported byte-identical | `fc0c3bc1a514f035bd5b8edec03e492bea93c007` |
+| `libavutil/wchar_filename.h` | imported byte-identical | `142d50e7c3c91b70ba70b254fb135d22d38b037f` |
 | `LICENSE.LGPLv2.1.txt` | imported byte-identical (`COPYING.LGPLv2.1`) | `58af0d3787aec7d6f8d833535d64879156e7ec23` |
 
 ## Authored stand-ins
@@ -329,6 +334,9 @@ code is not held to the project warning set), the `nk_h264_symbols.h` force-incl
 
 - 2026-10-24: all 208 imported blob SHAs match `git rev-parse n4.4:<path>` in a clone
   at the pin, and all 208 match the working-tree `git hash-object` (zero deltas).
+- 2026-11-04: `libavutil/wchar_filename.h` was taken with `git show n4.4:libavutil/wchar_filename.h`
+  from a clone at the pin; `git hash-object` of the working-tree file and
+  `git rev-parse n4.4:libavutil/wchar_filename.h` are both `142d50e7c3c91b70ba70b254fb135d22d38b037f`.
 - The subset compiles with GCC 13 (`-std=c11`) and the runtime test `make CC=gcc H264_FFMPEG=1
   psmf-media-selftest` decodes the source-authored H.264 fixture through it with no system
   FFmpeg installed.
