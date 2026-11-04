@@ -231,7 +231,7 @@ static void sr_cp0_delay_context(
 
 /* Data-access address checks (spec 3.3).
  *
- * MEASURED (run PSP-A3-01, campaign psp-hw-20260917, PSP-3000/6.61): a
+ * MEASURED on a PSP-3000, firmware 6.61 (run PSP-A3-01): a
  * user-mode `lw` from a kernel-segment address raises AdEL with EPC at the load
  * instruction, BadVAddr holding the effective address, and the destination
  * register unchanged. See docs/HARDWARE_ORACLE.md.
@@ -243,7 +243,7 @@ static void sr_cp0_delay_context(
  * consulted only while sr_cpu_lle_enabled(), so default builds keep the masking
  * behaviour and stay byte-identical.
  *
- * MEASURED (runs PSP-A3-02 and PSP-A3-03, same campaign): a misaligned user-mode
+ * MEASURED (runs PSP-A3-02 and PSP-A3-03): a misaligned user-mode
  * access to a mapped, writable, 16-byte-aligned buffer raises AdEL for a load
  * (Cause 0x10000010, ExcCode 4) and AdES for a store (Cause 0x10000014,
  * ExcCode 5). In both, EPC is the faulting access itself, BadVAddr is the
@@ -254,8 +254,8 @@ static void sr_cp0_delay_context(
  * (A3-02/03 left the delay-slot and halfword cases synthetic; A3-04 and A3-05
  * below have since measured both, so that caveat is gone rather than kept.)
  *
- * MEASURED (runs PSP-A3-04 and PSP-A3-05, campaign psp-hw-20260917,
- * PSP-3000/6.61, user-mode PRX probes via PSPLink; fixtures
+ * MEASURED (runs PSP-A3-04 and PSP-A3-05, PSP-3000/6.61,
+ * user-mode PRX probes via PSPLink; fixtures
  * `exception-a3-delayslot`, `exception-a3-half-load`, `exception-a3-half-store`
  * in fixtures/psp_oracle/probe_exception_a3.c, cells in
  * docs/HARDWARE_ORACLE.md "CPU exception delay-slot and width cells"):
@@ -269,7 +269,7 @@ static void sr_cp0_delay_context(
  * delay-slot bookkeeping in sr_cpu_guard_access() (BD set, EPC = branch) is
  * thereby measured rather than architectural reasoning.
  *
- * MEASURED (run PSP-A3-06, same campaign; fixture `exception-a3-unaligned`,
+ * MEASURED (run PSP-A3-06; fixture `exception-a3-unaligned`,
  * a negative control that returns and writes a results file): lwl/lwr/swl/swr
  * across alignment boundaries complete normally with the PPSSPP-derived
  * little-endian merge semantics this file's sr_lwl/sr_lwr/sr_swl/sr_swr
@@ -278,7 +278,7 @@ static void sr_cp0_delay_context(
  * in tools/codegen.py LLE_ACCESS, or in the interpreter width table.
  *
  * MEASURED (runs PSP-A3-08, PSP-A3-09 (+4 and +8 variants), PSP-A3-10 and
- * PSP-A3-11, same campaign and console; fixtures `exception-a3-vfpu-lvs`,
+ * PSP-A3-11, same console; fixtures `exception-a3-vfpu-lvs`,
  * `exception-a3-vfpu-lvq4`, `exception-a3-vfpu-lvq8`, `exception-a3-vfpu-svq4`
  * and `exception-a3-vfpu-aligned`, which are probe_exception_a3.c built with
  * -DA3_CASE=8, =9, =10, =11 and =12; cells in docs/HARDWARE_ORACLE.md "VFPU
@@ -307,8 +307,8 @@ static void sr_cp0_delay_context(
   * width table carries the VFPU rows at the same point relative to the access
   * as scalar loads/stores.
   *
-  * MEASURED (runs PSP-A3-12, PSP-A3-13, PSP-A3-14 and PSP-A3-15, same campaign
-  * and console; fixtures `exception-a3-vfpu-svs`, `exception-a3-vfpu-svq8`,
+  * MEASURED (runs PSP-A3-12, PSP-A3-13, PSP-A3-14 and PSP-A3-15, same console;
+  * fixtures `exception-a3-vfpu-svs`, `exception-a3-vfpu-svq8`,
   * `exception-a3-vfpu-lvq-delay` and `exception-a3-vfpu-lvl-odd`, which are
   * probe_exception_a3.c built with -DA3_CASE=13, =14, =15 and =16; cells in
   * docs/HARDWARE_ORACLE.md "VFPU remaining alignment cells"): the remaining

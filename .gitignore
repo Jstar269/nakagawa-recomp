@@ -13,6 +13,8 @@
 *.spv
 # Generated *_image.bin guest images, extracted game data, and raw dumps.
 *.bin
+# Code captures a run writes under SR_CODE_CAPTURE: bytes of the user's own game (#1933).
+*.[nN][kK][cC][aA][pP]
 
 # User-supplied PSP/game data and external verification inputs
 *.[eE][lL][fF]

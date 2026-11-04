@@ -156,7 +156,7 @@ def gen_context_c(nids=None, corpus_path: Path | str | None = None) -> str:
     ]
     if nids:
         table = load_nid_corpus(corpus_path)
-        lines.append("/* Imported NIDs referenced nearby (prototypes: TODO via API DB): */")
+        lines.append("/* Imported NIDs referenced nearby: */")
         for lib, nid in nids:
             nid_int = int(nid, 16) if isinstance(nid, str) else int(nid)
             name = lookup_nid_name(lib, nid_int, table)

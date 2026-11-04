@@ -552,7 +552,7 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         self.assertEqual(json.loads(out.getvalue())["code"], "BUNDLE_CACHE_REJECTED")
 
     def test_bundle_strips_documentation_and_keeps_every_licence_file(self) -> None:
-        # Owner decision (2026-10-26, #1285): share/doc, share/info and share/man hold
+        # Release policy (#1285): share/doc, share/info and share/man hold
         # GFDL-licensed manuals that a build never reads; they are not shipped. A licence
         # that a package keeps only in share/doc (MSYS2 mpfr's COPYING.LESSER) must still
         # reach notices/.
@@ -786,7 +786,7 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         return stream.getvalue()
 
     def test_bundle_copies_pinned_licence_files_out_of_the_sources(self) -> None:
-        # Owner decision (2026-10-27, #1285): a package whose binary carries no licence
+        # Release policy (#1285): a package whose binary carries no licence
         # file (MSYS2 cc-libs, gmp, isl, mpc, windows-default-manifest) gets the one
         # from its pinned source package, nested upstream tarball included.
         copying = b"GNU GENERAL PUBLIC LICENSE Version 3\n"
@@ -843,7 +843,7 @@ class TestPrerequisiteFetcher(unittest.TestCase):
                     stage_bundle(manifest, self.root / f"refused-{name}", self.root / "cache", allow_http=True)
 
     def test_bundled_runtime_libraries_are_accounted_for(self) -> None:
-        # Owner decision (2026-10-27, #1285): the libraries built into the CPython
+        # Release policy (#1285): the libraries built into the CPython
         # runtime ship their own source releases; a library without a public source
         # (the Microsoft C runtime) ships its redistribution terms; and a library that
         # neither accounts for is refused, so a CPython update cannot add one silently.
@@ -1050,7 +1050,7 @@ class TestPrerequisiteFetcher(unittest.TestCase):
     def test_every_bundled_artifact_names_its_pinned_source(self) -> None:
         """The corresponding source of every bundled artifact is pinned (#1285).
 
-        Owner decision (2026-10-26): the release ships the source of every bundled
+        Release policy (#1285): the release ships the source of every bundled
         package, not only the copyleft ones, as one archive next to the zip. Each
         MSYS2 package names the MSYS2 source package of its pkgbase at the same
         version, pinned from the file whose detached package signature verified
@@ -1082,7 +1082,7 @@ class TestPrerequisiteFetcher(unittest.TestCase):
     def test_runtime_libraries_and_missing_licence_files_are_pinned(self) -> None:
         """The CPython runtime's own libraries and the packages without licence files (#1285).
 
-        Owner decisions (2026-10-27): the source archive also carries the source
+        Release policy (#1285): the source archive also carries the source
         releases of the third-party libraries inside the CPython 3.15.1 embeddable
         runtime (CPython's PCbuild/get_externals.bat, checked against the shipped
         binaries), the Microsoft C runtime ships its redistribution terms instead, and
@@ -1188,8 +1188,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Offline by default (AGENTS.md section 5): the shipped player, runtime and
 # their Python helpers reach the network only through these files. Both serve
 # the consented, pinned prerequisite download; package_builder.c's WinHTTP
-# transport also carries the user-started update check (owner decision
-# 2026-10-28, see UPDATE_CHECK_HOSTS below). prereq_fetcher.py also serves the
+# transport also carries the user-started update check (see
+# UPDATE_CHECK_HOSTS below). prereq_fetcher.py also serves the
 # maintainer's release staging (--bundle-dest and --source-archive, #1285) from
 # the same pinned hosts; the player never passes those options, and a release
 # that carries prereqs/ makes no download at all. A new egress needs a
@@ -1211,7 +1211,7 @@ RELEASE_SOURCE_HOSTS = frozenset({
     "www.sqlite.org", "sourceware.org", "www.bytereef.org",
 })
 
-# Check for updates (owner decision 2026-10-28): the player asks GitHub's Releases API
+# Check for updates (AGENTS.md section 5): the player asks GitHub's Releases API
 # for this repository only, then, on a second click, fetches that release's .sha256
 # file, its .sha256.minisig signature and its Windows ZIP. These are its only hosts; docs/SETUP.md lists them under
 # "Network use". src/player/update_check.h holds the same list.

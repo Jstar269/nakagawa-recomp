@@ -22,6 +22,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* The most dropped disc images the player queues from one drop; the summary says when
+   more arrived. */
+#define PLAYER_DROP_QUEUE_MAX 16u
+
+
 #define MAX_LIBRARY_GAMES NK_MAX_GAMES
 #define MAX_TITLE_LEN NK_MAX_TITLE_LEN
 #define MAX_PATH_LEN NK_MAX_PATH
@@ -34,7 +39,6 @@ typedef enum {
     VIEW_SUPPORTED_TITLE,
     VIEW_EXPERIMENTAL_TITLE,
     VIEW_UNSUPPORTED_TITLE,
-    VIEW_PREPARING,
     VIEW_SETTINGS,
     VIEW_ERROR,
     VIEW_SETUP_WIZARD,
@@ -216,7 +220,7 @@ typedef enum {
 
 /* The library's Ace Mode settings. The feature values are kept while the switch is off. */
 typedef struct {
-    bool enabled;   /* the master switch: off until the player turns it on (owner, 2026-10-31) */
+    bool enabled;   /* the master switch: off until the player turns it on */
     int af;         /* texture filtering: 0, 2, 4, 8 or 16; 16 by default */
     bool text;      /* crisp system text (the on-screen keyboard); on by default */
     bool readout;   /* the speed readout; off by default */
@@ -406,7 +410,7 @@ typedef enum {
 } PlayerErrorRetry;
 
 typedef struct {
-    char error_code[32];
+    char error_code[48]; /* PACKAGE_REBUILD_NOT_INCOMPATIBLE is 32 characters */
     char title[128];
     char message[512];
     char details[PLAYER_ERROR_DETAILS_MAX];
@@ -638,7 +642,7 @@ typedef struct {
     void *userdata;
 } PlayerPsnConvertCallbacks;
 
-/* Games built by an older Nakagawa (owner decision, 2026-10-29). A package
+/* Games built by an older Nakagawa. A package
  * records the Nakagawa that built it (NkPackageBuildIdentity in
  * nk_title_manifest.h); one whose identity is not this player's is outdated.
  * It still validates and launches: the player suggests a rebuild and never
@@ -888,6 +892,18 @@ struct PlayerApp {
      * player wrote it), or an empty string. Shown on the Library screen. */
     char library_notice[192];
 
+    /* Files dropped on the window together (#2007): SDL sends them one event at a
+     * time between a begin and a complete. Several are gathered in a batch, the
+     * disc images among them wait in `drop_paths` to open one after another, and
+     * drop_notice is the one summary the library shows until the batch is done. */
+    char drop_paths[PLAYER_DROP_QUEUE_MAX][NK_MAX_PATH];
+    size_t drop_count;       /* queued disc images, in drop order */
+    size_t drop_next;        /* the next queued image to open */
+    size_t drop_seen;        /* every file this batch has seen */
+    bool drop_active;        /* between player_app_drop_begin and player_app_drop_finish */
+    char drop_notice[256];
+    bool drop_notice_visible; /* the library has shown it; leaving the library clears it */
+
     /* Window & layout metrics */
     int window_width;
     int window_height;
@@ -995,8 +1011,10 @@ bool player_app_remove_game(PlayerApp *app, int game_index);
 /* Remove from library (#1304). What Nakagawa built for one game, found from
  * its disc ID under the player's own roots (never from a stored path): the
  * built package, the build cache, and the disc files it extracted. The disc
- * image and the user's own decrypted files are never part of it. Saves are
- * listed apart and go only when asked. */
+ * image on the user's PC is never part of it. Two groups are listed apart and
+ * go only when asked: the saves, and the disc copy (#2003): the decrypted
+ * files (titles/<ID>/decrypted, which may also hold files the user put there)
+ * and the disc image Nakagawa expanded or converted (<data>/discs/<ID>). */
 typedef enum {
     PLAYER_REMOVAL_PACKAGE = 0,
     PLAYER_REMOVAL_BUILD_CACHE,
@@ -1004,7 +1022,7 @@ typedef enum {
     PLAYER_REMOVAL_KIND_COUNT
 } PlayerRemovalKind;
 
-#define PLAYER_REMOVAL_PATH_CAP 12
+#define PLAYER_REMOVAL_PATH_CAP 16
 
 typedef struct {
     char path[NK_MAX_PATH];
@@ -1013,6 +1031,7 @@ typedef struct {
     char keep_child[16];
     PlayerRemovalKind kind;
     bool saves;              /* this path is save data */
+    bool disc_copy;          /* this path is the opt-in disc copy and decrypted files */
     uint64_t bytes;
 } PlayerRemovalPath;
 
@@ -1024,6 +1043,8 @@ typedef struct {
     bool kind_present[PLAYER_REMOVAL_KIND_COUNT];
     bool has_saves;
     uint64_t saves_bytes;
+    bool has_disc_copy;
+    uint64_t disc_copy_bytes;
     /* Another image in the library has this disc ID (a retail disc beside its
        fan translation) and uses the same folders and saves, so only the
        record goes and paths stays empty. */
@@ -1037,14 +1058,26 @@ const char *player_app_removal_blocker(const PlayerApp *app, int game_index);
  * title cannot be removed or its disc ID is not a plain folder name. */
 bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
                                   PlayerRemovalPlan *plan);
-/* Removes the title from the library and deletes what the plan lists, the
- * saves only when delete_saves is set. Every folder is checked again just
- * before it goes. On failure the library entry stays and error says what was
- * left; the rest may already be deleted. */
-bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete_saves,
+/* The one logs folder (NK_PATH_LOGS, #2003), created if missing: the player's, the games'
+ * and the package builds' and build tools' logs, the folder Settings opens. */
+bool player_app_logs_dir(char *out, size_t out_size);
+
+/* What else goes with a removal: the saves, the disc copy and decrypted files. */
+#define PLAYER_REMOVE_ALSO_SAVES 1u
+#define PLAYER_REMOVE_ALSO_DISC_COPY 2u
+/* Removes the title from the library and deletes what the plan lists; the
+ * saves and the disc copy only when `also` names them (PLAYER_REMOVE_ALSO_*).
+ * Every folder is checked again just before it goes. On failure the library
+ * entry stays and error says what was left; the rest may already be deleted. */
+bool player_app_remove_game_and_data(PlayerApp *app, int game_index, unsigned also,
                                      char *error, size_t error_size);
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
+/* player_app_set_error, plus the technical text a plain card keeps in its
+   details box and in Copy details (a tool's own error line, a path). */
+void player_app_set_error_with_details(PlayerApp *app, const char *code, const char *title,
+                                       const char *msg, const char *details,
+                                       const char *recovery_label, PlayerView return_view);
 void player_app_set_cli_not_found_error(PlayerApp *app,
                                         const char *recovery_label,
                                         PlayerView return_view);
@@ -1063,7 +1096,8 @@ void player_launcher_unavailable_message_for_host(NkHostKind host, const char *r
                                                   char *out, size_t out_size);
 /* The opening of every DATA_DIR_UNAVAILABLE card: what the host could not
    resolve and which environment variables fix it (nk_platform_get_app_data_dir).
-   Each card adds its own closing words. */
+   Plain words, no code (the card's details and Copy details carry it). Each
+   card adds its own closing words. */
 const char *player_data_dir_unavailable_text(NkHostKind host);
 /* The FOLDER_OPEN_FAILED card's sentence on how the host was asked to show a
    folder: Windows' own shell, or xdg-open (through SDL) elsewhere. */
@@ -1072,6 +1106,30 @@ const char *player_folder_open_failure_hint(NkHostKind host);
    is the host's error, or empty). The card names the folder so the user can
    open it themselves, and returns to the view it was raised from. */
 void player_app_set_folder_open_error(PlayerApp *app, const char *path, const char *reason);
+/* Dropped files (#2007). player_app_drop_begin starts a batch, player_app_drop_add adds each
+   file, and player_app_drop_finish closes it. A lone file is returned as it is, whatever it
+   is: the caller runs the single-file path it always has. Of several, the disc images (.iso,
+   .cso, .zso, .chd, .pbp) are queued and the rest are skipped; drop_notice says which, once.
+   player_app_drop_take then hands the queued images out one at a time, oldest first, and
+   returns false when none is left. A queue is cleared with its summary when the library is
+   left with nothing queued. */
+void player_app_drop_begin(PlayerApp *app);
+void player_app_drop_add(PlayerApp *app, const char *path);
+void player_app_drop_finish(PlayerApp *app);
+bool player_app_drop_take(PlayerApp *app, char *out, size_t out_size);
+/* Ignores the files of a drop, queue and summary both, and logs why (the player cannot take
+   a new disc image while a worker owns the current game's files). */
+void player_app_drop_discard(PlayerApp *app, const char *reason);
+/* A .iso by its name, or a compressed disc image or PSN package by its contents. */
+bool player_path_looks_like_disc_image(const char *path);
+
+/* LIBRARY_WRITE_FAILED: a title could not be stored in the library file. */
+void player_app_set_library_write_error(PlayerApp *app);
+/* LINK_OPEN_FAILED: the browser could not be asked to open url (reason is the
+   host's error, or empty). The card puts the address in its details so the
+   user can paste it into a browser, and returns to the view it was raised
+   from (the library when raised from a card). */
+void player_app_set_link_open_error(PlayerApp *app, const char *url, const char *reason);
 /* The error card's words, shared by both launchers. The badge is a plain word
    for the kind of problem; an unknown code gets "Problem", never the code. */
 const char *player_error_badge(const ErrorState *error);
@@ -1880,9 +1938,15 @@ bool player_app_open_prerequisite_about(PlayerApp *app);
    nothing, and returns false, when the per-user data folder can't be found. */
 bool player_app_request_open_folder(PlayerApp *app, const char *path);
 bool player_app_request_license_folder(PlayerApp *app);
+/* Settings > Open data folder / Open logs (#2007): asks the main loop to show the
+   per-user data folder (kind NK_PATH_DATA) or the logs folder (NK_PATH_LOGS),
+   creating it first so there is something to show. When the folder can't be
+   resolved or created it raises the DATA_DIR_UNAVAILABLE card, returning to
+   Settings, and returns false. Other kinds are refused. */
+bool player_app_request_user_folder(PlayerApp *app, NkPathType kind);
 void player_app_remove_prerequisites(PlayerApp *app);
 
-/* Factory reset (owner, 2026-10-29): the player goes back to a first run by
+/* Factory reset: the player goes back to a first run by
  * moving its user data aside, never by deleting it. The folders that move are
  * the config, data, cache and saves folders (library, settings, saves,
  * imported PSP fonts, keys, built games and downloaded build tools), and the

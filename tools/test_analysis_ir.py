@@ -7,11 +7,19 @@ these tests run the real codegen on source-owned synthetic ELFs and check that t
 IR's callables, blocks and owners match the report, that building it leaves the
 report untouched, that its JSON round-trips, and that external annotations are
 compared with the analyzer without ever changing what it decided.
+
+``AnalysisIrModuleGateTests`` is the standing gate on whole modules: it runs the same chain
+(codegen ``--cfg-report``, ``analysis_ir.py build``, ``analysis_ir.py verify``) on every
+single-image module of the source-owned platform ladder, which carry imports, relocations, data
+pointers, scheduler and FPU code and a filesystem workload, and it checks that a wrong IR still
+fails ``verify``. A change to the analyzer, to codegen's ownership map or to the IR that breaks
+parity fails here instead of surfacing in a review of a private title.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 import struct
@@ -25,6 +33,10 @@ TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import analysis_ir  # noqa: E402
+
+LADDER = ROOT / "fixtures" / "platform_ladder"
+sys.path.insert(0, str(LADDER))
+import generate as ladder  # noqa: E402
 
 BASE = 0x1000
 NOP = 0x00000000
@@ -213,6 +225,66 @@ class AnalysisIrTests(unittest.TestCase):
         self.assertIn("ANALYSIS_IR_PARITY PASS", verified.stdout)
         explained = run("explain", "--ir", str(ir_path), "0x1020")
         self.assertIn("reached from 0x00001004 by call (jal)", explained.stdout)
+
+
+# Single-image ladder workloads. ladder-gap leaves a deliberate hole, ladder-title2-negative is a
+# refusal fixture and ladder-overlay places three more images at run time: none is one module.
+LADDER_MODULES = ("ladder-zero", "ladder-reloc", "ladder-sched", "ladder-fpu", "ladder-fs",
+                  "ladder-title2")
+
+
+def _run_tool(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, *args], cwd=ROOT, capture_output=True, text=True,
+                          check=False)
+
+
+class AnalysisIrModuleGateTests(unittest.TestCase):
+    def _chain(self, workload: str, root: Path) -> tuple[Path, Path]:
+        """Generate the module, run codegen with --cfg-report, build the IR; return both paths."""
+        fixture = root / "fixture"
+        self.assertEqual(ladder.generate(fixture, workload), 0, workload)
+        report = root / "cfg.json"
+        gen = _run_tool(str(TOOLS / "codegen.py"), str(fixture / "guest.prx"), str(root / "out.c"),
+                        f"--base={ladder.PLANS[workload].base:#x}", "--profile=none",
+                        "--funcs-per-chunk=2", f"--cfg-report={report}")
+        self.assertEqual(gen.returncode, 0, f"{workload}: codegen {gen.stdout}{gen.stderr}")
+        ir_path = root / "ir.json"
+        built = _run_tool(str(TOOLS / "analysis_ir.py"), "build", "--cfg-report", str(report),
+                          "--out", str(ir_path))
+        self.assertEqual(built.returncode, 0, f"{workload}: build {built.stderr}")
+        return report, ir_path
+
+    def test_verify_passes_on_every_source_owned_module(self):
+        for workload in LADDER_MODULES:
+            with self.subTest(workload=workload), tempfile.TemporaryDirectory() as tmp:
+                report, ir_path = self._chain(workload, Path(tmp))
+                before = hashlib.sha256(report.read_bytes()).hexdigest()
+                verified = _run_tool(str(TOOLS / "analysis_ir.py"), "verify", "--ir", str(ir_path),
+                                     "--cfg-report", str(report))
+                self.assertEqual(verified.returncode, 0, f"{workload}: {verified.stdout}")
+                self.assertIn("ANALYSIS_IR_PARITY PASS findings=0", verified.stdout)
+                self.assertEqual(hashlib.sha256(report.read_bytes()).hexdigest(), before,
+                                 "verify changed the CFG report")
+                # A pass over an empty IR would prove nothing.
+                summary = analysis_ir.load_ir(ir_path.read_text(encoding="utf-8"))["summary"]
+                self.assertGreaterEqual(summary["functions"], 1, workload)
+                self.assertGreaterEqual(summary["blocks"], summary["functions"], workload)
+                self.assertGreater(summary["instructions"], 0, workload)
+
+    def test_verify_fails_when_a_module_ir_is_wrong(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report, ir_path = self._chain("ladder-sched", Path(tmp))
+            ir = json.loads(ir_path.read_text(encoding="utf-8"))
+            owned = next(i for i in ir["instructions"] if i["owners"])
+            owned["owners"] = [0xFFFFFFF0]
+            ir["functions"].pop()
+            ir_path.write_text(json.dumps(ir), encoding="utf-8")
+            verified = _run_tool(str(TOOLS / "analysis_ir.py"), "verify", "--ir", str(ir_path),
+                                 "--cfg-report", str(report))
+            self.assertEqual(verified.returncode, 1, verified.stdout)
+            self.assertIn("ANALYSIS_IR_PARITY FAIL", verified.stdout)
+            self.assertIn("instruction-owners", verified.stdout)
+            self.assertIn("function-missing", verified.stdout)
 
 
 if __name__ == "__main__":

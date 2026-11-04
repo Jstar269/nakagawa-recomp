@@ -12680,7 +12680,7 @@ static void test_delay_advances_unified_timeline(void) {
 /* sceDisplayGetFramePerSec returns a single-precision float through $f0.  The
  * integer return convention reports success in $v0, so a guest reading the
  * float must see the measured 60000/1001 bits -- never stale/poisoned state
- * (issue #80 display-clock campaign). */
+ * (issue #80). */
 static void test_display_frame_per_sec_float_return(void) {
     reset_fixture();
     sr_hle_init();
@@ -16529,7 +16529,7 @@ static void wsv_cb_coro_body(void *arg) {
     selftest_park_on_scheduler();
 }
 
-/* PSP-B1-01 (psp-hw-20260917), project-authored synthetic probe on PSP-3000, firmware 6.61. */
+/* PSP-B1-01: project-authored synthetic probe run on a PSP-3000, firmware 6.61. */
 static void b1_expect(uint32_t actual, uint32_t expected, const char *scenario) {
     char msg[256];
     snprintf(msg, sizeof msg, "B1 %s: expected 0x%08x, actual 0x%08x",
@@ -16584,7 +16584,8 @@ static void test_sema_hardware_codes(void) {
     s_cur = -1;
 }
 
-/* PSP-B1-01 / PSP-B2-01 (psp-hw-20260917): LwMutex return codes and workarea
+/* Measured on a PSP-3000, firmware 6.61 (PSP-B1-01 / PSP-B2-01,
+ * docs/HARDWARE_ORACLE.md): LwMutex return codes and workarea
  * writes. The workarea lives at a fixed guest address; the fixture thread is the
  * owner, and "another owner" is simulated by writing a foreign uid. */
 #define B1_LW_WORKAREA 0x00250300u
@@ -17122,7 +17123,7 @@ static void test_expired_timed_sema_wait_enters_strict_priority(uint32_t nid,
              "%s slice C (C): the guest receives SCE_KERNEL_ERROR_WAIT_TIMEOUT (0x800201a8)", who);
     expect(s_slc_ret == SLC_WAIT_TIMEOUT, msg);
     expect(MEM_R32(SLC_TIMEOUT_PTR) == 0u,
-           "PSP-B2-01 (psp-hw-20260917): timed semaphore wait clears timeout");
+           "Measured (PSP-B2-01): timed semaphore wait clears timeout");
     snprintf(msg, sizeof msg,
              "%s slice C (F): earlier promotion manufactured no success result", who);
     expect(s_slc_ret != 0u, msg);
@@ -17168,7 +17169,7 @@ static void test_expired_timed_object_waits_enter_strict_priority(void) {
 }
 
 /* -------------------------------------------------------------------------
- * PSP-B2-01 / PSP-B3-01 (psp-hw-20260917): the cancel/release wake family.
+ * Measured (PSP-B2-01 / PSP-B3-01): the cancel/release wake family.
  * -------------------------------------------------------------------------
  * Hardware cells, entered through the production NIDs:
  *
@@ -17180,7 +17181,8 @@ static void test_expired_timed_object_waits_enter_strict_priority(void) {
  *                                   returns 0; on the running caller (0) it
  *                                   returns 0x80020197.
  *
- * Before this campaign the three NIDs were unregistered entirely (a guest call
+ * Before the cancel/release family was implemented the three NIDs were
+ * unregistered entirely (a guest call
  * stopped at the HLE boundary), and the waiter side had no way to observe a
  * non-satisfaction wake. The waiter runs on its own coroutine exactly like the
  * strict-priority fixture above; the main fixture thread plays the canceller.
@@ -17533,7 +17535,7 @@ static void test_cancel_release_wake_results(void) {
  * UIDs answer UNKNOWN_EVFID; DeleteEventFlag ends a blocked wait. Every call
  * enters through the production NID.
  *
- * Codes: PSP-B1-01 (psp-hw-20260917) unknown-ID codes, 8002019A event flag,
+ * Codes: PSP-B1-01 unknown-ID codes, 8002019A event flag,
  * 80020199 semaphore, 800201CA and 800201C4 for a missing LwMutex. Cells:
  * PSPAutotests tests/threads/events clear.expected L15-L19, refer.expected
  * L23-L25, wait.expected L31-L35, delete.expected L5-L7. A UID of another kind
@@ -17850,7 +17852,7 @@ static void test_evf_typed_uids_and_delete(void) {
 }
 
 /* -------------------------------------------------------------------------
- * PSP-B2-01 / PSP-B3-01 (psp-hw-20260917) second round: init restore, delete,
+ * PSP-B2-01 / PSP-B3-01 second round: init restore, delete,
  * single-wait rejection, LwMutex handoff/timeout, msgpipe modes, dormant
  * threads and waitType. Each cell enters through the production NID.
  * ------------------------------------------------------------------------- */
@@ -27335,6 +27337,45 @@ static void test_dcache_maintenance_notifies_renderer(void) {
     ge_set_gpu_hooks(NULL);
 }
 
+/* Instruction-cache maintenance (#1979). The three Icache NIDs are registered in production
+ * and in this harness (hle_register_icache_handlers); each is entered here through
+ * sr_syscall with a literal NID. The cells pin what the handlers do today: a normal range,
+ * a zero-length range and a range running past 0xffffffff all return 0 without a fault, and
+ * the all-cache forms ignore their arguments. They are synthetic checks of current
+ * behaviour, not PSP measurements: no hardware result is claimed. */
+static void icache_set_args(CpuState *cpu, uint32_t addr, uint32_t length) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = addr;
+    cpu->r[5] = length;
+}
+
+static void test_icache_maintenance_returns_zero_for_every_range(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+
+    icache_set_args(&cpu, 0x08abc000u, 0x2000u);
+    expect(sr_syscall(&cpu, 0x920f104au) == 0u, "sceKernelIcacheInvalidateAll returns 0 for a normal range");
+    icache_set_args(&cpu, 0x08abc000u, 0x2000u);
+    expect(sr_syscall(&cpu, 0xd8779ac6u) == 0u, "sceKernelIcacheClearAll returns 0 for a normal range");
+    icache_set_args(&cpu, 0x08abc000u, 0x2000u);
+    expect(sr_syscall(&cpu, 0xc2df770eu) == 0u, "sceKernelIcacheInvalidateRange returns 0 for a normal range");
+
+    icache_set_args(&cpu, 0x08abc000u, 0u);
+    expect(sr_syscall(&cpu, 0x920f104au) == 0u, "sceKernelIcacheInvalidateAll returns 0 for a zero length");
+    icache_set_args(&cpu, 0x08abc000u, 0u);
+    expect(sr_syscall(&cpu, 0xd8779ac6u) == 0u, "sceKernelIcacheClearAll returns 0 for a zero length");
+    icache_set_args(&cpu, 0x08abc000u, 0u);
+    expect(sr_syscall(&cpu, 0xc2df770eu) == 0u, "sceKernelIcacheInvalidateRange returns 0 for a zero length");
+
+    icache_set_args(&cpu, 0xfffffff0u, 0x100u);
+    expect(sr_syscall(&cpu, 0x920f104au) == 0u, "sceKernelIcacheInvalidateAll returns 0 for a range past 0xffffffff");
+    icache_set_args(&cpu, 0xfffffff0u, 0x100u);
+    expect(sr_syscall(&cpu, 0xd8779ac6u) == 0u, "sceKernelIcacheClearAll returns 0 for a range past 0xffffffff");
+    icache_set_args(&cpu, 0xfffffff0u, 0x100u);
+    expect(sr_syscall(&cpu, 0xc2df770eu) == 0u, "sceKernelIcacheInvalidateRange returns 0 for a range past 0xffffffff");
+}
+
 /* Host-memory safety for the production GE block-transfer command path.  The
  * temporary arena deliberately commits one complete maximum-transfer window after
  * the modeled 192 MiB guest arena.  That makes the historical later-row write
@@ -29819,16 +29860,18 @@ static void test_td24d_hle_batch(void) {
                MEM_R32(TD24D_RB_ADDR + 12u) == 0u,
            "sceMpegFlushAllStream flushes ring packet counters");
 
-    /* AvcDecodeFlush clears packet counters via mpeg struct */
+    /* AvcDecodeFlush flushes the video decoder and leaves the ring alone (#286): a guest PSMF
+     * player fills the ring, calls it, and expects the packets to still be there. Only
+     * FlushAllStream clears the ring counters. */
     MEM_W32(TD24D_RB_ADDR + 4u, 12u);
     MEM_W32(TD24D_RB_ADDR + 8u, 22u);
     MEM_W32(TD24D_RB_ADDR + 12u, 32u);
     expect(td24b_dispatch4(NID_SCE_MPEG_AVC_DECODE_FLUSH, TD24D_MPEG_DESC, 0u, 0u, 0u) == 0u,
            "sceMpegAvcDecodeFlush succeeds on valid MPEG descriptor");
-    expect(MEM_R32(TD24D_RB_ADDR + 4u) == 0u &&
-               MEM_R32(TD24D_RB_ADDR + 8u) == 0u &&
-               MEM_R32(TD24D_RB_ADDR + 12u) == 0u,
-           "sceMpegAvcDecodeFlush flushes ring packet counters");
+    expect(MEM_R32(TD24D_RB_ADDR + 4u) == 12u &&
+               MEM_R32(TD24D_RB_ADDR + 8u) == 22u &&
+               MEM_R32(TD24D_RB_ADDR + 12u) == 32u,
+           "sceMpegAvcDecodeFlush leaves the ring counters alone");
 
     /* FlushStream is registered next to them; it only validates its arguments and leaves the
      * shared ring counters alone. The stream-id check lives in mpeg.c, which this harness does
@@ -35265,7 +35308,7 @@ static void test_vpl_blocking_waits(void) {
 
 /* =========================================================================
  * Mailbox object model tests (issue #339)
- * Measured anchors from docs/HARDWARE_ORACLE.md (campaign psp-hw-20260917):
+ * Measured anchors from docs/HARDWARE_ORACLE.md:
  * unknown id 0x8002019B, timeout 0x800201A8 with remaining 0, Cancel waiters
  * 0x800201A9, empty poll 0x800201B2, FIFO circular next links, attr 0x400
  * ascending msgPriority, waitType 5.
@@ -38855,6 +38898,174 @@ static void test_route_stick_reaches_the_guest_through_the_controller_sample(voi
     rt_write("STICK 128 0 READS PRESS CROSS 2\nSTICK 0 255 VBLANKS PRESS_UNTIL_NID sceIoOpen 0 2 4 400\nEND\n");
     expect(sr_route_load(RT_PATH) == 1, "STICK combines with a READS or VBLANKS unit after it");
     remove(RT_PATH);
+
+    sr_route_reset();
+    sr_hle_test_ctrl_sampling_reset();
+    ctrl_env("1", "", "", "");
+    ctrl_drain(&cpu);
+}
+
+/* Recording a live session and replaying it: SR_INLOG's ctrl_latch lines are what
+ * padscript_from_log turns into a pad-script table, so the stick has to survive both halves.
+ * The log used to print a line only when a button changed, and the table had no stick column,
+ * so a walk recorded with the analog stick replayed standing still. Also here: an unread stick
+ * press names the position in its failure, and a long route program loads (the step limit was
+ * 256, which a walked level route passes before its first obstacle). */
+static void test_route_recording_carries_the_stick_from_log_to_replay(void) {
+    extern void sr_hle_test_inlog(int on);
+    CpuState cpu;
+    RouteStickRead r[12];
+
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();
+    ctrl_env("1", "", "", "");
+    sr_ctrl_test_reset_live_input();
+    sr_hle_test_ctrl_sampling_reset();
+    starve_reset();
+    route_stick_mode(&cpu, 1u);
+    ctrl_drain(&cpu);
+
+    /* --- the latch log prints a stick that moves with no button change ---------- */
+    rt_write("STICK 255 0 PRESS 0 2\nSTICK 40 200 PRESS 0 2\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a route of stick-only presses loads");
+    {
+        char err[4096] = "";
+        FILE *capture = NULL;
+        int saved = -1;
+        sr_hle_test_inlog(1);
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        for (int i = 0; i < 6; i++) { starve_batch(1u); (void)route_stick_read(&cpu); }
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        sr_hle_test_inlog(0);
+        expect(strstr(err, "buttons 0x0000 -> 0x0000 lx=255 ly=0") != NULL,
+               "SR_INLOG logs a stick-only move, so a recording keeps where the stick went");
+        expect(strstr(err, "buttons 0x0000 -> 0x0000 lx=40 ly=200") != NULL,
+               "and each later stick-only move");
+        expect(strstr(err, "buttons 0x0000 -> 0x0000 lx=128 ly=128") != NULL,
+               "and the stick's return to centre");
+    }
+    remove(RT_PATH);
+
+    /* --- a table row holds the stick in its two extra columns ------------------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    rt_write("1 0x0000 3 255 0\n6 0x4000 2\n");
+    expect(sr_route_load(RT_PATH) == 1, "a pad-script table with a stick column loads");
+    int stick_only = 0, stick_with_cross = 0, cross_centred = 0;
+    for (int i = 0; i < 12; i++) {
+        starve_batch(1u);
+        r[0] = route_stick_read(&cpu);
+        if (route_stick_is(r[0], 0u, 255u, 0u)) stick_only++;
+        if ((r[0].buttons & NK_PSP_BTN_CROSS_BIT) && r[0].lx == 255u) stick_with_cross = 1;
+        if (route_stick_is(r[0], NK_PSP_BTN_CROSS_BIT, 128u, 128u)) cross_centred = 1;
+    }
+    expect(stick_only == 3, "a stick row with no button holds the stick for its width");
+    expect(cross_centred && !stick_with_cross, "a row without a stick column leaves the stick centred");
+    remove(RT_PATH);
+
+    /* --- overlapping rows hold the stick of the row that started last ----------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    rt_write("1 0x4000 6\n3 0x0000 2 0 128\n");
+    expect(sr_route_load(RT_PATH) == 1, "a stick row inside a press loads");
+    int pushed_while_held = 0, held_after = 0;
+    for (int i = 0; i < 10; i++) {
+        starve_batch(1u);
+        r[0] = route_stick_read(&cpu);
+        if (route_stick_is(r[0], NK_PSP_BTN_CROSS_BIT, 0u, 128u)) pushed_while_held++;
+        if (pushed_while_held && route_stick_is(r[0], NK_PSP_BTN_CROSS_BIT, 128u, 128u)) held_after = 1;
+    }
+    expect(pushed_while_held == 2, "the stick row moves the stick while the earlier press stays down");
+    expect(held_after, "and the press is still down, stick centred, once the stick row ends");
+    remove(RT_PATH);
+
+    static const char *const refused_rows[] = {
+        "1 0x4000 2 256 0\n",        /* past the axis */
+        "1 0x4000 2 128\n",          /* one axis */
+        "1 0x4000 2 12a 0\n",        /* a stray character */
+        "1 0x4000 2 0 0 7\n",        /* something after the stick */
+        "1 0x4000 2 abc\n",          /* a word where the stick would be */
+        "1 0x4000 2 -1 128\n",       /* a negative axis */
+        "1 0x4000 2 x 0\n",          /* a stray column */
+    };
+    for (size_t i = 0; i < sizeof refused_rows / sizeof refused_rows[0]; i++) {
+        sr_route_reset();
+        rt_write(refused_rows[i]);
+        expect(sr_route_load(RT_PATH) == 0 && sr_route_status() == RT_FAILED,
+               "a pad-script row whose stick columns are not '<lx> <ly>' is refused at load");
+    }
+    {
+        char err[1024] = "";
+        FILE *capture = NULL;
+        int saved = -1;
+        sr_route_reset();
+        rt_write("1 0x4000 2\n4 0x0000 3 abc\n");
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        int loaded = sr_route_load(RT_PATH);
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        expect(loaded == 0, "a row with a word after its width is refused, not replayed with a centred stick");
+        expect(strstr(err, ":2: a pad-script row's stick is '<lx> <ly>'") != NULL,
+               "the refusal names the row's line");
+    }
+    sr_route_reset();
+    rt_write("1 0x4000 2 # jump\n4 0x0000 2 0 255 # walk\n");
+    expect(sr_route_load(RT_PATH) == 1, "a comment still ends a row, with or without a stick");
+    remove(RT_PATH);
+
+    /* --- an unread stick press names the stick in its failure -------------------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", "30");
+    rt_write("STICK 128 0 PRESS 0 4\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a stick-only press with a 30-vblank read budget loads");
+    {
+        char err[2048] = "";
+        FILE *capture = NULL;
+        int saved = -1;
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        starve_batch(1u);
+        starve_batch(28u);
+        starve_batch(2u);
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        expect(sr_route_status() == RT_FAILED, "the unread stick press fails the route");
+        expect(strstr(err, "while the left stick at 128,0 was held") != NULL,
+               "the failure names the stick position the guest never read");
+    }
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", NULL);
+    remove(RT_PATH);
+
+    /* --- a long route program loads, and one past the limit is refused by name --- */
+    {
+        const int long_steps = 4096;
+        size_t cap = (size_t)(long_steps + 2) * 8u;
+        char *text = (char *)malloc(cap);
+        expect(text != NULL, "the long route's text is allocated");
+        if (text) {
+            size_t used = 0;
+            for (int i = 0; i < 300; i++) used += (size_t)snprintf(text + used, cap - used, "DELAY 1\n");
+            snprintf(text + used, cap - used, "END\n");
+            sr_route_reset();
+            rt_write(text);
+            expect(sr_route_load(RT_PATH) == 1, "a 301-step route program loads");
+            used = 0;
+            for (int i = 0; i < long_steps; i++) used += (size_t)snprintf(text + used, cap - used, "DELAY 1\n");
+            snprintf(text + used, cap - used, "END\n");
+            sr_route_reset();
+            rt_write(text);
+            char err[1024] = "";
+            FILE *capture = NULL;
+            int saved = -1;
+            int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+            int loaded = sr_route_load(RT_PATH);
+            if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+            expect(loaded == 0 && sr_route_status() == RT_FAILED,
+                   "a route program one step past the limit is refused, not cut short");
+            expect(strstr(err, "more than 4096 steps") != NULL, "the refusal names the limit");
+            free(text);
+        }
+        remove(RT_PATH);
+    }
 
     sr_route_reset();
     sr_hle_test_ctrl_sampling_reset();
@@ -46276,6 +46487,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_mip_cells_match_psp();
     test_ge_block_transfer_span_atomicity();
     test_dcache_maintenance_notifies_renderer();
+    test_icache_maintenance_returns_zero_for_every_range();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_inline_stores_match_full_bodies();
@@ -46509,6 +46721,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_scripted_input_reaches_a_starved_guest();
     test_route_read_widths_hold_for_their_reads_on_a_starved_host();
     test_route_stick_reaches_the_guest_through_the_controller_sample();
+    test_route_recording_carries_the_stick_from_log_to_replay();
 
     check_coroutine_lifecycle();
 

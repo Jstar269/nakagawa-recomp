@@ -154,6 +154,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `compat_overrides.py` | Semantic-debt manifest of every game-address-specific override in the runtime. |
 | `entry_frame_balance.py` | Stack-symbolic entry classification: callable boundary versus resume PC. |
 | `miss_seeds.py` | Merge the dispatch-miss files a run writes (`SR_MISS_SEEDS`) into a per-title seed list that `analyze.py` and `codegen.py` take as `--miss-seeds` (#1848). |
+| `code_capture.py` | Read the captures a run writes (`SR_CODE_CAPTURE`) of code the game installed at run time, and make each an overlay `codegen.py --code-capture` translates and the runtime binds by its code (#1933). |
 | `elf_bounds.py` | Shared, fail-closed ELF32 envelope checks for the offline PSP tools. |
 | `hle_manifest.py` | Generate the authoritative HLE registration manifest from the runtime HLE table, plus the semantic-status census artifact (`--census-json` / `--census-markdown`). |
 | `hle_focus_check.py` | Prove a focused HLE selftest executable links only the HLE files it names: compares the executable's code symbols with those of the excluded files' objects (#307). |
@@ -310,7 +311,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ppm2png.py` | Convert framebuffer snapshots written by the runtime into PNG. |
 | `pngcmp.py` | Compare two framebuffer PNGs written by `ppm2png.py`. |
 | `frame_capture_check.py` | Temporal acceptance check for present-truthful frame captures: frame accounting, black/stale-frame and frame-gap detection, and watchdog/present-gap classification. |
-| `padscript_from_log.py` | Convert recorded controller transitions into a replay pad script. |
+| `padscript_from_log.py` | Convert recorded controller transitions, buttons and left stick, into a replay pad script. |
 | `mem_debug.py` | Interactive memory and CPU-state query and mutation tool for bring-up. |
 
 #### Comparing host compilers (issue #317)
@@ -525,7 +526,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_matrix_disposition.py` | Guard the evidence-matrix disposition field against becoming uninformative. |
 | `test_matrix_report.py` | Generate a conservative, machine-readable unittest evidence matrix. |
 | `test_parse_fuzz.py` | Seeded, deterministic mutation fuzzing over the public offline parsers. |
-| `test_padscript_from_log.py` | Controller log to pad script conversion: press widths and mask-change spans. |
+| `test_padscript_from_log.py` | Controller log to pad script conversion: press widths, mask-change spans and stick columns. |
 | `test_perf_summary_diff.py` | Performance summary comparison within a tolerance. |
 | `test_perf_attribution.py` | Synthetic regressions for the present-cadence and cost attribution report, including source pins on the emitter formats. |
 | `test_pgf_writer.py` | PGF writer determinism and public-reader round trip over generated glyph sets. |

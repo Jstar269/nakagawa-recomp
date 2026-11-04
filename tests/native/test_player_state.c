@@ -1891,7 +1891,7 @@ static bool dev_log_contains(const PlayerApp *app, const char *needle) {
 static void repeat_launch_and_settle(PlayerApp *app, int game_index,
                                      uint64_t launch_tick, uint64_t settle_tick,
                                      const char *expected_memstick) {
-    char error_before[32];
+    char error_before[48];
     snprintf(error_before, sizeof(error_before), "%s", app->last_error.error_code);
     assert(player_app_launch_game(app, game_index));
     assert(app->is_game_running);
@@ -2687,7 +2687,7 @@ static void test_disc_check_after_add(void) {
     assert(player_app_plan_game_removal(app, translated_index, &plan));
     assert(plan.files_shared && plan.path_count == 0);
     char error[256];
-    assert(player_app_remove_game_and_data(app, translated_index, true, error, sizeof(error)));
+    assert(player_app_remove_game_and_data(app, translated_index, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
     assert(app->game_count == 1 && strcmp(app->games[0].iso_path, retail_iso) == 0);
     assert(nk_library_load(&loaded, path) == NK_OK && nk_library_count(&loaded) == 1 &&
            nk_library_find_by_key(&loaded, "TEST70021", retail.sha1) != NULL);
@@ -2712,7 +2712,7 @@ static void test_disc_check_after_add(void) {
         assert(app->game_count == 1);
         assert(player_app_plan_game_removal(app, 0, &plan) && !plan.files_shared &&
                plan.path_count > 0);
-        assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        assert(player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
         FILE *kept = fopen(marker, "rb");
         assert(kept != NULL);
         fclose(kept);
@@ -2735,7 +2735,7 @@ static void test_disc_check_after_add(void) {
         rehashed.disc_verification = NK_DISC_TIER_UNKNOWN;
         loaded.entries[0] = rehashed;
         assert(nk_library_save(&loaded, path) == NK_OK);
-        assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        assert(player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
         kept = fopen(marker, "rb");
         assert(kept != NULL);
         fclose(kept);
@@ -2757,7 +2757,7 @@ static void test_disc_check_after_add(void) {
                  "%s", retail.crc32);
         loaded.entries[0].disc_verification = NK_DISC_TIER_VERIFIED_RETAIL;
         assert(nk_library_save(&loaded, path) == NK_OK);
-        assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        assert(player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
         kept = fopen(marker, "rb");
         assert(kept != NULL);
         fclose(kept);
@@ -2768,7 +2768,7 @@ static void test_disc_check_after_add(void) {
         assert(player_app_add_game(app, &retail_game));
         static const char newer[] = "{\"schema_version\": 99, \"games\": []}\n";
         write_text_file(path, newer);
-        assert(!player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        assert(!player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
         assert(strstr(error, "could not be read") != NULL);
         kept = fopen(marker, "rb");
         assert(kept != NULL);
@@ -3128,13 +3128,13 @@ static void test_platform_seam_answers_for_this_host(void) {
 
     /* Every host's card words, on every host. */
     assert(strcmp(player_data_dir_unavailable_text(NK_HOST_WINDOWS),
-                  "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. "
+                  "Windows could not find your Local AppData folder. "
                   "Set LOCALAPPDATA or APPDATA") == 0);
     assert(strcmp(player_data_dir_unavailable_text(NK_HOST_MACOS),
-                  "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. "
+                  "Nakagawa could not find your per-user data folder. "
                   "Set HOME") == 0);
     assert(strcmp(player_data_dir_unavailable_text(NK_HOST_LINUX),
-                  "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. "
+                  "Nakagawa could not find your per-user data folder. "
                   "Set XDG_DATA_HOME or HOME") == 0);
     assert(strcmp(player_data_dir_unavailable_text(NK_HOST_ANDROID),
                   player_data_dir_unavailable_text(NK_HOST_LINUX)) == 0);
@@ -3181,6 +3181,204 @@ static void test_platform_seam_answers_for_this_host(void) {
 /* #306: a card names this platform's fix. A Linux build compiled without
    SDL3_ttf told the user to extract a Windows ZIP and start nakagawa_player.exe,
    and a missing data root named Windows' LOCALAPPDATA. */
+/* #2007: every code the player raises has a badge and leads with its plain sentence; a code it
+   has never heard of keeps the plain badge, and the code stays in the report. */
+static void test_every_error_code_has_a_friendly_card(void) {
+    static const char *const codes[] = {
+        "SPAWN_FAILED", "PYTHON_NOT_FOUND", "PREREQUISITE_MANIFEST_INVALID",
+        "PREREQUISITE_BUNDLE_INVALID", "DATA_DIR_UNAVAILABLE", "LIBRARY_WRITE_FAILED",
+        "FOLDER_OPEN_FAILED", "LINK_OPEN_FAILED", "REMOVE_FAILED", "TOOLS_IN_USE",
+        "TOOLS_REMOVE_FAILED", "ISO_CORRUPT", "SOURCE_NOT_FOUND", "BUILD_TOOLCHAIN_MISSING",
+        "CLI_NOT_FOUND", "GAME_FILES_NOT_READY", "EXPERIMENTAL_LAUNCH_UNAVAILABLE",
+        "EXPERIMENTAL_PROFILE_FAILED", "FACTORY_RESET_BUSY", "FACTORY_RESET_FAILED",
+        "PACKAGE_BUILD_IN_PROGRESS", "PROCESS_SPAWN_FAILED", "DISC_NOT_PSP",
+        "DISC_IMAGE_TRUNCATED", "PBP_PACKAGE_UNSUPPORTED", "PREREQUISITE_FETCH_START_FAILED",
+        "PYTHON_BOOTSTRAP_FAILED", "DISK_FULL", "OFFLINE_OR_NETWORK_ERROR", "HASH_MISMATCH",
+        "ENHANCEMENT_UNAVAILABLE", "PACKAGE_REBUILD_NOT_INCOMPATIBLE", "LAUNCH_DETAILS_UNAVAILABLE",
+    };
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
+        player_app_set_error(app, codes[i], "Title", "A plain sentence.", "Back", VIEW_LIBRARY);
+        assert(strcmp(app->last_error.error_code, codes[i]) == 0); /* never cut short */
+        assert(strcmp(player_error_badge(&app->last_error), "Problem") != 0);
+        assert(player_error_leads_with_message(&app->last_error));
+        assert(strstr(player_error_badge(&app->last_error), "_") == NULL);
+    }
+    /* A failed build tools download names whatever code the downloader chose. */
+    player_app_set_error(app, "SOMETHING_NEW_FROM_THE_FETCHER", "Title", "x", "Retry",
+                         VIEW_PREREQ_CONSENT);
+    assert(strcmp(player_error_badge(&app->last_error), "Download failed") == 0);
+    player_app_set_error(app, "SOMETHING_NEW", "Title", "x", "Back", VIEW_LIBRARY);
+    assert(strcmp(player_error_badge(&app->last_error), "Problem") == 0);
+    assert(!player_error_leads_with_message(&app->last_error));
+
+    /* The raw tool text moves to the details: the card leads with a sentence and a next step,
+       and Copy details keeps the code and the tool's own line. */
+    player_app_set_error_with_details(app, "PREREQUISITE_MANIFEST_INVALID", "Pinned Build Tools",
+                                      "Nakagawa couldn't read its list of build tools.",
+                                      "PREREQUISITE_MANIFEST_INVALID: artifacts list is missing.",
+                                      "Back", VIEW_LIBRARY);
+    assert(strstr(app->last_error.message, "PREREQUISITE_MANIFEST_INVALID") == NULL);
+    assert(strstr(app->last_error.details, "artifacts list is missing") != NULL);
+    {
+        char report[4096];
+        (void)player_app_format_error_report_for(app, "0.0.0", NULL, NULL, report,
+                                                 sizeof(report));
+        assert(strstr(report, "Code: PREREQUISITE_MANIFEST_INVALID") != NULL);
+        assert(strstr(report, "artifacts list is missing") != NULL);
+    }
+    /* No data-folder sentence opens with a bare code. */
+    assert(strncmp(player_data_dir_unavailable_text(NK_HOST_WINDOWS), "DATA_DIR", 8) != 0);
+    assert(strncmp(player_data_dir_unavailable_text(NK_HOST_LINUX), "DATA_DIR", 8) != 0);
+    free(app);
+    printf("[PLAYER_STATE_TEST] every error code has a friendly card PASS\n");
+}
+
+/* #2007: a link the browser could not open, and a library that could not be written, are cards
+   that say what to do next. */
+static void test_link_and_library_failures_are_cards(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    app->active_view = VIEW_SETTINGS;
+    player_app_set_link_open_error(app, "https://example.test/releases/v1", "no handler");
+    assert(app->active_view == VIEW_ERROR);
+    assert(strcmp(app->last_error.error_code, "LINK_OPEN_FAILED") == 0);
+    assert(app->last_error.return_view == VIEW_SETTINGS);
+    assert(strcmp(app->last_error.details, "https://example.test/releases/v1") == 0);
+    assert(strstr(app->last_error.message, "browser") != NULL);
+    assert(strcmp(player_error_badge(&app->last_error), "Link not opened") == 0);
+    /* From the error card itself the way back is the library, not the card. */
+    player_app_set_link_open_error(app, "https://example.test/x", "");
+    assert(app->last_error.return_view == VIEW_LIBRARY);
+    player_app_set_library_write_error(app);
+    assert(strcmp(app->last_error.error_code, "LIBRARY_WRITE_FAILED") == 0);
+    assert(strstr(app->last_error.message, "then try again") != NULL);
+    assert(strstr(app->last_error.message, "may be full") == NULL);
+    free(app);
+    printf("[PLAYER_STATE_TEST] link and library failures are cards PASS\n");
+}
+
+/* #2007: Settings > Open data folder and Open logs. */
+static void test_user_folders_open_from_settings(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    char expected[NK_MAX_PATH];
+    assert(app != NULL);
+    assert(player_app_request_user_folder(app, NK_PATH_LOGS));
+    assert(app->request_open_folder);
+    assert(nk_platform_get_path(NK_PATH_LOGS, expected, sizeof(expected)));
+    assert(strcmp(app->requested_open_path, expected) == 0);
+    assert(nk_platform_dir_exists(expected));
+    assert(player_app_request_user_folder(app, NK_PATH_DATA));
+    assert(nk_platform_get_path(NK_PATH_DATA, expected, sizeof(expected)));
+    assert(strcmp(app->requested_open_path, expected) == 0);
+    /* Only these two folders are offered. */
+    app->request_open_folder = false;
+    assert(!player_app_request_user_folder(app, NK_PATH_CACHE));
+    assert(!app->request_open_folder);
+    free(app);
+    printf("[PLAYER_STATE_TEST] data and logs folders open from Settings PASS\n");
+}
+
+/* #2007: several dropped files are queued and reported once. */
+static void test_dropped_files_are_queued_and_summarised(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    char path[NK_MAX_PATH];
+    char dir[NK_MAX_PATH - 16]; /* leaves room for a file name under it */
+    char one[NK_MAX_PATH], two[NK_MAX_PATH], text[NK_MAX_PATH], upper[NK_MAX_PATH];
+    const char sep = nk_platform_path_separator();
+    assert(app != NULL);
+    snprintf(dir, sizeof(dir), "%s%cdrops", native_test_get_root(), sep);
+    assert(nk_platform_mkdir_p(dir));
+    snprintf(one, sizeof(one), "%s%cone.iso", dir, sep);
+    snprintf(two, sizeof(two), "%s%ctwo.iso", dir, sep);
+    snprintf(upper, sizeof(upper), "%s%cTHREE.ISO", dir, sep);
+    snprintf(text, sizeof(text), "%s%cnotes.txt", dir, sep);
+    write_text_file(one, "x");
+    write_text_file(two, "x");
+    write_text_file(upper, "x");
+    write_text_file(text, "not a disc");
+    assert(player_path_looks_like_disc_image(one));
+    assert(player_path_looks_like_disc_image(upper));
+    assert(!player_path_looks_like_disc_image(text));
+    assert(!player_path_looks_like_disc_image(NULL));
+
+    /* One file takes the path it always has, with no summary. */
+    app->active_view = VIEW_LIBRARY;
+    player_app_drop_begin(app);
+    player_app_drop_add(app, text);
+    player_app_drop_finish(app);
+    assert(app->drop_notice[0] == '\0');
+    assert(player_app_drop_take(app, path, sizeof(path)) && strcmp(path, text) == 0);
+    assert(!player_app_drop_take(app, path, sizeof(path)));
+
+    /* Three disc images and a text file: the images open in drop order, the text is named. */
+    player_app_drop_begin(app);
+    player_app_drop_add(app, one);
+    player_app_drop_add(app, text);
+    player_app_drop_add(app, two);
+    player_app_drop_add(app, upper);
+    player_app_drop_finish(app);
+    assert(strstr(app->drop_notice, "4 files were dropped") != NULL);
+    assert(strstr(app->drop_notice, "3 disc images open one at a time") != NULL);
+    assert(strstr(app->drop_notice, "notes.txt") != NULL);
+    assert(player_app_drop_take(app, path, sizeof(path)) && strcmp(path, one) == 0);
+    /* Leaving the library for the first image does not drop the summary... */
+    player_app_set_view(app, VIEW_SUPPORTED_TITLE);
+    assert(app->drop_notice[0] != '\0');
+    /* ...nor does coming back while images are still queued. */
+    player_app_set_view(app, VIEW_LIBRARY);
+    assert(!app->drop_notice_visible);
+    assert(player_app_drop_take(app, path, sizeof(path)) && strcmp(path, two) == 0);
+    player_app_set_view(app, VIEW_SUPPORTED_TITLE);
+    player_app_set_view(app, VIEW_LIBRARY);
+    assert(!app->drop_notice_visible);
+    assert(player_app_drop_take(app, path, sizeof(path)) && strcmp(path, upper) == 0);
+    player_app_set_view(app, VIEW_SUPPORTED_TITLE);
+    /* The last return shows the summary once; leaving the library again clears it. */
+    player_app_set_view(app, VIEW_LIBRARY);
+    assert(app->drop_notice_visible && app->drop_notice[0] != '\0');
+    player_app_set_view(app, VIEW_SETTINGS);
+    assert(app->drop_notice[0] == '\0');
+
+    /* Nothing that is a disc image: said at once, where the user already is. */
+    app->active_view = VIEW_LIBRARY;
+    player_app_drop_begin(app);
+    player_app_drop_add(app, text);
+    player_app_drop_add(app, text);
+    player_app_drop_finish(app);
+    assert(strstr(app->drop_notice, "None is a disc image") != NULL);
+    assert(app->drop_notice_visible);
+    assert(!player_app_drop_take(app, path, sizeof(path)));
+
+    /* More files than the queue holds: the rest are counted and the user is told. */
+    player_app_drop_begin(app);
+    for (unsigned i = 0; i < PLAYER_DROP_QUEUE_MAX + 4u; i++) player_app_drop_add(app, one);
+    player_app_drop_finish(app);
+    assert(strstr(app->drop_notice, "Only the first 16 were looked at") != NULL);
+    assert(strstr(app->drop_notice, "drop the other 4 again") != NULL);
+
+    /* A drop that arrives while a worker owns the current game's files is ignored, not queued
+       to open later; on the library the user is told why (the lone-file path included). */
+    app->active_view = VIEW_LIBRARY;
+    player_app_drop_begin(app);
+    player_app_drop_add(app, one);
+    player_app_drop_add(app, one);
+    player_app_drop_finish(app);
+    assert(app->drop_count == 2u && app->drop_notice[0] != '\0');
+    player_app_drop_discard(app, "a game is being set up");
+    assert(app->drop_count == 0u && app->drop_next == 0u && !app->drop_active);
+    assert(!player_app_drop_take(app, path, sizeof(path)));
+    assert(strstr(app->drop_notice, "A game is being set up") != NULL && app->drop_notice_visible);
+    app->active_view = VIEW_SETUP_WIZARD;
+    player_app_drop_add(app, one);
+    player_app_drop_finish(app);
+    player_app_drop_discard(app, "a game is being set up");
+    assert(app->drop_notice[0] == '\0' && !player_app_drop_take(app, path, sizeof(path)));
+    free(app);
+    printf("[PLAYER_STATE_TEST] dropped files are queued and summarised PASS\n");
+}
+
 static void test_platform_cards_name_this_platform(void) {
     char message[1024];
     player_launcher_unavailable_message(
@@ -4418,6 +4616,15 @@ static void test_package_build_lifecycle(const char *self_executable) {
     rebuild_app->last_error.error_code[0] = '\0';
     rebuild_app->active_view = VIEW_LIBRARY;
     assert(player_app_start_package_build(rebuild_app, 0));
+    {
+        /* #2003: the build log is in the one logs folder Settings opens, not in a logs
+           folder of the build root. */
+        char logs_dir[NK_MAX_PATH];
+        assert(nk_platform_get_path(NK_PATH_LOGS, logs_dir, sizeof(logs_dir)));
+        assert(native_test_path_within(rebuild_app->build_session.log_file_path, logs_dir));
+        assert(!native_test_path_within(rebuild_app->build_session.log_file_path, user_root));
+        printf("[PLAYER_STATE_TEST] the package build log is in the logs folder PASS\n");
+    }
     poll_player_package_build_to_terminal(rebuild_app);
     assert(rebuild_app->build_session.is_complete);
     assert(!rebuild_app->build_session.is_failed);
@@ -4547,12 +4754,14 @@ typedef struct {
     char staging[NK_MAX_PATH];
     char saves[NK_MAX_PATH];
     char decrypted[NK_MAX_PATH];
+    char discs[NK_MAX_PATH];
     char manifests[NK_MAX_PATH];
     char iso[NK_MAX_PATH];
 } RemovalFixture;
 
-/* Everything Nakagawa keeps for one disc, plus what it must never delete:
-   the disc image, the user's decrypted files and the shared manifests. */
+/* Everything Nakagawa keeps for one disc, plus what it must never delete (the
+   disc image and the shared manifests) and what goes only when asked (the
+   saves, the decrypted files and the disc copy, #2003). */
 static void removal_fixture_make(RemovalFixture *f, const char *disc) {
     char name[64];
     memset(f, 0, sizeof(*f));
@@ -4574,6 +4783,7 @@ static void removal_fixture_make(RemovalFixture *f, const char *disc) {
     removal_test_path(f->saves, sizeof(f->saves), f->saves_root, disc, NULL, NULL);
     removal_test_path(f->decrypted, sizeof(f->decrypted), f->build_root, "titles", disc,
                       "decrypted");
+    removal_test_path(f->discs, sizeof(f->discs), f->data_root, "discs", disc, NULL);
     removal_test_path(f->manifests, sizeof(f->manifests), f->build_root, "manifests", NULL,
                       NULL);
     snprintf(name, sizeof(name), "%s.iso", disc);
@@ -4586,6 +4796,7 @@ static void removal_fixture_make(RemovalFixture *f, const char *disc) {
     removal_test_tree(f->staging, "partial.bin", 7);
     removal_test_tree(f->saves, "SAVE.BIN", 2);
     removal_test_tree(f->decrypted, "EBOOT.BIN", 9);
+    removal_test_tree(f->discs, "expanded.iso", 11);
     removal_test_tree(f->manifests, "title.json", 5);
     write_text_file(f->iso, "disc image");
 }
@@ -4741,8 +4952,9 @@ static void test_remove_tree_deeper_than_max_path(void) {
 #endif
 
 /* #1304: Remove from library deletes the package, the build cache and the disc
-   files Nakagawa copied, keeps the saves unless asked, and never touches the
-   disc image, the user's decrypted files or another title's data. */
+   files Nakagawa copied, keeps the saves and (#2003) the decrypted files and
+   disc copy unless asked, and never touches the disc image or another title's
+   data. */
 static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     RemovalFixture f;
     PlayerRemovalPlan plan;
@@ -4760,16 +4972,21 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     assert(plan.kind_present[PLAYER_REMOVAL_EXTRACTED] &&
            plan.kind_bytes[PLAYER_REMOVAL_EXTRACTED] == 1007u);
     assert(plan.has_saves && plan.saves_bytes == 42u);
+    /* The decrypted files and the expanded disc image are their own opt-in group. */
+    assert(plan.has_disc_copy && plan.disc_copy_bytes == 20u);
     for (size_t i = 0; i < plan.path_count; ++i) {
+        bool in_copy = native_test_path_within(plan.paths[i].path, f.decrypted) ||
+                       native_test_path_within(plan.paths[i].path, f.discs);
         assert(strcmp(plan.paths[i].path, f.iso) != 0);
-        assert(!native_test_path_within(plan.paths[i].path, f.decrypted));
+        assert(in_copy == plan.paths[i].disc_copy);
+        assert(!(plan.paths[i].disc_copy && plan.paths[i].saves));
         assert(!native_test_path_within(plan.paths[i].path, f.manifests));
     }
 
     /* Nothing goes while the game starts, runs or builds. */
     app->launch_pending = true;
     assert(player_app_removal_blocker(app, 0) != NULL);
-    assert(!player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    assert(!player_app_remove_game_and_data(app, 0, 0u, error, sizeof(error)));
     assert(error[0] != '\0');
     app->launch_pending = false;
     app->is_game_running = true;
@@ -4780,7 +4997,7 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     app->build_session.is_building = false;
     assert(nk_platform_dir_exists(f.package));
 
-    assert(player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    assert(player_app_remove_game_and_data(app, 0, 0u, error, sizeof(error)));
     assert(app->game_count == 1 && strcmp(app->games[0].disc_id, "RMV01305") == 0);
     assert(!nk_platform_dir_exists(f.package));
     assert(!nk_platform_dir_exists(f.cache_packages));
@@ -4794,6 +5011,7 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     }
     assert(nk_platform_dir_exists(f.saves));
     assert(nk_platform_dir_exists(f.decrypted));
+    assert(nk_platform_dir_exists(f.discs));
     assert(nk_platform_dir_exists(f.manifests));
     assert(nk_platform_file_exists(f.iso));
     remove(app->library.library_path);
@@ -4802,13 +5020,50 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     /* With the box ticked the saves go too, and so does the emptied folder. */
     removal_fixture_make(&f, "RMV01304");
     app = removal_test_app(&f, "RMV01304");
-    assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+    assert(player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
     assert(!nk_platform_dir_exists(f.games));
     assert(!nk_platform_dir_exists(f.saves));
     assert(!nk_platform_dir_exists(f.package));
     assert(nk_platform_dir_exists(f.decrypted));
+    assert(nk_platform_dir_exists(f.discs));
     assert(nk_platform_file_exists(f.iso));
     remove(app->library.library_path);
+    free(app);
+
+    /* #2003: with the other box ticked the decrypted files and the disc copy go,
+       and the saves, the manifests and the disc image stay. */
+    removal_fixture_make(&f, "RMV01304");
+    app = removal_test_app(&f, "RMV01304");
+    assert(player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_DISC_COPY, error,
+                                           sizeof(error)));
+    assert(!nk_platform_dir_exists(f.decrypted));
+    assert(!nk_platform_dir_exists(f.discs));
+    assert(!nk_platform_dir_exists(f.package));
+    assert(nk_platform_dir_exists(f.saves) && nk_platform_dir_exists(f.memstick));
+    assert(nk_platform_dir_exists(f.manifests));
+    assert(nk_platform_file_exists(f.iso));
+    remove(app->library.library_path);
+
+    /* #2003 review: a disc copy file that can't be deleted is reported, not passed over, and
+       the game stays in the library. A file open without delete sharing is that on Windows;
+       POSIX deletes open files, so the case is Windows only. */
+    if (nk_platform_host_kind() == NK_HOST_WINDOWS) {
+        char held_path[NK_MAX_PATH * 2];
+        FILE *held;
+        free(app);
+        removal_fixture_make(&f, "RMV01304");
+        app = removal_test_app(&f, "RMV01304");
+        removal_test_path(held_path, sizeof(held_path), f.discs, "expanded.iso", NULL, NULL);
+        held = fopen(held_path, "rb");
+        assert(held != NULL);
+        assert(!player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_DISC_COPY, error,
+                                                sizeof(error)));
+        assert(error[0] != '\0');
+        assert(app->game_count == 2 && strcmp(app->games[0].disc_id, "RMV01304") == 0);
+        assert(nk_platform_file_exists(held_path));
+        fclose(held);
+        remove(app->library.library_path);
+    }
 
     /* A showcase demo and a disc ID that is not a plain folder name are
        refused before anything is planned. */
@@ -4817,10 +5072,10 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     app->games[0].title_id[0] = '\0';
     snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "..");
     assert(player_app_removal_blocker(app, 0) != NULL);
-    assert(!player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    assert(!player_app_remove_game_and_data(app, 0, 0u, error, sizeof(error)));
     free(app);
     printf("PASS: remove from library deletes what Nakagawa built and keeps the disc "
-           "image and, unless asked, the saves\n");
+           "image and, unless asked, the saves and the disc copy\n");
 }
 
 /* #1285: a release zip's verified prereqs/ tree beside bin/ runs BUILD PACKAGE
@@ -4981,7 +5236,9 @@ static void test_bundled_prerequisite_build(const char *self_executable) {
     assert(!player_app_start_package_build(app, 0));
     assert(app->active_view == VIEW_ERROR);
     assert(strcmp(app->last_error.error_code, "PREREQUISITE_BUNDLE_INVALID") == 0);
-    assert(strstr(app->last_error.message, "cpython-embed-amd64") != NULL);
+    /* The card says what to do; the tool's own line (which part is damaged) is in the details. */
+    assert(strstr(app->last_error.message, "Extract the download again") != NULL);
+    assert(strstr(app->last_error.details, "cpython-embed-amd64") != NULL);
     assert(app->prerequisites.phase != PLAYER_PREREQ_CONSENT);
     assert(!app->build_session.is_building);
 
@@ -6135,6 +6392,10 @@ int main(int argc, char **argv) {
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);
     test_error_cards_are_plain();
+    test_every_error_code_has_a_friendly_card();
+    test_link_and_library_failures_are_cards();
+    test_user_folders_open_from_settings();
+    test_dropped_files_are_queued_and_summarised();
     test_platform_seam_answers_for_this_host();
     test_platform_cards_name_this_platform();
     test_windows_block_cards_name_the_block();
@@ -6785,8 +7046,6 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_SUPPORTED_TITLE;
         assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_UNSUPPORTED_TITLE;
-        assert(player_app_focus_count(stops) == 1);
-        stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
         assert(player_app_focus_count(stops) == 18); /* two pacing modes; scaling; launcher fullscreen; online options; UI sounds */
@@ -10460,7 +10719,7 @@ int main(int argc, char **argv) {
            and exits cleanly (elapsed >= 500 ms, code 0: no error). */
         set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
         {
-            char error_before[32];
+            char error_before[48];
             snprintf(error_before, sizeof(error_before), "%s",
                      rep->last_error.error_code);
             assert(player_app_launch_game(rep, 0));

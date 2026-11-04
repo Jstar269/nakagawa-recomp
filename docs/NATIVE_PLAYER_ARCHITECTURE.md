@@ -24,9 +24,9 @@
 > `VIEW_PREPARING` screen is still an honest unavailable state, reachable today
 > only as a captured view.
 
-## 1. Executive Vision: The Honest "Program + ISO" Contract
+## 1. Goal: the "Program + ISO" contract
 
-The ultimate productization goal of Nakagawa Recomp is to deliver a seamless, modern, zero-terminal gaming experience without sacrificing low-level emulation (LLE) correctness or provenance integrity:
+The player's goal is that a user goes from their own disc to a running game without a terminal, while keeping low-level emulation (LLE) correctness and provenance intact:
 
 ```text
 Download / Install Nakagawa Recomp
@@ -110,7 +110,7 @@ Not done yet:
 The diagram below is the target separation. The implemented public slice currently reaches
 title lookup, bounded ISO inspection and ISO/XB staging, library package build and
 validation, launch-session validation, and child-process lifecycle. The player decrypts
-a UMD disc's encrypted program files locally with built-in tables (#295); retail-disc hash
+a UMD disc's encrypted program files locally with built-in tables (#1494); retail-disc hash
 validation and overlay parity remain unbuilt.
 
 ```text
@@ -154,7 +154,7 @@ The flow below is the complete productization target, not a description of the c
 executable. Today the player opens a native SDL file picker, inspects a selected ISO, runs
 bounded ISO/XB staging for supported inputs, builds a runtime package from the library with
 live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). The player decrypts the encrypted
-executable and modules of a UMD disc image you own, locally, when it checks the disc ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
+executable and modules of a UMD disc image you own, locally, when it checks the disc ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)); retail-disc hash validation
 and one-click play from an arbitrary ISO without the developer toolchain remain unbuilt
 ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
@@ -185,12 +185,12 @@ and one-click play from an arbitrary ISO without the developer toolchain remain 
      under those roots (for example `xbdata`) must be present, or the disc is
      refused with `[STAGE_DATA_FOLDER_MISSING]` before anything is promoted.
    - Native project-authored XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
-   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files; the disc check before it decrypts the encrypted `EBOOT.BIN` and modules that have no plain copy yet ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files; the disc check before it decrypts the encrypted `EBOOT.BIN` and modules that have no plain copy yet ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)).
    - Atomic directory promotion occurs only after the worker completes; failed/cancelled staging is discarded.
    - The promoted root is registered with a persistent asset census and becomes
      the launch session's preferred `SR_DATAROOT`/`SR_MEMSTICK` source.
    - An encrypted `~PSP`/`~SCE` executable without a user-supplied `EBOOT.elf` stops as
-     `ENCRYPTED_EXECUTABLE` ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). Without a supported plain or decrypted
+     `ENCRYPTED_EXECUTABLE` ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)). Without a supported plain or decrypted
      executable, a missing recompiled child is reported instead of fabricated.
    - Every check classifies the disc's program input (`PlayerInputClass` in `src/player/player_state.h`): plain ELF,
      homebrew or project-made, user-supplied decrypted retail, encrypted retail still short of decrypted copies, or

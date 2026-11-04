@@ -7,6 +7,9 @@ switches that are added for a focused investigation and have not yet been promot
 
 ## Quick Start
 
+These examples run the Hot Shots Tennis developer build in `build\hst`, which needs your own copy of the
+game and its title manifest; any other runtime takes the same variables.
+
 ```powershell
 # Enable all debug categories
 $env:SR_DEBUG = "0xFF"
@@ -81,6 +84,20 @@ divided by the interval's `wall_ms`, and VBlanks per frame are
   per-CPU scheduler clocks the kernel keeps within a tick or two of the wall clock: one frame can
   read a few ms long, and a run's sum is off by one reading at most. The JSON summary's `frames`
   object holds the run totals.
+
+The buckets say how many frames missed their period, not why. `SR_PERF_FRAMES=<path>` writes one
+CSV row per new game frame, so a slow frame can be read with its cause; like the other paths it
+turns the counters on by itself. `vcount` is the VBlank of the new frame and `vblanks` the VBlanks
+since the previous one; `work_ms` is that frame's host work as above (empty where the thread clock
+gave no reading) and `wall_ms` the host time between the two frames. Every other column is what
+the frame spent in one area, from the same counters as the one-second rows: `guest_ms`, `aot_ms`,
+`interp_ms`, `ge_cpu_ms` with `ge_cpu_calls`, `ge_wait_ms` with `ge_waits`, `readback_waits`, the
+Vulkan `vk_submit_ms`, `vk_wait_ms`, `vk_readback_ms`, `vk_pipeline_ms` and
+`vk_pipeline_creations`, `texture_decode_ms` with `texture_decodes`, `storage_ms` (disc image and
+file reads), `atrac_ms`, `h264_ms`, `audio_mix_ms`, `present_ms` and `sched_switches`. The first
+new frame starts the clock and writes no row, and a re-present of the same buffer adds its work to
+the next new frame. Join the rows with an `SR_SAMPLE_SPEC` file of the same run by VBlank to see
+which game phase the slow frames come from.
 
 For sparse GE front-end attribution, build with `GE_FRONTEND_PROFILE=1` (the default is `0`) and
 run with `SR_PERF=1` and `SR_GE_CPU_PROFILE=1`; `command_dispatch` is exported with those two, and
@@ -157,8 +174,8 @@ The summary fields mean:
   VFS byte/read/failure counters. `media` counts H.264 and ATRAC decode calls, elapsed time, and
   failures. If the host H.264 backend is unavailable, the runtime reports its named boundary
   (`H.264 backend unavailable; in the works (#283)`) instead of manufacturing a decode result.
-  `audio` separates SAS mix time from host output-enqueue time and frames; unavailable public audio
-  output remains an explicit product boundary (#301).
+  `audio` separates SAS mix time from host output-enqueue time and frames; public builds play sound through
+  SDL3 (#301), and with no output device the game runs silently.
 
 For exact AOT instruction counts, rebuild generated chunks with the compile-time profile:
 
@@ -390,6 +407,33 @@ not matched yet. The list is derived from a title's code, so keep it with the ti
 build inputs and out of the repository. A changed list is not a Makefile prerequisite, so
 rebuild the title's `_recomp.c` after merging.
 
+**Code a game installs at run time (#1933).** Some games copy code into their BSS or heap from their
+own data files and call it. No translation covers that code, so the call stops as
+`target-not-executable`, and no interpreter runs it (the PR #118 floor). Setting
+`SR_CODE_CAPTURE=<folder>` makes such a stop also write one capture to the folder, and print one more
+line, `CODE_CAPTURE: wrote code_capture_<target>_<digest>.nkcap [lo,hi) target=...`. The capture
+holds the target and the main RAM around it, up to 64 KiB on each side, that no executable span and
+no bound module owns. The run still stops. Rebuild with the folder:
+
+```powershell
+python tools/code_capture.py info <folder>           # the images the captures make
+#   codegen.py ... --code-capture=<folder>           (Makefile: CODEGEN_USER_ARGS=--code-capture=<folder>)
+```
+
+Captures that overlap and agree byte for byte become one image. Each image is translated as an ELF type
+0xFFA8 overlay at its own address. Its analysis is seeded only from the addresses the runs called, so a
+word that only looks like code is never translated. The translation's identity is the words it
+translated, as for the overlays of #1938. At instruction-cache maintenance the runtime binds it only
+while memory holds exactly those words (`CODE_OVERLAY_BOUND`). The data around the code does not
+matter. When one of those words differs, the translation is unbound, and a call there stops again and
+writes a capture of the new bytes. Captures of the same address with different bytes stay separate
+images, and they swap as memory changes. A captured target the build cannot translate is named
+(`captured target 0x... has no translation`), and a call to it still stops by name.
+
+A capture holds bytes of your own game: keep the folder with the title's other private files. The
+repository ignores `*.nkcap`, and a capture is never committed or published.
+`mingw32-make code-capture-selftest` runs the whole loop on a synthetic routine.
+
 The share is a time share. It overstates the interpreter's share of instructions, because the
 interpreter is slower per instruction. The exact instruction share still needs a
 `PERF_AOT_INSTRUCTIONS=1` build with `SR_PERF=1`. Time is charged to the tier that is running. A
@@ -499,6 +543,30 @@ The NID is always the first whitespace-separated token so simple `awk '{print
 $1}'` extraction keeps working; consumers that only need the call sequence
 should ignore the trailing uid/vblank columns.
 
+#### The `HLE` lines on stderr
+
+A run writes a few `HLE ...` lines to stderr whatever `SR_DEBUG` says; no `SR_*` switch turns them on. They
+tell you how far to trust a result. All of them come from `src/rt/hle.c`, and `<name>`, `<nid>` and `<code>` below
+stand for the import's name, its NID and a result code. Only the last two stop the run; the others are
+observations.
+
+| Line (exact text) | Where | Meaning and next step |
+| --- | --- | --- |
+| `HLE: unverified: <name> (NID 0x<nid>) has no recorded evidence (docs/HLE_COVERAGE.md)` | `src/rt/hle.c:105` | Once per NID, just before its handler first runs. The handler exists, but no test records evidence for it. The line changes no result. Look the NID up in [`HLE_COVERAGE.md`](HLE_COVERAGE.md) before you trust what the handler returned. |
+| `HLE: controlled refusal: <name> (NID 0x<nid>) returned 0x<code>; in the works (#341)` | `src/rt/hle.c:86` | Once per NID. The handler is registered only to answer a fixed error code (`0x8...`), because the function is not modelled yet. The game gets that error, not an invented success. Find the handler with the "Find an HLE handler" recipe in [Quick recipes](#quick-recipes). |
+| `HLE: compatibility exception: <name> (NID 0x<nid>) keeps result 0; semantics in the works (<issue>)` | `src/rt/hle.c:114` | Once per NID, after the handler ran. The handler returns 0 so the game can go on, but the real semantics are not modelled; `<issue>` is the tracking issue. If the game misbehaves near this call, start from that issue. |
+| `HLE unimplemented summary: <name> (NID 0x<nid>) -> 0x<code>; in the works (#341)` or `HLE unimplemented summary: <name> (NID 0x<nid>) kept compatibility result 0; in the works (<issue>)` | `src/rt/hle.c:71`, `src/rt/hle.c:76` | Printed once at process exit (registered with `atexit`), one line for each NID that earlier printed a controlled refusal or a compatibility exception. It is the same information gathered at the end of the log. A run that ends with `_Exit`, such as the stop below, does not print it. |
+| `UNSUPPORTED_IMPORT: <name> <detail>; the run stops here (#308)` | `src/rt/hle.c:1922` (`hle_unmodelled_stop`) | A handler met an argument shape the runtime does not model. Under the scheduler the run exits with code 7 and the player shows an `unsupported-import-<name>` stop card. See `UNSUPPORTED_IMPORT` in [`FAILURE_CODES.md`](FAILURE_CODES.md). Fix or model the case; do not work around the stop. |
+| `HLE: unimplemented nid 0x<nid> (<name>) (thread uid 0x<uid>)`, then an indented line `-> add a handler in src/rt/hle.c: sr_hle_register(0x<nid>u, "<name>", h_...);` | `src/rt/hle.c:4072` (`sr_syscall`) | The game called an import with no handler at all (`<name>` is `unknown` if the NID is not in the name table). The run stops: exit code 7 under the scheduler, an HLE-miss stop otherwise. Add a handler, or an unsupported registration, for that NID. |
+
+Two more lines come from registration and mean a build problem, not a game problem:
+`HLE: duplicate NID 0x<nid> (<name>) rejected; first was <name>` (`src/rt/hle.c:216`) and
+`HLE: invalid unsupported result 0x<code> for <name> (NID 0x<nid>)` (`src/rt/hle.c:243`; an unsupported
+result must have its top bit set). Both are printed while handlers register; the second registration is dropped.
+
+`SR_HLELOG=1` adds the per-call `HLE: calling <name> (0x<nid>) from 0x<uid>` lines (`src/rt/hle.c:4065`). The
+coverage classes, such as `unverified` and `synthetic`, are defined in [`HLE_COVERAGE.md`](HLE_COVERAGE.md).
+
 ### Thread Scheduling (→ SR_DBG_SCHED)
 
 | Variable | Description |
@@ -527,6 +595,24 @@ should ignore the trailing uid/vblank columns.
 | `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, `non_finite` (non-finite values among the four effective matrices, so the record names what the GE drops), decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD`. A non-finite matrix entry is emitted as JSON `null` (printf's `-nan(ind)` is not JSON) and the diff flags it on its own line as `NON_FINITE in bone_written[0..35]` Also one `{"kind":"late_write"}` record per weighted draw whose vertex or index bytes changed between the draw and the next present, `sceGeDrawSync` wait or completed `sceGeListSync` (the runtime reads those bytes at enqueue, earlier than the console's GE would): `vertex_span`/`index_span`, both hashes, `check` and `check_vblank`; mirrored as a `GE_LATE_WRITE` stderr line. A late write is a candidate cause, not proof. |
 | `SR_NAN_TRAP_LIMIT=N` | Report limit for the `SR_NAN_TRAP` build option below (default 20; `0` silences it). Only has an effect in a package built with `make NAN_TRAP=1` |
 | `SR_NAN_TRAP_CONTEXT=1` | After each `NAN_TRAP` line, a `NAN_TRAP_CTX` line with `ra`, `v0`, `a0`..`a3`, `t0`, `s0`, `s1` and `f12`, then one line per readable 16-byte span behind `v0` and `a0`..`a3` (four floats), so an origin instruction's inputs in guest memory can be read without editing generated code. Same build requirement as the limit. |
+
+### Does a title enable mipmapping? (issue #1373)
+
+The GE prints one line, with no environment variable, at the first textured draw made with mip
+sampling enabled: a mip filter bit in `TEXFILTER` and a highest level above 0 in `TEXMODE`. It
+covers every route that textures (PRIM, BEZIER and SPLINE patches, and immediate vertices):
+
+```text
+GE mip: first draw with mip sampling enabled at frame 412, highest level 3, filter 0x6, level mode 0, bias 0/16 (#1373)
+```
+
+The line says mip sampling is enabled, not that a level above 0 was picked: a constant level 0 or a
+magnified draw counts too. No such line in a run means no textured draw had mip sampling enabled, so
+mip levels cannot be the cause of a defect seen in that run. A line means mipmapping is enabled and
+may or may not be the cause; read the draw's level mode, bias and size to tell. The line names the
+first draw only; `g_ge_mip_draws` (`src/rt/recomp.h`) counts all of them for the whole run and
+`g_ge_mip_lines_printed` counts the lines (0 or 1). `test_ge_texture_mip_levels` and
+`test_ge_mip_use_trace_routes` check both.
 
 ### Locating the instruction that produced a NaN (issue #69)
 
@@ -646,12 +732,12 @@ The diagnostic does not skip guest work or change GE execution.
 
 | Variable | Description |
 | ---------- | ------------- |
-| `SR_INLOG=1` | Log input state changes |
+| `SR_INLOG=1` | Log each change of the pad state the guest is handed, buttons and left stick (`ctrl_latch:` lines, the input of `tools/padscript_from_log.py`); every analog move prints a line, so a live-pad session logs a lot |
 | `SR_PAD=HEX` | Override pad state (hex buttons) |
 | `SR_PADPERIOD=N` | Automatic pad-pulse period in vblanks (default 240) |
 | `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4); each pulse is held until the guest has read it (see [Scripted input is delivered in guest time](#scripted-input-is-delivered-in-guest-time)) |
 | `SR_PADSTART=N` | Pad override start frame |
-| `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width` table |
+| `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width [lx ly]` table |
 | `SR_PADSCRIPT_READ_BUDGET=N` | Vblanks a scripted press may wait for the guest to read it before the run fails (default 1800; a press whose width is in guest reads may wait for all of them); not a whole number >= 1 refuses the script |
 | `SR_OSK_SCRIPT=FILE` | Scripted on-screen-keyboard answers, one per input field in order (`CANCEL` answers that field as cancelled) |
 | `SR_OSK_TEXT=TEXT` | Answer every on-screen-keyboard field with the same text |
@@ -679,6 +765,33 @@ The converter expands shorter presses so a replay holds each press for as many
 vblanks as a person would. A one-vblank pulse can no longer fall between the
 game's controller reads, because scripted input waits for a read (below). Use
 `--minimum-width 1` only when an exact-width replay is required.
+
+The left stick is recorded with the buttons. Each `ctrl_latch:` line carries the
+stick the guest was handed (`lx=`, `ly=`; a title in digital mode reads 128, 128),
+and a row whose stick is off centre gets two more columns, `<frame> <hexmask>
+<width> <lx> <ly>`, which the replay holds for that row's width. Where rows
+overlap, the stick of the row that started last holds. A sweep of the stick passes
+through a new position every vblank; positions held for fewer than
+`--stick-min-width` vblanks (default 4) are folded into the next position, so the
+table keeps the positions the stick stayed at. Use `--stick-min-width 1` to keep
+every recorded position. A table is refused at load past 4096 rows; a long
+analog session that passes it needs a larger `--stick-min-width`, or to be
+recorded in parts.
+
+A replayed stick is therefore approximate, not a sample-for-sample copy:
+
+- A position held for fewer than `--stick-min-width` vblanks is not replayed; the
+  stick moves to the next position that many vblanks early.
+- A short press is expanded to `--minimum-width`, and the stick it was pressed
+  with is held for the expanded width as well, up to 8 vblanks by default, unless
+  a later row holds the stick somewhere else.
+- A row with a stick and no button is a press: the replay holds it until the
+  guest has read it, as it holds a button.
+
+Rows without a stick replay exactly as they did before stick columns existed. With
+`SR_INLOG=1`, every change of an analog stick prints a line, so a session with a
+live pad writes a large log: a stick at rest that wobbles by one step prints a
+line each time it moves.
 
 ### Scripted input is delivered in guest time
 
@@ -959,6 +1072,10 @@ END
   live input, but a stick cannot be, because a pad at rest does not sit at exactly 128, 128.
 - `STICK` applies to the four pressing steps only, comes first on the line, and is refused at
   load with anything else, including a value outside 0-255 or one that is not a plain decimal.
+- A press the guest never reads fails the run naming the stick position it held, as it names
+  the buttons.
+- A route program has at most 4096 steps; a longer one is refused at load with the line that
+  passed the limit, never cut short.
   No existing route starts a line with the word, so existing routes parse and replay exactly as
   they did. The legacy `frame hexmask width` table has no stick column; write a route program to
   hold the stick.
