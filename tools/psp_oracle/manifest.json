@@ -2362,6 +2362,123 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-IO-EOF-002",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "umd-eof-state-before",
+          "umd-eof-a-open",
+          "umd-eof-a-seek-past",
+          "umd-eof-a-read-past",
+          "umd-eof-a-seek-negative",
+          "umd-eof-a-seek-wide",
+          "umd-eof-b-open",
+          "umd-eof-b-seek-past",
+          "umd-eof-b-read-past",
+          "umd-eof-b-seek-negative",
+          "umd-eof-b-seek-wide",
+          "umd-eof-raw-open",
+          "umd-eof-raw-seek-past",
+          "umd-eof-raw-read-end",
+          "umd-eof-state-after",
+          "io-umd-eof-done"
+        ],
+        "measurement_note": "Measured by the 2026-11-04 PSP-3000 single-case run (system software 6.61, ARK-5.1.0, PSPLink pspver 6.6.0 through Nakagawa Link in the XMB context, boot 116, a game disc in the drive) of commit 999f3ce3, case io-umd-eof after the transport-write preflight: 15 records and the done record (out0 15), all PASS, acceptance-eligible with 0 blockers. Cited: results and positions relative to each file's size and the disc's last sector, and how many buffer bytes each read changed. The file sizes, the last sector's number and the bytes read stay private with the raw stream in the private campaign directory. PASS means the call results were recorded, and the parser compares no value.",
+        "group": "kernel",
+        "source": "fixtures/psp_oracle/probe_kernel_semantics.c",
+        "prx": "io_umd_eof.prx",
+        "apis": [
+          "sceIoOpen",
+          "sceIoClose",
+          "sceIoRead",
+          "sceIoLseek",
+          "sceIoLseek32",
+          "sceUmdCheckMedium",
+          "sceUmdGetDriveStat",
+          "sceKernelDcacheWritebackInvalidateRange"
+        ],
+        "diagnostic_case_ids": [
+          "io-umd-eof"
+        ],
+        "case_ids": [
+          "umd-eof-state-before",
+          "umd-eof-a-open",
+          "umd-eof-a-seek-past",
+          "umd-eof-a-read-past",
+          "umd-eof-a-seek-negative",
+          "umd-eof-a-seek-wide",
+          "umd-eof-b-open",
+          "umd-eof-b-seek-past",
+          "umd-eof-b-read-past",
+          "umd-eof-b-seek-negative",
+          "umd-eof-b-seek-wide",
+          "umd-eof-raw-open",
+          "umd-eof-raw-seek-past",
+          "umd-eof-raw-read-end",
+          "umd-eof-state-after",
+          "io-umd-eof-done"
+        ],
+        "invariant": "Raw results of #1380's UMD cells, read-only: sceUmdCheckMedium and sceUmdGetDriveStat before and after; for disc0:/UMD_DATA.BIN and disc0:/PSP_GAME/PARAM.SFO opened PSP_O_RDONLY, the size (SEEK_END 0), sceIoLseek past the end from SEEK_END and SEEK_SET, before the start from SEEK_SET and SEEK_END, and to 0xFFFFFFFF and 0x100000000, and sceIoLseek32 past the end and to -1, each with the position after it; 16-byte reads after a refused seek, across the end and at the end (count, buffer bytes changed, position); for umd0: opened PSP_O_RDONLY, the last sector (SEEK_END 0), sceIoLseek and sceIoLseek32 past the last sector with the position after each, and one- and two-sector reads from the last sector and a one-sector read past it (count, buffer bytes changed, position). No value is interpreted.",
+        "issues": [
+          1380
+        ],
+        "risk": "low; read-only on the inserted disc, no Memory Stick file is touched; the MAC address and OpenPSID are never read (import gate)",
+        "reset": "one PRX launch; a fresh boot before the next launch"
+      },
+      {
+        "id": "PSP-HLE-UTILITY-NONE-001",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "utility-none-savedata",
+          "utility-none-msgdialog",
+          "utility-none-netconf",
+          "utility-none-gamedata",
+          "utility-none-sharing",
+          "hle-utility-none-done"
+        ],
+        "measurement_note": "Measured by the 2026-11-04 PSP-3000 single-case run (system software 6.61, ARK-5.1.0, PSPLink pspver 6.6.0 through Nakagawa Link in the XMB context, boot 115) of commit 999f3ce3, case hle-utility-none after the transport-write preflight: 5 records and the done record (out0 5), all PASS, acceptance-eligible with 0 blockers. Cited: with no InitStart, every GetStatus, Update(1) and ShutdownStart of the five dialogs answers 0x80110005. Calls after an InitStart and a process in game context are not covered. The raw stream stays in the private campaign directory.",
+        "group": "system",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_utility_none.prx",
+        "apis": [
+          "sceUtilitySavedataGetStatus",
+          "sceUtilitySavedataUpdate",
+          "sceUtilitySavedataShutdownStart",
+          "sceUtilityMsgDialogGetStatus",
+          "sceUtilityMsgDialogUpdate",
+          "sceUtilityMsgDialogShutdownStart",
+          "sceUtilityNetconfGetStatus",
+          "sceUtilityNetconfUpdate",
+          "sceUtilityNetconfShutdownStart",
+          "sceUtilityGamedataInstallGetStatus",
+          "sceUtilityGamedataInstallUpdate",
+          "sceUtilityGamedataInstallShutdownStart",
+          "sceUtilityGameSharingGetStatus",
+          "sceUtilityGameSharingUpdate",
+          "sceUtilityGameSharingShutdownStart"
+        ],
+        "diagnostic_case_ids": [
+          "hle-utility-none"
+        ],
+        "case_ids": [
+          "utility-none-savedata",
+          "utility-none-msgdialog",
+          "utility-none-netconf",
+          "utility-none-gamedata",
+          "utility-none-sharing",
+          "hle-utility-none-done"
+        ],
+        "invariant": "For each of savedata, the message dialog, netconf, gamedata install and game sharing, with no InitStart of any utility dialog in the process: the raw results of GetStatus, Update(1), GetStatus, ShutdownStart, GetStatus, ShutdownStart and GetStatus, in that order. No InitStart is imported or called. No value is interpreted.",
+        "issues": [
+          1386
+        ],
+        "risk": "low; no dialog is started and nothing is written outside the host0 log",
+        "reset": "one PRX launch; a fresh boot before the next launch"
+      },
+      {
         "id": "PSP-MEMEDGE-001",
         "status": "implemented",
         "hardware_evidence": "CAPTURED",
