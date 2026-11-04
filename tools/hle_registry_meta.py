@@ -1073,7 +1073,7 @@ HANDLER_METADATA = {
     },
     "h_AudioSRCOutputBlocking": {
         "status": "partial",
-        "limitation": "returns 0x80260008 with nothing reserved and the reserved sample count after a reserve (0x400), both measured (PSP-HLE-AUDIO-SRC-001); the volume bound reuses the Output2 bound and the NULL or unreadable buffer result follows the regular output, both unmeasured; the host mixer runs at 44100 Hz, so a 48000 Hz block passes through a band-limited converter and keeps its source-rate pacing (#339)",
+        "limitation": "returns 0x80260008 with nothing reserved and the reserved sample count after a reserve (0x400), both measured (PSP-HLE-AUDIO-SRC-001); the volume bound 0xFFFFF (shared with Output2, from PPSSPP caa91b54b535 Core/HLE/sceAudio.cpp) and the NULL or unreadable buffer result, which follows the regular output, are both unmeasured; the host mixer runs at 44100 Hz, so a 48000 Hz block passes through a band-limited converter and keeps its source-rate pacing (#339)",
     },
     # sceVaudio* (#286): played through the SRC slot above. No PSP measurement; the
     # behaviour follows the public reference named at h_VaudioChReserve.
@@ -1089,7 +1089,7 @@ HANDLER_METADATA = {
     },
     "h_VaudioOutputBlocking": {
         "status": "partial",
-        "limitation": "the SRC blocking output for a Vaudio reservation: returns the reserved sample count, 0x80260008 with no Vaudio reservation, and 0x8026000b above volume 0x8000 (the Output2 bound, reused); unmeasured on a PSP",
+        "limitation": "the SRC blocking output for a Vaudio reservation: returns the reserved sample count, 0x80260008 with no Vaudio reservation, and 0x8026000b above volume 0xFFFFF, a project choice by analogy with the Output2 and SRC bound because this model plays Vaudio through the SRC output (the public reference checks no Vaudio volume); unmeasured on a PSP (#1986)",
         "evidence": ["tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot"],
     },
     # Route-A graduation batch 1 (#341, 2026-10-19). Each status is bounded to
@@ -1138,7 +1138,7 @@ HANDLER_METADATA = {
             "fixtures/psp_oracle/probe.c:run_audio_query",
             "PSP-AUDIO-001 cell: audio-out2-output-blocking",
         ],
-        "limitation": "audio-out2-output-blocking measures one valid silent 1024-sample block at maximum volume and makes no acoustic claim; not-reserved, volume, buffer-error and audio_output error-propagation behavior are not covered (the handler discards audio_output's return) (#341)",
+        "limitation": "audio-out2-output-blocking measures one valid silent 1024-sample block at volume 0x8000 and makes no acoustic claim; volumes above 0xFFFFF are refused with 0x8026000b following PPSSPP caa91b54b535 Core/HLE/sceAudio.cpp, unmeasured; not-reserved, buffer-error and audio_output error-propagation behavior are not covered (the handler discards audio_output's return) (#341)",
     },
     "h_AudioOutput2Release": {
         "status": "partial",

@@ -1906,35 +1906,35 @@ bool nk_launch_describe_spawn_block(int os_error, const char *program,
     NkSpawnBlock block = nk_platform_spawn_block(os_error);
     if (block == NK_SPAWN_BLOCK_NONE) return false;
     if (!program || !program[0]) program = "the program";
-    if (!program_title || !program_title[0]) program_title = "Program";
+    if (!program_title || !program_title[0]) program_title = "program";
     out->block = block;
     switch (block) {
         case NK_SPAWN_BLOCK_ACCESS_DENIED:
             snprintf(out->code, sizeof(out->code), "WINDOWS_BLOCKED_START");
-            snprintf(out->title, sizeof(out->title), "Windows Blocked the %s", program_title);
+            snprintf(out->title, sizeof(out->title), "Windows blocked the %s", program_title);
             snprintf(out->message, sizeof(out->message),
                      "Windows refused to start %s (access denied). This is often a Microsoft "
                      "Defender attack surface reduction rule. Those rules block programs that are "
                      "new to Windows, and every game Nakagawa builds on this PC is new. Protection "
                      "history in Windows Security names the rule. Whoever manages it can exclude "
-                     "Nakagawa's folders. Please don't turn Windows Security off.",
+                     "Nakagawa's folders. Don't turn Windows Security off.",
                      program);
             break;
         case NK_SPAWN_BLOCK_THREAT:
             snprintf(out->code, sizeof(out->code), "WINDOWS_DEFENDER_THREAT");
-            snprintf(out->title, sizeof(out->title), "Windows Security Blocked the %s",
+            snprintf(out->title, sizeof(out->title), "Windows Security blocked the %s",
                      program_title);
             snprintf(out->message, sizeof(out->message),
                      "Windows Security says %s contains a threat, so Windows would not start it. "
                      "Protection history in Windows Security names the detection. If you checked "
-                     "your download, you can allow it there and try again. Please don't turn "
+                     "your download, you can allow it there and try again. Don't turn "
                      "Windows Security off.",
                      program);
             break;
         case NK_SPAWN_BLOCK_POLICY:
         default:
             snprintf(out->code, sizeof(out->code), "WINDOWS_POLICY_BLOCKED");
-            snprintf(out->title, sizeof(out->title), "Windows Blocked the %s", program_title);
+            snprintf(out->title, sizeof(out->title), "Windows blocked the %s", program_title);
             snprintf(out->message, sizeof(out->message),
                      "A Windows policy on this PC does not allow %s to start. Whoever manages "
                      "this PC sets that policy (AppLocker, App Control or a software restriction "

@@ -239,7 +239,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         const char *badge = guided ? "Needs your files" : blocked ? "Not playable yet"
             : model->recorded ? "On the list"
             : (model->experimental ? "Not tested yet"
-               : (model->supported ? "Title profiled" : "Profile missing"));
+               : (model->supported ? "Known game" : "Not recognised"));
         uint32_t tone = guided ? theme->warning : blocked ? theme->error
             : model->recorded ? theme->ready
             : (model->experimental ? theme->warning
@@ -279,9 +279,9 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                    "stop early. You can add it and try.";
             note_tone = theme->warning;
         } else if (model->supported) {
-            note = "This disc is listed in the native title catalog.";
+            note = "Nakagawa recognises this disc.";
         } else {
-            note = "This disc is not listed in the native title catalog.";
+            note = "Nakagawa doesn't recognise this disc.";
             note_tone = theme->warning;
         }
         wizard_text(ui, 0u, model->converting_package ? "Converting the PSN package"
@@ -321,7 +321,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                     NkUiTextStyle file = nk_ui_type(NK_UI_TYPE_DATA, theme->dim);
                     nk_ui_text(ui, WIZ_ID_TEXT + 4u,
                                nk_ui_text_clamp(ui, safe_text(model->current_file,
-                                                              "Preparing the disc image..."),
+                                                              "Preparing the disc image…"),
                                                 &file, inner - 32.0f, 1), &file);
                 }
             } else if (guided) {
