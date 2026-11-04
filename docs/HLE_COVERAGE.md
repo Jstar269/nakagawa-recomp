@@ -26,8 +26,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 26 |
 | `ppsspp-derived` | 119 | 89 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 344 | 226 |
-| `unverified` | 158 | 22 |
+| `synthetic` | 347 | 226 |
+| `unverified` | 155 | 22 |
 | total | 685 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -455,7 +455,7 @@ belongs to without the census's own grouping.
 | `0x91de343c` | `sceKernelSetCompiledSdkVersion500_505` | kernel_memory | `synthetic` | registry evidence `tools/test_sdkver_c.py` |
 | `0x91e4f6a7` | `sceKernelLibcClock` | kernel_time | `synthetic` | HLE selftest dispatch |
 | `0x91e70e35` | `sceUtilityNetconfUpdate` | utility | `synthetic` | HLE selftest dispatch |
-| `0x920f104a` | `sceKernelIcacheInvalidateAll` | cache_dma | `unverified` | no recorded evidence |
+| `0x920f104a` | `sceKernelIcacheInvalidateAll` | cache_dma | `synthetic` | HLE selftest dispatch |
 | `0x92e41280` | `sceRegOpenRegistry` | system | `synthetic` | HLE selftest dispatch |
 | `0x93440b11` | `sceWlanDevIsPowerOn` | network | `synthetic` | HLE selftest dispatch |
 | `0x93ef3843` | `sceNetAdhocMatchingStart` | network | `unverified` | no recorded evidence |
@@ -581,7 +581,7 @@ belongs to without the census's own grouping.
 | `0xc132e22f` | `sceMpegQueryMemSize` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0xc152080a` | `sceCtrlPeekBufferNegative` | input | `synthetic` | HLE selftest dispatch |
 | `0xc1734599` | `sceKernelReferLwMutexStatus` | kernel_sync | `synthetic` | HLE selftest dispatch |
-| `0xc2df770e` | `sceKernelIcacheInvalidateRange` | cache_dma | `unverified` | no recorded evidence |
+| `0xc2df770e` | `sceKernelIcacheInvalidateRange` | cache_dma | `synthetic` | HLE selftest dispatch |
 | `0xc41c2853` | `sceRtcGetTickResolution` | rtc | `synthetic` | HLE selftest dispatch |
 | `0xc45c99cc` | `sceMpegQueryUserdataEsSize` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c; registry notes name PPSSPP |
 | `0xc492f751` | `sceUtilityGameSharingInitStart` | utility | `synthetic` | HLE selftest dispatch |
@@ -631,7 +631,7 @@ belongs to without the census's own grouping.
 | `0xd7a29f46` | `sceMpegRingbufferQueryMemSize` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0xd81957b7` | `sceUtilityScreenshotGetStatus` | utility | `unverified` | no recorded evidence |
 | `0xd8199e4c` | `sceKernelReferFplStatus` | kernel_memory | `hardware-measured` | PSP oracle PSP-HLE-KERNEL-STATUS-001 |
-| `0xd8779ac6` | `sceKernelIcacheClearAll` | cache_dma | `unverified` | no recorded evidence |
+| `0xd8779ac6` | `sceKernelIcacheClearAll` | cache_dma | `synthetic` | HLE selftest dispatch |
 | `0xd8b299ae` | `sceKernelSetVTimerHandler` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-TIMER-ORDER-001 |
 | `0xd8b73127` | `sceKernelGetModuleIdByAddress` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0xd8c5f121` | `sceMpegCreate` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
