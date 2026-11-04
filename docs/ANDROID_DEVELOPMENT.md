@@ -32,7 +32,7 @@ below are the ones this was built and tested with.
 - Gradle 9.8.2 (`android/gradle/wrapper/gradle-wrapper.properties` pins it; run
   `gradle -p android wrapper` once to create a local `gradlew`, which stays untracked).
 - A JDK 17 or later (Android Studio's bundled JBR works).
-- Git, for the pinned SDL3 3.4.18 and SDL3_ttf 3.2.2 sources the build fetches into
+- Git, for the pinned SDL3 3.4.20 and SDL3_ttf 3.2.2 sources the build fetches into
   `build/android-deps` (the commits hosted CI builds for Linux; `android/app/deps.cmake`).
 - For the showcase demos: PSPDEV, or prebuilt demo PRXs, as for the desktop showcase
   ([`SHOWCASE.md`](SHOWCASE.md)).
