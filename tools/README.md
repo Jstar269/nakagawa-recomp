@@ -157,6 +157,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `code_capture.py` | Read the captures a run writes (`SR_CODE_CAPTURE`) of code the game installed at run time, and make each an overlay `codegen.py --code-capture` translates and the runtime binds by its code (#1933). |
 | `elf_bounds.py` | Shared, fail-closed ELF32 envelope checks for the offline PSP tools. |
 | `hle_manifest.py` | Generate the authoritative HLE registration manifest from the runtime HLE table, plus the semantic-status census artifact (`--census-json` / `--census-markdown`). |
+| `hle_focus_check.py` | Prove a focused HLE selftest executable links only the HLE files it names: compares the executable's code symbols with those of the excluded files' objects (#307). |
 | `hle_registry_meta.py` | Curated classification metadata for the HLE registration manifest. |
 | `gen_nidnames.py` | Generate the NID name header from the tracked NID corpus. |
 | `gen_ui_assets.py` | Embed the vendored Kenney prompt glyphs and UI sounds (`third_party/kenney/`) in `src/ui/nk_ui_assets.c`; `--check` reports a stale file. |
@@ -250,6 +251,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `library_build.py` | Build every disc in a folder into one player data folder, with a per-title manifest, keyed by disc ID and image hash and checked against your Redump list. |
 | `compat_table.py` | Turn a private library build into the public whole-library summary in `docs/COMPATIBILITY.md`: counts only, refusing any disc identifier. |
 | `library_sweep.py` | Run the production ISO bring-up route across a library and aggregate blockers. |
+| `library_regress.py` | Library regression net: record each title's ladder place (built, first frame, frames, how its launch ended) per run and commit, compare two runs for titles that went backwards, and run a timed boot-to-first-frame subset. |
 | `progress_tracker.py` | Run concrete gating checks against real outputs and emit a structured progress record. |
 
 ### Publication, provenance and supply chain
@@ -392,6 +394,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_nidseq.py` | Fail-closed import-sequence extraction and oracle comparison. |
 | `test_gen_nidnames.py` | Tests for the corpus-driven NID name-table generator. |
 | `test_hle_manifest.py` | Tests for the fail-closed HLE registration manifest. |
+| `test_hle_focus_check.py` | Tests for the focused-HLE-link check, on small compiled objects. |
 | `test_stale_code_detect.py` | Opt-in stale translated-code tracking: detection and invalidation. |
 | `test_trace_window_probe.py` | Contract test for the address-windowed instruction trace. |
 | `test_callback_correctness.py` | Run the callback dispatcher for real instead of grepping its source. |
@@ -421,7 +424,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_savedata_security.py` | Production-path regressions for the bounded savedata security successor. |
 | `test_savedata_spans.py` | Guest span validation, preflight ordering and portable contained-delete seams. |
 | `test_sched_invariants.py` | Source-level guards for scheduler and thread-lifecycle invariants. |
-| `test_scripted_input.py` | Scripted controller input reaches the guest in guest time, including on a starved host. |
+| `test_scripted_input.py` | Scripted controller input reaches the guest in guest time, including on a starved host, and a held left stick lasts exactly its segment. |
 | `test_sdkver_c.py` | Retained-state regression for the compiled SDK-version contract. |
 | `test_tracediff_local_coverage.py` | Strict local trace coverage contract for `tracediff.py --strict-local` and the codegen/microtest gates. |
 | `test_vfs_c.py` | Host-neutral VFS path joining regression test. |
@@ -519,6 +522,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_compat_table.py` | The whole-library summary's tier rules, and that no title, disc ID, file name or hash reaches it. |
 | `test_disc_verify.py` | Whole-image hashing, the Redump datafile reader, the verified retail / modified / unknown tiers, and bring-up library records keyed by disc ID plus hash. |
 | `test_library_sweep.py` | Regressions for the private, resumable library compatibility sweep. |
+| `test_library_regress.py` | The library ladder, its snapshots, the run comparer with its commit ranges, the fast subset's rotation and budget, and title slots. |
 | `test_matrix_disposition.py` | Guard the evidence-matrix disposition field against becoming uninformative. |
 | `test_matrix_report.py` | Generate a conservative, machine-readable unittest evidence matrix. |
 | `test_parse_fuzz.py` | Seeded, deterministic mutation fuzzing over the public offline parsers. |

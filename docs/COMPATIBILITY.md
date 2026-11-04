@@ -214,6 +214,33 @@ Two images with one disc ID still share some folders, so only one of them is rea
 When two images share a disc ID, `nk_cli.py build-package` needs `--iso-path` to say which one to build, and the
 player's remove refuses to guess which of the two to take out.
 
+### Catching a title that went backwards
+
+`tools/library_regress.py` turns library runs into a regression net. `record <library-build.json> --store <folder>`
+keeps a snapshot of the run: for each title, its commit and its place on a short ladder (build failed, built, first
+frame presented, at least 60 frames presented) and how the first launch ended. A title is alive when it was still
+presenting at the launch timeout, or exited by itself, after at least 60 frames. Otherwise it stopped: with the named
+missing piece, a crash, a hang with no frame, a stall short of 60 frames, or a guest exit before 60 frames. The
+manifest does not record whether a frame was blank, so a blank present (a null framebuffer) still counts as a frame,
+and it does not carry the runtime's stall watchdog, so a title that presents slowly counts as stalled. `compare <old> <new>` takes two
+snapshots or two manifests, lists every title that went down or up with both commits (`--repo <checkout>` lists the
+first-parent commits between them) and exits 1 when any title went down: a lower rung, or a title that was still
+running at a rung and now stops there. A title that stops at the same rung in another way (another missing piece, or
+a hang where a missing import stopped it before, often because the import now works) is listed as changed, for
+review. It never passes a run that proves nothing: it exits 3 (no verdict) when a title the old run judged is
+missing from the new run, was left unfinished, or launched without a verdict (no video on the host, or no recorded
+launch status), and when nothing could be compared at all; each such title is listed. `--partial` judges only the
+titles a run still in progress has ended. Runs are compared like for like only when their launch timeout and frame
+threshold match; otherwise only the rung is compared, up to the first frame. Titles are keyed by their path in the
+disc folder, so a moved or renamed disc counts as a different title until the baseline is recorded again.
+
+`fast` is the check before landing a batch: it boots a rotating subset of the titles that reached a frame in a full
+baseline, sized from the baseline's per-title times to fit `--budget-minutes` (60 by default), builds them with
+`library_build.py --only` into a scratch folder, waits for a free title slot first when `--slot-dir` names a folder
+of lock files, and compares the result with the baseline; a selected title that ends without a verdict makes the
+run exit 3. Each run continues the rotation where the last one stopped. A full `library_build.py` run with `record` is the weekly ladder. Snapshots and comparisons name your own
+discs, so they stay private like the manifest.
+
 Builds run below normal priority with no window, `--jobs` at a time (default one per eight logical CPUs, at most
 four). A title over `--title-timeout` (2,400 s by default) is stopped and recorded. A `PAUSE` file in the work folder
 holds new titles until it is removed, and a `STOP` file ends the run once the titles already started finish. The

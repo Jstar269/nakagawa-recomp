@@ -18,6 +18,10 @@ coverage:
       default:
         informational: true
 
+# The project and patch status checks carry the numbers, with links to the full report. A
+# comment on every pull request repeats them as review conversation that asks for nothing.
+comment: false
+
 # The two measured surfaces upload independently and at different times: the
 # python flag from the Python tooling shards, the c flag from the native core
 # measurement. carryforward keeps each flag's last report current for a commit

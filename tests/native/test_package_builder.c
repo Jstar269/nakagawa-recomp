@@ -707,12 +707,12 @@ static void test_toolchain_preflight(void) {
     assert(strstr(msg, "gcc") != NULL);
     assert(strstr(msg, "PATH") != NULL);
 #if defined(_WIN32) || defined(_WIN64)
-    assert(strstr(msg, "pinned prerequisite consent card") != NULL);
+    assert(strstr(msg, "build tools download prompt") != NULL);
     assert(strstr(msg, "mingw-w64-ucrt-x86_64-gcc") != NULL);
 #else
     /* No download exists off Windows (#306): the card points at the system's
        packages and never at a consent card or an MSYS2 package. */
-    assert(strstr(msg, "pinned prerequisite consent card") == NULL);
+    assert(strstr(msg, "build tools download prompt") == NULL);
     assert(strstr(msg, "MSYS2") == NULL);
     assert(strstr(msg, "build-essential") != NULL);
     assert(strstr(msg, "downloads build tools only on Windows") != NULL);

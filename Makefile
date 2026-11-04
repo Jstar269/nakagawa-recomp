@@ -927,6 +927,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/gpu_sdl3vk/sdl3vk.c \
               src/rt/gpu_sdl3vk/ge_gpu.c \
               src/rt/gpu_sdl3vk/ace_ui.c \
+              src/rt/gpu_sdl3vk/ace_smooth.c \
               src/core/nk_input_profile.c \
               src/core/nk_font.c \
               src/core/nk_json.c \
@@ -1194,11 +1195,13 @@ PUBLIC_TARGETS := \
 	osk-text-entry-selftest \
 	osk-overlay-selftest \
 	ace-selftest \
+	ace-smooth-selftest \
 	ace-ui-selftest \
 	osk-overlay-paint-selftest \
 	psmf-producer-selftest \
 	psmf-media-selftest \
 	psmf-media-selftest-csc-mutant \
+	psmf-media-focused-selftest \
 	audio-selftest \
 	audio-resampler-bench \
 	atrac3p-title-accept \
@@ -1357,11 +1360,13 @@ HELP_DESCRIPTION_fbcap-selftest := run the presenter-neutral frame capture selft
 HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blocking text-entry selftest
 HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-machine selftest (pure C)
 HELP_DESCRIPTION_ace-selftest := run Ace Mode's CPU-only selftest (launch line, 30 Hz detector, readout, report; pure C)
+HELP_DESCRIPTION_ace-smooth-selftest := run Ace Mode's in-between frames selftest on a headless Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_ace-ui-selftest := run Ace Mode's in-game UI selftest (layout, then a headless Vulkan render; SKIPs the GPU leg without Vulkan)
 HELP_DESCRIPTION_osk-overlay-paint-selftest := run the in-window keyboard painter's exact-pixel selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
 HELP_DESCRIPTION_psmf-media-selftest-csc-mutant := prove the media selftest kills a Csc that reports success without writing pixels
+HELP_DESCRIPTION_psmf-media-focused-selftest := run the media selftest linked against only the media HLE files
 HELP_DESCRIPTION_audio-selftest := run the SDL3 host audio output selftest
 HELP_DESCRIPTION_audio-resampler-bench := run the synthetic-input audio resampler microbenchmark (no game data)
 HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
@@ -3176,6 +3181,40 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 		   ! grep -Fq "FAIL: ycbcr-decode: CSC writes the measured conversion of the decoded samples" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the guest pixel assertion" >&2; exit 1; fi; \
 		echo "psmf-media-selftest-csc-mutant: killed by the CSC write assertions"
 
+# psmf-media-focused-selftest -- the same media selftest (#307), linked against six HLE files, not
+# all twenty-seven: hle_mpeg.c and the presentation boundary its A/V measurement drives
+# (display, audio, audio_codec, route, input), plus tests/native/hle_focus_media_stubs.c for the
+# calls into the rest of HLE. tools/hle_focus_check.py then reads the executable's symbol table
+# and fails if any excluded HLE file was linked. $(HLE_OBJS) are only the symbol reference.
+# The runtime's src/core objects (nk_font, nk_json, nk_xb, nk_input_profile and the platform file)
+# come from native-core-objects-core, which native-core-tests builds for the product core tests
+# already: the same sources, no runtime-only define, so the focused link does not compile them a
+# third time (tools/test_native_core_build.py counts one compile per flag set).
+HLE_MEDIA_FOCUS_SRCS := src/rt/hle_mpeg.c src/rt/hle_display.c src/rt/hle_audio.c \
+                        src/rt/hle_audio_codec.c src/rt/hle_route.c src/rt/hle_input.c
+# NC_OBJ_DIR is set here because the prerequisite list below is read before the Native Product Core
+# Tests block that used to define it.
+NC_OBJ_DIR := $(BUILD_ROOT)/native-core
+PSMF_MEDIA_FOCUSED_CORE_RT := $(addprefix $(BUILD_DIR)/,$(notdir $(patsubst %.c,%.o,$(filter src/core/%,$(RT_SRCS)))))
+PSMF_MEDIA_FOCUSED_RT_OBJS := $(filter-out $(PSMF_MEDIA_FOCUSED_CORE_RT),$(PSMF_MEDIA_RUNTIME_OBJS))
+PSMF_MEDIA_FOCUSED_OBJS := $(PSMF_MEDIA_FOCUSED_RT_OBJS) \
+                           $(patsubst $(BUILD_DIR)/%,$(NC_OBJ_DIR)/core/%,$(PSMF_MEDIA_FOCUSED_CORE_RT))
+psmf-media-focused-selftest: native-core-objects-core $(PSMF_MEDIA_FOCUSED_RT_OBJS) $(HLE_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o tests/native/hle_focus_media_stubs.c tools/hle_focus_check.py
+	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest.o
+	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -c tests/native/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest.o
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Werror -c tests/native/hle_focus_media_stubs.c -o $(BUILD_DIR)/hle_focus_media_stubs.o
+	$(file >$(BUILD_DIR)/psmf_media_focused_selftest.rsp,$(BUILD_DIR)/psmf_producer_media_selftest.o $(BUILD_DIR)/psmf_media_selftest.o $(PSMF_MEDIA_FOCUSED_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Wno-unused-function -ffunction-sections -fdata-sections \
+		-o $(BUILD_DIR)/psmf_media_focused_selftest.exe \
+		$(HLE_MEDIA_FOCUS_SRCS) $(BUILD_DIR)/hle_focus_media_stubs.o @$(BUILD_DIR)/psmf_media_focused_selftest.rsp \
+		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
+	$(PYTHON) tools/hle_focus_check.py --exe $(BUILD_DIR)/psmf_media_focused_selftest.exe --objdir $(BUILD_DIR) \
+		--include $(HLE_MEDIA_FOCUS_SRCS) --stub $(BUILD_DIR)/hle_focus_media_stubs.o --require hle_register_psmf_player_handlers sr_hle_test_psmf_av_reset
+	$(BUILD_DIR)/psmf_media_focused_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
+
+# The hosted gate for the focused link (#307): native-core-tests runs on every pull request.
+native-core-tests: psmf-media-focused-selftest
+
 audio-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
 		src/rt/audio_sdl3.c src/rt/perf.c -lSDL3 -lm \
@@ -3684,7 +3723,6 @@ shader-repro-verify:
 NC_CFLAGS_CORE   := -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt
 NC_CFLAGS_PLAYER := $(NC_CFLAGS_CORE) -Isrc/player
 NC_SOURCES       := $(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES)
-NC_OBJ_DIR       := $(BUILD_ROOT)/native-core
 NC_OBJS_CORE     := $(addprefix $(NC_OBJ_DIR)/core/,$(notdir $(NC_SOURCES:.c=.o)))
 NC_OBJS_PLAYER   := $(addprefix $(NC_OBJ_DIR)/player/,$(notdir $(NC_SOURCES:.c=.o)))
 
@@ -3965,6 +4003,28 @@ nk-ui-vk-selftest:
 		echo "FAIL nk-ui-vk-selftest (exit 77, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
 	elif [ $$rc -eq 77 ]; then echo "SKIP nk-ui-vk-selftest (exit 77; the reason is printed above)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL nk-ui-vk-selftest (exit $$rc)"; exit $$rc; fi
+
+# ace-smooth-selftest - Ace Mode's in-between frames (src/rt/gpu_sdl3vk/ace_smooth.c) on a headless
+# Vulkan device: a moving shape lands halfway, a HUD over motion keeps every pixel, a cut holds the
+# old frame and the held frame is the new one, byte for byte. Linked from the pass and the C
+# library alone (invariant S1). No Vulkan headers, loader or device: SKIP (exit 77), visible in
+# the log; NK_UI_VK_REQUIRE=1 makes a skip fail.
+native-core-tests: ace-smooth-selftest
+.PHONY: ace-smooth-selftest
+ace-smooth-selftest: shader-verify
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@if ! printf '%s\n' '#include <vulkan/vulkan.h>' | $(CC) -E -x c $(VULKAN_INC_FLAGS) - >/dev/null 2>&1; then \
+		echo "SKIP ace-smooth-selftest (the Vulkan headers were not found)"; \
+		if [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then exit 1; fi; exit 0; \
+	fi; \
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -Isrc/rt/gpu_sdl3vk $(VULKAN_INC_FLAGS) \
+		src/rt/gpu_sdl3vk/ace_smooth.c src/rt/gpu_sdl3vk/ace_smooth_selftest.c \
+		$(NK_UI_VK_SELFTEST_LIBS) -o $(BUILD_ROOT)/ace_smooth_selftest$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_ROOT_RUN)/ace_smooth_selftest$(EXE_EXT) $(BUILD_ROOT) || rc=$$?; \
+	if [ $$rc -eq 77 ] && [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then \
+		echo "FAIL ace-smooth-selftest (skipped, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
+	elif [ $$rc -eq 77 ]; then echo "SKIP ace-smooth-selftest (exit 77)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL ace-smooth-selftest (exit $$rc)"; exit $$rc; fi
 
 # ace-ui-selftest - Ace Mode's in-game UI (src/rt/gpu_sdl3vk/ace_ui.c): the readout, the launch
 # notice and the crisp keyboard laid out at the overlay's sizes and two ultrawide windows (inside
