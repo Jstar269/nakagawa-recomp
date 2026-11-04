@@ -926,14 +926,15 @@ static void ku_off(uint32_t *w, SceOff r)
 }
 
 /* w[0] = the read's count, w[1] = how many buffer bytes it changed from KU_FILL. The buffer is
-   written back before the read and invalidated after it, so a stale line cannot hide or fake
-   a changed byte. */
+   written back and invalidated before the read and again after it. The second pass must write
+   back: a disc0: read stores through the data cache, and a plain invalidate after it discarded
+   those lines, so the 2026-11-04 capture of 11ec52e8 counted 0 changed bytes for file reads. */
 static void ku_read(SceUID fd, SceSize count, uint32_t *w)
 {
     memset(s_ku_buf, KU_FILL, sizeof(s_ku_buf));
     sceKernelDcacheWritebackInvalidateRange(s_ku_buf, sizeof(s_ku_buf));
     const int got = sceIoRead(fd, s_ku_buf, count);
-    sceKernelDcacheInvalidateRange(s_ku_buf, sizeof(s_ku_buf));
+    sceKernelDcacheWritebackInvalidateRange(s_ku_buf, sizeof(s_ku_buf));
     uint32_t changed = 0;
     for (uint32_t i = 0; i < KU_BUF; i++) changed += s_ku_buf[i] != KU_FILL;
     w[0] = (uint32_t)got;

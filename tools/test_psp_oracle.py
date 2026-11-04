@@ -9073,7 +9073,7 @@ class KernelSemanticsProbeTests(unittest.TestCase):
             "sceIoGetstat", "sceIoDopen", "sceIoDclose", "sceIoMkdir", "sceIoRemove", "sceIoRmdir",
             # io-umd-eof: the two pinned UMD state reads and the cache calls around its reads
             "sceUmdCheckMedium", "sceUmdGetDriveStat",
-            "sceKernelDcacheWritebackInvalidateRange", "sceKernelDcacheInvalidateRange",
+            "sceKernelDcacheWritebackInvalidateRange",
             "sceKernelDelayThread", "sceKernelGetSystemTimeLow", "sceKernelSleepThread",
             "sceKernelExitThread", "sceKernelWakeupThread", "sceKernelWaitThreadEnd",
             "sceKernelDeleteThread", "sceKernelGetThreadId",
@@ -9292,6 +9292,10 @@ class KernelSemanticsProbeTests(unittest.TestCase):
         read = self.bodies["ku_read"]
         self.assertIn("w[0] = (uint32_t)got;", read)
         self.assertIn("w[1] = changed;", read)
+        # The buffer is written back after the read too: a plain invalidate discards bytes a
+        # disc0: read stored through the data cache.
+        self.assertEqual(read.count("sceKernelDcacheWritebackInvalidateRange(s_ku_buf"), 2)
+        self.assertNotIn("sceKernelDcacheInvalidateRange", read)
         self.assertEqual(re.findall(r"s_ku_buf\[(\w+)\]", section), ["KU_BUF", "i"])
         self.assertIn("changed += s_ku_buf[i] != KU_FILL;", read)
 
