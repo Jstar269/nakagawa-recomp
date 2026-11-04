@@ -576,7 +576,7 @@ HANDLER_METADATA = {
             "tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract",
             "tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode",
         ],
-        "limitation": "writes the decoder's samples into the MEASURED mode-1 strip layout through the header's plane pointers and sets words 0 and 1; a picture larger than its InitYCbCr allocation or than 480x272 is refused as not measured, and the strip length from the decoded height rests on one measured geometry (#302)",
+        "limitation": "runs one access unit behind as MEASURED (PSP-MPEG-001: the first call returns 0 with init 0 and no picture, each later call the picture of the unit before it); writes the decoder's samples into the MEASURED mode-1 strip layout through the header's plane pointers and sets words 0 and 1; a picture larger than its InitYCbCr allocation or than 480x272 is refused as not measured, and the strip length from the decoded height rests on one measured geometry (#302)",
     },
     "h_MpegAvcDecodeStopYCbCr": {
         "status": "partial",
@@ -584,7 +584,7 @@ HANDLER_METADATA = {
             "tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract",
             "tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode",
         ],
-        "limitation": "takes the address of the buffer pointer and hands over the picture the decoder still holds with status 1, as MEASURED after the last access unit (PSP-MPEG-001); the PSP decoder runs one access unit behind and this one does not, the decoder is drained only once the whole stream was fed, and a stop in mid-stream is not measured (#302)",
+        "limitation": "takes the address of the buffer pointer and hands over the picture the decoder still holds with status 1, as MEASURED after the last access unit (PSP-MPEG-001); that held picture is the one the decoder runs behind by (sceMpegAvcDecodeYCbCr), the decoder is drained only once the whole stream was fed, and a stop in mid-stream is not measured (#302)",
     },
     "h_MpegAvcCopyYCbCr": {
         "status": "partial",

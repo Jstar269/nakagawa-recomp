@@ -2252,9 +2252,15 @@ static void test_mpeg_ycbcr_guest_decode(void) {
     MEM_W32(TD_PTR, TD_YCBCR);
     MEM_W32(TD_INIT, 0xdeadbeefu);
     memset(SR_HOST(TD_AU), 0, 24u);
+    /* PSP-MPEG-001: the decoder runs one access unit behind. */
+    CHECK(guest_mpeg_import(NID_DECODE_YCBCR, TD_DESC, TD_AU, TD_PTR, TD_INIT, 0u) == 0u &&
+              MEM_R32(TD_INIT) == 0u && MEM_R32(TD_YCBCR) == 0u && MEM_R32(TD_YCBCR + 4u) == 0u &&
+              guest_bytes_are(MEM_R32(TD_YCBCR + 16u), 1536u, 0xa5u),
+          "ycbcr-decode: the first DecodeYCbCr returns 0 with init 0 and writes no picture");
+    MEM_W32(TD_INIT, 0xdeadbeefu);
     CHECK(guest_mpeg_import(NID_DECODE_YCBCR, TD_DESC, TD_AU, TD_PTR, TD_INIT, 0u) == 0u &&
               MEM_R32(TD_INIT) == 1u,
-          "ycbcr-decode: DecodeYCbCr decodes a picture and sets init");
+          "ycbcr-decode: the next DecodeYCbCr hands over the first access unit's picture and sets init");
     CHECK(MEM_R32(TD_YCBCR) == 4u && MEM_R32(TD_YCBCR + 4u) == 4u,
           "ycbcr-decode: words 0 and 1 are the decoded height and width in 16-pixel units");
     int exact = 1;
@@ -4423,9 +4429,13 @@ static void test_mpeg_csc_presentation_boundary(int copy_planes) {
     MEM_W32(PC_PTR, PC_YCBCR);
     MEM_W32(PC_RANGE, 0u); MEM_W32(PC_RANGE + 4u, 0u);
     MEM_W32(PC_RANGE + 8u, width); MEM_W32(PC_RANGE + 12u, height);
+    MEM_W32(PC_INIT, 0xdeadbeefu);
+    CHECK(guest_mpeg_import(0xf0eb1125u, PC_DESC, PC_AU, PC_PTR, PC_INIT, 0u) == 0 && MEM_R32(PC_INIT) == 0u,
+          "sceMpeg presentation: the first access unit gives no picture yet (the decoder runs one behind)");
+    MEM_W32(PC_AU + 4u, 93003u);              /* the next unit, one frame later */
     MEM_W32(PC_INIT, 0u);
     CHECK(guest_mpeg_import(0xf0eb1125u, PC_DESC, PC_AU, PC_PTR, PC_INIT, 0u) == 0 && MEM_R32(PC_INIT) == 1u,
-          "sceMpeg presentation picture decodes");
+          "sceMpeg presentation picture decodes with the next access unit");
     CHECK(sr_hle_test_psmf_av_counter(0, "delivered") == 0,
           "sceMpeg: a decoded YCbCr picture is not delivered to the guest until sceMpegAvcCsc");
     if (copy_planes) {
@@ -4456,7 +4466,8 @@ static void test_mpeg_csc_presentation_boundary(int copy_planes) {
     const char *w = sr_hle_test_psmf_av_last_window();
     long long vo = 0;
     CHECK(av_log_field(w, " voff_us=", &vo) && vo == 1000000,
-          "sceMpeg: the picture's presentation offset is present time minus its access unit time");
+          "sceMpeg: the picture's presentation offset is present time minus the time of the access "
+          "unit it was decoded from, not of the unit given with the call that handed it over");
     mpeg_finish();
     sr_hle_test_psmf_av_reset();
 }
