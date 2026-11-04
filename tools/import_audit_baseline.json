@@ -247,7 +247,7 @@
     "classification": "dedicated",
     "handler": "h_DisplaySetMode",
     "name": "sceDisplaySetMode",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x0e2a73ab": {
     "classification": "dedicated",
@@ -683,7 +683,7 @@
     "classification": "dedicated",
     "handler": "h_GetThreadIdSched",
     "name": "sceKernelGetThreadId",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x29681260": {
     "classification": "controlled_unsupported",
@@ -1240,7 +1240,7 @@
     "classification": "dedicated",
     "handler": "h_CreateThread",
     "name": "sceKernelCreateThread",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x44e07129": {
     "classification": "dedicated",
@@ -2879,7 +2879,7 @@
     "classification": "dedicated",
     "handler": "h_IoGetstat",
     "name": "sceIoGetstat",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xad84d37f": {
     "classification": "dedicated",
@@ -3666,7 +3666,7 @@
     "classification": "dedicated",
     "handler": "h_GeListUpdateStallAddr",
     "name": "sceGeListUpdateStallAddr",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xe1619d7c": {
     "classification": "dedicated",
@@ -3741,7 +3741,7 @@
     "classification": "dedicated",
     "handler": "h_IoDread",
     "name": "sceIoDread",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xe3ee2c81": {
     "classification": "controlled_unsupported",
@@ -3986,7 +3986,7 @@
     "classification": "dedicated",
     "handler": "h_StartThread",
     "name": "sceKernelStartThread",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xf5478233": {
     "classification": "dedicated",
