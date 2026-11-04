@@ -2424,6 +2424,113 @@ static void test_mpeg_ycbcr_restart_after_stop(int via_flush) {
     mpeg_finish();
 }
 
+/* A host decoder that falls behind the PSP's one-unit lag (the guest took units whose data had not
+ * reached it yet) catches up inside one sceMpegAvcDecodeYCbCr.  newest 0: the decoder then holds a
+ * single picture, so the call's second pull finds none; that pull must not clear the size of the
+ * picture already in the scratch planes, or the call fails with INVALID_VALUE ("larger than
+ * 480x272") instead of handing it over.  newest 1: the decoder holds all three pictures; the call
+ * hands over the newest, and the two it overwrote take their units' times with them, so the one
+ * time left waiting is the last unit's, as after any call in step. */
+static void test_mpeg_ycbcr_catch_up(int newest) {
+    enum {
+        CU_DESC = 0x08100000u, CU_DATA = 0x08110000u, CU_YCBCR = 0x08130000u, CU_PTR = 0x08160000u,
+        CU_INIT = 0x08170000u, CU_AU = 0x08180000u, CU_MODE = 0x08190000u,
+    };
+    static const char *const tag[2] = {"one picture held", "three pictures held"};
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES], es_len = 0;
+    static uint8_t es[65536];
+    char msg[160];
+#define CU_CHECK(x, text) do { snprintf(msg, sizeof msg, text, tag[newest]); CHECK((x), msg); } while (0)
+    s_fixture_textured = 1;
+    int built = build_stream(es, sizeof(es), au_off, au_len, &es_len);
+    s_fixture_textured = 0;
+    CU_CHECK(built, "ycbcr-catch-up (%s): the textured I_PCM stream builds");
+    if (!built) return;
+    MEM_W32(CU_DESC, 0u);
+    CU_CHECK(mpeg_create(CU_DESC, CU_DATA, 0x10000u, 0, 64u, 0, 0) == 0, "ycbcr-catch-up (%s): a context");
+    Mpeg *ctx = mpeg_find(CU_DESC);
+    if (!ctx) return;
+    ctx->streamWidth = 64u;
+    ctx->streamHeight = 64u;
+    ctx->h264 = sr_h264_create();
+    ctx->h264Init = 1;
+    int ref = sr_h264_create();
+    if (ctx->h264 < 0 || ref < 0) {
+        fprintf(stderr, "SKIP: the YCbCr catch-up needs a real H.264 backend\n");
+        if (ref >= 0) sr_h264_destroy(ref);
+        mpeg_finish();
+        return;
+    }
+    /* The reference: the picture the call must hand over, decoded on its own. */
+    const int expect = newest ? FIX_PICTURES - 1 : 0;
+    static uint8_t ry[64u * 64u], rcb[32u * 32u], rcr[32u * 32u];
+    SrH264FrameTarget target;
+    SrH264FrameInfo info;
+    memset(&target, 0, sizeof(target));
+    target.kind = SR_H264_TARGET_HOST_YUV;
+    target.host_buffer = ry;
+    target.host_width = 64;
+    target.host_height = 64;
+    target.host_stride = 64;
+    target.host_cb = rcb;
+    target.host_cr = rcr;
+    target.host_c_stride = 32;
+    int ref_ok = 1;
+    for (int i = 0; i <= expect; i++)
+        ref_ok = ref_ok && sr_h264_submit_au(ref, es + au_off[i], au_len[i]) == 0;
+    for (int i = 0; i <= expect; i++)
+        ref_ok = ref_ok && sr_h264_frame_ex(ref, 1, &target, &info) > 0;
+    CU_CHECK(ref_ok, "ycbcr-catch-up (%s): the reference decoder gives the expected picture");
+
+    MEM_W32(CU_MODE, 0u);
+    MEM_W32(CU_MODE + 4u, 3u);
+    CU_CHECK(guest_mpeg_import(NID_INIT_YCBCR, CU_DESC, 1u, 64u, 64u, CU_YCBCR) == 0u &&
+                 guest_mpeg_import(NID_DECODE_MODE, CU_DESC, CU_MODE, 0u, 0u, 0u) == 0u,
+             "ycbcr-catch-up (%s): a 64x64 buffer and RGBA8888 output");
+    MEM_W32(CU_PTR, CU_YCBCR);
+    memset(SR_HOST(CU_AU), 0, 24u);
+    /* Three units are taken before any of their data reaches the decoder: no picture yet. */
+    for (int i = 0; i < 3; i++) {
+        au_write_pts(CU_AU, 0, 90000 + 3003 * i);
+        MEM_W32(CU_INIT, 0xdeadbeefu);
+        CU_CHECK(guest_mpeg_import(NID_DECODE_YCBCR, CU_DESC, CU_AU, CU_PTR, CU_INIT, 0u) == 0u &&
+                     MEM_R32(CU_INIT) == 0u,
+                 "ycbcr-catch-up (%s): with no picture decoded a call returns 0 with init 0");
+    }
+    CU_CHECK(ctx->h264Frames == 0 && ctx->ycbcrWant == 3, "ycbcr-catch-up (%s): the decoder is two pictures behind");
+    /* Then the data arrives and the whole movie is in. */
+    int fed = 1;
+    for (int i = 0; i <= expect; i++)
+        fed = fed && sr_h264_submit_au(ctx->h264, es + au_off[i], au_len[i]) == 0;
+    CU_CHECK(fed, "ycbcr-catch-up (%s): the units reach the decoder");
+    ctx->streamEnded = 1;
+    au_write_pts(CU_AU, 0, 90000 + 3003 * 3);
+    MEM_W32(CU_INIT, 0xdeadbeefu);
+    uint32_t r = guest_mpeg_import(NID_DECODE_YCBCR, CU_DESC, CU_AU, CU_PTR, CU_INIT, 0u);
+    CU_CHECK(r == 0u && MEM_R32(CU_INIT) == 1u,
+             "ycbcr-catch-up (%s): the catching-up call returns 0 and hands over a picture");
+    CU_CHECK(MEM_R32(CU_YCBCR) == 4u && MEM_R32(CU_YCBCR + 4u) == 4u,
+             "ycbcr-catch-up (%s): words 0 and 1 are the 64x64 picture's size, not a cleared one");
+    int exact = 1;
+    for (uint32_t y = 0; y < 64u; y++)
+        for (uint32_t x = 0; x < 64u; x++)
+            if (MEM_R8(ref_ycbcr_luma(CU_YCBCR, x, y)) != ry[y * 64u + x]) exact = 0;
+    CU_CHECK(exact, newest ? "ycbcr-catch-up (%s): the newest picture is the one handed over"
+                           : "ycbcr-catch-up (%s): the one picture the decoder held is handed over");
+    if (newest) {
+        const uint32_t cap = (uint32_t)(sizeof(ctx->ycbcrAuPts) / sizeof(ctx->ycbcrAuPts[0]));
+        CU_CHECK(ctx->ycbcrAuCount == 1u &&
+                     ctx->ycbcrAuPts[ctx->ycbcrAuHead % cap] == 90000 + 3003 * 3,
+                 "ycbcr-catch-up (%s): the overwritten pictures took their times; the last unit's waits");
+    }
+    if (r != 0u || MEM_R32(CU_INIT) != 1u || (newest && ctx->ycbcrAuCount != 1u))
+        fprintf(stderr, "ycbcr-catch-up (%s): r=0x%08x init=%u frames=%d want=%d times=%u\n", tag[newest],
+                r, MEM_R32(CU_INIT), ctx->h264Frames, ctx->ycbcrWant, ctx->ycbcrAuCount);
+#undef CU_CHECK
+    sr_h264_destroy(ref);
+    mpeg_finish();
+}
+
 /* The PCM access-unit and AU-mode boundaries of sceMpeg. */
 static void test_mpeg_pcm_and_au_mode(void) {
     enum { PM_DESC = 0x08100000u, PM_DATA = 0x08110000u, PM_SIZE = 0x08120000u };
@@ -5303,6 +5410,8 @@ int main(int argc, char **argv) {
     test_mpeg_ycbcr_guest_decode();
     test_mpeg_ycbcr_restart_after_stop(0);
     test_mpeg_ycbcr_restart_after_stop(1);
+    test_mpeg_ycbcr_catch_up(0);
+    test_mpeg_ycbcr_catch_up(1);
     test_mpeg_pcm_and_au_mode();
     test_mpeg_userdata_imports();
     test_mpeg_csc_swizzled_vram_mirrors();

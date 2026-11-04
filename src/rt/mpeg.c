@@ -1533,8 +1533,14 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
     SrH264FrameInfo info = {0};
     int eos = ctx->streamEnded;
 #ifdef SR_SDL3VK
+    /* A host decoder behind the PSP's one-unit lag (the guest took units before their data reached
+     * it) catches up here, several pictures in one call.  Each pull has its own info: a pull that
+     * finds no picture clears only its own, never the size of the picture already in the scratch
+     * planes.  The newest picture is handed over, and each one it overwrote goes with its unit's
+     * time, so later pictures keep their own units' times. */
     while (ctx->h264Frames < want) {
         SrH264FrameTarget target;
+        SrH264FrameInfo pulled;
         memset(&target, 0, sizeof(target));
         target.kind = SR_H264_TARGET_HOST_YUV;
         target.host_buffer = s_ycbcr_y;
@@ -1544,13 +1550,15 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
         target.host_cb = s_ycbcr_cb;
         target.host_cr = s_ycbcr_cr;
         target.host_c_stride = (int)(YCBCR_SCRATCH_W / 2u);
-        int r = sr_h264_frame_ex(ctx->h264, eos, &target, &info);
+        int r = sr_h264_frame_ex(ctx->h264, eos, &target, &pulled);
         if (r > 0) {
             ctx->h264Frames++;
             if (ctx->ycbcrStale > 0) {   /* a unit taken before a stop or flush */
                 ctx->ycbcrStale--;
                 continue;
             }
+            if (got) (void)ycbcr_au_pop(ctx);   /* the picture this one overwrote, and its time */
+            info = pulled;
             got = r;
         } else if (r < 0) {
             MEM_W32(initAddr, 0u);
