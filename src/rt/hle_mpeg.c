@@ -1300,6 +1300,25 @@ void hle_register_psmf_player_handlers(void) {
 /* Registration runs of the shared helpers in hle.c (#307). Each holds one run of this file's
  * registrations, in their order, and is called from the helper where the run stood. */
 
+#ifndef SR_HLE_THREAD_SELFTEST
+/* Two runs of hle_register_init_mpeg() the media fixture also registers, so its end-of-feed
+ * tests reach the production handlers through sr_syscall (#286). */
+static void hle_register_mpeg_stream_offset_handler(void) {
+    sr_hle_register(0x21ff80e4, "sceMpegQueryStreamOffset", h_MpegQueryStreamOffset);
+}
+static void hle_register_mpeg_ring_handlers(void) {
+    sr_hle_register(0xb240a59e, "sceMpegRingbufferPut", h_MpegRingbufferPut);
+    sr_hle_register(0xb5f6dc87, "sceMpegRingbufferAvailableSize", h_MpegRingbufferAvailable);
+    sr_hle_register(0xfe246728, "sceMpegGetAvcAu", h_MpegGetAvcAu);
+}
+#endif
+#ifdef SR_MPEG_MEDIA_SELFTEST
+void sr_hle_test_register_mpeg_ring_handlers(void) {
+    hle_register_mpeg_stream_offset_handler();
+    hle_register_mpeg_ring_handlers();
+}
+#endif
+
 #ifndef SR_MPEG_MEDIA_SELFTEST
 #ifndef SR_HLE_THREAD_SELFTEST
 /* From sr_hle_init(). */
@@ -1311,7 +1330,7 @@ void hle_register_init_mpeg(void) {
     sr_hle_register(0x606a4649, "sceMpegDelete", h_MpegDelete);
     sr_hle_register(0x42560f23, "sceMpegRegistStream", h_MpegRegistStream);
     sr_hle_register(0x591a4aa2, "sceMpegUnRegistStream", h_MpegUnRegistStream);
-    sr_hle_register(0x21ff80e4, "sceMpegQueryStreamOffset", h_MpegQueryStreamOffset);
+    hle_register_mpeg_stream_offset_handler();
     sr_hle_register(0x611e9e11, "sceMpegQueryStreamSize", h_MpegQueryStreamSize);
     sr_hle_register(0xd7a29f46, "sceMpegRingbufferQueryMemSize", h_MpegRingbufferQueryMemSize);
     sr_hle_register(0x769bebb6, "sceMpegRingbufferQueryPackNum", h_MpegRingbufferQueryPackNum);
@@ -1323,9 +1342,7 @@ void hle_register_init_mpeg(void) {
     /* sceMpeg ringbuffer destruct and flush: shared with the executable harness
      * through hle_register_mpeg_shared_handlers(). */
     hle_register_mpeg_shared_handlers();
-    sr_hle_register(0xb240a59e, "sceMpegRingbufferPut", h_MpegRingbufferPut);
-    sr_hle_register(0xb5f6dc87, "sceMpegRingbufferAvailableSize", h_MpegRingbufferAvailable);
-    sr_hle_register(0xfe246728, "sceMpegGetAvcAu", h_MpegGetAvcAu);
+    hle_register_mpeg_ring_handlers();
     sr_hle_register(0xe1ce83a7, "sceMpegGetAtracAu", h_MpegGetAtracAu);
     hle_register_mpeg_avc_decode_handler();
     hle_register_mpeg_userdata_handlers();
