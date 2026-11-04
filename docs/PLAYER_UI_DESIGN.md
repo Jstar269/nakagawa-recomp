@@ -414,12 +414,16 @@ bring-up), and the disc files Nakagawa copied. A `warning` FREES line gives the 
 image on the user's PC is not touched. The game's saves are the copied disc's Memory Stick folder and its
 per-user save folder. They get their own box, unticked every time the dialog opens; under it, "Your saves stay." in
 `muted`, or in `error` once the box is ticked, "Your saves for this game will be deleted too." A game with nothing
-built and no saves says so. REMOVE (`DANGER`) removes the title, deletes those folders (and the saves only when
-ticked), and returns to the library. Focus lands on the tile that took the removed title's place, or on the add
+built and no saves says so. A second box, also unticked every time, reads "Also delete the decrypted files and disc
+copy (*size*)" (#2003): the decrypted files the disc check wrote (`titles/<DISC_ID>/decrypted`, the folder where a
+user may also put their own) and the disc image Nakagawa expanded or converted (`<user data>/discs/<DISC_ID>`).
+Under it, "They stay, so adding this game again is quicker." in `muted`, or in `error` once ticked, "They go too,
+with any decrypted files you added yourself. Your disc image stays." REMOVE (`DANGER`) removes the title, deletes
+those folders (the saves and the disc copy only when their boxes are ticked), and returns to the library. Focus lands on the tile that took the removed title's place, or on the add
 card when it was the last, and the page turns to it. The folders are found from the disc ID under the player's own
-roots, never from a path stored in the library. The disc image, the user's decrypted files and the shared
-manifests are never on the list. Those folders and saves are the disc ID's, so while another image with the same
-disc ID stays in the library (a retail disc beside its fan translation), the box is left out and the lead says
+roots, never from a path stored in the library. The disc image on the user's PC and the shared manifests are
+never on the list. Those folders and saves are the disc ID's, so while another image with the same
+disc ID stays in the library (a retail disc beside its fan translation), the boxes are left out and the lead says
 what Nakagawa built for it and its saves stay, because the other image uses them; only the record goes. Prompt bar:
 MOVE, SELECT, CANCEL.
 

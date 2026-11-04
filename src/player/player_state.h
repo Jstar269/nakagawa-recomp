@@ -1011,8 +1011,10 @@ bool player_app_remove_game(PlayerApp *app, int game_index);
 /* Remove from library (#1304). What Nakagawa built for one game, found from
  * its disc ID under the player's own roots (never from a stored path): the
  * built package, the build cache, and the disc files it extracted. The disc
- * image and the user's own decrypted files are never part of it. Saves are
- * listed apart and go only when asked. */
+ * image on the user's PC is never part of it. Two groups are listed apart and
+ * go only when asked: the saves, and the disc copy (#2003): the decrypted
+ * files (titles/<ID>/decrypted, which may also hold files the user put there)
+ * and the disc image Nakagawa expanded or converted (<data>/discs/<ID>). */
 typedef enum {
     PLAYER_REMOVAL_PACKAGE = 0,
     PLAYER_REMOVAL_BUILD_CACHE,
@@ -1020,7 +1022,7 @@ typedef enum {
     PLAYER_REMOVAL_KIND_COUNT
 } PlayerRemovalKind;
 
-#define PLAYER_REMOVAL_PATH_CAP 12
+#define PLAYER_REMOVAL_PATH_CAP 16
 
 typedef struct {
     char path[NK_MAX_PATH];
@@ -1029,6 +1031,7 @@ typedef struct {
     char keep_child[16];
     PlayerRemovalKind kind;
     bool saves;              /* this path is save data */
+    bool disc_copy;          /* this path is the opt-in disc copy and decrypted files */
     uint64_t bytes;
 } PlayerRemovalPath;
 
@@ -1040,6 +1043,8 @@ typedef struct {
     bool kind_present[PLAYER_REMOVAL_KIND_COUNT];
     bool has_saves;
     uint64_t saves_bytes;
+    bool has_disc_copy;
+    uint64_t disc_copy_bytes;
     /* Another image in the library has this disc ID (a retail disc beside its
        fan translation) and uses the same folders and saves, so only the
        record goes and paths stays empty. */
@@ -1053,11 +1058,18 @@ const char *player_app_removal_blocker(const PlayerApp *app, int game_index);
  * title cannot be removed or its disc ID is not a plain folder name. */
 bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
                                   PlayerRemovalPlan *plan);
-/* Removes the title from the library and deletes what the plan lists, the
- * saves only when delete_saves is set. Every folder is checked again just
- * before it goes. On failure the library entry stays and error says what was
- * left; the rest may already be deleted. */
-bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete_saves,
+/* The one logs folder (NK_PATH_LOGS, #2003), created if missing: the player's, the games'
+ * and the package builds' and build tools' logs, the folder Settings opens. */
+bool player_app_logs_dir(char *out, size_t out_size);
+
+/* What else goes with a removal: the saves, the disc copy and decrypted files. */
+#define PLAYER_REMOVE_ALSO_SAVES 1u
+#define PLAYER_REMOVE_ALSO_DISC_COPY 2u
+/* Removes the title from the library and deletes what the plan lists; the
+ * saves and the disc copy only when `also` names them (PLAYER_REMOVE_ALSO_*).
+ * Every folder is checked again just before it goes. On failure the library
+ * entry stays and error says what was left; the rest may already be deleted. */
+bool player_app_remove_game_and_data(PlayerApp *app, int game_index, unsigned also,
                                      char *error, size_t error_size);
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
