@@ -620,6 +620,9 @@ uint32_t mpeg_ringbuffer_construct(uint32_t ring, uint32_t numPackets, uint32_t 
     return 0;
 }
 
+static void mpeg_pictures_report_all(const char *reason);
+void sr_psmf_av_set_pictures_report(void (*report)(const char *reason));
+
 uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_t ringAddr,
                      uint32_t frameWidth, uint32_t mode, uint32_t ddrTop) {
     (void)mode; (void)ddrTop;
@@ -649,6 +652,7 @@ uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_
     ctx->defaultFrameWidth = (int)frameWidth; ctx->pixelMode = 3; ctx->isAnalyzed = 0;
     ctx->lastAuPts = -1;
     ctx->h264 = -1;
+    sr_psmf_av_set_pictures_report(mpeg_pictures_report_all);
     return 0;
 }
 
@@ -680,8 +684,9 @@ static void mpeg_pictures_report(const Mpeg *ctx, const char *reason) {
     if (n > 0 && (size_t)n < sizeof(line)) fputs(line, stderr);
 }
 
-/* Every live context's line, from the end-of-run A/V report (hle_mpeg.c psmf_av_final). */
-void sr_mpeg_pictures_report_all(const char *reason) {
+/* Every live context's line, from the end-of-run A/V report (hle_mpeg.c psmf_av_final, which
+ * mpeg_create registers this with). */
+static void mpeg_pictures_report_all(const char *reason) {
     for (int i = 0; i < 8; i++) mpeg_pictures_report(&s_mpeg[i], reason);
 }
 

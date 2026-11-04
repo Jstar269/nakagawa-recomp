@@ -2184,6 +2184,13 @@ static void test_mpeg_ycbcr_picture_time_by_bytes(void) {
     CHECK(ycbcr_picture_pts(m, 0x3333u) == -1, "ycbcr-time: a reset forgets the pictures");
 }
 
+/* #279: every picture the host decoder gave a context is delivered, superseded, stale or
+ * rejected, exactly once. */
+static int mpeg_pictures_add_up(const Mpeg *ctx) {
+    return (uint64_t)ctx->h264Frames ==
+           ctx->picDelivered + ctx->picSuperseded + ctx->picStale + ctx->picRejected;
+}
+
 /* sceMpegAvcDecodeYCbCr through the production dispatch writes the decoder's own samples into
  * the measured strip layout (the textured I_PCM fixture, checked against a second decode of the
  * same units through the host YUV target), and sceMpegAvcCsc converts them. */
@@ -2429,13 +2436,6 @@ static void test_mpeg_ycbcr_restart_after_stop(int via_flush) {
                 ctx->ycbcrAuCount);
 #undef RS_CHECK
     mpeg_finish();
-}
-
-/* #279: every picture the host decoder gave a context is delivered, superseded, stale or
- * rejected, exactly once. */
-static int mpeg_pictures_add_up(const Mpeg *ctx) {
-    return (uint64_t)ctx->h264Frames ==
-           ctx->picDelivered + ctx->picSuperseded + ctx->picStale + ctx->picRejected;
 }
 
 /* A host decoder that falls behind the PSP's one-unit lag (the guest took units whose data had not
