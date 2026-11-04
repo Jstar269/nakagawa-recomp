@@ -514,6 +514,7 @@ class NativeHostBackendTests(unittest.TestCase):
                  "if (msg.message == WM_QUIT) { gui_quit_request(); continue; }": 1,
                  "if (res == GEGPU_PRESENT_WINDOW_CLOSED) {\n            gui_quit_request();": 1,
                  "if (present_result == 0) gui_quit_request();": 1,
+                 "if (result == 0) gui_quit_request();": 1,
                  "if (!sdl3vk_poll()) return gui_pause_quit();": 1,
                  "if (presented == 0) return gui_pause_quit();": 1,
                  "gui_quit_request();\n        if (!gui_stop_requested()) s_pause_resume = 1;": 1,
