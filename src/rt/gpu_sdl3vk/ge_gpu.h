@@ -247,6 +247,14 @@ typedef struct {
     unsigned tex_pool_sets;
 } GeGpuAceStats;
 void gegpu_ace_stats(GeGpuAceStats *out);
+
+/* Widescreen Fill (#1881): the wing canvas of display framebuffer `fb` (ge.c's 0x04xxxxxx form)
+ * as 512x272 RGBA8 words at guest resolution (the top-left device pixel of each guest pixel).
+ * 0 when the canvas does not exist. For selftests and the presenter's checks. */
+int  gegpu_wide_read(uint32_t fb, uint32_t *rgba);
+/* Wing primitives recorded, and wing primitives dropped (a state this backend draws in
+ * software, or no canvas). */
+void gegpu_wide_counts(unsigned long *drawn, unsigned long *dropped);
 int gegpu_snapshot_sync_selftest(void);
 int gegpu_ace_af_selftest(void);   /* 1 pass, 0 fail, 77 no anisotropic filtering */
 

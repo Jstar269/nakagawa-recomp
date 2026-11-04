@@ -716,6 +716,33 @@ static int s_bbox_visible = 1;
 /* Optional GPU rasterizer hooks (ge_shared.h). NULL = pure software (the GDI build
  * never registers any; the SDL3 build registers them only under SR_GPU_GE=1). */
 static const GeGpuHooks *s_gpu = NULL;
+
+/* ---- widescreen Fill (#1881), the renderer layer ------------------------------------------
+ * Fill shows more of the 3D scene to the left and right of the PSP's picture. The authentic
+ * frame is never touched: each display framebuffer gets a host-only wing canvas, 512x272 like
+ * a target, that holds both wings. Guest x in [-D, 0) is canvas x [0, D), and guest x in
+ * [480, 480 + D) is canvas x [D, 2D). ge.c alone decides which primitives reach a canvas
+ * (wide_tri, wide_sprite) and moves them there by a whole-pixel shift. The software rasterizer
+ * draws them through its own code with the pixel and depth accessors redirected to the canvas
+ * (s_wing); a GPU backend draws them through its wing hooks. D = 0, the default, is off: no
+ * canvas exists and none of this runs. */
+typedef struct {
+    uint32_t fb;          /* display framebuffer, in ge_fb_addr's form; 0 = free */
+    int drawn;            /* a wing draw reached this canvas since ge_wide_shown */
+    uint32_t epoch;       /* changes whenever the canvas is cleared (ge_wide_epoch) */
+    int fmt;              /* framebuffer format of the last software wing draw */
+    uint32_t *color;      /* software canvas: raw framebuffer words, GE_WIDE_CANVAS_W per row */
+    uint16_t *depth;
+} GeWideSlot;
+#define GE_WIDE_SLOTS 2
+static GeWideSlot s_wide_slot[GE_WIDE_SLOTS];
+static int s_wide_d = 0;          /* wing width in guest pixels; 0 = Fill off */
+static int s_wide_last = 0;       /* slot of the display address noted last */
+static uint32_t s_wide_epochs = 0; /* clears so far, the source of GeWideSlot.epoch */
+static GeWideSlot *s_wing = NULL; /* the software canvas a wing pass draws into */
+static int s_wing_x0, s_wing_x1;  /* canvas columns that pass may write, inclusive */
+#define WING_PX(x, y) ((uint32_t)(y) * GE_WIDE_CANVAS_W + (uint32_t)(x))
+
 volatile int g_sr_vram_read_pending;
 
 void sr_vram_mark_renderer_pending(void) {
@@ -1043,6 +1070,19 @@ void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
 }
 
 static void zbuf_fill_rect(int x0, int y0, int x1, int y1, uint16_t z) {
+    if (__builtin_expect(s_wing != NULL, 0)) {
+        /* A wing canvas: its own depth, clipped to the pass's columns and the scissor rows,
+         * as a GPU backend's scissor clips the same clear. */
+        if (x0 < s_wing_x0) x0 = s_wing_x0;
+        if (x1 > s_wing_x1) x1 = s_wing_x1;
+        if (y0 < ge.scis_y1) y0 = ge.scis_y1;
+        if (y1 > ge.scis_y2) y1 = ge.scis_y2;
+        if (y0 < 0) y0 = 0;
+        if (y1 > 271) y1 = 271;
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++) s_wing->depth[WING_PX(x, y)] = z;
+        return;
+    }
     if (!ge_zbuf_prepare_current()) return;
     uint32_t stride = zbuf_stride();
     if (x0 < 0) x0 = 0;
@@ -1060,10 +1100,15 @@ static void zbuf_fill_rect(int x0, int y0, int x1, int y1, uint16_t z) {
 
 static void stat_zfail(void);
 static int ztest_compare_px(int x, int y, uint16_t z) {
-    if (!ge_zbuf_prepare_current()) return 0;
-    uint32_t idx = (uint32_t)(y * (int)zbuf_stride() + x);
-    if (idx >= 272u * 512u) return 0;
-    uint16_t cur = s_zbuf[idx];
+    uint16_t cur;
+    if (__builtin_expect(s_wing != NULL, 0)) {
+        cur = s_wing->depth[WING_PX(x, y)];
+    } else {
+        if (!ge_zbuf_prepare_current()) return 0;
+        uint32_t idx = (uint32_t)(y * (int)zbuf_stride() + x);
+        if (idx >= 272u * 512u) return 0;
+        cur = s_zbuf[idx];
+    }
     int pass;
     switch (ge.ztest & 7) {
         case 0: pass = 0; break;
@@ -2520,6 +2565,11 @@ static void ge_fb_store(uint32_t addr, int is32, uint32_t value) {
 }
 
 static void read_fb_px(int x, int y, int *r, int *g, int *b, int *a) {
+    if (__builtin_expect(s_wing != NULL, 0)) {
+        unpack_color(s_wing->color[WING_PX(x, y)], ge.fbfmt & 3, r, g, b, a);
+        if ((ge.fbfmt & 3) == 0) *a = 0;
+        return;
+    }
     uint32_t stride = ge.fbw ? ge.fbw : 512;
     uint32_t off = (uint32_t)(y*(int)stride + x);
     if ((ge.fbfmt & 3) == 3) unpack_color(ge_fb_load(ge_fb_addr() + off*4, 1), 3, r,g,b,a);
@@ -2567,11 +2617,17 @@ static int blend_chan(int s, int d, int sf, int df, int eq) {
 }
 
 static int pixel_in_bounds(int x, int y) {
+    /* A wing pass replaces the screen's columns and the scissor's (which spans the screen:
+     * wide_target) with the pass's canvas columns; the scissor's rows still apply. */
+    if (__builtin_expect(s_wing != NULL, 0))
+        return x >= s_wing_x0 && x <= s_wing_x1 && y >= 0 && y < 272 &&
+               y >= ge.scis_y1 && y <= ge.scis_y2;
     return x >= 0 && x < 480 && y >= 0 && y < 272 &&
            x >= ge.scis_x1 && x <= ge.scis_x2 && y >= ge.scis_y1 && y <= ge.scis_y2;
 }
 
 static uint32_t read_fb_raw(int x, int y) {
+    if (__builtin_expect(s_wing != NULL, 0)) return s_wing->color[WING_PX(x, y)];
     uint32_t stride = ge.fbw ? ge.fbw : 512;
     uint32_t off = (uint32_t)(y * (int)stride + x);
     return (ge.fbfmt & 3) == 3 ? ge_fb_load(ge_fb_addr() + off * 4, 1)
@@ -2579,6 +2635,7 @@ static uint32_t read_fb_raw(int x, int y) {
 }
 
 static void write_fb_raw(int x, int y, uint32_t value) {
+    if (__builtin_expect(s_wing != NULL, 0)) { s_wing->color[WING_PX(x, y)] = value; return; }
     uint32_t stride = ge.fbw ? ge.fbw : 512;
     uint32_t off = (uint32_t)(y * (int)stride + x);
     if ((ge.fbfmt & 3) == 3) ge_fb_store(ge_fb_addr() + off * 4, 1, value);
@@ -2649,8 +2706,7 @@ static void write_stencil_px(int x, int y, int stencil) {
 }
 
 static void compose_px_rgba(int x, int y, int r, int g, int b, int src_a, int stencil) {
-    if (x<0||x>=480||y<0||y>=272) return;
-    if (x<ge.scis_x1||x>ge.scis_x2||y<ge.scis_y1||y>ge.scis_y2) return;
+    if (!pixel_in_bounds(x,y)) return;
     if (s_stat_on > 0 && s_in3d && !ge.clear && s_pxpass < 6) {
         s_pxpass++;
         fprintf(stderr, "PXPASS f=%" PRIu32 " xy=(%d,%d) rgba=(%d,%d,%d,%d) fbp=0x%08" PRIx32 " blend=%d/%06" PRIx32 "\n",
@@ -2697,6 +2753,7 @@ static void compose_px_rgba(int x, int y, int r, int g, int b, int src_a, int st
     stencil=(int)((rgba>>24)&0xFF);
     uint32_t c=pack_fb(r,g,b,stencil), mask=fb_write_mask_native();
     write_fb_raw(x,y,(c&~mask)|(oldraw&mask));
+    if (s_wing) return;   /* host-only: the guest's pixel and list counters stay its own */
     g_ge_pixels++;
     if (s_in3d) s_stat.px3d++; else s_stat.px2d++;
     if (s_stat_on > 0) {
@@ -2731,8 +2788,11 @@ static void put_px_rgba_tested(int x, int y, uint16_t pz, int use_z,
         return;
     }
     if (use_z && !ge.zwrite_disable) {
-        uint32_t zi=(uint32_t)(y*(int)zbuf_stride()+x);
-        if (zi<272u*512u) { s_zbuf[zi]=pz; ge_zbuf_note_write(); }
+        if (__builtin_expect(s_wing != NULL, 0)) s_wing->depth[WING_PX(x, y)] = pz;
+        else {
+            uint32_t zi=(uint32_t)(y*(int)zbuf_stride()+x);
+            if (zi<272u*512u) { s_zbuf[zi]=pz; ge_zbuf_note_write(); }
+        }
     }
     if (ge.stencil_enable)
         stencil=apply_stencil_op((int)((ge.stencil_op>>16)&7),stencil);
@@ -3255,15 +3315,18 @@ static void ge_time_transfer(uint32_t src, uint64_t bytes) {
     s_ge_run_clk += (edram ? GE_T_XFER_EDRAM_CLK : GE_T_XFER_RAM_CLK) * (double)bytes;
 }
 
-static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
+/* One triangle into the current target, or, during a wing pass (s_wing), into that wing
+ * canvas: a host-only draw, so it charges no GE time and leaves guest depth alone. */
+static void raster_tri_draw(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     if (vtx_nonfinite(A, B, C)) return;
-    if (s_ge_timing_model) ge_time_tri(A, B, C);   /* before the GPU hook: both backends charge alike */
-    if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
+    const int wing = s_wing != NULL;
+    if (s_ge_timing_model && !wing) ge_time_tri(A, B, C);   /* before the GPU hook: both backends charge alike */
+    if (!wing && (ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
         !ge_zbuf_prepare_current()) return;
     /* GPU capture seam: a registered backend takes the triangle (and reproduces culling,
      * depth, shading, blending on the GPU); if it declines it has already flushed, so the
      * software path below stays correctly ordered against prior GPU work. */
-    if (s_gpu && s_gpu->tri) {
+    if (s_gpu && s_gpu->tri && !wing) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->tri(A, B, C, persp);
         ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
@@ -3291,6 +3354,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     int miny=(int)floorf(fminf(A->y,fminf(B->y,C->y))), maxy=(int)ceilf(fmaxf(A->y,fmaxf(B->y,C->y)));
     int cx1 = ge.scis_x1 > 0 ? ge.scis_x1 : 0,   cy1 = ge.scis_y1 > 0 ? ge.scis_y1 : 0;
     int cx2 = ge.scis_x2 < 479 ? ge.scis_x2 : 479, cy2 = ge.scis_y2 < 271 ? ge.scis_y2 : 271;
+    if (wing) { cx1 = s_wing_x0; cx2 = s_wing_x1; }
     if (minx < cx1) minx = cx1;
     if (maxx > cx2) maxx = cx2;
     if (miny < cy1) miny = cy1;
@@ -3384,7 +3448,8 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             if (ge.clear) {
                 if (ge.clear_mode & 0x400) {
                     uint32_t zi = (uint32_t)(y * (int)zbuf_stride() + x);
-                    if (zi < 272u*512u) {
+                    if (wing) s_wing->depth[WING_PX(x, y)] = clamp_z(iz);
+                    else if (zi < 272u*512u) {
                         s_zbuf[zi] = clamp_z(iz);
                         ge_zbuf_note_write();
                     }
@@ -3475,6 +3540,13 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     }
 #undef AT_SETUP
 #undef AT_PIX
+}
+
+static void wide_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp);
+
+static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
+    raster_tri_draw(A, B, C, persp);
+    if (__builtin_expect(s_wide_d != 0, 0)) wide_tri(A, B, C, persp);
 }
 
 /* Line rasterizer (DDA), used for prim types 1/2 in both modes. */
@@ -4483,11 +4555,18 @@ static void dump_xform_debug(uint32_t vbase, uint32_t ibase, int idxfmt, const V
 static void fill_rect_clear_fast(int xa, int ya, int xb, int yb, int r, int g, int b, int a) {
     int cx1 = ge.scis_x1 > 0 ? ge.scis_x1 : 0,   cy1 = ge.scis_y1 > 0 ? ge.scis_y1 : 0;
     int cx2 = ge.scis_x2 < 479 ? ge.scis_x2 : 479, cy2 = ge.scis_y2 < 271 ? ge.scis_y2 : 271;
+    if (s_wing) { cx1 = s_wing_x0; cx2 = s_wing_x1; }
     if (xa < cx1) xa = cx1;
     if (xb > cx2 + 1) xb = cx2 + 1;
     if (ya < cy1) ya = cy1;
     if (yb > cy2 + 1) yb = cy2 + 1;
     if (xa >= xb || ya >= yb) return;
+    if (s_wing) {
+        uint32_t cw = pack_fb(r, g, b, a);
+        for (int y = ya; y < yb; y++)
+            for (int x = xa; x < xb; x++) s_wing->color[WING_PX(x, y)] = cw;
+        return;
+    }
     if (s_stat_on > 0 && xa <= 240 && 240 < xb && ya <= 136 && 136 < yb && s_pxc < 32) {
         s_pxc++;
         fprintf(stderr, "PXC f=%" PRIu32 " CLEARFILL rect=(%d,%d)-(%d,%d) rgba=(%d,%d,%d,%d) fbp=0x%08" PRIx32 "\n",
@@ -4506,13 +4585,15 @@ static void fill_rect_clear_fast(int xa, int ya, int xb, int yb, int r, int g, i
 }
 
 /* Rasterise a sprite (axis-aligned rect from two corner vertices). Used by both modes;
- * persp=1 recovers UV from the over-w storage and depth-tests with the second vertex's z. */
-static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
+ * persp=1 recovers UV from the over-w storage and depth-tests with the second vertex's z.
+ * During a wing pass (s_wing) it draws into that canvas, host-only, like raster_tri_draw. */
+static void fill_sprite_draw(const Vtx *p0, const Vtx *p1, int persp) {
     if (vtx_nonfinite(p0, p1, NULL)) return;
-    if (s_ge_timing_model) ge_time_sprite(p0, p1);
-    if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
+    const int wing = s_wing != NULL;
+    if (s_ge_timing_model && !wing) ge_time_sprite(p0, p1);
+    if (!wing && (ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
         !ge_zbuf_prepare_current()) return;
-    if (s_gpu && s_gpu->sprite) {
+    if (s_gpu && s_gpu->sprite && !wing) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->sprite(p0, p1, persp);
         ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
@@ -4606,6 +4687,205 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
             put_px_rgba_tested(x, y, pz, use_z, r, g, b, a);
         }
     }
+}
+
+static void wide_sprite(const Vtx *p0, const Vtx *p1, int persp);
+
+static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
+    fill_sprite_draw(p0, p1, persp);
+    if (__builtin_expect(s_wide_d != 0, 0)) wide_sprite(p0, p1, persp);
+}
+
+/* ---- widescreen Fill: which primitives reach a wing canvas ------------------------------- */
+
+static uint32_t ge_wide_norm(uint32_t addr) {
+    if (addr < 0x00200000u || (addr & 0x0F000000u) == 0x04000000u)
+        return 0x04000000u | (addr & 0x001FFFFFu);
+    return addr & 0x0FFFFFFFu;
+}
+
+static GeWideSlot *wide_slot_for(uint32_t fb) {
+    for (int i = 0; i < GE_WIDE_SLOTS; i++)
+        if (s_wide_slot[i].fb && s_wide_slot[i].fb == fb) return &s_wide_slot[i];
+    return NULL;
+}
+
+/* The canvas the current draw may reach: Fill is on, the target is a display framebuffer,
+ * and the guest scissor spans the screen's width. A narrower scissor is a viewport or a UI
+ * clip, and what lies outside it is not the scene's. */
+static GeWideSlot *wide_target(void) {
+    if (ge.scis_x1 > 0 || ge.scis_x2 < 479) return NULL;
+    return wide_slot_for(ge_fb_addr());
+}
+
+static void wide_clear_slot(GeWideSlot *w) {
+    w->drawn = 0;
+    w->epoch = ++s_wide_epochs ? s_wide_epochs : ++s_wide_epochs;   /* never 0 */
+    if (w->color) memset(w->color, 0, (size_t)GE_WIDE_CANVAS_W * 272u * sizeof *w->color);
+    if (w->depth) memset(w->depth, 0, (size_t)GE_WIDE_CANVAS_W * 272u * sizeof *w->depth);
+}
+
+static void wide_free_slot(GeWideSlot *w) {
+    free(w->color);
+    free(w->depth);
+    memset(w, 0, sizeof *w);
+}
+
+static int wide_sw_canvas(GeWideSlot *w) {
+    if (w->color && w->depth) return 1;
+    w->color = (uint32_t *)calloc((size_t)GE_WIDE_CANVAS_W * 272u, sizeof *w->color);
+    w->depth = (uint16_t *)calloc((size_t)GE_WIDE_CANVAS_W * 272u, sizeof *w->depth);
+    if (w->color && w->depth) return 1;
+    static int reported = 0;
+    if (!reported) {
+        reported = 1;
+        fprintf(stderr, "GE_WIDE: no memory for a wing canvas; Fill draws no wings\n");
+    }
+    free(w->color); free(w->depth);
+    w->color = NULL; w->depth = NULL;
+    return 0;
+}
+
+/* One primitive into canvas columns [x0, x1] of w, its vertices already moved there. A GPU
+ * backend draws its own canvases; without one the software rasterizer draws this one. */
+static void wide_pass(GeWideSlot *w, int x0, int x1, const Vtx *v, int sprite, int persp) {
+    w->drawn = 1;
+    if (s_gpu) {
+        if (sprite) { if (s_gpu->wing_sprite) (void)s_gpu->wing_sprite(w->fb, x0, x1, &v[0], &v[1], persp); }
+        else if (s_gpu->wing_tri) (void)s_gpu->wing_tri(w->fb, x0, x1, &v[0], &v[1], &v[2], persp);
+        return;
+    }
+    if (!wide_sw_canvas(w)) return;
+    w->fmt = (int)(ge.fbfmt & 3);
+    s_wing = w; s_wing_x0 = x0; s_wing_x1 = x1;
+    if (sprite) fill_sprite_draw(&v[0], &v[1], persp);
+    else        raster_tri_draw(&v[0], &v[1], &v[2], persp);
+    s_wing = NULL;
+}
+
+/* A transform-mode triangle that leaves the screen is drawn again in each wing it reaches.
+ * Its positions are first snapped to the 28.4 grid raster_tri_draw snaps to, so the whole-
+ * pixel shift is exact and the canvas rasterizes the triangle the guest's draw would give on
+ * a wider screen. Through-mode triangles stay in the centre. */
+static void wide_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
+    if (!persp || s_wing || vtx_nonfinite(A, B, C)) return;
+    GeWideSlot *w = wide_target();
+    if (!w) return;
+    const int d = s_wide_d;
+    Vtx snap[3] = { *A, *B, *C }, v[3];
+    float lo = 0.0f, hi = 0.0f;
+    for (int i = 0; i < 3; i++) {
+        snap[i].x = floorf(snap[i].x * 16.0f + 0.375f) * (1.0f / 16.0f);
+        if (i == 0 || snap[i].x < lo) lo = snap[i].x;
+        if (i == 0 || snap[i].x > hi) hi = snap[i].x;
+    }
+    if (lo < 0.0f) {
+        for (int i = 0; i < 3; i++) { v[i] = snap[i]; v[i].x += (float)d; }
+        wide_pass(w, 0, d - 1, v, 0, persp);
+    }
+    if (hi > 480.0f) {
+        for (int i = 0; i < 3; i++) { v[i] = snap[i]; v[i].x += (float)(d - 480); }
+        wide_pass(w, d, 2 * d - 1, v, 0, persp);
+    }
+}
+
+/* Sprites: a transform-mode sprite that leaves the screen is shifted like a triangle. Two
+ * through-mode kinds are stretched across a wing instead, because without them the wings go
+ * stale or stay bright through a fade: a clear-mode sprite that reaches that screen edge
+ * (sceGuClear's 64-pixel strips reach both), and an untextured sprite over the whole screen
+ * (a fade, flash or tint). Every other through-mode sprite stays in the centre. */
+static void wide_sprite(const Vtx *p0, const Vtx *p1, int persp) {
+    if (s_wing || vtx_nonfinite(p0, p1, NULL)) return;
+    GeWideSlot *w = wide_target();
+    if (!w) return;
+    const int d = s_wide_d;
+    const int xa = (int)fminf(p0->x, p1->x), xb = (int)fmaxf(p0->x, p1->x);
+    const int ya = (int)fminf(p0->y, p1->y), yb = (int)fmaxf(p0->y, p1->y);
+    Vtx v[2] = { *p0, *p1 };
+    if (persp) {
+        /* fill_sprite_draw's rectangle is the truncated corners; truncating them here, before
+         * the shift, keeps that rectangle and its texture span exact in the canvas, and a
+         * GPU backend's floor then agrees with it even where the canvas x is negative. */
+        const float x0 = (float)(int)p0->x, x1 = (float)(int)p1->x;
+        if (xa < 0) {
+            v[0].x = x0 + (float)d; v[1].x = x1 + (float)d;
+            wide_pass(w, 0, d - 1, v, 1, persp);
+        }
+        if (xb > 480) {
+            v[0].x = x0 + (float)(d - 480); v[1].x = x1 + (float)(d - 480);
+            wide_pass(w, d, 2 * d - 1, v, 1, persp);
+        }
+        return;
+    }
+    const int fade = !ge.clear && !ge.tex_enable && xa <= 0 && xb >= 480 && ya <= 0 && yb >= 272;
+    if (!ge.clear && !fade) return;
+    const int left = p0->x <= p1->x ? 0 : 1;   /* the vertex on the left edge stays there */
+    if (xa <= 0) {
+        v[left].x = 0.0f; v[1 - left].x = (float)d;
+        wide_pass(w, 0, d - 1, v, 1, persp);
+    }
+    if (xb >= 480) {
+        v[left].x = (float)d; v[1 - left].x = (float)(2 * d);
+        wide_pass(w, d, 2 * d - 1, v, 1, persp);
+    }
+}
+
+int ge_wide_wing_for(int window_w, int window_h) {
+    if (window_w <= 0 || window_h <= 0) return 0;
+    const long long canvas = 272LL * window_w / window_h;   /* the window's width at 272 rows */
+    long long d = (canvas - 480) / 2;
+    if (d <= 0) return 0;
+    d &= ~3LL;
+    return d > GE_WIDE_MAX_WING ? GE_WIDE_MAX_WING : (int)d;
+}
+
+int ge_wide_set_wing(int wing) {
+    if (wing < 0) wing = 0;
+    if (wing > GE_WIDE_MAX_WING) wing = GE_WIDE_MAX_WING;
+    wing &= ~3;
+    if (wing == s_wide_d) return wing;
+    s_wide_d = wing;
+    for (int i = 0; i < GE_WIDE_SLOTS; i++) {
+        if (!wing) wide_free_slot(&s_wide_slot[i]);
+        else wide_clear_slot(&s_wide_slot[i]);   /* the old columns are at the old width */
+    }
+    return wing;
+}
+
+int ge_wide_wing(void) { return s_wide_d; }
+
+void ge_wide_note_display(uint32_t fb_addr) {
+    if (!s_wide_d || !fb_addr) return;
+    const uint32_t fb = ge_wide_norm(fb_addr);
+    for (int i = 0; i < GE_WIDE_SLOTS; i++)
+        if (s_wide_slot[i].fb == fb) { s_wide_last = i; return; }
+    /* A new display buffer replaces the one not displayed last (double buffering keeps both). */
+    const int i = (s_wide_last + 1) % GE_WIDE_SLOTS;
+    wide_clear_slot(&s_wide_slot[i]);
+    s_wide_slot[i].fb = fb;
+    s_wide_last = i;
+}
+
+int ge_wide_drawn(uint32_t fb_addr) {
+    const GeWideSlot *w = s_wide_d ? wide_slot_for(ge_wide_norm(fb_addr)) : NULL;
+    return w && w->drawn;
+}
+
+void ge_wide_shown(uint32_t fb_addr) {
+    GeWideSlot *w = s_wide_d ? wide_slot_for(ge_wide_norm(fb_addr)) : NULL;
+    if (w) w->drawn = 0;
+}
+
+uint32_t ge_wide_epoch(uint32_t fb_addr) {
+    const GeWideSlot *w = s_wide_d ? wide_slot_for(ge_wide_norm(fb_addr)) : NULL;
+    return w ? w->epoch : 0u;
+}
+
+const uint32_t *ge_wide_canvas(uint32_t fb_addr, int *fmt) {
+    const GeWideSlot *w = s_wide_d ? wide_slot_for(ge_wide_norm(fb_addr)) : NULL;
+    if (!w || !w->color) return NULL;
+    if (fmt) *fmt = w->fmt;
+    return w->color;
 }
 
 typedef struct { float basis[4], deriv[4]; } PatchWeight;
@@ -4966,7 +5246,8 @@ static void tnl_params(const VFmt *vf, GeTnlParams *p) {
  * for every triangle, the depth surface could not be prepared), 0 to run the CPU path. */
 static int ge_tnl_try_prim(int type, int count, const VFmt *vf, uint32_t vbase, uint32_t ibase,
                            int idxfmt) {
-    if (!s_gpu || !s_gpu->tnl_prim || !tnl_enabled() || count < 3) return 0;
+    /* Fill's wings (wide_tri) need ge.c's own screen-space triangles. */
+    if (!s_gpu || !s_gpu->tnl_prim || !tnl_enabled() || count < 3 || s_wide_d) return 0;
     if (!tnl_state_ok(type, vf)) { s_tnl_cpu++; return 0; }
     uint32_t ntri = type == 3 ? (uint32_t)(count / 3) : (uint32_t)(count - 2);
     if (!tnl_grow((void **)&s_tnl_refs, &s_tnl_refs_cap, (uint32_t)count, sizeof(GeTnlVtx)) ||

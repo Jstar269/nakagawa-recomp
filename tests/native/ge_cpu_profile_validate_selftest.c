@@ -1035,6 +1035,156 @@ static void expect(int ok, const char *scenario, const char *what) {
     }
 }
 
+/* Widescreen Fill (#1881), the software rasterizer's wing canvases. One list on a display
+ * framebuffer: sceGuClear-style 64-pixel clear strips, a transform-mode quad from guest x -240
+ * to 720 (rows 68..203), and a through-mode bar over the screen's width (rows 100..139); the
+ * fade variant ends with an untextured whole-screen sprite. With Fill on at the 21:9 wing
+ * width the authentic frame must be byte-identical to Fill off, the quad must fill both wings
+ * in its rows and the clear colour the rest, the bar must reach no wing pixel, the fade must
+ * cover the wings, and a scissor narrower than the screen must keep every draw out of them.
+ * gpu-coherence-selftest runs the same list on the Vulkan backend and compares the canvases. */
+#define LIST_WIDE   0x08130000u
+#define WIDE_VERTS  0x08134000u
+#define WIDE_FB     0x04000000u
+#define WIDE_D      76
+#define WIDE_BG     0xff302010u
+#define WIDE_QUAD   0xff20c040u
+#define WIDE_BAR    0xff0000ffu
+#define WIDE_FADE   0xff808080u
+
+static uint32_t s_wide_vc;
+
+static void wide_vtx(uint32_t color, float x, float y) {
+    uint8_t *d = (uint8_t *)SR_HOST(s_wide_vc);
+    const float pos[3] = { x, y, 0.0f };
+    memcpy(d, &color, 4);
+    memcpy(d + 4, pos, 12);
+    s_wide_vc += 16u;
+}
+
+static void wide_matrix(uint32_t cmd, const float *m, int n) {
+    W(cmd, 0u);
+    for (int i = 0; i < n; i++) W(cmd + 1u, f24(m[i]));
+}
+
+static void build_wide_list(int fade, int narrow) {
+    const uint32_t through = (7u << 2) | (3u << 7) | (1u << 23), transform = (7u << 2) | (3u << 7);
+    s_pc = LIST_WIDE;
+    s_wide_vc = WIDE_VERTS;
+    W(0x10, 0x080000u);                    /* BASE: vertices at 0x08xxxxxx */
+    W(0x13, 0u);
+    W(0x9C, WIDE_FB & 0x00FFFFFFu);
+    W(0x9D, 512u);
+    W(0xD2, 3u);
+    W(0x15, 0u);
+    W(0x16, (271u << 10) | 479u);
+    W(0xD4, 0u);
+    W(0xD5, (271u << 10) | (narrow ? 400u : 479u));
+    W(0xD6, 0u);
+    W(0xD7, 0xFFFFu);
+    for (uint32_t cmd = 0x17; cmd <= 0x28; cmd++) W(cmd, 0u);   /* every unit off */
+    W(0x50, 0u);                           /* flat shading */
+    W(0xE8, 0u);
+    W(0xE9, 0u);
+
+    uint32_t at = s_wide_vc;
+    for (int i = 0; i < 8; i++) {
+        wide_vtx(WIDE_BG, (float)(i * 64), 0.0f);
+        wide_vtx(WIDE_BG, (float)(i * 64 + 64), 272.0f);
+    }
+    W(0xD3, 0x301u);                       /* clear colour and alpha */
+    W(0x12, through);
+    W(0x01, at & 0x00FFFFFFu);
+    W(0x04, (6u << 16) | 16u);
+    W(0xD3, 0u);
+
+    static const float ident43[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 };
+    static const float ident44[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    wide_matrix(0x3A, ident43, 12);
+    wide_matrix(0x3C, ident43, 12);
+    wide_matrix(0x3E, ident44, 16);
+    W(0x42, f24(240.0f));
+    W(0x43, f24(-136.0f));
+    W(0x44, f24(-32000.0f));
+    W(0x45, f24(2048.0f));
+    W(0x46, f24(2048.0f));
+    W(0x47, f24(32767.5f));
+    W(0x4C, (2048u - 240u) << 4);
+    W(0x4D, (2048u - 136u) << 4);
+    at = s_wide_vc;                        /* clip x -2..2 is guest x -240..720 */
+    wide_vtx(WIDE_QUAD, -2.0f, 0.5f); wide_vtx(WIDE_QUAD, 2.0f, 0.5f); wide_vtx(WIDE_QUAD, -2.0f, -0.5f);
+    wide_vtx(WIDE_QUAD, 2.0f, 0.5f); wide_vtx(WIDE_QUAD, 2.0f, -0.5f); wide_vtx(WIDE_QUAD, -2.0f, -0.5f);
+    W(0x12, transform);
+    W(0x01, at & 0x00FFFFFFu);
+    W(0x04, (3u << 16) | 6u);
+
+    at = s_wide_vc;
+    wide_vtx(WIDE_BAR, 0.0f, 100.0f); wide_vtx(WIDE_BAR, 480.0f, 140.0f);
+    if (fade) { wide_vtx(WIDE_FADE, 0.0f, 0.0f); wide_vtx(WIDE_FADE, 480.0f, 272.0f); }
+    W(0x12, through);
+    W(0x01, at & 0x00FFFFFFu);
+    W(0x04, (6u << 16) | (fade ? 4u : 2u));
+    W(0x0F, 0u);
+    W(0x0C, 0u);
+}
+
+static void run_wide_list(int wing, int fade, int narrow, uint32_t *frame) {
+    memset(SR_HOST(WIDE_FB), 0, 512u * 272u * 4u);
+    expect(ge_wide_set_wing(wing) == wing, "wide_fill", "the wing width is taken as given");
+    ge_wide_note_display(WIDE_FB);
+    build_wide_list(fade, narrow);
+    expect(ge_run_list(LIST_WIDE, 0) == 0, "wide_fill", "list did not reach END");
+    memcpy(frame, SR_HOST(WIDE_FB), 512u * 272u * 4u);
+}
+
+static void test_ge_wide_fill(void) {
+    expect(ge_wide_wing_for(2520, 1080) == WIDE_D, "wide_fill", "21:9 is a 76-pixel wing");
+    expect(ge_wide_wing_for(3840, 1080) == 240, "wide_fill", "32:9 is a 240-pixel wing");
+    expect(ge_wide_wing_for(1920, 1080) == 0 && ge_wide_wing_for(1280, 1024) == 0,
+           "wide_fill", "a window no wider than 30:17 has no wings");
+    expect(ge_wide_wing_for(7680, 1080) == GE_WIDE_MAX_WING, "wide_fill", "the wing is capped");
+    expect(ge_wide_set_wing(77) == 76 && ge_wide_set_wing(0) == 0, "wide_fill",
+           "a wing width rounds down to a multiple of 4");
+
+    const size_t px = 512u * 272u;
+    uint32_t *off = (uint32_t *)malloc(px * 4u), *on = (uint32_t *)malloc(px * 4u);
+    if (!off || !on) { expect(0, "wide_fill", "no memory"); free(off); free(on); return; }
+    for (int fade = 0; fade < 2; fade++) {
+        run_wide_list(0, fade, 0, off);
+        expect(!ge_wide_canvas(WIDE_FB, NULL) && !ge_wide_drawn(WIDE_FB), "wide_fill",
+               "Fill off makes no canvas");
+        run_wide_list(WIDE_D, fade, 0, on);
+        expect(!memcmp(off, on, px * 4u), "wide_fill", "Fill leaves the authentic frame unchanged");
+        expect(fade || on[120u * 512u + 240u] == WIDE_BAR, "wide_fill", "the bar is in the frame");
+        int fmt = -1;
+        const uint32_t *c = ge_wide_canvas(WIDE_FB, &fmt);
+        expect(c && fmt == 3 && ge_wide_drawn(WIDE_FB), "wide_fill", "Fill on draws the canvas");
+        size_t bad = 0;
+        for (uint32_t y = 0; c && y < 272u; y++)
+            for (uint32_t x = 0; x < 512u; x++) {
+                uint32_t want = x >= 2u * WIDE_D ? 0u
+                              : fade ? WIDE_FADE
+                              : (y >= 68u && y <= 203u) ? WIDE_QUAD : WIDE_BG;
+                if (c[y * 512u + x] != want) {
+                    if (!bad)
+                        fprintf(stderr, "wide_fill: canvas (%u,%u) = %08x, want %08x (fade=%d)\n",
+                                x, y, (unsigned)c[y * 512u + x], (unsigned)want, fade);
+                    bad++;
+                }
+            }
+        expect(!bad, "wide_fill", "the wings hold the 3D quad and the clear, never the bar");
+        ge_wide_shown(WIDE_FB);
+        expect(!ge_wide_drawn(WIDE_FB), "wide_fill", "showing a frame resets its drawn flag");
+        ge_wide_set_wing(0);
+    }
+    run_wide_list(WIDE_D, 0, 1, on);
+    expect(!ge_wide_canvas(WIDE_FB, NULL) && !ge_wide_drawn(WIDE_FB), "wide_fill",
+           "a scissor narrower than the screen keeps every draw out of the wings");
+    ge_wide_set_wing(0);
+    free(off);
+    free(on);
+}
+
 static void print_mask(FILE *out, uint32_t mask) {
     if (!mask) { fputs("none", out); return; }
     const char *sep = "";
@@ -1945,6 +2095,7 @@ int main(int argc, char **argv) {
     test_ge_mip_use_trace_routes();
     test_ge_immediate_mode();
     test_ge_immediate_stream();
+    test_ge_wide_fill();
     build_lists();
     expect_api_contract();
 

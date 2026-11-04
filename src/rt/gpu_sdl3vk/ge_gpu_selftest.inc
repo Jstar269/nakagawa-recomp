@@ -4918,6 +4918,195 @@ static int coherence_run_readback_rows(void) {
     return ok;
 }
 
+/* ---- widescreen Fill (#1881): the wing canvases on both renderers ----------------------------
+ *
+ * One list on a display framebuffer: sceGuClear-style 64-pixel clear strips, a transform-mode
+ * quad from guest x -240 to 720 (rows 68..203), and a through-mode bar over the screen's width
+ * (rows 100..139); the fade variant ends with an untextured whole-screen sprite. It runs on the
+ * software rasterizer and on this backend, with Fill off and at the 21:9 wing width (76). The
+ * authentic frame must be the same with Fill on and off, both canvases must agree byte for
+ * byte, the quad must fill both wings in its rows and the clear colour the rest, the bar must
+ * reach no wing pixel, and the fade must cover the wings. */
+#define WIDE_LIST  0x002C0000u
+#define WIDE_VTX   0x002C8000u
+#define WIDE_FB    0x04000000u
+#define WIDE_D     76
+#define WIDE_BG    0xff302010u
+#define WIDE_QUAD  0xff20c040u
+#define WIDE_BAR   0xff0000ffu
+#define WIDE_FADE  0xff808080u
+
+static uint32_t s_wide_vc;
+
+static void wide_vtx(uint32_t color, float x, float y) {
+    uint8_t *d = (uint8_t *)SR_HOST(s_wide_vc);
+    const float pos[3] = { x, y, 0.0f };
+    memcpy(d, &color, 4);
+    memcpy(d + 4, pos, 12);
+    s_wide_vc += 16u;
+}
+
+static uint32_t wide_build(int fade) {
+    TnlpList L = { (uint32_t *)SR_HOST(WIDE_LIST), 0 };
+    const uint32_t through = (7u << 2) | (3u << 7) | (1u << 23), transform = (7u << 2) | (3u << 7);
+    s_wide_vc = WIDE_VTX;
+    TNLP_W(&L, 0x10, 0);
+    TNLP_W(&L, 0x9C, WIDE_FB & 0x00FFFFFFu);
+    TNLP_W(&L, 0x9D, 512u | ((WIDE_FB & 0xFF000000u) >> 8));
+    TNLP_W(&L, 0xD2, 3);
+    TNLP_W(&L, 0x15, 0);
+    TNLP_W(&L, 0x16, ((FB_H - 1u) << 10) | 479u);
+    TNLP_W(&L, 0xD4, 0);
+    TNLP_W(&L, 0xD5, ((FB_H - 1u) << 10) | 479u);
+    TNLP_W(&L, 0xD6, 0);
+    TNLP_W(&L, 0xD7, 0xFFFF);
+    for (uint32_t cmd = 0x17; cmd <= 0x28; cmd++) TNLP_W(&L, cmd, 0);   /* every unit off */
+    TNLP_W(&L, 0x50, 0);                                                /* flat shading */
+    TNLP_W(&L, 0xE8, 0);
+    TNLP_W(&L, 0xE9, 0);
+
+    uint32_t at = s_wide_vc;                    /* sceGuClear's strips: 8 x 64 pixels */
+    for (int i = 0; i < 8; i++) { wide_vtx(WIDE_BG, (float)(i * 64), 0.0f); wide_vtx(WIDE_BG, (float)(i * 64 + 64), 272.0f); }
+    TNLP_W(&L, 0xD3, 0x301);
+    TNLP_W(&L, 0x12, through);
+    TNLP_W(&L, 0x01, at);
+    TNLP_W(&L, 0x04, (6u << 16) | 16u);
+    TNLP_W(&L, 0xD3, 0);
+
+    static const float ident43[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 };
+    static const float ident44[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    tnlp_matrix(&L, 0x3A, ident43, 12);
+    tnlp_matrix(&L, 0x3C, ident43, 12);
+    tnlp_matrix(&L, 0x3E, ident44, 16);
+    TNLP_W(&L, 0x42, tnlp_f24(240.0f));
+    TNLP_W(&L, 0x43, tnlp_f24(-136.0f));
+    TNLP_W(&L, 0x44, tnlp_f24(-32000.0f));
+    TNLP_W(&L, 0x45, tnlp_f24(2048.0f));
+    TNLP_W(&L, 0x46, tnlp_f24(2048.0f));
+    TNLP_W(&L, 0x47, tnlp_f24(32767.5f));
+    TNLP_W(&L, 0x4C, (2048u - 240u) << 4);
+    TNLP_W(&L, 0x4D, (2048u - 136u) << 4);
+    at = s_wide_vc;                             /* clip x -2..2 is guest x -240..720 */
+    wide_vtx(WIDE_QUAD, -2.0f, 0.5f); wide_vtx(WIDE_QUAD, 2.0f, 0.5f); wide_vtx(WIDE_QUAD, -2.0f, -0.5f);
+    wide_vtx(WIDE_QUAD, 2.0f, 0.5f); wide_vtx(WIDE_QUAD, 2.0f, -0.5f); wide_vtx(WIDE_QUAD, -2.0f, -0.5f);
+    TNLP_W(&L, 0x12, transform);
+    TNLP_W(&L, 0x01, at);
+    TNLP_W(&L, 0x04, (3u << 16) | 6u);
+
+    at = s_wide_vc;
+    wide_vtx(WIDE_BAR, 0.0f, 100.0f); wide_vtx(WIDE_BAR, 480.0f, 140.0f);
+    if (fade) { wide_vtx(WIDE_FADE, 0.0f, 0.0f); wide_vtx(WIDE_FADE, 480.0f, 272.0f); }
+    TNLP_W(&L, 0x12, through);
+    TNLP_W(&L, 0x01, at);
+    TNLP_W(&L, 0x04, (6u << 16) | (fade ? 4u : 2u));
+    TNLP_W(&L, 0x0F, 0);
+    TNLP_W(&L, 0x0C, 0);
+    return WIDE_LIST;
+}
+
+/* Run the list on one renderer with wing width `wing`; copy the frame and, with Fill on, the
+ * canvas (512 x 272 RGBA8888 words). */
+static int wide_run(int gpu, int wing, int fade, uint32_t *frame, uint32_t *canvas) {
+    coherence_reset_targets();
+    memset(SR_HOST(WIDE_FB), 0, 512u * FB_H * 4u);
+    sr_gpu_vram_dirty(WIDE_FB, 512u * FB_H * 4u);
+    if (ge_wide_set_wing(wing) != wing) return 0;
+    ge_wide_note_display(WIDE_FB);
+    ge_set_gpu_hooks(gpu ? &k_hooks : NULL);
+    ge_run_list(wide_build(fade), 0);
+    ge_set_gpu_hooks(&k_hooks);
+    int ok = 1;
+    if (gpu) {
+        GeGpuFbDescriptor desc = { .addr = WIDE_FB, .format = 3, .stride = 512, .width = 480, .height = FB_H };
+        if (gegpu_sync_guest_fb(&desc) != GEGPU_SYNC_OK) ok = 0;
+    }
+    memcpy(frame, SR_HOST(WIDE_FB), 512u * FB_H * 4u);
+    if (ok && wing) {
+        if (gpu) ok = gegpu_wide_read(WIDE_FB, canvas);
+        else {
+            int fmt = -1;
+            const uint32_t *c = ge_wide_canvas(WIDE_FB, &fmt);
+            ok = c && fmt == 3;
+            if (ok) memcpy(canvas, c, 512u * FB_H * 4u);
+        }
+        if (!ge_wide_drawn(WIDE_FB)) ok = 0;
+    }
+    if (!wing && (ge_wide_canvas(WIDE_FB, NULL) || ge_wide_drawn(WIDE_FB))) ok = 0;
+    ge_wide_set_wing(0);
+    return ok;
+}
+
+/* The canvas colour the list leaves at canvas pixel (x, y): wings are x < 2 * WIDE_D. */
+static uint32_t wide_expect(int fade, uint32_t x, uint32_t y) {
+    if (x >= 2u * WIDE_D) return 0u;
+    if (fade) return WIDE_FADE;
+    return (y >= 68u && y <= 203u) ? WIDE_QUAD : WIDE_BG;
+}
+
+static int coherence_run_wide_fill(void) {
+    const size_t px = (size_t)512 * FB_H;
+    uint32_t *buf = (uint32_t *)malloc(px * 4u * 6u);
+    if (!buf) return 0;
+    uint32_t *sw_off = buf, *sw_on = buf + px, *gpu_off = buf + 2 * px, *gpu_on = buf + 3 * px;
+    uint32_t *sw_wing = buf + 4 * px, *gpu_wing = buf + 5 * px;
+    int ok = 1;
+    if (ge_wide_wing_for(2520, 1080) != WIDE_D || ge_wide_wing_for(1920, 1080) != 0) {
+        fprintf(stderr, "gpu coherence selftest [wide-fill]: wing width for 21:9 or 16:9 is wrong\n");
+        ok = 0;
+    }
+    for (int fade = 0; ok && fade < 2; fade++) {
+        unsigned long drawn0, dropped0, drawn1, dropped1, drawn2, dropped2;
+        gegpu_wide_counts(&drawn0, &dropped0);
+        if (!wide_run(0, 0, fade, sw_off, NULL) || !wide_run(0, WIDE_D, fade, sw_on, sw_wing)) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: a software run failed (fade=%d)\n", fade);
+            ok = 0; break;
+        }
+        if (!wide_run(1, 0, fade, gpu_off, NULL)) { ok = 0; break; }
+        gegpu_wide_counts(&drawn1, &dropped1);
+        if (!wide_run(1, WIDE_D, fade, gpu_on, gpu_wing)) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: a Vulkan run failed (fade=%d)\n", fade);
+            ok = 0; break;
+        }
+        gegpu_wide_counts(&drawn2, &dropped2);
+        if (drawn1 != drawn0 || dropped1 != dropped0 || drawn2 == drawn1 || dropped2 != dropped1) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: wing primitives off=%lu on=%lu dropped=%lu\n",
+                    drawn1 - drawn0, drawn2 - drawn1, dropped2 - dropped0);
+            ok = 0;
+        }
+        if (memcmp(sw_off, sw_on, px * 4u) || memcmp(gpu_off, gpu_on, px * 4u)) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: Fill changed the authentic frame (fade=%d)\n", fade);
+            ok = 0;
+        }
+        for (uint32_t y = 0; ok && y < FB_H; y++) {
+            for (uint32_t x = 0; x < 512u; x++) {
+                const size_t i = (size_t)y * 512u + x;
+                const uint32_t want = wide_expect(fade, x, y);
+                if (x < 2u * WIDE_D && sw_wing[i] != gpu_wing[i]) {
+                    fprintf(stderr, "gpu coherence selftest [wide-fill]: canvas (%u,%u) software=%08x vulkan=%08x\n",
+                            x, y, (unsigned)sw_wing[i], (unsigned)gpu_wing[i]);
+                    ok = 0; break;
+                }
+                if (sw_wing[i] != want || gpu_wing[i] != want) {
+                    fprintf(stderr, "gpu coherence selftest [wide-fill]: canvas (%u,%u) software=%08x vulkan=%08x want=%08x (fade=%d)\n",
+                            x, y, (unsigned)sw_wing[i], (unsigned)gpu_wing[i], (unsigned)want, fade);
+                    ok = 0; break;
+                }
+            }
+        }
+        /* The bar is in the authentic frame, so the test above saw a list that drew it. */
+        if (ok && !fade && sw_on[120u * 512u + 240u] != WIDE_BAR) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: the bar is missing from the frame\n");
+            ok = 0;
+        }
+        if (ok)
+            printf("gpu coherence selftest: PASS %-22s fade=%d wing=%d scale=%d\n",
+                   "wide-fill", fade, WIDE_D, s_scale);
+    }
+    coherence_reset_targets();
+    free(buf);
+    return ok;
+}
+
 int gegpu_coherence_selftest(void) {
     /* SR_GPU_COHERENCE_CASE=scaled-upload (the harness's --case) runs that case alone, as the
      * recipe does at render scales 2 and 4: the other fixtures expect 1x pixels (a filtered sample
@@ -4929,6 +5118,7 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "readback-rows") == 0) return coherence_run_readback_rows();
         if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
         if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
+        if (strcmp(only, "wide-fill") == 0) return coherence_run_wide_fill();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }
@@ -4991,6 +5181,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_scaled_upload()) ok = 0;
     if (!coherence_run_readback_rows()) ok = 0;
     if (!coherence_run_stacked_targets()) ok = 0;
+    if (!coherence_run_wide_fill()) ok = 0;
     coherence_reset_targets();
     return ok;
 }

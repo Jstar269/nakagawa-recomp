@@ -174,6 +174,21 @@ UNDEFINED-layout image and published a PPM under a `.png` name. It is gone. In i
   means SKIP (Vulkan unavailable). `fbcap-selftest` covers the presenter-neutral service itself
   without a GPU.
 
+## Widescreen Fill wings (#1881)
+
+Off by default; the contract is `docs/ENHANCEMENT_CONTRACT.md` section 10.7. ge.c decides which
+primitives reach a display framebuffer's wing canvas and moves their vertices there; this backend
+draws them through `hook_wing_tri` / `hook_wing_sprite`, which run the ordinary `hook_tri` /
+`hook_sprite` with `s_wing_dst` set. That records into `s_wbatch` instead of `s_batch`, with the
+canvas columns as the scissor's x and the guest scissor's rows, and `submit_pending` submits those
+batches after the target's own, so every resource a pending batch names is released at the same
+boundaries as before. A canvas (`WingEnt`) is a 512x272 colour and depth pair at render scale
+that is never in `s_tgts` or `s_deps`: no readback, upload, coherence or texture path reaches it.
+It is cleared whenever ge.c clears its own (`ge_wide_epoch`). A state this backend would draw in
+software is dropped from the wings with no flush or readback. `gegpu_wide_read` reads a canvas
+back for `gpu-coherence-selftest`'s `wide-fill` case, which compares it with the software
+rasterizer's.
+
 ## Present and swapchain failures (#1377)
 
 Every state-changing Vulkan result on the present, pause-overlay and swapchain paths is checked.
