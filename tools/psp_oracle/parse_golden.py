@@ -1924,6 +1924,37 @@ _register_campaign_probe(
     dict(IO_SEEK_EOF_ROWS),
 )
 
+# hle-utility-none (140, probe_hle_measure.c): #1386 at status NONE, with no InitStart
+# imported: for savedata, the message dialog, netconf, gamedata install and game sharing,
+# GetStatus, Update(1), GetStatus, ShutdownStart, GetStatus, ShutdownStart, GetStatus.
+HLE_UTILITY_NONE_ROWS = (
+    ("utility-none-savedata", 7), ("utility-none-msgdialog", 7), ("utility-none-netconf", 7),
+    ("utility-none-gamedata", 7), ("utility-none-sharing", 7),
+)
+_register_campaign_probe(
+    "hle-utility-none", "PSP-HLE-UTILITY-NONE-001",
+    tuple(row for row, _ in HLE_UTILITY_NONE_ROWS), dict(HLE_UTILITY_NONE_ROWS),
+)
+
+# io-umd-eof (137, probe_kernel_semantics.c): #1380 on the UMD, read-only: the drive state
+# before and after; for two disc0: files (a = UMD_DATA.BIN, b = PSP_GAME/PARAM.SFO) the open
+# and size, seeks past the end, reads past and across the end, negative seeks and seeks at and
+# past 32 bits; for the raw umd0: device the last sector, seeks past it and reads at and across
+# it. Every row is emitted on every run with a fixed word count (SKIP rows keep the shape).
+IO_UMD_EOF_ROWS = (
+    ("umd-eof-state-before", 2),
+    ("umd-eof-a-open", 4), ("umd-eof-a-seek-past", 12), ("umd-eof-a-read-past", 10),
+    ("umd-eof-a-seek-negative", 9), ("umd-eof-a-seek-wide", 10),
+    ("umd-eof-b-open", 4), ("umd-eof-b-seek-past", 12), ("umd-eof-b-read-past", 10),
+    ("umd-eof-b-seek-negative", 9), ("umd-eof-b-seek-wide", 10),
+    ("umd-eof-raw-open", 3), ("umd-eof-raw-seek-past", 16), ("umd-eof-raw-read-end", 13),
+    ("umd-eof-state-after", 2),
+)
+_register_campaign_probe(
+    "io-umd-eof", "PSP-IO-EOF-002", tuple(row for row, _ in IO_UMD_EOF_ROWS),
+    dict(IO_UMD_EOF_ROWS),
+)
+
 # memory-edge (138, probe_memory_edge.c, fixture mem_edge.h): the #303 invalid-tail and
 # boundary cells and #1380's sceIoRead into a boundary buffer. Three measurement rows, then for
 # each of three placements (the last bytes of user RAM, the first bytes of user RAM, the last

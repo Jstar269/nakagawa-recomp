@@ -3837,5 +3837,27 @@ class CheckoutDeletionGuardTests(unittest.TestCase):
         self.assertEqual(_scan_for_checkout_damage(source, "case.py"), [])
 
 
+class DoctorRefusesTrackedCodeCaptureTests(unittest.TestCase):
+    """A .nkcap holds bytes of the user's own game RAM (#1933); a tracked one fails the doctor."""
+
+    def test_a_tracked_code_capture_fails_the_repository_contract(self):
+        import nk_doctor_checks
+        import nk_doctor_core
+
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("git is required")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run([git, "init", "-q"], cwd=root, check=True)
+            (root / "code_capture_08800000_0123456789abcdef.nkcap").write_bytes(b"NKCODE01")
+            subprocess.run([git, "add", "-f", "."], cwd=root, check=True)
+            report = nk_doctor_core.Report(root, "build")
+            nk_doctor_checks.check_repository_contract(report)
+        tracked = [r for r in report.results if r.code == "GIT_TRACKED_PRIVATE"]
+        self.assertEqual([r.status for r in tracked], ["FAIL"])
+        self.assertIn(".nkcap", tracked[0].detail or "")
+
+
 if __name__ == "__main__":
     unittest.main()
