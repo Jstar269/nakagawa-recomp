@@ -713,6 +713,47 @@ static void test_exec_share(void) {
     CHECK(value > 0.0 && value < 0.5, "interp_time_share=%f", value);
 }
 
+/* SR_PERF_FRAMES: one row per new frame with what that frame cost. A re-present adds no row, the
+ * first new frame has nothing to measure from, and GE CPU time lands in the frame it ran in. */
+static void test_per_frame_rows(void) {
+    const uint32_t a = 0x04000000u, b = 0x04044000u;
+    char path[600];
+    snprintf(path, sizeof path, "%.*s.frames.csv", (int)(strlen(s_csv_path) - 4u), s_csv_path);
+    set_env("SR_PERF_FRAMES", path);
+    s_fake_wall_ns = 30000000000ull;
+    s_fake_cpu_ns = 3000000000ull;
+    sr_perf_test_set_clocks(fake_wall, fake_cpu);
+    sr_perf_test_reinit();
+    flip(a, 200u, 0.0);                          /* the first new frame: no row */
+    flip(b, 201u, 10.0);
+    uint64_t ge_started = s_fake_wall_ns;
+    s_fake_wall_ns += 4000000u;                  /* 4 ms of GE work in the next frame */
+    sr_perf_ge_cpu(ge_started);
+    flip(a, 203u, 20.0);
+    flip(a, 204u, 1.0);                          /* a re-present: no row; its work joins the next frame */
+    flip(b, 205u, 5.0);
+    sr_perf_test_set_clocks(NULL, NULL);
+    set_env("SR_PERF_FRAMES", NULL);
+    sr_perf_test_reinit();                       /* closes the file */
+    static char text[4096];
+    CHECK(read_file(path, text, sizeof text) > 0, "SR_PERF_FRAMES wrote %s", path);
+    const char *header = "vcount,vblanks,work_ms,wall_ms,guest_ms,aot_ms,interp_ms,ge_cpu_ms,ge_cpu_calls,";
+    CHECK(strncmp(text, header, strlen(header)) == 0, "per-frame header: %.120s", text);
+    const char *rows = strchr(text, '\n');
+    int count = 0;
+    for (const char *r = rows; r && r[1]; r = strchr(r + 1, '\n')) count++;
+    CHECK(count == 3, "per-frame rows: %d (expected 3)\n%s", count, text);
+    CHECK(rows && strncmp(rows + 1, "201,1,10.000,11.000,0.000,0.000,0.000,0.000,0,", 46) == 0,
+          "first row: %.80s", rows ? rows + 1 : "");
+    const char *second = rows ? strchr(rows + 1, '\n') : NULL;
+    CHECK(second && strncmp(second + 1, "203,2,20.000,25.000,0.000,0.000,0.000,4.000,1,", 46) == 0,
+          "second row (4 ms of GE CPU): %.80s", second ? second + 1 : "");
+    const char *third = second ? strchr(second + 1, '\n') : NULL;
+    CHECK(third && strncmp(third + 1, "205,2,6.000,8.000,", 18) == 0,
+          "third row (across the re-present): %.80s", third ? third + 1 : "");
+    remove(path);
+}
+
 int main(void) {
     const char *tmp = getenv("TMPDIR");
     if (!tmp || !tmp[0]) tmp = getenv("TEMP");
@@ -733,6 +774,7 @@ int main(void) {
     test_thread_clock_guard();
     test_files_only_counters();
     test_thread_clock();
+    test_per_frame_rows();
     sr_perf_shutdown();
     {
         char json_path[600];
