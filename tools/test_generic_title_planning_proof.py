@@ -51,6 +51,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import title_codegen_plan  # noqa: E402
 import title_manifest  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 TITLES = ROOT / "assets" / "titles"
 SYNTHETIC = TITLES / "synthetic.json"
@@ -440,7 +441,7 @@ class LegacyToolingRetirementTests(unittest.TestCase):
             "tools/nk_safety.ps1",
             "tools/title_manager_plan.ps1",
         ):
-            text = (ROOT / relative).read_text(encoding="utf-8")
+            text = read_makefile(ROOT) if relative == "Makefile" else (ROOT / relative).read_text(encoding="utf-8")
             for token in forbidden:
                 with self.subTest(path=relative, token=token):
                     self.assertNotIn(token, text)
@@ -449,6 +450,7 @@ class LegacyToolingRetirementTests(unittest.TestCase):
         retired_names = tuple(self.RETIRED_PATHS)
         paths = [
             ROOT / "Makefile",
+            *sorted((ROOT / "mk").glob("*.mk")),
             ROOT / "tools" / "copy_build_assets.ps1",
             ROOT / "nk.ps1",
             ROOT / "nk_manager.ps1",
@@ -475,7 +477,7 @@ class LegacyToolingRetirementTests(unittest.TestCase):
                     self.assertNotIn(retired_name, text)
 
     def test_direct_make_has_no_hst_title_defaults(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertNotIn("HST_EXTRA_SPANS", makefile)
         self.assertNotIn("0x00303194,0x00306e24", makefile)
         self.assertNotIn("CODEGEN_PROFILE_ARG := --profile=hst", makefile)
@@ -509,7 +511,7 @@ class NoSecondTitleConditionalInGenericCode(unittest.TestCase):
                 self.assertNotIn("title_manifest_id", deriv.lower() if deriv else "")
 
     def test_makefile_has_no_second_title_conditional(self) -> None:
-        text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        text = read_makefile(ROOT)
         self.assertNotIn("synthetic_title2", text)
         self.assertNotIn("synthetic-title2", text)
         hst_conds = [m.start() for m in re.finditer(r"ifeq\s*\(\$\(GAME_NAME\),hst\)", text)]

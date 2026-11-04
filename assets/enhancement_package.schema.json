@@ -231,6 +231,24 @@
             "type": "string",
             "pattern": "^[0-9a-f]{64}$",
             "description": "SHA-256 of the stock word at low_insn_offset."
+          },
+          "stock_values": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "number"
+            },
+            "description": "swc1 or sw store sites only (sw needs it): the values the loader may store here. Any other value at run time stops the run; these are scaled and logged as they are stored."
+          },
+          "requires": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$"
+            },
+            "description": "Ids of other sites that declare stock_values. This site runs its rewrite only after each has applied in the run; until then it runs its stock statement."
           }
         }
       }

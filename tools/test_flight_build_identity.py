@@ -38,6 +38,9 @@ import time
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
+
 try:
     import flight_diff
 except ModuleNotFoundError:
@@ -926,7 +929,7 @@ class MakeIdentityResolutionTests(unittest.TestCase):
         return values, result.stdout + result.stderr
 
     def test_no_identity_default_spawns_git_through_make(self):
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("GIT ?= git", makefile)
         self.assertNotIn("$(shell git rev-parse HEAD)", makefile)
         # Every commit-stamped default reads the one guarded resolution.

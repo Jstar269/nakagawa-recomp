@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from vulkan_sdk import VulkanSdkError, discover_vulkan_sdk, is_usable_vulkan_sdk
+from makefile_text import read_makefile  # noqa: E402
 
 try:
     from test_build_truth import _scratch_build_root
@@ -140,7 +141,7 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
         PLAYER_VULKAN_INC/LIB (or CFLAGS/LDFLAGS) value that points the
         compiler at a pinned version directory.
         """
-        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(Path(__file__).resolve().parents[1])
         for line in makefile.splitlines():
             text = line.strip()
             if text.startswith("-I") or text.startswith("-L"):
@@ -155,7 +156,7 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
         # under test is that the group derives from the shared VULKAN_SDK
         # resolution rather than a machine-pinned version directory, so the
         # assertion accepts both forms and rejects a literal version path.
-        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(Path(__file__).resolve().parents[1])
         lines = makefile.splitlines()
         for line in lines:
             if re.match(r"\s*PLAYER_VULKAN_(INC|LIB)\s+:?=", line):

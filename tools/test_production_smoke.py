@@ -48,6 +48,7 @@ from import_fixtures import SYSLIB_EXPORT, build_module_elf  # noqa: E402
 from nk_core import package_cache  # noqa: E402
 from nk_core.iso_inspect import PBP_BOUNDARY_CODES, runtime_registered_nids  # noqa: E402
 from nk_core.types import TitleProfile  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 
 SPEC = importlib.util.spec_from_file_location("production_smoke_generator", GENERATOR_PATH)
@@ -508,7 +509,7 @@ class TestProductionSmoke(unittest.TestCase):
             self.assertNotIn(group, recipe, f"{group} is still passed on the link command line")
 
     def test_build_and_ci_route_use_the_production_targets(self):
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("production-smoke:", makefile)
         production_recipe = makefile.split("production-smoke:\n", 1)[1].split(

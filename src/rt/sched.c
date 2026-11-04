@@ -2758,9 +2758,12 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
      * exposed exactly that lifetime bug: its four-byte resource-manager argument
      * had become a text/code address before the loader thread dereferenced it.
      *
-     * Keep the copy below the thread's normal initial SP and start the entry below
-     * the copy, so an ordinary downward-growing prologue cannot overwrite it.
-     * Sixteen-byte rounding preserves the PSP ABI stack alignment. */
+     * The copy sits directly under the k0 block, where a PSP puts it (start.expected:
+     * argv = stack + size - 0x100 - round16(len)), and the entry's sp is 0x40 below the copy
+     * (docs/HARDWARE_ORACLE.md PSP-NULLCODE-001: argv 0x0b7eecf0, sp 0x0b7eecb0 for a four-byte
+     * block; the 0x40 is measured only at that one length), so an ordinary downward-growing
+     * prologue cannot overwrite the argument. Without an argument the sp is the thread's initial
+     * sp, 0x10 under k0 (unmeasured). Sixteen-byte rounding preserves the PSP ABI stack alignment. */
     t->arglen = arglen;
     t->argp = 0;
     t->exit_status = (int32_t)0x800201a4u; /* SCE_KERNEL_ERROR_NOT_DORMANT */
@@ -2769,7 +2772,10 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
         uint32_t rounded = (arglen + 15u) & ~15u;
         uint32_t stack_base = t->stack_base;
         uint32_t src_phys = SR_PHYS(argp);
-        uint32_t dst = t->sp_init - rounded;
+        /* The block sits directly under the k0 block: argv = stack + size - 0x100 - round16(len)
+         * (the "Argument length" cells: stack+0x6f0 for 1..8 bytes on a 0x800 stack, +0x6b0 for 80,
+         * +0x100 for 0x600). */
+        uint32_t dst = t->k0_init - rounded;
         uint32_t dst_phys = SR_PHYS(dst);
         int size_ok = arglen <= 0x0c000000u && rounded >= arglen && rounded <= t->sp_init;
         int src_ok = size_ok && src_phys < 0x0c000000u && arglen <= 0x0c000000u - src_phys;
@@ -2782,11 +2788,15 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
             if (rounded > arglen)
                 memset(SR_HOST(dst + arglen), 0, rounded - arglen);
             t->argp = dst;
-            t->saved.r[29] = dst;
+            /* sp = argv - 0x40 (PSP-NULLCODE-001); a block that fills the stack to its base keeps sp = argv. */
+            t->saved.r[29] = dst - 0x40u >= stack_base ? dst - 0x40u : dst;
             if (getenv("SR_THLOG") || getenv("SR_ARGLOG"))
                 fprintf(stderr,
                         "THREAD_ARG_COPY: uid=0x%x len=%u src=0x%08x dst=0x%08x sp=0x%08x\n",
                         t->uid, arglen, argp, dst, t->saved.r[29]);
+        } else if (argp == 0u) {
+            /* A NULL block with a length starts the thread with no argument (start.expected "With NULL ptr"). */
+            t->arglen = 0;
         } else {
             fprintf(stderr,
                     "sched_start_thread: invalid argument block uid=0x%x len=%u "

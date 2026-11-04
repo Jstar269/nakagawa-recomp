@@ -25,6 +25,7 @@ import publication_policy
 import publish_audit
 import test_public_title_isolation
 import title_manifest
+from makefile_text import read_makefile  # noqa: E402
 
 REL = "assets/titles/hst-ucus98701.json"
 
@@ -94,10 +95,10 @@ class HstTitleManifestTests(unittest.TestCase):
         adapter = (ROOT / "tools" / "title_manager_plan.ps1").read_text(encoding="utf-8")
         for module in self.manifest["modules"]:
             self.assertIn(module["name"], adapter)
-        self.assertNotIn("CODEGEN_PROFILE_ARG := --profile=hst", (ROOT / "Makefile").read_text(encoding="utf-8"))
+        self.assertNotIn("CODEGEN_PROFILE_ARG := --profile=hst", read_makefile(ROOT))
 
     def test_extra_executable_span_is_owned_by_the_manifest_plan(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertNotIn("HST_EXTRA_SPANS", makefile)
         self.assertNotIn("0x00303194,0x00306e24", makefile)
         expected = self.manifest["executable"]["extra_executable_spans"]

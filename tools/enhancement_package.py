@@ -217,6 +217,8 @@ SITE_KEYS = frozenset({
     "acceleration_site",
     "low_insn_offset",
     "low_stock_digest",
+    "stock_values",
+    "requires",
 })
 
 # The instruction where one logic update of the title begins: it runs exactly once per update.
@@ -610,6 +612,7 @@ def validate_package(data: Any) -> dict[str, Any]:
                 if target["transform"] != "accel_x0.25":
                     fail(f"sites[{idx}].acceleration_site",
                          f"acceleration_site {accel!r} must be an accel_x0.25 site")
+        _validate_requires(sites)
 
         # Validate update_boundary: where one logic update begins. Gated sites run on
         # alternate updates counted there, so a package that gates must declare it.
@@ -681,6 +684,35 @@ def _validate_site_extras(site: Mapping[str, Any], path: str) -> None:
             fail(f"{path}.low_stock_digest", "low_stock_digest must be a 64-character lowercase hex SHA-256 digest")
         if site["word_count"] != 1:
             fail(f"{path}.low_insn_offset", "a pinned low word completes a lone lui (word_count 1)")
+    if "stock_values" in site:
+        values = site["stock_values"]
+        if (not isinstance(values, list) or not values
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values)):
+            fail(f"{path}.stock_values", "stock_values must be a non-empty list of numbers")
+    if "requires" in site:
+        required = site["requires"]
+        if not isinstance(required, list) or not required or not all(isinstance(r, str) for r in required):
+            fail(f"{path}.requires", "requires must be a non-empty list of site ids")
+
+
+def _validate_requires(sites: Sequence[Mapping[str, Any]]) -> None:
+    """``requires`` names other sites of the package that declare ``stock_values``."""
+    by_id = {site["id"]: site for site in sites}
+    for idx, site in enumerate(sites):
+        required = site.get("requires")
+        if required is None:
+            continue
+        path = f"sites[{idx}].requires"
+        if len(set(required)) != len(required):
+            fail(path, "requires lists a site id twice (duplicate)")
+        for name in required:
+            if name == site["id"]:
+                fail(path, f"a site cannot require its own id {name!r}")
+            target = by_id.get(name)
+            if target is None or "stock_values" not in target:
+                fail(path, f"requires names sites that declare stock_values; {name!r} is not one")
+            if "requires" in target:
+                fail(path, f"required site {name!r} itself declares requires; chains are not allowed")
 
 
 def _check_id(value: Any, path: str, seen: set[str], role: str) -> None:
@@ -968,6 +1000,8 @@ def verify_and_resolve_sites(
         elif len(stock_words) == 1:
             rewrites = [plan_site_rewrite(site, stock_words[0])]
         else:
+            if "stock_values" in site:
+                fail(f"{site_path}.stock_values", "stock_values belongs only to swc1 and sw store sites")
             rewrites = plan_float_pair_rewrite(site, stock_words[0], stock_words[1])
         for word_index, rewrite in enumerate(rewrites):
             word_addr = site_addr + 4 * word_index
@@ -980,6 +1014,8 @@ def verify_and_resolve_sites(
             resolved_entry["fn_addr"] = fn_addr
             resolved_entry["site_addr"] = word_addr
             resolved_entry["stock_words"] = [stock_words[word_index]]
+            if "requires" in site:
+                rewrite = dict(rewrite, requires=list(site["requires"]))
             resolved_entry["rewrite"] = rewrite
             resolved_by_addr[word_addr] = resolved_entry
 
@@ -1374,7 +1410,87 @@ def plan_float_pair_rewrite(site: Mapping[str, Any], w0: int, w1: int,
     ]
 
 
+def _store_value_pairs(site: Mapping[str, Any], rewrite: dict[str, Any]) -> list[list[int]]:
+    """``[stock bits, scaled bits]`` for each declared stock value of a store site, checked."""
+    sid = site["id"]
+    float_store = rewrite["kind"] == "scale_f_store"
+    pairs: list[list[int]] = []
+    seen: set[int] = set()
+    for value in site["stock_values"]:
+        if float_store:
+            try:
+                bits = _f32_bits(float(value))
+            except OverflowError:
+                bits = 0x7F800000
+            stock = _f32(bits)
+            if not math.isfinite(stock):
+                raise EnhancementPackageError(
+                    f"site {sid}: stock value {value!r} is not finite as an f32 (fail-closed refusal)")
+            try:
+                scaled_bits = _f32_bits(stock * rewrite["factor"])
+            except OverflowError:
+                scaled_bits = 0x7F800000
+            if not math.isfinite(_f32(scaled_bits)):
+                raise EnhancementPackageError(
+                    f"site {sid}: stock value {value!r} scaled is not finite as an f32 (fail-closed refusal)")
+        else:
+            if not isinstance(value, int):
+                raise EnhancementPackageError(
+                    f"site {sid}: stock value {value!r} of an integer store must be an integer "
+                    "(fail-closed refusal)")
+            if not -0x80000000 <= value <= 0x7FFFFFFF or not -0x80000000 <= 2 * value <= 0x7FFFFFFF:
+                raise EnhancementPackageError(
+                    f"site {sid}: stock value {value} or its double is outside the s32 range "
+                    "(fail-closed refusal)")
+            bits, scaled_bits = value & 0xFFFFFFFF, (2 * value) & 0xFFFFFFFF
+        if bits in seen:
+            raise EnhancementPackageError(
+                f"site {sid}: duplicate stock value {value!r} (fail-closed refusal)")
+        seen.add(bits)
+        pairs.append([bits, scaled_bits])
+    return pairs
+
+
+def store_value_overlaps(site_id: str, rewrite: Mapping[str, Any]) -> list[str]:
+    """One note per stock value of a store site whose scaled value is also a stock value.
+
+    The run-time check cannot tell that value, stored again after it was scaled, from a fresh
+    stock value, so a path that re-stores it would scale it twice. It is not refused, because
+    the rows of one table can hold both v and 2v; the package author checks that no such path
+    exists.
+    """
+    pairs = rewrite.get("stock_values", ())
+    stock = {bits for bits, _scaled in pairs}
+
+    def text(bits: int) -> str:
+        if rewrite["kind"] == "scale_f_store":
+            return f"{_f32(bits):g}"
+        return str(bits - (1 << 32) if bits & 0x80000000 else bits)
+
+    return [
+        f"site {site_id}: stock value {text(bits)} scales to {text(scaled)}, which is also a stock "
+        "value; a path that stores an already scaled value again would scale it twice"
+        for bits, scaled in pairs if scaled in stock
+    ]
+
+
 def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
+    """The one defined rewrite of a verified stock word, with a store site's stock values."""
+    rewrite = _plan_word_rewrite(site, w)
+    if "stock_values" in site:
+        if rewrite["kind"] not in ("scale_f_store", "scale_int_store"):
+            raise EnhancementPackageError(
+                f"site {site['id']}: stock_values belongs only to swc1 and sw store sites "
+                "(fail-closed refusal)")
+        rewrite["stock_values"] = _store_value_pairs(site, rewrite)
+    elif rewrite["kind"] == "scale_int_store":
+        raise EnhancementPackageError(
+            f"site {site['id']}: an integer store site needs stock_values, so exactness and range "
+            "are proven at build time (fail-closed refusal)")
+    return rewrite
+
+
+def _plan_word_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
     """Return the one defined rewrite of a verified stock word for its declared transform.
 
     The rewrite depends only on the declared transform and the instruction's own
@@ -1389,6 +1505,7 @@ def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
       ``scale_int_args``  after the stock entry instruction, multiply the GPRs ``regs`` by 2;
       ``scale_f_reg``   after the stock instruction, multiply FPR ``reg`` by ``factor``;
       ``scale_f_store``   store FPR ``reg`` multiplied by ``factor`` (the register is kept);
+      ``scale_int_store`` store GPR ``reg`` doubled (the register is kept; count_x2 on ``sw``);
       ``scale_f_addend``  run ``fd = fd +/- ft`` with ``ft`` multiplied by ``factor``;
       ``map_f_reg``       after the stock lwc1, map FPR ``reg`` by ``map`` (decay or retention);
       ``scale_v_reg``     after the stock lv.s, multiply VFPU register ``vreg`` by ``factor``;
@@ -1532,6 +1649,10 @@ def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
         return {"kind": "scale_v_reg", "vreg": vt, "factor": factor}
     if op == 0x39:  # swc1
         return {"kind": "scale_f_store", "reg": rt, "factor": factor}
+    if op == 0x2B and tf == "count_x2":  # sw
+        if rt == 0 or rt == rs:
+            _refuse(site, w, "the stored register must not be $zero or also the base register")
+        return {"kind": "scale_int_store", "reg": rt}
     if is_fpu_s and fn in (0x00, 0x01) and sa == rd and rt != rd:
         return {"kind": "scale_f_addend", "reg": rt, "factor": factor}
     if is_fpu_s and fn in _FPU_RESULT_FUNCS:
