@@ -542,6 +542,12 @@ int main(int argc, char **argv) {
      * ordinary exit (exit(), the window closing); a fatal _Exit path writes no report. */
     if (ace_init_from_env()) {
         sr_flight_set_enhancements(ace_spec_text());
+        /* sas=sinc (#2054): the SAS mixer is part of every runtime, so the feature runs once
+         * the mixer has the switch. */
+        if (ace_effective()->sas == ACE_SAS_SINC) {
+            sr_hle_sas_set_band_limited(1);
+            ace_confirm(ACE_FEATURE_SAS);
+        }
         (void)atexit(ace_finish);
     }
 

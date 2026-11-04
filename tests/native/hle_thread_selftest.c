@@ -30294,6 +30294,224 @@ static void sas_test_vag(uint32_t addr, uint32_t blocks, uint8_t flags) {
     }
 }
 
+/* ---- #2054: Ace Mode's band-limited SAS resampling (sas=sinc) ----------------------------------
+ *
+ * A synthetic linear sine sweep, VAG-encoded here, plays on one voice at a pitch other than
+ * 0x1000, once authentic (zero-order hold) and once band-limited. The sweep's source band is
+ * chosen so the output band is 1.5 to 9 kHz at every pitch; the alias share is the energy above
+ * 10.5 kHz (Blackman-Harris window, 16384-point FFT) over all energy. Voice state is read through
+ * the guest calls each grain (end flags, envelope height) and must match exactly. */
+#define NID_SAS_SET_PITCH      0xad84d37fu
+#define NID_SAS_GET_ENV_HEIGHT 0x74ae582au
+#define SAS_BL_GRAIN   256u
+#define SAS_BL_FFT     16384u
+#define SAS_BL_MAX_BLOCKS 1600u   /* enough source for SAS_BL_FFT outputs at pitch 0x2A00 */
+#define SAS_BL_GRAINS  200u
+#define SAS_BL_CORE    0x08030000u
+#define SAS_BL_OUT     0x08010000u
+#define SAS_BL_VAG     0x08100000u
+
+typedef struct {
+    int16_t left[SAS_BL_GRAINS * SAS_BL_GRAIN];
+    uint32_t end_flags[SAS_BL_GRAINS];
+    uint32_t envelope[SAS_BL_GRAINS];
+    uint32_t grains;           /* grains mixed (the run stops two grains after the voice ends) */
+    int32_t last_audible;      /* index of the last nonzero left sample */
+} SasBlRun;
+
+static SasBlRun s_bl_off, s_bl_on;
+static double s_bl_re[SAS_BL_FFT], s_bl_im[SAS_BL_FFT];
+
+/* Closed-loop VAG encoder: each block takes the filter and shift whose decode (the mixer's own
+ * rule) is closest to the input. */
+static void sas_bl_encode(uint32_t addr, const int16_t *pcm, uint32_t blocks) {
+    static const int f0[5] = { 0, 60, 115, 98, 122 }, f1[5] = { 0, 0, -52, -55, -60 };
+    int h1 = 0, h2 = 0;
+    for (uint32_t b = 0; b < blocks; b++) {
+        const int16_t *in = pcm + b * 28u;
+        double best = -1.0;
+        int best_hdr = 0, best_h1 = 0, best_h2 = 0;
+        int nib[28], best_nib[28];
+        for (int pred = 0; pred < 5; pred++) {
+            for (int shift = 0; shift <= 12; shift++) {
+                int t1 = h1, t2 = h2;
+                double err = 0.0;
+                for (int i = 0; i < 28; i++) {
+                    int p = (t1 * f0[pred] + t2 * f1[pred]) >> 6;
+                    double d = (double)(in[i] - p) * (double)(1 << shift) / 4096.0;
+                    int q = (int)floor(d + 0.5);
+                    if (q > 7) q = 7;
+                    if (q < -8) q = -8;
+                    int s = ((int)(int16_t)(uint16_t)((unsigned)(q & 0xF) << 12) >> shift) + p;
+                    if (s > 32767) s = 32767;
+                    if (s < -32768) s = -32768;
+                    err += (double)(s - in[i]) * (double)(s - in[i]);
+                    nib[i] = q & 0xF;
+                    t2 = t1; t1 = s;
+                }
+                if (best < 0.0 || err < best) {
+                    best = err; best_hdr = (pred << 4) | shift; best_h1 = t1; best_h2 = t2;
+                    memcpy(best_nib, nib, sizeof(nib));
+                }
+            }
+        }
+        h1 = best_h1; h2 = best_h2;
+        uint32_t a = addr + b * 16u;
+        MEM_W8(a, (uint8_t)best_hdr);
+        MEM_W8(a + 1u, 0u);
+        for (uint32_t k = 0; k < 14u; k++)
+            MEM_W8(a + 2u + k, (uint8_t)(best_nib[2 * k] | (best_nib[2 * k + 1] << 4)));
+    }
+}
+
+/* One run: the sweep at `pitch`, with or without band-limited resampling. key_off_grain > 0 keys
+ * the voice off before that grain, so its end comes from the release instead of the data. */
+static void sas_bl_run(SasBlRun *run, int band_limited, uint32_t pitch, uint32_t key_off_grain) {
+    static int16_t sweep[SAS_BL_MAX_BLOCKS * 28u];
+    const double pi = 3.14159265358979323846, rate = 44100.0;
+    const double ratio = (double)pitch / 4096.0, fa = 1500.0 / ratio, fb = 9000.0 / ratio;
+    /* The voice outlasts the analysed SAS_BL_FFT samples, so its end is not in the window. */
+    const uint32_t blocks = (uint32_t)((double)SAS_BL_FFT * ratio / 28.0) + 40u;
+    const double len = (double)(blocks * 28u) / rate;
+    CpuState cpu;
+    for (uint32_t i = 0; i < blocks * 28u; i++) {
+        double t = (double)i / rate;
+        sweep[i] = (int16_t)floor(12000.0 * sin(2.0 * pi * (fa * t + (fb - fa) * t * t / (2.0 * len))) + 0.5);
+    }
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_sas_reset();
+    sr_hle_sas_set_band_limited(band_limited);
+    memset(&cpu, 0, sizeof(cpu));
+    memset(run, 0, sizeof(*run));
+    cpu.r[29] = 0x09012000u;
+    cpu.r[4] = SAS_BL_CORE; cpu.r[5] = SAS_BL_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "sas=sinc fixture: __sceSasInit accepts a 256-sample grain");
+    sas_bl_encode(SAS_BL_VAG, sweep, blocks);
+    cpu.r[4] = SAS_BL_CORE; cpu.r[5] = 0; cpu.r[6] = SAS_BL_VAG; cpu.r[7] = blocks * 16u; cpu.r[8] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOICE) == 0, "sas=sinc fixture: __sceSasSetVoice accepts the sweep");
+    cpu.r[4] = SAS_BL_CORE; cpu.r[5] = 0; cpu.r[6] = pitch;
+    expect(sr_syscall(&cpu, NID_SAS_SET_PITCH) == 0, "sas=sinc fixture: __sceSasSetPitch accepts the pitch");
+    cpu.r[4] = SAS_BL_CORE; cpu.r[5] = 0; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000; cpu.r[8] = 0; cpu.r[9] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0, "sas=sinc fixture: __sceSasSetVolume accepts full volume");
+    cpu.r[4] = SAS_BL_CORE; cpu.r[5] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "sas=sinc fixture: __sceSasSetKeyOn keys the sweep on");
+    run->last_audible = -1;
+    uint32_t ended_at = 0;
+    for (uint32_t g = 0; g < SAS_BL_GRAINS; g++) {
+        if (key_off_grain && g == key_off_grain) {
+            cpu.r[4] = SAS_BL_CORE; cpu.r[5] = 0;
+            (void)sr_syscall(&cpu, NID_SAS_SET_KEY_OFF);
+        }
+        cpu.r[4] = SAS_BL_CORE; cpu.r[5] = SAS_BL_OUT;
+        (void)sr_syscall(&cpu, NID_SAS_CORE);
+        for (uint32_t i = 0; i < SAS_BL_GRAIN; i++) {
+            int16_t l = (int16_t)MEM_R16(SAS_BL_OUT + i * 4u);
+            run->left[g * SAS_BL_GRAIN + i] = l;
+            if (l) run->last_audible = (int32_t)(g * SAS_BL_GRAIN + i);
+        }
+        cpu.r[4] = SAS_BL_CORE;
+        run->end_flags[g] = sr_syscall(&cpu, NID_SAS_GET_END);
+        cpu.r[4] = SAS_BL_CORE; cpu.r[5] = 0;
+        run->envelope[g] = sr_syscall(&cpu, NID_SAS_GET_ENV_HEIGHT);
+        run->grains = g + 1u;
+        if ((run->end_flags[g] & 1u) && !ended_at) ended_at = g + 1u;
+        if (ended_at && g >= ended_at + 1u) break;
+    }
+    sr_hle_sas_set_band_limited(0);
+}
+
+static void sas_bl_fft(double *re, double *im, uint32_t n) {
+    for (uint32_t i = 1, j = 0; i < n; i++) {
+        uint32_t bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            double t = re[i]; re[i] = re[j]; re[j] = t;
+            t = im[i]; im[i] = im[j]; im[j] = t;
+        }
+    }
+    for (uint32_t len = 2; len <= n; len <<= 1) {
+        double ang = -2.0 * 3.14159265358979323846 / (double)len;
+        for (uint32_t i = 0; i < n; i += len) {
+            for (uint32_t k = 0; k < len / 2u; k++) {
+                double wr = cos(ang * k), wi = sin(ang * k);
+                double xr = re[i + k + len / 2u] * wr - im[i + k + len / 2u] * wi;
+                double xi = re[i + k + len / 2u] * wi + im[i + k + len / 2u] * wr;
+                re[i + k + len / 2u] = re[i + k] - xr; im[i + k + len / 2u] = im[i + k] - xi;
+                re[i + k] += xr; im[i + k] += xi;
+            }
+        }
+    }
+}
+
+/* The share of the first SAS_BL_FFT output samples' energy above 10.5 kHz, in dB. */
+static double sas_bl_alias_db(const SasBlRun *run) {
+    const double pi = 3.14159265358979323846;
+    double above = 0.0, total = 0.0;
+    for (uint32_t i = 0; i < SAS_BL_FFT; i++) {
+        double x = 2.0 * pi * (double)i / (double)(SAS_BL_FFT - 1u);
+        double w = 0.35875 - 0.48829 * cos(x) + 0.14128 * cos(2.0 * x) - 0.01168 * cos(3.0 * x);
+        s_bl_re[i] = w * run->left[i];
+        s_bl_im[i] = 0.0;
+    }
+    sas_bl_fft(s_bl_re, s_bl_im, SAS_BL_FFT);
+    for (uint32_t k = 1; k <= SAS_BL_FFT / 2u; k++) {
+        double e = s_bl_re[k] * s_bl_re[k] + s_bl_im[k] * s_bl_im[k];
+        total += e;
+        if ((double)k * 44100.0 / SAS_BL_FFT > 10500.0) above += e;
+    }
+    return 10.0 * log10((above + 1e-30) / (total + 1e-30));
+}
+
+static int sas_bl_timing_equal(const SasBlRun *a, const SasBlRun *b) {
+    if (a->grains != b->grains || a->last_audible != b->last_audible) return 0;
+    for (uint32_t g = 0; g < a->grains; g++)
+        if (a->end_flags[g] != b->end_flags[g] || a->envelope[g] != b->envelope[g]) return 0;
+    return 1;
+}
+
+static void test_sas_band_limited_resampling(void) {
+    /* The pitches: upward 1.5x and 2.625x (decimation) and downward 0.6875x (images), each with
+     * the reduction it must reach (measured: 9.9, 6.6 and 22.0 dB). The upward floors are lower
+     * because both paths keep the authentic stepping, which drops a step's overshoot at every
+     * 28-sample VAG block end: those position jumps put broadband error above the band that no
+     * filter removes. With the overshoot carried, the same filter measures 28 and 32 dB. */
+    static const uint32_t pitches[] = { 0x1800u, 0x2A00u, 0x0B00u };
+    static const double floors[] = { 8.0, 5.0, 20.0 };
+    for (size_t p = 0; p < sizeof(pitches) / sizeof(pitches[0]); p++) {
+        char what[160];
+        sas_bl_run(&s_bl_off, 0, pitches[p], 0);
+        sas_bl_run(&s_bl_on, 1, pitches[p], 0);
+        double off_db = sas_bl_alias_db(&s_bl_off), on_db = sas_bl_alias_db(&s_bl_on);
+        fprintf(stderr, "  sas=sinc pitch 0x%04x: alias share above 10.5 kHz %.1f dB authentic, %.1f dB band-limited (%.1f dB less)\n",
+               (unsigned)pitches[p], off_db, on_db, off_db - on_db);
+        snprintf(what, sizeof(what),
+                 "sas=sinc at pitch 0x%04x cuts the alias share above the band by at least %.0f dB",
+                 (unsigned)pitches[p], floors[p]);
+        expect(off_db - on_db >= floors[p], what);
+        snprintf(what, sizeof(what),
+                 "sas=sinc at pitch 0x%04x: end flags, envelope heights and the voice's last sample match",
+                 (unsigned)pitches[p]);
+        expect(s_bl_off.grains > 4u && s_bl_off.last_audible > 0 && sas_bl_timing_equal(&s_bl_off, &s_bl_on), what);
+        int differs = 0;
+        for (uint32_t i = 0; i < SAS_BL_FFT; i++) if (s_bl_off.left[i] != s_bl_on.left[i]) { differs = 1; break; }
+        snprintf(what, sizeof(what), "sas=sinc at pitch 0x%04x changes the mixed sample values", (unsigned)pitches[p]);
+        expect(differs, what);
+    }
+    /* A release ends the voice mid-sweep: the envelope's timing is the authentic one. */
+    sas_bl_run(&s_bl_off, 0, 0x1800u, 30u);
+    sas_bl_run(&s_bl_on, 1, 0x1800u, 30u);
+    expect(s_bl_off.grains == 33u && sas_bl_timing_equal(&s_bl_off, &s_bl_on),
+           "sas=sinc: a key-off's release ends the voice in the same grain and sample as authentic");
+    /* Switched back off, the mix is exactly a run that never turned it on. */
+    sas_bl_run(&s_bl_off, 0, 0x1800u, 0);
+    sas_bl_run(&s_bl_on, 1, 0x1800u, 0);
+    sas_bl_run(&s_bl_on, 0, 0x1800u, 0);
+    expect(memcmp(s_bl_off.left, s_bl_on.left, sizeof(s_bl_on.left)) == 0 && sas_bl_timing_equal(&s_bl_off, &s_bl_on),
+           "sas=sinc off: the mix is the authentic zero-order hold, sample for sample");
+}
+
 static void test_sas_state_contracts(void) {
     CpuState cpu;
 #ifdef CORE
@@ -46602,6 +46820,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
+    test_sas_band_limited_resampling();
     test_sas_end_flags_refresh_per_cycle();
     test_sas_reinit_is_a_fresh_init();
     test_msgpipe_rendezvous();

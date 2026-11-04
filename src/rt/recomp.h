@@ -2103,6 +2103,10 @@ uint32_t sr_display_vcount(void);
 typedef uint32_t (*HleFn)(CpuState *s);
 void     sr_hle_register(uint32_t nid, const char *name, HleFn fn);
 void     sr_hle_init(void);     /* registers all built-in handlers (idempotent) */
+/* Ace Mode's sas=sinc (src/rt/ace.h, #2054): SAS VAG voices mix through a band-limited
+ * resampler. Host-only: voice state and timing are the authentic ones. 0 (the default) is
+ * authentic. */
+void     sr_hle_sas_set_band_limited(int on);
 uint32_t sr_syscall(CpuState *s, uint32_t nid);
 typedef struct SrLoadExecRequest {
     char guest_path[256];

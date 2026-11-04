@@ -275,8 +275,8 @@ loader, no AOT change, no guest hook. The runtime part is `src/rt/ace.h`; the in
 ### 10.1. The Launch Line
 
 The launcher always exports `SR_ACE`, so an inherited value cannot opt a launch in: `off`, or
-`v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2`. Every key is required, in any order, each once; a value
-for a feature this build does not carry (`wide=fill`, `smooth=match`) refuses the line. So does anything else: Ace
+`v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2;sas=off`. Every key is required, in any order, each once; a
+value for a feature this build does not carry (`wide=fill`, `smooth=match`) refuses the line. So does anything else: Ace
 is off for the run and one `ACE_MODE: refused (<reason>)` line says why. Unset is off. With Ace on the launcher also
 exports `SR_ACE_REPORT`, the per-run report under `<user data>/ace/`.
 
@@ -339,3 +339,30 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
   present latches no input and serves no capture.
 - **Stamps.** The report adds `presents` (real, between, held, superseded) and `present_interval_ms`. Section 10.4
   applies: the run is refused as evidence.
+
+### 10.7. Band-Limited SAS Resampling
+
+With `sas=sinc`, SAS voices are resampled by a band-limited filter on the host (#2054). The code is in
+`src/rt/hle_audio.c`, next to the authentic mixer.
+
+- **The authentic path.** Without the feature the mixer does not interpolate (a zero-order hold). Each
+  output sample plays the decoded sample at the voice's whole position. A 12-bit fraction then advances by
+  the pitch (0x1000 is one source sample per output sample). Above 0x1000 the voice skips samples with no
+  low-pass filter, so it aliases. Below 0x1000 it repeats them, so it carries images of its source band.
+  This rule has been in the mixer since the initial public export. It is not a physical-PSP measurement of
+  the SAS core.
+- **What changes.** A VAG voice's output samples are a Kaiser-windowed sinc (24 zero crossings, beta 7)
+  evaluated at the voice's exact position. Above a pitch of 0x1000 the cutoff drops by the pitch ratio, so
+  the source is low-passed below the output's Nyquist frequency before it is decimated. Samples ahead of
+  the position come from a copy of the voice that decodes ahead. The voice itself never does.
+- **What never changes.** The voice runs the authentic statements in the authentic order: decode position,
+  fraction, envelope, end of sample, end flags and the grain are the authentic ones, and only the mixed
+  sample values differ. PCM and noise voices, which ignore the pitch today, are mixed as before.
+- **Evidence.** `hle-thread-selftest` plays a VAG-encoded sine sweep at three pitches, off and on. It
+  asserts identical end flags, envelope heights and last audible sample in every grain. It also asserts
+  less energy above the sweep's output band: at least 20 dB at pitch 0x0B00 (measured 22.0 dB), 8 dB at
+  0x1800 (9.9 dB) and 5 dB at 0x2A00 (6.6 dB).
+- **Why the upward floors are lower.** The authentic stepping drops the step's overshoot at the end of
+  every 28-sample VAG block, so the position jumps there. Both paths keep that stepping. The jumps put
+  broadband error above the band that no filter removes. With the overshoot carried, the same filter
+  measures 28 dB at 0x1800 and 32 dB at 0x2A00. Whether the PSP drops the overshoot is not measured.
