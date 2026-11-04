@@ -187,8 +187,9 @@ if you had picked it. The conversion shows its progress and can be cancelled; a
 cancelled or failed conversion keeps nothing. Your `EBOOT.PBP` is only read,
 never changed. **Remove from library** keeps the converted image in
 `<user data>/discs/<DISC_ID>/`, and the decrypted files in
-`<user data>/titles/<DISC_ID>/decrypted/`, so adding the game again is quick;
-delete those two folders yourself to get the space back. Other PSN downloads
+`<user data>/titles/<DISC_ID>/decrypted/`, so adding the game again is quick.
+To get the space back, tick **Also delete the decrypted files and disc copy**
+in its dialog. Other PSN downloads
 (PSP minis and games tied to the PSP that bought them), PSOne Classics and
 PGD-protected data aren't supported yet.
 

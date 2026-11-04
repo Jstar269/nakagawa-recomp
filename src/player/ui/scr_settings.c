@@ -1011,13 +1011,14 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         scr_flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
         nk_ui_text_role(ui, FLOW_ID_TITLE, "PSP fonts", NK_UI_TYPE_TITLE, theme->paper);
         nk_ui_text_role(ui, FLOW_ID_LEAD,
-                        /* #2005: what the stand-in fonts change, in the words of
-                           font/README.md and docs/SETUP.md. */
+                        /* #2005: what the stand-in fonts change, as font/README.md
+                           describes them (shapes, widths) and the converter's Latin set
+                           (tools/ttf2pgf.py, no Cyrillic). */
                         "Optional. Without your PSP's own fonts, every game still runs and "
                         "shows its text in open stand-in fonts. They look different: the "
                         "letters are shaped differently, English lines come out a little wider "
-                        "or narrower, a few characters such as Cyrillic letters are missing, "
-                        "and Japanese and Korean text is smaller. For the PSP's own look, "
+                        "or narrower, and a few characters such as Cyrillic letters are "
+                        "missing. For the PSP's own look, "
                         "connect your PSP by USB and choose Get fonts from my PSP, or copy the "
                         ".pgf files from flash0:/font on your PSP to a folder on this PC "
                         "(docs/SETUP.md, \"Copying the fonts from your PSP\") and choose them "

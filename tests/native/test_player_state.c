@@ -5044,6 +5044,27 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     assert(nk_platform_file_exists(f.iso));
     remove(app->library.library_path);
 
+    /* #2003 review: a disc copy file that can't be deleted is reported, not passed over, and
+       the game stays in the library. A file open without delete sharing is that on Windows;
+       POSIX deletes open files, so the case is Windows only. */
+    if (nk_platform_host_kind() == NK_HOST_WINDOWS) {
+        char held_path[NK_MAX_PATH * 2];
+        FILE *held;
+        free(app);
+        removal_fixture_make(&f, "RMV01304");
+        app = removal_test_app(&f, "RMV01304");
+        removal_test_path(held_path, sizeof(held_path), f.discs, "expanded.iso", NULL, NULL);
+        held = fopen(held_path, "rb");
+        assert(held != NULL);
+        assert(!player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_DISC_COPY, error,
+                                                sizeof(error)));
+        assert(error[0] != '\0');
+        assert(app->game_count == 2 && strcmp(app->games[0].disc_id, "RMV01304") == 0);
+        assert(nk_platform_file_exists(held_path));
+        fclose(held);
+        remove(app->library.library_path);
+    }
+
     /* A showcase demo and a disc ID that is not a plain folder name are
        refused before anything is planned. */
     snprintf(app->games[0].title_id, sizeof(app->games[0].title_id), "showcase-scene");

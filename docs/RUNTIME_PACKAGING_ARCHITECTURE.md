@@ -648,9 +648,8 @@ moves all of it into one folder (`nk_platform_set_app_data_dir_override`).
 | `<user data>\fonts\v2\` | fonts imported from the user's own PSP, with `manifest.json` | user |
 | `<user data>\prerequisites\` | the consented per-user prerequisite download (absent when `prereqs/` is bundled) | player |
 | `<user data>\downloads\` | a verified update ZIP and, outside a release folder, its unpacked copy | player |
-| `<user data>\logs\` | build logs (`build_<DISC_ID>_progress.jsonl`) | player, `nk_cli` |
 | `Nakagawa\saves\<DISC_ID>\` | the title's Memory Stick root (`SR_MEMSTICK`) when the install is not writable | runtime |
-| `Nakagawa\logs\` | `game-<DISC_ID>-last.txt`, the last game session's output | player |
+| `Nakagawa\logs\` | `game-<DISC_ID>-last.txt`, the last game session's output; the player's build logs (`build_<DISC_ID>.log`, `build_<DISC_ID>_progress.jsonl`) and `prerequisite-fetch.log` | player |
 | `Nakagawa\cache\` | the platform cache folder (`NK_PATH_CACHE`) | player |
 | `Nakagawa\fonts\` | optional UI font overrides | user |
 
