@@ -1258,7 +1258,7 @@ static void test_hostile_pbp_package(const char *test_dir) {
 
     printf("[HOSTILE_TEST] PBP subtest 8: PARAM.SFO without a usable DISC_ID\n"); fflush(stdout);
     snprintf(path, sizeof(path), "%s%cpbp-no-disc-id.iso", test_dir, nk_platform_path_separator());
-    sfo_size = build_sfo_test(sfo, sizeof(sfo), "", "No Disc ID");
+    sfo_size = build_sfo_test(sfo, sizeof(sfo), "", "No disc ID");
     assert(sfo_size > 0);
     offsets[0] = 40;
     for (index = 1; index < 8; index++) offsets[index] = (uint32_t)(40 + sfo_size);
