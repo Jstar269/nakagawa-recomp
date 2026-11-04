@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from typing import Any
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -63,7 +64,7 @@ class PspIssueMatrixTests(unittest.TestCase):
         entries: list[dict[str, object]],
         *,
         oracle_issues: list[int] | None = None,
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         return psp_issue_matrix.build_matrix(
             issues,
             generated_at="2026-01-01T00:00:00Z",
