@@ -137,7 +137,7 @@ class LoweringTests(unittest.TestCase):
         lines = text.splitlines()
         latch = next(i for i, l in enumerate(lines) if "load i32, ptr %r4" in l)
         slot = next(i for i, l in enumerate(lines) if "@sr_llvm_begin(ptr %s, i32 4100," in l)
-        dispatch = next(i for i, l in enumerate(lines) if "@dispatch_call(" in l)
+        dispatch = next(i for i, l in enumerate(lines) if "@dispatch_call_checked(" in l)
         self.assertLess(latch, slot)
         self.assertLess(slot, dispatch)
         latched = re.search(r"(%r4\.\d+) = load", lines[latch]).group(1)

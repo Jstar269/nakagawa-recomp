@@ -47,6 +47,8 @@ typedef enum {
     NK_OVERLAY_ACT_SET_SCALING,  /* value: the new game scaling (NK_OVERLAY_SCALING_*) */
     NK_OVERLAY_ACT_SET_HUD,      /* value: 1 shows the performance HUD, 0 hides it */
     NK_OVERLAY_ACT_SET_READOUT,  /* value: 1 shows Ace Mode's speed readout, 0 hides it */
+    NK_OVERLAY_ACT_SET_FULLSCREEN, /* value: 1 makes the game window fullscreen, 0 windowed */
+    NK_OVERLAY_ACT_SET_PACING,   /* value: the new frame pacing (NK_OVERLAY_PACING_*) */
     NK_OVERLAY_ACT_VRAM_VIEW     /* the VRAM viewer's window moved: decode it again */
 } NkOverlayActionKind;
 
@@ -54,6 +56,14 @@ typedef struct {
     NkOverlayActionKind kind;
     int value;
 } NkOverlayAction;
+
+/* Frame pacing, the launcher's Settings > Frame pacing choices: the host output cap at the
+   PSP's refresh (SR_FPS_CAP=native), or no cap beyond what the game itself presents (0). */
+enum {
+    NK_OVERLAY_PACING_PSP = 0,
+    NK_OVERLAY_PACING_UNCAPPED,
+    NK_OVERLAY_PACING_COUNT
+};
 
 /* Game scaling, in the order of the runtime's SDL3VK_SCALING_* values. */
 enum {
@@ -201,6 +211,12 @@ typedef struct {
        no row (Ace Mode off, or its in-game UI unavailable), 1 shows it off, 2 on. */
     const char *ace_caption;
     int ace_readout;
+    /* The display rows, with the readout's convention: 0 (a zeroed model) has no row, 1 shows
+       it off, 2 on. Fullscreen has no row where the window cannot change mode; frame pacing
+       has none when the output cap is neither choice (a developer's numeric SR_FPS_CAP), so
+       the page never names a cap that is not in force. */
+    int fullscreen;
+    int pacing;                  /* 0: no row, else 1 + NK_OVERLAY_PACING_* in force */
 } NkOverlayModel;
 
 /* Which page is up and where focus returns. Zero-initialised is closed. */
@@ -235,6 +251,8 @@ const char *nk_overlay_scaling_label(int scaling);
 #define NK_OVERLAY_ID_SCALING_SPAN 0x8u
 #define NK_OVERLAY_ID_HUD NK_OVERLAY_ID(0x000210u)
 #define NK_OVERLAY_ID_READOUT NK_OVERLAY_ID(0x000211u)  /* Ace Mode's speed readout */
+#define NK_OVERLAY_ID_FULLSCREEN NK_OVERLAY_ID(0x000212u)
+#define NK_OVERLAY_ID_PACING NK_OVERLAY_ID(0x000218u)   /* + 1 + NK_OVERLAY_PACING_* per option */
 #define NK_OVERLAY_ID_SETTINGS_BACK NK_OVERLAY_ID(0x000220u)
 #define NK_OVERLAY_ID_CONTROLS_BACK NK_OVERLAY_ID(0x000301u)
 #define NK_OVERLAY_ID_QUIT_STAY NK_OVERLAY_ID(0x000401u)

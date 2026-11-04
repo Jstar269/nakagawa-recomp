@@ -576,15 +576,16 @@ HANDLER_METADATA = {
             "tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract",
             "tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode",
         ],
-        "limitation": "writes the decoder's samples into the MEASURED mode-1 strip layout through the header's plane pointers and sets words 0 and 1; a picture larger than its InitYCbCr allocation or than 480x272 is refused as not measured, and the strip length from the decoded height rests on one measured geometry (#302)",
+        "limitation": "runs one access unit behind as MEASURED (PSP-MPEG-001: the first call returns 0 with init 0 and no picture, each later call the picture of the unit before it); writes the decoder's samples into the MEASURED mode-1 strip layout through the header's plane pointers and sets words 0 and 1; a picture larger than its InitYCbCr allocation or than 480x272 is refused as not measured, and the strip length from the decoded height rests on one measured geometry (#302)",
     },
     "h_MpegAvcDecodeStopYCbCr": {
         "status": "partial",
         "evidence": [
             "tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract",
             "tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode",
+            "tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_restart_after_stop",
         ],
-        "limitation": "takes the address of the buffer pointer and hands over the picture the decoder still holds with status 1, as MEASURED after the last access unit (PSP-MPEG-001); the PSP decoder runs one access unit behind and this one does not, the decoder is drained only once the whole stream was fed, and a stop in mid-stream is not measured (#302)",
+        "limitation": "takes the address of the buffer pointer and hands over the picture the decoder still holds with status 1, as MEASURED after the last access unit (PSP-MPEG-001); that held picture is the one the decoder runs behind by (sceMpegAvcDecodeYCbCr), the decoder is drained only once the whole stream was fed, and a stop in mid-stream is not measured (#302); after a stop the decoder holds no earlier unit's picture, and one a host decoder still owes is dropped as it comes (an unmeasured model, #279)",
     },
     "h_MpegAvcCopyYCbCr": {
         "status": "partial",
@@ -952,8 +953,8 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#311)",
     },
-    # Mailboxes (issue #339). Measured contracts live in docs/HARDWARE_ORACLE.md
-    # (campaign psp-hw-20260917): unknown id 0x8002019B, timeout 0x800201A8 with
+    # Mailboxes (issue #339). Measured contracts live in docs/HARDWARE_ORACLE.md:
+    # unknown id 0x8002019B, timeout 0x800201A8 with
     # remaining 0, CancelReceiveMbx waiters 0x800201A9, empty poll 0x800201B2,
     # FIFO circular next links, attr 0x400 ascending msgPriority, waitType 5.
     # Each handler stays partial until its own named gaps are closed.

@@ -96,7 +96,7 @@ you are authorized to use.
 ## Encrypted PSP files
 
 The player decrypts the encrypted executable and modules of a disc the user owns, locally, with built-in game tables
-(`src/core/nk_psp_*`, [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). It never reads a key file and
+(`src/core/nk_psp_*`, [#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)). It never reads a key file and
 never decrypts firmware: firmware containers are refused by name before any key is read. Every container is
 size-bounded, integrity-checked (CMAC, SHA-1 or ECDSA) before its payload is used, and each output is validated as
 ELF32/MIPS before it is kept; one it cannot decrypt is refused by name. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed in

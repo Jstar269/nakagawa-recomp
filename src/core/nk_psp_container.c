@@ -9,7 +9,7 @@
  * container reports MALFORMED_INPUT rather than a key diagnostic,
  * and a well-formed one reports exactly the key entry it needs.
  *
- * Firmware is never decrypted (owner rule, 2026-10-27): a firmware updater
+ * Firmware is never decrypted (AGENTS.md section 5): a firmware updater
  * archive (PSAR), a raw KIRK block in the IPL form, and a module whose tag
  * only firmware containers carry are refused by name here, before any key
  * lookup or decryption step runs.

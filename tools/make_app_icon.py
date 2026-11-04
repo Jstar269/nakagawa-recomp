@@ -23,12 +23,31 @@ constants below, and ``tools/test_app_icon.py`` checks that the two agree.
 
 ``--check`` compares decoded pixels, not file bytes, because zlib builds may
 compress the PNG images differently.
+
+The same tool writes the resource script of each executable, which is the icon plus a
+VERSIONINFO. Task Manager, Explorer's Details tab and the firewall and notification
+prompts name a program by the FileDescription in that resource and fall back to the
+file name (``nakagawa_player.exe``, ``hst-ucus98701-v1.exe``) when there is none. The
+Makefile and CMakeLists.txt compile the script with windres (``--include-dir
+assets/brand``):
+
+    python tools/make_app_icon.py --version-rc build/nakagawa_icon.rc \
+        --original-filename nakagawa_player.exe --player
+    python tools/make_app_icon.py --version-rc build/<game>/nakagawa_icon.rc \
+        --original-filename <game>.exe --manifest assets/titles/<title>.json
+
+The player is "Nakagawa Recomp"; a title is "<manifest display_name> (Nakagawa Recomp)"
+(``--title-name`` names a title that has no manifest). The version is NK_PLAYER_VERSION
+from src/player/ui/player_ui_nk.h, the number the About page shows. The script holds no
+date, host name or absolute path, so two builds of one commit produce the same bytes.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
+import re
 import struct
 import sys
 import xml.etree.ElementTree as ET
@@ -308,6 +327,145 @@ def png_image(data: bytes, size: int) -> bytes:
     raise ValueError(f"no {size} px PNG image in the icon")
 
 
+# --- The VERSIONINFO resource script of one executable -------------------------
+
+VERSION_HEADER = ROOT / "src" / "player" / "ui" / "player_ui_nk.h"
+
+PRODUCT_NAME = "Nakagawa Recomp"
+COMPANY_NAME = "the Nakagawa Recomp authors"
+LEGAL_COPYRIGHT = "Copyright (C) 2026 the Nakagawa Recomp authors"
+
+# Language 0x0409 (US English), code page 1200 (Unicode): the "040904B0" block name.
+_LANG_BLOCK = "040904B0"
+_VERSION_RE = re.compile(r'^#define\s+NK_PLAYER_VERSION\s+"([^"]+)"', re.M)
+_NUMERIC_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
+_VS_FF_PRERELEASE = 0x2
+
+
+class ResourceError(ValueError):
+    """The inputs cannot make a truthful VERSIONINFO."""
+
+
+def read_version(header: Path = VERSION_HEADER) -> str:
+    match = _VERSION_RE.search(header.read_text(encoding="utf-8"))
+    if match is None:
+        raise ResourceError(f"{header} defines no NK_PLAYER_VERSION")
+    return match.group(1)
+
+
+def numeric_version(version: str) -> tuple[int, int, int, int]:
+    """``0.0.2-dev`` -> (0, 0, 2, 0): the four 16-bit fields of FILEVERSION."""
+    match = _NUMERIC_RE.match(version)
+    if match is None:
+        raise ResourceError(f"version {version!r} does not start with MAJOR.MINOR.PATCH")
+    fields = tuple(int(part) for part in match.groups()) + (0,)
+    if any(field > 0xFFFF for field in fields):
+        raise ResourceError(f"version {version!r} has a field above 65535")
+    return fields  # type: ignore[return-value]
+
+
+def title_name_from_manifest(path: Path) -> str:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ResourceError(f"cannot read title manifest {path}: {exc}") from exc
+    name = data.get("display_name") if isinstance(data, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        raise ResourceError(f"title manifest {path} has no display_name")
+    return name.strip()
+
+
+def _rc_string(text: str) -> str:
+    """A resource-script string literal; the characters rc treats specially are escaped.
+
+    Any other character is written as it is: the script is UTF-8 with
+    ``#pragma code_page(65001)``, which windres turns into UTF-16 in the resource, so a
+    title named in Japanese or with accents reads back exactly in Task Manager."""
+    if not text or any(ord(ch) < 0x20 or ord(ch) == 0x7F or 0xD800 <= ord(ch) <= 0xDFFF
+                       for ch in text):
+        raise ResourceError(f"{text!r} must be non-empty text without control characters")
+    return '"' + text.replace("\\", "\\\\").replace('"', '""') + '"'
+
+
+def render_version_rc(description: str, original_filename: str, version: str) -> str:
+    """The complete resource script, as text with LF line endings."""
+    fields = numeric_version(version)
+    numeric = ",".join(str(field) for field in fields)
+    flags = _VS_FF_PRERELEASE if "-" in version else 0
+    strings = (
+        ("CompanyName", COMPANY_NAME),
+        ("FileDescription", description),
+        ("FileVersion", version),
+        ("InternalName", Path(original_filename).stem),
+        ("LegalCopyright", LEGAL_COPYRIGHT),
+        ("OriginalFilename", original_filename),
+        ("ProductName", PRODUCT_NAME),
+        ("ProductVersion", version),
+    )
+    lines = [
+        "/* SPDX-License-Identifier: GPL-3.0-or-later */",
+        "/* Copyright (C) 2026 the Nakagawa Recomp authors */",
+        "/* Generated by tools/make_app_icon.py; do not edit. */",
+        "",
+        "/* This script is UTF-8: a title name may hold any character. */",
+        "#pragma code_page(65001)",
+        "",
+        "/* The app icon (1 ICON), found through windres --include-dir assets/brand. */",
+        '#include "nakagawa.rc"',
+        "",
+        "/* VS_VERSION_INFO is resource 1; 0x40004 is VOS_NT_WINDOWS32, type 1 VFT_APP. */",
+        "1 VERSIONINFO",
+        f" FILEVERSION {numeric}",
+        f" PRODUCTVERSION {numeric}",
+        " FILEFLAGSMASK 0x3fL",
+        f" FILEFLAGS 0x{flags:x}L",
+        " FILEOS 0x40004L",
+        " FILETYPE 0x1L",
+        " FILESUBTYPE 0x0L",
+        "BEGIN",
+        '    BLOCK "StringFileInfo"',
+        "    BEGIN",
+        f'        BLOCK "{_LANG_BLOCK}"',
+        "        BEGIN",
+    ]
+    lines += [f"            VALUE {_rc_string(key)}, {_rc_string(value)}" for key, value in strings]
+    lines += [
+        "        END",
+        "    END",
+        '    BLOCK "VarFileInfo"',
+        "    BEGIN",
+        '        VALUE "Translation", 0x409, 1200',
+        "    END",
+        "END",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_version_rc(args: argparse.Namespace) -> int:
+    """The ``--version-rc`` mode: write the script (UTF-8), or say why it cannot be truthful."""
+    try:
+        if not args.original_filename or not (args.player or args.manifest or args.title_name):
+            raise ResourceError("--version-rc needs --original-filename and one of "
+                                "--player, --manifest or --title-name")
+        if args.player:
+            description = PRODUCT_NAME
+        else:
+            name = (title_name_from_manifest(args.manifest) if args.manifest
+                    else args.title_name.strip())
+            description = f"{name} ({PRODUCT_NAME})"
+        text = render_version_rc(description, args.original_filename,
+                                 read_version(args.version_header))
+    except ResourceError as exc:
+        print(f"make_app_icon: {exc}", file=sys.stderr)
+        return 1
+    args.version_rc.parent.mkdir(parents=True, exist_ok=True)
+    # Rewrite only on a change so a rebuild with unchanged inputs keeps the timestamp.
+    if not args.version_rc.is_file() or args.version_rc.read_bytes() != text.encode("utf-8"):
+        args.version_rc.write_bytes(text.encode("utf-8"))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, default=ROOT / OUTPUT, help="icon file to write")
@@ -315,7 +473,17 @@ def main(argv: list[str] | None = None) -> int:
                         help="exit 1 when the committed icon's pixels differ from a fresh drawing")
     parser.add_argument("--png", nargs=2, metavar=("SIZE", "FILE"),
                         help="also write the icon at SIZE pixels as a PNG")
+    parser.add_argument("--version-rc", type=Path, metavar="FILE",
+                        help="write the resource script (icon and VERSIONINFO) of one executable")
+    parser.add_argument("--original-filename", help="with --version-rc: the executable's file name")
+    which = parser.add_mutually_exclusive_group()
+    which.add_argument("--player", action="store_true", help="with --version-rc: describe the player")
+    which.add_argument("--manifest", type=Path, help="with --version-rc: describe this manifest's title")
+    which.add_argument("--title-name", help="with --version-rc: describe a title with no manifest")
+    parser.add_argument("--version-header", type=Path, default=VERSION_HEADER, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.version_rc:
+        return write_version_rc(args)
     if args.png:
         size = int(args.png[0])
         Path(args.png[1]).write_bytes(_png(size, render(size)))

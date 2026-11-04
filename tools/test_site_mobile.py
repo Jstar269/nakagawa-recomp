@@ -80,7 +80,7 @@ BAR = "body > header.bar"
 # Filled blocks that deliberately keep a blue fill in both themes: the top bar, the blue buttons, the picked theme
 # button and the skip link. Their text is still checked for contrast against that fill.
 EXCEPTIONS = (BAR, ".btn", '.theme button[aria-pressed="true"]', ".skip")
-# The owner's content decisions for this page (2026-10-27): no hst-decomp mention, no "PSN download" wording, no
+# Content rules for this page: no hst-decomp mention, no "PSN download" wording, no
 # Hot Shots Tennis screenshot, and no review-draft text.
 FORBIDDEN = ("hst-decomp", "PSN", "hst-title-screen", "Draft for review")
 # A region's background must be clearly of its theme (WCAG relative luminance).

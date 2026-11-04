@@ -154,6 +154,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `compat_overrides.py` | Semantic-debt manifest of every game-address-specific override in the runtime. |
 | `entry_frame_balance.py` | Stack-symbolic entry classification: callable boundary versus resume PC. |
 | `miss_seeds.py` | Merge the dispatch-miss files a run writes (`SR_MISS_SEEDS`) into a per-title seed list that `analyze.py` and `codegen.py` take as `--miss-seeds` (#1848). |
+| `code_capture.py` | Read the captures a run writes (`SR_CODE_CAPTURE`) of code the game installed at run time, and make each an overlay `codegen.py --code-capture` translates and the runtime binds by its code (#1933). |
 | `elf_bounds.py` | Shared, fail-closed ELF32 envelope checks for the offline PSP tools. |
 | `hle_manifest.py` | Generate the authoritative HLE registration manifest from the runtime HLE table, plus the semantic-status census artifact (`--census-json` / `--census-markdown`). |
 | `hle_focus_check.py` | Prove a focused HLE selftest executable links only the HLE files it names: compares the executable's code symbols with those of the excluded files' objects (#307). |

@@ -3,8 +3,8 @@
  *
  * nk_decrypt -- command-line entry for the built-in PSP decryption
  * boundary (issue #295).  The Python tooling (tools/nk_core) calls this
- * binary.  It decrypts with the built-in game tables (owner decision
- * 2026-10-27); --key-file replaces them with a JSON key file, which the
+ * binary.  It decrypts with the built-in game tables;
+ * --key-file replaces them with a JSON key file, which the
  * synthetic tests use.  A missing entry fails closed naming the exact
  * entry required, and firmware is refused before any key lookup.
  *
