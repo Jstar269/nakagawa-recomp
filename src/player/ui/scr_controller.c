@@ -108,8 +108,8 @@ static void controller_row(NkUi *ui, const PlayerUiControllerModel *model, size_
     }
     controller_glyph(ui, model, control);
     if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_BUTTON(control),
-                     controller_button_label(ui, capturing ? (model->keyboard ? "Press a key..."
-                                                                              : "Press a button...")
+                     controller_button_label(ui, capturing ? (model->keyboard ? "Press a key…"
+                                                                              : "Press a button…")
                                                            : safe_text(model->bindings[control],
                                                                        "None"),
                                              button_width),
