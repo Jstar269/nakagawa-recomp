@@ -105,6 +105,32 @@ typedef struct {
     bool held;
 } NkFileLock;
 
+/* One running program per name (#2006): the player takes one per data folder, so a second
+   start on the same library and settings finds the first instead of opening beside it. */
+typedef enum {
+    NK_INSTANCE_ACQUIRED = 0,  /* this process holds it now */
+    NK_INSTANCE_RUNNING,       /* another live process holds it; see owner_pid */
+    NK_INSTANCE_UNAVAILABLE    /* the OS refused the objects: run unguarded, say so */
+} NkInstanceResult;
+
+typedef struct {
+    void *mutex;    /* Win32: the named mutex */
+    void *mapping;  /* Win32: a named page holding the holder's process ID */
+    bool held;
+    int owner_pid;  /* after NK_INSTANCE_RUNNING: the holder's process ID, 0 when not yet known */
+} NkSingleInstance;
+
+/* Win32: a named mutex in this sign-in session, named by a hash of `name` (case, slash
+   direction and trailing separators ignored, as Windows paths compare). A holder that ended
+   without releasing it (a crash) leaves it abandoned, and the next start takes it over. A
+   mutex belongs to a thread: acquire and release on the same thread, and a second acquire on
+   the holding thread succeeds again.
+   POSIX: there is no guard yet. Every call returns NK_INSTANCE_ACQUIRED and a second start
+   opens beside the first. */
+NkInstanceResult nk_platform_single_instance_acquire(NkSingleInstance *instance, const char *name);
+/* Release and close what acquire opened; safe on a zeroed or already released instance. */
+void nk_platform_single_instance_release(NkSingleInstance *instance);
+
 /* Take the lock on path, trying again every 50 ms for up to timeout_ms (0 tries
    once). False when another holder keeps it that long or the file cannot be
    opened. */

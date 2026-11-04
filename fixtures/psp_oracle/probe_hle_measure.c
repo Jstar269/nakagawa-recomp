@@ -14,7 +14,8 @@
 // (PSP-HLE-POWER-002), hle-null-out-pointers (PSP-HLE-NULL-OUT-001),
 // hle-audio-src (PSP-HLE-AUDIO-SRC-001), hle-timer-order
 // (PSP-HLE-TIMER-ORDER-001) and hle-savedata-getsize
-// (PSP-HLE-SAVEDATA-GETSIZE-001). Cases 97-101 have recorded PSP-3000 runs from
+// (PSP-HLE-SAVEDATA-GETSIZE-001), plus hle-utility-none (PSP-HLE-UTILITY-NONE-001), which
+// imports no InitStart call. Cases 97-101 have recorded PSP-3000 runs from
 // 2026-10-15: the VTimer and power cases were measured; pool-bounds was captured
 // only in its earlier revision, and the revised form has not run; null-out was
 // captured incomplete. Case 104 was measured on 2026-11-02 (docs/HARDWARE_ORACLE.md).
@@ -76,6 +77,7 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_AUDIO_SRC 102
 #define HLE_CASE_TIMER_ORDER 103
 #define HLE_CASE_SAVEDATA_GETSIZE 104
+#define HLE_CASE_UTILITY_NONE 140
 
 #if PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS
 #define HLE_CAMPAIGN_ID "hle-kernel-status"
@@ -137,6 +139,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "hle-savedata-getsize"
 #define HLE_TEST_ID "PSP-HLE-SAVEDATA-GETSIZE-001"
 #define HLE_LOG "host0:/hle_savedata_getsize_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_UTILITY_NONE
+#define HLE_CAMPAIGN_ID "hle-utility-none"
+#define HLE_TEST_ID "PSP-HLE-UTILITY-NONE-001"
+#define HLE_LOG "host0:/hle_utility_none_log.txt"
 #else
 #error probe_hle_measure.c has no family for this PSP_ORACLE_CASE
 #endif
@@ -2140,6 +2146,81 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_SAVEDATA_GETSIZE */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_UTILITY_NONE
+
+/* #1386: what each utility dialog's Update, ShutdownStart and GetStatus answer when no dialog
+   of any type has been started (status NONE), and what a second ShutdownStart answers. The
+   build imports no InitStart call at all (hle_utility_imports.S declares only GetStatus,
+   Update and ShutdownStart for this case and the Makefile pins the set), so no dialog can open
+   and nothing is drawn, installed, sent or saved. Savedata and the message dialog come first:
+   pspautotests measured them (utility/dialog/status.expected), so they show whether the
+   context answers like a game. Netconf, gamedata install and game sharing are the unmeasured
+   types. Each row's words: GetStatus, Update(1), GetStatus, ShutdownStart, GetStatus,
+   ShutdownStart again, GetStatus. The imports are named nkUtil* (hle_utility_imports.S):
+   PSPSDK's headers declare some of these calls as returning void, but each returns a status
+   word, which is what this case records. */
+
+typedef struct HleUtilNone {
+    const char *case_id;
+    int (*get_status)(void);
+    int (*update)(int);
+    int (*shutdown)(void);
+} HleUtilNone;
+
+int nkUtilSavedataGetStatus(void);
+int nkUtilSavedataUpdate(int);
+int nkUtilSavedataShutdownStart(void);
+int nkUtilMsgDialogGetStatus(void);
+int nkUtilMsgDialogUpdate(int);
+int nkUtilMsgDialogShutdownStart(void);
+int nkUtilNetconfGetStatus(void);
+int nkUtilNetconfUpdate(int);
+int nkUtilNetconfShutdownStart(void);
+int nkUtilGamedataInstallGetStatus(void);
+int nkUtilGamedataInstallUpdate(int);
+int nkUtilGamedataInstallShutdownStart(void);
+int nkUtilGameSharingGetStatus(void);
+int nkUtilGameSharingUpdate(int);
+int nkUtilGameSharingShutdownStart(void);
+
+static const HleUtilNone k_hle_util_none[] = {
+    {"utility-none-savedata", nkUtilSavedataGetStatus, nkUtilSavedataUpdate,
+     nkUtilSavedataShutdownStart},
+    {"utility-none-msgdialog", nkUtilMsgDialogGetStatus, nkUtilMsgDialogUpdate,
+     nkUtilMsgDialogShutdownStart},
+    {"utility-none-netconf", nkUtilNetconfGetStatus, nkUtilNetconfUpdate,
+     nkUtilNetconfShutdownStart},
+    {"utility-none-gamedata", nkUtilGamedataInstallGetStatus,
+     nkUtilGamedataInstallUpdate, nkUtilGamedataInstallShutdownStart},
+    {"utility-none-sharing", nkUtilGameSharingGetStatus, nkUtilGameSharingUpdate,
+     nkUtilGameSharingShutdownStart},
+};
+
+static void hle_util_none(const HleUtilNone *d)
+{
+    uint32_t out[7];
+    hle_step(d->case_id);
+    out[0] = (uint32_t)d->get_status();
+    out[1] = (uint32_t)d->update(1);
+    out[2] = (uint32_t)d->get_status();
+    out[3] = (uint32_t)d->shutdown();
+    out[4] = (uint32_t)d->get_status();
+    out[5] = (uint32_t)d->shutdown();
+    out[6] = (uint32_t)d->get_status();
+    hle_record(d->case_id, "PASS", out[0], out, 7);
+}
+
+static int hle_run(void)
+{
+    for (unsigned i = 0; i < sizeof(k_hle_util_none) / sizeof(k_hle_util_none[0]); i++) {
+        hle_util_none(&k_hle_util_none[i]);
+    }
+    return 1;
+}
+
+#endif /* HLE_CASE_UTILITY_NONE */
 
 /* ------------------------------------------------------------------------- */
 
