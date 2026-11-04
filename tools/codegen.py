@@ -240,6 +240,8 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
     experimental toggle is on at run time (nk_enhancement_on())."""
     kind = rw["kind"]
     if kind == "word":
+        if word_line is None:
+            raise ValueError("a word rewrite needs its emitted word line")
         enh = word_line
     elif kind == "gate":
         enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"

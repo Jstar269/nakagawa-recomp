@@ -1976,7 +1976,7 @@ class TestEnhancementBuildPackageWiring(unittest.TestCase):
 
 
 def _f32_bits_of(value: float) -> int:
-    return struct.unpack("<I", struct.pack("<f", value))[0]
+    return int(struct.unpack("<I", struct.pack("<f", value))[0])
 
 
 class TestEnhancementStoreSites(unittest.TestCase):
@@ -2003,7 +2003,8 @@ class TestEnhancementStoreSites(unittest.TestCase):
         }, **extra)
 
     def _plan(self, word: int, **extra: Any) -> dict[str, Any]:
-        return plan_site_rewrite(dict({"id": "S", "transform": "count_x2"}, **extra), word)
+        plan: dict[str, Any] = plan_site_rewrite(dict({"id": "S", "transform": "count_x2"}, **extra), word)
+        return plan
 
     def _refused(self, word: int, why: str, **extra: Any) -> None:
         with self.subTest(word=hex(word), extra=extra):
@@ -2159,7 +2160,7 @@ class TestEnhancementStoreSites(unittest.TestCase):
             exes = {}
             for on in (0, 1):
                 exes[on] = tmp / f"store{on}.exe"
-                subprocess.run([GCC, "-std=gnu11", "-Wall", "-Werror", "-Wno-unused-function",
+                subprocess.run([str(GCC), "-std=gnu11", "-Wall", "-Werror", "-Wno-unused-function",
                                 f"-DNK_ON={on}", "-o", str(exes[on]), str(src)],
                                check=True, capture_output=True, text=True)
 
