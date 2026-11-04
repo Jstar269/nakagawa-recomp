@@ -150,10 +150,11 @@ static uint32_t hle_io_raw_umd_read(uint32_t fd, uint32_t dst, uint32_t sectors)
     if (sectors > UINT32_MAX / IO_UMD_SECTOR_BYTES ||
         !sr_guest_span_writable(dst, sectors * IO_UMD_SECTOR_BYTES))
         return 0x80010016u;
-    if (sectors > f->size - f->off)
-        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_READ_PAST_END,
-                                          "sceIoRead past the last disc sector",
-                                          f->guest_path, fd);
+    /* PSP-IO-EOF-002 (PSP-3000 6.61, 2026-11-04): a read that starts at the last sector and asks
+     * for two returns 1 and copies that one sector; the position is then one past the last
+     * sector, where a further read answers 0x80210002 and a SEEK_CUR 0 is refused. */
+    if (f->off >= f->size) return IO_UMD_READ_AT_END;
+    if (sectors > f->size - f->off) sectors = f->size - f->off;
     const uint32_t bytes = sectors * IO_UMD_SECTOR_BYTES;
     uint8_t tmp[4096];
     for (uint32_t done = 0; done < bytes;) {

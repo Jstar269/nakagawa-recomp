@@ -13,8 +13,10 @@
    sceUtilityGetSystemParamInt. That is why the Get pair is declared for every case that
    links this file, not only for hle-sysparam.
 
-   Case 104 (hle-savedata-getsize) also declares the four savedata dialog calls, and only
-   under its own CASE_ID, which the Makefile passes to the assembler as -DPSP_ORACLE_CASE.
+   Case 104 (hle-savedata-getsize) also declares the four savedata dialog calls, and case 140
+   (hle-utility-none) the GetStatus, Update and ShutdownStart calls of five dialogs and no
+   InitStart (as nkUtil* stubs, because PSPSDK headers declare some of them returning void
+   while the calls return a status), each only under its own CASE_ID, which the Makefile passes to the assembler as -DPSP_ORACLE_CASE.
    The Makefile pins each build to exactly its sceUtility set (--exact-library). Each NID
    is the first four bytes, little-endian, of SHA-1 of the export name, and all six match
    src/rt/nid_names.h. */
@@ -29,4 +31,21 @@
     IMPORT_FUNC  "sceUtility", 0x8874DBE0, sceUtilitySavedataGetStatus
     IMPORT_FUNC  "sceUtility", 0xD4B95FFB, sceUtilitySavedataUpdate
     IMPORT_FUNC  "sceUtility", 0x9790B33C, sceUtilitySavedataShutdownStart
+#endif
+#if PSP_ORACLE_CASE == 140
+    IMPORT_FUNC  "sceUtility", 0x8874DBE0, nkUtilSavedataGetStatus
+    IMPORT_FUNC  "sceUtility", 0xD4B95FFB, nkUtilSavedataUpdate
+    IMPORT_FUNC  "sceUtility", 0x9790B33C, nkUtilSavedataShutdownStart
+    IMPORT_FUNC  "sceUtility", 0x9A1C91D7, nkUtilMsgDialogGetStatus
+    IMPORT_FUNC  "sceUtility", 0x95FC253B, nkUtilMsgDialogUpdate
+    IMPORT_FUNC  "sceUtility", 0x67AF3428, nkUtilMsgDialogShutdownStart
+    IMPORT_FUNC  "sceUtility", 0x6332AA39, nkUtilNetconfGetStatus
+    IMPORT_FUNC  "sceUtility", 0x91E70E35, nkUtilNetconfUpdate
+    IMPORT_FUNC  "sceUtility", 0xF88155F6, nkUtilNetconfShutdownStart
+    IMPORT_FUNC  "sceUtility", 0xB57E95D9, nkUtilGamedataInstallGetStatus
+    IMPORT_FUNC  "sceUtility", 0x4AECD179, nkUtilGamedataInstallUpdate
+    IMPORT_FUNC  "sceUtility", 0x32E32DCB, nkUtilGamedataInstallShutdownStart
+    IMPORT_FUNC  "sceUtility", 0x946963F3, nkUtilGameSharingGetStatus
+    IMPORT_FUNC  "sceUtility", 0x7853182D, nkUtilGameSharingUpdate
+    IMPORT_FUNC  "sceUtility", 0xEFC6F80F, nkUtilGameSharingShutdownStart
 #endif
