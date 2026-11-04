@@ -646,7 +646,7 @@ The diagnostic does not skip guest work or change GE execution.
 
 | Variable | Description |
 | ---------- | ------------- |
-| `SR_INLOG=1` | Log each change of the pad state the guest is handed, buttons and left stick (`ctrl_latch:` lines, the input of `tools/padscript_from_log.py`) |
+| `SR_INLOG=1` | Log each change of the pad state the guest is handed, buttons and left stick (`ctrl_latch:` lines, the input of `tools/padscript_from_log.py`); every analog move prints a line, so a live-pad session logs a lot |
 | `SR_PAD=HEX` | Override pad state (hex buttons) |
 | `SR_PADPERIOD=N` | Automatic pad-pulse period in vblanks (default 240) |
 | `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4); each pulse is held until the guest has read it (see [Scripted input is delivered in guest time](#scripted-input-is-delivered-in-guest-time)) |
@@ -691,6 +691,21 @@ table keeps the positions the stick stayed at. Use `--stick-min-width 1` to keep
 every recorded position. A table is refused at load past 4096 rows; a long
 analog session that passes it needs a larger `--stick-min-width`, or to be
 recorded in parts.
+
+A replayed stick is therefore approximate, not a sample-for-sample copy:
+
+- A position held for fewer than `--stick-min-width` vblanks is not replayed; the
+  stick moves to the next position that many vblanks early.
+- A short press is expanded to `--minimum-width`, and the stick it was pressed
+  with is held for the expanded width as well, up to 8 vblanks by default, unless
+  a later row holds the stick somewhere else.
+- A row with a stick and no button is a press: the replay holds it until the
+  guest has read it, as it holds a button.
+
+Rows without a stick replay exactly as they did before stick columns existed. With
+`SR_INLOG=1`, every change of an analog stick prints a line, so a session with a
+live pad writes a large log: a stick at rest that wobbles by one step prints a
+line each time it moves.
 
 ### Scripted input is delivered in guest time
 

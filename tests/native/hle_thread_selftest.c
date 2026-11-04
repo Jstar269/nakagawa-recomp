@@ -38473,12 +38473,28 @@ static void test_route_recording_carries_the_stick_from_log_to_replay(void) {
         "1 0x4000 2 128\n",          /* one axis */
         "1 0x4000 2 12a 0\n",        /* a stray character */
         "1 0x4000 2 0 0 7\n",        /* something after the stick */
+        "1 0x4000 2 abc\n",          /* a word where the stick would be */
+        "1 0x4000 2 -1 128\n",       /* a negative axis */
+        "1 0x4000 2 x 0\n",          /* a stray column */
     };
     for (size_t i = 0; i < sizeof refused_rows / sizeof refused_rows[0]; i++) {
         sr_route_reset();
         rt_write(refused_rows[i]);
         expect(sr_route_load(RT_PATH) == 0 && sr_route_status() == RT_FAILED,
                "a pad-script row whose stick columns are not '<lx> <ly>' is refused at load");
+    }
+    {
+        char err[1024] = "";
+        FILE *capture = NULL;
+        int saved = -1;
+        sr_route_reset();
+        rt_write("1 0x4000 2\n4 0x0000 3 abc\n");
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        int loaded = sr_route_load(RT_PATH);
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        expect(loaded == 0, "a row with a word after its width is refused, not replayed with a centred stick");
+        expect(strstr(err, ":2: a pad-script row's stick is '<lx> <ly>'") != NULL,
+               "the refusal names the row's line");
     }
     sr_route_reset();
     rt_write("1 0x4000 2 # jump\n4 0x0000 2 0 255 # walk\n");

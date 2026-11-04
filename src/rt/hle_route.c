@@ -532,10 +532,12 @@ static int route_parse_line(char *line, int lineno, const char *path) {
         }
         /* An optional left stick after the width, as padscript_from_log records it: the row
          * holds the stick there for its width. A row without one leaves the stick centred, so
-         * a three-column table reads exactly as before. */
+         * a three-column table reads exactly as before. Anything after the width that is not a
+         * comment is read as the stick and refused if it is not one: a mistyped column must not
+         * replay as a centred stick. */
         uint32_t row_stick = 0u;
         char *xs = strtok(NULL, " \t\r\n");
-        if (xs && xs[0] >= '0' && xs[0] <= '9') {
+        if (xs && xs[0] != '#') {
             char *ys = strtok(NULL, " \t\r\n");
             char *rest = strtok(NULL, " \t\r\n");
             uint32_t lx = 0u, ly = 0u;
