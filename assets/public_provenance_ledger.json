@@ -9089,6 +9089,18 @@
       }
     },
     {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/wchar_filename.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-wchar-filename-2026-11-04",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
       "path": "src/rt/h264_ffmpeg_sub/nk_h264_api.c",
       "classification": "upstream_derived",
       "evidence": {

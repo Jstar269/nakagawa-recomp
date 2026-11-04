@@ -265,9 +265,11 @@ When `tools/ci_paths.py` routes the native jobs, both hosts run `psmf-media-self
 source-authored PSMF/H.264 fixture behind the `sr_h264` decoder seam (#283), each on its own
 backend. The Windows job runs it in its `selftests` part on Media Foundation
 (`src/rt/h264_mf.c`), then requires `psmf-media-selftest-csc-mutant` to be killed. The Linux
-`native_tools` job runs it on the vendored FFmpeg subset (`H264_FFMPEG=1`). When no decoder
-instance can be created, the selftest reports `SKIP` for its decode checks and still exits 0, so
-the Windows step fails on any `SKIP` line. Neither run is private media acceptance or
+`native_tools` job runs it on the vendored FFmpeg subset (`H264_FFMPEG=1`). The same Windows part
+runs it a second time with `H264_FFMPEG=1` in its own build directory, so the subset's `_WIN32`
+branches, which the Linux job never compiles, build and decode the fixture there too. When no
+decoder instance can be created, the selftest reports `SKIP` for its decode checks and still exits
+0, so both Windows steps fail on any `SKIP` line. Neither run is private media acceptance or
 PSP-hardware evidence.
 
 The Windows job also runs `cosim-selftest` and `cosim-mutants`. The first executes the same
