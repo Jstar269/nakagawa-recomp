@@ -2037,10 +2037,10 @@ uint32_t sr_hle_test_io_getstat(CpuState *s) { return h_IoGetstat(s); }
  * never a success. Not measured on a PSP: what the real fatms driver returns when a game
  * mounts its unit again, or how unmounting a game-made alias affects the boot alias that
  * shares the unit. Both calls are rare (once per Memory Stick event), so each logs a line. */
+#define IO_ASSIGN_NO_SUCH_DEVICE 0x80020321u  /* SCE_ERROR_KERNEL_NO_SUCH_DEVICE */
+#define IO_ASSIGN_ALIAS_USED     0x80020326u  /* SCE_ERROR_KERNEL_ALIAS_USED */
+#define IO_ASSIGN_UNSUPPORTED    0x80010086u  /* the IO semantic-boundary error */
 enum {
-    IO_ASSIGN_NO_SUCH_DEVICE = 0x80020321u,   /* SCE_ERROR_KERNEL_NO_SUCH_DEVICE */
-    IO_ASSIGN_ALIAS_USED = 0x80020326u,       /* SCE_ERROR_KERNEL_ALIAS_USED */
-    IO_ASSIGN_UNSUPPORTED = 0x80010086u,      /* the IO semantic-boundary error */
     IO_ASSIGN_MODE_RDWR = 0,                  /* IOASSIGN_RDWR */
     IO_ASSIGN_MODE_RDONLY = 1,                /* IOASSIGN_RDONLY */
     IO_ASSIGN_NAME_MAX = 31,                  /* uofw: an alias name is shorter than 31 bytes */
