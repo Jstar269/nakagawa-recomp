@@ -28,6 +28,10 @@ behavioural evidence is the traced run itself.
 
 import unittest
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 RECOMP_C = (ROOT / "src/rt/recomp.c").read_text(encoding="utf-8")
@@ -39,7 +43,7 @@ WINDOW_H = (ROOT / "src/rt/flight_recorder.h").read_text(encoding="utf-8")
 INTERP_C = (ROOT / "src/rt/guest_interp.c").read_text(encoding="utf-8")
 CODEGEN_PY = (ROOT / "tools/codegen.py").read_text(encoding="utf-8")
 DISPATCH_SELFTEST = (ROOT / "tests/native/dispatch_isolation_selftest.c").read_text(encoding="utf-8")
-MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8")
+MAKEFILE = read_makefile(ROOT)
 NK_CLI = (ROOT / "tools/nk_cli.py").read_text(encoding="utf-8")
 
 

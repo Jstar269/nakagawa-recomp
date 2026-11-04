@@ -31,6 +31,7 @@ _TOOLS_DIR = str(Path(__file__).resolve().parent)
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
+from makefile_text import read_makefile  # noqa: E402
 from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -354,9 +355,8 @@ def make_relative_path(path: Path, toolchain_root: Path | None, repo_root: Path)
 
 def atrac3p_object_names(repo_root: Path = ROOT) -> list[str]:
     """Return the ATRAC3+ object paths the Makefile builds, derived from ATRAC3P_SRCS."""
-    makefile = repo_root / "Makefile"
     try:
-        text = makefile.read_text(encoding="utf-8")
+        text = read_makefile(repo_root)
     except OSError:
         return []
     match = re.search(r"^ATRAC3P_SRCS\s*:?=\s*((?:.*\\\n)*.*)$", text, re.MULTILINE)

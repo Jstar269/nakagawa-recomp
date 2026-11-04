@@ -33,6 +33,7 @@ import analyze  # noqa: E402
 import codegen  # noqa: E402
 import entry_frame_balance  # noqa: E402
 import scratch_dir  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 OWNER = 0x00021AC0
 RESUME = 0x00021C78
@@ -1281,7 +1282,7 @@ class SymbolMapFileTests(unittest.TestCase):
         self.assertEqual(codegen.symbol_map_collisions({"f_000468c8": "f_000468c8_loop"}, texts), [])
 
     def test_makefile_passes_the_map_and_regenerates_when_it_changes(self):
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("SYMBOL_MAP_ARG := --symbol-map=$(SYMBOL_MAP)", makefile)
         self.assertIn("SYMBOL_MAP_PROFILE_LINE := $(NEWLINE)SYMBOL_MAP=$(SYMBOL_MAP)", makefile)
         rule = re.search(r"^\$\(BUILD_DIR\)/\$\(GAME_NAME\)_recomp\.c [^\n]*: ([^\n]*)\n\t([^\n]*)",

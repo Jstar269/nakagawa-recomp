@@ -3412,6 +3412,66 @@
       }
     },
     {
+      "path": "mk/cosim_snapshot.mk",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-split-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "mk/diagnostics.mk",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-split-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "mk/fuzz_verify.mk",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-split-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "mk/housekeeping.mk",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-split-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "mk/native_ui_tests.mk",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-split-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
       "path": "mk/nk_ui.mk",
       "classification": "project_authored_attested",
       "evidence": {
@@ -3420,6 +3480,78 @@
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
+      }
+    },
+    {
+      "path": "mk/pipeline.mk",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-split-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "mk/public_targets.mk",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-split-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "mk/runtime_sources.mk",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-split-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "mk/selftests.mk",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-split-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "mk/smoke_gates.mk",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-split-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "mk/title_config.mk",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-split-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
       }
     },
     {
@@ -13718,6 +13850,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "showcase-animation-generator-20261021",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/makefile_text.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "makefile-text-reader-1531",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
