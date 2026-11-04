@@ -228,7 +228,7 @@ bool nk_title_manifest_aot_package_cache_identity(
     char out_identity[65]
 );
 
-/* The Nakagawa a package was built by (owner decision, 2026-10-29: the player
+/* The Nakagawa a package was built by (the player
  * suggests a rebuild for a package an older Nakagawa built, and still launches
  * it). Every package build since v0.0.1 records these four values in its cache
  * key, and they are the parts of that key that come from Nakagawa itself rather

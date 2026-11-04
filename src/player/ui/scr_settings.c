@@ -1080,7 +1080,7 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         }
         break;
     case PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET:
-        /* Owner, 2026-10-29: back to a first run, with the user data moved
+        /* Factory reset: back to a first run, with the user data moved
            aside (player_app_factory_reset), never deleted. */
         scr_flow_eyebrow(ui, FLOW_MARK_TRIANGLE, "Factory reset", theme->warning);
         nk_ui_text_role(ui, FLOW_ID_TITLE, "Reset Nakagawa Recomp to a first run?",
