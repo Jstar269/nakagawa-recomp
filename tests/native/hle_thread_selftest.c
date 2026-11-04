@@ -27310,6 +27310,45 @@ static void test_dcache_maintenance_notifies_renderer(void) {
     ge_set_gpu_hooks(NULL);
 }
 
+/* Instruction-cache maintenance (#1979). The three Icache NIDs are registered in production
+ * and in this harness (hle_register_icache_handlers); each is entered here through
+ * sr_syscall with a literal NID. The cells pin what the handlers do today: a normal range,
+ * a zero-length range and a range running past 0xffffffff all return 0 without a fault, and
+ * the all-cache forms ignore their arguments. They are synthetic checks of current
+ * behaviour, not PSP measurements: no hardware result is claimed. */
+static void icache_set_args(CpuState *cpu, uint32_t addr, uint32_t length) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = addr;
+    cpu->r[5] = length;
+}
+
+static void test_icache_maintenance_returns_zero_for_every_range(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+
+    icache_set_args(&cpu, 0x08abc000u, 0x2000u);
+    expect(sr_syscall(&cpu, 0x920f104au) == 0u, "sceKernelIcacheInvalidateAll returns 0 for a normal range");
+    icache_set_args(&cpu, 0x08abc000u, 0x2000u);
+    expect(sr_syscall(&cpu, 0xd8779ac6u) == 0u, "sceKernelIcacheClearAll returns 0 for a normal range");
+    icache_set_args(&cpu, 0x08abc000u, 0x2000u);
+    expect(sr_syscall(&cpu, 0xc2df770eu) == 0u, "sceKernelIcacheInvalidateRange returns 0 for a normal range");
+
+    icache_set_args(&cpu, 0x08abc000u, 0u);
+    expect(sr_syscall(&cpu, 0x920f104au) == 0u, "sceKernelIcacheInvalidateAll returns 0 for a zero length");
+    icache_set_args(&cpu, 0x08abc000u, 0u);
+    expect(sr_syscall(&cpu, 0xd8779ac6u) == 0u, "sceKernelIcacheClearAll returns 0 for a zero length");
+    icache_set_args(&cpu, 0x08abc000u, 0u);
+    expect(sr_syscall(&cpu, 0xc2df770eu) == 0u, "sceKernelIcacheInvalidateRange returns 0 for a zero length");
+
+    icache_set_args(&cpu, 0xfffffff0u, 0x100u);
+    expect(sr_syscall(&cpu, 0x920f104au) == 0u, "sceKernelIcacheInvalidateAll returns 0 for a range past 0xffffffff");
+    icache_set_args(&cpu, 0xfffffff0u, 0x100u);
+    expect(sr_syscall(&cpu, 0xd8779ac6u) == 0u, "sceKernelIcacheClearAll returns 0 for a range past 0xffffffff");
+    icache_set_args(&cpu, 0xfffffff0u, 0x100u);
+    expect(sr_syscall(&cpu, 0xc2df770eu) == 0u, "sceKernelIcacheInvalidateRange returns 0 for a range past 0xffffffff");
+}
+
 /* Host-memory safety for the production GE block-transfer command path.  The
  * temporary arena deliberately commits one complete maximum-transfer window after
  * the modeled 192 MiB guest arena.  That makes the historical later-row write
@@ -46421,6 +46460,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_mip_cells_match_psp();
     test_ge_block_transfer_span_atomicity();
     test_dcache_maintenance_notifies_renderer();
+    test_icache_maintenance_returns_zero_for_every_range();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_inline_stores_match_full_bodies();
