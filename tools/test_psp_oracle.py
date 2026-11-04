@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 127)
+        self.assertEqual(len(routes), 129)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2496,7 +2496,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(set(range(1, 79)) | set(range(90, 105)) | {106, 107, 108, 109}
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
-                         | {128, 129, 130, 132, 133, 134, 135, 136, 138, 139}
+                         | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
                          | {150, 151},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
@@ -5075,7 +5075,13 @@ class HleMeasureProbeTests(unittest.TestCase):
         ("hle-savedata-getsize", 104, "hle_savedata_getsize", "hle_utility_imports.S",
          "HLE_CASE_SAVEDATA_GETSIZE", "PSP-HLE-SAVEDATA-GETSIZE-001"),
     )
-    ALL_FAMILIES = FAMILIES + SINGLE_LAUNCH_FAMILIES
+    # Families whose cells come from a row table rather than one literal record call each, so
+    # the out-word walker cannot read them; HleUtilityNoneProbeTests checks their shape.
+    TABLE_FAMILIES = (
+        ("hle-utility-none", 140, "hle_utility_none", "hle_utility_imports.S",
+         "HLE_CASE_UTILITY_NONE", "PSP-HLE-UTILITY-NONE-001"),
+    )
+    ALL_FAMILIES = FAMILIES + SINGLE_LAUNCH_FAMILIES + TABLE_FAMILIES
     # Every family block: file -> (library, version word, {function: NID}). The
     # version word 0x40010000 is the one the PSPSDK import stubs carry.
     PINNED_BLOCKS = {
@@ -5117,6 +5123,25 @@ class HleMeasureProbeTests(unittest.TestCase):
             "sceUtilitySavedataGetStatus": 0x8874DBE0,
             "sceUtilitySavedataUpdate": 0xD4B95FFB,
             "sceUtilitySavedataShutdownStart": 0x9790B33C,
+        },
+        # hle-utility-none names its stubs nkUtil* (hle_utility_imports.S says why); each NID
+        # is still the one derived from the sceUtility* name (_sdk_name).
+        ("hle_utility_imports.S", 140): {
+            "nkUtilSavedataGetStatus": 0x8874DBE0,
+            "nkUtilSavedataUpdate": 0xD4B95FFB,
+            "nkUtilSavedataShutdownStart": 0x9790B33C,
+            "nkUtilMsgDialogGetStatus": 0x9A1C91D7,
+            "nkUtilMsgDialogUpdate": 0x95FC253B,
+            "nkUtilMsgDialogShutdownStart": 0x67AF3428,
+            "nkUtilNetconfGetStatus": 0x6332AA39,
+            "nkUtilNetconfUpdate": 0x91E70E35,
+            "nkUtilNetconfShutdownStart": 0xF88155F6,
+            "nkUtilGamedataInstallGetStatus": 0xB57E95D9,
+            "nkUtilGamedataInstallUpdate": 0x4AECD179,
+            "nkUtilGamedataInstallShutdownStart": 0x32E32DCB,
+            "nkUtilGameSharingGetStatus": 0x946963F3,
+            "nkUtilGameSharingUpdate": 0x7853182D,
+            "nkUtilGameSharingShutdownStart": 0xEFC6F80F,
         },
     }
     # Calls supplied by the SDK's default IO/audio libraries, not by the hand-written
@@ -5176,6 +5201,11 @@ class HleMeasureProbeTests(unittest.TestCase):
     @staticmethod
     def _nid(name: str) -> int:
         return int.from_bytes(hashlib.sha1(name.encode("ascii"), usedforsecurity=False).digest()[:4], "little")
+
+    @staticmethod
+    def _sdk_name(name: str) -> str:
+        """The firmware name a stub's NID derives from: nkUtil<X> stands for sceUtility<X>."""
+        return "sceUtility" + name[len("nkUtil"):] if name.startswith("nkUtil") else name
 
     @staticmethod
     def _imports(text: str) -> list[tuple[str, int, str]]:
@@ -5317,22 +5347,24 @@ class HleMeasureProbeTests(unittest.TestCase):
                                  self._pins(block, case_id))
                 for lib, nid, name in declared:
                     self.assertEqual(lib, library)
-                    self.assertEqual(nid, self._nid(name), name)
+                    self.assertEqual(nid, self._nid(self._sdk_name(name)), name)
         self.assertEqual({block for block, _case_id in linked}, set(self.PINNED_BLOCKS))
         self.assertLessEqual(set(self.CASE_EXTRA_PINS), linked)
 
     def test_utility_block_builds_are_pinned_to_their_own_sceutility_sets(self) -> None:
-        """hle_utility_imports.S declares the savedata calls only under case 104's guard,
-        and the Makefile's link-time gate pins each build that links the block to exactly
-        what its CASE_ID assembles, so hle-sysparam can import no savedata call."""
+        """hle_utility_imports.S declares the savedata calls only under case 104's guard and
+        the dialog calls without InitStart only under case 140's, and the Makefile's link-time
+        gate pins each build that links the block to exactly what its CASE_ID assembles, so
+        hle-sysparam can import no savedata call."""
         block = "hle_utility_imports.S"
         self.assertEqual(re.findall(r"^#if PSP_ORACLE_CASE == (\d+)$", self._block_text(block),
-                                    re.MULTILINE), ["104"])
+                                    re.MULTILINE), ["104", "140"])
         self.assertIn("#define HLE_CASE_SAVEDATA_GETSIZE 104\n", self.probe)
         self.assertIn("else ifeq ($(CASE),hle-savedata-getsize)\nCASE_ID = 104\n", self.makefile)
         users = [(case, case_id) for case, case_id, _stem, linked, _macro, _test
                  in self.ALL_FAMILIES if linked == block]
-        self.assertEqual(users, [("hle-sysparam", 95), ("hle-savedata-getsize", 104)])
+        self.assertEqual(users, [("hle-sysparam", 95), ("hle-savedata-getsize", 104),
+                                 ("hle-utility-none", 140)])
         for case, case_id in users:
             with self.subTest(case=case):
                 gate = self.makefile.split(f"\nifeq ($(CASE),{case})\n", 1)[1].split("endif", 1)[0]
@@ -5609,9 +5641,9 @@ class HleMeasureProbeTests(unittest.TestCase):
 
     def test_out_word_counts_match_the_parser_registry_for_every_family(self) -> None:
         """Each cell's out-word count, read from the record call that emits it, equals the
-        parser registry's count, and the cells come in registry order, for families 90
-        through 101."""
-        for case, _cid, _stem, _block, macro, _test in self.ALL_FAMILIES:
+        parser registry's count, and the cells come in registry order, for every family whose
+        cells are literal record calls (not TABLE_FAMILIES)."""
+        for case, _cid, _stem, _block, macro, _test in self.FAMILIES + self.SINGLE_LAUNCH_FAMILIES:
             with self.subTest(case=case):
                 self.assertEqual(_out_count_mismatches(self.probe, case, macro), [])
 
@@ -9332,6 +9364,13 @@ class HleUtilityNoneProbeTests(unittest.TestCase):
         section = self.probe[self.probe.index("#if PSP_ORACLE_CASE == HLE_CASE_UTILITY_NONE\n\n"):
                              self.probe.index("#endif /* HLE_CASE_UTILITY_NONE */")]
         self.assertEqual(tuple(re.findall(r'\{"(utility-none-[a-z]+)"', section)), rows)
+        # Every row goes through the one record call, which writes the 7 words it fills.
+        body = section[section.index("static void hle_util_none("):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn("uint32_t out[7];", body)
+        self.assertEqual(sorted(set(re.findall(r"out\[(\d)\] = ", body))), list("0123456"))
+        self.assertEqual(re.findall(r"hle_record\(([^;]*)\);", body),
+                         ['d->case_id, "PASS", out[0], out, 7'])
         self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "hle-utility-none").name,
                          "hle_utility_none_log.txt")
 
