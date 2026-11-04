@@ -12653,7 +12653,7 @@ static void test_delay_advances_unified_timeline(void) {
 /* sceDisplayGetFramePerSec returns a single-precision float through $f0.  The
  * integer return convention reports success in $v0, so a guest reading the
  * float must see the measured 60000/1001 bits -- never stale/poisoned state
- * (issue #80 display-clock campaign). */
+ * (issue #80). */
 static void test_display_frame_per_sec_float_return(void) {
     reset_fixture();
     sr_hle_init();
@@ -16502,7 +16502,7 @@ static void wsv_cb_coro_body(void *arg) {
     selftest_park_on_scheduler();
 }
 
-/* PSP-B1-01 (psp-hw-20260917), project-authored synthetic probe on PSP-3000, firmware 6.61. */
+/* PSP-B1-01: project-authored synthetic probe run on a PSP-3000, firmware 6.61. */
 static void b1_expect(uint32_t actual, uint32_t expected, const char *scenario) {
     char msg[256];
     snprintf(msg, sizeof msg, "B1 %s: expected 0x%08x, actual 0x%08x",
@@ -16557,7 +16557,8 @@ static void test_sema_hardware_codes(void) {
     s_cur = -1;
 }
 
-/* PSP-B1-01 / PSP-B2-01 (psp-hw-20260917): LwMutex return codes and workarea
+/* Measured on a PSP-3000, firmware 6.61 (PSP-B1-01 / PSP-B2-01,
+ * docs/HARDWARE_ORACLE.md): LwMutex return codes and workarea
  * writes. The workarea lives at a fixed guest address; the fixture thread is the
  * owner, and "another owner" is simulated by writing a foreign uid. */
 #define B1_LW_WORKAREA 0x00250300u
@@ -17095,7 +17096,7 @@ static void test_expired_timed_sema_wait_enters_strict_priority(uint32_t nid,
              "%s slice C (C): the guest receives SCE_KERNEL_ERROR_WAIT_TIMEOUT (0x800201a8)", who);
     expect(s_slc_ret == SLC_WAIT_TIMEOUT, msg);
     expect(MEM_R32(SLC_TIMEOUT_PTR) == 0u,
-           "PSP-B2-01 (psp-hw-20260917): timed semaphore wait clears timeout");
+           "Measured (PSP-B2-01): timed semaphore wait clears timeout");
     snprintf(msg, sizeof msg,
              "%s slice C (F): earlier promotion manufactured no success result", who);
     expect(s_slc_ret != 0u, msg);
@@ -17141,7 +17142,7 @@ static void test_expired_timed_object_waits_enter_strict_priority(void) {
 }
 
 /* -------------------------------------------------------------------------
- * PSP-B2-01 / PSP-B3-01 (psp-hw-20260917): the cancel/release wake family.
+ * Measured (PSP-B2-01 / PSP-B3-01): the cancel/release wake family.
  * -------------------------------------------------------------------------
  * Hardware cells, entered through the production NIDs:
  *
@@ -17153,7 +17154,8 @@ static void test_expired_timed_object_waits_enter_strict_priority(void) {
  *                                   returns 0; on the running caller (0) it
  *                                   returns 0x80020197.
  *
- * Before this campaign the three NIDs were unregistered entirely (a guest call
+ * Before the cancel/release family was implemented the three NIDs were
+ * unregistered entirely (a guest call
  * stopped at the HLE boundary), and the waiter side had no way to observe a
  * non-satisfaction wake. The waiter runs on its own coroutine exactly like the
  * strict-priority fixture above; the main fixture thread plays the canceller.
@@ -17506,7 +17508,7 @@ static void test_cancel_release_wake_results(void) {
  * UIDs answer UNKNOWN_EVFID; DeleteEventFlag ends a blocked wait. Every call
  * enters through the production NID.
  *
- * Codes: PSP-B1-01 (psp-hw-20260917) unknown-ID codes, 8002019A event flag,
+ * Codes: PSP-B1-01 unknown-ID codes, 8002019A event flag,
  * 80020199 semaphore, 800201CA and 800201C4 for a missing LwMutex. Cells:
  * PSPAutotests tests/threads/events clear.expected L15-L19, refer.expected
  * L23-L25, wait.expected L31-L35, delete.expected L5-L7. A UID of another kind
@@ -17823,7 +17825,7 @@ static void test_evf_typed_uids_and_delete(void) {
 }
 
 /* -------------------------------------------------------------------------
- * PSP-B2-01 / PSP-B3-01 (psp-hw-20260917) second round: init restore, delete,
+ * PSP-B2-01 / PSP-B3-01 second round: init restore, delete,
  * single-wait rejection, LwMutex handoff/timeout, msgpipe modes, dormant
  * threads and waitType. Each cell enters through the production NID.
  * ------------------------------------------------------------------------- */
@@ -35238,7 +35240,7 @@ static void test_vpl_blocking_waits(void) {
 
 /* =========================================================================
  * Mailbox object model tests (issue #339)
- * Measured anchors from docs/HARDWARE_ORACLE.md (campaign psp-hw-20260917):
+ * Measured anchors from docs/HARDWARE_ORACLE.md:
  * unknown id 0x8002019B, timeout 0x800201A8 with remaining 0, Cancel waiters
  * 0x800201A9, empty poll 0x800201B2, FIFO circular next links, attr 0x400
  * ascending msgPriority, waitType 5.

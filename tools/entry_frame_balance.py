@@ -98,7 +98,7 @@ def frame_size(elf, addr):
     """Frame allocated by an ``addiu $sp, $sp, -N`` prologue at ``addr``.
 
     ``None`` when ``addr`` does not begin with that prologue form, which is one
-    of the resume-entry signals listed in wiki doc 26 section 30.
+    of the signals that an address is a resume entry.
     """
     word = read32(elf, addr)
     if word is None:
@@ -488,8 +488,8 @@ def find_frame_owners(elf, addr, ranges, callables, limit=DEFAULT_STEP_LIMIT,
                       window=OWNER_SEARCH_WINDOW):
     """Balanced framed callables whose extent covers ``addr``.
 
-    Wiki doc 26 section 14 requires that discovering *incompatible* multiple
-    owners for one resume PC stops rather than silently picking one.  This
+    Discovering *incompatible* multiple owners for one resume PC must stop
+    rather than silently pick one.  This
     returns ``owner -> live stack depth at addr`` for every structural owner
     found within ``window`` bytes before ``addr``, so the caller can apply that
     rule.  Depth -- not prologue frame size -- is the compatibility test: two

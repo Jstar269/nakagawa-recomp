@@ -5,7 +5,7 @@
 
 Every fixture is synthetic: the CSVs and log lines are written by this file, so nothing here
 depends on a title, a private input or a captured run. What is pinned is the judging logic
-and, more importantly, that a *missing* artifact is reported as SKIP with a reason and never
+and that a *missing* artifact is reported as SKIP with a reason and never
 as a pass -- an audit that cannot fail is worse than no audit.
 """
 
