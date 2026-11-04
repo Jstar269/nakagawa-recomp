@@ -7,6 +7,7 @@
 
 #include "player_host.h"
 #include "player_state.h"
+#include "nk_launch.h"
 #include "nk_platform.h"
 #include "nk_ui_widgets.h"
 
@@ -15,6 +16,7 @@
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #include <shellapi.h>
+#include <shobjidl.h>  /* SetCurrentProcessExplicitAppUserModelID */
 #endif
 
 void player_host_show_picker(PlayerHostPick what, SDL_Window *window,
@@ -51,6 +53,17 @@ bool player_host_open_folder(const char *path) {
     char url[NK_MAX_PATH * 3u];
     return player_file_url(path, url, sizeof(url)) && SDL_OpenURL(url);
 #endif
+}
+
+void player_host_set_app_identity(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    HRESULT hr = SetCurrentProcessExplicitAppUserModelID(L"" NK_APP_USER_MODEL_ID);
+    if (FAILED(hr))
+        fprintf(stderr, "[PLAYER] The taskbar app ID could not be set (HRESULT 0x%08lx).\n",
+                (unsigned long)hr);
+#endif
+    if (!SDL_SetAppMetadata(NK_APP_NAME, NULL, NK_APP_DESKTOP_ID))
+        fprintf(stderr, "[PLAYER] SDL app metadata could not be set: %s\n", SDL_GetError());
 }
 
 void player_host_set_window_icon(SDL_Window *window) {

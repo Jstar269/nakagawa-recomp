@@ -45,6 +45,9 @@
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_render.h>
 #endif
+#ifdef SR_GUI_PRESENT_SELFTEST
+#include "overlay/nk_overlay.h"  /* the pause display rows' actions and pacing choices */
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -245,6 +248,43 @@ static void present_set_cap(int cap) {
     s_present_cap = cap == PRESENT_CAP_SCANOUT || (cap >= 0 && cap <= 240)
         ? cap : PRESENT_CAP_SCANOUT;
     s_present_next_ns = 0;
+}
+
+/* The pause overlay's display rows (#2002), kept apart from the window and the page so the
+ * present selftest checks them. Each row uses the readout's convention: 0 no row, 1 off (or
+ * the first choice), 2 on. Fullscreen has no row where the window cannot change mode (-1);
+ * frame pacing has none for a developer's numeric SR_FPS_CAP, which is neither choice. */
+static int pause_fullscreen_row(int window_fullscreen) {
+    return window_fullscreen < 0 ? 0 : window_fullscreen ? 2 : 1;
+}
+
+static int pause_pacing_row(int cap) {
+    return cap == PRESENT_CAP_SCANOUT ? 1 + NK_OVERLAY_PACING_PSP
+         : cap == 0                   ? 1 + NK_OVERLAY_PACING_UNCAPPED
+                                      : 0;
+}
+
+/* The cap a Frame pacing choice sets: a value the row cannot send is PSP timing, never
+ * uncapped. */
+static int pause_pacing_cap(int pacing) {
+    return pacing == NK_OVERLAY_PACING_UNCAPPED ? 0 : PRESENT_CAP_SCANOUT;
+}
+
+/* Applies the Fullscreen or Frame pacing row's choice and returns 1, or returns 0 for any
+ * other action. The window call is passed in, so the selftest runs this without a window. */
+static int pause_display_act(NkOverlayAction action, int (*set_fullscreen)(int on)) {
+    switch (action.kind) {
+    case NK_OVERLAY_ACT_SET_FULLSCREEN:
+        (void)set_fullscreen(action.value != 0);
+        return 1;
+    case NK_OVERLAY_ACT_SET_PACING:
+        present_set_cap(pause_pacing_cap(action.value));
+        fprintf(stderr, "SR_PAUSE: frame pacing %s\n",
+                present_cap() == 0 ? "no extra cap" : "PSP timing");
+        return 1;
+    default:
+        return 0;
+    }
 }
 #endif
 
@@ -1458,15 +1498,10 @@ static void gui_pause_act(NkOverlayAction action) {
         s_pause_dirty = 1;
         break;
     case NK_OVERLAY_ACT_SET_FULLSCREEN:
-        /* The window changes size; the pause loop composes the frame again on the
-         * pixel-size event that follows. */
-        (void)sdl3vk_set_fullscreen(action.value != 0);
-        s_pause_dirty = 1;
-        break;
     case NK_OVERLAY_ACT_SET_PACING:
-        present_set_cap(action.value == NK_OVERLAY_PACING_UNCAPPED ? 0 : PRESENT_CAP_SCANOUT);
-        fprintf(stderr, "SR_PAUSE: frame pacing %s\n",
-                action.value == NK_OVERLAY_PACING_UNCAPPED ? "no extra cap" : "PSP timing");
+        /* A fullscreen change resizes the window; the pause loop composes the frame again
+         * on the pixel-size event that follows. */
+        (void)pause_display_act(action, sdl3vk_set_fullscreen);
         s_pause_dirty = 1;
         break;
     case NK_OVERLAY_ACT_VRAM_VIEW:
@@ -1525,16 +1560,10 @@ static int gui_pause_compose(int w, int h, int rgba) {
         }
         model.ace_caption = ace_caption;
         model.ace_readout = s_ace_ui_ready ? (ace_effective()->readout ? 2 : 1) : 0;
-        {
-            /* The display rows (#2002): a window that can change mode, and the launcher's two
-             * Frame pacing choices. A numeric SR_FPS_CAP is neither, so it gets no row. */
-            int fullscreen = sdl3vk_fullscreen();
-            int cap = present_cap();
-            model.fullscreen = fullscreen < 0 ? 0 : fullscreen ? 2 : 1;
-            model.pacing = cap == PRESENT_CAP_SCANOUT ? 1 + NK_OVERLAY_PACING_PSP
-                         : cap == 0                   ? 1 + NK_OVERLAY_PACING_UNCAPPED
-                                                      : 0;
-        }
+        /* The display rows (#2002): a window that can change mode, and the launcher's two
+         * Frame pacing choices. */
+        model.fullscreen = pause_fullscreen_row(sdl3vk_fullscreen());
+        model.pacing = pause_pacing_row(present_cap());
         model.saving = sr_savedata_pause_busy() != 0;
         model.controls = s_pause_controls.rows;
         model.control_count = s_pause_controls.count;
@@ -1807,6 +1836,66 @@ static void selftest_pacing_changes_while_running(void) {
     assert(present_cap() == PRESENT_CAP_SCANOUT);
 }
 
+static int s_selftest_fullscreen_calls;
+static int s_selftest_fullscreen_on;
+
+static int selftest_set_fullscreen(int on) {
+    s_selftest_fullscreen_calls++;
+    s_selftest_fullscreen_on = on;
+    return 1;
+}
+
+/* The pause overlay's display rows (#2002) as gui.c fills and applies them: the rows the page
+ * gets from the window and the cap in force, what each choice changes, and that a choice reads
+ * back as the row the person picked. */
+static void selftest_pause_display_rows(void) {
+    NkOverlayAction act;
+    int pacing;
+
+    assert(pause_fullscreen_row(-1) == 0);
+    assert(pause_fullscreen_row(0) == 1);
+    assert(pause_fullscreen_row(1) == 2);
+    assert(pause_pacing_row(PRESENT_CAP_SCANOUT) == 1 + NK_OVERLAY_PACING_PSP);
+    assert(pause_pacing_row(0) == 1 + NK_OVERLAY_PACING_UNCAPPED);
+    assert(pause_pacing_row(30) == 0);
+    assert(pause_pacing_row(60) == 0);
+
+    s_selftest_fullscreen_calls = 0;
+    act.kind = NK_OVERLAY_ACT_SET_FULLSCREEN;
+    act.value = 1;
+    assert(pause_display_act(act, selftest_set_fullscreen));
+    assert(s_selftest_fullscreen_calls == 1 && s_selftest_fullscreen_on == 1);
+    act.value = 0;
+    assert(pause_display_act(act, selftest_set_fullscreen));
+    assert(s_selftest_fullscreen_calls == 2 && s_selftest_fullscreen_on == 0);
+
+    selftest_reset_slots(NULL);
+    for (pacing = 0; pacing < NK_OVERLAY_PACING_COUNT; pacing++) {
+        act.kind = NK_OVERLAY_ACT_SET_PACING;
+        act.value = pacing;
+        assert(pause_display_act(act, selftest_set_fullscreen));
+        assert(pause_pacing_row(present_cap()) == 1 + pacing);
+    }
+    assert(present_cap() == 0);
+    act.value = NK_OVERLAY_PACING_COUNT;
+    assert(pause_display_act(act, selftest_set_fullscreen));
+    assert(present_cap() == PRESENT_CAP_SCANOUT);
+    act.value = NK_OVERLAY_PACING_UNCAPPED;
+    assert(pause_display_act(act, selftest_set_fullscreen));
+    act.value = -1;
+    assert(pause_display_act(act, selftest_set_fullscreen));
+    assert(present_cap() == PRESENT_CAP_SCANOUT);
+    assert(s_selftest_fullscreen_calls == 2);
+
+    act.kind = NK_OVERLAY_ACT_SET_HUD;
+    act.value = 0;
+    assert(!pause_display_act(act, selftest_set_fullscreen));
+    act.kind = NK_OVERLAY_ACT_SET_SCALING;
+    assert(!pause_display_act(act, selftest_set_fullscreen));
+    assert(s_selftest_fullscreen_calls == 2);
+    assert(present_cap() == PRESENT_CAP_SCANOUT);
+}
+
 /* Small deterministic generator (the PCG32 output step over an LCG state) for jitter
  * that is not a repeating pattern. */
 static uint32_t selftest_next_random(uint64_t *state) {
@@ -2023,6 +2112,7 @@ int main(void) {
     assert(present_period_ns() == 1000000000ull / 30u);
 
     selftest_pacing_changes_while_running();
+    selftest_pause_display_rows();
 
     selftest_jittered_scanout_flips_are_all_presented();
     selftest_two_flips_per_scanout_present_once_per_scanout();
