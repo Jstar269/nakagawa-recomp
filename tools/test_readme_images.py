@@ -456,7 +456,7 @@ class ShowcaseAnimationToolTests(unittest.TestCase):
         self.assertEqual(gif.count(b"!\xf9\x04\x04" + struct.pack("<H", 1234) + b"\x00\x00"), 2)
         streams = self.gif_image_streams(gif)
         self.assertEqual(len(streams), 2)
-        for rgb, stream in zip(frames, streams):
+        for rgb, stream in zip(frames, streams, strict=True):
             decoded, _clears = self.lzw_decode(stream)
             self.assertEqual(decoded, animation._indices_332(rgb))
 
