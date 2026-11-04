@@ -214,9 +214,14 @@ void sdl3vk_set_logic_slowed_cb(int (*cb)(unsigned *rate)) {
 
 static void (*s_ui_pass)(const Sdl3VkUiPass *frame);
 static Sdl3VkShowPass s_show_pass;
+static Sdl3VkUpscalePass s_upscale_pass;
 
 void sdl3vk_set_show_pass(Sdl3VkShowPass pass) {
     s_show_pass = pass;
+}
+
+void sdl3vk_set_upscale_pass(Sdl3VkUpscalePass pass) {
+    s_upscale_pass = pass;
 }
 
 void sdl3vk_set_ui_pass(void (*pass)(const Sdl3VkUiPass *frame)) {
@@ -2002,7 +2007,18 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         blt.dstSubresource = blt.srcSubresource;
         blt.srcOffsets[1].z = 1;
         blt.dstOffsets[1].z = 1;
-        if (plan.prescale > 1 && prescale_ensure(plan.prescale * showw, plan.prescale * showh)) {
+        /* The presentation upscaler, when one is set, makes the picture at its place's size;
+         * the blit below then copies it 1:1. */
+        VkImage upscaled = VK_NULL_HANDLE;
+        if (s_upscale_pass && plan.w > 0 && plan.h > 0 && (plan.w > showw || plan.h > showh))
+            upscaled = (VkImage)s_upscale_pass((void *)cmd, (void *)show, showw, showh, plan.w, plan.h);
+        if (upscaled) {
+            blit_src = upscaled;
+            bw = plan.w;
+            bh = plan.h;
+            plan.nearest = 1;
+        } else if (plan.prescale > 1 &&
+                   prescale_ensure(plan.prescale * showw, plan.prescale * showh)) {
             /* Sharp scaling, pass 1: nearest enlargement to the integer multiple. */
             barrier(cmd, s_prescale_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     0, VK_ACCESS_TRANSFER_WRITE_BIT,

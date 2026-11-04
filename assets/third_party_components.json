@@ -383,6 +383,26 @@
         ]
       },
       {
+        "id": "fidelityfx-fsr1",
+        "name": "AMD FidelityFX Super Resolution 1",
+        "spdx_id": "MIT",
+        "upstream_origin": "https://github.com/GPUOpen-Effects/FidelityFX-FSR",
+        "upstream_revision": "a21ffb8f6c13233ba336352bdff293894c706575",
+        "disposition": "statically_linked_subset",
+        "notice_file": "fidelityfx-fsr1.txt",
+        "copyright_notices": [
+          "Copyright (c) 2021 Advanced Micro Devices, Inc."
+        ],
+        "note": "The byte-identical headers third_party/fidelityfx_fsr1/ffx_a.h and ffx_fsr1.h (third_party/fidelityfx_fsr1/PROVENANCE.md), compiled into the native player's presentation upscaler: into the SPIR-V of src/rt/gpu_sdl3vk/shaders/fsr1_easu.comp and fsr1_rcas.comp, and into src/rt/gpu_sdl3vk/fsr1_pass.c for the constant setup.",
+        "license_texts": [
+          {
+            "file": "third_party/fidelityfx_fsr1/LICENSE.txt",
+            "copied_from": "FidelityFX-FSR license.txt at commit a21ffb8f6c13233ba336352bdff293894c706575, imported byte-identical",
+            "sha256": "db089274ce766da70f5b7d791029c3486f9f9e27c8c79c652689603d3192e802"
+          }
+        ]
+      },
+      {
         "id": "libchdr",
         "name": "libchdr",
         "spdx_id": "BSD-3-Clause",

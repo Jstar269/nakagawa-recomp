@@ -1417,6 +1417,111 @@ def flight_smoke(build_dir: Path) -> int:
     return 0
 
 
+def fsr1_smoke(build_dir: Path) -> int:
+    """SR_PRESENT_UPSCALE=fsr1 is presentation only: the guest's frame, guest VRAM and every guest
+    flight event are byte-identical with it on and off.
+
+    Two runs on the Vulkan presenter, in a hidden window larger than the guest frame so the upscaler
+    runs on every present: off, then fsr1. Each records the flight bundle, the first presented guest
+    frame and VRAM at a set of VBLANKs. The fsr1 run must say it upscaled presents; the off run must
+    not. The flight bundles must match after the host-paced present events are projected out, the
+    first frames must be the exact stripe pixels and equal, and every VBLANK both runs captured must
+    hold the same VRAM bytes.
+    """
+    build_dir = build_dir.resolve()
+    manifest = _read_manifest(build_dir / "fixture")
+    frames = int(manifest["frames"])
+    expected = final_frame_first_pixel(frames)
+    executable = (build_dir / f"{ARTIFACT_STEM}.exe").resolve()
+    if not executable.exists():
+        executable = (build_dir / ARTIFACT_STEM).resolve()
+    image_path = (build_dir / f"{ARTIFACT_STEM}_image.bin").resolve()
+    if not executable.is_file() or not image_path.is_file():
+        raise RuntimeError("display-smoke runtime and generated image must be built first")
+    command = [
+        str(executable), "--image", str(image_path), f"0x{BASE:08x}", f"0x{ENTRY:08x}",
+        "none", "none", "--gui", f"--expect-u32=0x{FRAMEBUFFER:08x}:0x{expected:08x}",
+    ]
+    vblanks = ",".join(str(v) for v in range(20, 400, 20))
+
+    def launch(work: Path, upscale: str | None) -> tuple[dict, str]:
+        (work / "capture").mkdir(parents=True)
+        env = os.environ.copy()
+        for name in ("SR_VIDEO", "SR_FBDUMP", "SR_EXIT_AT_VBLANK", "SR_FLIGHT_TRIGGER", "SR_WATCH",
+                     "SR_PRESENT_UPSCALE", "SR_PRESENT_SCALING"):
+            env.pop(name, None)
+        env.update({
+            "SR_WINDOW_HIDDEN": "1",
+            "SR_FLIGHT": "ge,present;4096",
+            "SR_NOVBPACE": "0",
+            "SR_FLIGHT_OUTPUT": str(work / "flight.json"),
+            "SR_FIRST_FRAME_DUMP": "1",
+            "SR_FPS_CAP": "30",
+            "SR_VRAMDUMP": vblanks,
+            "SR_VRAMDUMP_DIR": str(work / "capture"),
+        })
+        if upscale:
+            env["SR_PRESENT_UPSCALE"] = upscale
+        done = subprocess.run(command, cwd=work, env=env, capture_output=True, text=True,
+                              timeout=120, check=False)
+        combined = done.stdout + done.stderr
+        (work / "run.log").write_text(combined, encoding="utf-8")
+        if done.returncode:
+            raise RuntimeError(f"fsr1 smoke ({upscale or 'off'}) exited {done.returncode}: {combined[-2000:]}")
+        if "status=PASS" not in combined or "status=FAIL" in combined:
+            raise RuntimeError(f"fsr1 smoke ({upscale or 'off'}) missed its guest check: {combined[-2000:]}")
+        bundle = json.loads((work / "flight.json").read_text(encoding="utf-8"))
+        _require_vblank_progress(bundle, upscale or "off")
+        return bundle, combined
+
+    with tempfile.TemporaryDirectory(prefix="display-smoke-fsr1-") as temporary:
+        root = Path(temporary)
+        runs = {}
+        for label in ("off", "fsr1"):
+            work = root / label
+            bundle, combined = launch(work, None if label == "off" else "fsr1")
+            runs[label] = (work, bundle, combined)
+        off_log, fsr_log = runs["off"][2], runs["fsr1"][2]
+        upscaled = re.search(r"sdl3vk: FSR 1 upscaled (\d+) presents", fsr_log)
+        if "FSR 1 upscaling on" not in fsr_log or not upscaled or int(upscaled.group(1)) < 1:
+            raise RuntimeError("the fsr1 run did not upscale any present: " + fsr_log[-2000:])
+        if "FSR 1 upscal" in off_log:
+            raise RuntimeError("the off run reported FSR 1 upscaling")
+
+        first = [runs[label][0] / "frame_first.ppm" for label in ("off", "fsr1")]
+        for path, label in zip(first, ("off", "fsr1"), strict=True):
+            _require_exact_present_pixels(path, frames, label)
+        if first[0].read_bytes() != first[1].read_bytes():
+            raise RuntimeError("FSR 1 changed the first presented guest frame")
+
+        paths = []
+        for label in ("off", "fsr1"):
+            target = root / f"{label}.projected.json"
+            target.write_text(json.dumps(_without_host_present_events(runs[label][1]), sort_keys=True),
+                              encoding="utf-8")
+            paths.append(target)
+        match = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "flight_diff.py"), str(paths[0]), str(paths[1])],
+            capture_output=True, text=True, check=False,
+        )
+        if match.returncode != 0 or "MATCH:" not in match.stdout:
+            raise RuntimeError(f"FSR 1 changed the guest's flight events: {match.stdout}{match.stderr}")
+
+        dumps = [{p.name: p.read_bytes() for p in (runs[label][0] / "capture").glob("vram_*")
+                  if not p.name.endswith(".json")} for label in ("off", "fsr1")]
+        common = sorted(set(dumps[0]) & set(dumps[1]))
+        if not common:
+            raise RuntimeError("the two runs captured VRAM at no common VBLANK")
+        changed = [name for name in common if dumps[0][name] != dumps[1][name]]
+        if changed:
+            raise RuntimeError(f"FSR 1 changed guest VRAM in {changed}")
+    print(
+        f"DISPLAY_SMOKE_FSR1 status=PASS upscaled_presents={upscaled.group(1)} guest=MATCH "
+        f"first_frame=EXACT vram_captures={len(common)} vram=IDENTICAL"
+    )
+    return 0
+
+
 def run_player(build_dir: Path) -> int:
     """Drive PLAY NOW through the native player without human input.
 
@@ -1582,6 +1687,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     vramdump_parser.add_argument("--build-dir", type=Path, required=True)
     flight_parser = subparsers.add_parser("flight")
     flight_parser.add_argument("--build-dir", type=Path, required=True)
+    fsr1_parser = subparsers.add_parser("fsr1")
+    fsr1_parser.add_argument("--build-dir", type=Path, required=True)
     player_parser = subparsers.add_parser("run-player")
     player_parser.add_argument("--build-dir", type=Path, required=True)
     quit_parser = subparsers.add_parser("quit")
@@ -1605,6 +1712,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_vramdump(args.build_dir)
         if args.command == "flight":
             return flight_smoke(args.build_dir)
+        if args.command == "fsr1":
+            return fsr1_smoke(args.build_dir)
         if args.command == "run-player":
             return run_player(args.build_dir)
         if args.command == "quit":

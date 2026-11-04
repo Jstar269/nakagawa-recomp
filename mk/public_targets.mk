@@ -136,6 +136,7 @@ PUBLIC_TARGETS := \
 	osk-overlay-selftest \
 	ace-selftest \
 	ace-smooth-selftest \
+	fsr1-selftest \
 	ace-ui-selftest \
 	osk-overlay-paint-selftest \
 	psmf-producer-selftest \
@@ -302,6 +303,7 @@ HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blo
 HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-machine selftest (pure C)
 HELP_DESCRIPTION_ace-selftest := run Ace Mode's CPU-only selftest (launch line, 30 Hz detector, readout, report; pure C)
 HELP_DESCRIPTION_ace-smooth-selftest := run Ace Mode's in-between frames selftest on a headless Vulkan device (SKIPs without one)
+HELP_DESCRIPTION_fsr1-selftest := run the FSR 1 presentation upscaler selftest on a headless Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_ace-ui-selftest := run Ace Mode's in-game UI selftest (layout, then a headless Vulkan render; SKIPs the GPU leg without Vulkan)
 HELP_DESCRIPTION_osk-overlay-paint-selftest := run the in-window keyboard painter's exact-pixel selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest

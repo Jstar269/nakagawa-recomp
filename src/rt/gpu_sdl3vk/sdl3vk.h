@@ -134,6 +134,16 @@ void sdl3vk_set_show_pass(Sdl3VkShowPass pass);
  * other presents do, and 0 with nothing to show or no pass. */
 int sdl3vk_present_held(void);
 
+/* The presentation upscaler (src/rt/gpu_sdl3vk/fsr1_pass.h, SR_PRESENT_UPSCALE). Called on a
+ * present whose shown image (w x h, in TRANSFER_SRC_OPTIMAL) is smaller than its place in the
+ * window, after the show pass and before the frame blit. It may record into the command buffer,
+ * and returns an image of exactly out_w x out_h, in TRANSFER_SRC_OPTIMAL, that is copied 1:1 into
+ * that place, or NULL to scale as SR_PRESENT_SCALING says. A capture always reads the guest's
+ * frame, so what it returns is never captured. Registered only when SR_PRESENT_UPSCALE asks for
+ * it; NULL removes it. Handles are Vulkan's, passed as void pointers. */
+typedef void *(*Sdl3VkUpscalePass)(void *cmd, void *src, int w, int h, int out_w, int out_h);
+void sdl3vk_set_upscale_pass(Sdl3VkUpscalePass pass);
+
 /* Pumps the SDL event loop without presenting a frame. Returns 0 on quit, 1 otherwise. */
 int  sdl3vk_poll(void);
 
