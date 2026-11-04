@@ -4481,7 +4481,7 @@ static void player_apply_test_view(PlayerApp *app, const char *test_view) {
                      sizeof(app->wizard.extraction_current_file),
                      "xbdata/menu.xb");
             snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                     "Decoding the selected synthetic XB assets...");
+                     "Extracting game assets into local application data…");
         } else if (strcmp(test_view, "wizard4") == 0) {
             player_app_start_setup_wizard(app);
             app->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
@@ -4539,11 +4539,11 @@ static void player_apply_test_view(PlayerApp *app, const char *test_view) {
             app->build_session.current_stage = PACKAGE_BUILD_STAGE_COMPILE;
             snprintf(app->build_session.current_stage_name, sizeof(app->build_session.current_stage_name), "compile");
             snprintf(app->build_session.current_message, sizeof(app->build_session.current_message),
-                     "Compiling translated native host C sources into package binary...");
+                     "Compiling the translated code");
             app->build_session.elapsed_ms = 1420;
-            package_builder_add_output_line(&app->build_session, "[preflight] PASS: Disc preflight inspection succeeded.");
-            package_builder_add_output_line(&app->build_session, "[extract] PASS: Staged plaintext guest modules to cache.");
-            package_builder_add_output_line(&app->build_session, "[compile] RUNNING: Compiling translated native C sources...");
+            package_builder_add_output_line(&app->build_session, "[preflight] PASS: The game and its title file are in order");
+            package_builder_add_output_line(&app->build_session, "[extract] PASS: The game's program files are ready");
+            package_builder_add_output_line(&app->build_session, "[compile] START: Compiling the translated code");
             if (strcmp(test_view, "building-parts") == 0) {
                 /* The compile stage's part count, through the same parser and state
                    machine as a line nk_cli writes. */

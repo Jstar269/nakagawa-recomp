@@ -3416,6 +3416,7 @@ static void test_platform_cards_name_this_platform(void) {
     nk_ps_set_env("HOME", NULL);
     assert(!player_app_open_prerequisite_about(app));
     assert(strcmp(app->last_error.error_code, "DATA_DIR_UNAVAILABLE") == 0);
+    assert(strcmp(app->last_error.title, "Data folder not found") == 0); /* #1974: sentence case */
     assert(strstr(app->last_error.message, "XDG_DATA_HOME or HOME") != NULL);
     assert(strstr(app->last_error.message, "LOCALAPPDATA") == NULL);
     restore_environment_value("XDG_DATA_HOME", saved_xdg, had_xdg);
@@ -9100,9 +9101,12 @@ int main(int argc, char **argv) {
                 assert(work != NULL);
                 assert(!player_app_launch_begin(x_app, 0, work));
                 assert(strcmp(x_app->last_error.error_code, "ENHANCEMENT_UNAVAILABLE") == 0);
+                /* #1974: error titles are in sentence case. */
+                assert(strcmp(x_app->last_error.title, "60 FPS enhancement unavailable") == 0);
                 x_app->last_error.error_code[0] = '\0';
                 assert(!player_app_start_package_build(x_app, 0));
                 assert(strcmp(x_app->last_error.error_code, "ENHANCEMENT_UNAVAILABLE") == 0);
+                assert(strcmp(x_app->last_error.title, "60 FPS enhancement unavailable") == 0);
                 assert(!x_app->build_session.is_building);
                 x_app->last_error.error_code[0] = '\0';
                 free(work);

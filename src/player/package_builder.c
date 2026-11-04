@@ -2500,7 +2500,7 @@ void package_builder_cancel(PackageBuildSession *session) {
         session->is_cancelled = true;
         session->current_stage = PACKAGE_BUILD_STAGE_CANCELLED;
         safe_str_copy(session->current_stage_name, sizeof(session->current_stage_name), "cancelled");
-        safe_str_copy(session->current_message, sizeof(session->current_message), "Build cancelled by user.");
+        safe_str_copy(session->current_message, sizeof(session->current_message), "Build cancelled.");
         package_builder_add_output_line(session, "[build] CANCEL: Process terminated by user");
     }
 }
