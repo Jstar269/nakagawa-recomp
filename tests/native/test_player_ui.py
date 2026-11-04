@@ -1874,10 +1874,6 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(len(coverage), len(declared), (coverage, declared))
         self.assertEqual([name for _, name, nk in coverage if nk != "1"], [],
                          "views the launcher does not draw")
-        preparing = self.run_player("preparing", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100"))
-        self.assertIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", preparing["stdout"])
-        self.assertEqual(self.screens(preparing)[-1][0], "library",
-                         "Return to Library leaves the preparation card")
 
     def test_settings_psp_fonts_imports_and_removes(self) -> None:
         """Walkthrough blocker: the PSP font import is reachable from Settings."""
@@ -2147,17 +2143,17 @@ class NativePlayerUiTests(unittest.TestCase):
         "resolution": str(0x4501), "pacing": str(0x4502), "done": str(0x450C),
         "online": str(0x450D), "notices": str(0x450E), "remove_tools": str(0x450F),
         "build_cache": str(0x451A), "share_libraries": str(0x451B),
-        "online_mode": str(0x4511), "back": str(0x4517), "confirm_remove": str(0x4519),
+        "developer": str(0x4515), "back": str(0x4517), "confirm_remove": str(0x4519),
         "controller": str(0x450B), "scaling": str(0x4505),
         "launcher_fullscreen": str(0x450A), "accessibility": str(0x452C),
         "interface_size": str(0x452D), "high_contrast": str(0x452E),
         "reduce_motion": str(0x4509), "text_size": str(0x452F),
         "ace": str(0x4540), "ace_open": str(0x4541), "ace_mode": str(0x4542),
     }
-    # From Resolution, Down runs through the Game card's seven rows (the last two
-    # are Ace Mode and its options) to the button row, which it enters at
+    # From Resolution, Down runs through the Game card's six rows (the last is the
+    # one Ace Mode row, which opens its page) to the button row, which it enters at
     # Third-party notices.
-    TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 7
+    TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 6
 
     def focus_trail(self, run: dict[str, object]) -> list[str]:
         """The controls the next UI focused, with repeats collapsed."""
@@ -2199,23 +2195,28 @@ class NativePlayerUiTests(unittest.TestCase):
                          "the ABOUT tab on Settings closes it and opens About")
 
     def test_next_ui_ace_mode_switch_is_saved_and_its_page_opens(self) -> None:
-        """Ace Mode (src/rt/ace.h): off by default; the Game card's row switches it for the
-        library and saves it, and Ace Mode options opens its page on its own switch."""
+        """Ace Mode (src/rt/ace.h): off by default. Settings has one Ace Mode row (#2007);
+        it opens the page, where the switch turns Ace Mode on for the library and saves it."""
         focus = self.SETTINGS_FOCUS
         run = self.next_ui_run(
             "settings",
-            ("WAIT_MS=100",) + ("KEY_DOWN",) * 5 + ("KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
+            ("WAIT_MS=100",) + ("KEY_DOWN",) * 5 +
+            ("KEY_RETURN", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
         )
-        self.assertIn(focus["ace"], self.focus_trail(run), "Down reaches the Ace Mode row")
+        self.assertIn(focus["ace_open"], self.focus_trail(run), "Down reaches the Ace Mode row")
+        self.assertNotIn(focus["ace"], self.focus_trail(run), "there is no second Ace Mode row")
+        self.assertEqual([view for view, _ in self.screens(run)],
+                         ["settings", "ace_settings", "settings"])
         settings = run["settings"]
         assert isinstance(settings, dict)
         ace = settings.get("ace")
         assert isinstance(ace, dict), settings
-        self.assertIs(ace.get("enabled"), True, "Ace Mode switched on and saved")
+        self.assertIs(ace.get("enabled"), True, "Ace Mode switched on on its page and saved")
         self.assertEqual(ace.get("af"), 16, "the features keep their defaults")
         pad = self.next_ui_run(
             "settings",
-            ("WAIT_MS=100",) + ("PAD_DPAD_DOWN",) * 5 + ("PAD_SOUTH", "WAIT_MS=100", "PAD_EAST"),
+            ("WAIT_MS=100",) + ("PAD_DPAD_DOWN",) * 5 +
+            ("PAD_SOUTH", "WAIT_MS=100", "PAD_SOUTH", "WAIT_MS=100", "PAD_EAST"),
         )
         pad_settings = pad["settings"]
         assert isinstance(pad_settings, dict)
@@ -2224,7 +2225,7 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIs(pad_ace.get("enabled"), True, "a controller's d-pad and south do the same")
         page = self.next_ui_run(
             "settings",
-            ("WAIT_MS=100",) + ("KEY_DOWN",) * 6 + ("KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE",
+            ("WAIT_MS=100",) + ("KEY_DOWN",) * 5 + ("KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE",
                                                      "WAIT_MS=100"),
         )
         self.assertEqual([view for view, _ in self.screens(page)],
@@ -2317,11 +2318,13 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual([view for view, _ in self.screens(online)],
                          ["settings", "online_settings", "settings"])
         trail = self.focus_trail(online)
-        self.assertEqual(trail[-3:], [focus["online"], focus["online_mode"], focus["online"]],
-                         "the page opens on its first switch and Back focuses its button")
+        self.assertEqual(trail[-3:], [focus["online"], focus["developer"], focus["online"]],
+                         "the page opens on its one switch and Back focuses its button")
         frames = online["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[-1]["online_mode"], "1")
+        self.assertEqual(frames[-1]["developer_mode"], "1", "the page's switch is developer mode")
+        self.assertEqual(frames[-1]["online_mode"], "0",
+                         "online mode has no switch until the feature exists (#2007)")
 
         notices = self.next_ui_run(
             "settings", ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS + ("KEY_RETURN", "WAIT_MS=100"),
@@ -3935,7 +3938,7 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertLessEqual(retry_delay_ns, 2_500_000_000)
 
     def test_inspection_and_support_screens_render_and_return(self) -> None:
-        for view in ("inspecting", "supported", "experimental", "unsupported", "preparing"):
+        for view in ("inspecting", "supported", "experimental", "unsupported"):
             with self.subTest(view=view):
                 run = self.run_player(view, ("KEY_ESCAPE",))
                 frames = run["frames"]
@@ -4344,33 +4347,34 @@ class NativePlayerUiTests(unittest.TestCase):
 
     # The next UI draws the setup wizard too, with the existing wizard's handlers.
     def test_next_ui_wizard_options_step_switches_and_skip(self) -> None:
-        # The switches sit above the buttons: Up from Continue reaches Developer
-        # mode, Up again Online mode.
+        # The one switch sits above the buttons: Up from Continue reaches Developer
+        # mode. Online mode has no switch until the feature exists (#2007).
         run = self.run_player(
             "wizard-options",
-            ("WAIT_MS=100", "KEY_UP", "KEY_UP", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN"),
+            ("WAIT_MS=100", "KEY_UP", "KEY_RETURN", "WAIT_MS=100"),
             ui_mode="next",
         )
         if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
             self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
         frames = run["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[-1]["online_mode"], "1")
+        self.assertEqual(frames[-1]["online_mode"], "0")
         self.assertEqual(frames[-1]["developer_mode"], "1")
         self.assertEqual(frames[-1]["wizard_step"], "online_options")
         skipped = self.run_player(
             "wizard-options",
-            # Down twice lands on the button row; Left twice reaches Continue
+            # Down lands on the button row; Left twice reaches Continue
             # whichever button it lands on, and Right is Skip.
-            ("WAIT_MS=100", "KEY_UP", "KEY_UP", "KEY_RETURN", "KEY_DOWN", "KEY_DOWN",
+            ("WAIT_MS=100", "KEY_UP", "KEY_RETURN", "KEY_DOWN",
              "KEY_LEFT", "KEY_LEFT", "KEY_RIGHT", "KEY_RETURN"),
             ui_mode="next",
         )
         frames = skipped["frames"]
         assert isinstance(frames, list)
-        self.assertIn("1", [frame["online_mode"] for frame in frames])
+        self.assertIn("1", [frame["developer_mode"] for frame in frames])
         self.assertEqual(frames[-1]["wizard_step"], "select_game")
-        self.assertEqual(frames[-1]["online_mode"], "0", "Skip turns online mode back off")
+        self.assertEqual(frames[-1]["online_mode"], "0", "Skip keeps online mode off")
+        self.assertEqual(frames[-1]["developer_mode"], "0", "Skip turns developer mode back off")
 
     def test_next_ui_wizard_runs_the_first_run_path(self) -> None:
         run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN", "KEY_RETURN"),
@@ -5007,8 +5011,14 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[0]["error_title"], "Build_Not_Started")
         self.assertEqual(frames[0]["error_badge"], "Build_not_started")
         self.assertEqual(frames[0]["error_retry"], "Try_again")
-        # An unknown code still gets a plain badge.
-        other = self.run_player("library", ("WAIT_MS=50",), error_code="PYTHON_NOT_FOUND",
+        # Every code the player raises has its own badge (#2007)...
+        named = self.run_player("library", ("WAIT_MS=50",), error_code="PYTHON_NOT_FOUND",
+                                ui_mode="next")
+        named_frames = named["frames"]
+        assert isinstance(named_frames, list)
+        self.assertEqual(named_frames[0]["error_badge"], "Build_tools_needed")
+        # ...and a code it has never heard of still gets a plain badge.
+        other = self.run_player("library", ("WAIT_MS=50",), error_code="SOME_UNKNOWN_CODE",
                                 ui_mode="next")
         other_frames = other["frames"]
         assert isinstance(other_frames, list)

@@ -130,10 +130,13 @@ typedef struct {
     bool stacked;
 } WizardColumn;
 
-/* The online and developer switches, in the wizard and in Settings. */
-#define WIZARD_ONLINE_SENTENCE                                                    \
-    "Check nakagawa.jaycast.net for news and let you send reports. Nothing is " \
-    "sent without you."
+/* The online options are not built yet, so the wizard and Settings say so in one
+   line where the Online mode switch and its News and Reports buttons were (#2007).
+   The stored online_mode setting is unchanged; docs/ONLINE_FEATURES.md has the plan. */
+#define SCR_ONLINE_NOT_BUILT_LINE \
+    "Online features aren't built yet, so Nakagawa makes no connection and has " \
+    "nothing to switch on."
+/* The developer switch, in the wizard and in Settings. */
 #define WIZARD_DEVELOPER_SENTENCE \
     "Show a developer log on screen to help track down problems. Stays on this PC."
 
@@ -159,6 +162,6 @@ bool scr_wizard_value_state(NkUi *ui, NkUiId id, NkUiId text_id, const char *nam
                             float width, const WizardColumn *column);
 bool scr_wizard_switch(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
                        const char *sentence, bool on, float width, const WizardColumn *column);
-WizardColumn scr_online_developer_column(NkUi *ui, bool online, bool developer, float width);
+WizardColumn scr_online_developer_column(NkUi *ui, bool developer, float width);
 
 #endif /* NK_PLAYER_UI_SCR_SHARED_H */

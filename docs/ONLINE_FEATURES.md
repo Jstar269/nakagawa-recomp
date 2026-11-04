@@ -34,8 +34,12 @@ with one plain sentence:
 | Online mode | Off | "Check nakagawa.jaycast.net for news and let you send reports. Nothing is sent without you." |
 | Developer mode | Off | "Show a developer log on screen to help track down problems. Stays on this PC." |
 
-With online mode on, Settings shows its two parts (news, reports), each on by default and each
-switchable alone. The step is skippable; skipping keeps both off.
+Until news and reports exist, the wizard step and Settings > Online and developer do not show the Online mode
+switch or its two parts (news, reports): they say in one line that online features are not built yet, and
+only the Developer mode switch is there. The `online_mode`, `online_news` and `online_reports` settings are still
+stored and still default to off, so a build that adds the features keeps what the user chose; with online mode
+on, Settings will show its two parts again, each on by default and each switchable alone. The step is skippable;
+skipping keeps developer mode off.
 
 ## Update check
 

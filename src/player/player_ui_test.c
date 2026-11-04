@@ -490,7 +490,6 @@ const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_SUPPORTED_TITLE: return "supported";
     case VIEW_EXPERIMENTAL_TITLE: return "experimental";
     case VIEW_UNSUPPORTED_TITLE: return "unsupported";
-    case VIEW_PREPARING: return "preparing";
     case VIEW_SETTINGS: return "settings";
     case VIEW_ERROR: return "error";
     case VIEW_SETUP_WIZARD: return "wizard";

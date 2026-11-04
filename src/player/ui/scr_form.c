@@ -152,9 +152,8 @@ bool scr_wizard_switch(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
     return scr_wizard_value(ui, id, text_id, name, on ? "On" : "Off", sentence, on, width, column);
 }
 
-WizardColumn scr_online_developer_column(NkUi *ui, bool online, bool developer, float width) {
+WizardColumn scr_online_developer_column(NkUi *ui, bool developer, float width) {
     const WizardRow rows[] = {
-        {"Online mode", online ? "On" : "Off", WIZARD_ONLINE_SENTENCE},
         {"Developer mode", developer ? "On" : "Off", WIZARD_DEVELOPER_SENTENCE}
     };
     return scr_wizard_column(ui, rows, sizeof(rows) / sizeof(rows[0]), width);

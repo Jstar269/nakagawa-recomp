@@ -153,16 +153,10 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             {PLAYER_UI_ID_WIZARD_BACK, "Back", 0u, PLAYER_UI_WIZARD_BACK}
         };
         wizard_text(ui, 0u, "Online and developer options", NK_UI_TYPE_TITLE_XL, theme->paper);
-        wizard_text(ui, 1u, "Both start off. You can change either one later in Settings.",
-                    NK_UI_TYPE_BODY, theme->muted);
+        wizard_text(ui, 1u, SCR_ONLINE_NOT_BUILT_LINE, NK_UI_TYPE_BODY, theme->muted);
         if (scr_wizard_box_begin(ui, 0u)) {
-            WizardColumn column = scr_online_developer_column(ui, model->online_mode,
-                                                          model->developer_mode, inner - 32.0f);
-            if (scr_wizard_switch(ui, PLAYER_UI_ID_WIZARD_ONLINE, WIZ_ID_TEXT + 0x80u, "Online mode",
-                              WIZARD_ONLINE_SENTENCE, model->online_mode, inner - 32.0f,
-                              &column)) {
-                result = wizard_op(PLAYER_UI_WIZARD_TOGGLE_ONLINE);
-            }
+            WizardColumn column = scr_online_developer_column(ui, model->developer_mode,
+                                                              inner - 32.0f);
             if (scr_wizard_switch(ui, PLAYER_UI_ID_WIZARD_DEVELOPER, WIZ_ID_TEXT + 0x90u,
                               "Developer mode", WIZARD_DEVELOPER_SENTENCE,
                               model->developer_mode, inner - 32.0f, &column)) {
@@ -170,10 +164,8 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             }
             nk_ui_end_container(ui);
         }
-        wizard_text(ui, 2u,
-                    "News and reports aren't built yet, so online mode makes no connection. "
-                    "Your choice is kept for when they arrive.",
-                    NK_UI_TYPE_CAPTION, theme->warning);
+        wizard_text(ui, 2u, "Developer mode starts off. You can change it later in Settings.",
+                    NK_UI_TYPE_CAPTION, theme->muted);
         wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 3u, &result);
         break;
     }

@@ -190,6 +190,7 @@ struct PlayerUiNk {
     bool rebuild_focus_pending;
     char rebuild_text[256];
     char rebuild_notice[96];
+    char library_notice[448];   /* the library file's notice and the drop summary together */
     char verify_notice[96];     /* the library's disc check line */
     /* A rebuilding card's status word with its progress ("Rebuilding 40%"). */
     char rebuild_word[PLAYER_UI_TITLE_CAP][32];
@@ -448,7 +449,6 @@ static bool player_ui_settings_view(PlayerView view) {
    the developer log. */
 static bool player_ui_nk_flow_view(PlayerView view) {
     return view == VIEW_SETUP_WIZARD || view == VIEW_BUILDING_PACKAGE ||
-           view == VIEW_PREPARING ||
            view == VIEW_PREREQ_CONSENT ||
            view == VIEW_PREREQ_PROGRESS || view == VIEW_ERROR ||
            player_ui_disc_view(view) || player_ui_settings_view(view) ||
@@ -1273,20 +1273,6 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
         model.logical_height = scale.logical_h;
         return player_ui_screen_prereq(player->ui, &model);
     }
-    if (app->active_view == VIEW_PREPARING) {
-        /* No preparation pipeline is connected in this build: the card says
-           so plainly, with the way back, and shows no fake progress. */
-        PlayerUiErrorModel model;
-        memset(&model, 0, sizeof(model));
-        model.badge = "Not available";
-        model.title = "Preparation Unavailable";
-        model.message = "No preparation pipeline is connected in this build, so no "
-                        "preparation work is running.";
-        model.recovery_label = "Return to Library";
-        model.logical_width = scale.logical_w;
-        model.logical_height = scale.logical_h;
-        return player_ui_screen_error(player->ui, &model);
-    }
     if (app->active_view == VIEW_ERROR) {
         const ErrorState *error = &app->last_error;
         bool launch_readiness = player_error_leads_with_message(error);
@@ -1368,7 +1354,6 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
             case VIEW_PREREQ_CONSENT: focus = PLAYER_UI_ID_PREREQ_ACCEPT; break;
             case VIEW_PREREQ_PROGRESS: focus = PLAYER_UI_ID_PREREQ_CANCEL; break;
             case VIEW_ERROR:
-            case VIEW_PREPARING: focus = PLAYER_UI_ID_ERROR_RECOVER; break;
             case VIEW_INSPECTING:
             case VIEW_SUPPORTED_TITLE:
             case VIEW_EXPERIMENTAL_TITLE:
@@ -2613,7 +2598,16 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                      "Version %.40s is out", app->update.check.newest.version);
             model.update_notice = player->update_notice;
         }
-        if (app->library_notice[0] != '\0') model.library_notice = app->library_notice;
+        if (app->library_notice[0] != '\0' && app->drop_notice[0] != '\0') {
+            snprintf(player->library_notice, sizeof(player->library_notice), "%s %s",
+                     app->library_notice, app->drop_notice);
+            model.library_notice = player->library_notice;
+        } else if (app->library_notice[0] != '\0') {
+            model.library_notice = app->library_notice;
+        } else if (app->drop_notice[0] != '\0') {
+            /* The one summary of files dropped together (#2007). */
+            model.library_notice = app->drop_notice;
+        }
         if (player_app_rebuild_banner_visible(app)) {
             (void)player_app_rebuild_banner_text(app, player->rebuild_notice,
                                                  sizeof(player->rebuild_notice),

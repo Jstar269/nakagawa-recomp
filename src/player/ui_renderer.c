@@ -2585,10 +2585,7 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
             /* The add was rejected or never persisted. Saying nothing would
                show the title in the library until the next restart dropped
                it. */
-            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
-                                 "The title could not be stored. The library may be full, or the "
-                                 "user data directory is not writable.",
-                                 "Return to Library", VIEW_LIBRARY);
+            player_app_set_library_write_error(app);
         }
     }
     bool back_focused = (app->focus_index == 1);
@@ -2673,9 +2670,7 @@ static void render_experimental_title(SDL_Renderer *ren, PlayerApp *app,
         if (player_app_add_game(app, &app->inspecting_game)) {
             player_app_set_view(app, VIEW_LIBRARY);
         } else {
-            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
-                                 "The experimental title could not be stored. The library may be full, or the user data directory is not writable.",
-                                 "Return to Library", VIEW_LIBRARY);
+            player_app_set_library_write_error(app);
         }
     }
     bool back_focused = app->focus_index == 1;
@@ -2725,42 +2720,6 @@ static void render_unsupported_title(SDL_Renderer *ren, PlayerApp *app, const Ui
     bool focused = (app->focus_index == 0);
     float button_y = card_y + card_h - 90.0f;
     if (draw_button_focused(ren, card_x + 32.0f, button_y, 220.0f, 48.0f, "RETURN TO LIBRARY", true, in, focused)) {
-        player_app_set_view(app, VIEW_LIBRARY);
-    }
-}
-
-/* --- View: Preparation Progress --- */
-static void render_preparing(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
-    float w = (float)app->window_width;
-    float h = (float)app->window_height;
-    float cx = w * 0.5f;
-    float cy = h * 0.5f;
-    float card_w = dialog_card_w(w, 700.0f);
-    float card_h = 360.0f;
-    float card_x = centered_card_x(w, card_w);
-    if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
-    float card_y = cy - card_h * 0.5f;
-    if (card_y < 80.0f) card_y = 80.0f;
-    if (card_y + card_h > h - 32.0f && h > 460.0f) card_y = h - 32.0f - card_h;
-
-    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
-    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
-    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
-
-    draw_badge(ren, card_x + 32.0f, card_y + 32.0f, "PREPARATION UNAVAILABLE", COLOR_AMBER);
-    draw_text(ren, card_x + 32.0f, card_y + 76.0f, "Preparation Unavailable", 2.2f, COLOR_TEXT_WHITE);
-    /* This is intentionally an explanation screen, not a fake progress
-     * surface. No native preparation pipeline is connected in this build. */
-    draw_text_wrapped(ren, card_x + 32.0f, card_y + 120.0f, card_w - 64.0f,
-                      "No preparation pipeline is connected in this build.", 1.2f,
-                      COLOR_TEXT_MUTED, 2);
-    draw_indeterminate_bar(ren, card_x + 32.0f, card_y + 160.0f,
-                           card_w - 64.0f, 20.0f, g_reduce_motion);
-    draw_text(ren, card_x + 32.0f, card_y + 196.0f,
-              "No preparation work is running.", 1.2f, COLOR_TEXT_WHITE);
-
-    bool focused = (app->focus_index == 0);
-    if (draw_button_focused(ren, card_x + 32.0f, card_y + 270.0f, 190.0f, 46.0f, "RETURN TO LIBRARY", false, in, focused)) {
         player_app_set_view(app, VIEW_LIBRARY);
     }
 }
@@ -4807,9 +4766,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                     if (player_app_add_game(app, &app->inspecting_game)) {
                         player_app_set_view(app, VIEW_LIBRARY);
                     } else {
-                        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
-                                             "The experimental title could not be stored. The library may be full, or the user data directory is not writable.",
-                                             "Return to Library", VIEW_LIBRARY);
+                        player_app_set_library_write_error(app);
                     }
                 }
                 bool diff_foc = (app->focus_index == focus++);
@@ -5102,9 +5059,6 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             break;
         case VIEW_UNSUPPORTED_TITLE:
             render_unsupported_title(renderer, app, input);
-            break;
-        case VIEW_PREPARING:
-            render_preparing(renderer, app, input);
             break;
         case VIEW_SETTINGS:
             render_settings(renderer, app, input);

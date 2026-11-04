@@ -125,7 +125,7 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
         const char *values[] = {
             safe_text(model->resolution, "2x"), safe_text(model->pacing, "PSP timing"),
             safe_text(model->scaling, "Sharp"), "Size, contrast, motion",
-            "Controller and keyboard", "Check for updates", "Off", "Filtering and more"
+            "Controller and keyboard", "Check for updates", "Off", "Off: options"
         };
         float buttons = 190.0f;
         for (size_t i = 0u; i < sizeof(values) / sizeof(values[0]); ++i) {
@@ -190,13 +190,11 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                              safe_text(model->scaling, "Sharp"), false, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_SCALING);
             }
-            /* Ace Mode (src/rt/ace.h): the library's switch, and its page. */
-            if (settings_row(ui, 11u, PLAYER_UI_ID_SETTINGS_ACE, "Ace Mode",
-                             settings_on_off(model->ace_enabled), model->ace_enabled, name_width)) {
-                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ACE);
-            }
-            if (settings_row(ui, 12u, PLAYER_UI_ID_SETTINGS_ACE_OPEN, "Ace Mode options",
-                             "Filtering and more", false, name_width)) {
+            /* Ace Mode (src/rt/ace.h): one row that opens its page, where the
+               switch and what it does are (#2007). */
+            if (settings_row(ui, 12u, PLAYER_UI_ID_SETTINGS_ACE_OPEN, "Ace Mode",
+                             model->ace_enabled ? "On: options" : "Off: options",
+                             model->ace_enabled, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_OPEN_ACE);
             }
             nk_ui_end_container(ui);
@@ -298,6 +296,9 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
             {PLAYER_UI_ID_SETTINGS_FONTS, "PSP fonts", 0u, PLAYER_UI_SETTINGS_OPEN_FONTS},
             {PLAYER_UI_ID_SETTINGS_PROBLEM_REPORT, "Problem report", 0u,
              PLAYER_UI_SETTINGS_OPEN_PROBLEM_REPORT},
+            {PLAYER_UI_ID_SETTINGS_OPEN_DATA_FOLDER, "Open data folder", 0u,
+             PLAYER_UI_SETTINGS_OPEN_DATA_FOLDER},
+            {PLAYER_UI_ID_SETTINGS_OPEN_LOGS, "Open logs", 0u, PLAYER_UI_SETTINGS_OPEN_LOGS},
             {PLAYER_UI_ID_SETTINGS_FACTORY_RESET, "Factory reset", NK_UI_BUTTON_DANGER,
              PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET}
         };
@@ -784,7 +785,8 @@ static void settings_ace(NkUi *ui, const PlayerUiSettingsModel *model, float inn
     scr_flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
     nk_ui_text_role(ui, FLOW_ID_TITLE, "Ace Mode", NK_UI_TYPE_TITLE, theme->paper);
     nk_ui_text_role(ui, FLOW_ID_LEAD,
-                    "Modern touches for every game. The games themselves run as released. "
+                    "Ace Mode adds optional modern touches to every game, such as sharper "
+                    "textures and crisp system text. The games themselves run as released. "
                     "Each game's page can turn it on or off for that game alone.",
                     NK_UI_TYPE_BODY_S, theme->muted);
     if (scr_wizard_box_begin(ui, 0u)) {
@@ -856,40 +858,13 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         scr_flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
         nk_ui_text_role(ui, FLOW_ID_TITLE, "Online and developer options", NK_UI_TYPE_TITLE,
                         theme->paper);
-        nk_ui_text_role(ui, FLOW_ID_LEAD,
-                        "News and reports aren't built yet, so online mode makes no "
-                        "connection. Your choice is kept for when they arrive.",
-                        NK_UI_TYPE_BODY_S, theme->warning);
+        /* Online mode has nothing to switch yet: one plain line says so rather
+           than a switch that does nothing (#2007). The stored setting stays. */
+        nk_ui_text_role(ui, FLOW_ID_LEAD, SCR_ONLINE_NOT_BUILT_LINE, NK_UI_TYPE_BODY_S,
+                        theme->warning);
         if (scr_wizard_box_begin(ui, 0u)) {
-            WizardColumn column = scr_online_developer_column(ui, model->online_mode,
-                                                          model->developer_mode, inner - 32.0f);
-            if (scr_wizard_switch(ui, PLAYER_UI_ID_SETTINGS_ONLINE_MODE, SET_ID_TEXT + 0x80u,
-                              "Online mode", WIZARD_ONLINE_SENTENCE, model->online_mode,
-                              inner - 32.0f, &column)) {
-                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ONLINE);
-            }
-            if (model->online_mode) {
-                NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
-                                             NK_UI_SPACE_3);
-                char label[48];
-                if (nk_ui_begin_container(ui, SET_ID_TEXT + 0x88u, &row, NULL)) {
-                    (void)snprintf(label, sizeof(label), "News: %s",
-                                   settings_on_off(model->online_news));
-                    if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_NEWS, label,
-                                     NK_UI_BUTTON_SMALL |
-                                         (model->online_news ? NK_UI_BUTTON_PRIMARY : 0u))) {
-                        *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_NEWS);
-                    }
-                    (void)snprintf(label, sizeof(label), "Reports: %s",
-                                   settings_on_off(model->online_reports));
-                    if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_REPORTS, label,
-                                     NK_UI_BUTTON_SMALL |
-                                         (model->online_reports ? NK_UI_BUTTON_PRIMARY : 0u))) {
-                        *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_REPORTS);
-                    }
-                    nk_ui_end_container(ui);
-                }
-            }
+            WizardColumn column = scr_online_developer_column(ui, model->developer_mode,
+                                                              inner - 32.0f);
             if (scr_wizard_switch(ui, PLAYER_UI_ID_SETTINGS_DEVELOPER, SET_ID_TEXT + 0x90u,
                               "Developer mode", WIZARD_DEVELOPER_SENTENCE,
                               model->developer_mode, inner - 32.0f, &column)) {
