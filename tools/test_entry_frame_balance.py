@@ -5,10 +5,9 @@
 
 Every fixture here is an owned synthetic MIPS word image -- no title bytes and
 no ELF container -- so the cases run host-neutral and in CI.  They cover the
-entry shapes wiki doc 26 sections 25/30 name as the ones a single ``known`` set
-conflates: interior epilogues, adjacent functions, address-taken leaves, shared
-tails reached from several owners, jump-table landing pads, and ordinary
-``jalr`` targets.
+entry shapes a single ``known`` set conflates: interior epilogues, adjacent
+functions, address-taken leaves, shared tails reached from several owners,
+jump-table landing pads, and ordinary ``jalr`` targets.
 """
 
 from __future__ import annotations
@@ -381,7 +380,7 @@ class FrameBalanceBasicsTests(unittest.TestCase):
 
 
 class SharedTailOwnershipTests(unittest.TestCase):
-    """Wiki doc 26 section 14: multiple owners must not be silently reduced."""
+    """Multiple owners must not be silently reduced to one."""
 
     def _shared_tail_image(self, owner_b_frame, owner_b_extra=None):
         tail = 0x1200
@@ -505,7 +504,7 @@ class JumpTableEntryTests(unittest.TestCase):
             self.assertEqual(efb.verify_resume_entry(elf, ranges, pad, owner), [])
 
     def test_indirectly_called_function_stays_callable(self):
-        """`resumable != indirect` (wiki doc 26 section 24)."""
+        """`resumable != indirect`: an indirect call target is not a resume entry."""
         (elf, ranges), _, _, _, callee = self._switch_image()
         profile = efb.profile_entry(elf, callee, ranges)
         self.assertEqual(efb.classify(profile), efb.CALLABLE)
