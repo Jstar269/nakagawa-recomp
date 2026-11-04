@@ -280,13 +280,17 @@ def collect_frame(run_dir: Path, vblank: int | None) -> tuple[Path | None, str]:
     if vblank is None:
         first = run_dir / "frame_first.ppm"
         return (first, "first-frame") if first.is_file() else (None, "no-frame-captured")
-    snaps = run_dir / "build" / "snapshots"
     found = []
-    if snaps.is_dir():
-        for entry in snaps.iterdir():
-            match = _FRAME_V.match(entry.name)
-            if match:
-                found.append((int(match.group(1)), entry))
+    # The capture service publishes under build/snapshots/ (it creates the folder); a runtime
+    # built before that wrote the frame beside its working directory, so read both.
+    for folder in (run_dir / "build" / "snapshots", run_dir):
+        if folder.is_dir():
+            for entry in folder.iterdir():
+                match = _FRAME_V.match(entry.name)
+                if match:
+                    found.append((int(match.group(1)), entry))
+        if found:
+            break
     if not found:
         return None, "no-frame-captured"
     found.sort()
@@ -307,9 +311,6 @@ def run_capture(command: list[str], env: dict, run_dir: Path,
     run_dir.mkdir(parents=True)
     for name in mkdirs:
         (run_dir / name).mkdir(parents=True, exist_ok=True)
-    if vblank is not None:
-        # No build step creates the capture folder (src/rt/fbcap.c), so the gate does.
-        (run_dir / "build" / "snapshots").mkdir(parents=True, exist_ok=True)
     here = str(run_dir)
     command = [c.replace("{run}", here) for c in command]
     env = {k: v.replace("{run}", here) for k, v in env.items()}

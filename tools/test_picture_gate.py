@@ -38,7 +38,7 @@ if mode == "noframe":
 win = os.environ.get("SR_FBSNAP_WINDOWS")
 if win:
     lo = int(win.split("-")[0])
-    d = Path("build/snapshots")
+    d = Path("." if mode == "rootdir" else "build/snapshots"); d.mkdir(parents=True, exist_ok=True)
     # a later frame first in name order must not win over the earliest one
     (d / ("frame_v%d.ppm" % (lo + 3))).write_bytes(ppm[:-1] + b"\x00")
     (d / ("frame_v%d.ppm" % lo)).write_bytes(ppm)
@@ -246,6 +246,11 @@ class RouteTests(Base):
         self.assertIn("accept-refused", v.detail)
         self.assertFalse((pg.ROOT / "tools" / "never-written.ppm").exists())
 
+    def test_frames_beside_the_working_directory_are_found(self):
+        pg.accept(self.ppm("seed.ppm", frame(5)), self.dir / "priv" / "ref.ppm", commit="c")
+        v = self.check(self.route("rootdir"))
+        self.assertEqual((v.status, v.detail.split()[-1]), (pg.PASS, "vblank=20"))
+
     def test_first_frame_route_without_vblank(self):
         route = self.route(vblank=None)
         pg.accept(self.ppm("seed.ppm", frame(5)), self.dir / "priv" / "ref.ppm", commit="c")
@@ -271,7 +276,6 @@ class RouteTests(Base):
         self.assertEqual(Path(seen["SR_MEMSTICK"]), run / "ms")
         self.assertEqual(Path(json.loads((run / "seen_argv.json").read_text())[-1]), run / "arg")
         self.assertTrue((run / "ms").is_dir() and (run / "fs" / "sub").is_dir())
-        self.assertTrue((run / "build" / "snapshots").is_dir())
         for bad in (["/abs"], ["../up"]):
             data["mkdirs"] = bad
             route.write_text(json.dumps(data))
