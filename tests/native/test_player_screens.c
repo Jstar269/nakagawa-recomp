@@ -89,44 +89,44 @@ static const PlayerUiTitle k_titles[] = {
      "", "", "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "", "",
      "RETRY PACKAGE CHECK", "◆", 0xC29AF4FFu,
      PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "", "",
      "BUILD PACKAGE", "?", 0xC29AF4FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_WONT_BOOT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL}
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
 };
 
 /* A library with the demos that come with Nakagawa among the user's games, in
@@ -137,25 +137,25 @@ static const PlayerUiTitle k_demo_titles[] = {
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL}
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
 };
 
 /* The demos alone: a first start with nothing added yet. */
@@ -165,13 +165,13 @@ static const PlayerUiTitle k_demo_only_titles[] = {
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL}
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
 };
 
 /* What-to-expect cards: a player tier with plain words, with known issues, the
@@ -204,16 +204,17 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_PROGRESS, FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE,
                FLOW_WIZ_BAD_DISC, FLOW_WIZ_CHOSEN,
                FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
-               FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_BLOCKED,
+               FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_OPTIONS_ON, FLOW_WIZ_BLOCKED,
                FLOW_WIZ_COPY_FAILED, FLOW_WIZ_GUIDED, FLOW_ERROR_STOP, FLOW_ERROR_CRASH,
                FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
-               FLOW_DISC_GUIDED, FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
+               FLOW_DISC_GUIDED, FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_ONLINE_ON,
+               FLOW_SETTINGS_NOTICES,
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
                FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
                FLOW_SETTINGS_ACCESSIBILITY, FLOW_SETTINGS_ACE, FLOW_SETTINGS_ACE_OFF,
-               FLOW_SETTINGS_REPORT, FLOW_SETTINGS_REPORT_NO_PYTHON,
+               FLOW_SETTINGS_REPORT, FLOW_SETTINGS_REPORT_NO_PYTHON, FLOW_SETTINGS_REFRESH,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
@@ -334,13 +335,14 @@ static const char *const k_font_lines[18];
 
 static const char *const k_settings_tools[] = {
     "synthetic-compiler 14.2 \xC2\xB7 GPL-3.0-or-later",
-    "synthetic-headers 0.9 \xC2\xB7 licence review in the works"
+    "synthetic-headers 0.9 \xC2\xB7 licence not yet reviewed"
 };
 
 static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     PlayerUiSettingsModel settings;
     memset(&settings, 0, sizeof(settings));
-    settings.page = which == FLOW_SETTINGS_ONLINE ? PLAYER_UI_SETTINGS_PAGE_ONLINE
+    settings.page = which == FLOW_SETTINGS_ONLINE || which == FLOW_SETTINGS_ONLINE_ON
+        ? PLAYER_UI_SETTINGS_PAGE_ONLINE
         : which == FLOW_SETTINGS_NOTICES ? PLAYER_UI_SETTINGS_PAGE_NOTICES
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
@@ -363,10 +365,13 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.pacing = "PSP timing";
     settings.scaling = "Sharp";
     settings.vsync = true;
+    /* The refresh-rate advisory case runs on a 144 Hz display; the rest on 60 Hz. */
+    settings.display_refresh_hz = which == FLOW_SETTINGS_REFRESH ? 144.0 : 60.0;
     settings.volume = 80;
     settings.controller_line = "keyboard and mouse";
     settings.saves_folder = "C:/synthetic/Nakagawa/saves";
-    settings.online_mode = true;
+    /* Off, the default; its own case has the stored setting On (#2007). */
+    settings.online_mode = which == FLOW_SETTINGS_ONLINE_ON;
     settings.developer_mode = true;
     settings.share_system_libraries = true;
     /* Accessibility: a size picked, high contrast following Windows (off), and
@@ -417,7 +422,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         /* The download stopped at the signature; nothing was fetched after it. */
         settings.update_step = PLAYER_UI_UPDATE_FAILED;
         settings.update_failed_step = PLAYER_UI_UPDATE_DOWNLOADING;
-        settings.update_error_title = "Signature Didn't Match";
+        settings.update_error_title = "Signature didn't match";
         settings.update_error_message =
             "The release's signature doesn't match its checksum file, so Nakagawa did not "
             "download the update. Nothing was installed. Try again later, or download it from "
@@ -426,7 +431,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     if (which == FLOW_SETTINGS_UPDATE_FAILED) {
         settings.update_step = PLAYER_UI_UPDATE_FAILED;
         settings.update_failed_step = PLAYER_UI_UPDATE_CHECKING;
-        settings.update_error_title = "Couldn't Reach GitHub";
+        settings.update_error_title = "Couldn't reach GitHub";
         settings.update_error_message =
             "Nakagawa couldn't reach GitHub. Check your internet connection and try again "
             "later. Nothing was changed.";
@@ -659,8 +664,9 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
                                   "Sound 80% \xC2\xB7 Package ready";
             break;
         case FLOW_WIZ_OPTIONS:
+        case FLOW_WIZ_OPTIONS_ON:
             wizard.step = 1;
-            wizard.online_mode = true;
+            wizard.online_mode = which == FLOW_WIZ_OPTIONS_ON;
             break;
         case FLOW_WIZ_BLOCKED:
             /* #1280: an experimental disc this version cannot use. */
@@ -832,11 +838,11 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         PlayerUiErrorModel error;
         memset(&error, 0, sizeof(error));
         error.badge = which == FLOW_ERROR_STOP ? "Game stopped" : "Game closed";
-        error.title = which == FLOW_ERROR_STOP ? "Game Stopped Early"
-                                               : "Game Closed Unexpectedly";
+        error.title = which == FLOW_ERROR_STOP ? "Game stopped early"
+                                               : "Game closed unexpectedly";
         error.message = "The game needed ad hoc wireless play that this version can't run yet.";
         error.details = "Stopped at a synthetic boundary (not supported yet).";
-        error.recovery_label = "Return to Library";
+        error.recovery_label = "Back to library";
         error.retry_label = "Restart game";
         error.copy_available = true;
         error.report_available = true;
@@ -1928,8 +1934,6 @@ static void test_wizard_actions(void) {
          "Continue leaves the options step as they are"},
         {FLOW_WIZ_OPTIONS, PLAYER_UI_ID_WIZARD_SECOND, PLAYER_UI_WIZARD_SKIP_OPTIONS,
          "Skip turns both options off"},
-        {FLOW_WIZ_OPTIONS, PLAYER_UI_ID_WIZARD_ONLINE, PLAYER_UI_WIZARD_TOGGLE_ONLINE,
-         "the online switch toggles online mode"},
         {FLOW_WIZ_OPTIONS, PLAYER_UI_ID_WIZARD_DEVELOPER, PLAYER_UI_WIZARD_TOGGLE_DEVELOPER,
          "the developer switch toggles developer mode"}
     };
@@ -1993,7 +1997,7 @@ static void test_plain_cards(void) {
           "Copy details asks for the report on the clipboard");
     CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_RECOVER, FLOW_ERROR_STOP).kind ==
               PLAYER_UI_ACTION_ERROR_RECOVER,
-          "Return to Library still leaves the card");
+          "Back to library still leaves the card");
     CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_RETRY, FLOW_ERROR).kind ==
               PLAYER_UI_ACTION_NONE,
           "a card without a retry action draws no retry button");
@@ -2008,7 +2012,7 @@ static void test_plain_cards(void) {
     /* Report this game: a known cause says so and links its issue, and the
        report steps back to a small button; an unknown one leads with it. */
     CHECK(strstr(dump, "This is a known issue (#308).") != NULL &&
-              strstr(dump, "\"SEE ISSUE #308\"") != NULL &&
+              strstr(dump, "\"VIEW ISSUE #308 ON GITHUB\"") != NULL &&
               strstr(dump, "\"REPORT THIS GAME\"") != NULL &&
               strstr(dump, "\"SEE EXISTING REPORTS\"") != NULL,
           "a known stop names its issue next to Report this game and the existing reports");
@@ -2049,7 +2053,7 @@ static void test_plain_cards(void) {
           "a rejected file keeps its plain reason and next step visible in the wizard");
     CHECK(dump_flow_case(FLOW_WIZ_COPY_FAILED, dump, sizeof(dump)) &&
               strstr(dump, "Synthetic reason") != NULL &&
-              strstr(dump, "listed in the native title catalog") == NULL,
+              strstr(dump, "Nakagawa recognises this disc") == NULL,
           "a failed copy shows its reason in place of the catalog note");
     /* The fonts step says how to get the PSP's own fonts, in plain words, with its button. */
     CHECK(dump_flow_case(FLOW_WIZ_FONTS, dump, sizeof(dump)) &&
@@ -2578,10 +2582,12 @@ static void test_settings_pages(void) {
          PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION, "the reduce motion button steps its choice"},
         {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
          "Back leaves Accessibility"},
-        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ACE, PLAYER_UI_SETTINGS_TOGGLE_ACE,
-         "the GAME card's Ace Mode button switches it"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ACE_OPEN, PLAYER_UI_SETTINGS_OPEN_ACE,
-         "Ace Mode options opens its page"},
+         "the one Ace Mode row opens its page"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_OPEN_DATA_FOLDER,
+         PLAYER_UI_SETTINGS_OPEN_DATA_FOLDER, "Open data folder shows the data folder"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_OPEN_LOGS, PLAYER_UI_SETTINGS_OPEN_LOGS,
+         "Open logs shows the logs folder"},
         {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ACE,
          "the page's Ace Mode button switches it"},
         {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_FILTERING,
@@ -2638,12 +2644,6 @@ static void test_settings_pages(void) {
          PLAYER_UI_SETTINGS_OPEN_REMOVE_TOOLS, "Remove build tools asks first"},
         {FLOW_SETTINGS_BUILD_CACHE, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
          "Back returns to Settings from build tools and cache"},
-        {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_ONLINE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ONLINE,
-         "the online switch toggles online mode"},
-        {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_NEWS, PLAYER_UI_SETTINGS_TOGGLE_NEWS,
-         "the news switch toggles it"},
-        {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_REPORTS, PLAYER_UI_SETTINGS_TOGGLE_REPORTS,
-         "the reports switch toggles it"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_DEVELOPER,
          PLAYER_UI_SETTINGS_TOGGLE_DEVELOPER, "the developer switch toggles developer mode"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_DEVELOPER_LOG,
@@ -2673,6 +2673,14 @@ static void test_settings_pages(void) {
     CHECK(activate_flow_button(PLAYER_UI_ID_TAB_LIBRARY, FLOW_SETTINGS).kind ==
               PLAYER_UI_ACTION_OPEN_LIBRARY,
           "the LIBRARY tab on Settings opens the library");
+    CHECK(flow_case_fits(FLOW_SETTINGS_REFRESH, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Your display runs at 144 Hz") != NULL &&
+              strstr(dump, "set it to 60, 120 or 180 Hz") != NULL &&
+              strstr(dump, "\"DONE\"") != NULL,
+          "Settings on a 144 Hz display shows the refresh-rate advisory and still fits");
+    CHECK(dump_flow_case(FLOW_SETTINGS, dump, sizeof(dump)) &&
+              strstr(dump, "Your display runs at") == NULL,
+          "Settings on a 60 Hz display shows no refresh-rate advisory");
     CHECK(activate_flow_button(PLAYER_UI_ID_TAB_ABOUT, FLOW_SETTINGS).kind ==
               PLAYER_UI_ACTION_OPEN_ABOUT,
           "the ABOUT tab on Settings opens About");
@@ -2709,6 +2717,8 @@ static void test_settings_pages(void) {
               strstr(dump, "\"CRISP SYSTEM TEXT: ON\"") != NULL &&
               strstr(dump, "\"SPEED READOUT: OFF\"") != NULL &&
               strstr(dump, "\"GAME BADGE: ON\"") != NULL &&
+              strstr(dump, "\"SMOOTH MOTION: ") != NULL &&
+              strstr(dump, "about 17 ms of delay.\"") != NULL &&
               strstr(dump, "keep the filtering.\"") != NULL &&
               strstr(dump, "Boost") == NULL &&
               strstr(dump, "\xE2\x80\xA6\"") == NULL,
@@ -2728,6 +2738,44 @@ static void test_settings_pages(void) {
                   strstr(dump, "\"TEXTURE FILTERING: 16X\"") != NULL,
               "with Ace Mode off the features keep their values");
     }
+    /* #2007: Settings has one Ace Mode row, which opens its page; the switch and what Ace Mode
+       is live on that page. */
+    CHECK(dump_flow_case(FLOW_SETTINGS, dump, sizeof(dump)) &&
+              strstr(dump, "Ace Mode options") == NULL &&
+              strstr(dump, "\"ON: OPTIONS\"") != NULL &&
+              activate_flow_button(PLAYER_UI_ID_SETTINGS_ACE, FLOW_SETTINGS).kind ==
+                  PLAYER_UI_ACTION_NONE,
+          "Settings shows one Ace Mode row that opens its page, not a switch and an options row");
+    CHECK(dump_flow_case(FLOW_SETTINGS_ACE, dump, sizeof(dump)) &&
+              strstr(dump, "Ace Mode adds optional modern touches") != NULL,
+          "the Ace Mode page says what Ace Mode is");
+    /* #2007: "Online mode" has nothing to switch yet, so the options step and the Online and
+       developer page say so in one line and offer no switch, News or Reports button. */
+    CHECK(dump_flow_case(FLOW_SETTINGS_ONLINE, dump, sizeof(dump)) &&
+              strstr(dump, "Online features aren't built yet") != NULL &&
+              strstr(dump, "ONLINE MODE") == NULL && strstr(dump, "NEWS:") == NULL &&
+              strstr(dump, "REPORTS:") == NULL && strstr(dump, "\"DEVELOPER MODE: ") != NULL &&
+              activate_flow_button(PLAYER_UI_ID_SETTINGS_ONLINE_MODE, FLOW_SETTINGS_ONLINE).kind ==
+                  PLAYER_UI_ACTION_NONE,
+          "Online and developer shows one plain line instead of an inert online switch");
+    /* A stored online_mode of On still shows its switch, so it can be turned off. */
+    CHECK(flow_case_fits(FLOW_SETTINGS_ONLINE_ON, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Online mode is on in your settings") != NULL &&
+              settings_op_is(activate_flow_button(PLAYER_UI_ID_SETTINGS_ONLINE_MODE,
+                                                  FLOW_SETTINGS_ONLINE_ON),
+                             PLAYER_UI_SETTINGS_TOGGLE_ONLINE),
+          "Online and developer offers the switch while the stored online mode is On");
+    CHECK(flow_case_fits(FLOW_WIZ_OPTIONS_ON, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Online mode is on in your settings") != NULL &&
+              wizard_op_is(activate_flow_button(PLAYER_UI_ID_WIZARD_ONLINE, FLOW_WIZ_OPTIONS_ON),
+                           PLAYER_UI_WIZARD_TOGGLE_ONLINE),
+          "the options step offers the switch while the stored online mode is On");
+    CHECK(dump_flow_case(FLOW_WIZ_OPTIONS, dump, sizeof(dump)) &&
+              strstr(dump, "Online features aren't built yet") != NULL &&
+              strstr(dump, "ONLINE MODE") == NULL &&
+              activate_flow_button(PLAYER_UI_ID_WIZARD_ONLINE, FLOW_WIZ_OPTIONS).kind ==
+                  PLAYER_UI_ACTION_NONE,
+          "the options step shows one plain line instead of an inert online switch");
     CHECK(flow_case_fits(FLOW_PAGE_TITLE_ACE, 960, 540, dump, sizeof(dump)) &&
               strstr(dump, "\"ACE MODE: ON (LIBRARY DEFAULT)\"") != NULL &&
               strstr(dump, "the game ran at 30 Hz.") != NULL &&
@@ -2766,7 +2814,7 @@ static void test_settings_pages(void) {
               strstr(dump, "\"DOWNLOAD\"") != NULL,
           "Updates shows this and the newest version, the notes, the link and the size");
     CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_FAILED, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "Couldn't Reach GitHub") != NULL &&
+              strstr(dump, "Couldn't reach GitHub") != NULL &&
               strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
           "offline, Updates says it couldn't reach GitHub and offers only Check again");
     CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_FAILED, 960, 540, dump, sizeof(dump)) &&
@@ -2777,7 +2825,7 @@ static void test_settings_pages(void) {
               strstr(dump, "\"OPEN RELEASE PAGE\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
           "a build without a signing key says so and offers only the release page");
     CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_REFUSED, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "Signature Didn't Match") != NULL &&
+              strstr(dump, "Signature didn't match") != NULL &&
               strstr(dump, "\"OPEN RELEASE PAGE\"") != NULL &&
               strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"INSTALL\"") == NULL,
           "a download refused at its signature offers the release page and Check again");
@@ -2906,7 +2954,7 @@ static void test_controller_and_developer_log_pages(void) {
           "mapping it edits, with no Save step");
     CHECK(dump_flow_case(FLOW_CONTROLLER_GAME, dump, sizeof(dump)) &&
               strstr(dump, "TEST00005 ONLY") != NULL &&
-              strstr(dump, "\"PRESS A BUTTON...\"") != NULL &&
+              strstr(dump, "\"PRESS A BUTTON…\"") != NULL &&
               strstr(dump, "Conflict: Y (Triangle)") != NULL &&
               strstr(dump, "\"USE THE GLOBAL MAPPING\"") != NULL,
           "a game's own mapping is named, with the waiting control and the conflict");
@@ -3002,7 +3050,7 @@ static void test_controller_binding_glyphs(void) {
     CHECK(dump_flow_case(FLOW_CONTROLLER_KEYS, dump, sizeof(dump)) &&
               dump_has_element(dump, PLAYER_UI_ID_CONTROLLER_GLYPH(1u), "TEXT", "ENTER", NULL,
                                NULL) &&
-              strstr(dump, "\"PRESS A KEY...\"") != NULL,
+              strstr(dump, "\"PRESS A KEY…\"") != NULL,
           "the control waiting for a key keeps the glyph of the key it has");
 }
 
@@ -3057,7 +3105,7 @@ static void test_controller_keyboard_page(void) {
         }
         CHECK(strstr(dump, quoted) != NULL, "every PSP control shows its keyboard key");
     }
-    CHECK(strstr(dump, "\"PRESS A KEY...\"") != NULL &&
+    CHECK(strstr(dump, "\"PRESS A KEY…\"") != NULL &&
               strstr(dump, "\"KEYS \xC2\xB7 TEST00005 ONLY\"") != NULL,
           "the control waiting for a key says so, and the mapping being edited is named");
     CHECK(strstr(dump, "Esc or F1 pauses the game.") != NULL &&
@@ -3131,6 +3179,33 @@ static void test_every_screen_fits_the_window(void) {
     g_flow_text_size_pct = 100;
 }
 
+static void test_refresh_advice_classifier(void) {
+    static const double silent[] = {60.0, 120.0, 180.0, 240.0, 59.94, 119.88, 179.82,
+                                    60000.0 / 1001.0, 59.9401, 0.0, -1.0};
+    static const double advised[] = {75.0, 144.0, 165.0, 90.0, 100.0, 30.0, 200.0, 59.0, 61.0,
+                                     143.98};
+    char text[192];
+    for (size_t i = 0u; i < sizeof(silent) / sizeof(silent[0]); ++i) {
+        CHECK(player_ui_refresh_advice(silent[i]) == PLAYER_UI_REFRESH_SILENT,
+              "60, 120, 180, 59.94 Hz and an unknown rate give no advisory");
+    }
+    CHECK(player_ui_refresh_advice(0.0 / 0.0) == PLAYER_UI_REFRESH_SILENT &&
+              player_ui_refresh_advice(1.0 / 0.0) == PLAYER_UI_REFRESH_SILENT,
+          "a NaN or infinite rate gives no advisory");
+    for (size_t i = 0u; i < sizeof(advised) / sizeof(advised[0]); ++i) {
+        CHECK(player_ui_refresh_advice(advised[i]) == PLAYER_UI_REFRESH_ADVISORY,
+              "75, 144 and 165 Hz (and other non-multiples of 60) get the advisory");
+    }
+    player_ui_refresh_advisory_text(75.0, text, sizeof(text));
+    CHECK(strstr(text, "Your display runs at 75 Hz") != NULL, "the advisory names a whole rate");
+    player_ui_refresh_advisory_text(143.98, text, sizeof(text));
+    CHECK(strstr(text, "143.98 Hz") != NULL, "the advisory keeps a fractional rate's decimals");
+    player_ui_refresh_advisory_text(60.0, text, sizeof(text));
+    CHECK(text[0] == '\0', "a silent rate gives an empty advisory");
+    player_ui_refresh_advisory_text(144.0, text, 16u);
+    CHECK(strlen(text) < 16u, "a short buffer is cut, not overrun");
+}
+
 static void test_error_details_fit_the_minimum_window(void) {
     static char dump[CASE_DUMP_CAP];
     static const char details[] =
@@ -3157,11 +3232,11 @@ static void test_error_details_fit_the_minimum_window(void) {
     set_test_viewport(ui, 960, 540);
     memset(&error, 0, sizeof(error));
     error.badge = "CLI_NOT_FOUND";
-    error.title = "Build Tools Not Found";
+    error.title = "Build tools not found";
     error.message = "Nakagawa Recomp's build tools were not found next to the app. Reinstall "
                     "Nakagawa Recomp and keep its folder together.";
     error.details = details;
-    error.recovery_label = "Return to Library";
+    error.recovery_label = "Back to library";
     error.logical_width = 960.0f;
     error.logical_height = 540.0f;
     for (int frame = 0; frame < 2; ++frame) {
@@ -3847,7 +3922,7 @@ static int capture_screens(const char *directory) {
             {FLOW_WIZ_GUIDED, "wizard-needs-files", PLAYER_UI_ID_WIZARD_PRIMARY},
             {FLOW_DISC_UNSUPPORTED, "disc-unsupported", PLAYER_UI_ID_DISC_PRIMARY},
             {FLOW_SETTINGS, "settings", PLAYER_UI_ID_SETTINGS_RESOLUTION},
-            {FLOW_SETTINGS_ONLINE, "settings-online", PLAYER_UI_ID_SETTINGS_ONLINE_MODE},
+            {FLOW_SETTINGS_ONLINE, "settings-online", PLAYER_UI_ID_SETTINGS_DEVELOPER},
             {FLOW_SETTINGS_NOTICES, "settings-notices", PLAYER_UI_ID_SETTINGS_BACK},
             {FLOW_SETTINGS_REMOVE, "settings-remove-tools", PLAYER_UI_ID_SETTINGS_BACK},
             {FLOW_SETTINGS_BUILD_CACHE, "settings-build-cache",
@@ -5073,6 +5148,7 @@ int main(int argc, char **argv) {
     title[0] = '\0';
     test_router();
     test_screen_actions();
+    test_refresh_advice_classifier();
     test_error_details_fit_the_minimum_window();
     test_every_screen_fits_the_window();
     test_psp_fonts_page();

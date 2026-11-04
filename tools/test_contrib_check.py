@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import contrib_check  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 MAINTAINER_LINE = "PROVENANCE_CONTENT_MISMATCH: tools/thing.py: audited bytes differ"
 CONTRIBUTOR_LINE = "POLICY_UNCLASSIFIED: tools/new_thing.py: no explicit disposition"
@@ -176,7 +177,7 @@ class TestStrictCompileIncludePath(unittest.TestCase):
 
 def _makefile_text() -> str:
     """The Makefile and the fragments it includes, continuation lines joined."""
-    parts = [(ROOT / "Makefile").read_text(encoding="utf-8")]
+    parts = [read_makefile(ROOT)]
     parts.extend(path.read_text(encoding="utf-8") for path in sorted((ROOT / "mk").glob("*.mk")))
     return re.sub(r"\\\n[ \t]*", " ", "\n".join(parts))
 
@@ -352,6 +353,44 @@ class TestStrictCompileUnavailableInputs(unittest.TestCase):
         self.assertIn("Vulkan SDK", gate.detail)
         self.assertIn("No usable Vulkan SDK found.", gate.detail)
 
+    def _gate_for_output(self, source: str, stderr: str):
+        with mock.patch.dict(contrib_check.os.environ, {"CC": "cc"}), \
+                mock.patch.object(contrib_check, "vulkan_include_flags", return_value=([], "")), \
+                mock.patch.object(contrib_check.subprocess, "run", return_value=_Completed(1, "", stderr)):
+            return contrib_check.c_gate([source])
+
+    def test_a_missing_pspsdk_header_is_a_skip_with_its_reason_never_a_fail(self) -> None:
+        for header in ("pspkernel.h", "pspiofilemgr_fcntl.h", "psputility_osk.h"):
+            with self.subTest(header=header):
+                gate = self._gate_for_output(
+                    "fixtures/psp_oracle/probe_ge_sample.c",
+                    f"fixtures/psp_oracle/probe_ge_sample.c:5:10: fatal error: {header}: "
+                    "No such file or directory\ncompilation terminated.",
+                )
+                self.assertEqual(gate.status, contrib_check.SKIP)
+                self.assertIn("PSPSDK", gate.detail)
+                self.assertIn(header, gate.detail)
+
+    def test_a_missing_project_psp_header_still_fails(self) -> None:
+        gate = self._gate_for_output(
+            "tests/native/test_player_state.c",
+            "tests/native/test_player_state.c:3:10: fatal error: psp_seal_fixture.h: "
+            "No such file or directory\ncompilation terminated.",
+        )
+        self.assertEqual(gate.status, contrib_check.FAIL)
+
+    def test_a_real_error_beside_a_missing_sdk_header_still_fails(self) -> None:
+        for header in ("pspkernel.h", "vulkan/vulkan.h"):
+            with self.subTest(header=header):
+                gate = self._gate_for_output(
+                    "fixtures/psp_oracle/probe_ge_sample.c",
+                    "fixtures/psp_oracle/probe_ge_sample.c:2:1: error: unknown type name 'foo_t'\n"
+                    f"fixtures/psp_oracle/probe_ge_sample.c:5:10: fatal error: {header}: "
+                    "No such file or directory\ncompilation terminated.",
+                )
+                self.assertEqual(gate.status, contrib_check.FAIL)
+                self.assertIn("unknown type name", gate.detail)
+
     def test_a_discovered_vulkan_sdk_is_on_the_include_path(self) -> None:
         sdk = Path(tempfile.gettempdir()) / "VulkanSDK" / "1.4.0"
         with mock.patch.object(contrib_check, "discover_vulkan_sdk", return_value=sdk):
@@ -462,7 +501,7 @@ class TestPublicationGateSplit(unittest.TestCase):
 
 class TestMakeTargetWiring(unittest.TestCase):
     def test_the_makefile_exposes_contrib_check_through_the_help_catalog(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertRegex(makefile, r"(?m)^contrib-check:")
         self.assertIn("tools/contrib_check.py", makefile)
         self.assertRegex(makefile, r"(?m)^\tcontrib-check \\$")
@@ -473,7 +512,7 @@ class TestMakeTargetWiring(unittest.TestCase):
 
     def test_the_target_runs_on_both_make_frontends(self) -> None:
         """mingw32-make and make share the recipe; nothing in it is host-specific."""
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         recipe = makefile.split("\ncontrib-check:\n", 1)[1].split("\n\n", 1)[0]
         self.assertIn("$(PYTHON)", recipe)
         for host_specific in ("mingw32", "cmd /c", "pwsh", "powershell"):

@@ -1891,7 +1891,7 @@ static bool dev_log_contains(const PlayerApp *app, const char *needle) {
 static void repeat_launch_and_settle(PlayerApp *app, int game_index,
                                      uint64_t launch_tick, uint64_t settle_tick,
                                      const char *expected_memstick) {
-    char error_before[32];
+    char error_before[48];
     snprintf(error_before, sizeof(error_before), "%s", app->last_error.error_code);
     assert(player_app_launch_game(app, game_index));
     assert(app->is_game_running);
@@ -2293,8 +2293,8 @@ static void test_report_this_game(void) {
         assert(player_error_report_problem(&app->last_error, value, sizeof(value)) > 0);
         assert(strcmp(value, "RUNTIME_PREMATURE_EXIT, exit code 3") == 0);
         /* A card that is not about a game stopping offers no report. */
-        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library", "x",
-                             "Return to Library", VIEW_LIBRARY);
+        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library", "x",
+                             "Back to library", VIEW_LIBRARY);
         assert(!player_error_offers_report(&app->last_error));
         assert(app->last_error.stop_boundary[0] == '\0');
         /* The title page's report has no problem line. */
@@ -2408,7 +2408,7 @@ static void test_library_card_status_text(void) {
     assert(n == strlen(out));
 
     player_library_status_text(false, true, false, false, 0, NULL, out, sizeof(out));
-    assert(strcmp(out, "Status: Checking package...") == 0);
+    assert(strcmp(out, "Status: Checking package…") == 0);
 
     /* The reason from a copied library: the identity record is missing. */
     const char *reason =
@@ -3128,13 +3128,13 @@ static void test_platform_seam_answers_for_this_host(void) {
 
     /* Every host's card words, on every host. */
     assert(strcmp(player_data_dir_unavailable_text(NK_HOST_WINDOWS),
-                  "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. "
+                  "Windows could not find your Local AppData folder. "
                   "Set LOCALAPPDATA or APPDATA") == 0);
     assert(strcmp(player_data_dir_unavailable_text(NK_HOST_MACOS),
-                  "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. "
+                  "Nakagawa could not find your per-user data folder. "
                   "Set HOME") == 0);
     assert(strcmp(player_data_dir_unavailable_text(NK_HOST_LINUX),
-                  "DATA_DIR_UNAVAILABLE: the per-user data folder could not be resolved. "
+                  "Nakagawa could not find your per-user data folder. "
                   "Set XDG_DATA_HOME or HOME") == 0);
     assert(strcmp(player_data_dir_unavailable_text(NK_HOST_ANDROID),
                   player_data_dir_unavailable_text(NK_HOST_LINUX)) == 0);
@@ -3181,6 +3181,204 @@ static void test_platform_seam_answers_for_this_host(void) {
 /* #306: a card names this platform's fix. A Linux build compiled without
    SDL3_ttf told the user to extract a Windows ZIP and start nakagawa_player.exe,
    and a missing data root named Windows' LOCALAPPDATA. */
+/* #2007: every code the player raises has a badge and leads with its plain sentence; a code it
+   has never heard of keeps the plain badge, and the code stays in the report. */
+static void test_every_error_code_has_a_friendly_card(void) {
+    static const char *const codes[] = {
+        "SPAWN_FAILED", "PYTHON_NOT_FOUND", "PREREQUISITE_MANIFEST_INVALID",
+        "PREREQUISITE_BUNDLE_INVALID", "DATA_DIR_UNAVAILABLE", "LIBRARY_WRITE_FAILED",
+        "FOLDER_OPEN_FAILED", "LINK_OPEN_FAILED", "REMOVE_FAILED", "TOOLS_IN_USE",
+        "TOOLS_REMOVE_FAILED", "ISO_CORRUPT", "SOURCE_NOT_FOUND", "BUILD_TOOLCHAIN_MISSING",
+        "CLI_NOT_FOUND", "GAME_FILES_NOT_READY", "EXPERIMENTAL_LAUNCH_UNAVAILABLE",
+        "EXPERIMENTAL_PROFILE_FAILED", "FACTORY_RESET_BUSY", "FACTORY_RESET_FAILED",
+        "PACKAGE_BUILD_IN_PROGRESS", "PROCESS_SPAWN_FAILED", "DISC_NOT_PSP",
+        "DISC_IMAGE_TRUNCATED", "PBP_PACKAGE_UNSUPPORTED", "PREREQUISITE_FETCH_START_FAILED",
+        "PYTHON_BOOTSTRAP_FAILED", "DISK_FULL", "OFFLINE_OR_NETWORK_ERROR", "HASH_MISMATCH",
+        "ENHANCEMENT_UNAVAILABLE", "PACKAGE_REBUILD_NOT_INCOMPATIBLE", "LAUNCH_DETAILS_UNAVAILABLE",
+    };
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
+        player_app_set_error(app, codes[i], "Title", "A plain sentence.", "Back", VIEW_LIBRARY);
+        assert(strcmp(app->last_error.error_code, codes[i]) == 0); /* never cut short */
+        assert(strcmp(player_error_badge(&app->last_error), "Problem") != 0);
+        assert(player_error_leads_with_message(&app->last_error));
+        assert(strstr(player_error_badge(&app->last_error), "_") == NULL);
+    }
+    /* A failed build tools download names whatever code the downloader chose. */
+    player_app_set_error(app, "SOMETHING_NEW_FROM_THE_FETCHER", "Title", "x", "Retry",
+                         VIEW_PREREQ_CONSENT);
+    assert(strcmp(player_error_badge(&app->last_error), "Download failed") == 0);
+    player_app_set_error(app, "SOMETHING_NEW", "Title", "x", "Back", VIEW_LIBRARY);
+    assert(strcmp(player_error_badge(&app->last_error), "Problem") == 0);
+    assert(!player_error_leads_with_message(&app->last_error));
+
+    /* The raw tool text moves to the details: the card leads with a sentence and a next step,
+       and Copy details keeps the code and the tool's own line. */
+    player_app_set_error_with_details(app, "PREREQUISITE_MANIFEST_INVALID", "Pinned Build Tools",
+                                      "Nakagawa couldn't read its list of build tools.",
+                                      "PREREQUISITE_MANIFEST_INVALID: artifacts list is missing.",
+                                      "Back", VIEW_LIBRARY);
+    assert(strstr(app->last_error.message, "PREREQUISITE_MANIFEST_INVALID") == NULL);
+    assert(strstr(app->last_error.details, "artifacts list is missing") != NULL);
+    {
+        char report[4096];
+        (void)player_app_format_error_report_for(app, "0.0.0", NULL, NULL, report,
+                                                 sizeof(report));
+        assert(strstr(report, "Code: PREREQUISITE_MANIFEST_INVALID") != NULL);
+        assert(strstr(report, "artifacts list is missing") != NULL);
+    }
+    /* No data-folder sentence opens with a bare code. */
+    assert(strncmp(player_data_dir_unavailable_text(NK_HOST_WINDOWS), "DATA_DIR", 8) != 0);
+    assert(strncmp(player_data_dir_unavailable_text(NK_HOST_LINUX), "DATA_DIR", 8) != 0);
+    free(app);
+    printf("[PLAYER_STATE_TEST] every error code has a friendly card PASS\n");
+}
+
+/* #2007: a link the browser could not open, and a library that could not be written, are cards
+   that say what to do next. */
+static void test_link_and_library_failures_are_cards(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    app->active_view = VIEW_SETTINGS;
+    player_app_set_link_open_error(app, "https://example.test/releases/v1", "no handler");
+    assert(app->active_view == VIEW_ERROR);
+    assert(strcmp(app->last_error.error_code, "LINK_OPEN_FAILED") == 0);
+    assert(app->last_error.return_view == VIEW_SETTINGS);
+    assert(strcmp(app->last_error.details, "https://example.test/releases/v1") == 0);
+    assert(strstr(app->last_error.message, "browser") != NULL);
+    assert(strcmp(player_error_badge(&app->last_error), "Link not opened") == 0);
+    /* From the error card itself the way back is the library, not the card. */
+    player_app_set_link_open_error(app, "https://example.test/x", "");
+    assert(app->last_error.return_view == VIEW_LIBRARY);
+    player_app_set_library_write_error(app);
+    assert(strcmp(app->last_error.error_code, "LIBRARY_WRITE_FAILED") == 0);
+    assert(strstr(app->last_error.message, "then try again") != NULL);
+    assert(strstr(app->last_error.message, "may be full") == NULL);
+    free(app);
+    printf("[PLAYER_STATE_TEST] link and library failures are cards PASS\n");
+}
+
+/* #2007: Settings > Open data folder and Open logs. */
+static void test_user_folders_open_from_settings(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    char expected[NK_MAX_PATH];
+    assert(app != NULL);
+    assert(player_app_request_user_folder(app, NK_PATH_LOGS));
+    assert(app->request_open_folder);
+    assert(nk_platform_get_path(NK_PATH_LOGS, expected, sizeof(expected)));
+    assert(strcmp(app->requested_open_path, expected) == 0);
+    assert(nk_platform_dir_exists(expected));
+    assert(player_app_request_user_folder(app, NK_PATH_DATA));
+    assert(nk_platform_get_path(NK_PATH_DATA, expected, sizeof(expected)));
+    assert(strcmp(app->requested_open_path, expected) == 0);
+    /* Only these two folders are offered. */
+    app->request_open_folder = false;
+    assert(!player_app_request_user_folder(app, NK_PATH_CACHE));
+    assert(!app->request_open_folder);
+    free(app);
+    printf("[PLAYER_STATE_TEST] data and logs folders open from Settings PASS\n");
+}
+
+/* #2007: several dropped files are queued and reported once. */
+static void test_dropped_files_are_queued_and_summarised(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    char path[NK_MAX_PATH];
+    char dir[NK_MAX_PATH - 16]; /* leaves room for a file name under it */
+    char one[NK_MAX_PATH], two[NK_MAX_PATH], text[NK_MAX_PATH], upper[NK_MAX_PATH];
+    const char sep = nk_platform_path_separator();
+    assert(app != NULL);
+    snprintf(dir, sizeof(dir), "%s%cdrops", native_test_get_root(), sep);
+    assert(nk_platform_mkdir_p(dir));
+    snprintf(one, sizeof(one), "%s%cone.iso", dir, sep);
+    snprintf(two, sizeof(two), "%s%ctwo.iso", dir, sep);
+    snprintf(upper, sizeof(upper), "%s%cTHREE.ISO", dir, sep);
+    snprintf(text, sizeof(text), "%s%cnotes.txt", dir, sep);
+    write_text_file(one, "x");
+    write_text_file(two, "x");
+    write_text_file(upper, "x");
+    write_text_file(text, "not a disc");
+    assert(player_path_looks_like_disc_image(one));
+    assert(player_path_looks_like_disc_image(upper));
+    assert(!player_path_looks_like_disc_image(text));
+    assert(!player_path_looks_like_disc_image(NULL));
+
+    /* One file takes the path it always has, with no summary. */
+    app->active_view = VIEW_LIBRARY;
+    player_app_drop_begin(app);
+    player_app_drop_add(app, text);
+    player_app_drop_finish(app);
+    assert(app->drop_notice[0] == '\0');
+    assert(player_app_drop_take(app, path, sizeof(path)) && strcmp(path, text) == 0);
+    assert(!player_app_drop_take(app, path, sizeof(path)));
+
+    /* Three disc images and a text file: the images open in drop order, the text is named. */
+    player_app_drop_begin(app);
+    player_app_drop_add(app, one);
+    player_app_drop_add(app, text);
+    player_app_drop_add(app, two);
+    player_app_drop_add(app, upper);
+    player_app_drop_finish(app);
+    assert(strstr(app->drop_notice, "4 files were dropped") != NULL);
+    assert(strstr(app->drop_notice, "3 disc images open one at a time") != NULL);
+    assert(strstr(app->drop_notice, "notes.txt") != NULL);
+    assert(player_app_drop_take(app, path, sizeof(path)) && strcmp(path, one) == 0);
+    /* Leaving the library for the first image does not drop the summary... */
+    player_app_set_view(app, VIEW_SUPPORTED_TITLE);
+    assert(app->drop_notice[0] != '\0');
+    /* ...nor does coming back while images are still queued. */
+    player_app_set_view(app, VIEW_LIBRARY);
+    assert(!app->drop_notice_visible);
+    assert(player_app_drop_take(app, path, sizeof(path)) && strcmp(path, two) == 0);
+    player_app_set_view(app, VIEW_SUPPORTED_TITLE);
+    player_app_set_view(app, VIEW_LIBRARY);
+    assert(!app->drop_notice_visible);
+    assert(player_app_drop_take(app, path, sizeof(path)) && strcmp(path, upper) == 0);
+    player_app_set_view(app, VIEW_SUPPORTED_TITLE);
+    /* The last return shows the summary once; leaving the library again clears it. */
+    player_app_set_view(app, VIEW_LIBRARY);
+    assert(app->drop_notice_visible && app->drop_notice[0] != '\0');
+    player_app_set_view(app, VIEW_SETTINGS);
+    assert(app->drop_notice[0] == '\0');
+
+    /* Nothing that is a disc image: said at once, where the user already is. */
+    app->active_view = VIEW_LIBRARY;
+    player_app_drop_begin(app);
+    player_app_drop_add(app, text);
+    player_app_drop_add(app, text);
+    player_app_drop_finish(app);
+    assert(strstr(app->drop_notice, "None is a disc image") != NULL);
+    assert(app->drop_notice_visible);
+    assert(!player_app_drop_take(app, path, sizeof(path)));
+
+    /* More files than the queue holds: the rest are counted and the user is told. */
+    player_app_drop_begin(app);
+    for (unsigned i = 0; i < PLAYER_DROP_QUEUE_MAX + 4u; i++) player_app_drop_add(app, one);
+    player_app_drop_finish(app);
+    assert(strstr(app->drop_notice, "Only the first 16 were looked at") != NULL);
+    assert(strstr(app->drop_notice, "drop the other 4 again") != NULL);
+
+    /* A drop that arrives while a worker owns the current game's files is ignored, not queued
+       to open later; on the library the user is told why (the lone-file path included). */
+    app->active_view = VIEW_LIBRARY;
+    player_app_drop_begin(app);
+    player_app_drop_add(app, one);
+    player_app_drop_add(app, one);
+    player_app_drop_finish(app);
+    assert(app->drop_count == 2u && app->drop_notice[0] != '\0');
+    player_app_drop_discard(app, "a game is being set up");
+    assert(app->drop_count == 0u && app->drop_next == 0u && !app->drop_active);
+    assert(!player_app_drop_take(app, path, sizeof(path)));
+    assert(strstr(app->drop_notice, "A game is being set up") != NULL && app->drop_notice_visible);
+    app->active_view = VIEW_SETUP_WIZARD;
+    player_app_drop_add(app, one);
+    player_app_drop_finish(app);
+    player_app_drop_discard(app, "a game is being set up");
+    assert(app->drop_notice[0] == '\0' && !player_app_drop_take(app, path, sizeof(path)));
+    free(app);
+    printf("[PLAYER_STATE_TEST] dropped files are queued and summarised PASS\n");
+}
+
 static void test_platform_cards_name_this_platform(void) {
     char message[1024];
     player_launcher_unavailable_message(
@@ -3294,7 +3492,7 @@ static void test_error_cards_are_plain(void) {
 
     /* An unknown code gets a plain badge, never the code. */
     player_app_set_error(app, "SOME_INTERNAL_CODE", "Something Went Wrong", "Plain words.",
-                         "Return to Library", VIEW_LIBRARY);
+                         "Back to library", VIEW_LIBRARY);
     assert(strcmp(player_error_badge(&app->last_error), "Problem") == 0);
     assert(player_error_retry_label(&app->last_error) == NULL);
     assert(!player_app_retry_from_error(app));
@@ -3312,7 +3510,7 @@ static void test_error_cards_are_plain(void) {
     player_app_set_game_stop_error(app, "RUNTIME_SEMANTIC_BOUNDARY",
                                    "unsupported-import-scenetadhocinit", 308u, 9, 9000u,
                                    "TEST00042", report_run_log);
-    assert(strcmp(app->last_error.title, "Game Stopped Early") == 0);
+    assert(strcmp(app->last_error.title, "Game stopped early") == 0);
     assert(strcmp(player_error_badge(&app->last_error), "Game stopped") == 0);
     assert(strstr(app->last_error.message, "ad hoc wireless play") != NULL);
     assert(strstr(app->last_error.message, "unsupported-") == NULL);
@@ -3322,7 +3520,7 @@ static void test_error_cards_are_plain(void) {
     char report[PLAYER_ERROR_DETAILS_MAX + 4096];
     assert(player_app_format_error_report(app, "v0.0.1", report, sizeof(report)) > 0);
     assert(strstr(report, "Nakagawa Recomp v0.0.1\n") != NULL);
-    assert(strstr(report, "Problem: Game Stopped Early\n") != NULL);
+    assert(strstr(report, "Problem: Game stopped early\n") != NULL);
     assert(strstr(report, "Code: RUNTIME_SEMANTIC_BOUNDARY\n") != NULL);
     assert(strstr(report, "Game: Plain Card Fixture\n") != NULL);
     assert(strstr(report, "Disc ID: TEST00042\n") != NULL);
@@ -3355,7 +3553,7 @@ static void test_error_cards_are_plain(void) {
     package_builder_init_session(&app->build_session, "TEST00042", "Plain Card Fixture");
     player_app_set_build_error(app, "compile", "PACKAGE_BUILD_FAILED: build exited with code 2",
                                NULL);
-    assert(strcmp(app->last_error.title, "Couldn't Finish Building") == 0);
+    assert(strcmp(app->last_error.title, "Couldn't finish building") == 0);
     assert(strstr(app->last_error.message, "PACKAGE_BUILD_FAILED") == NULL);
     assert(strcmp(player_error_retry_label(&app->last_error), "Try again") == 0);
     assert(player_error_leads_with_message(&app->last_error));
@@ -3363,14 +3561,14 @@ static void test_error_cards_are_plain(void) {
                                "PACKAGE_DISK_FULL: At least 1,234 bytes are needed for "
                                "the package files; 56 bytes are free.", NULL);
     assert(strcmp(app->last_error.error_code, "PACKAGE_DISK_FULL") == 0);
-    assert(strcmp(app->last_error.title, "Not Enough Disk Space") == 0);
+    assert(strcmp(app->last_error.title, "Not enough disk space") == 0);
     assert(strstr(app->last_error.message, "1,234 bytes") != NULL);
     assert(strstr(app->last_error.message, "56 bytes") != NULL);
     assert(strstr(app->last_error.message, "PACKAGE_DISK_FULL") == NULL);
     player_app_set_build_error(app, "package",
                                "[Errno 28] No space left on device: 'package.staging'", NULL);
     assert(strcmp(app->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
-    assert(strcmp(app->last_error.title, "Couldn't Finish Building") == 0);
+    assert(strcmp(app->last_error.title, "Couldn't finish building") == 0);
     assert(strstr(app->last_error.message, "Compilation ran out of disk space") != NULL);
     assert(strstr(app->last_error.message, "package size could be measured") != NULL);
     assert(strcmp(player_error_retry_label(&app->last_error), "Try again") == 0);
@@ -3474,14 +3672,14 @@ static void test_windows_block_cards_name_the_block(void) {
         const char *title;
         const char *names;
     } blocks[] = {
-        {5, "WINDOWS_BLOCKED_START", "Windows Blocked the Game",
+        {5, "WINDOWS_BLOCKED_START", "Windows blocked the game",
          "attack surface reduction rule"},
-        {225, "WINDOWS_DEFENDER_THREAT", "Windows Security Blocked the Game",
+        {225, "WINDOWS_DEFENDER_THREAT", "Windows Security blocked the game",
          "contains a threat"},
-        {226, "WINDOWS_DEFENDER_THREAT", "Windows Security Blocked the Game",
+        {226, "WINDOWS_DEFENDER_THREAT", "Windows Security blocked the game",
          "contains a threat"},
-        {1260, "WINDOWS_POLICY_BLOCKED", "Windows Blocked the Game", "A Windows policy"},
-        {4551, "WINDOWS_POLICY_BLOCKED", "Windows Blocked the Game", "A Windows policy"},
+        {1260, "WINDOWS_POLICY_BLOCKED", "Windows blocked the game", "A Windows policy"},
+        {4551, "WINDOWS_POLICY_BLOCKED", "Windows blocked the game", "A Windows policy"},
     };
     for (size_t i = 0; i < sizeof(blocks) / sizeof(blocks[0]); i++) {
         work->session.process.spawn_error = blocks[i].os_error;
@@ -3506,7 +3704,7 @@ static void test_windows_block_cards_name_the_block(void) {
     assert(!player_app_launch_finish(app, work));
     assert(strcmp(app->last_error.error_code, "PROCESS_SPAWN_FAILED") == 0);
     NkSpawnBlockReport report;
-    assert(!nk_launch_describe_spawn_block(0, "the game", "Game", "x.exe", &report));
+    assert(!nk_launch_describe_spawn_block(0, "the game", "game", "x.exe", &report));
     assert(report.code[0] == '\0');
     free(work);
     free(app);
@@ -4981,7 +5179,9 @@ static void test_bundled_prerequisite_build(const char *self_executable) {
     assert(!player_app_start_package_build(app, 0));
     assert(app->active_view == VIEW_ERROR);
     assert(strcmp(app->last_error.error_code, "PREREQUISITE_BUNDLE_INVALID") == 0);
-    assert(strstr(app->last_error.message, "cpython-embed-amd64") != NULL);
+    /* The card says what to do; the tool's own line (which part is damaged) is in the details. */
+    assert(strstr(app->last_error.message, "Extract the download again") != NULL);
+    assert(strstr(app->last_error.details, "cpython-embed-amd64") != NULL);
     assert(app->prerequisites.phase != PLAYER_PREREQ_CONSENT);
     assert(!app->build_session.is_building);
 
@@ -5358,7 +5558,7 @@ static void test_psn_package_imports_as_its_iso(void) {
     assert(app->wizard.extraction_percent == 50);
     player_app_wizard_cancel(app);
     assert(player_app_wizard_cancel_requested(app));
-    assert(strcmp(app->wizard.status_message, "Cancelling the conversion...") == 0);
+    assert(strcmp(app->wizard.status_message, "Cancelling the conversion…") == 0);
     player_app_psn_conversion_finish(app);
     assert(app->active_view == VIEW_LIBRARY);
     assert(!app->wizard.is_extracting && !app->psn_conversion_active);
@@ -5714,7 +5914,10 @@ static void test_ace_mode_settings(void) {
         char *saved = read_text_file(path);
         assert(saved && strstr(saved, "\"ace\": {\"enabled\": true, \"af\": 16,") != NULL);
         assert(strstr(saved, "\"ace_titles\": {\"TEST90001\": {\"mode\": \"ace\"}}") != NULL);
-        assert(strstr(saved, "wide") == NULL && strstr(saved, "smooth") == NULL);
+        /* Smooth motion is saved beside its siblings (#1272); wide is not carried yet. */
+        assert(strstr(saved, "wide") == NULL);
+        assert(strstr(saved, "\"notice\": false, \"smooth\": \"off\"},") != NULL);
+        assert(strstr(saved, "\"TEST90001\": {\"mode\": \"ace\"}") != NULL);
         free(saved);
     }
     /* A file from before Ace Mode keeps the defaults; bad values keep them too, and a title
@@ -5763,6 +5966,118 @@ static void test_ace_mode_settings(void) {
         remove(report);
         (void)test_rmdir(dir);
     }
+    remove(path);
+    (void)test_rmdir(root);
+    free(back);
+    free(app);
+}
+
+/* Ace Mode's smooth motion (#1272, docs/ENHANCEMENT_CONTRACT.md section 10): off by default,
+ * a library value and a per-title override with the same precedence as the sibling features,
+ * saved by name and read back, an unknown value keeping the default, the launch line
+ * carrying smooth=x2 (never smooth=match), and the enhanced 60 FPS build refusing it. */
+static void test_ace_smooth_motion(void) {
+    char sep = nk_platform_path_separator();
+    char cache_root[512], root[700], path[800], line[160];
+    PlayerAceResolved r;
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(root, sizeof(root), "%s%cace_smooth_probe", cache_root, sep);
+    assert(nk_platform_mkdir_p(root));
+    snprintf(path, sizeof(path), "%s%csettings.json", root, sep);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    PlayerApp *back = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app && back);
+    player_app_settings_init_default(&app->settings);
+    assert(app->settings.ace.smooth == 0);
+    app->game_count = 1;
+    snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "TEST90001");
+    size_t path_len = strlen(path);
+    assert(path_len < sizeof(app->settings_path));
+    memcpy(app->settings_path, path, path_len + 1u);
+
+    /* Off by default: the line says so. */
+    player_app_toggle_ace(app);
+    player_ace_resolve(&app->settings, "TEST90001", &r);
+    assert(r.on && r.smooth == 0);
+    assert(player_ace_launch_line(&r, line, sizeof(line)) &&
+           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off") == 0);
+    assert(player_app_title_ace_smooth(app, 0) == -1);
+
+    /* The library value reaches the line as x2, and never as match. */
+    player_app_toggle_ace_smooth(app);
+    assert(app->settings.ace.smooth == 1);
+    player_ace_resolve(&app->settings, "TEST90001", &r);
+    assert(r.on && r.smooth == 1);
+    assert(player_ace_launch_line(&r, line, sizeof(line)) &&
+           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2") == 0);
+    assert(strstr(line, "match") == NULL);
+
+    /* A title's own choice wins over the library's; the cycle is library, on, off, library. */
+    player_app_cycle_title_ace_smooth(app, 0);                    /* library -> on */
+    assert(player_app_title_ace_smooth(app, 0) == 1 && app->settings.ace_title_count == 1);
+    player_app_cycle_title_ace_smooth(app, 0);                    /* on -> off */
+    assert(player_app_title_ace_smooth(app, 0) == 0);
+    player_ace_resolve(&app->settings, "TEST90001", &r);
+    assert(r.on && r.smooth == 0);                                /* library x2, title off */
+    assert(player_settings_ace_title(&app->settings, "TEST90001")->mode == PLAYER_ACE_TITLE_LIBRARY);
+    player_ace_resolve(&app->settings, "TEST90002", &r);
+    assert(r.smooth == 1);                                        /* another title follows */
+    player_app_toggle_ace_smooth(app);                            /* library off */
+    player_app_cycle_title_ace_smooth(app, 0);                    /* off -> library: sparse, dropped */
+    assert(player_app_title_ace_smooth(app, 0) == -1 && app->settings.ace_title_count == 0);
+    player_app_cycle_title_ace_smooth(app, 0);                    /* library off, title on */
+    player_ace_resolve(&app->settings, "TEST90001", &r);
+    assert(r.smooth == 1);
+
+    /* The true 60 FPS game logic build refuses it, whatever the settings say; the other
+       features keep their values and a title without that build keeps smooth motion. */
+    assert(r.on && r.af == 16 && r.text && r.notice);
+    player_ace_apply_logic_60(&r, false);
+    assert(r.smooth == 1);
+    player_ace_apply_logic_60(&r, true);
+    assert(r.smooth == 0 && r.on && r.af == 16 && r.text && r.notice);
+    assert(player_ace_launch_line(&r, line, sizeof(line)) &&
+           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off") == 0);
+
+    /* Saved by name beside the sibling keys, and read back. */
+    app->settings.ace.smooth = 1;
+    player_app_toggle_ace_text(app);
+    player_app_toggle_ace_text(app);                              /* saves */
+    {
+        char *saved = read_text_file(path);
+        assert(saved);
+        assert(strstr(saved, "\"notice\": true, \"smooth\": \"x2\"},") != NULL);
+        assert(strstr(saved, "\"ace_titles\": {\"TEST90001\": {\"smooth\": \"x2\"}}") != NULL);
+        assert(strstr(saved, "\"match\"") == NULL);
+        free(saved);
+    }
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.ace.smooth == 1);
+    assert(back->settings.ace_title_count == 1 && back->settings.ace_titles[0].smooth == 1);
+    assert(back->settings.ace_titles[0].mode == PLAYER_ACE_TITLE_LIBRARY &&
+           back->settings.ace_titles[0].af == -1);
+
+    /* A value this build does not know keeps the default, or follows the library; an entry
+       that differs nowhere else is dropped. smooth=match stays refused here too. */
+    write_text_file(path,
+        "{\"schema_version\": 2, \"ace\": {\"smooth\": \"match\"},"
+        " \"ace_titles\": {\"TEST90001\": {\"smooth\": \"fast\"},"
+        " \"TEST90002\": {\"mode\": \"ace\", \"smooth\": \"match\"},"
+        " \"TEST90003\": {\"smooth\": 2}, \"TEST90004\": {\"smooth\": \"off\"}}}");
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.ace.smooth == 0);
+    assert(back->settings.ace_title_count == 2);
+    assert(player_settings_ace_title(&back->settings, "TEST90001") == NULL);
+    assert(player_settings_ace_title(&back->settings, "TEST90003") == NULL);
+    assert(player_settings_ace_title(&back->settings, "TEST90002")->smooth == -1);
+    assert(player_settings_ace_title(&back->settings, "TEST90004")->smooth == 0);
+    write_text_file(path, "{\"schema_version\": 2, \"ace\": {\"smooth\": \"x2\"}}");
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.ace.smooth == 1);
+
     remove(path);
     (void)test_rmdir(root);
     free(back);
@@ -6020,6 +6335,10 @@ int main(int argc, char **argv) {
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);
     test_error_cards_are_plain();
+    test_every_error_code_has_a_friendly_card();
+    test_link_and_library_failures_are_cards();
+    test_user_folders_open_from_settings();
+    test_dropped_files_are_queued_and_summarised();
     test_platform_seam_answers_for_this_host();
     test_platform_cards_name_this_platform();
     test_windows_block_cards_name_the_block();
@@ -6032,6 +6351,7 @@ int main(int argc, char **argv) {
     test_library_card_status_text();
     test_enhanced_package_variants();
     test_ace_mode_settings();
+    test_ace_smooth_motion();
     /* Saves a library file under the cache root, so it runs only once that
      * root is the temporary one. */
     test_sample_entries_never_reach_library_json();
@@ -6669,8 +6989,6 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_SUPPORTED_TITLE;
         assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_UNSUPPORTED_TITLE;
-        assert(player_app_focus_count(stops) == 1);
-        stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
         assert(player_app_focus_count(stops) == 18); /* two pacing modes; scaling; launcher fullscreen; online options; UI sounds */
@@ -9485,7 +9803,7 @@ int main(int argc, char **argv) {
         /* #1286: a preflight refusal is not a failed build. The card leads with
            the reason, without its code. */
         assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_REFUSED") == 0);
-        assert(strcmp(bapp->last_error.title, "Build Not Started") == 0);
+        assert(strcmp(bapp->last_error.title, "Build not started") == 0);
         assert(strncmp(bapp->last_error.message, "EBOOT.BIN is encrypted and built-in", 35) == 0);
         assert(strstr(bapp->last_error.message, "ENCRYPTED_EXECUTABLE") == NULL);
         assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
@@ -10344,7 +10662,7 @@ int main(int argc, char **argv) {
            and exits cleanly (elapsed >= 500 ms, code 0: no error). */
         set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
         {
-            char error_before[32];
+            char error_before[48];
             snprintf(error_before, sizeof(error_before), "%s",
                      rep->last_error.error_code);
             assert(player_app_launch_game(rep, 0));
@@ -10406,7 +10724,7 @@ int main(int argc, char **argv) {
         assert(rep->active_view == VIEW_ERROR);
         assert(strcmp(rep->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0);
         assert(rep->last_error.message[0] != '\0');
-        assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
+        assert(strcmp(rep->last_error.recovery_action_label, "Back to library") == 0);
         assert(rep->last_error.return_view == VIEW_LIBRARY);
         /* Recovery: restore the executable and launch again. */
         copy_executable_file(self_path, package_exe);
@@ -10438,7 +10756,7 @@ int main(int argc, char **argv) {
                       "LAUNCH_DETAILS_UNAVAILABLE") == 0);
         assert(strstr(rep->last_error.message, "launch details") != NULL);
         assert(strcmp(rep->last_error.recovery_action_label,
-                      "Return to Library") == 0);
+                      "Back to library") == 0);
         assert(rep->last_error.return_view == VIEW_LIBRARY);
         restore_environment_value(cache_root_env, old_cache_root_env,
                                   had_cache_root_env);
@@ -10497,13 +10815,13 @@ int main(int argc, char **argv) {
         assert(rep->active_view == VIEW_ERROR);
         assert(strcmp(rep->last_error.error_code, "RUNTIME_PREMATURE_EXIT") == 0);
         /* #1282: a plain title and sentence; the exit code is in the details. */
-        assert(strcmp(rep->last_error.title, "Game Couldn't Start") == 0);
+        assert(strcmp(rep->last_error.title, "Game couldn't start") == 0);
         assert(strstr(rep->last_error.message, "Child") == NULL);
         assert(strstr(rep->last_error.message, "7") == NULL);
         assert(strstr(rep->last_error.details, "Exit code 7") != NULL);
         assert(strcmp(player_error_retry_label(&rep->last_error), "Restart game") == 0);
         assert(strcmp(rep->last_error.subject_disc_id, rep->games[0].disc_id) == 0);
-        assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
+        assert(strcmp(rep->last_error.recovery_action_label, "Back to library") == 0);
         assert(rep->last_error.return_view == VIEW_LIBRARY);
         /* Recovery after the premature exit. */
         set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
@@ -10521,7 +10839,7 @@ int main(int argc, char **argv) {
         assert_session_released(&rep->launch_session);
         assert(rep->active_view == VIEW_ERROR);
         assert(strcmp(rep->last_error.error_code, "RUNTIME_ERROR_EXIT") == 0);
-        assert(strcmp(rep->last_error.title, "Game Closed Unexpectedly") == 0);
+        assert(strcmp(rep->last_error.title, "Game closed unexpectedly") == 0);
         assert(strstr(rep->last_error.message, "last in-game save") != NULL);
         assert(strstr(rep->last_error.message, "9") == NULL);
         assert(strstr(rep->last_error.details, "Exit code 9") != NULL);
@@ -10541,7 +10859,7 @@ int main(int argc, char **argv) {
         assert(strcmp(rep->last_error.error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0);
         /* #1282: what the game needed, in plain words, and what happens to
            progress; the raw boundary and its tracker issue are the details. */
-        assert(strcmp(rep->last_error.title, "Game Stopped Early") == 0);
+        assert(strcmp(rep->last_error.title, "Game stopped early") == 0);
         assert(strstr(rep->last_error.message, "a processor feature") != NULL);
         assert(strstr(rep->last_error.message, "last in-game save") != NULL);
         assert(strstr(rep->last_error.message, "unsupported-") == NULL);
@@ -10610,7 +10928,7 @@ int main(int argc, char **argv) {
         assert_session_released(&rep->launch_session);
         assert(rep->active_view == VIEW_ERROR);
         assert(strcmp(rep->last_error.error_code, "RUNTIME_START_TIMEOUT") == 0);
-        assert(strcmp(rep->last_error.title, "Game Couldn't Start") == 0);
+        assert(strcmp(rep->last_error.title, "Game couldn't start") == 0);
         assert(strstr(rep->last_error.message, "The game didn't start") != NULL);
         assert(strcmp(player_error_badge(&rep->last_error), "Game didn't start") == 0);
         assert(player_error_leads_with_message(&rep->last_error));
@@ -10618,7 +10936,7 @@ int main(int argc, char **argv) {
         assert(strstr(rep->last_error.details, "15000 ms") != NULL);
         assert(strcmp(player_error_retry_label(&rep->last_error), "Restart game") == 0);
         assert(strcmp(rep->last_error.subject_disc_id, rep->games[0].disc_id) == 0);
-        assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
+        assert(strcmp(rep->last_error.recovery_action_label, "Back to library") == 0);
         assert(rep->last_error.return_view == VIEW_LIBRARY);
         assert(strcmp(rep->last_error.log_file_path, run_log_last) == 0);
         assert(!nk_platform_file_exists(hold_event_path));
@@ -10807,7 +11125,7 @@ int main(int argc, char **argv) {
                 warning_stopped_game = !rep->is_game_running &&
                     strcmp(rep->last_error.error_code, "RUNTIME_NO_NEW_FRAMES") == 0;
                 warning_card_has_details =
-                    strcmp(rep->last_error.title, "Game Stopped Early") == 0 &&
+                    strcmp(rep->last_error.title, "Game stopped early") == 0 &&
                     strstr(rep->last_error.message, "last in-game save") != NULL &&
                     strstr(rep->last_error.details, "no_frame_vblanks=1800") != NULL &&
                     strstr(rep->last_error.details, "ready=1 delay=2 wait=3 spin=4") != NULL;
@@ -10900,7 +11218,7 @@ int main(int argc, char **argv) {
                 player_app_stop_stalled_game(rep);
                 dark_stopped = !rep->is_game_running &&
                     strcmp(rep->last_error.error_code, "RUNTIME_NO_PICTURE") == 0 &&
-                    strcmp(rep->last_error.title, "Game Stopped Early") == 0 &&
+                    strcmp(rep->last_error.title, "Game stopped early") == 0 &&
                     strstr(rep->last_error.message, "black screen") != NULL &&
                     strstr(rep->last_error.details, "dark_vblanks=2400") != NULL;
             }
@@ -11220,7 +11538,7 @@ int main(int argc, char **argv) {
                 assert(capp->active_view == VIEW_ERROR);
                 assert(capp->prerequisites.phase == PLAYER_PREREQ_FAILED);
                 assert(strcmp(capp->last_error.error_code, errors[i]) == 0);
-                assert(strcmp(capp->last_error.recovery_action_label, "Retry Download") == 0);
+                assert(strcmp(capp->last_error.recovery_action_label, "Retry download") == 0);
                 assert(capp->last_error.return_view == VIEW_PREREQ_CONSENT);
                 player_app_prereq_retry(capp);
                 assert(capp->active_view == VIEW_PREREQ_CONSENT);

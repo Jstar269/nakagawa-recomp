@@ -77,7 +77,7 @@ PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model)
             nk_ui_text(ui, FLOW_ID_MESSAGE,
                        nk_ui_text_clamp(ui, model->built
                            ? "Package written. Checking it before PLAY is offered."
-                           : safe_text(model->message, "Building the package..."),
+                           : safe_text(model->message, "Building the package…"),
                            &text, inner - 140.0f, 2), &text);
             nk_ui_spacer(ui, FLOW_ID_STATUS_SPACER, sizing_grow(), sizing_fixed(1.0f));
             (void)snprintf(elapsed, sizeof(elapsed), "%u.%u s",
@@ -108,7 +108,7 @@ PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model)
                                             inner - 28.0f, 1), &text);
             }
             if (model->line_count == 0u) {
-                nk_ui_text(ui, FLOW_ID_LOG + 8u, "Waiting for the first build output...", &text);
+                nk_ui_text(ui, FLOW_ID_LOG + 8u, "Waiting for the first build output…", &text);
             }
             nk_ui_end_container(ui);
         }

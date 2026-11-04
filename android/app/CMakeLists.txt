@@ -3,7 +3,7 @@
 
 # Native half of the Android app, driven by Gradle (android/app/build.gradle.kts) through the
 # NDK's CMake toolchain, once per ABI. It builds, from source:
-#   - SDL3 3.4.18 and SDL3_ttf 3.2.2 at the commits hosted CI pins for Linux (libSDL3.so,
+#   - SDL3 3.4.20 and SDL3_ttf 3.2.2 at the commits hosted CI pins for Linux (libSDL3.so,
 #     libSDL3_ttf.so; SDL3_ttf with its vendored FreeType and HarfBuzz);
 #   - the player (launcher) as libmain.so, from the repository's own CMakeLists.txt;
 #   - one runtime library per bundled title, libnk_title_<id>.so, from a package's generated C

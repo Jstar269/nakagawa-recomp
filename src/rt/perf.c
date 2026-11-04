@@ -74,6 +74,14 @@ static const char *const s_frame_work_names[SR_PERF_FRAME_WORK_BUCKETS] = {
     "le16_7", "le22", "le33_4", "le50_1", "gt50_1",
 };
 
+/* SR_PERF_FRAMES columns (frames_row()). */
+static const char s_frames_header[] =
+    "vcount,vblanks,work_ms,wall_ms,guest_ms,aot_ms,interp_ms,ge_cpu_ms,ge_cpu_calls,ge_wait_ms,ge_waits,"
+    "readback_waits,vk_submit_ms,vk_wait_ms,vk_readback_ms,vk_pipeline_ms,vk_pipeline_creations,"
+    "texture_decode_ms,texture_decodes,storage_ms,atrac_ms,h264_ms,audio_mix_ms,present_ms,"
+    "sched_switches\n";
+
+
 typedef struct SrPerfMetrics {
     uint64_t guest_ns;
     uint64_t guest_idle_ns;
@@ -190,6 +198,8 @@ typedef struct SrPerfState {
     SrPerfMetrics interval;
     SrPerfMetrics total;
     FILE *csv;
+    FILE *frames;                   /* SR_PERF_FRAMES: one row per new frame */
+    SrPerfMetrics frame_base;       /* the totals at the previous new frame */
     char csv_path[SR_PERF_PATH_MAX];
     char json_path[SR_PERF_PATH_MAX];
     int aot_depth;
@@ -1232,6 +1242,29 @@ static void exec_write_miss_seeds(const char *path) {
 
 void sr_exec_share_arm(void) { s_exec.armed = 1; }
 
+#define SR_PROCESS_END_MAX 8
+static void (*s_process_end[SR_PROCESS_END_MAX])(void);
+static unsigned s_process_end_count;
+
+void sr_at_process_end(void (*report)(void)) {
+    if (s_process_end_count == SR_PROCESS_END_MAX) {
+        fprintf(stderr, "SR_PROCESS_END: more than %u end-of-process reports; the run stops here\n",
+                (unsigned)SR_PROCESS_END_MAX);
+        fflush(stderr);
+        exit(1);
+    }
+    s_process_end[s_process_end_count++] = report;
+}
+
+static void sr_process_end_reports(void) {
+    for (unsigned i = 0; i < s_process_end_count; i++) {
+        void (*report)(void) = s_process_end[i];
+        s_process_end[i] = NULL;
+        if (report) report();
+    }
+    fflush(stderr);
+}
+
 void sr_exec_share_report(void) {
     if (!s_exec.armed || s_exec.reported) return;
     s_exec.reported = 1;
@@ -1309,6 +1342,7 @@ static void make_summary_path(const char *csv_path, char *out, size_t out_size) 
 }
 
 void sr_perf_shutdown(void) {
+    sr_process_end_reports();
     sr_exec_share_report();
     if (!s_perf.enabled || !s_perf.initialized || s_perf.shutdown) return;
     s_perf.shutdown = 1;
@@ -1329,6 +1363,10 @@ void sr_perf_shutdown(void) {
         fclose(s_perf.csv);
         s_perf.csv = NULL;
     }
+    if (s_perf.frames) {
+        fclose(s_perf.frames);
+        s_perf.frames = NULL;
+    }
 }
 
 static void perf_exit(void) {
@@ -1347,8 +1385,10 @@ void sr_perf_init(void) {
     const char *perf = getenv("SR_PERF");
     const char *csv_path = getenv("SR_PERF_CSV");
     const char *json_path = getenv("SR_PERF_JSON");
+    const char *frames_path = getenv("SR_PERF_FRAMES");
     int perf_off = perf && strcmp(perf, "0") == 0;
-    int files = !perf_off && ((csv_path && csv_path[0]) || (json_path && json_path[0]));
+    int files = !perf_off && ((csv_path && csv_path[0]) || (json_path && json_path[0]) ||
+                              (frames_path && frames_path[0]));
     int hud = env_on("SR_HUD");
     s_perf.enabled = s_perf_stderr_enabled || hud || files;
     s_perf_files_only = s_perf.enabled && !s_perf_stderr_enabled && !hud;
@@ -1372,6 +1412,11 @@ void sr_perf_init(void) {
     }
     if (json_path && json_path[0])
         snprintf(s_perf.json_path, sizeof(s_perf.json_path), "%s", json_path);
+    if (frames_path && frames_path[0]) {
+        s_perf.frames = fopen(frames_path, "w");
+        if (s_perf.frames) fputs(s_frames_header, s_perf.frames);
+        else fprintf(stderr, "PERF: cannot open SR_PERF_FRAMES output\n");
+    }
     static int exit_hooked;
     if (!exit_hooked) atexit(perf_exit);
     exit_hooked = 1;
@@ -1389,6 +1434,8 @@ void sr_perf_test_set_clocks(SrPerfTestClock wall_ns, SrPerfTestClock thread_cpu
 void sr_perf_test_reinit(void) {
     if (s_perf.csv) fclose(s_perf.csv);
     s_perf.csv = NULL;
+    if (s_perf.frames) fclose(s_perf.frames);
+    s_perf.frames = NULL;
     s_perf.initialized = 0;
     s_perf_files_only = 0;
     sr_perf_init();
@@ -1668,6 +1715,32 @@ void sr_perf_present_skip(void) {
     if (s_perf.enabled && !s_perf.shutdown) ADD(present_skips, 1);
 }
 
+/* SR_PERF_FRAMES: what one game frame cost, from the previous new frame to this one, so a frame
+ * that misses its period can be told apart by cause. Every column but the first three is a
+ * difference of the run totals; `work_ms` is empty when the thread clock gave no reading. */
+static void frames_row(uint32_t vcount, uint32_t vblanks, int work_valid, uint64_t work_ns,
+                       uint64_t wall_ns) {
+    const SrPerfMetrics *t = &s_perf.total, *b = &s_perf.frame_base;
+#define D(field) (t->field - b->field)
+#define DMS(field) ms(D(field))
+    uint64_t storage = 0;
+    for (unsigned i = 0; i < SR_PERF_STORAGE_SOURCE_COUNT; i++)
+        storage += t->storage_ns[i] - b->storage_ns[i];
+    fprintf(s_perf.frames, "%u,%u,", (unsigned)vcount, (unsigned)vblanks);
+    if (work_valid) fprintf(s_perf.frames, "%.3f", ms(work_ns));
+    fprintf(s_perf.frames,
+            ",%.3f,%.3f,%.3f,%.3f,%.3f,%llu,%.3f,%llu,%llu,%.3f,%.3f,%.3f,%.3f,%llu,%.3f,%llu,%.3f,%.3f,"
+            "%.3f,%.3f,%.3f,%llu\n",
+            ms(wall_ns), DMS(guest_ns), DMS(aot_ns), DMS(interp_ns), DMS(ge_cpu_ns),
+            (unsigned long long)D(ge_cpu_calls), DMS(ge_wait_ns), (unsigned long long)D(ge_waits),
+            (unsigned long long)D(readback_waits), DMS(vk_submit_ns), DMS(vk_wait_ns),
+            DMS(vk_readback_ns), DMS(vk_pipeline_ns), (unsigned long long)D(vk_pipeline_creations),
+            DMS(texture_decode_ns), (unsigned long long)D(texture_decodes), ms(storage), DMS(atrac_ns),
+            DMS(h264_ns), DMS(audio_mix_ns), DMS(present_ns), (unsigned long long)D(sched_switches));
+#undef DMS
+#undef D
+}
+
 /* A new game frame is a present whose guest framebuffer differs from the previous present's,
  * the flip of tools/perf_attribution.py; the first present is one and starts the interval
  * clock. A title that hands one finished frame to the window more than once (Hot Shots Tennis
@@ -1706,8 +1779,9 @@ void sr_perf_present_frame(uint32_t buffer, uint32_t vcount) {
                              "per frame is off for the rest of the run\n",
                              ms(cpu_ns - s_perf.last_frame_cpu_ns), ms(wall_ns - s_perf.last_frame_wall_ns));
         }
-        if (cpu_valid && s_perf.frame_cpu_valid && cpu_ns >= s_perf.last_frame_cpu_ns) {
-            uint64_t work = cpu_ns - s_perf.last_frame_cpu_ns;
+        int work_valid = cpu_valid && s_perf.frame_cpu_valid && cpu_ns >= s_perf.last_frame_cpu_ns;
+        uint64_t work = work_valid ? cpu_ns - s_perf.last_frame_cpu_ns : 0;
+        if (work_valid) {
             unsigned bucket = 0;
             while (bucket < SR_PERF_FRAME_WORK_BUCKETS - 1u && work > s_frame_work_bound_ns[bucket])
                 bucket++;
@@ -1716,7 +1790,11 @@ void sr_perf_present_frame(uint32_t buffer, uint32_t vcount) {
             KEEP_MAX(frame_work_max_ns, work);
             ADD_ARRAY(frame_work_bucket, bucket, 1);
         }
+        if (s_perf.frames)
+            frames_row(vcount, vblanks, work_valid, work,
+                       wall_ns > s_perf.last_frame_wall_ns ? wall_ns - s_perf.last_frame_wall_ns : 0);
     }
+    if (s_perf.frames) s_perf.frame_base = s_perf.total;
     s_perf.frame_seen = 1;
     s_perf.last_frame_buffer = buffer;
     s_perf.last_new_frame_vcount = vcount;

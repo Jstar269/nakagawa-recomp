@@ -311,7 +311,7 @@ fixture title configurations.
 Most Linux jobs run on Ubuntu 26.04. The `native_tools` job stays on Ubuntu 24.04 because its
 translation gate installs `gcc-mipsel-linux-gnu`, which is absent from the Ubuntu 26.04 package
 archive ([Ubuntu 24.04 package](https://packages.ubuntu.com/noble/gcc-mipsel-linux-gnu)). It builds
-SDL3 from its pinned 3.4.18 release commit with X11 and Vulkan enabled, and SDL3_ttf 3.2.2 from upstream commit
+SDL3 from its pinned 3.4.20 release commit with X11 and Vulkan enabled, and SDL3_ttf 3.2.2 from upstream commit
 `a1ce3670aec736ecbf0936c43f2f0cc53aa61e5b`, with vendored FreeType and HarfBuzz enabled.
 The SDL3 and SDL3_ttf staged installs are cached under keys naming their pinned source versions
 and commits, the SDL3 pin where applicable, the gcc and cmake versions, and the workflow file
@@ -699,7 +699,9 @@ upload or Codecov outage from failing the job.
 **The numbers are informational.** [`.github/codecov.yml`](../.github/codecov.yml) marks the
 project and patch status checks `informational: true`, so neither can block a
 merge, and sets `carryforward: true` for both flags, so a run that measures only
-one surface keeps the other flag's last report. The OpenSSF Best Practices
+one surface keeps the other flag's last report. It also sets `comment: false`: the
+two status checks carry the numbers and link to the full report, so Codecov posts
+no pull request comment. The OpenSSF Best Practices
 Silver criterion "statement coverage >= 80%" is the target these numbers are
 watched against; it is not a gate, and promoting either status to a required
 check is a separate maintainer decision. Python's `coverage` package is installed

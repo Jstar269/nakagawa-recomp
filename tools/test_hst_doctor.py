@@ -26,6 +26,7 @@ import nk_doctor_core  # noqa: E402
 import shader_embed  # noqa: E402
 from hst_test_fixtures import write_elf, write_iso, write_psp_header  # noqa: E402
 from nk_core.prereq_fetcher import PrerequisiteFetchError  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 _CHECKS_MODULE = nk_doctor_checks
 
@@ -972,7 +973,7 @@ class SimpleFrontEndTests(unittest.TestCase):
     def setUp(self) -> None:
         self.frontend = (ROOT / "nk.ps1").read_text(encoding="utf-8-sig")
         self.manager = (ROOT / "nk_manager.ps1").read_text(encoding="utf-8-sig")
-        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.makefile = read_makefile(ROOT)
 
     def test_frontend_exposes_small_supported_surface(self) -> None:
         for script in (

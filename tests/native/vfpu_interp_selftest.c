@@ -35,6 +35,10 @@
 //   * vh2f.s/.p, vuc2i.s, vsocp.s/.p, vwbn.s and vrndf1.s/vrndf2.s return the
 //     PSP-VFPU-FORMS-001 words in both lanes, and their unmeasured widths and
 //     prefixes fail closed;
+//   * every census form the generated code emits directly agrees with the
+//     interpreter at every register-overlap signature its encoding allows, on
+//     seeded states with edge-value lanes and drawn S/T/D prefixes (the alias
+//     and edge-value sweep, issue #326), and a seeded alias mutant is caught;
 //   * valid aligned quad round-trips still work.
 //
 // The final check count is printed by the executable. No game inputs or private
@@ -46,7 +50,7 @@
 /* White-box: include the real runtime + interpreter as translation units so the
  * selftest exercises the production sr_vfpu_interp, sr_vread/sr_vwrite, the
  * transcendental kernels and the guest-memory accessors directly (the same
- * pattern src/rt/heap_selftest.c uses for recomp.c). */
+ * pattern tests/native/heap_selftest.c uses for recomp.c). */
 #include "recomp.c"
 #include "vfpu_tables.c"
 #include "vfpu_interp.c"
@@ -2571,6 +2575,227 @@ static int check_vfpu_forms_measured(void) {
     return bad;
 }
 
+/* Alias and edge-value sweep (issue #326): every census form the AOT emits directly, at every
+ * register-overlap signature its encoding allows (tools/vfpu_overlap_diff_gen.py), runs through
+ * the generated body and sr_vfpu_interp from the same seeded state. About 30% of the lanes come
+ * from an edge list (signed zeros, denormals, infinities, NaNs, FLT_MAX, saturation bounds,
+ * large integers), the rest are small values or random bits, and the S, T and D prefixes are
+ * drawn per state: identity, one prefix at a time, then all three. Both lanes must leave the
+ * GPRs, every v[] lane and vfpuCtrl[] identical. This is an AOT/interpreter cross-check, not PSP
+ * evidence: where no hardware cell backs a form, its PSP result stays unmeasured. */
+#ifndef SWEEP_STATES
+#define SWEEP_STATES 48
+#endif
+#ifndef SWEEP_SEED
+#define SWEEP_SEED 326u
+#endif
+
+static uint32_t sweep_next(uint32_t *x) {
+    uint32_t v = *x;
+    v ^= v << 13;
+    v ^= v >> 17;
+    v ^= v << 5;
+    return *x = v;
+}
+
+static uint32_t sweep_lane(uint32_t *rng) {
+    static const uint32_t edges[] = {
+        0x00000000u, 0x80000000u,             /* +0, -0 */
+        0x00000001u, 0x807fffffu, 0x007fffffu, /* smallest and largest denormals */
+        0x00800000u, 0x80800000u,             /* FLT_MIN */
+        0x7f800000u, 0xff800000u,             /* +inf, -inf */
+        0x7fc00000u, 0xffc00000u, 0x7f800001u, 0xff812345u, 0x7fffffffu, /* NaNs */
+        0x7f7fffffu, 0xff7fffffu,             /* FLT_MAX */
+        0x3f800000u, 0xbf800000u, 0x3f7fffffu, 0x3f800001u, 0x3f000000u, /* saturation bounds */
+        0x40490fdbu, 0x4b000000u, 0x4b800001u, /* pi, 2^23, 2^24 + 2 */
+        0x4f000000u, 0xcf000000u, 0x4effffffu, /* 2^31, -2^31, just below 2^31 */
+        0x477fff00u, 0x437f0000u,             /* 65535, 255 */
+    };
+    const uint32_t pick = sweep_next(rng) % 100u;
+    if (pick < 30u) return edges[sweep_next(rng) % (uint32_t)(sizeof(edges) / sizeof(edges[0]))];
+    if (pick < 65u) {
+        const float f = (float)((int32_t)(sweep_next(rng) % 4001u) - 2000) / 64.0f;
+        uint32_t bits;
+        memcpy(&bits, &f, sizeof(bits));
+        return bits;
+    }
+    return sweep_next(rng);
+}
+
+static void sweep_state(CpuState *s, uint32_t *rng, int k) {
+    memset(s, 0, sizeof(*s));
+    sr_vfpu_thread_ctrl_init(s);
+    for (int i = 0; i < 128; i++) s->vi[i] = sweep_lane(rng);
+    for (int i = 1; i < 32; i++) s->r[i] = sweep_next(rng);
+    for (int i = 0; i < 32; i++) s->fi[i] = sweep_lane(rng);
+    s->vfpuCtrl[3] = sweep_next(rng) & 0x3fu; /* VFPU_CC */
+    /* S/T prefix: swizzle (8 bits), abs, constant and negate (4 bits each). D prefix:
+     * saturation (2 bits per lane) and write mask (4 bits). */
+    const int which = k % 8;
+    if (which == 1 || which >= 4) s->vfpuCtrl[0] = sweep_next(rng) & 0xfffffu;
+    if (which == 2 || which >= 4) s->vfpuCtrl[1] = sweep_next(rng) & 0xfffffu;
+    if (which == 3 || which >= 4) s->vfpuCtrl[2] = sweep_next(rng) & 0xfffu;
+}
+
+static int sweep_diff(const CpuState *a, const CpuState *b, char *where, size_t n) {
+    for (int i = 0; i < 32; i++)
+        if (a->r[i] != b->r[i]) { snprintf(where, n, "r%d aot=0x%08x interp=0x%08x", i, a->r[i], b->r[i]); return 1; }
+    for (int i = 0; i < 128; i++)
+        if (a->vi[i] != b->vi[i]) { snprintf(where, n, "v%d aot=0x%08x interp=0x%08x", i, a->vi[i], b->vi[i]); return 1; }
+    for (int i = 0; i < 16; i++)
+        if (a->vfpuCtrl[i] != b->vfpuCtrl[i]) {
+            snprintf(where, n, "vfpuCtrl[%d] aot=0x%08x interp=0x%08x", i, a->vfpuCtrl[i], b->vfpuCtrl[i]);
+            return 1;
+        }
+    return 0;
+}
+
+/* The NaN rule of the sr_vf_* lane helpers (src/rt/recomp.h, issue #326), which the generated
+ * code and sr_vfpu_interp share: the first NaN operand quieted, else 0xFFC00000 for an invalid
+ * operation. Swapping two NaN operands swaps the result, whatever the host compiler does with
+ * a plain + or *. Project semantics, not PSP evidence. */
+static int check_vf_nan_rule(void) {
+    static const struct { uint32_t a, b, add, sub, mul, div; } cells[] = {
+        {0x7fc12345u, 0xffc00001u, 0x7fc12345u, 0x7fc12345u, 0x7fc12345u, 0x7fc12345u},
+        {0xffc00001u, 0x7fc12345u, 0xffc00001u, 0xffc00001u, 0xffc00001u, 0xffc00001u},
+        {0x7f800001u, 0x3f800000u, 0x7fc00001u, 0x7fc00001u, 0x7fc00001u, 0x7fc00001u}, /* sNaN quieted */
+        {0x3f800000u, 0xff800002u, 0xffc00002u, 0xffc00002u, 0xffc00002u, 0xffc00002u},
+        {0x7f800000u, 0xff800000u, 0xffc00000u, 0x7f800000u, 0xff800000u, 0xffc00000u}, /* Inf, -Inf */
+        {0x00000000u, 0x7f800000u, 0x7f800000u, 0xff800000u, 0xffc00000u, 0x00000000u}, /* 0, Inf */
+        {0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0xffc00000u}, /* 0 / 0 */
+        {0x3fc00000u, 0x40000000u, 0x40600000u, 0xbf000000u, 0x40400000u, 0x3f400000u}, /* 1.5, 2 */
+    };
+    int bad = 0;
+    for (size_t i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
+        float a, b, r[4];
+        uint32_t got[4];
+        memcpy(&a, &cells[i].a, 4);
+        memcpy(&b, &cells[i].b, 4);
+        r[0] = sr_vf_add(a, b);
+        r[1] = sr_vf_sub(a, b);
+        r[2] = sr_vf_mul(a, b);
+        r[3] = sr_vf_div(a, b);
+        memcpy(got, r, sizeof(got));
+        const uint32_t want[4] = {cells[i].add, cells[i].sub, cells[i].mul, cells[i].div};
+        for (int k = 0; k < 4; k++) {
+            if (got[k] != want[k]) {
+                fprintf(stderr, "FAIL: sr_vf_%s(0x%08x, 0x%08x) = 0x%08x, want 0x%08x\n",
+                        (const char *[]){"add", "sub", "mul", "div"}[k], cells[i].a, cells[i].b, got[k], want[k]);
+                bad = 1;
+            }
+        }
+    }
+    CHECK(!bad, "sr_vf_* lane helpers return the first NaN operand, quieted, or 0xFFC00000");
+    return bad;
+}
+
+/* vlog2's interpolation knots (src/rt/recomp.c sr_log2_approx, issue #326). sr_vfpu_log2's
+ * upper knot (i+64)&~63 reaches the end point 0x800000 for mantissas from 0x7FFFC0 up, FLT_MAX
+ * among them, where the old code also read the entry after the 129-entry table and the entry
+ * after the 128-entry quadratic one. Both carry zero weight there, so only the ASan/UBSan build
+ * (and the alias-edge sweep's FLT_MAX lanes in it) saw the fault; this pins the knot value. */
+static int check_log2_top_knot(void) {
+    int bad = 0;
+    for (uint32_t k = 0; k <= 128u; k++)
+        if (sr_log2_approx(k << 16) != sr_log2_lut65536[k]) {
+            fprintf(stderr, "FAIL: sr_log2_approx(0x%06x) != knot entry %u\n", k << 16, k);
+            bad = 1;
+        }
+    for (uint32_t e = 0x3f800000u; e <= 0x7f000000u; e += 0x3f800000u) {
+        float prev = -INFINITY;
+        for (uint32_t m = 0x7fff80u; m <= 0x7fffffu; m++) {
+            const uint32_t bits = e | m;
+            float x, r;
+            memcpy(&x, &bits, 4);
+            r = sr_vfpu_log2(x);
+            const float hi = (float)((int32_t)(e >> 23) - 126);
+            if (!(r >= prev && r <= hi)) {
+                fprintf(stderr, "FAIL: vlog2(0x%08x) = %a, not in [%a, %a]\n", bits, r, prev, hi);
+                bad = 1;
+            }
+            prev = r;
+        }
+    }
+    CHECK(!bad, "vlog2 knots: the end point 0x800000 is the last table entry; vlog2 rises to the next binade");
+    return bad;
+}
+
+/* One sweep state through one AOT body (the production one, or the mutant) and the
+ * interpreter. Returns 1 and fills where[] when the two lanes disagree. */
+static int sweep_one(int c, int mutant, CpuState *s0, char *where, size_t n) {
+    const uint32_t w = sweep_cases[c].w;
+    CpuState aot = *s0, interp = *s0;
+    if (mutant >= 0) sweep_run_mutant(&aot, mutant);
+    else sweep_run_codegen(&aot, c);
+    const int kind = sr_vfpu_interp(&interp, w);
+    const int interp_stopped = kind != SR_VFPU_COMPUTE && kind != SR_VFPU_STATE;
+    if (interp_stopped != sweep_stopped) {
+        snprintf(where, n, "interpreter %s, generated code %s",
+                 interp_stopped ? "refused" : "computed", sweep_stopped ? "stopped" : "computed");
+        return 1;
+    }
+    /* A stop in both lanes must leave the state untouched (pc is not compared). */
+    return sweep_diff(&aot, &interp, where, n) || (interp_stopped && sweep_diff(&aot, s0, where, n));
+}
+
+static int check_alias_edge_sweep(void) {
+    static int form_bad[SWEEP_NFORMS];
+    int bad_cases = 0, stopped = 0, reported = 0;
+    uint32_t rng = SWEEP_SEED;
+    for (int c = 0; c < SWEEP_NCASES; c++) {
+        int case_bad = 0;
+        for (int k = 0; k < SWEEP_STATES && !case_bad; k++) {
+            CpuState s0;
+            char where[96];
+            sweep_state(&s0, &rng, k);
+            case_bad = sweep_one(c, -1, &s0, where, sizeof(where));
+            if (!case_bad && sweep_stopped) stopped++;
+            if (case_bad && !form_bad[sweep_cases[c].form] && reported++ < 60)
+                fprintf(stderr, "MISMATCH alias-edge sweep %s op=0x%08x %s state=%d S=0x%05x T=0x%05x D=0x%03x: %s\n",
+                        sweep_forms[sweep_cases[c].form], sweep_cases[c].w, sweep_cases[c].alias, k,
+                        s0.vfpuCtrl[0], s0.vfpuCtrl[1], s0.vfpuCtrl[2], where);
+        }
+        if (case_bad) {
+            bad_cases++;
+            form_bad[sweep_cases[c].form] = 1;
+        }
+    }
+    int bad_forms = 0;
+    for (int f = 0; f < SWEEP_NFORMS; f++) bad_forms += form_bad[f];
+    printf("alias-edge sweep: %d forms, %d instances, %d states each, seed %u: %d instances "
+           "(%d forms) differ; %d states stopped fail-closed in both lanes\n",
+           SWEEP_NFORMS, SWEEP_NCASES, SWEEP_STATES, SWEEP_SEED, bad_cases, bad_forms, stopped);
+    CHECK(bad_cases == 0, "alias-edge sweep: AOT codegen and sr_vfpu_interp agree on every form, alias and state");
+
+    /* The mutant (vadd run twice, sources re-read after the destination is written) must
+     * mismatch on exactly the instances whose destination overlaps a source. */
+    int mutant_wrong = 0, mutant_hits = 0;
+    for (int m = 0; m < SWEEP_NMUTANTS; m++) {
+        const int c = sweep_mutant_case[m];
+        const char *alias = sweep_cases[c].alias;
+        const int expect = strstr(alias, "d=s") || strstr(alias, "d~s") ||
+                           strstr(alias, "d=t") || strstr(alias, "d~t");
+        uint32_t mrng = SWEEP_SEED ^ (uint32_t)c;
+        int hit = 0;
+        for (int k = 0; k < SWEEP_STATES && !hit; k++) {
+            CpuState s0;
+            char where[96];
+            sweep_state(&s0, &mrng, k);
+            hit = sweep_one(c, m, &s0, where, sizeof(where));
+        }
+        mutant_hits += hit;
+        if (hit != expect) {
+            mutant_wrong++;
+            fprintf(stderr, "alias-edge sweep mutant: %s op=0x%08x %s %s\n", sweep_forms[sweep_cases[c].form],
+                    sweep_cases[c].w, alias, hit ? "mismatched without an overlap" : "was not caught");
+        }
+    }
+    printf("alias-edge sweep mutant: %d vadd instances, %d mismatch, all of them the overlapping ones: %s\n",
+           SWEEP_NMUTANTS, mutant_hits, mutant_wrong == 0 ? "PASS" : "FAIL");
+    CHECK(mutant_wrong == 0 && mutant_hits > 0, "alias-edge sweep mutant: exactly the aliased vadd instances mismatch");
+    return bad_cases != 0 || mutant_wrong != 0 || mutant_hits == 0;
+}
+
 int main(void) {
     int bad = 0;
     bad |= check_psp_measured_vfpu9();
@@ -2595,6 +2820,9 @@ int main(void) {
     bad |= check_vfpu3_compare_parity();
     bad |= check_vhdp_signed_zero_corpus();
     bad |= check_vf2i_conversions();
+    bad |= check_vf_nan_rule();
+    bad |= check_log2_top_knot();
+    bad |= check_alias_edge_sweep();
     bad |= g_failures != 0;
     if (bad == 0) {
         printf("vfpu_interp_selftest: all %d checks passed\n", g_checks);

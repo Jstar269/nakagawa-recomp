@@ -1292,6 +1292,100 @@ int main(int argc, char **argv) {{
         self.assertIn("code-overlay header is malformed", candidates[0]["reason"])
         self.assertIn("names an entry point", candidates[0]["reason"])
 
+    @staticmethod
+    def _build_prx_without_module_info() -> bytes:
+        """A relocatable module that declares no SceModuleInfo (a zero phdr[0].p_paddr)."""
+        elf = bytearray(build_plain_mips_elf(0xFFA0))
+        struct.pack_into("<I", elf, 0x34 + 12, 0)
+        return bytes(elf)
+
+    def test_plain_prx_is_found_by_its_header_whatever_its_file_name(self) -> None:
+        # The kernel's module loader reads the header, not the name, so a game can load a
+        # plain PRX named like data; left undeclared, its start was skipped and the first
+        # call into it hit a null pointer. The same bytes under other names show what stays
+        # out: the executables, a fixed-address ELF, and a file that only opens with the magic.
+        prx = self._build_prx_without_module_info()
+        work = self.temp_dir / "renamed-module"
+        user_root = work / "user"
+        user_root.mkdir(parents=True)
+        selected = work / "selected.elf"
+        selected.write_bytes(build_plain_mips_elf())
+        iso_file = work / "renamed.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/901_menu.bin": prx,
+                       "PSP_GAME/SYSDIR/BOOT.BIN": prx,
+                       "PSP_GAME/USRDIR/game.dat": build_plain_mips_elf(),
+                       "PSP_GAME/USRDIR/truncated.bin": prx[:0x14],
+                       "PSP_GAME/USRDIR/bad_tables.bin": build_plain_mips_elf(0xFFA0),
+                       "PSP_GAME/USRDIR/data/notes.bin": b"not code"},
+            disc_id="TEST00084",
+        )
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual([(c["name"], c["kind"]) for c in candidates],
+                         [("901_menu.bin", "plain-elf")])
+        declared, deferred, staged = nk_cli._declare_experimental_disc_modules(
+            iso_file, user_root, "TEST00084", candidates, selected, {},
+        )
+        self.assertEqual(deferred, [])
+        self.assertEqual(declared, [{
+            "name": "901_menu.bin", "required": True, "role": "guest-prx",
+            "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/901_menu.bin",
+        }])
+        self.assertEqual((staged / "901_menu.bin").read_bytes(), prx)
+
+    def test_prx_packed_in_a_disc_file_is_declared_by_its_sector_extent(self) -> None:
+        # A game can pack its modules in one archive and load each by the sectors it
+        # occupies, so no file name leads to it. The section table's end is the size the
+        # game passes, and that extent is the guest path the runtime matches. What only
+        # looks like a module stays file data, and the firmware updater is never opened.
+        section_string_table = struct.pack("<10I", 0, 3, 0, 0, 84, 4, 0, 0, 1, 0)
+        elf = bytearray(self._build_prx_without_module_info())
+        struct.pack_into("<I", elf, 0x20, len(elf))
+        struct.pack_into("<HH", elf, 0x2E, len(section_string_table), 1)
+        prx = bytes(elf) + section_string_table
+
+        def pad(data: bytes, sectors: int = 1) -> bytes:
+            return data + bytes(sectors * 2048 - len(data))
+
+        no_sections = pad(build_plain_mips_elf(0xFFA0))
+        unaligned = pad(bytes(16) + prx)
+        beyond_the_file = bytearray(elf)
+        struct.pack_into("<I", beyond_the_file, 0x20, 0x100000)
+        archive = (bytes(2048) + pad(prx, 2) + no_sections + unaligned +
+                   pad(bytes(beyond_the_file)) + b"\x7fELF" + bytes(2044) + pad(prx))
+        work = self.temp_dir / "embedded-module"
+        user_root = work / "user"
+        user_root.mkdir(parents=True)
+        selected = work / "selected.elf"
+        selected.write_bytes(build_plain_mips_elf())
+        iso_file = work / "embedded.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/package.rdp": archive,
+                       "PSP_GAME/SYSDIR/UPDATE/DATA.BIN": archive},
+            disc_id="TEST00085",
+        )
+        archive_lba = next(entry.lba for _directory, entry
+                           in iso_inspect.walk_disc_module_entries(iso_file)
+                           if entry.name == "package.rdp")
+        extents = [
+            f"sce_lbn0x{archive_lba + sector:x}_size0x{len(prx):x}" for sector in (1, 7)
+        ]
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual([(c["name"], c["kind"]) for c in candidates],
+                         [(f"{extent}.prx", "plain-elf") for extent in extents])
+        declared, deferred, staged = nk_cli._declare_experimental_disc_modules(
+            iso_file, user_root, "TEST00085", candidates, selected, {},
+        )
+        self.assertEqual(deferred, [])
+        self.assertEqual([module["guest_path"] for module in declared],
+                         [f"disc0:/{extent}" for extent in extents])
+        self.assertEqual({module["placement"] for module in declared}, {"runtime"})
+        self.assertEqual((staged / f"{extents[0]}.prx").read_bytes(), prx)
+        copied = nk_cli._copy_optional_modules(
+            iso_file, {"modules": declared}, work / "package", None,
+        )
+        self.assertEqual((copied / f"{extents[1]}.prx").read_bytes(), prx)
+
     def test_code_overlay_is_found_by_its_magic_and_declared_runtime_placed(self) -> None:
         # A game's own code overlays (MWo3) are found by their magic whatever their file
         # name, staged as they are, and declared runtime-placed so the build translates
@@ -1460,13 +1554,21 @@ int main(int argc, char **argv) {{
                                  "native layout rule")
 
     def test_start_entry_is_shared_by_python_and_c(self) -> None:
-        # module_start wins over e_entry, then module_bootstart, then e_entry; an image with
-        # no module info (p_paddr == p_vaddr) starts at e_entry.
+        # module_start wins over e_entry, then module_bootstart, then e_entry; a NID listed
+        # twice resolves to its last entry; an image with no module info (p_paddr ==
+        # p_vaddr) starts at e_entry.
         cases = [
             ("module-start-over-e-entry", build_module_start_elf(entry=0x08804008),
              0x08804004, None),
             ("module-start-over-bootstart", build_module_start_elf(entry=0, exports=(
                 (MODULE_BOOTSTART_NID, 0x8), (MODULE_START_NID, 0x4))), 0x08804004, None),
+            # A table that lists module_start twice (The BIGS and The BIGS 2 list a game
+            # routine first and their crt0 entry last): uofw's module manager assigns every
+            # match, so the last one is entered (sr_prx_start_entry names the revision).
+            ("module-start-listed-twice", build_module_start_elf(entry=0x08804008, exports=(
+                (MODULE_START_NID, 0x4), (MODULE_START_NID, 0x8))), 0x08804008, None),
+            ("bootstart-listed-twice", build_module_start_elf(entry=0, exports=(
+                (MODULE_BOOTSTART_NID, 0x4), (MODULE_BOOTSTART_NID, 0xC))), 0x0880400C, None),
             ("bootstart-without-start", build_module_start_elf(
                 entry=0x08804008, exports=((MODULE_BOOTSTART_NID, 0xC),)), 0x0880400C, None),
             ("e-entry-without-exports", build_module_start_elf(
@@ -1778,12 +1880,12 @@ int main(int argc, char **argv) {{
         create_test_iso_with_module_tree(iso_file, modules)
         with self.assertRaisesRegex(
             IsoInspectionError,
-            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets are in the works",
+            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets aren't supported yet",
         ):
             list_disc_module_candidates(iso_file)
         with self.assertRaisesRegex(
             nk_cli.PackageBuildError,
-            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets are in the works",
+            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets aren't supported yet",
         ):
             nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
 
@@ -2112,6 +2214,36 @@ int main(int argc, char **argv) {{
         iso_file = self.temp_dir / "standard.iso"
         create_test_iso(iso_file, disc_id="TEST00001", title="Standard Disc")
         self.assertNotIn("format_warnings", inspect_iso(iso_file).container_metadata)
+
+    def test_quirky_disc_inspection_builds_a_valid_title_identity(self) -> None:
+        # The inspector's container metadata goes straight into the package identity,
+        # so a disc with a tolerated quirk must still yield a valid identity record.
+        from nk_core import package_cache
+
+        iso_file = self.temp_dir / "quirk-identity.iso"
+        sfo = build_custom_param_sfo([
+            ("DISC_ID", 0x0204, b"TEST00001\0"),
+            ("DISC_VERSION", 0x0204, b"1.00\0"),
+            ("TITLE", 0x0204, b"Fixture \x96 Edition\0"),
+        ])
+        create_test_iso(iso_file, volume_id="VOLUME_ID", sfo_bytes=sfo)
+        meta = inspect_iso(iso_file)
+        self.assertIn("format_warnings", meta.container_metadata)
+        identity = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-quirk-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[],
+            disc_id=meta.disc_id,
+            region="OTHER",
+            disc_version=meta.version,
+            param_sfo=dict(meta.param_sfo_facts),
+            container=dict(meta.container_metadata),
+        )
+        self.assertEqual(
+            set(identity["container"]),
+            {"format", "volume_id", "size_bytes", "pvd_sector", "sector_size"},
+        )
 
     # A synthetic beta disc: a 12-character placeholder DISC_ID, outside the retail
     # format, and a small executable. Its key is pinned below, because a library

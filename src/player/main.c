@@ -124,7 +124,7 @@ static void player_show_picked_refusal(PlayerApp *app, const char *code, const c
         snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
                  "%.48s: %.200s", code, message);
     } else {
-        player_app_set_error(app, code, title, message, "Try Another File", VIEW_LIBRARY);
+        player_app_set_error(app, code, title, message, "Choose another disc", VIEW_LIBRARY);
     }
 }
 
@@ -145,9 +145,9 @@ static void player_take_picked_disc_from(PlayerApp *app, const char *selected_pa
                          "%s", profile_error[0] ? profile_error : "Experimental profile could not be saved.");
             } else {
                 player_app_set_error(app, "EXPERIMENTAL_PROFILE_FAILED",
-                                     "Could Not Save Experimental Profile",
+                                     "Could not save experimental profile",
                                      profile_error[0] ? profile_error : "Experimental profile could not be saved.",
-                                     "Return to Library", VIEW_LIBRARY);
+                                     "Back to library", VIEW_LIBRARY);
             }
             return;
         }
@@ -191,8 +191,8 @@ static void player_take_picked_disc_from(PlayerApp *app, const char *selected_pa
             player_show_picked_refusal(app, res.boundary_code,
                                        player_disc_refusal_title(res.boundary_code), message);
         } else {
-            player_app_set_error(app, "ISO_CORRUPT", "Not a PSP Disc Image",
-                                 k_invalid_disc_message, "Try Another File", VIEW_LIBRARY);
+            player_app_set_error(app, "ISO_CORRUPT", "Not a PSP disc image",
+                                 k_invalid_disc_message, "Choose another disc", VIEW_LIBRARY);
         }
     }
 }
@@ -235,7 +235,7 @@ static void player_take_picked_package(PlayerApp *app, const char *path) {
     char message[512];
     if (!player_psn_package_inspect(path, &package, code, sizeof(code), message,
                                     sizeof(message))) {
-        player_show_picked_refusal(app, code, "Package Not Supported", message);
+        player_show_picked_refusal(app, code, "Package not supported", message);
         return;
     }
     if (package.iso_ready) {
@@ -270,6 +270,29 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
         return;
     }
     player_take_picked_disc(app, selected_path);
+}
+
+/* Opens the next dropped disc image the way the picker's choice opens, when the player
+   can take one: not while a worker owns the staging or conversion. Later images of a
+   drop wait for the library (player_frame_requests), so each is added in turn. */
+static void player_open_next_dropped_disc(PlayerApp *app) {
+    char path[NK_MAX_PATH];
+    const char *files[2] = { path, NULL };
+    if (app->wizard.is_extracting || app->psn_conversion_active) return;
+    if (!player_app_drop_take(app, path, sizeof(path))) return;
+    on_file_dialog_callback(app, files, 0);
+}
+
+/* The end of a drop, whether SDL bracketed it with begin and complete or sent a lone file: a
+   worker that owns the current game's files ignores it, as a dropped file always was then
+   (nothing waits to open later); otherwise the first disc image opens now. */
+static void player_finish_drop(PlayerApp *app) {
+    player_app_drop_finish(app);
+    if (app->wizard.is_extracting || app->psn_conversion_active) {
+        player_app_drop_discard(app, "a game is being set up");
+        return;
+    }
+    player_open_next_dropped_disc(app);
 }
 
 /* Where a picker opens (player_app_picker_start_folder). SDL keeps reading
@@ -895,11 +918,21 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
     case SDL_EVENT_PEN_UP:
         if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         return false;
+    /* Files dropped together arrive one event at a time between a begin and a
+       complete: they are gathered, then opened in turn with one summary (#2007). */
+    case SDL_EVENT_DROP_BEGIN:
+        player_app_drop_begin(app);
+        return true;
     case SDL_EVENT_DROP_FILE:
-        if (event->drop.data) {
-            const char *files[2] = { event->drop.data, NULL };
-            on_file_dialog_callback(app, files, 0);
+        {
+            /* A host that sends no begin and complete delivers a lone file. */
+            const bool in_batch = app->drop_active;
+            if (event->drop.data) player_app_drop_add(app, event->drop.data);
+            if (!in_batch) player_finish_drop(app);
         }
+        return true;
+    case SDL_EVENT_DROP_COMPLETE:
+        player_finish_drop(app);
         return true;
     default:
         return false;
@@ -989,10 +1022,7 @@ static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
             if (player_app_add_game(app, &app->inspecting_game)) {
                 player_app_set_view(app, VIEW_LIBRARY);
             } else {
-                player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
-                                     "The experimental title could not be stored. The library "
-                                     "may be full, or the user data directory is not writable.",
-                                     "Return to Library", VIEW_LIBRARY);
+                player_app_set_library_write_error(app);
             }
             break;
         case PLAYER_UI_WIZARD_ACCEPT_FONTS:
@@ -1068,8 +1098,12 @@ static void player_open_link(PlayerApp *app, const char *what, const char *url) 
     }
     if (!SDL_OpenURL(url)) {
         fprintf(stderr, "[PLAYER] %s could not be opened: %s\n", what, SDL_GetError());
-        if (app) player_dev_log_add(app, "error", "%s could not be opened (%s)", what,
-                                    SDL_GetError());
+        if (app) {
+            player_dev_log_add(app, "error", "%s could not be opened (%s)", what,
+                               SDL_GetError());
+            /* Say so on screen, with the address to paste into a browser (#2007). */
+            player_app_set_link_open_error(app, url, SDL_GetError());
+        }
     }
 }
 
@@ -1117,20 +1151,14 @@ static void player_ui_disc_apply(PlayerApp *app, PlayerUiDiscOp op) {
                    up first by the wizard's staging worker; any other title is
                    saved directly. */
                 if (!player_app_add_inspected_game(app)) {
-                    player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
-                                         "The title could not be stored. The library may be full, "
-                                         "or the user data directory is not writable.",
-                                         "Return to Library", VIEW_LIBRARY);
+                    player_app_set_library_write_error(app);
                 }
             } else if (app->active_view == VIEW_EXPERIMENTAL_TITLE &&
                        player_preflight_blocking_check(&app->wizard.preflight) == NULL) {
                 if (player_app_add_game(app, &app->inspecting_game)) {
                     player_app_set_view(app, VIEW_LIBRARY);
                 } else {
-                    player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
-                                         "The experimental title could not be stored. The library "
-                                         "may be full, or the user data directory is not writable.",
-                                         "Return to Library", VIEW_LIBRARY);
+                    player_app_set_library_write_error(app);
                 }
             }
             break;
@@ -1247,7 +1275,7 @@ static void player_update_start(PlayerApp *app, PlayerUpdateJobKind kind) {
     if (s_update_job != NULL) return;   /* one step at a time */
     job = (PlayerUpdateJob *)calloc(1, sizeof(*job));
     if (!job) {
-        player_update_fail(app, step, "UPDATE_START_FAILED", "Couldn't Start",
+        player_update_fail(app, step, "UPDATE_START_FAILED", "Couldn't start",
                            "Nakagawa couldn't start this step. Restart it and try again.");
         return;
     }
@@ -1260,7 +1288,7 @@ static void player_update_start(PlayerApp *app, PlayerUpdateJobKind kind) {
         snprintf(job->downloads_dir, sizeof(job->downloads_dir), "%s%cdownloads", data_dir,
                  nk_platform_path_separator()) >= (int)sizeof(job->downloads_dir)) {
         free(job);
-        player_update_fail(app, step, "DATA_DIR_UNAVAILABLE", "Couldn't Start",
+        player_update_fail(app, step, "DATA_DIR_UNAVAILABLE", "Couldn't start",
                            "Nakagawa's data folder is not available, so there is nowhere to "
                            "save the download.");
         return;
@@ -1275,7 +1303,7 @@ static void player_update_start(PlayerApp *app, PlayerUpdateJobKind kind) {
                                   job->release.zip_name, job->install_dir,
                                   sizeof(job->install_dir))) {
         free(job);
-        player_update_fail(app, step, "UPDATE_INSTALL_PATH", "Couldn't Install",
+        player_update_fail(app, step, "UPDATE_INSTALL_PATH", "Couldn't install",
                            "The folder for the new version has too long a path. Unpack the "
                            "ZIP yourself.");
         return;
@@ -1283,7 +1311,7 @@ static void player_update_start(PlayerApp *app, PlayerUpdateJobKind kind) {
     job->thread = SDL_CreateThread(player_update_thread_main, "nakagawa-update", job);
     if (!job->thread) {
         free(job);
-        player_update_fail(app, step, "UPDATE_START_FAILED", "Couldn't Start",
+        player_update_fail(app, step, "UPDATE_START_FAILED", "Couldn't start",
                            "Nakagawa couldn't start this step. Restart it and try again.");
         return;
     }
@@ -1358,13 +1386,13 @@ static void player_update_shutdown(void) {
     s_update_job = NULL;
 }
 
-static void player_update_open_release_page(const PlayerApp *app) {
+static void player_update_open_release_page(PlayerApp *app) {
     const char *url = app->update.check.newest.page_url;
     /* Only this repository's release pages, as the check verified. */
     if (strncmp(url, NK_UPDATE_RELEASE_PAGE_PREFIX, strlen(NK_UPDATE_RELEASE_PAGE_PREFIX)) != 0) {
         return;
     }
-    player_open_link(NULL, "The release page", url);
+    player_open_link(app, "The release page", url);
 }
 
 /* ---- Problem report (#1849) -----------------------------------------------------------
@@ -1691,6 +1719,12 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             break;
         }
         case PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE: player_update_open_release_page(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_DATA_FOLDER:
+            (void)player_app_request_user_folder(app, NK_PATH_DATA);
+            break;
+        case PLAYER_UI_SETTINGS_OPEN_LOGS:
+            (void)player_app_request_user_folder(app, NK_PATH_LOGS);
+            break;
         case PLAYER_UI_SETTINGS_CYCLE_RESOLUTION: player_app_cycle_resolution_scale(app, 1); break;
         case PLAYER_UI_SETTINGS_TOGGLE_PACING:
             player_app_set_fps_cap(app, app->settings.fps_cap < 0 ? 0 : -1);
@@ -1712,6 +1746,7 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
         case PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT: player_app_toggle_ace_text(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT: player_app_toggle_ace_readout(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE: player_app_toggle_ace_notice(app); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_ACE_SMOOTH: player_app_toggle_ace_smooth(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST: player_app_cycle_high_contrast_focus(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION: player_app_cycle_reduce_motion(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN:
@@ -2002,11 +2037,6 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
     if (action->kind == PLAYER_UI_ACTION_PREREQ_CANCEL) {
         player_app_prereq_cancel(app);
-        return;
-    }
-    if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER &&
-        app->active_view == VIEW_PREPARING) {
-        player_app_set_view(app, VIEW_LIBRARY);
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER) {
@@ -2965,7 +2995,7 @@ static void start_psn_job(PlayerApp *app, PlayerPsnJob **job_slot) {
         bool disc_image = app->psn_package.disc_format != NK_DISC_FORMAT_NONE;
         player_app_psn_conversion_finish(app);
         player_show_picked_refusal(app, "INTERNAL_ERROR",
-                                   disc_image ? "Disc Image Not Expanded" : "Package Not Converted",
+                                   disc_image ? "Disc image not expanded" : "Package not converted",
                                    disc_image ? "Nakagawa could not start expanding the disc image. Try again."
                                               : "Nakagawa could not start converting the package. Try again.");
         return;
@@ -3006,7 +3036,7 @@ static void finish_psn_job(PlayerApp *app, PlayerPsnJob *job) {
         player_show_picked_refusal(app, job->code, player_disc_refusal_title(job->code),
                                    job->message);
     } else {
-        player_show_picked_refusal(app, job->code, "Package Not Converted", job->message);
+        player_show_picked_refusal(app, job->code, "Package not converted", job->message);
     }
 }
 
@@ -3511,7 +3541,7 @@ static bool player_apply_user_data_root(int argc, char *argv[]) {
             fprintf(stderr, "[PLAYER] %s\n", portable.message);
             /* A double-clicked player has no console to print to. */
             (void)SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-                                           "Nakagawa Recomp can't start portable",
+                                           "Nakagawa Recomp can't start in portable mode",
                                            portable.message, NULL);
             return false;
         }
@@ -3602,7 +3632,7 @@ static void player_start_prerequisite_operation(PlayerApp *app) {
         if (!python_item || !package_builder_bootstrap_python_start(
                 &app->bootstrap_session, python_item, data_root)) {
             player_app_prereq_fail(app, "PYTHON_BOOTSTRAP_START_FAILED",
-                "The verified CPython bootstrap could not start. Check app-data permissions and retry.");
+                "Nakagawa couldn't start installing Python. Check that it can write to its data folder, then try again.");
             return;
         }
         app->prerequisite_job_started = true;
@@ -3617,7 +3647,7 @@ static void player_start_prerequisite_operation(PlayerApp *app) {
     char cli_path[NK_MAX_PATH];
     if (!package_builder_find_python_in_root(data_root, python_path, sizeof(python_path))) {
         player_app_prereq_fail(app, "PYTHON_NOT_FOUND",
-            "The verified CPython runtime is unavailable in app data. Retry the bootstrap download.");
+            "The downloaded Python isn't available. Download the build tools again.");
         return;
     }
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
@@ -4053,8 +4083,8 @@ static int player_load_library(PlayerRun *run) {
             fprintf(stderr, "[PLAYER] %s: %s\n", code, message);
             if (run->stage_only || app->launch_headless) return 1;
             run->populate_sample = false;
-            player_app_set_error(app, code, "Package Not Supported", message,
-                                 "Try Another File", VIEW_LIBRARY);
+            player_app_set_error(app, code, "Package not supported", message,
+                                 "Choose another disc", VIEW_LIBRARY);
             run->initial_iso_path = NULL;
         } else {
             snprintf(run->converted_iso_path, sizeof(run->converted_iso_path), "%s", package.iso_path);
@@ -4083,7 +4113,7 @@ static int player_load_library(PlayerRun *run) {
             if (run->stage_only || app->launch_headless) return 1;
             run->populate_sample = false;
             player_app_set_error(app, code, player_disc_refusal_title(code), message,
-                                 "Try Another File", VIEW_LIBRARY);
+                                 "Choose another disc", VIEW_LIBRARY);
             run->initial_iso_path = NULL;
         } else {
             snprintf(run->expanded_iso_path, sizeof(run->expanded_iso_path), "%s", package.iso_path);
@@ -4157,29 +4187,26 @@ static int player_load_library(PlayerRun *run) {
 
             if (run->launch_now && app->inspecting_game.is_experimental) {
                 const char *message =
-                    "Launch now is unavailable for experimental titles. Generic ISO-to-Play "
-                    "support is in the works. This title was not added; review its "
+                    "Launch now is unavailable for experimental games. Starting a game straight "
+                    "from its ISO isn't supported yet. This game was not added; review its "
                     "compatibility checks before adding it to the library.";
                 fprintf(stderr, "[PLAYER] EXPERIMENTAL_LAUNCH_UNAVAILABLE: %s\n", message);
                 player_app_set_error(app, "EXPERIMENTAL_LAUNCH_UNAVAILABLE",
-                                     "Experimental Title Cannot Launch Yet", message,
-                                     "Review Compatibility", VIEW_EXPERIMENTAL_TITLE);
+                                     "Experimental game can't launch yet", message,
+                                     "Review compatibility", VIEW_EXPERIMENTAL_TITLE);
             } else if (add_before_launch && staging_exit != 0) {
                 /* The staging transaction already explained itself on stderr. */
                 if (app->launch_headless) return staging_exit;
-                player_app_set_error(app, "GAME_FILES_NOT_READY", "Game Files Not Set Up",
+                player_app_set_error(app, "GAME_FILES_NOT_READY", "Game files not set up",
                                      app->wizard.extraction_error[0]
                                          ? app->wizard.extraction_error
                                          : "This game's files could not be set up.",
-                                     "Return to Library", VIEW_LIBRARY);
+                                     "Back to library", VIEW_LIBRARY);
             } else if (add_before_launch && !stored) {
                 fprintf(stderr, "[PLAYER] Could not store %s in the library.\n",
                         app->inspecting_game.disc_id);
                 if (app->launch_headless) return 2;
-                player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
-                                     "The title could not be stored. The library may be full, "
-                                     "or the user data directory is not writable.",
-                                     "Return to Library", VIEW_LIBRARY);
+                player_app_set_library_write_error(app);
             } else if (should_store) {
                 player_app_set_view(app, app->inspecting_game.is_experimental
                     ? VIEW_EXPERIMENTAL_TITLE : VIEW_SUPPORTED_TITLE);
@@ -4196,10 +4223,10 @@ static int player_load_library(PlayerRun *run) {
                         fprintf(stderr, "[PLAYER] Disc %s is not in the library after adding it.\n",
                                 app->inspecting_game.disc_id);
                         if (app->launch_headless) return 4;
-                        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
                                              "The title could not be found in the library after "
                                              "adding it. Add the disc again from the library.",
-                                             "Return to Library", VIEW_LIBRARY);
+                                             "Back to library", VIEW_LIBRARY);
                     } else if (app->launch_headless) {
                         /* --launch-now stands in for pressing PLAY NOW: the
                            same launch function and the same bounded wait as
@@ -4234,9 +4261,9 @@ static int player_load_library(PlayerRun *run) {
                 app,
                 named_boundary ? res.boundary_code : "ISO_CORRUPT",
                 named_boundary ? player_disc_refusal_title(res.boundary_code)
-                               : "Not a PSP Disc Image",
+                               : "Not a PSP disc image",
                 named_boundary ? message : k_invalid_disc_message,
-                "Try Another File", VIEW_LIBRARY);
+                "Choose another disc", VIEW_LIBRARY);
         }
     }
 
@@ -4406,23 +4433,16 @@ static void player_apply_test_view(PlayerApp *app, const char *test_view) {
             player_app_set_view(app, VIEW_EXPERIMENTAL_TITLE);
         } else if (strcmp(test_view, "unsupported") == 0) {
             snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "ULES99999");
-            snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "Unknown PSP Game");
+            snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "Unknown PSP game");
             player_app_set_view(app, VIEW_UNSUPPORTED_TITLE);
-        } else if (strcmp(test_view, "preparing") == 0) {
-            /* No preparation pipeline is connected: render honest idle state */
-            app->prep_state.stage = STAGE_IDLE;
-            app->prep_state.completed_items = 0;
-            app->prep_state.total_items = 0;
-            app->prep_state.percentage = 0.0f;
-            player_app_set_view(app, VIEW_PREPARING);
         } else if (strcmp(test_view, "settings") == 0) {
             player_app_set_view(app, VIEW_SETTINGS);
         } else if (strcmp(test_view, "controller") == 0 || strcmp(test_view, "controller_settings") == 0) {
             player_app_set_view(app, VIEW_CONTROLLER_SETTINGS);
         } else if (strcmp(test_view, "error") == 0) {
-            player_app_set_error(app, "SOURCE_NOT_FOUND", "Game Source File Not Found",
+            player_app_set_error(app, "SOURCE_NOT_FOUND", "Game file not found",
                                  "Nakagawa could not locate the source ISO file on disk.",
-                                 "Locate Game ISO", VIEW_LIBRARY);
+                                 "Locate game ISO", VIEW_LIBRARY);
         } else if (strcmp(test_view, "focus") == 0) {
             /* set_view resets focus, so the focused card is chosen after it. */
             player_app_set_view(app, VIEW_LIBRARY);
@@ -4815,7 +4835,7 @@ static int player_capture_screenshot(PlayerRun *run) {
         }
 
         if (app->is_game_running) {
-            printf("[PLAYER] Checking child process runtime health reactively...\n");
+            printf("[PLAYER] Checking that the game is still running.\n");
             if (nk_launch_is_running(&app->launch_session)) {
                 printf("[PLAYER] Child process is running. PID: %d\n", app->launch_session.process.process_id);
                 nk_launch_stop(&app->launch_session);
@@ -5056,6 +5076,10 @@ static void player_frame_requests(PlayerRun *run) {
             app->request_file_picker = false;
             trigger_file_picker(run->window, app);
         }
+    }
+    /* The rest of a drop, one disc image whenever the library is showing again. */
+    if (app->active_view == VIEW_LIBRARY && app->drop_next < app->drop_count) {
+        player_open_next_dropped_disc(app);
     }
     if (app->request_font_folder_picker) {
         if (!player_ui_test_active(&run->ui_test)) {
@@ -5352,10 +5376,10 @@ static void player_frame_render(PlayerRun *run) {
             (run->staging_job && !run->staging_job->completion_handled) ||
             (run->psn_job && !run->psn_job->completion_handled)) {
             /* A worker may still have a file in the user data open. */
-            player_app_set_error(app, "FACTORY_RESET_BUSY", "Factory Reset Has to Wait",
+            player_app_set_error(app, "FACTORY_RESET_BUSY", "Factory reset has to wait",
                                  "Nakagawa Recomp is still checking or setting up a "
                                  "game. Wait a moment, then reset again. Nothing was "
-                                 "moved.", "Return to Settings", VIEW_SETTINGS);
+                                 "moved.", "Back to settings", VIEW_SETTINGS);
         } else {
             char stamp[32];
             time_t now = time(NULL);

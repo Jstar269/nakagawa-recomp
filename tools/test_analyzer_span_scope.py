@@ -35,6 +35,7 @@ import analyze  # noqa: E402
 import codegen  # noqa: E402
 import scratch_dir  # noqa: E402
 from nk_core import package_cache  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 # A wholly synthetic span standing in for "some other title's configuration". It is
 # deliberately NOT any real title's address range: these tests prove isolation and
@@ -1225,7 +1226,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
             [
                 CC, "-std=c11", "-O0", "-fno-strict-aliasing", "-Wall", "-Wextra",
                 "-DSR_SDL3VK", "-D_CRT_SECURE_NO_WARNINGS",
-                "-I", str(self.root), "-I", str(ROOT / "src" / "rt"),
+                "-I", str(self.root), "-I", str(ROOT / "src" / "rt"), "-I", str(ROOT / "tests" / "native"),
                 str(harness), str(out_c), str(out_dir / "mutant_0.c"),
                 str(ROOT / "src" / "rt" / "guest_interp.c"),
                 str(ROOT / "src" / "rt" / "perf.c"),
@@ -1862,7 +1863,7 @@ class MakefileSpanBindingTests(unittest.TestCase):
     """The direct-Make path must bind a span explicitly, not rely on a default."""
 
     def setUp(self) -> None:
-        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.makefile = read_makefile(ROOT)
 
     def test_span_is_passed_as_an_argument_not_a_shell_environment_prefix(self) -> None:
         # `VAR=value cmd` needs a POSIX shell; Make falls back to cmd.exe on Windows

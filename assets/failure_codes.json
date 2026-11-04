@@ -1129,6 +1129,12 @@
         "player"
       ]
     },
+    "LINK_OPEN_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
     "MANIFEST_INVALID": {
       "stage": "host",
       "in": [

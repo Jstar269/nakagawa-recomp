@@ -829,7 +829,14 @@ static inline int sr_guest_memmove(uint32_t dst, uint32_t src, uint32_t size) {
     return ok;
 }
 
-static inline uint8_t  sr_r8 (uint32_t a) {
+/* The full scalar accessors. They stay out of line so the inline fast paths below stay
+ * small in generated code, and stay `inline` so a unit that never calls one emits nothing;
+ * GCC reports that pair under -Wattributes. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
+#endif
+static inline __attribute__((noinline)) uint8_t sr_r8_slow(uint32_t a) {
     if (sr_inrange(a)) {
         uint8_t v;
         if (sr_vram_cpu_aperture(a)) {
@@ -843,7 +850,7 @@ static inline uint8_t  sr_r8 (uint32_t a) {
     }
     sr_oor(a,0,0); return 0u;
 }
-static inline uint16_t sr_r16(uint32_t a) {
+static inline __attribute__((noinline)) uint16_t sr_r16_slow(uint32_t a) {
     if (sr_inrange_n(a, 2)) {
         if (sr_vram_cpu_span_touches(a, 2u)) {
             sr_guest_vram_read_prepare_bytes(a, 2u);
@@ -856,7 +863,7 @@ static inline uint16_t sr_r16(uint32_t a) {
     }
     sr_oor(a,0,0); return 0u;
 }
-static inline uint32_t sr_r32(uint32_t a) {
+static inline __attribute__((noinline)) uint32_t sr_r32_slow(uint32_t a) {
     if ((a & 0xFFFFFFFC) == 0x04084000) {
         extern uint32_t sr_get_ge_status(void);
         return sr_get_ge_status();
@@ -874,7 +881,7 @@ static inline uint32_t sr_r32(uint32_t a) {
     }
     sr_oor(a,0,0); return 0u;
 }
-static inline void sr_w8_pc(uint32_t a, uint8_t v, uint32_t pc) {
+static inline __attribute__((noinline)) void sr_w8_pc_slow(uint32_t a, uint8_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 1u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 1u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
@@ -891,7 +898,7 @@ static inline void sr_w8_pc(uint32_t a, uint8_t v, uint32_t pc) {
         SR_WATCH_STORE_IF_ARMED(pc, a, v, 1u);
     } else sr_oor(a, v, 1);
 }
-static inline void sr_w16_pc(uint32_t a, uint16_t v, uint32_t pc) {
+static inline __attribute__((noinline)) void sr_w16_pc_slow(uint32_t a, uint16_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 2u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 2u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
@@ -909,7 +916,7 @@ static inline void sr_w16_pc(uint32_t a, uint16_t v, uint32_t pc) {
         SR_WATCH_STORE_IF_ARMED(pc, a, v, 2u);
     } else sr_oor(a, v, 1);
 }
-static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
+static inline __attribute__((noinline)) void sr_w32_pc_slow(uint32_t a, uint32_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 4u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 4u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
@@ -926,6 +933,49 @@ static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
         }
         SR_WATCH_STORE_IF_ARMED(pc, a, v, 4u);
     } else sr_oor(a, v, 1);
+}
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+/* The accessors guest code calls on every load and store. Main RAM with no store
+ * instrumentation armed is a plain host access, small enough to inline; everything else
+ * (VRAM, the GE status word, out-of-range addresses, watches) takes the *_slow body. */
+static inline uint32_t sr_ram_offset(uint32_t a) { return SR_PHYS(a) - SR_RAM_BASE; }
+static inline int sr_store_plain(void) {
+    return !(g_sr_store_context_pc | (uint32_t)g_sr_last_writer_enabled |
+             (uint32_t)g_sr_mem_watch_count | (uint32_t)g_sr_heap_watch |
+             (uint32_t)SR_WATCH_ACTIVE());
+}
+static inline uint8_t sr_r8(uint32_t a) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o < 0x04000000u, 1)) return g_mem[o];
+    return sr_r8_slow(a);
+}
+static inline uint16_t sr_r16(uint32_t a) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o <= 0x04000000u - 2u, 1)) { uint16_t v; memcpy(&v, g_mem + o, 2); return v; }
+    return sr_r16_slow(a);
+}
+static inline uint32_t sr_r32(uint32_t a) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o <= 0x04000000u - 4u, 1)) { uint32_t v; memcpy(&v, g_mem + o, 4); return v; }
+    return sr_r32_slow(a);
+}
+static inline void sr_w8_pc(uint32_t a, uint8_t v, uint32_t pc) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o < 0x04000000u && sr_store_plain(), 1)) { g_mem[o] = v; return; }
+    sr_w8_pc_slow(a, v, pc);
+}
+static inline void sr_w16_pc(uint32_t a, uint16_t v, uint32_t pc) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o <= 0x04000000u - 2u && sr_store_plain(), 1)) { memcpy(g_mem + o, &v, 2); return; }
+    sr_w16_pc_slow(a, v, pc);
+}
+static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o <= 0x04000000u - 4u && sr_store_plain(), 1)) { memcpy(g_mem + o, &v, 4); return; }
+    sr_w32_pc_slow(a, v, pc);
 }
 static inline void sr_w8 (uint32_t a, uint8_t v) { sr_w8_pc(a, v, 0); }
 static inline void sr_w16(uint32_t a, uint16_t v) { sr_w16_pc(a, v, 0); }
@@ -1075,6 +1125,41 @@ int sr_guest_format_host(CpuState *s, uint32_t fmt, uint32_t first_reg,
  * (saturate) and write mask, then stores. The prefix value comes from s->vfpuCtrl. */
 void sr_vread(float *r, const CpuState *s, const uint8_t *idx, int n, uint32_t prefix);
 void sr_vwrite(CpuState *s, const uint8_t *idx, float *d, int n, uint32_t dprefix);
+
+/* VFPU lane arithmetic with the NaN result fixed by rule (issue #326). C leaves the NaN
+ * that a NaN-producing operation returns to the host: x86-64 SSE keeps the first NaN
+ * source, and an optimiser may swap the operands of a commutative + or *. So the
+ * generated code and sr_vfpu_interp, each compiled on its own, kept different NaNs when
+ * two met (the alias-edge sweep in tests/native/vfpu_interp_selftest.c, built at -O1 or
+ * -O2). Both lanes call these helpers for every lane operation of vadd, vsub, vmul, vdiv,
+ * vscl, vdot, vhdp, vcrs, vcrsp, vqmul, vmmul, vtfm and vmscl. The rule: the first NaN
+ * operand, quieted, else the invalid-operation NaN 0xFFC00000 (Inf - Inf, 0 * Inf, 0 / 0,
+ * Inf / Inf). That is what x86-64 SSE returns for the operands in source order, but it is a
+ * change for default builds too: even at -O0 (RECOMP_OPT, the Makefile default) GCC may
+ * evaluate a plain + or * with its operands swapped, as MSYS2 GCC 16.2 does for the old
+ * vadd and vmul lane loops, so NaN-with-NaN lanes of vadd, vmul, vcrsp and vqmul now keep
+ * the first source where they used to keep the second. Results without a NaN are unchanged.
+ * It is project semantics, not PSP evidence: the PSP's NaN word for these forms is
+ * unmeasured or contested. docs/HARDWARE_ORACLE.md PSP-GE-001 and the issue #40 fixture
+ * fixtures/vfpu_nan_payload/vfpu_nan_cases.h disagree, and the dot-product adder measured
+ * as PSP-VFPU-FUNNEL-001 (vfpu_dot_bits in vfpu_interp.c, used by vfad and vavg) returns
+ * the fixed 0x7F800001 for any NaN operand, which this rule for vdot does not follow.
+ * At -O0 GCC does not inline these static inline helpers, so an ad-hoc build makes one
+ * call per lane operation; package builds (-O1, PACKAGE_RECOMP_OPT) inline them. */
+static inline float sr_vf_nan(float a, float b) {
+    uint32_t u;
+    float r;
+    if (a != a) memcpy(&u, &a, 4);
+    else if (b != b) memcpy(&u, &b, 4);
+    else u = 0xffc00000u;
+    u |= 0x00400000u;
+    memcpy(&r, &u, 4);
+    return r;
+}
+static inline float sr_vf_add(float a, float b) { const float r = a + b; return r == r ? r : sr_vf_nan(a, b); }
+static inline float sr_vf_sub(float a, float b) { const float r = a - b; return r == r ? r : sr_vf_nan(a, b); }
+static inline float sr_vf_mul(float a, float b) { const float r = a * b; return r == r ? r : sr_vf_nan(a, b); }
+static inline float sr_vf_div(float a, float b) { const float r = a / b; return r == r ? r : sr_vf_nan(a, b); }
 
 /* VFPU transcendentals, exact ports of PPSSPP's table-based kernels (the PSP hardware does
  * not compute these with IEEE math). The lookup tables are loaded once from assets/vfpu/
@@ -1409,6 +1494,13 @@ typedef struct SrVarExportDecl {
     uint32_t addr;
 } SrVarExportDecl;
 void sr_main_var_exports_register(const SrVarExportDecl *exports, uint32_t count);
+/* A function the main image exports. The table is sorted by NID, unique, and outlives the run:
+ * the executable is started before any module, so importers link to these from boot. */
+typedef struct SrMainFuncExport {
+    uint32_t nid;
+    uint32_t addr;
+} SrMainFuncExport;
+void sr_main_func_exports_register(const SrMainFuncExport *exports, uint32_t count);
 /* The variable imports of a module translated at a fixed base (absolute sites), keyed by its
  * file name; they link when that module loads and unlink when it unloads. */
 void sr_fixed_var_imports_register(const char *module, const SrVarImport *imports,
@@ -1911,6 +2003,7 @@ void     gui_consume_button_pulses(void);          /* after one PSP VBLANK sampl
 uint32_t gui_pad_pulses_take(void);
 void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128=centre) */
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
+void     gui_ace_vblank(uint32_t vcount);        /* Ace Mode's smooth motion: a held frame's VBLANK */
 /* Returns 1 only when the selected presenter accepted the validated frame. */
 int      gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
 void     gui_pump(void);                         /* service the window's pending events */

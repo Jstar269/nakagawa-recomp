@@ -50,6 +50,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 import ttf2pgf  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 from nk_core.fonts import validate_pgf_data  # noqa: E402
 from pgf_writer import Glyph  # noqa: E402
 from ttf2pgf import DEFAULT_FONT_NAME, TtfConvertError, convert, load_pin, manifest_bytes  # noqa: E402
@@ -1343,7 +1344,7 @@ class ProjectLatinStrikeTests(unittest.TestCase):
 
     @classmethod
     def _convert(cls, variable: str):
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         match = re.search(rf"^{variable} := (.+)$", makefile, re.MULTILINE)
         assert match is not None, f"the Makefile does not define {variable}"
         tokens = match.group(1).split()

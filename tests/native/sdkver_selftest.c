@@ -20,7 +20,7 @@
  *
  * Standalone: no runtime, scheduler, or HLE mocking required. Built and run by
  * tools/test_sdkver_c.py; can also be compiled directly:
- *   gcc -Wall -Wextra -Werror -Isrc/rt -o sdkver_selftest src/rt/sdkver_selftest.c
+ *   gcc -Wall -Wextra -Werror -Isrc/rt -o sdkver_selftest tests/native/sdkver_selftest.c
  * Exit code 0 = all invariants hold. */
 
 #include <stdio.h>

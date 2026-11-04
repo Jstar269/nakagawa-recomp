@@ -356,6 +356,11 @@ int player_ui_test_next_event(const char *script, size_t *cursor,
         event->user.timestamp = total_bytes;
         return 1;
     }
+    if (strcmp(token, "DROP_BEGIN") == 0 || strcmp(token, "DROP_COMPLETE") == 0) {
+        /* The brackets SDL puts around several dropped files. */
+        event->type = token[5] == 'B' ? SDL_EVENT_DROP_BEGIN : SDL_EVENT_DROP_COMPLETE;
+        return 1;
+    }
     if (strncmp(token, "DROP_FILE=", 10) == 0) {
         event->type = SDL_EVENT_DROP_FILE;
         event->drop.data = SDL_strdup(token + 10);
@@ -490,7 +495,6 @@ const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_SUPPORTED_TITLE: return "supported";
     case VIEW_EXPERIMENTAL_TITLE: return "experimental";
     case VIEW_UNSUPPORTED_TITLE: return "unsupported";
-    case VIEW_PREPARING: return "preparing";
     case VIEW_SETTINGS: return "settings";
     case VIEW_ERROR: return "error";
     case VIEW_SETUP_WIZARD: return "wizard";
@@ -716,7 +720,7 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "rebuild_reminder=%d rebuild_queue=%d rebuild_queue_active=%d "
            "rebuild_queue_paused=%d prompt_version=%s "
            "input_class=%s input_files=%zu next_input_class=%s next_input_files=%zu "
-           "backdrop=%d backdrop_shown=%d disc_check=%d\n",
+           "backdrop=%d backdrop_shown=%d disc_check=%d drop_pending=%zu drop_notice=%s\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -799,7 +803,10 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->wizard.preflight.input.files_needed,
            selected_input ? player_input_class_name(selected_input->input_class) : "none",
            selected_input ? selected_input->files_needed : (size_t)0,
-           backdrop_index, backdrop_shown ? 1 : 0, app->disc_check.running ? 1 : 0);
+           backdrop_index, backdrop_shown ? 1 : 0, app->disc_check.running ? 1 : 0,
+           app->drop_count > app->drop_next ? app->drop_count - app->drop_next : (size_t)0,
+           !app->drop_notice[0] ? "none"
+               : strstr(app->drop_notice, "being set up") ? "busy" : "summary");
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {
@@ -975,7 +982,7 @@ void player_ui_test_prepare_app(PlayerUiTest *t, PlayerApp *app) {
     }
     if (t->error_code) {
         if (strcmp(t->error_code, "CLI_NOT_FOUND") == 0) {
-            player_app_set_cli_not_found_error(app, "Return to Library",
+            player_app_set_cli_not_found_error(app, "Back to library",
                                                VIEW_LIBRARY);
         } else if (strcmp(t->error_code, "UI_TEST_LONG_ERROR") == 0) {
             static const char long_error_message[] =
@@ -988,7 +995,7 @@ void player_ui_test_prepare_app(PlayerUiTest *t, PlayerApp *app) {
                 "player can read the complete instruction before leaving this screen.";
             player_app_set_error(app, t->error_code,
                                  "Synthetic Long Error", long_error_message,
-                                 "Return to Library", VIEW_LIBRARY);
+                                 "Back to library", VIEW_LIBRARY);
         } else if (strcmp(t->error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0 ||
                    strcmp(t->error_code, "RUNTIME_PREMATURE_EXIT") == 0 ||
                    strcmp(t->error_code, "RUNTIME_ERROR_EXIT") == 0) {
@@ -1030,7 +1037,7 @@ void player_ui_test_prepare_app(PlayerUiTest *t, PlayerApp *app) {
         } else {
             player_app_set_error(app, t->error_code, t->error_code,
                                  "Synthetic UI regression error state.",
-                                 "Return to Library", VIEW_LIBRARY);
+                                 "Back to library", VIEW_LIBRARY);
         }
     }
 }

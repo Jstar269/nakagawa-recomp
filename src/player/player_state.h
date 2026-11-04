@@ -22,6 +22,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* The most dropped disc images the player queues from one drop; the summary says when
+   more arrived. */
+#define PLAYER_DROP_QUEUE_MAX 16u
+
+
 #define MAX_LIBRARY_GAMES NK_MAX_GAMES
 #define MAX_TITLE_LEN NK_MAX_TITLE_LEN
 #define MAX_PATH_LEN NK_MAX_PATH
@@ -34,7 +39,6 @@ typedef enum {
     VIEW_SUPPORTED_TITLE,
     VIEW_EXPERIMENTAL_TITLE,
     VIEW_UNSUPPORTED_TITLE,
-    VIEW_PREPARING,
     VIEW_SETTINGS,
     VIEW_ERROR,
     VIEW_SETUP_WIZARD,
@@ -221,6 +225,7 @@ typedef struct {
     bool text;      /* crisp system text (the on-screen keyboard); on by default */
     bool readout;   /* the speed readout; off by default */
     bool notice;    /* the in-game badge at start; on by default */
+    int smooth;     /* smooth motion (#1272): 0 off (the default), 1 x2 */
 } PlayerAceSettings;
 
 /* One title's choice, saved only while it differs from the library: -1 follows the library. */
@@ -231,6 +236,7 @@ typedef struct {
     int text;       /* -1, 0 or 1 */
     int readout;
     int notice;
+    int smooth;     /* -1 follows the library, 0 off, 1 x2 */
 } PlayerAceTitle;
 
 /* What a title launches with (player_ace_resolve). */
@@ -241,6 +247,7 @@ typedef struct {
     bool text;
     bool readout;
     bool notice;
+    int smooth;                /* 0 off, 1 x2; player_ace_apply_logic_60 forces 0 */
 } PlayerAceResolved;
 
 typedef struct {
@@ -403,7 +410,7 @@ typedef enum {
 } PlayerErrorRetry;
 
 typedef struct {
-    char error_code[32];
+    char error_code[48]; /* PACKAGE_REBUILD_NOT_INCOMPATIBLE is 32 characters */
     char title[128];
     char message[512];
     char details[PLAYER_ERROR_DETAILS_MAX];
@@ -885,6 +892,18 @@ struct PlayerApp {
      * player wrote it), or an empty string. Shown on the Library screen. */
     char library_notice[192];
 
+    /* Files dropped on the window together (#2007): SDL sends them one event at a
+     * time between a begin and a complete. Several are gathered in a batch, the
+     * disc images among them wait in `drop_paths` to open one after another, and
+     * drop_notice is the one summary the library shows until the batch is done. */
+    char drop_paths[PLAYER_DROP_QUEUE_MAX][NK_MAX_PATH];
+    size_t drop_count;       /* queued disc images, in drop order */
+    size_t drop_next;        /* the next queued image to open */
+    size_t drop_seen;        /* every file this batch has seen */
+    bool drop_active;        /* between player_app_drop_begin and player_app_drop_finish */
+    char drop_notice[256];
+    bool drop_notice_visible; /* the library has shown it; leaving the library clears it */
+
     /* Window & layout metrics */
     int window_width;
     int window_height;
@@ -1042,6 +1061,11 @@ bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete
                                      char *error, size_t error_size);
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
+/* player_app_set_error, plus the technical text a plain card keeps in its
+   details box and in Copy details (a tool's own error line, a path). */
+void player_app_set_error_with_details(PlayerApp *app, const char *code, const char *title,
+                                       const char *msg, const char *details,
+                                       const char *recovery_label, PlayerView return_view);
 void player_app_set_cli_not_found_error(PlayerApp *app,
                                         const char *recovery_label,
                                         PlayerView return_view);
@@ -1060,7 +1084,8 @@ void player_launcher_unavailable_message_for_host(NkHostKind host, const char *r
                                                   char *out, size_t out_size);
 /* The opening of every DATA_DIR_UNAVAILABLE card: what the host could not
    resolve and which environment variables fix it (nk_platform_get_app_data_dir).
-   Each card adds its own closing words. */
+   Plain words, no code (the card's details and Copy details carry it). Each
+   card adds its own closing words. */
 const char *player_data_dir_unavailable_text(NkHostKind host);
 /* The FOLDER_OPEN_FAILED card's sentence on how the host was asked to show a
    folder: Windows' own shell, or xdg-open (through SDL) elsewhere. */
@@ -1069,6 +1094,30 @@ const char *player_folder_open_failure_hint(NkHostKind host);
    is the host's error, or empty). The card names the folder so the user can
    open it themselves, and returns to the view it was raised from. */
 void player_app_set_folder_open_error(PlayerApp *app, const char *path, const char *reason);
+/* Dropped files (#2007). player_app_drop_begin starts a batch, player_app_drop_add adds each
+   file, and player_app_drop_finish closes it. A lone file is returned as it is, whatever it
+   is: the caller runs the single-file path it always has. Of several, the disc images (.iso,
+   .cso, .zso, .chd, .pbp) are queued and the rest are skipped; drop_notice says which, once.
+   player_app_drop_take then hands the queued images out one at a time, oldest first, and
+   returns false when none is left. A queue is cleared with its summary when the library is
+   left with nothing queued. */
+void player_app_drop_begin(PlayerApp *app);
+void player_app_drop_add(PlayerApp *app, const char *path);
+void player_app_drop_finish(PlayerApp *app);
+bool player_app_drop_take(PlayerApp *app, char *out, size_t out_size);
+/* Ignores the files of a drop, queue and summary both, and logs why (the player cannot take
+   a new disc image while a worker owns the current game's files). */
+void player_app_drop_discard(PlayerApp *app, const char *reason);
+/* A .iso by its name, or a compressed disc image or PSN package by its contents. */
+bool player_path_looks_like_disc_image(const char *path);
+
+/* LIBRARY_WRITE_FAILED: a title could not be stored in the library file. */
+void player_app_set_library_write_error(PlayerApp *app);
+/* LINK_OPEN_FAILED: the browser could not be asked to open url (reason is the
+   host's error, or empty). The card puts the address in its details so the
+   user can paste it into a browser, and returns to the view it was raised
+   from (the library when raised from a card). */
+void player_app_set_link_open_error(PlayerApp *app, const char *url, const char *reason);
 /* The error card's words, shared by both launchers. The badge is a plain word
    for the kind of problem; an unknown code gets "Problem", never the code. */
 const char *player_error_badge(const ErrorState *error);
@@ -1418,9 +1467,14 @@ const PlayerAceTitle *player_settings_ace_title(const PlayerSettings *settings,
  * turns Ace on; each feature then takes the title's value, else the library's. */
 void player_ace_resolve(const PlayerSettings *settings, const char *disc_id,
                         PlayerAceResolved *out);
+/* True 60 Hz game logic and smooth motion are refused together, not stacked (#1272): a title
+ * that launches its enhanced 60 FPS build (GameRecord.enhancement_package_id set) calls this
+ * with logic_60 true, and smooth motion is off for that launch whatever the settings say.
+ * Ace's other features are untouched. */
+void player_ace_apply_logic_60(PlayerAceResolved *ace, bool logic_60);
 /* The SR_ACE line for a resolution: "off", or "v1;af=16;text=on;readout=off;notice=on;
- * wide=off;smooth=off" (features this build does not carry are always off). Returns false
- * when it does not fit. */
+ * wide=off;smooth=off" (smooth=x2 when smooth motion is on; wide is always off, and
+ * smooth=match is never written). Returns false when it does not fit. */
 bool player_ace_launch_line(const PlayerAceResolved *ace, char *out, size_t cap);
 /* <user_root>/ace/<disc ID>.json: the runtime's per-run report for that disc. */
 bool player_ace_report_path(const char *user_root, const char *disc_id, char *out, size_t cap);
@@ -1434,12 +1488,17 @@ void player_app_cycle_ace_filtering(PlayerApp *app);   /* 16x, 8x, 4x, 2x, Off *
 void player_app_toggle_ace_text(PlayerApp *app);
 void player_app_toggle_ace_readout(PlayerApp *app);
 void player_app_toggle_ace_notice(PlayerApp *app);
+void player_app_toggle_ace_smooth(PlayerApp *app);     /* Off, x2 */
 /* "16x", "8x", "4x", "2x" or "Off". */
 const char *player_ace_filtering_label(int af);
 /* The title page: Library default, On, Authentic, then Library default again. Authentic
  * also takes the title's 60 FPS game logic off for as long as it is chosen. */
 void player_app_cycle_title_ace_mode(PlayerApp *app, int game_index);
 PlayerAceTitleMode player_app_title_ace_mode(const PlayerApp *app, int game_index);
+/* The title page's smooth motion: Library default, On, Off, then Library default again. */
+void player_app_cycle_title_ace_smooth(PlayerApp *app, int game_index);
+/* The title's own smooth motion choice: -1 follows the library, 0 off, 1 x2. */
+int player_app_title_ace_smooth(const PlayerApp *app, int game_index);
 /* The title's "Last session" line from the report under the user data folder; false, with
  * out empty, when there is none. */
 bool player_app_ace_last_session(const PlayerApp *app, int game_index, char *out, size_t cap);
@@ -1867,6 +1926,12 @@ bool player_app_open_prerequisite_about(PlayerApp *app);
    nothing, and returns false, when the per-user data folder can't be found. */
 bool player_app_request_open_folder(PlayerApp *app, const char *path);
 bool player_app_request_license_folder(PlayerApp *app);
+/* Settings > Open data folder / Open logs (#2007): asks the main loop to show the
+   per-user data folder (kind NK_PATH_DATA) or the logs folder (NK_PATH_LOGS),
+   creating it first so there is something to show. When the folder can't be
+   resolved or created it raises the DATA_DIR_UNAVAILABLE card, returning to
+   Settings, and returns false. Other kinds are refused. */
+bool player_app_request_user_folder(PlayerApp *app, NkPathType kind);
 void player_app_remove_prerequisites(PlayerApp *app);
 
 /* Factory reset (owner, 2026-10-29): the player goes back to a first run by

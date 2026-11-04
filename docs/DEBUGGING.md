@@ -82,6 +82,20 @@ divided by the interval's `wall_ms`, and VBlanks per frame are
   read a few ms long, and a run's sum is off by one reading at most. The JSON summary's `frames`
   object holds the run totals.
 
+The buckets say how many frames missed their period, not why. `SR_PERF_FRAMES=<path>` writes one
+CSV row per new game frame, so a slow frame can be read with its cause; like the other paths it
+turns the counters on by itself. `vcount` is the VBlank of the new frame and `vblanks` the VBlanks
+since the previous one; `work_ms` is that frame's host work as above (empty where the thread clock
+gave no reading) and `wall_ms` the host time between the two frames. Every other column is what
+the frame spent in one area, from the same counters as the one-second rows: `guest_ms`, `aot_ms`,
+`interp_ms`, `ge_cpu_ms` with `ge_cpu_calls`, `ge_wait_ms` with `ge_waits`, `readback_waits`, the
+Vulkan `vk_submit_ms`, `vk_wait_ms`, `vk_readback_ms`, `vk_pipeline_ms` and
+`vk_pipeline_creations`, `texture_decode_ms` with `texture_decodes`, `storage_ms` (disc image and
+file reads), `atrac_ms`, `h264_ms`, `audio_mix_ms`, `present_ms` and `sched_switches`. The first
+new frame starts the clock and writes no row, and a re-present of the same buffer adds its work to
+the next new frame. Join the rows with an `SR_SAMPLE_SPEC` file of the same run by VBlank to see
+which game phase the slow frames come from.
+
 For sparse GE front-end attribution, build with `GE_FRONTEND_PROFILE=1` (the default is `0`) and
 run with `SR_PERF=1` and `SR_GE_CPU_PROFILE=1`; `command_dispatch` is exported with those two, and
 the per-primitive stages (`draw_setup` through `assembly`, `triangle_total`, `empty_control`) also
@@ -646,12 +660,12 @@ The diagnostic does not skip guest work or change GE execution.
 
 | Variable | Description |
 | ---------- | ------------- |
-| `SR_INLOG=1` | Log input state changes |
+| `SR_INLOG=1` | Log each change of the pad state the guest is handed, buttons and left stick (`ctrl_latch:` lines, the input of `tools/padscript_from_log.py`); every analog move prints a line, so a live-pad session logs a lot |
 | `SR_PAD=HEX` | Override pad state (hex buttons) |
 | `SR_PADPERIOD=N` | Automatic pad-pulse period in vblanks (default 240) |
 | `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4); each pulse is held until the guest has read it (see [Scripted input is delivered in guest time](#scripted-input-is-delivered-in-guest-time)) |
 | `SR_PADSTART=N` | Pad override start frame |
-| `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width` table |
+| `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width [lx ly]` table |
 | `SR_PADSCRIPT_READ_BUDGET=N` | Vblanks a scripted press may wait for the guest to read it before the run fails (default 1800; a press whose width is in guest reads may wait for all of them); not a whole number >= 1 refuses the script |
 | `SR_OSK_SCRIPT=FILE` | Scripted on-screen-keyboard answers, one per input field in order (`CANCEL` answers that field as cancelled) |
 | `SR_OSK_TEXT=TEXT` | Answer every on-screen-keyboard field with the same text |
@@ -679,6 +693,33 @@ The converter expands shorter presses so a replay holds each press for as many
 vblanks as a person would. A one-vblank pulse can no longer fall between the
 game's controller reads, because scripted input waits for a read (below). Use
 `--minimum-width 1` only when an exact-width replay is required.
+
+The left stick is recorded with the buttons. Each `ctrl_latch:` line carries the
+stick the guest was handed (`lx=`, `ly=`; a title in digital mode reads 128, 128),
+and a row whose stick is off centre gets two more columns, `<frame> <hexmask>
+<width> <lx> <ly>`, which the replay holds for that row's width. Where rows
+overlap, the stick of the row that started last holds. A sweep of the stick passes
+through a new position every vblank; positions held for fewer than
+`--stick-min-width` vblanks (default 4) are folded into the next position, so the
+table keeps the positions the stick stayed at. Use `--stick-min-width 1` to keep
+every recorded position. A table is refused at load past 4096 rows; a long
+analog session that passes it needs a larger `--stick-min-width`, or to be
+recorded in parts.
+
+A replayed stick is therefore approximate, not a sample-for-sample copy:
+
+- A position held for fewer than `--stick-min-width` vblanks is not replayed; the
+  stick moves to the next position that many vblanks early.
+- A short press is expanded to `--minimum-width`, and the stick it was pressed
+  with is held for the expanded width as well, up to 8 vblanks by default, unless
+  a later row holds the stick somewhere else.
+- A row with a stick and no button is a press: the replay holds it until the
+  guest has read it, as it holds a button.
+
+Rows without a stick replay exactly as they did before stick columns existed. With
+`SR_INLOG=1`, every change of an analog stick prints a line, so a session with a
+live pad writes a large log: a stick at rest that wobbles by one step prints a
+line each time it moves.
 
 ### Scripted input is delivered in guest time
 
@@ -816,6 +857,7 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `PRESS_UNTIL_NID <import\|0xNID> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press (held `width`, released for the rest of `period`) until the guest calls that import; fail on timeout. Use it where a press may land without changing the screen, such as a message box or a Yes/No that waits on a savedata check, because the import is the event that says the press was taken |
 | `WIDTHS VBLANKS\|READS` | The unit the widths of `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` and `PRESS_UNTIL_NID` count in, for the whole file (default `VBLANKS`); must precede every step, and may appear once |
 | `READS <step>` / `VBLANKS <step>` | The unit of that one `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` or `PRESS_UNTIL_NID` line; overrides `WIDTHS` |
+| `STICK <lx> <ly> <step>` | Hold the left stick at `lx`, `ly` (decimal 0-255, 128 centred) while that `PRESS`, `PRESS_UNTIL`, `PRESS_WHILE` or `PRESS_UNTIL_NID` presses; comes before `READS` / `VBLANKS` ([below](#holding-the-left-stick)) |
 | `END` | Route complete |
 
 A mask is either a button name (see [Naming the buttons a route presses](#naming-the-buttons-a-route-presses))
@@ -926,6 +968,45 @@ Only these rules differ from the vblank widths above:
   line with either word, so an existing route parses and replays exactly as it did.
 - The legacy `frame hexmask width` table has no keyword lines, so it stays in vblanks. Write a
   route program to use reads.
+
+### Holding the left stick
+
+A route without `STICK` leaves the left stick centred (128, 128), so it can press buttons but
+cannot walk a character. `STICK <lx> <ly>` in front of a pressing step holds the stick at that
+position for as long as the step presses. Each axis is a decimal from 0 to 255, with 128
+centred: `lx` 0 is full left and 255 full right, `ly` 0 is full up and 255 full down. A press
+mask of `0` holds the stick with no button:
+
+```text
+STICK 255 128 PRESS 0 120            # right, no button, for 120 vblanks
+STICK 255 128 PRESS CROSS 8          # right with CROSS held
+DELAY 30                             # released, stick centred
+STICK 128 0 READS PRESS 0 4          # up for four guest reads
+STICK 128 255 PRESS_UNTIL_NID sceIoOpen 0 2 8 600
+END
+```
+
+- The stick is part of the pad state the step holds, so it is delivered by the rule above: it
+  is latched into the controller ring with the buttons and reaches the guest in
+  `SceCtrlData`'s `Lx` and `Ly` bytes through the same reads (`sceCtrlReadBuffer*`,
+  `sceCtrlPeekBuffer*`). A press that holds only the stick is still a press: it has the read
+  budget, and a guest that never reads it fails the run.
+- The released half of a `PRESS_UNTIL`, `PRESS_WHILE` or `PRESS_UNTIL_NID` period, `DELAY`,
+  and every other step centre the stick, as they release the buttons.
+- A PSP reports the stick only in analog sampling mode (`sceCtrlSetSamplingMode(1)`). A title
+  in digital mode reads 128, 128 whatever the route holds, and the route log says so once.
+- While a step holds the stick, the scripted position replaces the window's live stick for
+  those samples; before and after, the live stick is read as usual. Buttons are combined with
+  live input, but a stick cannot be, because a pad at rest does not sit at exactly 128, 128.
+- `STICK` applies to the four pressing steps only, comes first on the line, and is refused at
+  load with anything else, including a value outside 0-255 or one that is not a plain decimal.
+- A press the guest never reads fails the run naming the stick position it held, as it names
+  the buttons.
+- A route program has at most 4096 steps; a longer one is refused at load with the line that
+  passed the limit, never cut short.
+  No existing route starts a line with the word, so existing routes parse and replay exactly as
+  they did. The legacy `frame hexmask width` table has no stick column; write a route program to
+  hold the stick.
 
 ### Naming the buttons a route presses
 

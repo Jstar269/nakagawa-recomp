@@ -913,8 +913,8 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         sr_vread(a, s, si, n, s->vfpuCtrl[0]);
         sr_vread(b, s, ti, n, s->vfpuCtrl[1]);
         for (int i = 0; i < n; i++)
-            d[i] = op == 0x19 ? a[i] * b[i]
-                  : sub == 0 ? a[i] + b[i] : sub == 1 ? a[i] - b[i] : a[i] / b[i];
+            d[i] = op == 0x19 ? sr_vf_mul(a[i], b[i])
+                  : sub == 0 ? sr_vf_add(a[i], b[i]) : sub == 1 ? sr_vf_sub(a[i], b[i]) : sr_vf_div(a[i], b[i]);
         VFPU_NAN(op == 0x19 ? "vmul.s" : sub == 0 ? "vadd.s"
                  : sub == 1 ? "vsub.s" : "vdiv.s", d, n, a, n, b, n);
         sr_vwrite(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
@@ -926,7 +926,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         sr_vread(a, s, si, n, s->vfpuCtrl[0]);
         sr_vread(b, s, ti, n, s->vfpuCtrl[1]);
         float acc = 0.0f;
-        for (int i = 0; i < n; i++) acc += a[i] * b[i];
+        for (int i = 0; i < n; i++) acc = sr_vf_add(acc, sr_vf_mul(a[i], b[i]));
         dd[0] = acc;
         VFPU_NAN("vdot.s", dd, 1, a, n, b, n);
         sr_vwrite(s, dst, dd, 1, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
@@ -938,8 +938,8 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         sr_vread(a, s, si, n, s->vfpuCtrl[0]);
         sr_vread(b, s, ti, n, s->vfpuCtrl[1]);
         float acc = 0.0f;
-        for (int i = 0; i < n - 1; i++) acc += a[i] * b[i];
-        acc += 1.0f * b[n - 1];
+        for (int i = 0; i < n - 1; i++) acc = sr_vf_add(acc, sr_vf_mul(a[i], b[i]));
+        acc = sr_vf_add(acc, sr_vf_mul(1.0f, b[n - 1]));
         dd[0] = isnan(acc) ? fabsf(acc) : acc;
         VFPU_NAN("vhdp.s", dd, 1, a, n, b, n);
         sr_vwrite(s, dst, dd, 1, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
@@ -953,7 +953,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         vreg_idx(vd, n, di); vreg_idx(vs, n, si); vreg_idx(vt, n, ti);
         sr_vread(a, s, si, n, s->vfpuCtrl[0]);
         sr_vread(b, s, ti, n, s->vfpuCtrl[1]);
-        for (int i = 0; i < n; i++) d[i] = a[ss[i]] * b[ts[i]];
+        for (int i = 0; i < n; i++) d[i] = sr_vf_mul(a[ss[i]], b[ts[i]]);
         VFPU_NAN("vcrs.t", d, n, a, n, b, n);
         sr_vwrite(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
     }
@@ -963,7 +963,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         vreg_idx(vd, n, di); vreg_idx(vs, n, si);
         sr_vread(a, s, si, n, s->vfpuCtrl[0]);
         float scalar = s->v[sc[0]];
-        for (int i = 0; i < n; i++) d[i] = a[i] * scalar;
+        for (int i = 0; i < n; i++) d[i] = sr_vf_mul(a[i], scalar);
         VFPU_NAN("vscl.s", d, n, a, n, (const float *)&scalar, 1);
         sr_vwrite(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
     }
@@ -975,7 +975,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
             for (int b = 0; b < side; b++) {
                 float sum = 0.0f;
                 for (int c = 0; c < side; c++)
-                    sum += s->v[mreg_idx(vs, side, b, c)] * s->v[mreg_idx(vt, side, a, c)];
+                    sum = sr_vf_add(sum, sr_vf_mul(s->v[mreg_idx(vs, side, b, c)], s->v[mreg_idx(vt, side, a, c)]));
                 r[a * 4 + b] = sum;
             }
 #ifdef SR_NAN_TRAP
@@ -997,8 +997,8 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         float r[4];
         for (int i = 0; i < side; i++) {
             float sum = 0.0f;
-            for (int k = 0; k < tn; k++) sum += s->v[mreg_idx(vs, side, i, k)] * s->v[ti[k]];
-            if (ins >= n) sum += s->v[mreg_idx(vs, side, i, ins)];
+            for (int k = 0; k < tn; k++) sum = sr_vf_add(sum, sr_vf_mul(s->v[mreg_idx(vs, side, i, k)], s->v[ti[k]]));
+            if (ins >= n) sum = sr_vf_add(sum, s->v[mreg_idx(vs, side, i, ins)]);
             r[i] = sum;
         }
 #ifdef SR_NAN_TRAP
@@ -1024,7 +1024,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         float scalar = s->v[sc[0]];
         for (int i = 0; i < side - 1; i++)
             for (int j = 0; j < side; j++)
-                s->v[mreg_idx(vd, side, j, i)] = s->v[mreg_idx(vs, side, j, i)] * scalar;
+                s->v[mreg_idx(vd, side, j, i)] = sr_vf_mul(s->v[mreg_idx(vs, side, j, i)], scalar);
         for (int j = 0; j < side; j++) {
             src[j] = (uint8_t)mreg_idx(vs, side, j, side - 1);
             dst[j] = (uint8_t)mreg_idx(vd, side, j, side - 1);
@@ -1032,7 +1032,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         }
         sr_vread(row, s, src, side, s->vfpuCtrl[0]);
         sr_vread(t, s, scv, side, s->vfpuCtrl[1]);
-        for (int j = 0; j < side; j++) d[j] = row[j] * t[j];
+        for (int j = 0; j < side; j++) d[j] = sr_vf_mul(row[j], t[j]);
         VFPU_NAN("vmscl", d, side, row, side, t, side);
         sr_vwrite(s, dst, d, side, s->vfpuCtrl[2]);
         eat_prefix(s); return SR_VFPU_COMPUTE;
@@ -1067,7 +1067,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 float scalar = s->v[sc[0]];
                 for (int i = 0; i < side - 1; i++)
                     for (int j = 0; j < side; j++)
-                        s->v[mreg_idx(vd, side, j, i)] = s->v[mreg_idx(vs, side, j, i)] * scalar;
+                        s->v[mreg_idx(vd, side, j, i)] = sr_vf_mul(s->v[mreg_idx(vs, side, j, i)], scalar);
                 for (int j = 0; j < side; j++) {
                     src[j] = (uint8_t)mreg_idx(vs, side, j, side - 1);
                     dst[j] = (uint8_t)mreg_idx(vd, side, j, side - 1);
@@ -1075,7 +1075,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 }
                 sr_vread(row, s, src, side, s->vfpuCtrl[0]);
                 sr_vread(t, s, scv, side, s->vfpuCtrl[1]);
-                for (int j = 0; j < side; j++) d[j] = row[j] * t[j];
+                for (int j = 0; j < side; j++) d[j] = sr_vf_mul(row[j], t[j]);
                 VFPU_NAN("vmscl", d, side, row, side, t, side);
                 sr_vwrite(s, dst, d, side, s->vfpuCtrl[2]);
                 eat_prefix(s); return SR_VFPU_COMPUTE;
@@ -1133,14 +1133,19 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
         sr_vread(a, s, si, n, s->vfpuCtrl[0]);
         sr_vread(b, s, ti, n, s->vfpuCtrl[1]);
         if (n == 3) {
-            d[0] = a[1] * b[2] - a[2] * b[1];
-            d[1] = a[2] * b[0] - a[0] * b[2];
-            d[2] = a[0] * b[1] - a[1] * b[0];
+            /* Left-to-right sr_vf_* chains, the ones codegen.py emits (issue #326). */
+            d[0] = sr_vf_sub(sr_vf_mul(a[1], b[2]), sr_vf_mul(a[2], b[1]));
+            d[1] = sr_vf_sub(sr_vf_mul(a[2], b[0]), sr_vf_mul(a[0], b[2]));
+            d[2] = sr_vf_sub(sr_vf_mul(a[0], b[1]), sr_vf_mul(a[1], b[0]));
         } else if (n == 4) {
-            d[0] =  a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0];
-            d[1] = -a[0] * b[2] + a[1] * b[3] + a[2] * b[0] + a[3] * b[1];
-            d[2] =  a[0] * b[1] - a[1] * b[0] + a[2] * b[3] + a[3] * b[2];
-            d[3] = -a[0] * b[0] - a[1] * b[1] - a[2] * b[2] + a[3] * b[3];
+            d[0] = sr_vf_add(sr_vf_sub(sr_vf_add(sr_vf_mul(a[0], b[3]), sr_vf_mul(a[1], b[2])),
+                                       sr_vf_mul(a[2], b[1])), sr_vf_mul(a[3], b[0]));
+            d[1] = sr_vf_add(sr_vf_add(sr_vf_add(sr_vf_mul(-a[0], b[2]), sr_vf_mul(a[1], b[3])),
+                                       sr_vf_mul(a[2], b[0])), sr_vf_mul(a[3], b[1]));
+            d[2] = sr_vf_add(sr_vf_add(sr_vf_sub(sr_vf_mul(a[0], b[1]), sr_vf_mul(a[1], b[0])),
+                                       sr_vf_mul(a[2], b[3])), sr_vf_mul(a[3], b[2]));
+            d[3] = sr_vf_add(sr_vf_sub(sr_vf_sub(sr_vf_mul(-a[0], b[0]), sr_vf_mul(a[1], b[1])),
+                                       sr_vf_mul(a[2], b[2])), sr_vf_mul(a[3], b[3]));
         } else {
             return SR_VFPU_OTHER;
         }

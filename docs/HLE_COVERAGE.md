@@ -23,12 +23,12 @@ Classes are listed strongest first. A path takes the first class whose source na
 
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
-| `hardware-measured` | 64 | 16 |
-| `ppsspp-derived` | 117 | 90 |
+| `hardware-measured` | 64 | 26 |
+| `ppsspp-derived` | 119 | 89 |
 | `game-route` | 0 | 0 |
 | `synthetic` | 344 | 226 |
-| `unverified` | 159 | 31 |
-| total | 684 | 363 |
+| `unverified` | 158 | 22 |
+| total | 685 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -45,8 +45,6 @@ them, so they carry no class; `python tools/vfpu_coverage_report.py` lists them.
   counted, because it would give every path the same class.
 - Hardware runs described only in `tools/hle_registry_meta.py` notes count only when
   `tools/psp_oracle/manifest.json` links them; the rows marked `note` below carry such a note.
-- Measured VFPU oracle rows that no census form cites yet: `PSP-VFPU-CMP-001`, `PSP-VFPU-FORMS2-001`, `PSP-VFPU-FUNNEL-001`, `PSP-VFPU-SORT-001`, `PSP-VFPU-TRANSCENDENTAL-001`. Their forms keep the class
-  their census row gives until the census links them.
 
 At run time `sr_syscall` logs one line the first time each `unverified` NID with a handler is
 called: `HLE: unverified: <name> (NID 0x<nid>) has no recorded evidence (docs/HLE_COVERAGE.md)`.
@@ -181,7 +179,7 @@ belongs to without the census's own grouping.
 | `0x2c8e6ab3` | `__sceSasGetPauseFlag` | audio | `unverified` | no recorded evidence |
 | `0x2d0e4e0a` | `scePsmfPlayerSetTempBuf` | mpeg | `unverified` | no recorded evidence |
 | `0x2d211135` | `sceRegGetKeys` | system | `synthetic` | HLE selftest dispatch |
-| `0x2d53f36e` | `sceAudioOutput2OutputBlocking` | audio | `unverified` | no recorded evidence; note |
+| `0x2d53f36e` | `sceAudioOutput2OutputBlocking` | audio | `ppsspp-derived` | registry notes name PPSSPP; note |
 | `0x2dd3e298` | `sceAtracGetBufferInfoForResetting` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x2e0911aa` | `sceKernelUnloadModule` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0x30be0259` | `sceRegGetKeyValueByName` | system | `synthetic` | HLE selftest dispatch |
@@ -259,7 +257,7 @@ belongs to without the census's own grouping.
 | `0x43196845` | `sceAudioOutput2Release` | audio | `hardware-measured` | PSP oracle PSP-HLE-AUDIO-SRC-001 |
 | `0x438a385a` | `sceGeSaveContext` | ge | `synthetic` | HLE selftest dispatch |
 | `0x440ca7d8` | `__sceSasSetVolume` | audio | `synthetic` | HLE selftest dispatch |
-| `0x446d8de6` | `sceKernelCreateThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
+| `0x446d8de6` | `sceKernelCreateThread` | kernel_thread | `synthetic` | HLE selftest dispatch; note |
 | `0x44e07129` | `sceMp3Init` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x4571cc64` | `sceMpegAvcDecodeFlush` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x469989ad` | `scePowerSetClockFrequency630` | power | `ppsspp-derived` | handler comment names PPSSPP; registry notes name PPSSPP |
@@ -287,6 +285,7 @@ belongs to without the census's own grouping.
 | `0x4da4c788` | `sceNetAdhocPtpSend` | network | `unverified` | no recorded evidence |
 | `0x4db1e739` | `sceUtilityNetconfInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0x4e3a1105` | `sceKernelWaitSema` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch; note |
+| `0x500f0429` | `sceMpegFlushStream` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x50647530` | `sceNetFreeThreadinfo` | network | `unverified` | no recorded evidence |
 | `0x50a14dfc` | `__sceSasCoreWithMix` | audio | `synthetic` | HLE selftest dispatch |
 | `0x50c4cd57` | `sceUtilitySavedataInitStart` | utility | `synthetic` | HLE selftest dispatch |
@@ -706,7 +705,7 @@ belongs to without the census's own grouping.
 | `0xf2a4afe5` | `sceRtcTickAddSeconds` | rtc | `synthetic` | HLE selftest dispatch |
 | `0xf3986382` | `sceKernelReceiveMbxCB` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0xf3f76017` | `sceUtilityOskGetStatus` | utility | `synthetic` | HLE selftest dispatch |
-| `0xf475845d` | `sceKernelStartThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
+| `0xf475845d` | `sceKernelStartThread` | kernel_thread | `synthetic` | HLE selftest dispatch; note |
 | `0xf5478233` | `sceMp3ReleaseMp3Handle` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0xf6107f00` | `__sceSasUnsetATRAC3` | audio | `unverified` | no recorded evidence |
 | `0xf6269b82` | `sceUtilityOskInitStart` | utility | `synthetic` | HLE selftest dispatch |
@@ -747,108 +746,108 @@ belongs to without the census's own grouping.
 
 | Form | Opcode | Word | Size | Disposition | Class | Basis |
 | --- | --- | --- | --- | --- | --- | --- |
-| `vfpu-12-48600000-34c181bf1f1f` | `0x12` | `0x48600000` | - | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-12-48610000-02f2322ba6bc` | `0x12` | `0x48610088` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-1f0e5aa40ac7` | `0x12` | `0x4861008a` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-2b7101462809` | `0x12` | `0x4861008d` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-489ecc642709` | `0x12` | `0x48610081` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-61f519cd2598` | `0x12` | `0x48610082` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-63d7a697df95` | `0x12` | `0x48610085` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-6799f2ee01ef` | `0x12` | `0x48610087` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-8131fc1fa55b` | `0x12` | `0x4861008f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-92aa061f55e3` | `0x12` | `0x48610080` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-9ffa41c064d2` | `0x12` | `0x48610084` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-a6527cba23b3` | `0x12` | `0x48610086` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-d5555d8d9cc7` | `0x12` | `0x4861008e` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-df156e6ab245` | `0x12` | `0x48610000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-e13759eba1f9` | `0x12` | `0x4861008c` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-e50d110557e0` | `0x12` | `0x48610083` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-eba194a6eeea` | `0x12` | `0x48610089` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48610000-f757075bc6c6` | `0x12` | `0x4861008b` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e00000-aba4a5a65af3` | `0x12` | `0x48e0008f` | - | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-12-48e00000-eb5ac23b2387` | `0x12` | `0x48e00000` | - | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-12-48e10000-152969ff89d9` | `0x12` | `0x48e1008b` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-1c01d6853175` | `0x12` | `0x48e1008c` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-2203ee0ba637` | `0x12` | `0x48e1008e` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-266d0a916b03` | `0x12` | `0x48e1008d` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-2fad71a8f3ca` | `0x12` | `0x48e10088` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-3b34a2612de8` | `0x12` | `0x48e10084` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-3f6525fc7faa` | `0x12` | `0x48e10083` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-475e3549dae1` | `0x12` | `0x48e10086` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-4c1228531707` | `0x12` | `0x48e1008f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-5390c89841cc` | `0x12` | `0x48e10085` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-5966b7b139c2` | `0x12` | `0x48e1008a` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-5f14a99ceaf2` | `0x12` | `0x48e10089` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-66f9672e174c` | `0x12` | `0x48e10082` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-90dfa8701ff6` | `0x12` | `0x48e10081` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-9f81684a9020` | `0x12` | `0x48e10000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-ca103ace1a90` | `0x12` | `0x48e10080` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-12-48e10000-d585297d9fe8` | `0x12` | `0x48e10087` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-60000000-4c919dacf553` | `0x18` | `0x60000088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-60000000-78a5f8e1c701` | `0x18` | `0x60000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-60008000-5823de273795` | `0x18` | `0x60008008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-60008000-dc09e188306a` | `0x18` | `0x60008088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-60800000-037fa058685a` | `0x18` | `0x60800000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-60800000-8491cb4c8f27` | `0x18` | `0x60800080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-60808000-6db2a2e91835` | `0x18` | `0x60808008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-60808000-d1f6c0d48e24` | `0x18` | `0x60808088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-63800000-99dde7d0202f` | `0x18` | `0x63800000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-63800000-f5da75062738` | `0x18` | `0x63800088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-63808000-5816dbe6d68f` | `0x18` | `0x63808008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-18-63808000-d904f9e751c4` | `0x18` | `0x63808081` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-64000000-2916cc2cdbee` | `0x19` | `0x64000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-64000000-f02bdba88743` | `0x19` | `0x64000088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-64008000-3c4e4276d2cc` | `0x19` | `0x64008008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-64008000-eb6380930700` | `0x19` | `0x64008088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-64800000-03f1fc88bc23` | `0x19` | `0x64800000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-64800000-4a7bdc50094b` | `0x19` | `0x64800080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-64808000-c55dcbafc2df` | `0x19` | `0x64808008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-a, issue-40-group-b |
-| `vfpu-19-64808000-ed7d5b427d57` | `0x19` | `0x64808088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-65000000-a68bceaf587b` | `0x19` | `0x65000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-65000000-d3a0b11f8665` | `0x19` | `0x65000088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-65008000-53d56b85fab6` | `0x19` | `0x65008088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-65008000-e4859065a8e8` | `0x19` | `0x65008008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
-| `vfpu-19-66000000-08a2360cbf56` | `0x19` | `0x66000088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-66000000-2f4749f5316f` | `0x19` | `0x66000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-66008000-2f5510da3aa6` | `0x19` | `0x66008088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-19-66008000-a21bfdaec595` | `0x19` | `0x66008008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-a, issue-40-group-b |
-| `vfpu-19-66808000-e34d27a47e20` | `0x19` | `0x66808001` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
-| `vfpu-1b-6c000000-c3c11660a80b` | `0x1b` | `0x6c000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c018100-35968732032f` | `0x1b` | `0x6c01810f` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6c018100-b8b444e70e06` | `0x1b` | `0x6c01818f` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6c020000-3c835b4d17fc` | `0x1b` | `0x6c020084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c028000-9340359d1b9e` | `0x1b` | `0x6c028084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c028000-d8a78b010d2a` | `0x1b` | `0x6c028004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c030100-2115cd62983b` | `0x1b` | `0x6c030185` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c030100-dd458aca8e67` | `0x1b` | `0x6c030105` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c038100-2a248253ae1d` | `0x1b` | `0x6c038105` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c038100-bb708866aad1` | `0x1b` | `0x6c038185` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c050100-b22e268335ba` | `0x1b` | `0x6c050101` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6c050100-efc06a11ea23` | `0x1b` | `0x6c05010f` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6c058100-3d5b5325cfff` | `0x1b` | `0x6c058181` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6c080000-d8932454186f` | `0x1b` | `0x6c0800ff` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6c0a0800-17b5909369e7` | `0x1b` | `0x6c0a080c` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c0a0800-9bc084e3e2cb` | `0x1b` | `0x6c0a088c` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c0a8800-d82f94555599` | `0x1b` | `0x6c0a888c` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c0a8800-da7f16f9194a` | `0x1b` | `0x6c0a880c` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c170100-41342d6cca15` | `0x1b` | `0x6c170181` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6c3f8100-09cbcbd04122` | `0x1b` | `0x6c3f8101` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6d000000-6c9ec6f00b6b` | `0x1b` | `0x6d000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6d018000-67a821de4443` | `0x1b` | `0x6d01807f` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6d018100-342c1b50a7cf` | `0x1b` | `0x6d018180` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6d020000-05c5b518292e` | `0x1b` | `0x6d020084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6e800000-5892d48f0b5a` | `0x1b` | `0x6e800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6e808000-60c44851743e` | `0x1b` | `0x6e808001` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6e808000-d5aff2b94fa6` | `0x1b` | `0x6e808090` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6e810100-2116777d0d40` | `0x1b` | `0x6e810190` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-1b-6f000000-c76c882fac89` | `0x1b` | `0x6f000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6f010100-ea8a350b708d` | `0x1b` | `0x6f01018f` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6f028000-9b185cb51eac` | `0x1b` | `0x6f028084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6f028000-cf13e937e2b1` | `0x1b` | `0x6f028004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6f800000-5d8abd9df115` | `0x1b` | `0x6f800000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6f808000-17b86eaa660a` | `0x1b` | `0x6f808081` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6f810100-751ff06bc92c` | `0x1b` | `0x6f810181` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6f828000-e057fab353aa` | `0x1b` | `0x6f828004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
+| `vfpu-12-48600000-34c181bf1f1f` | `0x12` | `0x48600000` | - | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-02f2322ba6bc` | `0x12` | `0x48610088` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-1f0e5aa40ac7` | `0x12` | `0x4861008a` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-2b7101462809` | `0x12` | `0x4861008d` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-489ecc642709` | `0x12` | `0x48610081` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-61f519cd2598` | `0x12` | `0x48610082` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-63d7a697df95` | `0x12` | `0x48610085` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-6799f2ee01ef` | `0x12` | `0x48610087` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-8131fc1fa55b` | `0x12` | `0x4861008f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-92aa061f55e3` | `0x12` | `0x48610080` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-9ffa41c064d2` | `0x12` | `0x48610084` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-a6527cba23b3` | `0x12` | `0x48610086` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-d5555d8d9cc7` | `0x12` | `0x4861008e` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-df156e6ab245` | `0x12` | `0x48610000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-e13759eba1f9` | `0x12` | `0x4861008c` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-e50d110557e0` | `0x12` | `0x48610083` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-eba194a6eeea` | `0x12` | `0x48610089` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48610000-f757075bc6c6` | `0x12` | `0x4861008b` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e00000-aba4a5a65af3` | `0x12` | `0x48e0008f` | - | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e00000-eb5ac23b2387` | `0x12` | `0x48e00000` | - | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-152969ff89d9` | `0x12` | `0x48e1008b` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-1c01d6853175` | `0x12` | `0x48e1008c` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-2203ee0ba637` | `0x12` | `0x48e1008e` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-266d0a916b03` | `0x12` | `0x48e1008d` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-2fad71a8f3ca` | `0x12` | `0x48e10088` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-3b34a2612de8` | `0x12` | `0x48e10084` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-3f6525fc7faa` | `0x12` | `0x48e10083` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-475e3549dae1` | `0x12` | `0x48e10086` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-4c1228531707` | `0x12` | `0x48e1008f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-5390c89841cc` | `0x12` | `0x48e10085` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-5966b7b139c2` | `0x12` | `0x48e1008a` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-5f14a99ceaf2` | `0x12` | `0x48e10089` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-66f9672e174c` | `0x12` | `0x48e10082` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-90dfa8701ff6` | `0x12` | `0x48e10081` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-9f81684a9020` | `0x12` | `0x48e10000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-ca103ace1a90` | `0x12` | `0x48e10080` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-12-48e10000-d585297d9fe8` | `0x12` | `0x48e10087` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-60000000-3777189900f7` | `0x18` | `0x60000088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-60000000-bec85cce01be` | `0x18` | `0x60000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-60008000-188421640487` | `0x18` | `0x60008088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-60008000-34798fd74341` | `0x18` | `0x60008008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-60800000-1fca46bfd8f8` | `0x18` | `0x60800080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-60800000-96d320986d19` | `0x18` | `0x60800000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-60808000-45589d5354e7` | `0x18` | `0x60808088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-60808000-8c8613fa2ec1` | `0x18` | `0x60808008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-63800000-1c12bbe2cfa3` | `0x18` | `0x63800088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-63800000-b5b5645fa233` | `0x18` | `0x63800000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-63808000-a92e3813d384` | `0x18` | `0x63808008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-18-63808000-b770a41d37db` | `0x18` | `0x63808081` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-64000000-0488119092ba` | `0x19` | `0x64000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-64000000-e60210667270` | `0x19` | `0x64000088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-64008000-1e32723316b0` | `0x19` | `0x64008088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-64008000-9e372ceeafa2` | `0x19` | `0x64008008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-64800000-74d351651d0e` | `0x19` | `0x64800080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-64800000-ca20d56e8930` | `0x19` | `0x64800000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-64808000-c955ef0ff1b6` | `0x19` | `0x64808008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-a, issue-40-group-b |
+| `vfpu-19-64808000-cf43fa05cebb` | `0x19` | `0x64808088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-65000000-5bd299bf99be` | `0x19` | `0x65000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-65000000-acece882b7f8` | `0x19` | `0x65000088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-65008000-837f1604beec` | `0x19` | `0x65008088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-65008000-a88cd2605e4c` | `0x19` | `0x65008008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
+| `vfpu-19-66000000-2c5b8425d13d` | `0x19` | `0x66000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-66000000-e147c30568b2` | `0x19` | `0x66000088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-66008000-8c18bfea8213` | `0x19` | `0x66008088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-19-66008000-91d95559b25a` | `0x19` | `0x66008008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-a, issue-40-group-b |
+| `vfpu-19-66808000-0c9d9ba97632` | `0x19` | `0x66808001` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
+| `vfpu-1b-6c000000-c3c11660a80b` | `0x1b` | `0x6c000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c018100-35968732032f` | `0x1b` | `0x6c01810f` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c018100-b8b444e70e06` | `0x1b` | `0x6c01818f` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c020000-3c835b4d17fc` | `0x1b` | `0x6c020084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c028000-9340359d1b9e` | `0x1b` | `0x6c028084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c028000-d8a78b010d2a` | `0x1b` | `0x6c028004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c030100-2115cd62983b` | `0x1b` | `0x6c030185` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c030100-dd458aca8e67` | `0x1b` | `0x6c030105` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c038100-2a248253ae1d` | `0x1b` | `0x6c038105` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c038100-bb708866aad1` | `0x1b` | `0x6c038185` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c050100-b22e268335ba` | `0x1b` | `0x6c050101` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c050100-efc06a11ea23` | `0x1b` | `0x6c05010f` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c058100-3d5b5325cfff` | `0x1b` | `0x6c058181` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c080000-d8932454186f` | `0x1b` | `0x6c0800ff` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c0a0800-17b5909369e7` | `0x1b` | `0x6c0a080c` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c0a0800-9bc084e3e2cb` | `0x1b` | `0x6c0a088c` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c0a8800-d82f94555599` | `0x1b` | `0x6c0a888c` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c0a8800-da7f16f9194a` | `0x1b` | `0x6c0a880c` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6c170100-41342d6cca15` | `0x1b` | `0x6c170181` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c3f8100-09cbcbd04122` | `0x1b` | `0x6c3f8101` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6d000000-6c9ec6f00b6b` | `0x1b` | `0x6d000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6d018000-67a821de4443` | `0x1b` | `0x6d01807f` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6d018100-342c1b50a7cf` | `0x1b` | `0x6d018180` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6d020000-05c5b518292e` | `0x1b` | `0x6d020084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6e800000-5892d48f0b5a` | `0x1b` | `0x6e800000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-CMP-001 |
+| `vfpu-1b-6e808000-60c44851743e` | `0x1b` | `0x6e808001` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6e808000-d5aff2b94fa6` | `0x1b` | `0x6e808090` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6e810100-2116777d0d40` | `0x1b` | `0x6e810190` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6f000000-c76c882fac89` | `0x1b` | `0x6f000000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-CMP-001 |
+| `vfpu-1b-6f010100-ea8a350b708d` | `0x1b` | `0x6f01018f` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6f028000-9b185cb51eac` | `0x1b` | `0x6f028084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6f028000-cf13e937e2b1` | `0x1b` | `0x6f028004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6f800000-5d8abd9df115` | `0x1b` | `0x6f800000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-CMP-001 |
+| `vfpu-1b-6f808000-17b86eaa660a` | `0x1b` | `0x6f808081` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6f810100-751ff06bc92c` | `0x1b` | `0x6f810181` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-1b-6f828000-e057fab353aa` | `0x1b` | `0x6f828004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
 | `vfpu-32-c8000000-4ed11a01c431` | `0x32` | `0xc8000000` | - | `aot-direct` | `unverified` | no recorded evidence |
 | `vfpu-32-c8018100-b06fdc4468bf` | `0x32` | `0xc801810f` | - | `aot-direct` | `unverified` | no recorded evidence |
 | `vfpu-32-c8050100-7190ae39c3e3` | `0x32` | `0xc805010f` | - | `aot-direct` | `unverified` | no recorded evidence |
@@ -861,34 +860,34 @@ belongs to without the census's own grouping.
 | `vfpu-32-c8250000-237b2992f72e` | `0x32` | `0xc825000f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-32-c8258000-1c3c462e8d50` | `0x32` | `0xc8258081` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-32-c8260000-266eef066eaf` | `0x32` | `0xc8260001` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0000000-0d11775c2fde` | `0x34` | `0xd0000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0000000-94b906e3c033` | `0x34` | `0xd0000084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0008000-4d607a362c28` | `0x34` | `0xd0008084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0008000-62bb79c43fa8` | `0x34` | `0xd0008004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0010000-b971a5528982` | `0x34` | `0xd0010084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0010000-d86d0cd5b2fc` | `0x34` | `0xd0010000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0018000-3f3edf2482ce` | `0x34` | `0xd0018004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0018000-c4ecd4ba8f0b` | `0x34` | `0xd0018084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0020000-4821ecf1e2d6` | `0x34` | `0xd0020084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0020000-ab0ff5b761bb` | `0x34` | `0xd0020000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0028000-256d0e3657e8` | `0x34` | `0xd0028084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0028000-d21363515da0` | `0x34` | `0xd0028004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0030000-a7ca06293e38` | `0x34` | `0xd0030000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0030000-fbe568a7e3d7` | `0x34` | `0xd0030084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0038000-7fe09cd8240e` | `0x34` | `0xd0038084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0038000-8f018b9a6422` | `0x34` | `0xd0038004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0040000-0be3552d4b88` | `0x34` | `0xd0040000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0040000-0ea342f0dc67` | `0x34` | `0xd0040084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0048000-23260f835bca` | `0x34` | `0xd0048004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0048000-67a101b3b656` | `0x34` | `0xd0048084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0050000-8e54d9835911` | `0x34` | `0xd0050000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0050000-af00e1d2232f` | `0x34` | `0xd0050084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0058000-6f7a7995a5b8` | `0x34` | `0xd0058004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0058000-8a0e31df1185` | `0x34` | `0xd0058084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0060000-632ff28fb776` | `0x34` | `0xd0060084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0060000-db745a74ba51` | `0x34` | `0xd0060000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0068000-5791705e7685` | `0x34` | `0xd0068004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0068000-c82dcb4f7a31` | `0x34` | `0xd0068084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
+| `vfpu-34-d0000000-0d11775c2fde` | `0x34` | `0xd0000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0000000-94b906e3c033` | `0x34` | `0xd0000084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0008000-4d607a362c28` | `0x34` | `0xd0008084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0008000-62bb79c43fa8` | `0x34` | `0xd0008004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0010000-b971a5528982` | `0x34` | `0xd0010084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0010000-d86d0cd5b2fc` | `0x34` | `0xd0010000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0018000-3f3edf2482ce` | `0x34` | `0xd0018004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0018000-c4ecd4ba8f0b` | `0x34` | `0xd0018084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0020000-4821ecf1e2d6` | `0x34` | `0xd0020084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0020000-ab0ff5b761bb` | `0x34` | `0xd0020000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0028000-256d0e3657e8` | `0x34` | `0xd0028084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0028000-d21363515da0` | `0x34` | `0xd0028004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0030000-a7ca06293e38` | `0x34` | `0xd0030000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0030000-fbe568a7e3d7` | `0x34` | `0xd0030084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0038000-7fe09cd8240e` | `0x34` | `0xd0038084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0038000-8f018b9a6422` | `0x34` | `0xd0038004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0040000-0be3552d4b88` | `0x34` | `0xd0040000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0040000-0ea342f0dc67` | `0x34` | `0xd0040084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0048000-23260f835bca` | `0x34` | `0xd0048004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0048000-67a101b3b656` | `0x34` | `0xd0048084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0050000-8e54d9835911` | `0x34` | `0xd0050000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0050000-af00e1d2232f` | `0x34` | `0xd0050084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0058000-6f7a7995a5b8` | `0x34` | `0xd0058004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0058000-8a0e31df1185` | `0x34` | `0xd0058084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0060000-632ff28fb776` | `0x34` | `0xd0060084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0060000-db745a74ba51` | `0x34` | `0xd0060000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0068000-5791705e7685` | `0x34` | `0xd0068004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0068000-c82dcb4f7a31` | `0x34` | `0xd0068084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
 | `vfpu-34-d0100000-57f920b3947f` | `0x34` | `0xd0100084` | 2 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_rcp` |
 | `vfpu-34-d0100000-6868bfad7d0b` | `0x34` | `0xd0100000` | 1 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_rcp` |
 | `vfpu-34-d0108000-7156d63bfade` | `0x34` | `0xd0108080` | 4 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_rcp` |
@@ -938,7 +937,7 @@ belongs to without the census's own grouping.
 | `vfpu-34-d01b8000-022cd47e8e14` | `0x34` | `0xd01b8084` | 4 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_cos` |
 | `vfpu-34-d01b8000-63e35c246687` | `0x34` | `0xd01b8004` | 3 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_cos` |
 | `vfpu-34-d01c0000-1e11bb35b0d7` | `0x34` | `0xd01c0084` | 2 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_exp2` |
-| `vfpu-34-d01c0000-d2bbb648cba7` | `0x34` | `0xd01c0000` | 1 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_exp2` |
+| `vfpu-34-d01c0000-d2bbb648cba7` | `0x34` | `0xd01c0000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-TRANSCENDENTAL-001 |
 | `vfpu-34-d01c8000-85e1a9a3851e` | `0x34` | `0xd01c8084` | 4 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_exp2` |
 | `vfpu-34-d01c8000-96924f606b41` | `0x34` | `0xd01c8004` | 3 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_exp2` |
 | `vfpu-34-d01d0000-2d107eb4f24f` | `0x34` | `0xd01d0084` | 2 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_log2` |
@@ -953,67 +952,67 @@ belongs to without the census's own grouping.
 | `vfpu-34-d01f0000-e6fbe0819423` | `0x34` | `0xd01f0084` | 2 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_asin` |
 | `vfpu-34-d01f8000-13306d9c22d2` | `0x34` | `0xd01f8004` | 3 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_asin` |
 | `vfpu-34-d01f8000-4a572d3f61f1` | `0x34` | `0xd01f8084` | 4 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_asin` |
-| `vfpu-34-d0200000-569020674441` | `0x34` | `0xd0200000` | 1 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
-| `vfpu-34-d0210000-12b37ebc278e` | `0x34` | `0xd0210000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff`, `vfpu-interp-selftest:check_vrndi_rule_cells` |
-| `vfpu-34-d0218000-ac69ea1bf731` | `0x34` | `0xd021800f` | 3 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
+| `vfpu-34-d0200000-569020674441` | `0x34` | `0xd0200000` | 1 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS2-001 |
+| `vfpu-34-d0210000-12b37ebc278e` | `0x34` | `0xd0210000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff`, `vfpu-interp-selftest:check_vrndi_rule_cells` |
+| `vfpu-34-d0218000-ac69ea1bf731` | `0x34` | `0xd021800f` | 3 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001, PSP-VFPU-FORMS2-001 |
 | `vfpu-34-d0220000-41aec2c1ea09` | `0x34` | `0xd0220000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
-| `vfpu-34-d0228000-bf2dcb1482da` | `0x34` | `0xd022808f` | 4 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
-| `vfpu-34-d0328000-bf2dcb1482da` | `0x34` | `0xd0328090` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
+| `vfpu-34-d0228000-bf2dcb1482da` | `0x34` | `0xd022808f` | 4 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001, PSP-VFPU-FORMS2-001 |
+| `vfpu-34-d0328000-bf2dcb1482da` | `0x34` | `0xd0328090` | 4 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS2-001 |
 | `vfpu-34-d0330000-812afb3b7a6b` | `0x34` | `0xd0330000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
 | `vfpu-34-d0380000-a8e1644c3022` | `0x34` | `0xd0380000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
-| `vfpu-34-d0390000-01881cbef1ef` | `0x34` | `0xd0390000` | 1 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
-| `vfpu-34-d03b0000-5bf1c1e7f497` | `0x34` | `0xd03b0000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03b0000-695999f072c8` | `0x34` | `0xd03b0084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03b8000-65b917bad035` | `0x34` | `0xd03b8084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03b8000-fe32fd38ba6b` | `0x34` | `0xd03b8004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03c0000-aa28f693e213` | `0x34` | `0xd03c0000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03c0000-de575981a63f` | `0x34` | `0xd03c0084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03c8000-c67f27e66a31` | `0x34` | `0xd03c8004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03c8000-f6fc3c50db4e` | `0x34` | `0xd03c8084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03d0000-67ecc820d2d9` | `0x34` | `0xd03d0000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03d0000-bfc7c26c893c` | `0x34` | `0xd03d0084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03d8000-b2a50e5225ad` | `0x34` | `0xd03d8084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03d8000-ff3c38483c57` | `0x34` | `0xd03d8004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03e0000-1addfd8e3e87` | `0x34` | `0xd03e0084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03e0000-aa4a2358a0a8` | `0x34` | `0xd03e0000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03e8000-53d2b9277ab2` | `0x34` | `0xd03e8084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03e8000-93b994a98b01` | `0x34` | `0xd03e8004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03f0000-5fb5cc0ce92c` | `0x34` | `0xd03f0084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03f0000-e78ad9932eff` | `0x34` | `0xd03f0000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03f8000-a9f423550f5f` | `0x34` | `0xd03f8084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d03f8000-c17e8d52cda8` | `0x34` | `0xd03f8004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0440000-43a479f884c1` | `0x34` | `0xd0440000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0440000-a5e816dfe20e` | `0x34` | `0xd0440084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0448000-7a4fb93af934` | `0x34` | `0xd0448004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0448000-9ca02b934046` | `0x34` | `0xd0448084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
+| `vfpu-34-d0390000-01881cbef1ef` | `0x34` | `0xd0390000` | 1 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS2-001 |
+| `vfpu-34-d03b0000-5bf1c1e7f497` | `0x34` | `0xd03b0000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03b0000-695999f072c8` | `0x34` | `0xd03b0084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03b8000-65b917bad035` | `0x34` | `0xd03b8084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03b8000-fe32fd38ba6b` | `0x34` | `0xd03b8004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03c0000-aa28f693e213` | `0x34` | `0xd03c0000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03c0000-de575981a63f` | `0x34` | `0xd03c0084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03c8000-c67f27e66a31` | `0x34` | `0xd03c8004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03c8000-f6fc3c50db4e` | `0x34` | `0xd03c8084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03d0000-67ecc820d2d9` | `0x34` | `0xd03d0000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03d0000-bfc7c26c893c` | `0x34` | `0xd03d0084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03d8000-b2a50e5225ad` | `0x34` | `0xd03d8084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03d8000-ff3c38483c57` | `0x34` | `0xd03d8004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03e0000-1addfd8e3e87` | `0x34` | `0xd03e0084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03e0000-aa4a2358a0a8` | `0x34` | `0xd03e0000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03e8000-53d2b9277ab2` | `0x34` | `0xd03e8084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03e8000-93b994a98b01` | `0x34` | `0xd03e8004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03f0000-5fb5cc0ce92c` | `0x34` | `0xd03f0084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03f0000-e78ad9932eff` | `0x34` | `0xd03f0000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03f8000-a9f423550f5f` | `0x34` | `0xd03f8084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d03f8000-c17e8d52cda8` | `0x34` | `0xd03f8004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0440000-43a479f884c1` | `0x34` | `0xd0440000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0440000-a5e816dfe20e` | `0x34` | `0xd0440084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0448000-7a4fb93af934` | `0x34` | `0xd0448004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0448000-9ca02b934046` | `0x34` | `0xd0448084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
 | `vfpu-34-d0450000-6b85266691e1` | `0x34` | `0xd0450000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
 | `vfpu-34-d0450100-d11658a3e0f7` | `0x34` | `0xd0450180` | 2 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
-| `vfpu-34-d0468000-ac69ea1bf731` | `0x34` | `0xd046807f` | 3 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
-| `vfpu-34-d0478000-bf2dcb1482da` | `0x34` | `0xd04780ff` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
-| `vfpu-34-d0488000-bf2dcb1482da` | `0x34` | `0xd0488090` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
+| `vfpu-34-d0468000-ac69ea1bf731` | `0x34` | `0xd046807f` | 3 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FUNNEL-001 |
+| `vfpu-34-d0478000-bf2dcb1482da` | `0x34` | `0xd04780ff` | 4 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FUNNEL-001 |
+| `vfpu-34-d0488000-bf2dcb1482da` | `0x34` | `0xd0488090` | 4 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-SORT-001 |
 | `vfpu-34-d04a0000-01881cbef1ef` | `0x34` | `0xd04a0000` | 1 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-34-d04a8000-bf2dcb1482da` | `0x34` | `0xd04a80ff` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-34-d0598000-bf2dcb1482da` | `0x34` | `0xd0598090` | 4 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
-| `vfpu-34-d0600000-632ff28fb776` | `0x34` | `0xd0600084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0600000-db745a74ba51` | `0x34` | `0xd0600000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0608000-5791705e7685` | `0x34` | `0xd0608004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d0608000-c82dcb4f7a31` | `0x34` | `0xd0608084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2000000-623625fb155b` | `0x34` | `0xd2000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2000000-c1d51c7467c8` | `0x34` | `0xd2000084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2008000-0fbcf6fe903b` | `0x34` | `0xd2008084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2008000-b6d78642ce9b` | `0x34` | `0xd2008004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2800000-ab867fbcef06` | `0x34` | `0xd2800084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2800000-f0039c0eaf43` | `0x34` | `0xd2800000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2808000-deb075490dda` | `0x34` | `0xd2808084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2808000-e4879fc0cd03` | `0x34` | `0xd2808001` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2a00000-de06eb413fce` | `0x34` | `0xd2a00084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2a00000-e2f49b3f3a36` | `0x34` | `0xd2a00000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2a08000-d50f167d129a` | `0x34` | `0xd2a08084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2a08000-d656899ed0ac` | `0x34` | `0xd2a08004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2a60000-2d1124157f82` | `0x34` | `0xd2a60000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2a60000-f50a6c70188b` | `0x34` | `0xd2a60084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2a68000-7118faa02091` | `0x34` | `0xd2a68004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-34-d2a68000-bbca1f833115` | `0x34` | `0xd2a68084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
+| `vfpu-34-d0600000-632ff28fb776` | `0x34` | `0xd0600084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0600000-db745a74ba51` | `0x34` | `0xd0600000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0608000-5791705e7685` | `0x34` | `0xd0608004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d0608000-c82dcb4f7a31` | `0x34` | `0xd0608084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2000000-623625fb155b` | `0x34` | `0xd2000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2000000-c1d51c7467c8` | `0x34` | `0xd2000084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2008000-0fbcf6fe903b` | `0x34` | `0xd2008084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2008000-b6d78642ce9b` | `0x34` | `0xd2008004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2800000-ab867fbcef06` | `0x34` | `0xd2800084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2800000-f0039c0eaf43` | `0x34` | `0xd2800000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2808000-deb075490dda` | `0x34` | `0xd2808084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2808000-e4879fc0cd03` | `0x34` | `0xd2808001` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2a00000-de06eb413fce` | `0x34` | `0xd2a00084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2a00000-e2f49b3f3a36` | `0x34` | `0xd2a00000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2a08000-d50f167d129a` | `0x34` | `0xd2a08084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2a08000-d656899ed0ac` | `0x34` | `0xd2a08004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2a60000-2d1124157f82` | `0x34` | `0xd2a60000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2a60000-f50a6c70188b` | `0x34` | `0xd2a60084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2a68000-7118faa02091` | `0x34` | `0xd2a68004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-34-d2a68000-bbca1f833115` | `0x34` | `0xd2a68084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
 | `vfpu-34-d3000000-8d033fde8982` | `0x34` | `0xd3000000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
 | `vfpu-35-d4000000-3c6ee712bb5c` | `0x35` | `0xd4000000` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `vfpu-interp-selftest:check_quad_memops` |
 | `vfpu-35-d4018100-e4c37f0fbf47` | `0x35` | `0xd401810f` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `vfpu-interp-selftest:check_quad_memops` |
@@ -1024,10 +1023,10 @@ belongs to without the census's own grouping.
 | `vfpu-36-d8200000-21b49665cf78` | `0x36` | `0xd8200000` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-36-d8218000-44bff127c0fe` | `0x36` | `0xd821800f` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-36-d8258000-b04c26043d59` | `0x36` | `0xd8258081` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-37-dc000000-04aa804c6140` | `0x37` | `0xdc000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-37-dd000000-fc234082344e` | `0x37` | `0xdd000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-37-de000000-7caa71cf79ea` | `0x37` | `0xde000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-37-df000000-bb5f76d2c6f9` | `0x37` | `0xdf000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
+| `vfpu-37-dc000000-04aa804c6140` | `0x37` | `0xdc000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-37-dd000000-fc234082344e` | `0x37` | `0xdd000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-37-de000000-7caa71cf79ea` | `0x37` | `0xde000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-37-df000000-bb5f76d2c6f9` | `0x37` | `0xdf000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
 | `vfpu-3a-e8000000-660eb05aa6f6` | `0x3a` | `0xe8000000` | - | `aot-direct` | `unverified` | no recorded evidence |
 | `vfpu-3a-e8018100-fdbb9ee1712e` | `0x3a` | `0xe801810f` | - | `aot-direct` | `unverified` | no recorded evidence |
 | `vfpu-3a-e8050100-3ea357128bd4` | `0x3a` | `0xe8050101` | - | `aot-direct` | `unverified` | no recorded evidence |
@@ -1040,40 +1039,40 @@ belongs to without the census's own grouping.
 | `vfpu-3a-e8250000-ef69f6c7813d` | `0x3a` | `0xe825000f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3a-e8258000-aa889c2278dc` | `0x3a` | `0xe8258081` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3a-e8260000-420666dfdabb` | `0x3a` | `0xe8260001` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f0000000-36a0dfd6f25e` | `0x3c` | `0xf0000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-3c-f0018100-5a4cbf0afcde` | `0x3c` | `0xf001818f` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f0018100-ae9fcb3f5729` | `0x3c` | `0xf001810f` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-vmmul-vtfm3-nan |
-| `vfpu-3c-f0040000-87e8800f7077` | `0x3c` | `0xf0040088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f0800000-6269167e2f9b` | `0x3c` | `0xf0800080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f0800000-74175c7ed704` | `0x3c` | `0xf0800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-3c-f0818100-1436ad21d7ee` | `0x3c` | `0xf081818f` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f0818100-a21cd625cf03` | `0x3c` | `0xf0818101` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f1000000-c53432ee06d9` | `0x3c` | `0xf1000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-3c-f1018000-f4f54cf36cf1` | `0x3c` | `0xf101807f` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f1018100-ad659c2f8f04` | `0x3c` | `0xf1018180` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f1040000-75031de63abb` | `0x3c` | `0xf1040088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f1800000-698ca1415af9` | `0x3c` | `0xf1800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-3c-f1808000-7629a00da228` | `0x3c` | `0xf1808010` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-vmmul-vtfm3-nan |
-| `vfpu-3c-f1818000-f4d5da436b74` | `0x3c` | `0xf1818090` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f1830000-a250b91c407a` | `0x3c` | `0xf18300ff` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f2000000-6c250f1e9dc1` | `0x3c` | `0xf2000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-3c-f2008000-5b136f7b67ad` | `0x3c` | `0xf200807f` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
-| `vfpu-3c-f2018000-10d8b1518c48` | `0x3c` | `0xf20180ff` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f2030100-67f127769a35` | `0x3c` | `0xf20301ff` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f2808000-28bdadf840d9` | `0x3c` | `0xf2808090` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f2808000-a8b7c9270777` | `0x3c` | `0xf2808001` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3800000-33c04b695fcc` | `0x3c` | `0xf3800088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3800000-8a57926c1d7d` | `0x3c` | `0xf3800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-3c-f3808000-7b56bb3b366e` | `0x3c` | `0xf3808008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3808000-c9722109ff7d` | `0x3c` | `0xf3808081` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3810000-67f127769a35` | `0x3c` | `0xf3810088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3810000-6c250f1e9dc1` | `0x3c` | `0xf3810000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-3c-f3818000-10d8b1518c48` | `0x3c` | `0xf3818088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3818000-5b136f7b67ad` | `0x3c` | `0xf3818008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
-| `vfpu-3c-f3830000-4d3e36431900` | `0x3c` | `0xf3830000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
-| `vfpu-3c-f3830000-b0763af87a26` | `0x3c` | `0xf3830080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3838000-2559d0e2853f` | `0x3c` | `0xf3838008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3838000-4172a423a232` | `0x3c` | `0xf3838088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
+| `vfpu-3c-f0000000-25c1673d7689` | `0x3c` | `0xf0000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-3c-f0018100-8c400d319d71` | `0x3c` | `0xf001810f` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-vmmul-vtfm3-nan |
+| `vfpu-3c-f0018100-ac2a533962d4` | `0x3c` | `0xf001818f` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f0040000-34764a2884d3` | `0x3c` | `0xf0040088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f0800000-73526996747e` | `0x3c` | `0xf0800080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f0800000-cbd84061d035` | `0x3c` | `0xf0800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-3c-f0818100-6823b1d63610` | `0x3c` | `0xf081818f` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f0818100-84e550226709` | `0x3c` | `0xf0818101` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f1000000-ebbeb56f6f90` | `0x3c` | `0xf1000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-3c-f1018000-359ccbc69b61` | `0x3c` | `0xf101807f` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f1018100-3959d7ba2c5e` | `0x3c` | `0xf1018180` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f1040000-f4cc4429a1af` | `0x3c` | `0xf1040088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f1800000-d0be4a2cd1fa` | `0x3c` | `0xf1800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-3c-f1808000-92fda6462487` | `0x3c` | `0xf1808010` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-vmmul-vtfm3-nan |
+| `vfpu-3c-f1818000-a3b4db437e8f` | `0x3c` | `0xf1818090` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f1830000-667e85d8d605` | `0x3c` | `0xf18300ff` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f2000000-4a1f48bcd97b` | `0x3c` | `0xf2000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-3c-f2008000-29ede142a02f` | `0x3c` | `0xf200807f` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
+| `vfpu-3c-f2018000-66f859e0d3fe` | `0x3c` | `0xf20180ff` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f2030100-b442fa627190` | `0x3c` | `0xf20301ff` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f2808000-7a1d9055d96b` | `0x3c` | `0xf2808090` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f2808000-daa126ea11dd` | `0x3c` | `0xf2808001` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f3800000-33c04b695fcc` | `0x3c` | `0xf3800088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f3800000-8a57926c1d7d` | `0x3c` | `0xf3800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-3c-f3808000-7b56bb3b366e` | `0x3c` | `0xf3808008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f3808000-c9722109ff7d` | `0x3c` | `0xf3808081` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f3810000-4a1f48bcd97b` | `0x3c` | `0xf3810000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-3c-f3810000-b442fa627190` | `0x3c` | `0xf3810088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f3818000-29ede142a02f` | `0x3c` | `0xf3818008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
+| `vfpu-3c-f3818000-66f859e0d3fe` | `0x3c` | `0xf3818088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f3830000-4d3e36431900` | `0x3c` | `0xf3830000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_alias_edge_sweep`, `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-3c-f3830000-b0763af87a26` | `0x3c` | `0xf3830080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f3838000-2559d0e2853f` | `0x3c` | `0xf3838008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
+| `vfpu-3c-f3838000-4172a423a232` | `0x3c` | `0xf3838088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback`, `vfpu-interp-selftest:check_alias_edge_sweep` |
 | `vfpu-3c-f3a00000-15f095708365` | `0x3c` | `0xf3a0000f` | 1 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_cos`, `sr_vfpu_sin` |
 | `vfpu-3c-f3a00000-37b15d195917` | `0x3c` | `0xf3a00088` | 2 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_cos`, `sr_vfpu_sin` |
 | `vfpu-3c-f3a00000-f37f7c6d720b` | `0x3c` | `0xf3a00000` | 1 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_cos`, `sr_vfpu_sin` |

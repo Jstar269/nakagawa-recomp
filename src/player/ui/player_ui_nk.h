@@ -129,6 +129,7 @@ typedef enum {
     PLAYER_UI_ACTION_CHECK_INPUT_AGAIN, /* the title page checks its files again (#308) */
     PLAYER_UI_ACTION_TOGGLE_60FPS,     /* the title page's 60 FPS game logic switch */
     PLAYER_UI_ACTION_CYCLE_ACE,        /* the title page's Ace Mode: library, on, authentic */
+    PLAYER_UI_ACTION_CYCLE_SMOOTH,     /* the title page's smooth motion: library, on, off */
     PLAYER_UI_ACTION_CYCLE_SORT,        /* the library's next sort */
     PLAYER_UI_ACTION_FIND_OPEN,         /* open the library's find box */
     PLAYER_UI_ACTION_FIND_KEY,          /* an on-screen key: title_index is a codepoint, or
@@ -259,6 +260,14 @@ typedef struct {
     const char *ace_line;
     const char *ace_last_session;
     bool ace_badge;             /* the library card's ACE badge */
+    /* Smooth motion (#1272) beside the Ace Mode button: shown while Ace is in effect for the
+       title; the button's words ("Smooth motion: On (library default)"); lit when on; and
+       whether it can change now. It is disabled, and says so, while the title's 60 FPS game
+       logic is on: the two are refused together. */
+    bool smooth_shown;
+    const char *smooth_label;
+    bool smooth_on;
+    bool smooth_enabled;
     /* Disc verification: one sentence about how the image compares with the
        user's disc list, under the title page's tags; NULL when not checked. The
        card's badge carries the short word. */
@@ -535,9 +544,12 @@ typedef enum {
     PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT,
     PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT,
     PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE,
+    PLAYER_UI_SETTINGS_TOGGLE_ACE_SMOOTH,    /* smooth motion: Off, On (x2) */
     PLAYER_UI_SETTINGS_OPEN_PROBLEM_REPORT,  /* Settings > Problem report: lists the files */
     PLAYER_UI_SETTINGS_CREATE_REPORT,        /* write the bundle on this PC */
-    PLAYER_UI_SETTINGS_OPEN_REPORT_FOLDER
+    PLAYER_UI_SETTINGS_OPEN_REPORT_FOLDER,
+    PLAYER_UI_SETTINGS_OPEN_DATA_FOLDER,     /* the folder holding the library, games and settings */
+    PLAYER_UI_SETTINGS_OPEN_LOGS             /* the folder holding the logs */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_REPORT_LINES 24u   /* PLAYER_REPORT_MAX_FILES */
@@ -599,6 +611,7 @@ typedef struct {
     bool ace_text;
     bool ace_readout;
     bool ace_notice;
+    bool ace_smooth;                /* smooth motion (x2) */
     const char *controller_line;    /* "Keyboard ready" or the pad's name */
     const char *saves_folder;
     const char *notice;             /* a settings notice (a failed save), or NULL */
@@ -650,9 +663,23 @@ typedef struct {
     size_t reset_folder_count;
     const char *font_summary;       /* how many of the PSP fonts are the user's own */
     bool fonts_all_own;
+    /* The display the launcher is on, in Hz; 0 when unknown (no advisory then) */
+    double display_refresh_hz;
     float logical_width;
     float logical_height;
 } PlayerUiSettingsModel;
+
+/* Whether a display refresh rate (Hz) gives the game's 60 Hz (59.94 Hz) frames even motion.
+   A whole multiple of either (60, 120, 180, 240, 59.94 ...) is silent, and so is an unknown
+   rate (0 or less, NaN); anything else (75, 90, 144, 165 ...) earns the Settings advisory. */
+typedef enum {
+    PLAYER_UI_REFRESH_SILENT = 0,
+    PLAYER_UI_REFRESH_ADVISORY
+} PlayerUiRefreshAdvice;
+
+PlayerUiRefreshAdvice player_ui_refresh_advice(double refresh_hz);
+/* The advisory sentence for `refresh_hz` into out, or an empty string when it is silent. */
+void player_ui_refresh_advisory_text(double refresh_hz, char *out, size_t out_size);
 
 /* The controller settings page (VIEW_CONTROLLER_SETTINGS): the controller or
    keyboard mapping, or a step of the guided stick and trigger calibration while
@@ -882,6 +909,7 @@ enum {
     PLAYER_UI_ID_TITLE_REPORT = 0x2020u,
     PLAYER_UI_ID_TITLE_60FPS = 0x2009u,
     PLAYER_UI_ID_TITLE_ACE = 0x200Au,                /* the ENHANCEMENTS card's Ace Mode */
+    PLAYER_UI_ID_TITLE_SMOOTH = 0x200Bu,             /* the ENHANCEMENTS card's smooth motion */
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
@@ -952,9 +980,12 @@ enum {
     PLAYER_UI_ID_SETTINGS_ACE_TEXT = 0x4544u,
     PLAYER_UI_ID_SETTINGS_ACE_READOUT = 0x4545u,
     PLAYER_UI_ID_SETTINGS_ACE_NOTICE = 0x4546u,
+    PLAYER_UI_ID_SETTINGS_ACE_SMOOTH = 0x4547u,
     PLAYER_UI_ID_SETTINGS_PROBLEM_REPORT = 0x4550u,   /* Settings: opens the Problem report page */
     PLAYER_UI_ID_REPORT_CREATE = 0x4551u,
     PLAYER_UI_ID_REPORT_FOLDER = 0x4552u,
+    PLAYER_UI_ID_SETTINGS_OPEN_DATA_FOLDER = 0x4553u, /* Settings: shows the data folder */
+    PLAYER_UI_ID_SETTINGS_OPEN_LOGS = 0x4554u,        /* Settings: shows the logs folder */
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the control, 0-18 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,

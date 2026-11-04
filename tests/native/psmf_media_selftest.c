@@ -1432,6 +1432,32 @@ static void test_backend_malformed_input(void) {
     conformance_backend.destroy(id);
 }
 
+/* The seam's timed submit carries the producer's normalized 90 kHz PTS.  Every backend converts or
+ * forwards it (Media Foundation multiplies by 1000 / 9), so a value outside
+ * +-SR_H264_PTS_ABS_MAX is refused like any malformed unit instead of overflowing int64. */
+static void test_backend_pts_range(void) {
+    static const uint8_t au[] = { 0, 0, 1, 0x09, 0x10 };
+    struct { int64_t pts; int has_pts; int accepted; const char *what; } cases[] = {
+        { SR_H264_PTS_ABS_MAX, 1, 1, "a PTS at the bound is accepted" },
+        { -SR_H264_PTS_ABS_MAX, 1, 1, "a negative PTS at the bound is accepted" },
+        { SR_H264_PTS_ABS_MAX + 1, 1, 0, "a PTS one past the bound is refused" },
+        { -SR_H264_PTS_ABS_MAX - 1, 1, 0, "a negative PTS one past the bound is refused" },
+        { INT64_MAX, 1, 0, "INT64_MAX as a PTS is refused" },
+        { INT64_MIN, 1, 0, "INT64_MIN as a PTS is refused" },
+        { INT64_MAX, 0, 1, "an unknown-PTS unit ignores the PTS value" }
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int id = conformance_backend.create();
+        if (id < 0) {
+            fprintf(stderr, "SKIP: PTS range contract needs a real H.264 backend\n");
+            return;
+        }
+        int r = sr_h264_submit_au_timed(id, au, sizeof(au), cases[i].pts, cases[i].has_pts);
+        CHECK(cases[i].accepted ? r == 0 : r < 0, cases[i].what);
+        conformance_backend.destroy(id);
+    }
+}
+
 static uint64_t demux_fuzz_state = 0x3194844345584D58ULL;
 
 static uint64_t demux_fuzz_rand64(void) {
@@ -2585,6 +2611,11 @@ static void test_psmf_log_tick_instance_isolation(void) {
 static const uint8_t *s_player_image;
 static uint32_t s_player_image_size;
 static const char s_player_path[] = "disc0:/media/av_timing.psmf";
+
+int iso_sector_extent_path(const char *guest_path, char *out, size_t out_size) {
+    (void)guest_path; (void)out; (void)out_size;
+    return 0;
+}
 
 int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
     if (s_player_image && guest_path && strcmp(guest_path, s_player_path) == 0) {
@@ -4280,7 +4311,33 @@ static void test_mpeg_atrac_au_decode(void) {
               mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u &&
               mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, 1u) == 0u,
           "mpeg-atrac: after a flush the refed stream decodes again");
+
+    /* sceMpegFlushStream (0x500f0429) through the production handler checks its arguments and
+     * changes nothing, as PPSSPP's does: a flush in mid-playback keeps the frame the game holds,
+     * the frames still queued and the shared ring counters (an unmeasured PSP behaviour). */
+    const uint32_t flush_stream_nid = 0x500f0429u;
+    CHECK(mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u,
+          "mpeg-atrac: a second frame is held before FlushStream");
+    uint32_t avail_before = MEM_R32(AT_RING + 12u);
+    uint32_t read_before = MEM_R32(AT_RING + 4u);
+    CHECK(guest_mpeg_import(flush_stream_nid, AT_DESC, sid, 0u, 0u, 0u) == 0u,
+          "mpeg-atrac: FlushStream on the registered ATRAC stream returns 0");
+    CHECK(MEM_R32(AT_RING + 12u) == avail_before && MEM_R32(AT_RING + 4u) == read_before,
+          "mpeg-atrac: FlushStream leaves the shared ring counters alone");
+    CHECK(mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, 0u) == 0u,
+          "mpeg-atrac: FlushStream keeps the frame the game holds");
+    CHECK(mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u,
+          "mpeg-atrac: FlushStream keeps the frames still queued");
+    CHECK(guest_mpeg_import(flush_stream_nid, AT_DESC, sid + 1000u, 0u, 0u, 0u) == SCE_MPEG_ERROR_INVALID_VALUE,
+          "mpeg-atrac: FlushStream refuses a stream id the context never issued");
+    CHECK(guest_mpeg_import(flush_stream_nid, 0u, sid, 0u, 0u, 0u) == 0x80020003u,
+          "mpeg-atrac: FlushStream refuses a null context pointer");
+    CHECK(mpeg_unregist_stream(AT_DESC, sid) == 0u &&
+              guest_mpeg_import(flush_stream_nid, AT_DESC, sid, 0u, 0u, 0u) == 0u,
+          "mpeg-atrac: FlushStream accepts a stream the context has unregistered");
     CHECK(mpeg_delete(AT_DESC) == 0u, "mpeg-atrac: the context is deleted");
+    CHECK(guest_mpeg_import(flush_stream_nid, AT_DESC, sid, 0u, 0u, 0u) == (uint32_t)-1,
+          "mpeg-atrac: FlushStream refuses a deleted context");
 
     /* A guest PSMF player parses the header with scePsmf and hands sceMpeg only the ring (title
      * X's libpsmfplayer, 2026-10-31): the decoder is set up from the frame's own header (0x28:
@@ -4870,6 +4927,7 @@ int main(int argc, char **argv) {
     test_backend_registry_fail_closed();
     test_backend_reset_and_restart();
     test_backend_malformed_input();
+    test_backend_pts_range();
     test_video_eos_waits_for_all_access_units();
     test_mpeg_ps_demux_error_fails_closed();
     test_mpeg_ycbcr_measured_contract();

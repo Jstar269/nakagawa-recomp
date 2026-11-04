@@ -27,6 +27,7 @@ TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import nk_clean  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 
 def _write(path: Path, data: bytes = b"x") -> Path:
@@ -285,7 +286,7 @@ class CheckoutDryRunTests(unittest.TestCase):
 
 class EntryPointWiringTests(unittest.TestCase):
     def test_makefile_exposes_preview_first_clean_target(self) -> None:
-        text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        text = read_makefile(ROOT)
         catalog = text.split("PUBLIC_TARGETS :=", 1)[1].split("INTERNAL_TARGETS :=", 1)[0]
         self.assertIn("clean-preview", catalog)
         self.assertIn("HELP_DESCRIPTION_clean-preview :=", text)

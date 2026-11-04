@@ -32,6 +32,7 @@ import build_profile
 import codegen
 import hle_sources
 import title_codegen_plan
+from makefile_text import read_makefile  # noqa: E402
 
 
 _MTIME_MARGIN_NS = 2_000_000_000
@@ -305,7 +306,7 @@ class BuildTruthTests(unittest.TestCase):
         self.assertEqual(manifest["sections"]["runtime"]["entries"], ["PROFILE_FLAGS=-O0"])
 
     def test_repository_rules_do_not_keep_manager_object_lists(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         manager = (ROOT / "nk_manager.ps1").read_text(encoding="utf-8")
         self.assertIn("$(DEPFLAGS) -c", makefile)
         self.assertIn("$(RUNTIME_PROFILE_STAMP)", makefile)
@@ -322,7 +323,7 @@ class BuildTruthTests(unittest.TestCase):
         list. The repository Makefile has no such constraint -- it names the tool
         relatively -- so the edge is pinned here, where it is real.
         """
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("BUILD_PROFILE_TOOL := tools/build_profile.py", makefile)
         for stamp in ("$(RUNTIME_PROFILE_STAMP)", "$(RECOMP_PROFILE_STAMP)",
                       "$(CODEGEN_PROFILE_STAMP)", "$(TITLE_CONFIG_STAMP)"):
@@ -452,7 +453,7 @@ class CpuStateAbiProfileTests(unittest.TestCase):
             )
             self.assertNotEqual(first, second)
 
-            makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+            makefile = read_makefile(ROOT)
             self.assertIn('CPU_STATE_ABI_HEADER := src/rt/recomp.h', makefile)
             self.assertIn('--file "$(CPU_STATE_ABI_HEADER)"', makefile)
 
@@ -556,7 +557,7 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.makefile = read_makefile(ROOT)
         self.lines = _logical_lines(self.makefile)
 
     def test_policy_symbols_are_defined_where_the_makefile_says_they_are(self) -> None:
@@ -663,7 +664,7 @@ class FlightRecorderLinkDependencyTests(unittest.TestCase):
     """
 
     def test_psmf_media_selftest_links_the_recorder_implementation(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         logical = _with_response_file_inputs(_logical_lines(makefile))
         selftest = (ROOT / "tests" / "native" / "psmf_media_selftest.c").read_text(encoding="utf-8")
         mpeg = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")
@@ -699,7 +700,7 @@ class FlightRecorderLinkDependencyTests(unittest.TestCase):
         )
 
     def test_psmf_media_links_do_not_compile_audio_resample_twice(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         logical = _with_response_file_inputs(_logical_lines(makefile))
         self.assertIn("src/rt/audio_resample.c", _rt_runtime_sources(makefile))
         self.assertNotIn("audio_resample.o", _psmf_media_filtered_out(makefile))
@@ -729,7 +730,11 @@ def _psmf_media_filtered_out(makefile: str) -> str:
 
 H264_BACKENDS = ("src/rt/h264_mf.c", "src/rt/h264_null.c")
 H264_BACKEND_OBJECTS = ("h264_mf.o", "h264_null.o")
-HLE_RUNTIME_BUNDLES = ("$(RT_SRCS)", "$(RT_OBJS)", "$(PSMF_MEDIA_RUNTIME_OBJS)")
+# The focused media link (#307) takes PSMF_MEDIA_RUNTIME_OBJS minus the src/core objects, which it
+# links from the native-core set; _hle_link_supplies_h264_backends checks that derivation.
+HLE_RUNTIME_BUNDLES = (
+    "$(RT_SRCS)", "$(RT_OBJS)", "$(PSMF_MEDIA_RUNTIME_OBJS)", "$(PSMF_MEDIA_FOCUSED_OBJS)",
+)
 
 
 def _rt_runtime_sources(makefile: str) -> set[str]:
@@ -753,7 +758,16 @@ def _hle_link_supplies_h264_backends(link: str, makefile: str) -> bool:
     if not all(source in runtime_sources for source in H264_BACKENDS):
         return False
 
-    if "$(PSMF_MEDIA_RUNTIME_OBJS)" in bundles:
+    if "$(PSMF_MEDIA_FOCUSED_OBJS)" in bundles:
+        # Only a bundle built from the PSMF media object set, minus src/core objects, keeps the backends.
+        derived = re.search(
+            r"(?m)^PSMF_MEDIA_FOCUSED_RT_OBJS\s*:=\s*\$\(filter-out\s+\$\(PSMF_MEDIA_FOCUSED_CORE_RT\),"
+            r"\s*\$\(PSMF_MEDIA_RUNTIME_OBJS\)\)",
+            makefile,
+        )
+        if derived is None:
+            return False
+    if "$(PSMF_MEDIA_RUNTIME_OBJS)" in bundles or "$(PSMF_MEDIA_FOCUSED_OBJS)" in bundles:
         filtered_out = _psmf_media_filtered_out(makefile)
         if any(obj in filtered_out for obj in H264_BACKEND_OBJECTS):
             return False
@@ -783,7 +797,7 @@ class HlePsmfPlayerBackendLinkDependencyTests(unittest.TestCase):
     """HLE's registered PSMF player path calls the H.264 backend API."""
 
     def setUp(self) -> None:
-        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.makefile = read_makefile(ROOT)
 
     def test_runtime_sources_keep_both_h264_backends(self) -> None:
         sources = _rt_runtime_sources(self.makefile)
@@ -823,7 +837,7 @@ class HlePsmfPlayerBackendLinkDependencyTests(unittest.TestCase):
             "$(BUILD_DIR)/h264_null.o,$(RT_OBJS)",
         )
         filtered_offenders = _hle_link_h264_offenders(filtered_regression)
-        self.assertEqual(len(filtered_offenders), 2, "both PSMF media links must be guarded")
+        self.assertEqual(len(filtered_offenders), 3, "all three PSMF media links must be guarded")
 
 
 NESTED_FRAMES_C = "src/rt/nested_frames.c"
@@ -923,7 +937,7 @@ class PortableCoreSourceSetTests(unittest.TestCase):
     )
 
     def test_portable_core_srcs_is_pinned(self):
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         match = re.search(
             r"^PORTABLE_CORE_SRCS :=((?:.*\\\n)*.*)$", makefile, re.MULTILINE
         )
@@ -957,7 +971,7 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.makefile = read_makefile(ROOT)
         self.lines = _with_response_file_inputs(_logical_lines(self.makefile))
 
     def test_module_defines_the_symbols_its_callers_use(self) -> None:
@@ -1043,7 +1057,7 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
 
 class Atrac3pBuildPortabilityTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.makefile = read_makefile(ROOT)
         self.make = shutil.which("mingw32-make") or shutil.which("make")
 
     def test_makefile_does_not_contain_per_recipe_mkdir_in_atrac3p_rule(self) -> None:
@@ -1464,7 +1478,7 @@ class GuestInputTransportTests(unittest.TestCase):
         Each replacement must actually match, so the mutation cannot silently
         become a no-op if the Makefile is refactored.
         """
-        text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        text = read_makefile(ROOT)
         for old, new in replacements:
             self.assertIn(old, text, f"mutation anchor vanished from Makefile: {old!r}")
             text = text.replace(old, new, 1)
@@ -1829,7 +1843,7 @@ class ShellPortabilityAndRecipeTruthTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.makefile_text = read_makefile(ROOT)
         self.make = shutil.which("mingw32-make") or shutil.which("make")
 
     def test_makefile_has_no_tab_indented_comments_in_recipes(self) -> None:
@@ -1950,7 +1964,7 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.make = shutil.which("mingw32-make") or shutil.which("make")
-        cls.makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        cls.makefile_text = read_makefile(ROOT)
 
     def setUp(self) -> None:
         self.build_root = _scratch_build_root(self, "lifecycle")
@@ -2412,7 +2426,7 @@ class MachinePortabilityTests(unittest.TestCase):
 
     def test_sdl3_search_flags_precede_vulkan_sdk_in_makefile(self) -> None:
         """SDL3 include and library flags must precede Vulkan SDK flags in CFLAGS, PLAYER_INCLUDES, and LDFLAGS."""
-        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile_text = read_makefile(ROOT)
         cflags_match = re.search(r"CFLAGS\s*\?=\s*([^\r\n]+)", makefile_text)
         self.assertIsNotNone(cflags_match, "CFLAGS must be defined")
         cflags = _matched(cflags_match).group(1)
@@ -2451,7 +2465,7 @@ class MachinePortabilityTests(unittest.TestCase):
         """
         if not self.make:
             self.skipTest("GNU Make is required")
-        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile_text = read_makefile(ROOT)
         self.assertRegex(makefile_text, r"(?m)^compile:.*\| sdl3-check$")
         self.assertRegex(makefile_text, r"(?m)^\$\(PLAYER_EXE\): \| player-vulkan-check sdl3-check$")
         proc = subprocess.run(
@@ -2473,7 +2487,7 @@ class MachinePortabilityTests(unittest.TestCase):
         self.assertIn("[string]$Sdl3DllPath", script_text)
         self.assertIn("Copy-Item $Sdl3DllPath", script_text)
 
-        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile_text = read_makefile(ROOT)
         self.assertIn("-Sdl3DllPath \"$(SDL3_DLL)\"", makefile_text)
 
     def test_copy_build_assets_helper_is_a_tools_script_everywhere_it_is_named(self) -> None:
@@ -2491,7 +2505,7 @@ class MachinePortabilityTests(unittest.TestCase):
             "the helper still exists at the repository root",
         )
 
-        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile_text = read_makefile(ROOT)
         self.assertIn(
             "$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1",
             makefile_text,
@@ -2596,7 +2610,7 @@ class MachinePortabilityTests(unittest.TestCase):
 
     def test_windows_package_build_uses_builtin_windows_powershell(self) -> None:
         """A consumer build must not need a separately installed PowerShell 7."""
-        makefile_text = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        makefile_text = read_makefile(Path(__file__).resolve().parents[1])
         script_text = (Path(__file__).resolve().parents[1] / "tools" / "copy_build_assets.ps1").read_text(encoding="utf-8")
         self.assertIn("POWERSHELL ?= powershell.exe", makefile_text)
         self.assertIn("$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1", makefile_text)
@@ -2744,7 +2758,7 @@ class StrbufSafetyTests(unittest.TestCase):
 
     def test_makefile_declares_strbuf_selftest(self) -> None:
         """Makefile must declare strbuf-selftest target in .PHONY and compile strbuf_selftest.c."""
-        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile_text = read_makefile(ROOT)
         self.assertIn("strbuf-selftest", makefile_text)
         self.assertIn("strbuf_selftest.c", makefile_text)
 
@@ -2939,7 +2953,7 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_makefile_discovers_sdl3_and_vulkan_once_per_parse(self) -> None:
-        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile_text = read_makefile(ROOT)
         normal_discovery = makefile_text.split(
             "# SDL3 and Vulkan dependency discovery.", 1
         )[1].split("\nelse\nSDL3_PROVIDER", 1)[0]
@@ -3097,7 +3111,7 @@ class ProfileEntriesEnvTransportTests(unittest.TestCase):
         self.assertEqual(proc.stdout.splitlines(), expected)
 
     def test_make_batches_profile_hashes_for_normal_build_parses(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertEqual(makefile.count(" hash-profiles "), 1)
         self.assertIn("_PROFILE_HASHES := $(shell", makefile)
         self.assertIn("CODEGEN_PROFILE_HASH := $(word 1,$(_PROFILE_HASHES))", makefile)
@@ -3699,7 +3713,7 @@ class CheckoutDeletionGuardTests(unittest.TestCase):
         define = r'-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\"'
         checked: list[str] = []
         missing: list[str] = []
-        for number, command in _logical_lines(ROOT.joinpath("Makefile").read_text(encoding="utf-8")):
+        for number, command in _logical_lines(read_makefile(ROOT)):
             if "$(CC)" not in command:
                 continue
             if not (native.search(command) or any(name in command for name in source_names)):
@@ -3814,7 +3828,7 @@ class CheckoutDeletionGuardTests(unittest.TestCase):
                     subprocess.run([self.make, "clean-all", f"BUILD_ROOT={scratch / 'b'}",
                                     f"LOG_DIR={scratch / 'l'}"], cwd=ROOT)
                     (scratch / "x.o").unlink()
-                    text = (ROOT / "Makefile").read_text()
+                    text = read_makefile(ROOT)
                     targets = ("clean", "clean-all")
                     subprocess.run([self.make, "help"], cwd=ROOT)
                     subprocess.run([self.make, "GAME_NAME=hst", f"BUILD_ROOT={scratch}", "v"], cwd=ROOT)

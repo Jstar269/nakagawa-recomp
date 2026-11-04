@@ -371,6 +371,17 @@ static float sr_audio_master_gain(int percent) {
     return (float)percent / 100.0f;
 }
 
+/* One sample at a channel volume, where 0x8000 is unity gain, clamped to 16 bits. The
+ * product is 64-bit: the Output2/SRC channel accepts volumes up to 0xFFFFF (hle_audio.c,
+ * SCE_AUDIO_OUTPUT2_VOLUME_MAX), and a full-scale sample times that overflows 32 bits.
+ * PPSSPP's mixer also widens the product to 64 bits (hrydgard/ppsspp caa91b54b535,
+ * Core/HLE/__sceAudio.cpp, ApplyChannelVolume), but clamps once after summing the channels;
+ * this mixer hands each channel to its own stream, so it clamps per sample. */
+static int16_t sr_audio_scale_sample(int16_t sample, int volume) {
+    int64_t scaled = ((int64_t)sample * volume) >> 15;
+    return (int16_t)(scaled < -32768 ? -32768 : (scaled > 32767 ? 32767 : scaled));
+}
+
 static int sr_audio_apply_master_volume(int channel_volume) {
     if (s_master_volume_percent >= 100) return channel_volume;
     if (s_master_volume_percent <= 0) return 0;
@@ -605,10 +616,8 @@ void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
             if (!buf) return;
         }
         for (int i = 0; i < nframes; i++) {
-            int32_t l = ((int32_t)lr[i * 2] * volL) >> 15;
-            int32_t r = ((int32_t)lr[i * 2 + 1] * volR) >> 15;
-            buf[i * 2]     = (int16_t)(l < -32768 ? -32768 : (l > 32767 ? 32767 : l));
-            buf[i * 2 + 1] = (int16_t)(r < -32768 ? -32768 : (r > 32767 ? 32767 : r));
+            buf[i * 2]     = sr_audio_scale_sample(lr[i * 2], volL);
+            buf[i * 2 + 1] = sr_audio_scale_sample(lr[i * 2 + 1], volR);
         }
         submitted = buf;
         push_ok = SDL_PutAudioStreamData(s_streams[ch], buf, nframes * 4);
@@ -1535,6 +1544,32 @@ static void test_pause_master_gain_applied_once(void) {
     printf("test_pause_master_gain_applied_once: PASS\n");
 }
 
+/* The Output2/SRC channel accepts volumes up to 0xFFFFF (hle_audio.c,
+ * SCE_AUDIO_OUTPUT2_VOLUME_MAX). A full-scale sample at that volume amplifies past 16 bits
+ * and is clamped. A 32-bit product overflows instead: 32767 * 0xFFFFF wraps to -1081343, so
+ * the mixer submitted -33 where the clamp gives 32767, and -32768 * 0xFFFFF wraps to 32768,
+ * giving 1 where the clamp gives -32768. */
+static void test_volume_above_16_bits_is_clamped(void) {
+    test_reset();
+    SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE);
+    assert(sr_audio_init() == 0 && s_audio_state == AUDIO_STATE_ACTIVE);
+    assert(SDL_PauseAudioDevice(s_device_id));
+    int16_t block[64 * 2];
+    for (int i = 0; i < 64; i++) {
+        block[i * 2] = 32767;
+        block[i * 2 + 1] = -32768;
+    }
+    block[2] = 100;
+    block[3] = -1;
+    sr_audio_push(0, block, 64, 0xFFFFF, 0xFFFFF);
+    const int16_t *out = s_shadow_queues[0].samples;
+    assert(out[0] == 32767 && out[1] == -32768);
+    /* 100 * 0xFFFFF >> 15 and -1 * 0xFFFFF >> 15 (arithmetic shift). */
+    assert(out[2] == 3199 && out[3] == -32);
+    test_reset();
+    printf("test_volume_above_16_bits_is_clamped: PASS\n");
+}
+
 static void test_pause_fade_has_no_dumped_click(void) {
     const char *dir = getenv("TEMP");
     if (!dir || !*dir) dir = getenv("TMPDIR");
@@ -1630,6 +1665,7 @@ int main(int argc, char **argv) {
     test_dummy_mixer_handoff();
     test_pause_queue_hold_and_fades();
     test_pause_master_gain_applied_once();
+    test_volume_above_16_bits_is_clamped();
     test_pause_fade_has_no_dumped_click();
     test_no_device_path();
     test_null_backend_env();

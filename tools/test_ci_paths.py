@@ -15,6 +15,10 @@ import textwrap
 import unittest
 from unittest import mock
 from unittest.mock import patch
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
 
 try:
     import ci_paths as ci_paths_module
@@ -968,7 +972,7 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
         self.assertIsNone(self.analyse(unterminated, unterminated.replace("report.py", "report2.py")))
 
     def test_live_makefile_recipe_edit_narrows_and_flag_edit_does_not(self) -> None:
-        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(Path(__file__).resolve().parents[1])
         # The UI regressions run as four literal shard targets; editing the shared
         # shard recipe, or the recipe that starts them, stays recipe-only.
         recipe = '\t"$(PYTHON)" -m unittest discover -s tests/native -p "test_player_ui.py" -v\n'
@@ -1002,9 +1006,27 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
         self.assertEqual(json.loads(result["python_shards"]), list(range(ci_paths_module.PYTHON_SHARDS_MAKEFILE)))
         self.assertEqual(result["python_num_shards"], str(ci_paths_module.PYTHON_SHARDS_MAKEFILE))
 
+    def test_a_recipe_only_edit_in_an_included_fragment_narrows_like_one_in_the_makefile(self) -> None:
+        # The Makefile includes its mk/ fragments where their text used to be (#1531), so the
+        # recipe-only analysis runs over the inlined text and a fragment edit routes the same way.
+        for fragment in ("mk/selftests.mk", "mk/build_common.mk"):
+            with self.subTest(fragment=fragment):
+                result = classify([fragment], makefile_change=("cpu-lle-selftest",))
+                self.assertEqual(result["makefile_recipe_only"], "true")
+                self.assertEqual(result["build_system"], "false")
+                self.assertEqual(result["python_scope"], "makefile")
+        result = classify(["mk/selftests.mk"])
+        self.assertEqual(result["makefile_recipe_only"], "false")
+        self.assertEqual(result["build_system"], "true")
+
+    def test_the_analysis_reads_the_makefile_with_its_fragments_inlined(self) -> None:
+        text = ci_paths_module._makefile_text_at("HEAD")
+        self.assertNotIn("\ninclude mk/selftests.mk\n", text)
+        self.assertIn("\ncpu-lle-selftest:", text)
+
     def test_any_other_python_routing_restores_the_full_suite(self) -> None:
         for other in ("tools/codegen.py", "src/rt/hle.c", ".github/workflows/ci.yml",
-                      "tools/publish_audit.py", "mk/build_common.mk", "brand_new_file.xyz"):
+                      "tools/publish_audit.py", "tools/build_profile.py", "brand_new_file.xyz"):
             with self.subTest(other=other):
                 result = classify(["Makefile", other], makefile_change=("player-ui-regressions",))
                 self.assertEqual(result["python_scope"], "all")
