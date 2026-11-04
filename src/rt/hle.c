@@ -34,6 +34,7 @@
 
 #include "hle_internal.h"
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
+#define SR_EVIDENCE_NO_VFPU /* this file reads the NID table only */
 #include "hle_evidence.h" /* generated: NIDs with no recorded evidence (docs/HLE_COVERAGE.md) */
 int sr_thread_has_pending_callbacks(uint32_t thread_uid);
 int sr_thread_dispatch_callbacks(void);    /* internal pump count; public CheckCallback is Boolean */

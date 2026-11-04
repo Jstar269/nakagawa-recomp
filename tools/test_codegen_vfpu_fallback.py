@@ -406,5 +406,84 @@ int main(void) {{
                 self.assertIsNone(bare.search(effect), effect)
 
 
+class UnverifiedVfpuFormReportTests(unittest.TestCase):
+    """#1877: the build lists the unverified VFPU forms a title translated; the runtime prints
+    each once at start-up. The patterns come from src/rt/hle_evidence.h (tools/verification_ledger.py)."""
+
+    LV_S_ZERO = (0x32 << 26)                  # lv.s S000, 0($zero): base $zero is unverified
+    LV_S_T5 = (0x32 << 26) | (13 << 21)       # lv.s S000, 0($t5): has evidence
+    SV_Q_ZERO = (0x3E << 26)                  # sv.q: base $zero is unverified
+
+    def setUp(self):
+        codegen.reset_unverified_vfpu_uses()
+        self.addCleanup(codegen.stop_collecting_unverified_vfpu_uses)
+
+    def test_the_generated_header_table_parses_and_is_not_empty(self):
+        text = (ROOT / "src" / "rt" / "hle_evidence.h").read_text(encoding="utf-8")
+        count = int(re.search(r"#define SR_VFPU_UNVERIFIED_FORM_COUNT (\d+)u", text).group(1))
+        patterns = codegen.unverified_vfpu_patterns()
+        self.assertGreater(count, 0)
+        self.assertEqual(len(patterns), count)
+        for mask, match, forms in patterns:
+            self.assertEqual(match & ~mask, 0)
+            self.assertTrue(forms.startswith("vfpu-"), forms)
+
+    def test_a_translated_unverified_form_is_listed_once_at_its_lowest_address(self):
+        codegen.normal_line(0x08804020, self.LV_S_ZERO)
+        codegen.normal_line(0x08804010, self.LV_S_ZERO)
+        codegen.normal_line(0x08804030, self.LV_S_T5)
+        lines = codegen.unverified_vfpu_report_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(
+            lines[0],
+            "    sr_vfpu_report_unverified_uses((const SrVfpuUse[]){ { 0x%08xu, 0x08804010u } }, 1u);"
+            % self.LV_S_ZERO,
+        )
+
+    def test_two_patterns_are_listed_in_address_order(self):
+        codegen.normal_line(0x08804040, self.SV_Q_ZERO)
+        codegen.normal_line(0x08804000, self.LV_S_ZERO)
+        line = codegen.unverified_vfpu_report_lines()[0]
+        self.assertIn("{ 0x%08xu, 0x08804000u }, { 0x%08xu, 0x08804040u } }, 2u);"
+                      % (self.LV_S_ZERO, self.SV_Q_ZERO), line)
+
+    def test_nothing_is_collected_outside_a_translation(self):
+        codegen.stop_collecting_unverified_vfpu_uses()
+        codegen.normal_line(0x08804000, self.LV_S_ZERO)
+        self.assertEqual(codegen.unverified_vfpu_report_lines(), [])
+
+    def test_forms_with_evidence_are_not_listed(self):
+        codegen.normal_line(0x08804000, self.LV_S_T5)
+        codegen.normal_line(0x08804004, 0x24020001)  # addiu v0, zero, 1
+        self.assertEqual(codegen.unverified_vfpu_report_lines(), [])
+
+    def test_codegen_registers_the_list_only_for_a_title_that_uses_a_form(self):
+        from test_codegen_runtime_modules import TEXT_VADDR, _elf, _text
+        import contextlib
+        import io
+        import tempfile
+
+        def build(words):
+            text = bytearray(_text())
+            self.assertLessEqual(4 * len(words) + 8, 0x40)  # below SceModuleInfo
+            for i, word in enumerate(words + [0x03E00008, 0]):  # then jr ra; nop
+                text[4 * i:4 * i + 4] = word.to_bytes(4, "little")
+            with tempfile.TemporaryDirectory() as tmp:
+                elf = Path(tmp) / "main.elf"
+                elf.write_bytes(_elf(bytes(text)))
+                out_c = Path(tmp) / "game_recomp.c"
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()) as err:
+                    status = codegen.main(["codegen.py", str(elf), str(out_c)])
+                self.assertEqual(status, 0, err.getvalue())
+                return out_c.read_text(encoding="ascii")
+
+        used = build([self.LV_S_ZERO, self.LV_S_ZERO, self.LV_S_T5])
+        self.assertEqual(used.count("sr_vfpu_report_unverified_uses("), 1)
+        self.assertIn("{ 0x%08xu, 0x%08xu } }, 1u);" % (self.LV_S_ZERO, TEXT_VADDR), used)
+        measured = build([self.LV_S_T5, self.LV_S_T5])
+        self.assertNotIn("sr_vfpu_report_unverified_uses", measured)
+
+
 if __name__ == "__main__":
     unittest.main()
