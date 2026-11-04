@@ -1778,78 +1778,211 @@ static int coherence_run_mip_level_dirty_same_state(void) {
     return ok;
 }
 
-/* A notified write over a whole mip chain that leaves its bytes as they were (a title's
- * whole-cache writeback, once a frame) must not decode the chain again: the byte shadow covers
- * every level, as it does a single-level texture. A later change to level 1 that the content
- * hash does not sample (bytes 16-63 of a 4 KiB level: tex_hash reads 16 of every 64) must
- * still reach the draw, so level 1's bytes are compared, not only level 0's. The chain is 64x64
- * and 32x32 8888 at constant level 1, drawn at level-1 texel (8, 0). */
-static int coherence_run_mip_shadow_reuse(void) {
+/* ---- texture byte shadow of a mip chain (#1931) -------------------------------------------
+ *
+ * A notified write over a whole chain that leaves its bytes as they were (a title's whole-cache
+ * writeback, once a frame) must not decode the chain again: the byte shadow covers every level,
+ * as it does a single-level texture. Each case draws a chain three times at one constant level
+ * and pixel (level texel (8, 0)): the first draw decodes, the second follows a notified write
+ * over every level with the bytes unchanged and must reuse the shadow, and the third follows a
+ * change that must decode again. A byte change goes to bytes 16-63 of row 0 of one level, which
+ * the content hash does not sample (a level of 4 KiB or more: tex_hash reads 16 of every 64
+ * bytes), so only the shadow's comparison of that level can find it. The palette case changes
+ * the palette entry every texel uses instead. Levels lie one after another from `addr`. */
+#define COH_SHADOW_CLUT 0x085C0000u
+#define COH_SHADOW_INDEX 6u
+
+typedef struct {
+    const char *name;
+    uint32_t addr;          /* level 0; main RAM or VRAM */
+    uint32_t log2;          /* level 0 is 2^log2 texels square */
+    uint32_t fmt;           /* 3 = 8888, 5 = CLUT8 through the palette at COH_SHADOW_CLUT */
+    uint32_t max_level;
+    uint32_t show;          /* the constant level the draws sample */
+    int change;             /* level whose unsampled bytes the third draw changes; -1 = palette */
+} CohShadowCase;
+
+static uint32_t coh_shadow_level(const CohShadowCase *c, uint32_t level, uint32_t *bytes) {
+    uint32_t addr = c->addr, bpp = c->fmt == 3u ? 4u : 1u;
+    for (uint32_t l = 0; l <= level; l++) {
+        uint32_t size = 1u << (c->log2 - l);
+        *bytes = size * size * bpp;
+        if (l < level) addr += *bytes;
+    }
+    return addr;
+}
+
+/* Distinct opaque colours for the levels and the palette entries (ABGR). */
+static uint32_t coh_shadow_colour(uint32_t level) {
+    return 0xFF000000u | (0x50u << 16) | ((0xC0u - 0x30u * level) << 8) | (0x30u + 0x40u * level);
+}
+static uint32_t coh_shadow_entry(uint32_t j) { return 0xFF000000u | ((j * 0x00030507u) & 0x00FFFFFFu); }
+
+/* Every texel of `level` shows `colour` (8888), or palette index COH_SHADOW_INDEX (CLUT8). */
+static void coh_shadow_fill(const CohShadowCase *c, uint32_t level, uint32_t colour) {
+    uint32_t bytes, addr = coh_shadow_level(c, level, &bytes);
+    if (c->fmt == 3u) {
+        uint32_t *tex = (uint32_t *)SR_HOST(addr);
+        for (uint32_t i = 0; i < bytes / 4u; i++) tex[i] = colour;
+    } else {
+        memset(SR_HOST(addr), (int)COH_SHADOW_INDEX, bytes);
+    }
+    sr_gpu_vram_dirty(addr, bytes);
+}
+
+/* The chain's state through the list path; with a palette, it is loaded from COH_SHADOW_CLUT. */
+static void coh_shadow_state(const CohShadowCase *c) {
+    const CohMipCase mc = { c->name, 0x004u, c->max_level, 1u, c->show * 16u, 8, 0, (int)c->show,
+                            0, 0, 0.0f, 0 };
+    ge_run_list(coherence_mip_list(&mc, 0), 0);
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_MIP_RESET);
+    int p = 0;
+    for (uint32_t l = 0; l <= c->max_level; l++) {
+        uint32_t bytes, addr = coh_shadow_level(c, l, &bytes), log2 = c->log2 - l;
+        dl[p++] = ((0xA0u + l) << 24) | (addr & 0x00FFFFFFu);                         /* TEXADDRn */
+        dl[p++] = ((0xA8u + l) << 24) | (1u << log2) | ((addr & 0xFF000000u) >> 8);  /* TEXBUFWIDTHn */
+        dl[p++] = ((0xB8u + l) << 24) | (log2 << 8) | log2;                          /* TEXSIZEn */
+    }
+    dl[p++] = (0xC3u << 24) | c->fmt;
+    if (c->fmt != 3u) {
+        dl[p++] = (0xB0u << 24) | (COH_SHADOW_CLUT & 0x00FFFFFFu);
+        dl[p++] = (0xB1u << 24) | ((COH_SHADOW_CLUT & 0xFF000000u) >> 8);
+        dl[p++] = (0xC5u << 24) | 3u | (0xFFu << 8);    /* 8888 entries, shift 0, mask 0xFF */
+        dl[p++] = (0xC4u << 24) | 32u;                  /* load 256 entries */
+    }
+    dl[p++] = 0x0Fu << 24;
+    dl[p++] = 0x0Cu << 24;
+    ge_run_list(COH_MIP_RESET, 0);
+}
+
+/* Draw `d` of a case at level texel (8, 0), submitted; returns the decodes it took, or -1. */
+static long coh_shadow_draw(const CohShadowCase *c, int d) {
+    const float scale = (float)(1u << c->show), x = (float)(COH_MIP_X + 16 * d);
+    GeVtx p0 = { x, (float)COH_MIP_Y, 1.0f, 1.0f, 8.0f * scale + 0.25f, 0.25f, 1.0f,
+                 255, 255, 255, 255 };
+    GeVtx p1 = { x + 8.0f, (float)(COH_MIP_Y + 8), 1.0f, 1.0f, 9.0f * scale + 0.25f,
+                 scale + 0.25f, 1.0f, 255, 255, 255, 255 };
+    unsigned long before = s_cnt_texup;
+    if (!hook_sprite(&p0, &p1, 0) || !submit_pending()) return -1;
+    return (long)(s_cnt_texup - before);
+}
+
+static int coherence_run_mip_shadow_case(const CohShadowCase *c) {
     const uint32_t base = 0x04000000u | 0x00160000u, stride = 512u, rgb = 0x00FFFFFFu;
-    const uint32_t level0 = 0x04050000u, level1 = 0x04054000u;
-    const uint32_t first = 0xFF2080C0u, changed = 0xFF40C020u;     /* ABGR */
-    const CohMipCase c = { "shadow-reuse", 0x004u, 1u, 1u, 16u, 8, 0, 1, 0, 0, 0.0f, 0 };
     uint32_t *fb = (uint32_t *)SR_HOST(base);
-    uint32_t *tex0 = (uint32_t *)SR_HOST(level0), *tex1 = (uint32_t *)SR_HOST(level1);
-    for (unsigned i = 0; i < 64u * 64u; i++) tex0[i] = 0xFF0000FFu;
-    for (unsigned i = 0; i < 32u * 32u; i++) tex1[i] = first;
-    sr_gpu_vram_dirty(level0, 64u * 64u * 4u);
-    sr_gpu_vram_dirty(level1, 32u * 32u * 4u);
+    uint32_t *clut = (uint32_t *)SR_HOST(COH_SHADOW_CLUT);
+    const uint32_t changed = 0xFF40C020u;
+    for (uint32_t l = 0; l <= c->max_level; l++) coh_shadow_fill(c, l, coh_shadow_colour(l));
+    for (uint32_t j = 0; j < 256u; j++) clut[j] = coh_shadow_entry(j);
+    sr_gpu_vram_dirty(COH_SHADOW_CLUT, 256u * 4u);
+    const uint32_t first = c->fmt == 3u ? coh_shadow_colour(c->show) : clut[COH_SHADOW_INDEX];
     coherence_reset_targets();
     memset(fb, 0, stride * FB_H * 4u);
     sr_gpu_vram_dirty(base, stride * FB_H * 4u);
     ge_set_gpu_hooks(&k_hooks);
-    ge_run_list(coherence_mip_list(&c, 0), 0);      /* the state, no draw */
-    uint32_t *dl = (uint32_t *)SR_HOST(COH_MIP_RESET);
-    dl[0] = (0xA0u << 24) | (level0 & 0x00FFFFFFu);                 /* TEXADDR0 */
-    dl[1] = (0xA8u << 24) | 64u | ((level0 & 0xFF000000u) >> 8);    /* TEXBUFWIDTH0 */
-    dl[2] = (0xB8u << 24) | (6u << 8) | 6u;                         /* TEXSIZE0 64x64 */
-    dl[3] = (0xA1u << 24) | (level1 & 0x00FFFFFFu);
-    dl[4] = (0xA9u << 24) | 32u | ((level1 & 0xFF000000u) >> 8);
-    dl[5] = (0xB9u << 24) | (5u << 8) | 5u;                         /* TEXSIZE1 32x32 */
-    dl[6] = 0x0Fu << 24;
-    dl[7] = 0x0Cu << 24;
-    ge_run_list(COH_MIP_RESET, 0);
+    coh_shadow_state(c);
 
-    GeVtx p0 = { (float)COH_MIP_X, (float)COH_MIP_Y, 1.0f, 1.0f, 16.25f, 0.25f, 1.0f,
-                 255, 255, 255, 255 };
-    GeVtx p1 = { (float)(COH_MIP_X + 8), (float)(COH_MIP_Y + 8), 1.0f, 1.0f, 18.25f, 2.25f, 1.0f,
-                 255, 255, 255, 255 };
-    unsigned long decodes[3];
+    long decodes[3];
     uint64_t avoided0 = s_cnt_shadow_avoided;
-    int ok = 1;
-    for (int d = 0; d < 3; d++) {
-        if (d == 1) {
-            sr_gpu_vram_dirty(level0, 64u * 64u * 4u);              /* bytes unchanged */
-            sr_gpu_vram_dirty(level1, 32u * 32u * 4u);
-        } else if (d == 2) {
-            for (unsigned u = 4u; u < 16u; u++) tex1[u] = changed;  /* row 0 bytes 16-63 */
-            sr_gpu_vram_dirty(level1 + 16u, 48u);
-        }
-        unsigned long before = s_cnt_texup;
-        ok = ok && hook_sprite(&p0, &p1, 0) && submit_pending();
-        decodes[d] = s_cnt_texup - before;
-        p0.x += 16.0f; p1.x += 16.0f;
+    decodes[0] = coh_shadow_draw(c, 0);
+    for (uint32_t l = 0; l <= c->max_level; l++) {          /* bytes unchanged */
+        uint32_t bytes, addr = coh_shadow_level(c, l, &bytes);
+        sr_gpu_vram_dirty(addr, bytes);
     }
-    ok = ok && s_cur && target_readback(s_cur);
+    decodes[1] = coh_shadow_draw(c, 1);
+    if (c->change >= 0) {
+        uint32_t bytes, addr = coh_shadow_level(c, (uint32_t)c->change, &bytes);
+        uint32_t *tex = (uint32_t *)SR_HOST(addr);
+        for (uint32_t u = 4u; u < 16u; u++) tex[u] = changed;      /* row 0 bytes 16-63 */
+        sr_gpu_vram_dirty(addr + 16u, 48u);
+    } else {
+        clut[COH_SHADOW_INDEX] = changed;
+        sr_gpu_vram_dirty(COH_SHADOW_CLUT, 256u * 4u);
+        coh_shadow_state(c);                                        /* reloads the palette */
+    }
+    decodes[2] = coh_shadow_draw(c, 2);
+    const uint64_t avoided = s_cnt_shadow_avoided - avoided0;
+    int ok = decodes[0] >= 0 && decodes[1] >= 0 && decodes[2] >= 0 && s_cur && target_readback(s_cur);
     uint32_t px[3];
     for (int d = 0; d < 3; d++) px[d] = fb[COH_MIP_Y * stride + COH_MIP_X + 16u * (uint32_t)d] & rgb;
-    const uint64_t avoided = s_cnt_shadow_avoided - avoided0;
     if (!ok || px[0] != (first & rgb) || px[1] != (first & rgb) || px[2] != (changed & rgb) ||
-        decodes[0] != 1u || decodes[1] != 0u || decodes[2] != 1u || avoided != 1u) {
+        decodes[0] != 1 || decodes[1] != 0 || decodes[2] != 1 || avoided != 1u) {
         fprintf(stderr,
-                "gpu coherence selftest [mip-shadow-reuse]: draws=%d pixels=%06x %06x %06x (want "
-                "%06x %06x %06x) decodes=%lu %lu %lu (want 1 0 1) shadow reuses=%llu (want 1)%s\n",
-                ok, px[0], px[1], px[2], first & rgb, first & rgb, changed & rgb, decodes[0],
-                decodes[1], decodes[2], (unsigned long long)avoided,
+                "gpu coherence selftest [mip-shadow %s]: draws=%d pixels=%06x %06x %06x (want "
+                "%06x %06x %06x) decodes=%ld %ld %ld (want 1 0 1) shadow reuses=%llu (want 1)%s\n",
+                c->name, ok, px[0], px[1], px[2], first & rgb, first & rgb, changed & rgb,
+                decodes[0], decodes[1], decodes[2], (unsigned long long)avoided,
                 decodes[1] ? " -- an unchanged chain decoded again" :
-                px[2] != (changed & rgb) ? " -- the shadow did not compare level 1" : "");
+                px[2] != (changed & rgb) ? " -- the shadow missed the change" : "");
         ok = 0;
     }
     coherence_mip_reset_state();
     coherence_reset_targets();
-    if (ok) printf("gpu coherence selftest: PASS mip %-22s decodes=1 0 1 shadow-reuses=1\n",
-                   "shadow-reuse");
+    if (ok) printf("gpu coherence selftest: PASS mip shadow %-15s decodes=1 0 1 shadow-reuses=1\n",
+                   c->name);
+    return ok;
+}
+
+/* An upload that fails partway leaves the image's contents undefined: copying level 0 discards
+ * every level, and a chain stays in its transfer layout. Nothing may reuse that image until a
+ * decode succeeds, even when the guest puts back exactly the bytes the shadow and the content
+ * hash still describe. The selftest fails the upload right after level 0 has been copied
+ * (s_selftest_upload_fail_after). Level 0 turns from one colour to another, the failing draw
+ * follows, the old colour comes back, and the next draw must decode and show it; reusing the
+ * image would show the new colour, or nothing defined at all. */
+static int coherence_run_texture_upload_failure(const CohShadowCase *c) {
+    const uint32_t base = 0x04000000u | 0x00160000u, stride = 512u, rgb = 0x00FFFFFFu;
+    const uint32_t old_colour = coh_shadow_colour(0), new_colour = 0xFF40C020u;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    for (uint32_t l = 0; l <= c->max_level; l++) coh_shadow_fill(c, l, coh_shadow_colour(l));
+    coherence_reset_targets();
+    memset(fb, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    ge_set_gpu_hooks(&k_hooks);
+    coh_shadow_state(c);
+
+    long decodes[3];
+    decodes[0] = coh_shadow_draw(c, 0);
+    coh_shadow_fill(c, 0, new_colour);
+    s_selftest_upload_fail_after = 0u;
+    decodes[1] = coh_shadow_draw(c, 1);
+    const int failed = s_selftest_upload_fail_after == UINT32_MAX;
+    s_selftest_upload_fail_after = UINT32_MAX;
+    coh_shadow_fill(c, 0, old_colour);
+    decodes[2] = coh_shadow_draw(c, 2);
+    int ok = decodes[0] >= 0 && decodes[1] >= 0 && decodes[2] >= 0 && s_cur && target_readback(s_cur);
+    const uint32_t last = fb[COH_MIP_Y * stride + COH_MIP_X + 32u] & rgb;
+    if (!ok || !failed || last != (old_colour & rgb) || decodes[0] != 1 || decodes[1] != 0 ||
+        decodes[2] != 1) {
+        fprintf(stderr,
+                "gpu coherence selftest [texture-upload-failure %s]: draws=%d injected=%d last=%06x "
+                "(want %06x) decodes=%ld %ld %ld (want 1 0 1)%s\n",
+                c->name, ok, failed, last, old_colour & rgb, decodes[0], decodes[1], decodes[2],
+                decodes[2] == 0 ? " -- the partly uploaded image was reused" : "");
+        ok = 0;
+    }
+    coherence_mip_reset_state();
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS texture-upload-failure %-12s decodes=1 0 1\n", c->name);
+    return ok;
+}
+
+static int coherence_run_mip_shadow(void) {
+    static const CohShadowCase shadow[] = {
+        { "vram-level-1", 0x04050000u, 6u, 3u, 1u, 1u, 1 },
+        { "ram-level-0",  0x08560000u, 7u, 3u, 1u, 0u, 0 },
+        { "ram-level-2",  0x08580000u, 7u, 3u, 2u, 2u, 2 },
+        { "ram-palette",  0x085A0000u, 7u, 5u, 1u, 1u, -1 },
+    };
+    static const CohShadowCase failure[] = {
+        { "single-level", 0x08560000u, 7u, 3u, 0u, 0u, 0 },
+        { "chain",        0x08580000u, 7u, 3u, 1u, 0u, 0 },
+    };
+    int ok = 1;
+    for (size_t i = 0; i < sizeof(shadow) / sizeof(shadow[0]); i++)
+        if (!coherence_run_mip_shadow_case(&shadow[i])) ok = 0;
+    for (size_t i = 0; i < sizeof(failure) / sizeof(failure[0]); i++)
+        if (!coherence_run_texture_upload_failure(&failure[i])) ok = 0;
     return ok;
 }
 
@@ -2026,7 +2159,7 @@ static int coherence_run_mip_levels(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         if (!coherence_run_mip_case(&cases[i])) ok = 0;
     if (!coherence_run_mip_level_dirty_same_state()) ok = 0;
-    if (!coherence_run_mip_shadow_reuse()) ok = 0;
+    if (!coherence_run_mip_shadow()) ok = 0;
     if (!coherence_run_mip_lod()) ok = 0;
     if (!coherence_run_mip_slope_change()) ok = 0;
     coherence_mip_reset_state();
