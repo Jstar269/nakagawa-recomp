@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-"""Stage a runnable player install outside the build tree, with a desktop shortcut.
+"""Stage a runnable player install outside the build tree, with desktop and Start-menu shortcuts.
 
 The install uses the release layout the player already searches
 (``docs/PREVIEW_RELEASE.md``)::
@@ -20,12 +20,17 @@ The install uses the release layout the player already searches
                                      console icon)
 
 Only a folder this tool created (it holds ``.nakagawa-install.json``) is ever
-replaced, so pointing ``--dest`` at an unrelated folder fails closed. The
-shortcut is a plain Windows ``.lnk`` written through ``WScript.Shell``; it
-starts the player with ``--ui=next`` by default, the way Explorer would start it.
-On Linux, ``--desktop-shortcut`` writes a per-user ``.desktop`` entry and a 256 px
-icon under ``$XDG_DATA_HOME`` (``~/.local/share`` when unset). The marker records
-the paths written outside ``--dest`` in ``integration``.
+replaced, so pointing ``--dest`` at an unrelated folder fails closed. A
+shortcut is a Windows ``.lnk`` written through ``WScript.Shell``; it starts the
+player with ``--ui=next`` by default, the way Explorer would start it, and
+carries the player's AppUserModelID (``APP_USER_MODEL_ID``, #2006), so a pinned
+shortcut, the launcher and every game it starts share one taskbar group.
+``--desktop-shortcut`` puts one on the Desktop and ``--start-menu-shortcut`` one
+in the user's Start menu (#2003); both may be given.
+On Linux, either flag writes a per-user ``.desktop`` entry (which the desktop
+shows in its application menu) and a 256 px icon under ``$XDG_DATA_HOME``
+(``~/.local/share`` when unset). The marker records the paths written outside
+``--dest`` in ``integration``.
 
 The Windows install's ``bin/`` also carries ``runtime-manifest.json``
 (``tools/stage_runtime_dlls.py``): the size, SHA-256 and imports of the player
@@ -42,7 +47,7 @@ which the source export rewrites on every run) are refused.
 
 Usage::
 
-    python tools/stage_install.py --dest "<install folder>" --desktop-shortcut
+    python tools/stage_install.py --dest "<install folder>" --desktop-shortcut --start-menu-shortcut
     python tools/stage_install.py --portable-zip <out.zip> --zip-stage <staged folder>
     python tools/stage_install.py --check-assets <release folder, or file names>
 
@@ -79,7 +84,12 @@ IS_WINDOWS = os.name == "nt"
 MARKER = ".nakagawa-install.json"
 SCHEMA_VERSION = 2
 SHORTCUT_NAME = "Nakagawa Recomp.lnk"
-DESKTOP_ENTRY_NAME = "nakagawa-recomp.desktop"
+#: The player's identity (#2006): NK_APP_USER_MODEL_ID and NK_APP_DESKTOP_ID in
+#: src/core/nk_launch.h, and their copies in src/rt/gpu_sdl3vk/sdl3vk.c for the game window.
+#: tools/test_stage_install.py keeps the four equal.
+APP_USER_MODEL_ID = "Nakagawa.Recomp"
+APP_DESKTOP_ID = "nakagawa-recomp"
+DESKTOP_ENTRY_NAME = f"{APP_DESKTOP_ID}.desktop"
 DESKTOP_ICON_NAME = "nakagawa-recomp.png"
 DEFAULT_ARGUMENTS = "--ui=next"
 
@@ -259,6 +269,7 @@ def write_desktop_entry(dest: Path, arguments: str = DEFAULT_ARGUMENTS) -> list[
         f"TryExec={player}",
         f"Path={dest / 'bin'}",
         f"Icon={icon}",
+        f"StartupWMClass={APP_DESKTOP_ID}",
         "Terminal=false",
         "Categories=Game;",
         "",
@@ -270,28 +281,123 @@ def write_desktop_entry(dest: Path, arguments: str = DEFAULT_ARGUMENTS) -> list[
     return [entry, icon]
 
 
-def desktop_folder() -> Path:
-    """The signed-in user's Desktop folder, wherever Windows has redirected it."""
+def _special_folder(name: str, code: str) -> Path:
     result = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-         "[Environment]::GetFolderPath('Desktop')"],
+         f"[Environment]::GetFolderPath('{name}')"],
         capture_output=True, text=True, check=False)
     folder = result.stdout.strip()
     if result.returncode != 0 or not folder:
-        raise InstallError("INSTALL_DESKTOP_UNKNOWN: Windows did not report a Desktop folder")
+        raise InstallError(f"{code}: Windows did not report a {name} folder")
     return Path(folder)
 
 
+def desktop_folder() -> Path:
+    """The signed-in user's Desktop folder, wherever Windows has redirected it."""
+    return _special_folder("Desktop", "INSTALL_DESKTOP_UNKNOWN")
+
+
+def start_menu_folder() -> Path:
+    """The signed-in user's Start menu Programs folder, where a shortcut shows in Start."""
+    return _special_folder("Programs", "INSTALL_START_MENU_UNKNOWN")
+
+
+# WScript.Shell cannot set a shortcut's AppUserModelID, so the shortcut's property store
+# (System.AppUserModel.ID, PKEY {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3},5) is written through
+# SHGetPropertyStoreFromParsingName. PowerShell compiles this once per run (Add-Type).
+_APP_ID_CSHARP = r"""
+using System;
+using System.Runtime.InteropServices;
+public static class NkShortcutAppId {
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    public struct PropertyKey { public Guid fmtid; public uint pid; }
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
+    public struct PropVariant { [FieldOffset(0)] public ushort vt; [FieldOffset(8)] public IntPtr p; }
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPropertyStore {
+        void GetCount(out uint count);
+        void GetAt(uint index, out PropertyKey key);
+        void GetValue(ref PropertyKey key, out PropVariant value);
+        void SetValue(ref PropertyKey key, ref PropVariant value);
+        void Commit();
+    }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    static extern void SHGetPropertyStoreFromParsingName(string path, IntPtr bindContext,
+        int flags, ref Guid iid, out IPropertyStore store);
+    [DllImport("ole32.dll", PreserveSig = false)]
+    static extern void PropVariantClear(ref PropVariant value);
+    const ushort VT_LPWSTR = 31;
+    static PropertyKey AppIdKey() {
+        PropertyKey key;
+        key.fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+        key.pid = 5;
+        return key;
+    }
+    static IPropertyStore Open(string path, int flags) {
+        Guid iid = typeof(IPropertyStore).GUID;
+        IPropertyStore store;
+        SHGetPropertyStoreFromParsingName(path, IntPtr.Zero, flags, ref iid, out store);
+        return store;
+    }
+    public static void Set(string path, string id) {
+        IPropertyStore store = Open(path, 2);  // GPS_READWRITE
+        try {
+            PropertyKey key = AppIdKey();
+            PropVariant value = new PropVariant();
+            value.vt = VT_LPWSTR;
+            value.p = Marshal.StringToCoTaskMemUni(id);
+            try { store.SetValue(ref key, ref value); store.Commit(); }
+            finally { Marshal.FreeCoTaskMem(value.p); }
+        } finally { Marshal.ReleaseComObject(store); }
+    }
+    public static string Get(string path) {
+        IPropertyStore store = Open(path, 0);  // GPS_DEFAULT
+        try {
+            PropertyKey key = AppIdKey();
+            PropVariant value;
+            store.GetValue(ref key, out value);
+            try { return value.vt == VT_LPWSTR ? Marshal.PtrToStringUni(value.p) : ""; }
+            finally { PropVariantClear(ref value); }
+        } finally { Marshal.ReleaseComObject(store); }
+    }
+}
+"""
+
 _SHORTCUT_SCRIPT = (
+    "$ErrorActionPreference = 'Stop'; "
     "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:NK_LNK); "
     "$s.TargetPath = $env:NK_TARGET; $s.Arguments = $env:NK_ARGS; "
     "$s.WorkingDirectory = $env:NK_WORKDIR; $s.IconLocation = $env:NK_ICON + ',0'; "
-    "$s.Description = 'Nakagawa Recomp'; $s.Save()"
+    "$s.Description = 'Nakagawa Recomp'; $s.Save(); "
+    "Add-Type -TypeDefinition $env:NK_APP_ID_CS; "
+    "[NkShortcutAppId]::Set($env:NK_LNK, $env:NK_APP_ID)"
+)
+
+_READ_APP_ID_SCRIPT = (
+    "$ErrorActionPreference = 'Stop'; "
+    "Add-Type -TypeDefinition $env:NK_APP_ID_CS; "
+    "[NkShortcutAppId]::Get($env:NK_LNK)"
 )
 
 
+def read_shortcut_app_id(shortcut: Path) -> str:
+    """The AppUserModelID a .lnk carries, or "" when it has none (Windows only)."""
+    if os.name != "nt":
+        raise InstallError("INSTALL_SHORTCUT_UNSUPPORTED: shortcuts are read on Windows only")
+    environment = {**os.environ, "NK_LNK": str(shortcut), "NK_APP_ID_CS": _APP_ID_CSHARP}
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", _READ_APP_ID_SCRIPT],
+        capture_output=True, text=True, env=environment, check=False)
+    if result.returncode != 0:
+        raise InstallError(
+            f"INSTALL_SHORTCUT_UNREADABLE: {shortcut}: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
 def write_shortcut(shortcut: Path, dest: Path, arguments: str = DEFAULT_ARGUMENTS) -> None:
-    """Write a .lnk that starts bin/nakagawa_player.exe the way Explorer does."""
+    """Write a .lnk that starts bin/nakagawa_player.exe the way Explorer does, with the
+    player's AppUserModelID."""
     if os.name != "nt":
         raise InstallError("INSTALL_SHORTCUT_UNSUPPORTED: shortcuts are written on Windows only")
     dest = dest.resolve()
@@ -302,6 +408,8 @@ def write_shortcut(shortcut: Path, dest: Path, arguments: str = DEFAULT_ARGUMENT
         "NK_ARGS": arguments,
         "NK_WORKDIR": str(dest / "bin"),
         "NK_ICON": str(dest / "nakagawa.ico"),
+        "NK_APP_ID": APP_USER_MODEL_ID,
+        "NK_APP_ID_CS": _APP_ID_CSHARP,
     })
     result = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", _SHORTCUT_SCRIPT],
@@ -575,6 +683,9 @@ def main(argv=None) -> int:
     parser.add_argument("--desktop-shortcut", action="store_true",
                         help=f"also write '{SHORTCUT_NAME}' on the Desktop (Windows), or a "
                              f"'{DESKTOP_ENTRY_NAME}' entry (Linux)")
+    parser.add_argument("--start-menu-shortcut", action="store_true",
+                        help=f"also write '{SHORTCUT_NAME}' in the Start menu (Windows); on Linux "
+                             f"the same '{DESKTOP_ENTRY_NAME}' entry, which is the application menu")
     parser.add_argument("--shortcut", type=Path,
                         help="write the Windows shortcut at this exact .lnk path instead")
     parser.add_argument("--arguments", default=DEFAULT_ARGUMENTS,
@@ -610,17 +721,25 @@ def main(argv=None) -> int:
         record = stage_install(args.dest, args.player, revision=args.revision)
         print(f"stage_install: staged {record['player']} and source {record['source_commit'][:12]} "
               f"into {args.dest.resolve()}")
-        if not IS_WINDOWS and args.desktop_shortcut:
-            entry, icon = write_desktop_entry(args.dest, args.arguments)
-            record_integration(args.dest, [entry, icon])
-            print(f"stage_install: desktop entry {entry}")
+        if not IS_WINDOWS:
+            if args.desktop_shortcut or args.start_menu_shortcut:
+                entry, icon = write_desktop_entry(args.dest, args.arguments)
+                record_integration(args.dest, [entry, icon])
+                print(f"stage_install: desktop entry {entry}")
         else:
-            shortcut = args.shortcut or (desktop_folder() / SHORTCUT_NAME
-                                         if args.desktop_shortcut else None)
-            if shortcut is not None:
+            shortcuts = []
+            if args.shortcut is not None:
+                shortcuts.append(args.shortcut)
+            else:
+                if args.desktop_shortcut:
+                    shortcuts.append(desktop_folder() / SHORTCUT_NAME)
+                if args.start_menu_shortcut:
+                    shortcuts.append(start_menu_folder() / SHORTCUT_NAME)
+            for shortcut in shortcuts:
                 write_shortcut(shortcut, args.dest, args.arguments)
-                record_integration(args.dest, [shortcut])
                 print(f"stage_install: shortcut {shortcut}")
+            if shortcuts:
+                record_integration(args.dest, shortcuts)
     except InstallError as exc:
         print(f"stage_install: FAIL: {exc}", file=sys.stderr)
         return 1

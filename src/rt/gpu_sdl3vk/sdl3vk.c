@@ -41,6 +41,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <shobjidl.h>  /* SetCurrentProcessExplicitAppUserModelID */
 #include <direct.h>
 #else
 #include <sys/stat.h>
@@ -578,8 +579,31 @@ static SDL_Window *sdl3vk_create_window(const char *title) {
     return win;
 }
 
+/* The launcher's identity (#2006), so the game's window joins the launcher's taskbar group on
+ * Windows and its application on Linux instead of showing as an unrelated program. These are
+ * NK_APP_USER_MODEL_ID, NK_APP_DESKTOP_ID and NK_APP_NAME in src/core/nk_launch.h, which the
+ * runtime does not include; tools/test_stage_install.py keeps the copies equal. */
+#define SDL3VK_APP_USER_MODEL_ID "Nakagawa.Recomp"
+#define SDL3VK_APP_DESKTOP_ID "nakagawa-recomp"
+#define SDL3VK_APP_NAME "Nakagawa Recomp"
+
+/* Before SDL_Init and before the window exists: Windows reads the process's ID when the
+ * window's taskbar button is made, and SDL reads its metadata at initialisation. A refusal
+ * only costs the grouping, so it is reported and the game goes on. */
+static void sdl3vk_set_app_identity(void) {
+#ifdef _WIN32
+    HRESULT hr = SetCurrentProcessExplicitAppUserModelID(L"" SDL3VK_APP_USER_MODEL_ID);
+    if (FAILED(hr))
+        fprintf(stderr, "sdl3vk: the taskbar app ID could not be set (HRESULT 0x%08lx)\n",
+                (unsigned long)hr);
+#endif
+    if (!SDL_SetAppMetadata(SDL3VK_APP_NAME, NULL, SDL3VK_APP_DESKTOP_ID))
+        fprintf(stderr, "sdl3vk: SDL app metadata could not be set: %s\n", SDL_GetError());
+}
+
 int sdl3vk_init(const char *title) {
     s_init_steps = 0;
+    sdl3vk_set_app_identity();
     INIT_OK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD), "sdl3vk: SDL_Init failed: %s\n", SDL_GetError());
     s_sdl_subsystems = 1;
     /* SR_WINDOW_HIDDEN=1: the same presenter (Vulkan swapchain, keyboard, frame capture) with
