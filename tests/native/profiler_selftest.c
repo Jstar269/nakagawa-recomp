@@ -713,6 +713,28 @@ static void test_exec_share(void) {
     CHECK(value > 0.0 && value < 0.5, "interp_time_share=%f", value);
 }
 
+/* End-of-process reports (sr_at_process_end): sr_perf_shutdown() runs each registered report
+ * once, in registration order, and a second shutdown (an ordinary exit after an _Exit-path
+ * call, say) must not run them again. */
+static int s_end_log[8];
+static int s_end_count;
+static void end_report_first(void) { if (s_end_count < 8) s_end_log[s_end_count++] = 1; }
+static void end_report_second(void) { if (s_end_count < 8) s_end_log[s_end_count++] = 2; }
+
+static void test_process_end_reports(void) {
+    s_end_count = 0;
+    sr_at_process_end(end_report_first);
+    sr_at_process_end(end_report_second);
+    CHECK(s_end_count == 0, "a report ran at registration (%d runs)", s_end_count);
+    sr_perf_shutdown();
+    CHECK(s_end_count == 2 && s_end_log[0] == 1 && s_end_log[1] == 2,
+          "first shutdown ran %d reports, order %d,%d (expected 2 in registration order 1,2)",
+          s_end_count, s_end_log[0], s_end_log[1]);
+    sr_perf_shutdown();
+    CHECK(s_end_count == 2, "second shutdown re-ran reports (%d runs in total, expected 2)",
+          s_end_count);
+}
+
 int main(void) {
     const char *tmp = getenv("TMPDIR");
     if (!tmp || !tmp[0]) tmp = getenv("TEMP");
@@ -734,6 +756,7 @@ int main(void) {
     test_files_only_counters();
     test_thread_clock();
     sr_perf_shutdown();
+    test_process_end_reports();
     {
         char json_path[600];
         snprintf(json_path, sizeof json_path, "%.*s.json", (int)(strlen(s_csv_path) - 4u), s_csv_path);

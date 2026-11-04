@@ -681,6 +681,13 @@ void sr_perf_vblank_coalesced(void) {}
 void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
 void sr_perf_phase_report(int force) { (void)force; }
 void sr_perf_shutdown(void) {}
+/* A spy, not the mechanism: perf.c owns the real end-of-process list (profiler-selftest runs
+ * it). This keeps what was registered so a test can count it and call it. */
+void (*g_end_reports[8])(void);
+unsigned g_end_report_count;
+void sr_at_process_end(void (*report)(void)) {
+    if (g_end_report_count < 8u) g_end_reports[g_end_report_count++] = report;
+}
 /* Execution-share counters (perf.c owns the real ones; only the symbols are needed here). */
 int sr_exec_tier;
 uint64_t sr_exec_interp_instructions;
@@ -3340,19 +3347,22 @@ static void test_io_enhancement_data_file(void) {
     (void)sr_hle_test_io_close(&cpu);
 
     /* A title that reads a registered file some other way (raw UMD sectors, its own archive
-     * reader) never opens its path, so the end-of-run report names it. This binary reaches
-     * sr_compat_report nowhere else, and it prints once per process. */
+     * reader) never opens its path, so the end-of-process report names it. hle_data.c adds that
+     * report to the end-of-process list once per process, however many files register and
+     * however often a test resets the file list; the spy above recorded it. */
     static const uint8_t unused[] = "c,4\n";
     expect(sr_enhancement_file_register("NKENH/Unused.csv", digest, unused,
                                         (uint32_t)(sizeof(unused) - 1u)) == 1,
            "enhancement data file: a second disc path registers");
+    expect(g_end_report_count == 1u && g_end_reports[0] != NULL,
+           "enhancement data file: several files register the end-of-process report exactly once");
     rt_capture_begin();
-    sr_compat_report();
+    if (g_end_report_count >= 1u) g_end_reports[0]();
     const char *report = rt_capture_end();
     expect(strstr(report, "ENHANCEMENT_DATA_NOT_SERVED: nkenh/unused.csv was never opened by path") != NULL &&
            strstr(report, "nkenh/timing.csv was never") == NULL &&
            strstr(report, "ENHANCEMENT_DATA_REPORT: served=1/2") != NULL,
-           "enhancement data file: the end-of-run report names a file that was never served");
+           "enhancement data file: the end-of-process report names a file that was never served");
 
     sr_hle_test_enhancement_files_reset();
     expect(sr_enhancement_file_register("NKENH/TIMING.CSV", wrong, rewritten,
@@ -3367,6 +3377,8 @@ static void test_io_enhancement_data_file(void) {
     cpu.r[4] = fd;
     (void)sr_hle_test_io_close(&cpu);
     sr_hle_test_enhancement_files_reset();
+    expect(g_end_report_count == 1u,
+           "enhancement data file: registering again after a reset adds no second report");
     for (size_t i = 0; i < 2u; i++) {
         fd_host_path(host, sizeof(host), names[i]);
         nk_remove_utf8(host);

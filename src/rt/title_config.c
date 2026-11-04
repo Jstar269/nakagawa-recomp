@@ -215,20 +215,6 @@ int sr_compat_fired_at(unsigned index, char *id, unsigned id_size, unsigned long
     return 1;
 }
 
-#define SR_COMPAT_REPORT_ALSO_MAX 4u
-static void (*s_compat_report_also[SR_COMPAT_REPORT_ALSO_MAX])(void);
-static unsigned s_compat_report_also_n;
-
-void sr_compat_report_also(void (*report)(void)) {
-    for (unsigned i = 0; i < s_compat_report_also_n; i++)
-        if (s_compat_report_also[i] == report) return;
-    if (s_compat_report_also_n == SR_COMPAT_REPORT_ALSO_MAX) {
-        fprintf(stderr, "COMPAT_PATCH_REPORT: no room for another end-of-run report; it will not print\n");
-        return;
-    }
-    s_compat_report_also[s_compat_report_also_n++] = report;
-}
-
 void sr_compat_report(void) {
     static int reported;
     if (reported) return;
@@ -242,6 +228,5 @@ void sr_compat_report(void) {
     else
         fprintf(stderr, "COMPAT_PATCH_REPORT: fired=%u overflow_hits=%llu (title %s)\n",
                 s_compat_fired_n, s_compat_fired_overflow, s_config.source_id);
-    for (unsigned i = 0; i < s_compat_report_also_n; i++) s_compat_report_also[i]();
     fflush(stderr);
 }

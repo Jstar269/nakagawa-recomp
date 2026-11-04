@@ -2299,6 +2299,9 @@ typedef struct {
 
 static HleEnhancementFile s_enhancement_files[128];
 static size_t s_enhancement_file_count;
+/* Set the first time a file registers: the report is added to the end-of-process list once per
+ * process, so a test reset of the file list never adds it a second time. */
+static int s_enhancement_report_registered;
 
 /* End of run: a title that reads its data through raw UMD sectors or its own archive reader
  * never opens these paths, so their rewrites never apply. Each such file is named. */
@@ -2331,7 +2334,10 @@ int sr_enhancement_file_register(const char *disc_path, const uint8_t stock_sha2
     entry->data = data;
     entry->size = size;
     entry->served = 0;
-    sr_compat_report_also(hle_enhancement_report);
+    if (!s_enhancement_report_registered) {
+        s_enhancement_report_registered = 1;
+        sr_at_process_end(hle_enhancement_report);
+    }
     return 1;
 }
 
