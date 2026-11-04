@@ -80,7 +80,7 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 native-core-tests: profiler-selftest
 
 gui-present-selftest:
-	$(CC) $(CFLAGS) -DSR_GUI_PRESENT_SELFTEST -ffunction-sections -fdata-sections \
+	$(CC) $(CFLAGS) -Isrc/ui -DSR_GUI_PRESENT_SELFTEST -ffunction-sections -fdata-sections \
 		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gui_present_selftest.exe \
 		src/rt/gui.c src/rt/ace.c $(LIBS)
 	$(BUILD_DIR)/gui_present_selftest.exe

@@ -3881,6 +3881,8 @@ typedef struct PlayerRun {
     bool build_check_pending;
     bool running;
     uint64_t last_tick;
+    /* One launcher per data folder (#2006). */
+    NkSingleInstance instance;
 } PlayerRun;
 
 /* What the startup and window steps return when the run goes on; any other value is
@@ -4004,6 +4006,47 @@ static int player_parse_command_line(PlayerRun *run, int argc, char *argv[]) {
 
     player_ui_test_check_environment(&run->ui_test);
     return PLAYER_RUN_CONTINUE;
+}
+
+/* One launcher per data folder (#2006): a second start on the same library and settings
+   brings the first launcher's window forward and exits. Screenshots, test views, staging,
+   headless launches and UI tests run beside a launcher on purpose and are left alone. */
+static int player_claim_single_instance(PlayerRun *run) {
+    char data_root[NK_MAX_PATH];
+    if (run->screenshot_path || run->test_view || run->stage_only || run->app.launch_headless ||
+        player_ui_test_active(&run->ui_test)) {
+        return PLAYER_RUN_CONTINUE;
+    }
+    if (!nk_platform_get_app_data_dir(data_root, sizeof(data_root))) return PLAYER_RUN_CONTINUE;
+    switch (nk_platform_single_instance_acquire(&run->instance, data_root)) {
+    case NK_INSTANCE_ACQUIRED:
+        return PLAYER_RUN_CONTINUE;
+    case NK_INSTANCE_UNAVAILABLE:
+        fprintf(stderr, "[PLAYER] Could not check for another open Nakagawa Recomp; "
+                        "starting anyway.\n");
+        return PLAYER_RUN_CONTINUE;
+    case NK_INSTANCE_RUNNING:
+        break;
+    }
+    if (run->launch_now || run->launch_index_requested) {
+        fprintf(stderr, "[PLAYER] Nakagawa Recomp is already open on this data folder, so the "
+                        "game was not started. Start it from the open window.\n");
+    } else if (run->initial_iso_path) {
+        fprintf(stderr, "[PLAYER] Nakagawa Recomp is already open, so %s was not added. "
+                        "Add it from the open window.\n", run->initial_iso_path);
+    } else {
+        fprintf(stderr, "[PLAYER] Nakagawa Recomp is already open; showing that window.\n");
+    }
+    if (run->instance.owner_pid > 0) {
+        NkProcessHandle first;
+        memset(&first, 0, sizeof(first));
+        first.process_id = run->instance.owner_pid;
+        first.is_active = true;
+        if (!nk_platform_bring_process_window_to_front(&first)) {
+            fprintf(stderr, "[PLAYER] The open window could not be brought to the front.\n");
+        }
+    }
+    return 0;
 }
 
 /* Loads the title manifests, the initial disc image and the demo entries. */
@@ -5498,6 +5541,9 @@ static int player_shutdown(PlayerRun *run) {
 int main(int argc, char *argv[]) {
     /* Windows: UTF-8 console output and argv rebuilt from the UTF-16 command line. */
     (void)nk_platform_init_utf8_main(&argc, &argv);
+    /* One taskbar group for the launcher, its games and a pinned shortcut (#2006): set before
+       any window, SDL's message boxes included. */
+    player_host_set_app_identity();
 
     /* Android: system-log streams and the unpacked-files folder (no-op elsewhere). */
     (void)nk_platform_host_startup("nakagawa");
@@ -5513,6 +5559,7 @@ int main(int argc, char *argv[]) {
     player_run_init(&run);
 
     int code = player_parse_command_line(&run, argc, argv);
+    if (code == PLAYER_RUN_CONTINUE) code = player_claim_single_instance(&run);
     if (code == PLAYER_RUN_CONTINUE) code = player_load_library(&run);
     if (code == PLAYER_RUN_CONTINUE) {
         player_apply_test_view(&run.app, run.test_view);
@@ -5524,7 +5571,10 @@ int main(int argc, char *argv[]) {
     }
     if (code == PLAYER_RUN_CONTINUE) code = player_open_window(&run);
     if (code == PLAYER_RUN_CONTINUE) code = player_capture_screenshot(&run);
-    if (code != PLAYER_RUN_CONTINUE) return code;
+    if (code != PLAYER_RUN_CONTINUE) {
+        nk_platform_single_instance_release(&run.instance);
+        return code;
+    }
 
     player_loop_start(&run);
     while (run.running && !run.app.should_quit) {
@@ -5534,5 +5584,7 @@ int main(int argc, char *argv[]) {
         player_frame_game_session(&run);
         player_frame_render(&run);
     }
-    return player_shutdown(&run);
+    code = player_shutdown(&run);
+    nk_platform_single_instance_release(&run.instance);
+    return code;
 }

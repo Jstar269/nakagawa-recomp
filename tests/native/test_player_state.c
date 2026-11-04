@@ -4951,6 +4951,132 @@ static void test_remove_tree_deeper_than_max_path(void) {
 }
 #endif
 
+/* #2006: one launcher per data folder. A second start finds the first by name and learns
+   its process ID; a release, or a holder that ended without one, lets the next start in. A
+   mutex belongs to a thread, so the other starts run on their own threads. */
+typedef struct {
+    const char *name;
+    NkInstanceResult result;
+    int owner_pid;
+    bool release;
+    /* Windows: the process's open handles before the acquire and after the release. A start
+       that finds another holder opens nothing it keeps. */
+    unsigned long handles_before;
+    unsigned long handles_after;
+} InstanceProbe;
+
+#if defined(_WIN32) || defined(_WIN64)
+static unsigned __stdcall instance_probe_thread(void *data) {
+#else
+static void *instance_probe_thread(void *data) {
+#endif
+    InstanceProbe *probe = (InstanceProbe *)data;
+    NkSingleInstance instance;
+#if defined(_WIN32) || defined(_WIN64)
+    DWORD count = 0;
+    (void)GetProcessHandleCount(GetCurrentProcess(), &count);
+    probe->handles_before = (unsigned long)count;
+#endif
+    probe->result = nk_platform_single_instance_acquire(&instance, probe->name);
+    probe->owner_pid = instance.owner_pid;
+    /* Without a release the thread ends holding it, as a crashed launcher would. The handles
+       stay open in this process, as a crash's would until the OS closed them. */
+    if (probe->release) nk_platform_single_instance_release(&instance);
+#if defined(_WIN32) || defined(_WIN64)
+    count = 0;
+    (void)GetProcessHandleCount(GetCurrentProcess(), &count);
+    probe->handles_after = (unsigned long)count;
+#endif
+#if defined(_WIN32) || defined(_WIN64)
+    return 0u;
+#else
+    return NULL;
+#endif
+}
+
+static void run_instance_probe(InstanceProbe *probe) {
+#if defined(_WIN32) || defined(_WIN64)
+    uintptr_t thread = _beginthreadex(NULL, 0, instance_probe_thread, probe, 0, NULL);
+    assert(thread != 0u);
+    assert(WaitForSingleObject((HANDLE)thread, INFINITE) == WAIT_OBJECT_0);
+    CloseHandle((HANDLE)thread);
+#else
+    pthread_t thread;
+    assert(pthread_create(&thread, NULL, instance_probe_thread, probe) == 0);
+    assert(pthread_join(thread, NULL) == 0);
+#endif
+}
+
+static void test_single_instance_per_data_folder(void) {
+    char name[NATIVE_TEST_PATH_MAX + 64];
+    char same[sizeof(name) + 2u];  /* name, a '/', the terminator */
+    char other[NATIVE_TEST_PATH_MAX + 64];
+    NkSingleInstance first;
+    InstanceProbe probe;
+    snprintf(name, sizeof(name), "%s%cinstance2006", native_test_get_root(),
+             nk_platform_path_separator());
+    snprintf(other, sizeof(other), "%s%cinstance2006-other", native_test_get_root(),
+             nk_platform_path_separator());
+    assert(nk_platform_single_instance_acquire(&first, name) == NK_INSTANCE_ACQUIRED);
+    assert(first.held || nk_platform_host_kind() != NK_HOST_WINDOWS);
+    if (nk_platform_host_kind() != NK_HOST_WINDOWS) {
+        /* No guard on POSIX yet: every start is let in, and the header says so. */
+        memset(&probe, 0, sizeof(probe));
+        probe.name = name;
+        probe.release = true;
+        run_instance_probe(&probe);
+        assert(probe.result == NK_INSTANCE_ACQUIRED);
+        nk_platform_single_instance_release(&first);
+        printf("PASS: single instance: no guard on this host, every start is let in\n");
+        return;
+    }
+    /* The same folder written another way is the same launcher. */
+    snprintf(same, sizeof(same), "%s/", name);
+    for (char *c = same; *c; ++c) {
+        if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 'a' + 'A');
+        else if (*c == '\\') *c = '/';
+    }
+    memset(&probe, 0, sizeof(probe));
+    probe.name = same;
+    probe.release = true;
+    run_instance_probe(&probe);
+    assert(probe.result == NK_INSTANCE_RUNNING);
+#if defined(_WIN32) || defined(_WIN64)
+    assert(probe.owner_pid == (int)GetCurrentProcessId());
+    assert(probe.handles_after == probe.handles_before);
+#endif
+    /* A name the OS can't use opens nothing either. */
+    memset(&probe, 0, sizeof(probe));
+    probe.name = "";
+    probe.release = true;
+    run_instance_probe(&probe);
+    assert(probe.result == NK_INSTANCE_UNAVAILABLE);
+    assert(probe.handles_after == probe.handles_before);
+    /* Another data folder has its own launcher. */
+    memset(&probe, 0, sizeof(probe));
+    probe.name = other;
+    probe.release = true;
+    run_instance_probe(&probe);
+    assert(probe.result == NK_INSTANCE_ACQUIRED);
+    /* After the first launcher closes, the next start is let in. It then ends without a
+       release, as a crash would, and the start after it still gets in. */
+    nk_platform_single_instance_release(&first);
+    assert(!first.held && first.mutex == NULL && first.mapping == NULL);
+    memset(&probe, 0, sizeof(probe));
+    probe.name = name;
+    probe.release = false;
+    run_instance_probe(&probe);
+    assert(probe.result == NK_INSTANCE_ACQUIRED);
+    memset(&probe, 0, sizeof(probe));
+    probe.name = name;
+    probe.release = true;
+    run_instance_probe(&probe);
+    assert(probe.result == NK_INSTANCE_ACQUIRED);
+    nk_platform_single_instance_release(&first);
+    printf("PASS: single instance: a second start finds the first, a crashed one never "
+           "blocks the next\n");
+}
+
 /* #1304: Remove from library deletes the package, the build cache and the disc
    files Nakagawa copied, keeps the saves and (#2003) the decrypted files and
    disc copy unless asked, and never touches the disc image or another title's
@@ -6536,6 +6662,7 @@ int main(int argc, char **argv) {
     test_remove_tree_deeper_than_max_path();
 #endif
     test_remove_from_library_deletes_what_nakagawa_built();
+    test_single_instance_per_data_folder();
     test_build_identity_matches_the_python_digest();
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);

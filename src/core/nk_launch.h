@@ -24,6 +24,18 @@ extern "C" {
 #define NK_LAUNCH_EXIT_ACCEPTANCE_PRESENTER_UNAVAILABLE 43
 #define NK_LAUNCH_EXIT_ACCEPTANCE_NOT_REACHED 44
 
+/* One identity for the launcher and every game it starts (#2006), so the desktop shows
+ * them as one app: one taskbar group on Windows, one application on Linux.
+ * NK_APP_USER_MODEL_ID is the Windows AppUserModelID; tools/stage_install.py writes it on
+ * the shortcuts too, so a pinned shortcut groups with the running windows.
+ * NK_APP_DESKTOP_ID is SDL's app identifier (the Wayland app ID and X11 class), the name
+ * of the .desktop entry stage_install.py writes. The game window sets the same two from
+ * src/rt/gpu_sdl3vk/sdl3vk.c, which does not include this header; the copies must stay
+ * equal, and tools/test_stage_install.py checks that they do. */
+#define NK_APP_USER_MODEL_ID "Nakagawa.Recomp"
+#define NK_APP_DESKTOP_ID "nakagawa-recomp"
+#define NK_APP_NAME "Nakagawa Recomp"
+
 /* How the child scales game frames into its window (SR_PRESENT_SCALING, issue #1129). */
 enum {
     NK_PRESENT_SCALING_SHARP = 0,    /* nearest to the next integer multiple, then linear */
