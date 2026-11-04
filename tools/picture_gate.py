@@ -48,6 +48,7 @@ values is the run's fresh scratch folder (``mkdirs`` creates folders in it); it 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import importlib.util
@@ -112,7 +113,7 @@ def format_percent(percent: float) -> str:
 def parse_ppm(data: bytes, label: str = "frame") -> Frame:
     """Decode the exact binary P6 the runtime's capture service publishes."""
     pos = 0
-    tokens = []
+    tokens: list[bytes] = []
     while len(tokens) < 4:
         while pos < len(data) and data[pos:pos + 1].isspace():
             pos += 1
@@ -263,8 +264,8 @@ def accept(frame: Path, reference: Path, commit: str | None = None) -> dict:
 
 # ---- running a route ------------------------------------------------------------------------
 
-def sandbox_env(base: dict, extra: dict, vblank: int | None, window: int,
-                pad: Path | None) -> dict:
+def sandbox_env(base: Mapping[str, str], extra: Mapping[str, str], vblank: int | None,
+                window: int, pad: Path | None) -> dict[str, str]:
     env = {k: v for k, v in base.items() if not _STRIPPED_ENV.match(k)}
     env.update(extra)
     env.update({
@@ -414,7 +415,7 @@ def run_route(route_path: Path, runs: int = 1, work_root: Path | None = None,
         return title, Verdict(NOT_RUN, "route-timeout-invalid")
 
     own_tmp = work_root is None
-    work = Path(tempfile.mkdtemp(prefix="picture-gate-")) if own_tmp else Path(work_root)
+    work = Path(tempfile.mkdtemp(prefix="picture-gate-")) if work_root is None else Path(work_root)
     try:
         env = sandbox_env(os.environ, extra, vblank, window, pad)
         frames, how = [], ""
