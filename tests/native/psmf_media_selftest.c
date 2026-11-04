@@ -4304,7 +4304,7 @@ static void test_mpeg_feed_end_without_stream_size(int mode) {
     const uint32_t pad = packets * MPEG_PACKET_SIZE - ps;
     /* The ring has room past the movie, as a guest's does, so the last put asks for more
      * packets than are left and the callback runs short. */
-    const uint32_t ring_packets = mode == 5 ? 48u : packets + 32u;
+    const uint32_t ring_packets = mode == 5 ? 45u : packets + 32u;
     uint8_t *source = calloc(packets, MPEG_PACKET_SIZE);
     if (!source || (pad && pad < 6u) || EF_RING_DATA + ring_packets * MPEG_PACKET_SIZE > EF_CALLBACK) {
         CHECK(0, "mpeg-eof: the movie and its padding fit the fixture");
@@ -4380,23 +4380,31 @@ static void test_mpeg_feed_end_without_stream_size(int mode) {
     }
     if (mode == 5) {
         /* Takes and puts interleave, so a put meets the ring's end.  The callback's error after
-         * packets went in is not the source running out: the put keeps what went in and the feed
-         * goes on. */
+         * packets went in is not the source running out: the put keeps what went in, and a
+         * GetAvcAu that then finds no complete unit does not end the feed.  The units are only
+         * taken after the error, not decoded: the check is of the feed, and the end of the movie
+         * is covered by the other cases. */
         int checked = 0;
-        for (int guard = 0; guard < 4096 && s_ef_next < packets; guard++) {
+        for (int guard = 0; guard < 4096 && s_ef_next < packets && !checked; guard++) {
             pictures += eof_drain(avc);
             const int seen = s_ef_error_seen;
-            eof_put();
+            const uint32_t went_in = eof_put();
             if (!seen && s_ef_error_seen) {
-                pictures += eof_drain(avc);
+                uint32_t r = 0u;
+                for (int take = 0; take < 64 && r == 0u; take++)
+                    r = guest_mpeg_import(NID_MPEG_GET_AVC_AU, EF_DESC, avc, EF_AU, EF_ATTR, 0u);
+                EF_CHECK(went_in > 0u && went_in < 8u && r == SCE_MPEG_ERROR_NO_DATA,
+                         "mpeg-eof (%s): the put keeps what went in, and GetAvcAu then finds no unit");
                 EF_CHECK(!ctx->streamEnded && !ctx->feedShort && s_ef_next < packets,
                          "mpeg-eof (%s): an error after packets went in does not end the feed");
                 checked = 1;
             }
         }
         EF_CHECK(checked, "mpeg-eof (%s): a put met the ring's end and the callback's second call failed");
-        pictures += eof_drain(avc);
-        eof_put();   /* the source has run out: the callback runs short */
+        mpeg_finish();
+        free(source);
+        free(image);
+        return;
     }
     if (mode == 1 || mode == 2) {
         EF_CHECK(s_ef_next == s_ef_short_at && s_ef_next < packets,
