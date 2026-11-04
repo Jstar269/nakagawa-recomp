@@ -186,11 +186,15 @@ static inline int sr_input_list_tick(SrInputPlayer *p, const SrInputSegment *lis
  * into the segment list that reproduces them: the pad state is cut at every row start and
  * end, overlapping rows are held together, release gaps become their own segments, and a
  * gap before the first row lets the guest see the pad released before it is pressed.
- * Pressed segments get `budget`; gaps wait without one. Rows need not be sorted. Returns
- * the number of segments written, or -1 when `out` (capacity `max`) is too small; 2n + 1
- * always suffices. */
+ * Pressed segments get `budget`; gaps wait without one. Rows need not be sorted. `stick`, when
+ * not NULL, gives each row's left stick (SR_INPUT_STICK, 0 = centred): where held rows overlap,
+ * the stick of the one that started last holds, as a recorded stick moves on to its newest
+ * position while an earlier press is still down. A row with a stick and no button counts as
+ * pressed. Returns the number of segments written, or -1 when `out` (capacity `max`) is too
+ * small; 2n + 1 always suffices. */
 static inline int sr_input_from_rows(const uint32_t *f, const uint32_t *mask, const uint32_t *w,
-                                     int n, uint32_t budget, SrInputSegment *out, int max) {
+                                     const uint32_t *stick, int n, uint32_t budget,
+                                     SrInputSegment *out, int max) {
     int count = 0;
     uint32_t at = 0u;
     for (;;) {
@@ -204,24 +208,29 @@ static inline int sr_input_from_rows(const uint32_t *f, const uint32_t *mask, co
             if (end > at && end < next) { next = end; any = 1; }
         }
         if (!any) break;
-        uint32_t held = 0u;
+        uint32_t held = 0u, held_stick = 0u;
+        int stick_row = -1;
         for (int i = 0; i < n; i++) {
             if (w[i] == 0u) continue;
             uint32_t end = f[i] + w[i] < f[i] ? UINT32_MAX : f[i] + w[i];
-            if (f[i] <= at && at < end) held |= mask[i];
+            if (!(f[i] <= at && at < end)) continue;
+            held |= mask[i];
+            if (stick && stick[i] && (stick_row < 0 || f[i] >= f[stick_row])) stick_row = i;
         }
-        if (count > 0 && out[count - 1].mask == held) {
+        if (stick_row >= 0) held_stick = stick[stick_row];
+        int pressed = held != 0u || held_stick != 0u;
+        if (count > 0 && out[count - 1].mask == held && out[count - 1].stick == held_stick) {
             out[count - 1].samples += next - at;
         } else {
             if (count >= max) return -1;
             out[count].mask = held;
             /* The leading gap only has to show the guest a released pad; the first press
              * is placed by its own not_before, however late the script's first vblank. */
-            out[count].samples = (count == 0 && held == 0u) ? 1u : next - at;
+            out[count].samples = (count == 0 && !pressed) ? 1u : next - at;
             out[count].not_before = at;
-            out[count].budget = held ? budget : 0u;
+            out[count].budget = pressed ? budget : 0u;
             out[count].reads = 0u;          /* a table row is a vblank width */
-            out[count].stick = 0u;          /* and leaves the stick centred */
+            out[count].stick = held_stick;  /* 0 leaves the stick centred */
             count++;
         }
         at = next;
