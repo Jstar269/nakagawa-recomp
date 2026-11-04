@@ -2,7 +2,7 @@
 
 > **Status: CURRENT — maintained architectural contract.** Issue reference: #327. Build cache coordination coordinates with #316, and high-refresh presentation coordinates with #328.
 
-Sections 1–7 define the authentic baseline, category boundaries, fail-closed package validation (`tools/enhancement_package.py`), and AOT cache epoch separation (`tools/nk_core/package_cache.py`, `tools/codegen.py`). Declarative frame-rate rescale packages (60 Hz logic rescaling for 30 Hz titles) are implemented on the AOT codegen and package-builder path; host runtime asset replacement and overlay loaders remain in the works.
+Sections 1–7 define the authentic baseline, category boundaries, fail-closed package validation (`tools/enhancement_package.py`), and AOT cache epoch separation (`tools/nk_core/package_cache.py`, `tools/codegen.py`). Declarative frame-rate rescale packages (60 Hz logic rescaling for 30 Hz titles) are implemented on the AOT codegen and package-builder path; host runtime asset replacement and overlay loaders remain in the works. Section 10 covers the project-authored library-wide mode, and section 11 the class of its items that change what the guest can observe (#2055).
 
 ## 1. Core Principle: Authentic Mode is the Untouched Baseline
 
@@ -289,8 +289,9 @@ the samplers and the pool; `display-smoke` keeps its image hash.
 
 ### 10.3. What Ace Changes, and What It Never Changes
 
-- **Never:** guest logic, the instruction trace, the generated code and the package key (`SR_ACE` is not a codegen
-  option), the guest timing model (VBLANK schedule, GE timing, input sampling, media clocks).
+- **Never, for a host-only feature:** guest logic, the instruction trace, the generated code and the package key
+  (`SR_ACE` is not a codegen option), the guest timing model (VBLANK schedule, GE timing, input sampling, media
+  clocks). Every feature in this section is host-only unless section 11 admits it as a guest-visible item.
 - **Host work:** the detector and the readout count flips, draws and host waits; their cost runs on the scheduler
   thread like any renderer cost.
 - **Pixels:** texture filtering (anisotropic, for transformed draws with linear minification) changes framebuffer
@@ -339,3 +340,67 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
   present latches no input and serves no capture.
 - **Stamps.** The report adds `presents` (real, between, held, superseded) and `present_interval_ms`. Section 10.4
   applies: the run is refused as evidence.
+
+## 11. Guest-Visible Items
+
+Sections 10.3 and 10.6 describe host-only features: what the guest reads, in its registers, memory and timing, is the
+same with them on or off. The owner's decision of 2026-11-04 (#2055) is that Enhanced does not have to stay fully
+Authentic: a change that improves a game without making anything worse is allowed, even when the guest can observe
+it. This section is the class for those changes. It adds to the classes above and removes none of them.
+
+"Enhanced" here is the library-wide tier and "Ace" the per-title tier of #2055. In builds before that rename the
+library-wide tier is the Ace Mode of section 10, and the identifiers keep `ace`.
+
+### 11.1. What Makes an Item Guest-Visible
+
+An item is guest-visible when, with it on, any of the following differs from the same run with it off:
+
+- the bytes of guest VRAM or any other guest memory the item writes;
+- what a readback returns: a GE or display readback, a save picture, a screenshot the title takes of its own screen;
+- timing the guest can measure: when a VBLANK, a DMA, a GE list or a media clock completes relative to the guest;
+- the speed of I/O the guest performs: disc, Memory Stick or savedata reads and writes.
+
+The item's contract entry (section 11.2) names each of these that applies. An item that changes none of them is
+host-only and follows sections 10.2 to 10.6, not this section. One existing feature already sits on this line:
+texture filtering changes the frame that every present commits to guest VRAM, so a game that copies its screen keeps
+the filtered picture (the "Pixels" bullet of section 10.3). It keeps that entry; a new item is not admitted by
+analogy with it.
+
+### 11.2. What an Item Must Have
+
+1. **Authentic stays byte-identical.** With the library choice or the title's choice at Authentic, a build behaves
+   as section 10.2 describes: the item sits behind the one switch that stays false, the generated code, the package
+   key, the guest's memory, its instruction trace and its timing are what they are without the item. The test that
+   pins the item also runs with Authentic and compares against the item-less result byte for byte.
+2. **Its own key and off switch.** The item has a key on the launch line (section 10.1), a library setting and a
+   per-title setting, and each can turn the item off alone, without turning off the rest of Enhanced or Ace. A
+   missing or unknown value reads as off, never as more permissive. A launch line that carries a key this build does
+   not know is refused, as section 10.1 says.
+3. **A contract entry that says what the guest can observe.** Each item is listed in this document, in its own
+   subsection, with: its key; what it changes; for each of VRAM bytes, readbacks, timing and I/O speed, either
+   "unchanged" or exactly what differs and by how much; the tier it belongs to (Enhanced for every game, or Ace for
+   one title); and its default. An item without an entry is not admitted.
+4. **"Nothing worse" is shown before it is on by default.** Until the evidence below exists, the item is off by
+   default and a player may turn it on. To be on by default in Enhanced or Ace it needs all of:
+   - a test that pins the new behaviour, in this repository, that fails without the item and passes with it;
+   - private route or picture-gate runs (`tools/picture_gate.py` or the title's private route) on *Hot Shots Tennis*
+     and on *LittleBigPlanet*, each compared with the same build and route with the item off, with no new failure;
+   - for an item that applies to every game, a library sweep (`tools/library_sweep.py`) with the item on against the
+     same sweep with it off, with no title that passed turning into a failure.
+
+   The comparison runs are non-authentic evidence (section 3): they show the item made nothing worse and are not
+   cited for PSP conformance. The pull request lists each run with its result and says which could not be run.
+5. **A title where it breaks gets a per-title off switch in its package.** The switch is data in that title's own
+   package or title profile (section 5), which the generic code reads as "this item is off here". Generic files
+   contain no title ID, no address and no branch for it. When a regression is found for a title, the item stays
+   admitted and the title's switch goes in with the fix; the item is not made title-aware.
+6. **The evidence tools keep their answers.** An Enhanced or Ace run is stamped, labelled and refused as section 10.4
+   says: `ACE_MODE: on (...)` carries the item's key and value, the flight recorder bundle lists it in
+   `runtime.enhancements`, `tools/flight_diff.py` and `tools/boot_gate.py` refuse the run and the acceptance
+   checkpoint refuses it. A guest-visible item never relaxes one of those checks, and none is changed to let an item
+   through.
+
+### 11.3. Where Items Are Listed
+
+No guest-visible item is admitted by this section alone. Each lands in its own pull request with its entry added here
+(`11.3.<n>`), following the order of section 11.2. This section is the template that entry is checked against.
