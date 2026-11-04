@@ -33,11 +33,11 @@ PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *mode
         size_t shown = model->item_count;
         scr_flow_eyebrow(ui, FLOW_MARK_DIAMOND, "One-time build tool download", theme->info);
         nk_ui_text_role(ui, FLOW_ID_TITLE,
-                        "Download the pinned tools needed to build this game?",
+                        "Download the build tools this game needs?",
                         NK_UI_TYPE_TITLE, theme->paper);
         nk_ui_text_role(ui, FLOW_ID_LEAD,
                         "Nothing is downloaded until you choose DOWNLOAD, and your answer applies "
-                        "to this build only. Each file is checked against its pinned hash.",
+                        "to this build only. Each file is checked against its checksum before it is used.",
                         NK_UI_TYPE_BODY_S, theme->muted);
         {
             NkUiLayout rows = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(), 0.0f);
@@ -52,7 +52,7 @@ PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *mode
                     const PlayerUiPrereqItem *item = &model->items[i];
                     const char *license = item->license != NULL &&
                         strcmp(item->license, "NOASSERTION") == 0
-                        ? "licence review in the works" : safe_text(item->license, "");
+                        ? "licence not yet reviewed" : safe_text(item->license, "");
                     scr_flow_bytes(a, sizeof(a), item->bytes);
                     (void)snprintf(text, sizeof(text), "%s %s" FLOW_MIDDOT "%s" FLOW_MIDDOT "%s"
                                    FLOW_MIDDOT "%s",
@@ -93,7 +93,7 @@ PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *mode
     nk_ui_text_role(ui, FLOW_ID_TITLE, "The files are checked before they are installed.",
                     NK_UI_TYPE_TITLE, theme->paper);
     (void)snprintf(text, sizeof(text), "Now: %s",
-                   safe_text(model->current_item, "Starting the verified fetcher"));
+                   safe_text(model->current_item, "Starting the download"));
     nk_ui_text_role(ui, FLOW_ID_LEAD, text, NK_UI_TYPE_BODY_S, theme->paper);
     nk_ui_progress_bar(ui, FLOW_ID_BAR, inner,
                        model->total_bytes > 0ull

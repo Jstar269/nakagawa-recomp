@@ -1,6 +1,5 @@
 name: Starter issue (maintainers)
 description: A small, self-contained task for a first-time contributor
-title: "[Starter]: "
 labels:
   - good first issue
 body:
@@ -9,7 +8,7 @@ body:
       value: |
         For maintainers and for contributors who have agreed a task with a maintainer. A starter issue
         names one change, the files to start in and the exact command that proves it. Do not include game
-        files, decrypted modules, extracted assets, full traces or private paths.
+        files, decrypted modules, extracted assets, keys, full traces or private paths.
         Setup: [CONTRIBUTING.md](https://github.com/Jstar269/nakagawa-recomp/blob/main/CONTRIBUTING.md#contributing-without-a-game-disc).
 
   - type: textarea
