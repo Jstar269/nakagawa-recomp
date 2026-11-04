@@ -432,9 +432,10 @@ def _windows_process_names() -> set[str]:
         ]
 
     # Windows-only ctypes members, looked up by name so other hosts type-check.
-    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
-    get_last_error = getattr(ctypes, "get_last_error")
-    set_last_error = getattr(ctypes, "set_last_error")
+    win_ctypes: Any = ctypes
+    kernel32 = win_ctypes.WinDLL("kernel32", use_last_error=True)
+    get_last_error = win_ctypes.get_last_error
+    set_last_error = win_ctypes.set_last_error
     kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
     kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]

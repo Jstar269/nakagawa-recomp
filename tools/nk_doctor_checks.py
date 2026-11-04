@@ -137,8 +137,8 @@ def _windows_version_info() -> tuple[int | None, int | None]:
     if os.name != "nt":
         return None, None
     try:
-        # Windows-only; looked up by name so type checkers on other hosts accept it.
-        version = getattr(sys, "getwindowsversion")()
+        win_sys: Any = sys  # getwindowsversion exists on Windows only
+        version = win_sys.getwindowsversion()
         return int(version.build), int(version.product_type)
     except (AttributeError, OSError, TypeError, ValueError):
         return None, None
