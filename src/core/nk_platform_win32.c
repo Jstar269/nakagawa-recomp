@@ -522,6 +522,84 @@ void nk_platform_file_lock_release(NkFileLock *lock) {
     lock->held = false;
 }
 
+/* FNV-1a over the name as Windows compares paths: ASCII case folded, '/' read as '\\', and
+   trailing separators dropped. */
+static unsigned long long single_instance_hash(const char *name) {
+    unsigned long long hash = 1469598103934665603ull;
+    size_t length = strlen(name);
+    while (length > 1u && (name[length - 1u] == '\\' || name[length - 1u] == '/')) --length;
+    for (size_t i = 0; i < length; ++i) {
+        unsigned char c = (unsigned char)name[i];
+        if (c == '/') c = '\\';
+        else if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+        hash ^= c;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+NkInstanceResult nk_platform_single_instance_acquire(NkSingleInstance *instance,
+                                                     const char *name) {
+    if (!instance) return NK_INSTANCE_UNAVAILABLE;
+    memset(instance, 0, sizeof(*instance));
+    if (!name || !*name) return NK_INSTANCE_UNAVAILABLE;
+    char narrow[96];
+    WCHAR mutex_name[96];
+    WCHAR mapping_name[96];
+    unsigned long long hash = single_instance_hash(name);
+    (void)snprintf(narrow, sizeof(narrow), "Local\\NakagawaRecomp.Instance.%016llx", hash);
+    if (!utf8_to_wide(narrow, mutex_name, sizeof(mutex_name) / sizeof(mutex_name[0]))) {
+        return NK_INSTANCE_UNAVAILABLE;
+    }
+    (void)snprintf(narrow, sizeof(narrow), "Local\\NakagawaRecomp.Instance.%016llx.owner", hash);
+    if (!utf8_to_wide(narrow, mapping_name, sizeof(mapping_name) / sizeof(mapping_name[0]))) {
+        return NK_INSTANCE_UNAVAILABLE;
+    }
+    HANDLE mutex = CreateMutexW(NULL, FALSE, mutex_name);
+    if (!mutex) return NK_INSTANCE_UNAVAILABLE;
+    DWORD wait = WaitForSingleObject(mutex, 0);
+    /* The owner's process ID; a fresh page reads 0 until the holder writes it. */
+    HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
+                                        (DWORD)sizeof(LONG), mapping_name);
+    if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
+        /* WAIT_ABANDONED: the last holder ended without releasing it, as a crash does. The
+           mutex is this thread's now, so a crashed launcher never blocks the next start. */
+        if (mapping) {
+            LONG *owner = (LONG *)MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(LONG));
+            if (owner) {
+                InterlockedExchange(owner, (LONG)GetCurrentProcessId());
+                UnmapViewOfFile(owner);
+            }
+        }
+        instance->mutex = mutex;
+        instance->mapping = mapping;
+        instance->held = true;
+        return NK_INSTANCE_ACQUIRED;
+    }
+    NkInstanceResult result = NK_INSTANCE_UNAVAILABLE;
+    if (wait == WAIT_TIMEOUT) {
+        result = NK_INSTANCE_RUNNING;
+        if (mapping) {
+            LONG *owner = (LONG *)MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(LONG));
+            if (owner) {
+                instance->owner_pid = (int)InterlockedCompareExchange(owner, 0, 0);
+                UnmapViewOfFile(owner);
+            }
+        }
+    }
+    if (mapping) CloseHandle(mapping);
+    CloseHandle(mutex);
+    return result;
+}
+
+void nk_platform_single_instance_release(NkSingleInstance *instance) {
+    if (!instance) return;
+    if (instance->held && instance->mutex) ReleaseMutex((HANDLE)instance->mutex);
+    if (instance->mapping) CloseHandle((HANDLE)instance->mapping);
+    if (instance->mutex) CloseHandle((HANDLE)instance->mutex);
+    memset(instance, 0, sizeof(*instance));
+}
+
 /* Reads an environment variable through the wide API as UTF-8. The narrow CRT
  * getenv() yields active-code-page bytes, which strict UTF-8 path consumers refuse. */
 static bool env_get_utf8(const WCHAR *name, char *out_utf8, size_t max_utf8_bytes) {
