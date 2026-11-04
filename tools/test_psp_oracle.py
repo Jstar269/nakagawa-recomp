@@ -3175,6 +3175,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-KERNEL-SEM-001",
                 # The 2026-11-02 acceptance-eligible io-seek-eof run of f484ef58 (#1380).
                 "PSP-IO-EOF-001",
+                # The 2026-11-04 acceptance-eligible io-umd-eof (#1380) and hle-utility-none
+                # (#1386) runs of 999f3ce3.
+                "PSP-IO-EOF-002", "PSP-HLE-UTILITY-NONE-001",
                 # The 2026-10-28 acceptance-eligible ge-sample run of 86e55611 (#282).
                 "PSP-GE-SAMPLE-001",
                 # The 2026-10-29 acceptance-eligible dma-timing runs of 0e40e7d3, 281a21a4 and
