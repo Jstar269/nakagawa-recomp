@@ -327,6 +327,137 @@ static void test_ace(void) {
     }
 }
 
+/* The display rows (#2002): Fullscreen and Frame pacing, offered only when the host fills
+   them in (a zeroed model keeps the page as it was). Fullscreen leads and takes the first
+   focus; both are driven from the keyboard or a controller alone; the page with every row
+   fits every window. */
+static void test_display_rows(void) {
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    NkUi *ui = overlay_ui(1280, 800, 1.0f);
+    NkOverlayModel model = base_model(1280.0f, 800.0f);
+    NkOverlayState state;
+    NkOverlayAction action;
+    if (ui == NULL) return;
+    memset(&state, 0, sizeof(state));
+    nk_overlay_open(&state, NK_OVERLAY_OPEN_USER);
+    state.screen = NK_OVERLAY_SCREEN_SETTINGS;
+    CHECK(!frame_has_text(ui, &state, &model, "Fullscreen"),
+          "a host that cannot change the window's mode gets no Fullscreen row");
+    CHECK(!frame_has_text(ui, &state, &model, "Frame pacing"),
+          "a cap that is neither choice gets no Frame pacing row");
+    model.fullscreen = 1;
+    model.pacing = 1 + NK_OVERLAY_PACING_PSP;
+    CHECK(frame_has_text(ui, &state, &model, "Fullscreen"), "the page offers Fullscreen");
+    CHECK(frame_has_text(ui, &state, &model, "Frame pacing"), "the page offers Frame pacing");
+    CHECK(frame_has_text(ui, &state, &model, "PSP timing") &&
+          frame_has_text(ui, &state, &model, "No extra cap"),
+          "Frame pacing names the launcher's two choices");
+    nk_ui_destroy(ui);
+
+    /* As a person gets there: the menu, then SETTINGS. */
+    ui = overlay_ui(1280, 800, 1.0f);
+    if (ui == NULL) return;
+    memset(&state, 0, sizeof(state));
+    nk_overlay_open(&state, NK_OVERLAY_OPEN_USER);
+    (void)settle(ui, &state, &model);
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_DOWN);
+    (void)frame_with(ui, &state, &model, NK_UI_EV_ACTIVATE, NK_UI_DIR_NONE);
+    CHECK(state.screen == NK_OVERLAY_SCREEN_SETTINGS, "SETTINGS opens the settings page");
+    (void)settle(ui, &state, &model);
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_FULLSCREEN, "Fullscreen is the first row and the default focus");
+
+    action = frame_with(ui, &state, &model, NK_UI_EV_ACTIVATE, NK_UI_DIR_NONE);
+    CHECK(action.kind == NK_OVERLAY_ACT_SET_FULLSCREEN && action.value == 1,
+          "Confirm on a windowed game asks for fullscreen");
+    model.fullscreen = 2;
+    action = frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_RIGHT);
+    CHECK(action.kind == NK_OVERLAY_ACT_NONE, "right on a fullscreen game changes nothing");
+    action = frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_LEFT);
+    CHECK(action.kind == NK_OVERLAY_ACT_SET_FULLSCREEN && action.value == 0,
+          "left puts the game back in its window");
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_FULLSCREEN, "left keeps focus on the Fullscreen row");
+
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_DOWN);
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_SCALING, "down from Fullscreen reaches Game scaling");
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_DOWN);
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_PACING, "down from Game scaling reaches Frame pacing");
+    action = frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_LEFT);
+    CHECK(action.kind == NK_OVERLAY_ACT_NONE, "left on PSP timing changes nothing");
+    action = frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_RIGHT);
+    CHECK(action.kind == NK_OVERLAY_ACT_SET_PACING && action.value == NK_OVERLAY_PACING_UNCAPPED,
+          "right on PSP timing selects No extra cap");
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_PACING, "right keeps focus on the Frame pacing row");
+    model.pacing = 1 + NK_OVERLAY_PACING_UNCAPPED;
+    action = frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_RIGHT);
+    CHECK(action.kind == NK_OVERLAY_ACT_NONE, "right on No extra cap changes nothing");
+    action = frame_with(ui, &state, &model, NK_UI_EV_ACTIVATE, NK_UI_DIR_NONE);
+    CHECK(action.kind == NK_OVERLAY_ACT_SET_PACING && action.value == NK_OVERLAY_PACING_PSP,
+          "Confirm on No extra cap wraps to PSP timing");
+    action = frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_LEFT);
+    CHECK(action.kind == NK_OVERLAY_ACT_SET_PACING && action.value == NK_OVERLAY_PACING_PSP,
+          "left on No extra cap selects PSP timing");
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_DOWN);
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_HUD, "down from Frame pacing reaches the HUD row");
+    action = frame_with(ui, &state, &model, NK_UI_EV_BACK, NK_UI_DIR_NONE);
+    CHECK(action.kind == NK_OVERLAY_ACT_NONE && state.screen == NK_OVERLAY_SCREEN_MENU,
+          "Back from the display rows returns to the menu");
+    nk_ui_destroy(ui);
+
+    {
+        static const struct { int w; int h; float scale; } sizes[] = {
+            {960, 600, 1.0f}, {1280, 800, 1.0f}, {1920, 1200, 1.5f}
+        };
+        for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+            NkUi *fit = overlay_ui(sizes[s].w, sizes[s].h, sizes[s].scale);
+            NkOverlayModel full = base_model((float)sizes[s].w / sizes[s].scale,
+                                             (float)sizes[s].h / sizes[s].scale);
+            NkOverlayState st;
+            const NkUiDrawList *list;
+            bool inside = true;
+            bool clear = true;
+            bool found_card = false;
+            int bar_top = sizes[s].h - (int)(NK_UI_PROMPT_BAR_HEIGHT * sizes[s].scale + 0.5f);
+            int edge = (int)(NK_UI_SAFE_AREA_MIN * sizes[s].scale + 0.5f);
+            if (fit == NULL) continue;
+            full.fullscreen = 2;
+            full.pacing = 1 + NK_OVERLAY_PACING_UNCAPPED;
+            full.ace_readout = 2;
+            memset(&st, 0, sizeof(st));
+            nk_overlay_open(&st, NK_OVERLAY_OPEN_USER);
+            st.screen = NK_OVERLAY_SCREEN_SETTINGS;
+            nk_ui_begin(fit, 0.0);
+            (void)nk_overlay_frame(fit, &st, &full);
+            list = nk_ui_end(fit);
+            for (uint32_t i = 0u; list != NULL && i < list->ncmd; ++i) {
+                const NkUiDrawCmd *cmd = &list->cmd[i];
+                if (cmd->kind == NK_UI_DRAW_SCISSOR_START || cmd->kind == NK_UI_DRAW_SCISSOR_END)
+                    continue;
+                if (cmd->bounds[0] < 0 || cmd->bounds[1] < 0 || cmd->bounds[2] > sizes[s].w ||
+                    cmd->bounds[3] > sizes[s].h) {
+                    inside = false;
+                }
+                /* The card (the one strong-edged border, as test_fits_every_window finds it)
+                   stays inside the safe area and above the prompt bar. */
+                if (cmd->kind == NK_UI_DRAW_BORDER && cmd->rgba_pm == theme->line_strong &&
+                    cmd->bounds[2] - cmd->bounds[0] > sizes[s].w / 4) {
+                    found_card = true;
+                    if (cmd->bounds[0] < edge || cmd->bounds[1] < edge ||
+                        cmd->bounds[2] > sizes[s].w - edge || cmd->bounds[3] > bar_top) {
+                        clear = false;
+                    }
+                }
+            }
+            if (!inside || !found_card || !clear)
+                fprintf(stderr, "  Settings with every row at %dx%d: inside=%d card=%d clear=%d\n",
+                        sizes[s].w, sizes[s].h, inside, found_card, clear);
+            CHECK(list != NULL && inside, "every Settings row fits every window");
+            CHECK(found_card && clear,
+                  "the Settings card with every row stays clear of the edges and the prompt bar");
+            nk_ui_destroy(fit);
+        }
+    }
+}
+
 static void test_controls(void) {
     NkUi *ui = overlay_ui(1280, 800, 1.0f);
     NkOverlayModel model = base_model(1280.0f, 800.0f);
@@ -981,6 +1112,19 @@ static bool build_golden(char *out, size_t cap, size_t *used) {
         model.vram = NULL;
         model.profile = NULL;
     }
+    /* The display rows (#2002), appended so the cases above keep their bytes. */
+    model.developer = false;
+    model.scaling = NK_OVERLAY_SCALING_SHARP;
+    model.hud_on = false;
+    model.fullscreen = 2;
+    model.pacing = 1 + NK_OVERLAY_PACING_PSP;
+    nk_overlay_go(&state, NK_OVERLAY_SCREEN_SETTINGS, NK_OVERLAY_ID_FULLSCREEN);
+    ok = ok && append_case(out, cap, used, "settings-display-rows", ui, &state, &model);
+    narrow.fullscreen = 1;
+    narrow.pacing = 1 + NK_OVERLAY_PACING_UNCAPPED;
+    narrow.ace_readout = 2;
+    nk_overlay_go(&state, NK_OVERLAY_SCREEN_SETTINGS, NK_OVERLAY_ID_FULLSCREEN);
+    ok = ok && append_case(out, cap, used, "settings-display-rows-960x600", small, &state, &narrow);
     nk_ui_destroy(ui);
     nk_ui_destroy(small);
     return ok;
@@ -1150,6 +1294,7 @@ int main(int argc, char **argv) {
     test_menu();
     test_settings();
     test_ace();
+    test_display_rows();
     test_controls();
     test_quit();
     test_pad_lost();

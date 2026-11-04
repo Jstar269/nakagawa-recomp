@@ -372,6 +372,9 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
             ("form_sweep.c", "main"),                   # one AOT instance, $ra = host return (#1844)
         },
         "dispatch_call": {("verify_harness.c", "main")},   # sampled-check harness host entry (#1843)
+        # Generated call sites and the interpreter's handoff only (#1935).
+        "dispatch_call_checked": set(),
+        "dispatch_call_continue": set(),
         "dispatch": {("vfpu_fuzz.c", "check_unaligned_dispatch")},  # the VFPU fallback tag
     }
 
@@ -398,6 +401,7 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
 
     def test_every_host_to_guest_entry_is_an_allowed_helper(self):
         call = re.compile(r"(?<![\w.>])(dispatch_from_host|sr_call_body|dispatch_call_try|"
+                          r"dispatch_call_checked|dispatch_call_continue|"
                           r"dispatch_call|dispatch)\s*\(")
         found = set()
         stray = []

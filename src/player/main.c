@@ -272,6 +272,29 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
     player_take_picked_disc(app, selected_path);
 }
 
+/* Opens the next dropped disc image the way the picker's choice opens, when the player
+   can take one: not while a worker owns the staging or conversion. Later images of a
+   drop wait for the library (player_frame_requests), so each is added in turn. */
+static void player_open_next_dropped_disc(PlayerApp *app) {
+    char path[NK_MAX_PATH];
+    const char *files[2] = { path, NULL };
+    if (app->wizard.is_extracting || app->psn_conversion_active) return;
+    if (!player_app_drop_take(app, path, sizeof(path))) return;
+    on_file_dialog_callback(app, files, 0);
+}
+
+/* The end of a drop, whether SDL bracketed it with begin and complete or sent a lone file: a
+   worker that owns the current game's files ignores it, as a dropped file always was then
+   (nothing waits to open later); otherwise the first disc image opens now. */
+static void player_finish_drop(PlayerApp *app) {
+    player_app_drop_finish(app);
+    if (app->wizard.is_extracting || app->psn_conversion_active) {
+        player_app_drop_discard(app, "a game is being set up");
+        return;
+    }
+    player_open_next_dropped_disc(app);
+}
+
 /* Where a picker opens (player_app_picker_start_folder). SDL keeps reading
    the filters, and may read this, until the dialog's callback runs, so
    neither lives on the stack. */
@@ -895,11 +918,21 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
     case SDL_EVENT_PEN_UP:
         if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         return false;
+    /* Files dropped together arrive one event at a time between a begin and a
+       complete: they are gathered, then opened in turn with one summary (#2007). */
+    case SDL_EVENT_DROP_BEGIN:
+        player_app_drop_begin(app);
+        return true;
     case SDL_EVENT_DROP_FILE:
-        if (event->drop.data) {
-            const char *files[2] = { event->drop.data, NULL };
-            on_file_dialog_callback(app, files, 0);
+        {
+            /* A host that sends no begin and complete delivers a lone file. */
+            const bool in_batch = app->drop_active;
+            if (event->drop.data) player_app_drop_add(app, event->drop.data);
+            if (!in_batch) player_finish_drop(app);
         }
+        return true;
+    case SDL_EVENT_DROP_COMPLETE:
+        player_finish_drop(app);
         return true;
     default:
         return false;
@@ -989,10 +1022,7 @@ static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
             if (player_app_add_game(app, &app->inspecting_game)) {
                 player_app_set_view(app, VIEW_LIBRARY);
             } else {
-                player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
-                                     "The experimental title could not be stored. The library "
-                                     "may be full, or the user data directory is not writable.",
-                                     "Back to library", VIEW_LIBRARY);
+                player_app_set_library_write_error(app);
             }
             break;
         case PLAYER_UI_WIZARD_ACCEPT_FONTS:
@@ -1068,8 +1098,12 @@ static void player_open_link(PlayerApp *app, const char *what, const char *url) 
     }
     if (!SDL_OpenURL(url)) {
         fprintf(stderr, "[PLAYER] %s could not be opened: %s\n", what, SDL_GetError());
-        if (app) player_dev_log_add(app, "error", "%s could not be opened (%s)", what,
-                                    SDL_GetError());
+        if (app) {
+            player_dev_log_add(app, "error", "%s could not be opened (%s)", what,
+                               SDL_GetError());
+            /* Say so on screen, with the address to paste into a browser (#2007). */
+            player_app_set_link_open_error(app, url, SDL_GetError());
+        }
     }
 }
 
@@ -1117,20 +1151,14 @@ static void player_ui_disc_apply(PlayerApp *app, PlayerUiDiscOp op) {
                    up first by the wizard's staging worker; any other title is
                    saved directly. */
                 if (!player_app_add_inspected_game(app)) {
-                    player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
-                                         "The title could not be stored. The library may be full, "
-                                         "or the user data directory is not writable.",
-                                         "Back to library", VIEW_LIBRARY);
+                    player_app_set_library_write_error(app);
                 }
             } else if (app->active_view == VIEW_EXPERIMENTAL_TITLE &&
                        player_preflight_blocking_check(&app->wizard.preflight) == NULL) {
                 if (player_app_add_game(app, &app->inspecting_game)) {
                     player_app_set_view(app, VIEW_LIBRARY);
                 } else {
-                    player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
-                                         "The experimental title could not be stored. The library "
-                                         "may be full, or the user data directory is not writable.",
-                                         "Back to library", VIEW_LIBRARY);
+                    player_app_set_library_write_error(app);
                 }
             }
             break;
@@ -1358,13 +1386,13 @@ static void player_update_shutdown(void) {
     s_update_job = NULL;
 }
 
-static void player_update_open_release_page(const PlayerApp *app) {
+static void player_update_open_release_page(PlayerApp *app) {
     const char *url = app->update.check.newest.page_url;
     /* Only this repository's release pages, as the check verified. */
     if (strncmp(url, NK_UPDATE_RELEASE_PAGE_PREFIX, strlen(NK_UPDATE_RELEASE_PAGE_PREFIX)) != 0) {
         return;
     }
-    player_open_link(NULL, "The release page", url);
+    player_open_link(app, "The release page", url);
 }
 
 /* ---- Problem report (#1849) -----------------------------------------------------------
@@ -1691,6 +1719,12 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             break;
         }
         case PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE: player_update_open_release_page(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_DATA_FOLDER:
+            (void)player_app_request_user_folder(app, NK_PATH_DATA);
+            break;
+        case PLAYER_UI_SETTINGS_OPEN_LOGS:
+            (void)player_app_request_user_folder(app, NK_PATH_LOGS);
+            break;
         case PLAYER_UI_SETTINGS_CYCLE_RESOLUTION: player_app_cycle_resolution_scale(app, 1); break;
         case PLAYER_UI_SETTINGS_TOGGLE_PACING:
             player_app_set_fps_cap(app, app->settings.fps_cap < 0 ? 0 : -1);
@@ -2005,11 +2039,6 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         player_app_prereq_cancel(app);
         return;
     }
-    if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER &&
-        app->active_view == VIEW_PREPARING) {
-        player_app_set_view(app, VIEW_LIBRARY);
-        return;
-    }
     if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER) {
         if (app->last_error.return_view == VIEW_PREREQ_CONSENT &&
             app->prerequisites.phase == PLAYER_PREREQ_FAILED) {
@@ -2065,10 +2094,13 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         player_ui_open_save_folder(app, action->title_index);
     } else if (action->kind == PLAYER_UI_ACTION_REMOVE_CONFIRM) {
         /* Remove from library (#1304): what Nakagawa built goes with it, the
-           saves only when the dialog's box was ticked. */
+           saves and the disc copy (#2003) only when the dialog's box was ticked. */
         char reason[NK_MAX_PATH + 96];
-        if (!player_app_remove_game_and_data(app, index, action->primary == 1,
-                                             reason, sizeof(reason))) {
+        unsigned picked = (unsigned)action->primary;
+        unsigned also = ((picked & PLAYER_UI_REMOVE_ALSO_SAVES) ? PLAYER_REMOVE_ALSO_SAVES : 0u) |
+                        ((picked & PLAYER_UI_REMOVE_ALSO_DISC_COPY) ? PLAYER_REMOVE_ALSO_DISC_COPY
+                                                                    : 0u);
+        if (!player_app_remove_game_and_data(app, index, also, reason, sizeof(reason))) {
             player_app_set_error(app, "REMOVE_FAILED", "The game was not removed", reason,
                                  "Back to library", VIEW_LIBRARY);
         }
@@ -3626,10 +3658,9 @@ static void player_start_prerequisite_operation(PlayerApp *app) {
             "The packaged source/tools folder could not be located. Repair the release source folder, then retry.");
         return;
     }
+    /* The build tools' log goes to the one logs folder (#2003). */
     char log_dir[NK_MAX_PATH];
-    int n = snprintf(log_dir, sizeof(log_dir), "%s%clogs", data_root,
-                     nk_platform_path_separator());
-    if (n < 0 || (size_t)n >= sizeof(log_dir) || !nk_platform_mkdir_p(log_dir)) {
+    if (!player_app_logs_dir(log_dir, sizeof(log_dir))) {
         player_app_prereq_fail(app, "DISK_FULL",
             "The app-data log folder could not be created. Free disk space or check permissions, then retry.");
         return;
@@ -4177,10 +4208,7 @@ static int player_load_library(PlayerRun *run) {
                 fprintf(stderr, "[PLAYER] Could not store %s in the library.\n",
                         app->inspecting_game.disc_id);
                 if (app->launch_headless) return 2;
-                player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
-                                     "The title could not be stored. The library may be full, "
-                                     "or the user data directory is not writable.",
-                                     "Back to library", VIEW_LIBRARY);
+                player_app_set_library_write_error(app);
             } else if (should_store) {
                 player_app_set_view(app, app->inspecting_game.is_experimental
                     ? VIEW_EXPERIMENTAL_TITLE : VIEW_SUPPORTED_TITLE);
@@ -4409,13 +4437,6 @@ static void player_apply_test_view(PlayerApp *app, const char *test_view) {
             snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "ULES99999");
             snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "Unknown PSP game");
             player_app_set_view(app, VIEW_UNSUPPORTED_TITLE);
-        } else if (strcmp(test_view, "preparing") == 0) {
-            /* No preparation pipeline is connected: render honest idle state */
-            app->prep_state.stage = STAGE_IDLE;
-            app->prep_state.completed_items = 0;
-            app->prep_state.total_items = 0;
-            app->prep_state.percentage = 0.0f;
-            player_app_set_view(app, VIEW_PREPARING);
         } else if (strcmp(test_view, "settings") == 0) {
             player_app_set_view(app, VIEW_SETTINGS);
         } else if (strcmp(test_view, "controller") == 0 || strcmp(test_view, "controller_settings") == 0) {
@@ -5057,6 +5078,10 @@ static void player_frame_requests(PlayerRun *run) {
             app->request_file_picker = false;
             trigger_file_picker(run->window, app);
         }
+    }
+    /* The rest of a drop, one disc image whenever the library is showing again. */
+    if (app->active_view == VIEW_LIBRARY && app->drop_next < app->drop_count) {
+        player_open_next_dropped_disc(app);
     }
     if (app->request_font_folder_picker) {
         if (!player_ui_test_active(&run->ui_test)) {

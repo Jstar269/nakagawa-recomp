@@ -2,8 +2,7 @@
  * Copyright (c) 2012- PPSSPP Project
  * Copyright (C) 2026 the Nakagawa Recomp authors
  *
- * Built-in PSP game-decryption key tables (owner decision 2026-10-27,
- * issue #295).
+ * Built-in PSP game-decryption key tables (issue #295).
  *
  * Adapted from PPSSPP (https://github.com/hrydgard/ppsspp) at
  * b4386554795949491a26e51b7d74082bb9b2470f:

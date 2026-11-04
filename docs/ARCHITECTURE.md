@@ -135,7 +135,7 @@ report is an optimizing IR or a production HST switch.
 proving gate and retains its declared evidence class. That gate drives both
 manifests through ProgramImage, analyzer/AOT package generation, and the headless
 production runtime. The fixtures cover the public source route only; broader
-title intake remains tracked in issue #309.
+title intake is tracked in [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
 Generated output from a source-owned profile may be public in principle, but retail
 or private-input-derived AOT remains local, ignored, and outside publication.
 
@@ -789,7 +789,7 @@ Clock ownership:
   time continuous and preserves the VBLANK phase. The RTC epoch is not re-anchored, so guest
   wall time lags host wall time by the accumulated pauses for the rest of the session. A pause
   is not PSP suspend and raises no power callback. Losing focus or minimizing the window does
-  not pause the guest in v0.0.1.
+  not pause the guest.
 
   In the SDL3/Vulkan window, `Esc`, `F1` or the controller's Guide button asks for the pause,
   and so does losing the open controller (`src/rt/gpu_sdl3vk/sdl3vk.c`, `src/rt/gui.c`). The
@@ -803,9 +803,10 @@ Clock ownership:
   or stick still held as the overlay closes stays hidden from the guest until it is let go, so
   the press that resumed never reaches the game as a fresh press (`NkInputGate`,
   `src/core/nk_input_profile.h`). Guide is the pause button only; a profile binding to it has no
-  effect in game. The overlay's screens (resume, settings, controls, quit to library) are in the
-  works under [#1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159); today `Esc`,
-  `F1`, Guide or the controller's back button (East) resumes.
+  effect in game. Builds after v0.0.1 draw the overlay's pages (resume, settings, controls, quit to
+  library) inside the runtime with nk_ui (`src/rt/overlay/`,
+  [#1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159)); in v0.0.1, `Esc`, `F1`,
+  Guide or the controller's back button (East) only resumes.
 - **libc time/gettimeofday** — seconds/usec since the standard Unix epoch, converted from the RTC
   tick. The PSP timezone is a console setting, not the host process timezone. It lives in the
   virtual system registry (`/CONFIG/DATE/time_zone_offset` and `summer_time`), the same keys

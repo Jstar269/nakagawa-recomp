@@ -16,16 +16,21 @@ because they change with every pull request.
 | `src/ui/`, `src/player/ui/` | C | The launcher's newer UI toolkit and the screens built with it. |
 | `src/core/` | C | Code the player and the tools share: reading disc images, decryption, title manifests, starting a game. |
 | `tools/` | Python | Analysis and code generation, the `nk_cli.py` command line, and the test suite (`tools/test_*.py`). |
-| `src/rt/` | C | The runtime: everything linked into each built game, standing in for the PSP's system software and hardware. The `*_selftest.c` files beside it are native self-tests, built only by test targets such as `native-core-tests`. |
-| `tests/` | C | Fuzz targets and shared helpers for native tests. Most native self-tests still live in `src/rt/`. |
+| `src/rt/` | C | The runtime: everything linked into each built game, standing in for the PSP's system software and hardware. |
+| `tests/native/`, `tests/fuzzers/` | C | The native self-tests and their shared helpers, built only by test targets such as `native-core-tests`, and the fuzz targets. |
+| `Makefile`, `mk/` | GNU Make | The build. The top-level `Makefile` includes one `mk/*.mk` file per concern, for example `mk/runtime_sources.mk` (what goes into a game's executable) and `mk/selftests.mk` (the native self-tests). |
 | `build/` | generated | Generated C and objects. Never committed, never edited by hand. |
 
 ## 1. The user adds a disc
 
-The player starts in `main()` in `src/player/main.c`. It loads the user's library and settings
-(`player_app_init` and friends in `src/player/player_state.c`), opens the window, and runs the
-event loop. The library and title screens are drawn by the newer UI in `src/player/ui/`
-(`player_ui_nk_render`); other screens by `ui_render_frame()` in `src/player/ui_renderer.c`.
+The player starts in `main()` in `src/player/main.c`, which reads as four stages: start-up
+(`player_run_init()`, which loads the user's library and settings through `player_app_init` and
+friends in `src/player/player_state.c`), the window (`player_open_window()`), one pass of the event
+loop per frame (`player_frame_events()`, `player_frame_render()` and their neighbours) and
+`player_shutdown()`. The screens are drawn by the newer UI in `src/player/ui/`
+(`player_ui_nk_render`), one file per screen: `scr_library.c`, `scr_title.c`, `scr_settings.c` and
+so on, with `ui_router.c` deciding which one is showing. `src/player/ui_renderer.c` is the older
+renderer: only the UI regression build still draws with it, under `--ui=legacy`.
 The code in `main.c` under `NK_PLAYER_UI_REGRESSION_TEST` is for the UI regression tests only; their
 scripted-event harness is `src/player/player_ui_test.c`, which only the UI-test player build links.
 
@@ -61,8 +66,11 @@ BUILD PACKAGE, `src/player/package_builder.c` finds Python and the build tools a
 lines that command prints as stages and a progress bar. A package that is still valid for the
 same inputs is reused, not rebuilt.
 
-`build-package` hands the title's manifest to `tools/title_codegen_plan.py`, which plans the
-build and then runs the two steps below.
+`_build_package()` in `nk_cli.py` runs the build as named stages, in order: `_package_preflight`,
+`_package_extract`, `_package_identity`, `_package_cache_check`, `_package_codegen`,
+`_package_compile`, `_package_validate` and `_package_promote`. The codegen stage hands the
+title's manifest to `tools/title_codegen_plan.py`, which plans the build and then runs the two
+steps below.
 
 ## 4. Finding the functions: `tools/analyze.py`
 
@@ -74,7 +82,9 @@ only code inside an analyzer-owned span may ever run.
 
 ## 5. Translating MIPS to C: `tools/codegen.py`
 
-`main()` in `tools/codegen.py` turns every function the analyzer found into a C function.
+`main()` in `tools/codegen.py` turns every function the analyzer found into a C function;
+`_translate()` does the work in order (the options, the images, the emitted functions, then the
+files).
 `emit_function()` walks the function's instructions and `effect()` (with `vfpu_effect()` and
 `fpu_effect()` for the coprocessors) gives the C for each one: a register write such as
 `s->r[2] = ...`, a guarded memory access, or a call into the runtime. A branch becomes a `goto`

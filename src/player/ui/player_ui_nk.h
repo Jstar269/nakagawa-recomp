@@ -111,7 +111,9 @@ typedef enum {
     PLAYER_UI_ACTION_OPEN_NOTICES,
     PLAYER_UI_ACTION_REMOVE_TITLE,         /* the title page asks to remove it (#1304) */
     PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES,  /* the confirm screen's saves box */
-    PLAYER_UI_ACTION_REMOVE_CONFIRM,       /* remove it; .primary is 1 to delete saves */
+    PLAYER_UI_ACTION_REMOVE_TOGGLE_DISC_COPY, /* its decrypted files and disc copy box */
+    /* remove it; .primary holds PLAYER_UI_REMOVE_ALSO_* for what goes with it */
+    PLAYER_UI_ACTION_REMOVE_CONFIRM,
     PLAYER_UI_ACTION_STALL_KEEP_WAITING,
     PLAYER_UI_ACTION_STALL_STOP_GAME,
     PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER, /* fix a package-build preflight blocker */
@@ -547,7 +549,9 @@ typedef enum {
     PLAYER_UI_SETTINGS_TOGGLE_ACE_SMOOTH,    /* smooth motion: Off, On (x2) */
     PLAYER_UI_SETTINGS_OPEN_PROBLEM_REPORT,  /* Settings > Problem report: lists the files */
     PLAYER_UI_SETTINGS_CREATE_REPORT,        /* write the bundle on this PC */
-    PLAYER_UI_SETTINGS_OPEN_REPORT_FOLDER
+    PLAYER_UI_SETTINGS_OPEN_REPORT_FOLDER,
+    PLAYER_UI_SETTINGS_OPEN_DATA_FOLDER,     /* the folder holding the library, games and settings */
+    PLAYER_UI_SETTINGS_OPEN_LOGS             /* the folder holding the logs */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_REPORT_LINES 24u   /* PLAYER_REPORT_MAX_FILES */
@@ -911,6 +915,7 @@ enum {
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
+    PLAYER_UI_ID_REMOVE_DISC_COPY = 0x4404u,
     PLAYER_UI_ID_STOP_KEEP = 0x4411u,
     PLAYER_UI_ID_STOP_CONFIRM = 0x4412u,
     PLAYER_UI_ID_TAB_LIBRARY = 0x0F01u,
@@ -982,6 +987,8 @@ enum {
     PLAYER_UI_ID_SETTINGS_PROBLEM_REPORT = 0x4550u,   /* Settings: opens the Problem report page */
     PLAYER_UI_ID_REPORT_CREATE = 0x4551u,
     PLAYER_UI_ID_REPORT_FOLDER = 0x4552u,
+    PLAYER_UI_ID_SETTINGS_OPEN_DATA_FOLDER = 0x4553u, /* Settings: shows the data folder */
+    PLAYER_UI_ID_SETTINGS_OPEN_LOGS = 0x4554u,        /* Settings: shows the logs folder */
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the control, 0-18 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
@@ -1070,6 +1077,9 @@ PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model)
 
 /* Remove from library (#1304): what goes, with sizes, and the saves box. */
 #define PLAYER_UI_REMOVE_ITEM_CAP 4u
+/* What a confirmed removal also deletes, in PLAYER_UI_ACTION_REMOVE_CONFIRM's .primary. */
+#define PLAYER_UI_REMOVE_ALSO_SAVES 1u
+#define PLAYER_UI_REMOVE_ALSO_DISC_COPY 2u
 typedef struct {
     const char *label;          /* "Built package" */
     uint64_t bytes;
@@ -1084,6 +1094,10 @@ typedef struct {
     bool has_saves;             /* the game has saves; false hides the saves box */
     uint64_t saves_bytes;
     bool delete_saves;          /* the saves box; off until the user ticks it */
+    /* The decrypted files and the disc copy Nakagawa made (#2003); false hides the box. */
+    bool has_disc_copy;
+    uint64_t disc_copy_bytes;
+    bool delete_disc_copy;      /* that box; off until the user ticks it */
     /* Another image in the library has this disc ID and uses its folders and
        saves: only the record goes, and the dialog says so. */
     bool files_shared;

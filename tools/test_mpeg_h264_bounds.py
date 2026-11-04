@@ -164,7 +164,12 @@ class TestMpegYcbcrContracts(unittest.TestCase):
         decode = block[block.index("uint32_t mpeg_avc_decode_ycbcr") : block.index("uint32_t mpeg_avc_decode_stop_ycbcr")]
         self.assertIn("SR_H264_TARGET_HOST_YUV", decode)
         self.assertIn("ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height, &bytes)", decode)
-        self.assertIn("ycbcr_picture_set(mpegAddr, bytes, au_read_pts(auAddr));", decode)
+        # A picture carries the time of the access unit it was decoded from, one call earlier
+        # (MPEG_YCBCR_DECODE_LAG, measured in PSP-MPEG-001).
+        self.assertIn("ycbcr_au_push(ctx, au_read_pts(auAddr));", decode)
+        self.assertIn("const int want = ctx->ycbcrWant - ctx->ycbcrLag;", decode)
+        self.assertIn("ycbcr_picture_set(mpegAddr, bytes, pts);", decode)
+        self.assertIn("#define MPEG_YCBCR_DECODE_LAG 1", block)
         self.assertIn("MEM_W32(initAddr, 1u);", decode)
         store = block[block.index("static uint32_t ycbcr_store_picture") : block.index("uint32_t mpeg_avc_decode_ycbcr")]
         self.assertIn("MEM_W32(buf, h / 16u);", store)

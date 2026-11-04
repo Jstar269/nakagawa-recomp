@@ -148,12 +148,11 @@
     "tools/verify_key_scrub.py": 1,
     "tools/verify_sbom.py": 7,
     "tools/verify_vfpu_provenance.py": 2,
-    "tools/vfpu_coverage_report.py": 20,
     "tools/vfpu_fuzz_gen.py": 1
   },
   "mypy_version": "2.1.0",
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 601
+  "total_errors": 581
 }

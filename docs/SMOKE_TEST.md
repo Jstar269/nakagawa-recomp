@@ -79,7 +79,7 @@ moves or deletes it.
 2. Check that the game card and checklist report `ENCRYPTED_EXECUTABLE` (or `ENCRYPTED_MODULE`) and name `%LOCALAPPDATA%\Nakagawa\data\titles\<DISC_ID>\decrypted`, and that nothing is written to that folder.
 3. If the showcase image is the only one you have, record this step as **NOT RUN**: its plain program file doesn't go through the encrypted path.
 
-**Expected result:** Pass when the encrypted test file stops with the named message. The command-line build doesn't decrypt anything; the player decrypts when it checks a disc ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+**Expected result:** Pass when the encrypted test file stops with the named message. The command-line build doesn't decrypt anything; the player decrypts when it checks a disc ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)).
 
 ### Step 8: BUILD PACKAGE and prerequisite consent
 
@@ -123,11 +123,11 @@ moves or deletes it.
 
 ### Step 13: Log and report locations to attach
 
-1. Open the build log folder: `%LOCALAPPDATA%\Nakagawa\data\logs`.
+1. Open the player's logs folder, `%LOCALAPPDATA%\Nakagawa\logs` (or **Settings > Open logs**).
 2. If you started a build, collect:
    - the build progress log, `build_<DISC_ID>_progress.jsonl`;
    - the detailed build log, `build_<DISC_ID>.log`.
-3. If you played a game, collect `game-<DISC_ID>-last.txt` from the player's logs folder, `%LOCALAPPDATA%\Nakagawa\logs`: the output of the last game session, kept after the game exits.
+3. If you played a game, collect `game-<DISC_ID>-last.txt` from the same folder: the output of the last game session, kept after the game exits.
 4. If you started the player from PowerShell, copy its console output too.
 
 **Expected result:** Pass if the build logs exist for any build you started. Before you attach them, check that they contain nothing private: no disc images, no game files, and no personal paths you don't want to share.

@@ -124,7 +124,7 @@ static inline int ge_tex_mip_active(const GeState *g) {
     return (g->tex_filter & 4u) != 0u && g->tex_max_level > 0u;
 }
 
-/* The GE's level arithmetic, measured on a PSP-3000 (PSP-GE-MIP-001, #1373; 55 of its 57
+/* The GE's level arithmetic, measured on a PSP-3000 (PSP-GE-MIP-001, #1373; all 66 of its
  * cells, docs/HARDWARE_ORACLE.md). A level of detail is an integer in 1/16 levels. Its
  * logarithm is the float's exponent and top four mantissa bits, log2(1 + m) taken as m:
  * 1.5 and 3 texels per pixel give 0.5 and 1.5 levels, not 0.585 and 1.585. The sign bit is

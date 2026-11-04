@@ -586,12 +586,12 @@ if(BUILD_PLAYER)
     endif()
 
     if(NOT SDL3_FOUND AND NK_BOOTSTRAP_SDL3)
-        message(STATUS "System SDL3 not found; bootstrapping pinned official release SDL3 3.4.18")
+        message(STATUS "System SDL3 not found; bootstrapping pinned official release SDL3 3.4.20")
         include(FetchContent)
         FetchContent_Declare(
             SDL3
-            URL "https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz"
-            URL_HASH SHA256=9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
+            URL "https://github.com/libsdl-org/SDL/releases/download/release-3.4.20/SDL3-3.4.20.tar.gz"
+            URL_HASH SHA256=f3bb06f55bed9557227a700af2ea62e49497ebdf58037732a731a5fb3ef8581f
         )
         set(SDL_TEST OFF CACHE BOOL "" FORCE)
         set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -694,8 +694,29 @@ if(BUILD_PLAYER)
         set_target_properties(nakagawa_player PROPERTIES WIN32_EXECUTABLE TRUE)
         # The app icon; SDL gives every window the executable's first icon group (see the
         # Makefile PLAYER_ICON_OBJ note). Other systems set it at run time instead.
+        # The VERSIONINFO that names the player in Task Manager comes from the same generated
+        # script the Makefile compiles (tools/make_app_icon.py); without Python the
+        # player keeps the icon alone and Windows shows its file name.
         enable_language(RC)
-        target_sources(nakagawa_player PRIVATE assets/brand/nakagawa.rc)
+        find_package(Python3 COMPONENTS Interpreter)
+        if(Python3_FOUND)
+            set(NK_PLAYER_RC "${CMAKE_CURRENT_BINARY_DIR}/nakagawa_icon.rc")
+            add_custom_command(
+                OUTPUT "${NK_PLAYER_RC}"
+                COMMAND "${Python3_EXECUTABLE}" tools/make_app_icon.py
+                        --version-rc "${NK_PLAYER_RC}" --original-filename nakagawa_player.exe --player
+                DEPENDS tools/make_app_icon.py src/player/ui/player_ui_nk.h
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                VERBATIM
+            )
+            set_source_files_properties("${NK_PLAYER_RC}" PROPERTIES OBJECT_DEPENDS
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/brand/nakagawa.rc;${CMAKE_CURRENT_SOURCE_DIR}/assets/brand/nakagawa.ico")
+            # The generated script includes nakagawa.rc, which names the icon beside it.
+            target_include_directories(nakagawa_player PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/assets/brand")
+            target_sources(nakagawa_player PRIVATE "${NK_PLAYER_RC}")
+        else()
+            target_sources(nakagawa_player PRIVATE assets/brand/nakagawa.rc)
+        endif()
         if(DEFINED ENV{VULKAN_SDK})
             target_include_directories(nakagawa_player PRIVATE
                 "$ENV{VULKAN_SDK}/Include"

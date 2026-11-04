@@ -21,8 +21,8 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
    - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, asynchronous extraction metrics, settings, and structured recovery actions.
    - `setup_staging.c` / `setup_staging.h`: Native worker-facing staging boundary that keeps cancellation/progress separate from SDL and invokes the source-owned ISO/XB layers.
-   - The optional local bridge discovers named plain support PRXs the user has already placed in a recognized local folder and stages them under `EXTRACTED/decrypted/`. The player decrypts a disc's encrypted executable and modules into the per-title folder (#295); one it can't decrypt and with no user-supplied plain copy there fails closed as `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` with a named result
-     ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+   - The optional local bridge discovers named plain support PRXs the user has already placed in a recognized local folder and stages them under `EXTRACTED/decrypted/`. The player decrypts a disc's encrypted executable and modules into the per-title folder (#1494); one it can't decrypt and with no user-supplied plain copy there fails closed as `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` with a named result
+     ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)).
    - `ui_renderer.c` / `ui_renderer.h`: the first SDL3 renderer (Dark Court palette, card layouts, scaled text, offscreen screenshots), now legacy.
    - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), reactive SDL worker notifications, gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
    - `nk_xb.c` / `nk_xb.h`: Project-authored bounded XB FST parser and native LZS/Huffman/nested tag-0 decoder; no `third_party/libxb` dependency.
@@ -89,7 +89,6 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 | ISO Inspecting | `native_03_iso_inspecting.png` | 1280×720 | Captured with no `--iso=`, so the inspector renders "No disc image selected" and a cancel action. With a disc it shows an indeterminate indicator: this build's inspector reports no percentage |
 | Recognized Title | `native_04_supported_game.png` | 1280×720 | The synthetic fixture `TEST00001`, which is what `--view=supported` populates — no retail disc is involved; honest LLE font requirement note |
 | Unsupported Title | `native_05_unsupported_game.png` | 1280×720 | Fail-closed boundary preventing unregistered execution |
-| Legacy Preparation View | `native_06_preparing.png` | 1280×720 | "No preparation pipeline is connected in this build" remains an honest unavailable state; it is reachable today only as the captured `--view=preparing` input, while wizard Step 3 has a separate bounded staging progress view |
 | Ready Library | `native_07_ready_library.png` | 1280×720 | Hero game card with "PLAY NOW" & Quick Specs Rail |
 | Settings Dialog | `native_08_settings.png` | 1280×720 | Live resolution/FPS presets, display toggles, reduce-motion switch and volume stepper (persisted to settings.json); keyboard/gamepad focus on every control; single-column flow on narrow windows |
 | Visual Craft | n/a | all | Runtime system-font typography (SDL3_ttf dlopen, zero bundled fonts, DebugText fallback), rounded cards/buttons/pills with shadows, disc ICON0.PNG runtime texture extraction with monogram fallback, dimmed PIC1.PNG hero backdrop, density-aware raster |
@@ -166,7 +165,7 @@ vblanks, so the guest-visible frame checkpoint is readable without a display.
 source-owned display guest: the BUILD PACKAGE action
 (`package_builder_start` → `tools/nk_cli.py build-package`, real analysis,
 codegen and compilation), the player's own package validator, the headless
-launch, two named missing-prerequisite boundaries ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)
+launch, two named missing-prerequisite boundaries ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)
 decrypted inputs, [#296](https://github.com/Jstar269/nakagawa-recomp/issues/296)
 `--psp-header`), and a before/after check that the route changed no
 repository-tracked file.

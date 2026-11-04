@@ -50,6 +50,7 @@
     X("SR_CALLCOUNT_ALL", "flag-presence", "off (top 18 NIDs listed)", "hle.c", "Makes the HLE call-count report list every distinct NID instead of the top 18.") \
     X("SR_CBLOG", "flag-presence", "off", "debug.h,hle.c,hle_kernel_module.c,hle_kernel_thread.c,hle_umd.c", "Logs kernel callback creation, notification and registration events and enables the misc debug class.") \
     X("SR_CBSNAP", "flag-presence", "off", "sched.c", "Diagnostic switch read in sched.c that enables callback snapshots at each delivered vblank.") \
+    X("SR_CODE_CAPTURE", "path", "unset (no capture written)", "recomp.c", "Folder to which a run stopped by a call into unowned RAM writes the code around the target, for tools/code_capture.py (#1933).") \
     X("SR_DATAROOT", "path", "unset", "hle_thread_selftest.c", "Extracted data root directory used to serve guest files from the host; the self-test saves and restores it.") \
     X("SR_DEBUG", "list", "unset (legacy per-subsystem variables decide)", "debug.h,hle.c", "Bitmask (strtoul, base 0) selecting debug log categories; 0x08 also enables GE display-list dumping.") \
     X("SR_DEBUG_THREAD_LOG", "flag-presence", "off", "hle_kernel_interrupt.c", "Diagnostic switch read in hle_kernel_interrupt.c for thread and interrupt logging.") \
@@ -167,6 +168,7 @@
     X("SR_PCSAMPLE", "flag-presence", "off", "sched.c", "When set, enables scheduler PC sampling.") \
     X("SR_PERF", "flag-nonzero", "off", "perf.c", "Enables runtime performance counters with stderr reporting; an explicit 0 also keeps CSV/JSON output off.") \
     X("SR_PERF_CSV", "path", "unset (no CSV)", "perf.c", "File the performance counters are written to as CSV; setting it enables perf collection.") \
+    X("SR_PERF_FRAMES", "path", "unset: no per-frame file", "perf.c", "File that gets one CSV row per new game frame: its host work, wall time and the cost by area; setting it enables perf collection.") \
     X("SR_PERF_JSON", "path", "unset: no JSON performance file", "perf.c", "File path to which the performance recorder writes its JSON report.") \
     X("SR_PIXWHO", "list", "unset", "ge.c", "Comma pair x,y selecting a pixel whose writers are reported.") \
     X("SR_PPM_DUMP", "path", "unset (no dump)", "driver.c", "Output file path for a 64x64 PPM dump of the framebuffer at exit.") \
