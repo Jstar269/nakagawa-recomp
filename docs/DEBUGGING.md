@@ -7,6 +7,9 @@ switches that are added for a focused investigation and have not yet been promot
 
 ## Quick Start
 
+These examples run the Hot Shots Tennis developer build in `build\hst`, which needs your own copy of the
+game and its title manifest; any other runtime takes the same variables.
+
 ```powershell
 # Enable all debug categories
 $env:SR_DEBUG = "0xFF"
@@ -171,8 +174,8 @@ The summary fields mean:
   VFS byte/read/failure counters. `media` counts H.264 and ATRAC decode calls, elapsed time, and
   failures. If the host H.264 backend is unavailable, the runtime reports its named boundary
   (`H.264 backend unavailable; in the works (#283)`) instead of manufacturing a decode result.
-  `audio` separates SAS mix time from host output-enqueue time and frames; unavailable public audio
-  output remains an explicit product boundary (#301).
+  `audio` separates SAS mix time from host output-enqueue time and frames; public builds play sound through
+  SDL3 (#301), and with no output device the game runs silently.
 
 For exact AOT instruction counts, rebuild generated chunks with the compile-time profile:
 
