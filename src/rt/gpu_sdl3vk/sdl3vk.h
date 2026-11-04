@@ -257,6 +257,13 @@ int  sdl3vk_present_overlay(const void *px, int pitch);
 /* Frees the overlay image when the pause ends. */
 void sdl3vk_overlay_release(void);
 int  sdl3vk_window_minimized(void);
+/* The game window's fullscreen state: 1 fullscreen, 0 windowed, -1 when it cannot change mode
+ * (no window, a hidden one, or a platform whose windows are always fullscreen). */
+int  sdl3vk_fullscreen(void);
+/* Makes the window fullscreen (desktop mode, on the display it is on) or windowed, for the rest
+ * of the run (the pause overlay's Fullscreen row, #2002). Returns 1 when the window took the
+ * mode, 0 when it could not (the reason goes to stderr). */
+int  sdl3vk_set_fullscreen(int on);
 /* Waits until an event is queued or timeout_ms passes, without taking the event. */
 void sdl3vk_wait_events(uint32_t timeout_ms);
 /* The SR_PRESENT_SCALING mode in use (SDL3VK_SCALING_*). */
