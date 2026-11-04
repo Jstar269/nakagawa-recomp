@@ -2282,10 +2282,10 @@ class TestEnhancementStoreSites(unittest.TestCase):
             self.assertEqual((res.returncode, res.stderr), (0, ""))
 
     def test_every_runtime_exit_path_reaches_the_end_of_process_reports(self) -> None:
-        """A store site's NOT_REACHED report runs from sr_perf_shutdown() or
-        sr_process_end_reports(); every _Exit/_exit in the runtime calls one of them first."""
+        """A store site's NOT_REACHED report runs from sr_perf_shutdown(); every _Exit/_exit
+        in the runtime calls it first. HLE self-tests that do not link perf.c stub it."""
         exit_call = re.compile(r"\b_(?:Exit|exit)\(")
-        report = re.compile(r"\bsr_(?:perf_shutdown|process_end_reports)\(\);")
+        report = re.compile(r"\bsr_perf_shutdown\(\);")
         # verify_harness.c is its own program (#1843): it runs a synthetic module with no
         # enhancement package and does not link perf.c, so it has no store sites to report.
         not_the_runtime = {"verify_harness.c"}

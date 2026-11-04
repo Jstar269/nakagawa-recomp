@@ -1246,7 +1246,7 @@ void sr_at_process_end(void (*report)(void)) {
     s_process_end[s_process_end_count++] = report;
 }
 
-void sr_process_end_reports(void) {
+static void sr_process_end_reports(void) {
     for (unsigned i = 0; i < s_process_end_count; i++) {
         void (*report)(void) = s_process_end[i];
         s_process_end[i] = NULL;
