@@ -404,6 +404,33 @@ not matched yet. The list is derived from a title's code, so keep it with the ti
 build inputs and out of the repository. A changed list is not a Makefile prerequisite, so
 rebuild the title's `_recomp.c` after merging.
 
+**Code a game installs at run time (#1933).** Some games copy code into their BSS or heap from their
+own data files and call it. No translation covers that code, so the call stops as
+`target-not-executable`, and no interpreter runs it (the PR #118 floor). Setting
+`SR_CODE_CAPTURE=<folder>` makes such a stop also write one capture to the folder, and print one more
+line, `CODE_CAPTURE: wrote code_capture_<target>_<digest>.nkcap [lo,hi) target=...`. The capture
+holds the target and the main RAM around it, up to 64 KiB on each side, that no executable span and
+no bound module owns. The run still stops. Rebuild with the folder:
+
+```powershell
+python tools/code_capture.py info <folder>           # the images the captures make
+#   codegen.py ... --code-capture=<folder>           (Makefile: CODEGEN_USER_ARGS=--code-capture=<folder>)
+```
+
+Captures that overlap and agree byte for byte become one image. Each image is translated as an ELF type
+0xFFA8 overlay at its own address. Its analysis is seeded only from the addresses the runs called, so a
+word that only looks like code is never translated. The translation's identity is the words it
+translated, as for the overlays of #1938. At instruction-cache maintenance the runtime binds it only
+while memory holds exactly those words (`CODE_OVERLAY_BOUND`). The data around the code does not
+matter. When one of those words differs, the translation is unbound, and a call there stops again and
+writes a capture of the new bytes. Captures of the same address with different bytes stay separate
+images, and they swap as memory changes. A captured target the build cannot translate is named
+(`captured target 0x... has no translation`), and a call to it still stops by name.
+
+A capture holds bytes of your own game: keep the folder with the title's other private files. The
+repository ignores `*.nkcap`, and a capture is never committed or published.
+`mingw32-make code-capture-selftest` runs the whole loop on a synthetic routine.
+
 The share is a time share. It overstates the interpreter's share of instructions, because the
 interpreter is slower per instruction. The exact instruction share still needs a
 `PERF_AOT_INSTRUCTIONS=1` build with `SR_PERF=1`. Time is charged to the tier that is running. A
