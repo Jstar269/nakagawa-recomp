@@ -2106,15 +2106,97 @@ class TestEnhancementRateComparison(unittest.TestCase):
         self.assertEqual(whole["events"][0]["verdict"], "PASS")
         self.assertGreater(whole["events"][0]["stock"], 30)
 
-    def test_unusable_steps_count_nothing(self) -> None:
-        # An unreadable vblank, a repeated vblank and an empty cell each drop their steps.
-        (self.tmp / "s.csv").write_text("vblank,updates,flag\n1,0,0\nx,1,0\n3,2,\n3,3,1\n5,4,1\n7,5,\n9,6,2\n",
+    def test_a_failing_phase_fails_a_run_whose_totals_pass(self) -> None:
+        # Phase 1 (120 s) is rescaled right; phase 2 (20 s) runs its event at the stock period, so
+        # twice as often per game second. The totals dilute it; the phase row must still fail.
+        boundary = round(120 * 60000 / 1001)
+        n_b = (boundary * 60 * 1001) // 60000
+
+        def mode(n: int, v: int) -> str:
+            return "1" if v < boundary else "2"
+
+        def enhanced_count(n: int, v: int) -> str:
+            return str(n // 18 if v < boundary else n_b // 18 + (n - n_b) // 9)
+
+        rc, text, data = self._run({"mode": mode, "hits": lambda n, v: str(n // 9)},
+                                   {"mode": mode, "hits": enhanced_count},
+                                   "--phase", "mode", "--event", "count:hits", seconds=140)
+        whole, first, second = data["report"]["phases"]
+        self.assertEqual(whole["events"][0]["verdict"], "PASS", text)
+        self.assertEqual(first["events"][0]["verdict"], "PASS", text)
+        self.assertEqual(second["events"][0]["verdict"], "FAIL", text)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("rates: FAIL (1 event(s): 1 result(s) differ [2 count:hits]", text)
+
+    def test_a_truncated_or_one_sided_run_is_incomplete(self) -> None:
+        serves = {"serves": lambda n, v: str(n // 45)}
+        rc, text, data = self._run(serves, {"serves": lambda n, v: str(n // 90)}, "--event", "count:serves")
+        self.assertEqual(rc, 0, text)
+        # The enhanced capture stops halfway: its rates still agree, but it covers half the route.
+        _sample_csv(self.tmp / "stock.csv", hz=30, seconds=60, columns=serves)
+        _sample_csv(self.tmp / "enh.csv", hz=60, seconds=30, columns={"serves": lambda n, v: str(n // 90)})
+        out = StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = enhancement_package.main(["--compare-rates", str(self.tmp / "stock.csv"),
+                                           str(self.tmp / "enh.csv"), "--event", "count:serves"])
+        self.assertEqual(rc, 2, out.getvalue())
+        self.assertIn("the shorter run covers 50% of the longer one's game time (below 90%)", out.getvalue())
+        # A phase that runs logic in one run only means the runs did not follow the same route.
+        rc, text, data = self._run({"mode": lambda n, v: "1", **serves},
+                                   {"mode": lambda n, v: "1" if v < 3000 else "2",
+                                    "serves": lambda n, v: str(n // 90)},
+                                   "--phase", "mode", "--event", "count:serves")
+        self.assertEqual(rc, 2, text)
+        self.assertEqual(data["report"]["one_sided_phases"], ["2"])
+
+    def test_repeated_rows_are_skipped_and_empty_cells_scope_the_event(self) -> None:
+        # The sampler can write one vblank twice: an exact repeat is skipped and counted. An empty
+        # event cell leaves that step out of the event's count and out of its game time.
+        (self.tmp / "s.csv").write_text("vblank,updates,flag\n1,0,0\n2,1,0\n2,1,0\n3,2,1\n4,3,\n5,4,1\n",
                                         encoding="utf-8")
         rows = enhancement_package.load_sample_rows(self.tmp / "s.csv", ["updates", "flag"])
         m = enhancement_package.measure_rates(rows, updates="updates", nominal_hz=30,
                                               events=[enhancement_package.parse_rate_event("change:flag")])
         b = m["phases"]["all"]
-        self.assertEqual((b["vblanks"], b["updates"], b["events"]["change:flag"]), (6, 3, 0))
+        self.assertEqual((m["duplicate_rows"], m["empty_steps"]["change:flag"]), (1, 2))
+        self.assertEqual((b["vblanks"], b["updates"], b["events"]["change:flag"]), (4, 4, 1))
+        self.assertEqual(b["event_updates"]["change:flag"], 2)
+
+    def test_a_capture_that_loses_time_refuses(self) -> None:
+        cases = (
+            ("vblank,updates\n1,0\nx,1\n", r"s.csv:3: column vblank: 'x' is not an integer"),
+            ("vblank,updates\n1,0\n1,1\n", r"s.csv:3: vblank 1 does not follow vblank 1 with new values"),
+            ("vblank,updates\n2,0\n1,1\n", r"s.csv:3: vblank 1 does not follow vblank 2"),
+            ("vblank,updates\n1,0\n2,\n", r"s.csv:3: no updates value"),
+            ("vblank,updates,serves\n1,0,0\n2,1,two\n", r"s.csv:3: column serves: 'two' is not an integer"),
+        )
+        for body, why in cases:
+            (self.tmp / "s.csv").write_text(body, encoding="utf-8")
+            columns = ["updates"] + (["serves"] if "serves" in body else [])
+            rows = enhancement_package.load_sample_rows(self.tmp / "s.csv", columns)
+            events = [enhancement_package.parse_rate_event("count:serves")] if "serves" in body else []
+            with self.subTest(why=why), self.assertRaisesRegex(EnhancementPackageError, why):
+                enhancement_package.measure_rates(rows, updates="updates", nominal_hz=30, events=events,
+                                                  source=str(self.tmp / "s.csv"))
+
+    def test_bad_inputs_and_options_give_a_rates_fail_line(self) -> None:
+        _sample_csv(self.tmp / "good.csv", hz=30, seconds=1, columns={"serves": lambda n, v: str(n // 9)})
+        (self.tmp / "latin1.csv").write_bytes(b"vblank,updates\n1,\xe9\n")
+        good, event = str(self.tmp / "good.csv"), ["--event", "count:serves"]
+        cases = (
+            ([str(self.tmp / "missing.csv"), good, *event], "cannot read the sample file"),
+            ([str(self.tmp / "latin1.csv"), good], "cannot read the sample file"),
+            ([good, good, *event, "--stock-hz", "0"], "the nominal rate must be a positive number"),
+            ([good, good, *event, "--enhanced-hz", "nan"], "the nominal rate must be a positive number"),
+            ([good, good, *event, "--lcg-limit", "0"], "--lcg-limit must be at least 1"),
+            ([good, good, *event, "--min-coverage", "2"], r"--min-coverage must lie in \[0, 1\]"),
+        )
+        for argv, why in cases:
+            err = StringIO()
+            with self.subTest(why=why), mock.patch("sys.stderr", err), mock.patch("sys.stdout", StringIO()):
+                rc = enhancement_package.main(["--compare-rates", *argv])
+                self.assertEqual(rc, 1)
+                self.assertRegex(err.getvalue(), "rates: FAIL: .*" + why)
 
     def test_bad_sample_files_refuse(self) -> None:
         for body, why in (("", "empty sample file"), ("frame,updates\n1,0\n", "first column must be vblank"),

@@ -1867,6 +1867,7 @@ RATE_EVENT_KINDS = ("count", "change", "lcg")
 RATE_MIN_EVENTS = 20
 RATE_Z = 2.576  # two-sided 99 %
 RATE_SLOWED_BELOW = 57.0  # the runtime's ENHANCEMENT_LOGIC_SLOWED threshold (section 9.5, item 4)
+RATE_MIN_COVERAGE = 0.9   # the shorter run must cover this share of the longer run's game time
 
 
 def parse_rate_event(spec: str) -> dict[str, Any]:
@@ -1905,7 +1906,10 @@ def parse_rate_event(spec: str) -> dict[str, Any]:
 
 def load_sample_rows(path: Path | str, columns: Sequence[str]) -> list[dict[str, str]]:
     """Read an ``SR_SAMPLE_OUT`` CSV (``vblank,<label>...``) and check that it names ``columns``."""
-    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise EnhancementPackageError(f"{path}: cannot read the sample file ({exc})") from None
     if not lines:
         raise EnhancementPackageError(f"{path}: empty sample file")
     header = lines[0].split(",")
@@ -1936,56 +1940,93 @@ def _lcg_steps(a: int, c: int, bits: int, start: int, end: int, limit: int) -> i
 
 def measure_rates(rows: Sequence[Mapping[str, str]], *, updates: str, nominal_hz: float,
                   phase: str | None = None, events: Sequence[Mapping[str, Any]] = (),
-                  lcg_limit: int = 4096) -> dict[str, Any]:
+                  lcg_limit: int = 4096, source: str = "samples") -> dict[str, Any]:
     """Count logic updates, vblanks and events per phase of one sampled run.
 
-    A step from one sample to the next belongs to the phase of the earlier sample. A step with an
-    empty cell in a column it needs counts nothing for that column. The updates counter is read as
-    an unsigned 32-bit count, so it may wrap.
+    A step from one sample to the next belongs to the phase of the earlier sample. A row that
+    repeats the previous row exactly (the sampler wrote one vblank twice) is skipped and counted.
+    Anything else that would lose time refuses the file: a vblank that is not an integer, does not
+    increase, or repeats with different values, and a row without the updates counter. An event
+    counts only over the steps where its column has a value on both sides, and its game time is
+    the updates of those same steps, so an unreadable stretch biases neither side. The updates
+    counter is read as an unsigned 32-bit count, so it may wrap.
     """
+    if not math.isfinite(nominal_hz) or nominal_hz <= 0:
+        raise EnhancementPackageError(f"{source}: the nominal rate must be a positive number, got {nominal_hz!r}")
+    if lcg_limit < 1:
+        raise EnhancementPackageError(f"--lcg-limit must be at least 1, got {lcg_limit}")
     phases: dict[str, dict[str, Any]] = {}
+    specs = [e["spec"] for e in events]
 
     def bucket(name: str) -> dict[str, Any]:
         if name not in phases:
-            phases[name] = {"vblanks": 0, "updates": 0,
-                            "events": {e["spec"]: 0 for e in events}, "unresolved": {e["spec"]: 0 for e in events}}
+            phases[name] = {"vblanks": 0, "updates": 0, "events": dict.fromkeys(specs, 0),
+                            "event_updates": dict.fromkeys(specs, 0), "unresolved": dict.fromkeys(specs, 0)}
         return phases[name]
 
-    per_second: dict[int, int] = {}
-    for prev, cur in zip(rows, rows[1:], strict=False):
+    def number(index: int, column: str) -> int:
+        text = rows[index][column]
         try:
-            dv = int(cur["vblank"]) - int(prev["vblank"])
+            return int(text)
         except ValueError:
+            raise EnhancementPackageError(
+                f"{source}:{index + 2}: column {column}: {text!r} is not an integer") from None
+
+    kept: list[int] = []
+    duplicates = 0
+    for i, row in enumerate(rows):
+        if kept and row == rows[kept[-1]]:
+            duplicates += 1
             continue
-        if dv <= 0:
-            continue
+        vblank = number(i, "vblank")
+        if kept and vblank <= int(rows[kept[-1]]["vblank"]):
+            raise EnhancementPackageError(
+                f"{source}:{i + 2}: vblank {vblank} does not follow vblank {rows[kept[-1]]['vblank']} with "
+                "new values; the file is not one clean capture")
+        if not row[updates]:
+            raise EnhancementPackageError(
+                f"{source}:{i + 2}: no {updates} value; every sample must read the logic-update counter")
+        kept.append(i)
+
+    empty = dict.fromkeys(specs, 0)
+    per_second: dict[int, int] = {}
+    for i, j in zip(kept, kept[1:], strict=False):
+        prev, cur = rows[i], rows[j]
         b = bucket(prev[phase] if phase else "all")
-        b["vblanks"] += dv
-        if prev[updates] and cur[updates]:
-            du = (int(cur[updates]) - int(prev[updates])) & 0xFFFFFFFF
-            b["updates"] += du
-            second = int(int(cur["vblank"]) / VBLANK_HZ)
-            per_second[second] = per_second.get(second, 0) + du
+        b["vblanks"] += number(j, "vblank") - number(i, "vblank")
+        du = (number(j, updates) - number(i, updates)) & 0xFFFFFFFF
+        b["updates"] += du
+        second = int(number(j, "vblank") / VBLANK_HZ)
+        per_second[second] = per_second.get(second, 0) + du
         for e in events:
-            x, y = prev[e["column"]], cur[e["column"]]
-            if not x or not y:
+            spec, column = e["spec"], e["column"]
+            if not prev[column] or not cur[column]:
+                empty[spec] += 1
                 continue
+            b["event_updates"][spec] += du
             if e["kind"] == "change":
-                b["events"][e["spec"]] += x != y
-            elif e["kind"] == "count":
-                b["events"][e["spec"]] += max(0, int(y) - int(x))
+                b["events"][spec] += prev[column] != cur[column]
+                continue
+            x, y = number(i, column), number(j, column)
+            if e["kind"] == "count":
+                b["events"][spec] += max(0, y - x)
             else:
-                steps = _lcg_steps(e["a"], e["c"], e["bits"], int(x), int(y), lcg_limit)
+                steps = _lcg_steps(e["a"], e["c"], e["bits"], x, y, lcg_limit)
                 if steps is None:
-                    b["unresolved"][e["spec"]] += 1
+                    b["unresolved"][spec] += 1
                 else:
-                    b["events"][e["spec"]] += steps
+                    b["events"][spec] += steps
     for b in phases.values():
-        b["seconds"] = b["vblanks"] / VBLANK_HZ
-        b["game_seconds"] = b["updates"] / nominal_hz
-        b["updates_per_second"] = b["updates"] / b["seconds"] if b["seconds"] else 0.0
-    return {"nominal_hz": nominal_hz, "phases": phases,
+        _derive_rates(b, nominal_hz)
+    return {"nominal_hz": nominal_hz, "phases": phases, "duplicate_rows": duplicates, "empty_steps": empty,
             "per_second": [per_second[s] for s in sorted(per_second)]}
+
+
+def _derive_rates(b: dict[str, Any], nominal_hz: float) -> None:
+    b["seconds"] = b["vblanks"] / VBLANK_HZ
+    b["game_seconds"] = b["updates"] / nominal_hz
+    b["event_game_seconds"] = {spec: n / nominal_hz for spec, n in b["event_updates"].items()}
+    b["updates_per_second"] = b["updates"] / b["seconds"] if b["seconds"] else 0.0
 
 
 def compare_event_rate(n_stock: int, t_stock: float, n_enh: int, t_enh: float, ratio: float) -> dict[str, Any]:
@@ -2018,23 +2059,38 @@ def compare_event_rate(n_stock: int, t_stock: float, n_enh: int, t_enh: float, r
 
 def compare_rates(stock: Mapping[str, Any], enhanced: Mapping[str, Any],
                   events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Side-by-side report of two measure_rates() results: per phase and over the whole run."""
+    """Side-by-side report of two measure_rates() results: per phase and over the whole run.
+
+    A FAIL in any row, the whole run or one phase, is a failure of the run: a phase whose rate is
+    wrong must not be hidden by the totals. A phase too short to judge adds its events to the whole
+    run and is listed as not judged.
+    """
     def total(run: Mapping[str, Any]) -> dict[str, Any]:
-        out: dict[str, Any] = {"vblanks": 0, "updates": 0, "seconds": 0.0, "game_seconds": 0.0,
-                               "events": {e["spec"]: 0 for e in events}, "unresolved": {e["spec"]: 0 for e in events}}
+        out: dict[str, Any] = {"vblanks": 0, "updates": 0, "events": {e["spec"]: 0 for e in events},
+                               "event_updates": {e["spec"]: 0 for e in events},
+                               "unresolved": {e["spec"]: 0 for e in events}}
         for b in run["phases"].values():
-            for k in ("vblanks", "updates", "seconds", "game_seconds"):
+            for k in ("vblanks", "updates"):
                 out[k] += b[k]
-            for spec in out["events"]:
-                out["events"][spec] += b["events"][spec]
-                out["unresolved"][spec] += b["unresolved"][spec]
-        out["updates_per_second"] = out["updates"] / out["seconds"] if out["seconds"] else 0.0
+            for key in ("events", "event_updates", "unresolved"):
+                for spec in out[key]:
+                    out[key][spec] += b[key][spec]
+        _derive_rates(out, run["nominal_hz"])
         return out
 
     names = sorted(set(stock["phases"]) | set(enhanced["phases"]), key=lambda n: (len(n), n))
-    rows = [("all", total(stock), total(enhanced))]
+    whole_stock, whole_enh = total(stock), total(enhanced)
+    rows = [("all", whole_stock, whole_enh)]
     rows += [(n, stock["phases"].get(n), enhanced["phases"].get(n)) for n in names]
-    report: dict[str, Any] = {"phases": [], "failures": 0, "unresolved": 0}
+    longer = max(whole_stock["game_seconds"], whole_enh["game_seconds"])
+    report: dict[str, Any] = {
+        "phases": [], "failures": 0, "unresolved": 0, "failed_phases": [], "unjudged_phases": [],
+        # A phase that runs no logic (a loading screen) has no game time and no events, so it may
+        # appear in one run only; one that runs logic must appear in both.
+        "one_sided_phases": [n for n in names if (n in stock["phases"]) != (n in enhanced["phases"])
+                             and (stock["phases"].get(n) or enhanced["phases"][n])["updates"]],
+        "coverage": min(whole_stock["game_seconds"], whole_enh["game_seconds"]) / longer if longer else 0.0,
+    }
     for name, s, e in rows:
         entry: dict[str, Any] = {"phase": name, "stock": None, "enhanced": None, "logic": "ABSENT", "events": []}
         for side, b in (("stock", s), ("enhanced", e)):
@@ -2045,14 +2101,19 @@ def compare_rates(stock: Mapping[str, Any], enhanced: Mapping[str, Any],
             entry["logic"] = "SLOWED" if e["updates_per_second"] < RATE_SLOWED_BELOW else "OK"
         for ev in events:
             spec = ev["spec"]
-            cmp = compare_event_rate(s["events"][spec] if s else 0, s["game_seconds"] if s else 0.0,
-                                     e["events"][spec] if e else 0, e["game_seconds"] if e else 0.0, ev["ratio"])
+            cmp = compare_event_rate(s["events"][spec] if s else 0, s["event_game_seconds"][spec] if s else 0.0,
+                                     e["events"][spec] if e else 0, e["event_game_seconds"][spec] if e else 0.0,
+                                     ev["ratio"])
             cmp["event"] = spec
             cmp["unresolved"] = (s["unresolved"][spec] if s else 0) + (e["unresolved"][spec] if e else 0)
             entry["events"].append(cmp)
+            if cmp["verdict"] == "FAIL":
+                report["failures"] += 1
+                report["failed_phases"].append(f"{name} {spec}")
             if name == "all":
-                report["failures"] += cmp["verdict"] == "FAIL"
                 report["unresolved"] += cmp["unresolved"]
+            elif cmp["verdict"] == "NOT_JUDGED" and ((s and s["updates"]) or (e and e["updates"])):
+                report["unjudged_phases"].append(f"{name} {spec}")
         report["phases"].append(entry)
     return report
 
@@ -2067,11 +2128,14 @@ def _rates_main(args: argparse.Namespace) -> int:
     events = [parse_rate_event(spec) for spec in args.event]
     needed = [args.updates] + ([args.phase] if args.phase else []) + [e["column"] for e in events]
     stock = measure_rates(load_sample_rows(args.compare_rates[0], needed), updates=args.updates,
-                          nominal_hz=args.stock_hz, phase=args.phase, events=events, lcg_limit=args.lcg_limit)
+                          nominal_hz=args.stock_hz, phase=args.phase, events=events, lcg_limit=args.lcg_limit,
+                          source=str(args.compare_rates[0]))
     enhanced = measure_rates(load_sample_rows(args.compare_rates[1], needed), updates=args.updates,
                              nominal_hz=args.enhanced_hz, phase=args.phase, events=events,
-                             lcg_limit=args.lcg_limit)
+                             lcg_limit=args.lcg_limit, source=str(args.compare_rates[1]))
     report = compare_rates(stock, enhanced, events)
+    if not 0.0 <= args.min_coverage <= 1.0:
+        raise EnhancementPackageError(f"--min-coverage must lie in [0, 1], got {args.min_coverage!r}")
     print(f"{'phase':<10} {'stock s':>8} {'upd/s':>6} {'enh s':>8} {'upd/s':>6}  logic")
     for p in report["phases"]:
         s, e = p["stock"] or {}, p["enhanced"] or {}
@@ -2083,6 +2147,9 @@ def _rates_main(args: argparse.Namespace) -> int:
                   f" {c['verdict']}" + (f", {c['unresolved']} lcg step(s) unresolved" if c["unresolved"] else ""))
     for label, run in (("stock", stock), ("enhanced", enhanced)):
         print(f"{label} updates per second: " + " ".join(str(v) for v in run["per_second"]))
+        empty = ", ".join(f"{spec} {n}" for spec, n in run["empty_steps"].items() if n)
+        print(f"{label}: {report['phases'][0][label]['game_seconds']:.1f} game seconds; "
+              f"{run['duplicate_rows']} repeated row(s) skipped; steps without a value: {empty or 'none'}")
     if args.json is not None:
         Path(args.json).write_text(json.dumps({"stock": stock, "enhanced": enhanced, "report": report},
                                               indent=2) + "\n", encoding="utf-8")
@@ -2091,15 +2158,24 @@ def _rates_main(args: argparse.Namespace) -> int:
     # Judged per phase: a phase with no updates at all (a loading screen) lowers the whole run's
     # rate without any logic running slow.
     slowed = [p["phase"] for p in report["phases"][1:] if p["logic"] == "SLOWED"]
+    short = report["coverage"] < args.min_coverage
     if report["failures"] or report["unresolved"]:
         verdict = "FAIL"
-    elif unjudged or not events or slowed:
+    elif unjudged or not events or slowed or short or report["one_sided_phases"]:
         verdict = "INCOMPLETE"
     else:
         verdict = "PASS"
-    print(f"rates: {verdict} ({len(events)} event(s): {report['failures']} differ, {unjudged} not judged, "
+
+    def listed(items: Sequence[str]) -> str:
+        return ", ".join(items) if items else "none"
+
+    print(f"rates: {verdict} ({len(events)} event(s): {report['failures']} result(s) differ "
+          f"[{listed(report['failed_phases'])}], {unjudged} not judged over the whole run, "
           f"{report['unresolved']} lcg step(s) unresolved; logic below {RATE_SLOWED_BELOW:g} updates/s in "
-          f"{', '.join(slowed) if slowed else 'no phase'})")
+          f"{listed(slowed)}; phases in one run only: {listed(report['one_sided_phases'])}; "
+          f"the shorter run covers {report['coverage']:.0%} of the longer one's game time"
+          f"{' (below ' + format(args.min_coverage, '.0%') + ')' if short else ''}; "
+          f"phase results not judged: {listed(report['unjudged_phases'])})")
     return {"PASS": 0, "FAIL": 1, "INCOMPLETE": 2}[verdict]
 
 
@@ -2152,6 +2228,8 @@ def main(argv: list[str] | None = None) -> int:
     rates.add_argument("--stock-hz", type=float, default=30.0, help="Logic updates per game second, stock (30).")
     rates.add_argument("--enhanced-hz", type=float, default=60.0, help="Logic updates per game second, enhanced (60).")
     rates.add_argument("--lcg-limit", type=int, default=4096, help="Most LCG steps searched between two samples.")
+    rates.add_argument("--min-coverage", type=float, default=RATE_MIN_COVERAGE,
+                       help="Share of the longer run's game time the shorter run must cover (0.9).")
     rates.add_argument("--json", type=Path, help="Also write the measurements and the report as JSON.")
     args = parser.parse_args(argv)
     if args.compare_rates is not None:
