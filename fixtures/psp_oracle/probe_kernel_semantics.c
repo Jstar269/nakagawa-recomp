@@ -9,6 +9,11 @@
 //   CASE=io-seek-eof (PSP-IO-EOF-001): #1380 opens of a missing Memory Stick file without
 //     PSP_O_CREAT, negative seeks, a write after a seek past the end (the size, the gap's
 //     bytes and the tail) and a read past the end, in its own probe-owned directory.
+//   CASE=io-umd-eof (PSP-IO-EOF-002): #1380 seeks past the end of UMD files (disc0:) and of
+//     the raw UMD device (umd0:), reads there and across the end, negative seeks and seeks
+//     past 32 bits. Read-only opens only; nothing is written to the Memory Stick or the disc,
+//     and the UMD is never activated or changed (the build pins sceUmdUser to the two state
+//     reads). Only counts, positions and return codes are recorded, never disc bytes.
 //
 // These cells live apart from probe_hle_issues.c because they do what that file may not:
 // they write and remove a Memory Stick file and directory, allocate partition memory, and
@@ -29,6 +34,9 @@
 #include <pspsuspend.h>
 #include <pspsysmem.h>
 #include <pspwlan.h>
+#if PSP_ORACLE_CASE == 137
+#include <pspumd.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -43,6 +51,7 @@ PSP_HEAP_SIZE_KB(64);
 
 #define KS_CASE_KERNEL_SEM 127
 #define KS_CASE_IO_EOF 136
+#define KS_CASE_IO_UMD_EOF 137
 #if PSP_ORACLE_CASE == KS_CASE_KERNEL_SEM
 #define HLE_CAMPAIGN_ID "kernel-semantics"
 #define HLE_TEST_ID "PSP-KERNEL-SEM-001"
@@ -51,6 +60,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "io-seek-eof"
 #define HLE_TEST_ID "PSP-IO-EOF-001"
 #define HLE_LOG "host0:/io_seek_eof_log.txt"
+#elif PSP_ORACLE_CASE == KS_CASE_IO_UMD_EOF
+#define HLE_CAMPAIGN_ID "io-umd-eof"
+#define HLE_TEST_ID "PSP-IO-EOF-002"
+#define HLE_LOG "host0:/io_umd_eof_log.txt"
 #else
 #error probe_kernel_semantics.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -858,10 +871,252 @@ static void ke_io(void)
 }
 #endif /* KS_CASE_IO_EOF */
 
+#if PSP_ORACLE_CASE == KS_CASE_IO_UMD_EOF
+/* ---- io-umd-eof: #1380 seeks and reads past the end of UMD files and the UMD device ----- */
+/* One launch, user mode, read-only. Two files every game disc carries are opened PSP_O_RDONLY
+   on disc0:, then the raw device umd0:. Every row is emitted on every run with a fixed word
+   count; a word that does not apply is HLE_SENTINEL, and a file's rows are SKIP when its open
+   fails. A 64-bit seek result is (low, high). Before each group of seeks the position is set
+   to a known value (8 for a file, sector 16 for the device), so a refused seek's effect on the
+   position is visible. A read records only its count and how many bytes of a buffer filled
+   with 0xEE it changed, never the bytes. Raw reads ask for at most two 2048-byte sectors into
+   a 32 KiB buffer (PSP-UMDRAW-001: a raw count is in sectors). */
+#define KU_FILL 0xEEu
+#define KU_BUF 0x8000u
+#define KU_FILES 2u
+#define KU_FILE_ROWS 5u
+#define KU_ROWS (1u + KU_FILES * KU_FILE_ROWS + 3u + 1u)
+static const char *const k_ku_paths[KU_FILES] = {
+    "disc0:/UMD_DATA.BIN", "disc0:/PSP_GAME/PARAM.SFO",
+};
+static const char *const k_ku_rows[KU_ROWS] = {
+    "umd-eof-state-before",
+    "umd-eof-a-open", "umd-eof-a-seek-past", "umd-eof-a-read-past", "umd-eof-a-seek-negative",
+    "umd-eof-a-seek-wide",
+    "umd-eof-b-open", "umd-eof-b-seek-past", "umd-eof-b-read-past", "umd-eof-b-seek-negative",
+    "umd-eof-b-seek-wide",
+    "umd-eof-raw-open", "umd-eof-raw-seek-past", "umd-eof-raw-read-end",
+    "umd-eof-state-after",
+};
+static const uint32_t k_ku_words[KU_ROWS] = {
+    2u, 4u, 12u, 10u, 9u, 10u, 4u, 12u, 10u, 9u, 10u, 3u, 16u, 13u, 2u,
+};
+static uint8_t s_ku_buf[KU_BUF] __attribute__((aligned(64)));
+
+static void ku_sentinel(uint32_t *w, uint32_t count)
+{
+    for (uint32_t i = 0; i < count; i++) w[i] = HLE_SENTINEL;
+}
+
+static void ku_skip(unsigned row, uint32_t result)
+{
+    uint32_t w[16];
+    ku_sentinel(w, k_ku_words[row]);
+    hle_record(k_ku_rows[row], "SKIP", result, w, k_ku_words[row]);
+}
+
+static void ku_off(uint32_t *w, SceOff r)
+{
+    w[0] = (uint32_t)((uint64_t)r & 0xffffffffu);
+    w[1] = (uint32_t)((uint64_t)r >> 32);
+}
+
+/* w[0] = the read's count, w[1] = how many buffer bytes it changed from KU_FILL. The buffer is
+   written back before the read and invalidated after it, so a stale line cannot hide or fake
+   a changed byte. */
+static void ku_read(SceUID fd, SceSize count, uint32_t *w)
+{
+    memset(s_ku_buf, KU_FILL, sizeof(s_ku_buf));
+    sceKernelDcacheWritebackInvalidateRange(s_ku_buf, sizeof(s_ku_buf));
+    const int got = sceIoRead(fd, s_ku_buf, count);
+    sceKernelDcacheInvalidateRange(s_ku_buf, sizeof(s_ku_buf));
+    uint32_t changed = 0;
+    for (uint32_t i = 0; i < KU_BUF; i++) changed += s_ku_buf[i] != KU_FILL;
+    w[0] = (uint32_t)got;
+    w[1] = changed;
+}
+
+static void ku_state(unsigned row)
+{
+    uint32_t w[2];
+    hle_step(k_ku_rows[row]);
+    w[0] = (uint32_t)sceUmdCheckMedium();
+    w[1] = (uint32_t)sceUmdGetDriveStat();
+    hle_record(k_ku_rows[row], "PASS", 0u, w, 2u);
+}
+
+static void ku_file(unsigned f)
+{
+    const unsigned base = 1u + f * KU_FILE_ROWS;
+    uint32_t w[16];
+
+    /* open: the descriptor, Lseek END 0 (low, high), which is the size, then Lseek SET 0. */
+    hle_step(k_ku_rows[base]);
+    const SceUID fd = sceIoOpen(k_ku_paths[f], PSP_O_RDONLY, 0);
+    if (fd < 0) {
+        ku_sentinel(w, 4u);
+        w[0] = (uint32_t)fd;
+        hle_record(k_ku_rows[base], "PASS", (uint32_t)fd, w, 4u);
+        for (unsigned r = base + 1u; r < base + KU_FILE_ROWS; r++) ku_skip(r, (uint32_t)fd);
+        return;
+    }
+    const SceOff size = sceIoLseek(fd, 0, PSP_SEEK_END);
+    w[0] = (uint32_t)fd;
+    ku_off(&w[1], size);
+    w[3] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_SET);
+    hle_record(k_ku_rows[base], "PASS", (uint32_t)fd, w, 4u);
+    const int sized = size >= 4 && size < 0x10000000;
+
+    /* seek-past: Lseek SET 8 (low); Lseek END +16, CUR 0; Lseek SET size + 0x1000, CUR 0 (each
+       low, high); Lseek32 END +16, Lseek32 CUR 0; then whether the size was usable. */
+    hle_step(k_ku_rows[base + 1u]);
+    w[0] = (uint32_t)sceIoLseek(fd, 8, PSP_SEEK_SET);
+    ku_off(&w[1], sceIoLseek(fd, 16, PSP_SEEK_END));
+    ku_off(&w[3], sceIoLseek(fd, 0, PSP_SEEK_CUR));
+    if (sized) {
+        ku_off(&w[5], sceIoLseek(fd, size + 0x1000, PSP_SEEK_SET));
+    } else {
+        w[5] = w[6] = HLE_SENTINEL;
+    }
+    ku_off(&w[7], sceIoLseek(fd, 0, PSP_SEEK_CUR));
+    w[9] = (uint32_t)sceIoLseek32(fd, 16, PSP_SEEK_END);
+    w[10] = (uint32_t)sceIoLseek32(fd, 0, PSP_SEEK_CUR);
+    w[11] = sized ? 1u : 0u;
+    hle_record(k_ku_rows[base + 1u], "PASS", (uint32_t)fd, w, 12u);
+
+    /* read-past: Lseek END +16 (low), a 16-byte read there (count, changed), Lseek CUR 0
+       (low); Lseek END -4 (low), a 16-byte read across the end (count, changed), Lseek CUR 0
+       (low); Lseek END 0 (low) and a 16-byte read at the end (count). */
+    hle_step(k_ku_rows[base + 2u]);
+    w[0] = (uint32_t)sceIoLseek(fd, 16, PSP_SEEK_END);
+    ku_read(fd, 16u, &w[1]);
+    w[3] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+    if (sized) {
+        w[4] = (uint32_t)sceIoLseek(fd, -4, PSP_SEEK_END);
+        ku_read(fd, 16u, &w[5]);
+        w[7] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+    } else {
+        ku_sentinel(&w[4], 4u);
+    }
+    w[8] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_END);
+    {
+        uint32_t at_end[2];
+        ku_read(fd, 16u, at_end);
+        w[9] = at_end[0];
+    }
+    hle_record(k_ku_rows[base + 2u], "PASS", (uint32_t)fd, w, 10u);
+
+    /* seek-negative: Lseek SET 8 (low); Lseek SET -1 (low, high), CUR 0 (low); Lseek END
+       -(size + 1) (low, high), CUR 0 (low); Lseek32 SET -1, Lseek32 CUR 0. */
+    hle_step(k_ku_rows[base + 3u]);
+    w[0] = (uint32_t)sceIoLseek(fd, 8, PSP_SEEK_SET);
+    ku_off(&w[1], sceIoLseek(fd, -1, PSP_SEEK_SET));
+    w[3] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+    if (sized) {
+        ku_off(&w[4], sceIoLseek(fd, -(size + 1), PSP_SEEK_END));
+    } else {
+        w[4] = w[5] = HLE_SENTINEL;
+    }
+    w[6] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+    w[7] = (uint32_t)sceIoLseek32(fd, -1, PSP_SEEK_SET);
+    w[8] = (uint32_t)sceIoLseek32(fd, 0, PSP_SEEK_CUR);
+    hle_record(k_ku_rows[base + 3u], "PASS", (uint32_t)fd, w, 9u);
+
+    /* seek-wide: Lseek SET 8 (low); Lseek SET 0xFFFFFFFF, CUR 0; Lseek SET 0x100000000, CUR 0
+       (each low, high); then the close. */
+    hle_step(k_ku_rows[base + 4u]);
+    w[0] = (uint32_t)sceIoLseek(fd, 8, PSP_SEEK_SET);
+    ku_off(&w[1], sceIoLseek(fd, (SceOff)0xFFFFFFFFu, PSP_SEEK_SET));
+    ku_off(&w[3], sceIoLseek(fd, 0, PSP_SEEK_CUR));
+    ku_off(&w[5], sceIoLseek(fd, (SceOff)0x100000000ll, PSP_SEEK_SET));
+    ku_off(&w[7], sceIoLseek(fd, 0, PSP_SEEK_CUR));
+    w[9] = (uint32_t)sceIoClose(fd);
+    hle_record(k_ku_rows[base + 4u], "PASS", (uint32_t)fd, w, 10u);
+}
+
+static void ku_raw(void)
+{
+    const unsigned base = 1u + KU_FILES * KU_FILE_ROWS;
+    uint32_t w[16];
+
+    /* raw-open: umd0: PSP_O_RDONLY: the descriptor and Lseek END 0 (low, high), the last
+       sector (PSP-UMDRAW-001). */
+    hle_step(k_ku_rows[base]);
+    const SceUID fd = sceIoOpen("umd0:", PSP_O_RDONLY, 0);
+    if (fd < 0) {
+        ku_sentinel(w, 3u);
+        w[0] = (uint32_t)fd;
+        hle_record(k_ku_rows[base], "PASS", (uint32_t)fd, w, 3u);
+        ku_skip(base + 1u, (uint32_t)fd);
+        ku_skip(base + 2u, (uint32_t)fd);
+        return;
+    }
+    const SceOff last = sceIoLseek(fd, 0, PSP_SEEK_END);
+    w[0] = (uint32_t)fd;
+    ku_off(&w[1], last);
+    hle_record(k_ku_rows[base], "PASS", (uint32_t)fd, w, 3u);
+    const int sized = last > 16 && last < 0x10000000;
+
+    /* raw-seek-past: Lseek SET 16 (low); Lseek SET last + 1 (low, high), CUR 0 (low); Lseek
+       SET last + 2 (low, high), CUR 0 (low); Lseek END +1 (low, high), CUR 0 (low); Lseek SET
+       0x100000000 (low, high), CUR 0 (low); Lseek32 SET last + 1, Lseek32 CUR 0; then whether
+       the last sector was usable. */
+    hle_step(k_ku_rows[base + 1u]);
+    w[0] = (uint32_t)sceIoLseek(fd, 16, PSP_SEEK_SET);
+    if (sized) {
+        ku_off(&w[1], sceIoLseek(fd, last + 1, PSP_SEEK_SET));
+        w[3] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+        ku_off(&w[4], sceIoLseek(fd, last + 2, PSP_SEEK_SET));
+        w[6] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+    } else {
+        ku_sentinel(&w[1], 6u);
+    }
+    ku_off(&w[7], sceIoLseek(fd, 1, PSP_SEEK_END));
+    w[9] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+    ku_off(&w[10], sceIoLseek(fd, (SceOff)0x100000000ll, PSP_SEEK_SET));
+    w[12] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+    w[13] = sized ? (uint32_t)sceIoLseek32(fd, (int)(last + 1), PSP_SEEK_SET) : HLE_SENTINEL;
+    w[14] = (uint32_t)sceIoLseek32(fd, 0, PSP_SEEK_CUR);
+    w[15] = sized ? 1u : 0u;
+    hle_record(k_ku_rows[base + 1u], "PASS", (uint32_t)fd, w, 16u);
+
+    /* raw-read-end: Lseek SET last (low), a one-sector read (count, changed), CUR 0 (low);
+       Lseek SET last (low), a two-sector read across the end (count, changed), CUR 0 (low);
+       Lseek SET last + 1 (low), a one-sector read (count, changed), CUR 0 (low); the close. */
+    hle_step(k_ku_rows[base + 2u]);
+    if (sized) {
+        w[0] = (uint32_t)sceIoLseek(fd, last, PSP_SEEK_SET);
+        ku_read(fd, 1u, &w[1]);
+        w[3] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+        w[4] = (uint32_t)sceIoLseek(fd, last, PSP_SEEK_SET);
+        ku_read(fd, 2u, &w[5]);
+        w[7] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+        w[8] = (uint32_t)sceIoLseek(fd, last + 1, PSP_SEEK_SET);
+        ku_read(fd, 1u, &w[9]);
+        w[11] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+    } else {
+        ku_sentinel(w, 12u);
+    }
+    w[12] = (uint32_t)sceIoClose(fd);
+    hle_record(k_ku_rows[base + 2u], "PASS", (uint32_t)fd, w, 13u);
+}
+
+static void ku_io(void)
+{
+    ku_state(0u);
+    for (unsigned f = 0; f < KU_FILES; f++) ku_file(f);
+    ku_raw();
+    ku_state(KU_ROWS - 1u);
+}
+#endif /* KS_CASE_IO_UMD_EOF */
+
 static int hle_run(void)
 {
 #if PSP_ORACLE_CASE == KS_CASE_IO_EOF
     ke_io();
+    return 1;
+#elif PSP_ORACLE_CASE == KS_CASE_IO_UMD_EOF
+    ku_io();
     return 1;
 #else
     ks_subintr_order();

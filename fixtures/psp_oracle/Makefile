@@ -308,6 +308,10 @@ CASE_ID = 127
 # (probe_kernel_semantics.c, its own probe-owned directory).
 else ifeq ($(CASE),io-seek-eof)
 CASE_ID = 136
+# 137: #1380's UMD cells: seeks and reads past the end of disc0: files and the raw umd0:
+# device, read-only (probe_kernel_semantics.c).
+else ifeq ($(CASE),io-umd-eof)
+CASE_ID = 137
 # 128: #1375 P1 plus non-invoking P2 registrations; 129/130 are separately guarded NULL invokes.
 else ifeq ($(CASE),null-code-registration)
 CASE_ID = 128
@@ -543,6 +547,9 @@ OBJS = $(BUILD_DIR)/probe_kernel_semantics.o $(BUILD_DIR)/threadman_user_imports
 else ifeq ($(CASE),io-seek-eof)
 TARGET = $(BUILD_DIR)/io_seek_eof
 OBJS = $(BUILD_DIR)/probe_kernel_semantics.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),io-umd-eof)
+TARGET = $(BUILD_DIR)/io_umd_eof
+OBJS = $(BUILD_DIR)/probe_kernel_semantics.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),null-code-registration)
 TARGET = $(BUILD_DIR)/null_code_registration
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
@@ -688,6 +695,16 @@ endif
 # io-seek-eof: file calls only (IoFileMgrForUser and the shared ThreadManForUser block); none
 # of kernel-semantics' interrupt, controller, suspend or WLAN imports, nothing from the bridge.
 ifeq ($(CASE),io-seek-eof)
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager --forbid-library sceCtrl
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceSuspendForUser --forbid-library sceWlanDrv
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceOpenPSID --forbid-library KUBridge --forbid-library SystemCtrlForUser
+endif
+# io-umd-eof: read-only file calls and exactly the two UMD state reads (sceUmdCheckMedium and
+# sceUmdGetDriveStat), so a build that imported sceUmdActivate or any other UMD call fails the
+# gate; none of kernel-semantics' interrupt, controller, suspend or WLAN imports.
+ifeq ($(CASE),io-umd-eof)
+LIBS += -lpspumd
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUmdUser=0x46EBB729,0x6B4A146C
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager --forbid-library sceCtrl
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceSuspendForUser --forbid-library sceWlanDrv
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceOpenPSID --forbid-library KUBridge --forbid-library SystemCtrlForUser
