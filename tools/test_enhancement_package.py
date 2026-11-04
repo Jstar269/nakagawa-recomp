@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import enhancement_package
 from enhancement_package import (
     AOT_ENHANCEMENT_PACKAGE_EPOCH,
     HOOK_KEYS,
@@ -2017,6 +2018,252 @@ class TestEnhancementBuildPackageWiring(unittest.TestCase):
         path = self._write_pkg("pkg.json", sites=[])
         with self.assertRaises(package_cache.PackageCacheError):
             package_cache.enhancement_package_options({"ENHANCEMENT_PACKAGE": str(path)})
+
+
+def _sample_csv(path: Path, *, hz: int, seconds: int, columns: dict[str, Any]) -> None:
+    """Write a synthetic SR_SAMPLE_OUT file: one row per vblank, logic at `hz` updates a second.
+
+    `columns` maps a label to a function of (update count, vblank) giving the cell text.
+    """
+    lines = ["vblank,updates," + ",".join(columns)]
+    vblanks = round(seconds * 60000 / 1001)
+    for v in range(1, vblanks + 1):
+        n = (v * hz * 1001) // 60000
+        lines.append(f"{v},{n & 0xFFFFFFFF}," + ",".join(fn(n, v) for fn in columns.values()))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class TestEnhancementRateComparison(unittest.TestCase):
+    """Section 9.7: the side-by-side timing check of a stock and an enhanced run."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def _run(self, stock: dict[str, Any], enhanced: dict[str, Any], *extra: str,
+             enhanced_hz: int = 60, seconds: int = 60) -> tuple[int, str, dict[str, Any]]:
+        _sample_csv(self.tmp / "stock.csv", hz=30, seconds=seconds, columns=stock)
+        _sample_csv(self.tmp / "enh.csv", hz=enhanced_hz, seconds=seconds, columns=enhanced)
+        out = StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = enhancement_package.main(["--compare-rates", str(self.tmp / "stock.csv"), str(self.tmp / "enh.csv"),
+                                           "--json", str(self.tmp / "r.json"), *extra])
+        return rc, out.getvalue(), json.loads((self.tmp / "r.json").read_text(encoding="utf-8"))
+
+    def test_rescaled_events_match_and_pass(self) -> None:
+        # One serve every 45 stock updates; the package doubles the count, so every 90 enhanced updates.
+        rc, text, data = self._run({"serves": lambda n, v: str(n // 45)}, {"serves": lambda n, v: str(n // 90)},
+                                   "--event", "count:serves")
+        self.assertEqual(rc, 0, text)
+        self.assertIn("rates: PASS", text)
+        whole = data["report"]["phases"][0]
+        self.assertEqual(whole["logic"], "OK")
+        self.assertEqual(whole["events"][0]["verdict"], "PASS")
+        self.assertAlmostEqual(whole["events"][0]["ratio"], 1.0, delta=0.05)
+
+    def test_an_unrescaled_count_fails(self) -> None:
+        # A frame count the package missed: the event comes twice as often per second.
+        rc, text, data = self._run({"serves": lambda n, v: str(n // 45)}, {"serves": lambda n, v: str(n // 45)},
+                                   "--event", "count:serves")
+        self.assertEqual(rc, 1, text)
+        self.assertIn("rates: FAIL", text)
+        self.assertAlmostEqual(data["report"]["phases"][0]["events"][0]["ratio"], 2.0, delta=0.1)
+
+    def test_lcg_steps_are_counted_and_compared_with_the_declared_ratio(self) -> None:
+        a, c = 1103515245, 12345
+
+        def lcg(steps: int) -> str:
+            x = 7
+            for _ in range(steps):
+                x = (a * x + c) & 0xFFFFFFFF
+            return str(x)
+
+        cache: dict[int, str] = {}
+
+        def rolls(n: int, v: int) -> str:  # one roll per update
+            if n not in cache:
+                cache[n] = lcg(n)
+            return cache[n]
+
+        rc, text, data = self._run({"seed": rolls}, {"seed": rolls}, "--event", f"lcg:seed:{a}:{c}=2",
+                                   seconds=10)
+        self.assertEqual(rc, 0, text)
+        ev = data["report"]["phases"][0]["events"][0]
+        self.assertEqual((ev["stock"], ev["verdict"], ev["unresolved"]), (data["stock"]["phases"]["all"]["updates"],
+                                                                           "PASS", 0))
+        rc, text, _ = self._run({"seed": rolls}, {"seed": rolls}, "--event", f"lcg:seed:{a}:{c}", seconds=10)
+        self.assertEqual(rc, 1, text)
+
+    def test_an_lcg_jump_past_the_limit_is_unresolved_not_zero(self) -> None:
+        rc, text, data = self._run({"seed": lambda n, v: str(v * 977)}, {"seed": lambda n, v: str(v * 977)},
+                                   "--event", "lcg:seed:1103515245:12345", "--lcg-limit", "8", seconds=2)
+        self.assertEqual(rc, 1, text)
+        self.assertGreater(data["report"]["unresolved"], 0)
+
+    def test_slowed_logic_and_rare_events_are_incomplete_not_pass(self) -> None:
+        rc, text, data = self._run({"serves": lambda n, v: str(n // 45)}, {"serves": lambda n, v: str(n // 90)},
+                                   "--event", "count:serves", enhanced_hz=45)
+        self.assertEqual(rc, 2, text)
+        self.assertIn("rates: INCOMPLETE", text)
+        self.assertEqual(data["report"]["phases"][0]["logic"], "SLOWED")
+        rc, text, data = self._run({"rare": lambda n, v: str(n // 3000)}, {"rare": lambda n, v: str(n // 6000)},
+                                   "--event", "count:rare")
+        self.assertEqual(rc, 2, text)
+        self.assertEqual(data["report"]["phases"][0]["events"][0]["verdict"], "NOT_JUDGED")
+
+    def test_phases_split_by_column_and_the_counter_may_wrap(self) -> None:
+        base = 0xFFFFFFC0  # wraps after 64 of the 120 updates
+        _sample_csv(self.tmp / "s.csv", hz=30, seconds=4, columns={"mode": lambda n, v: "1" if v < 120 else "2"})
+        lines = (self.tmp / "s.csv").read_text(encoding="utf-8").splitlines()
+        wrapped = [lines[0]] + [",".join([c[0], str((int(c[1]) + base) & 0xFFFFFFFF), c[2]])
+                                for c in (row.split(",") for row in lines[1:])]
+        (self.tmp / "w.csv").write_text("\n".join(wrapped) + "\n", encoding="utf-8")
+        rows = enhancement_package.load_sample_rows(self.tmp / "w.csv", ["updates", "mode"])
+        m = enhancement_package.measure_rates(rows, updates="updates", nominal_hz=30, phase="mode")
+        self.assertEqual(set(m["phases"]), {"1", "2"})
+        total = sum(b["updates"] for b in m["phases"].values())
+        self.assertEqual(total, int(lines[-1].split(",")[1]) - int(lines[1].split(",")[1]))
+        self.assertAlmostEqual(m["phases"]["1"]["updates_per_second"], 30.0, delta=0.5)
+
+    def test_change_events_and_a_loading_phase(self) -> None:
+        # A flag that flips every 45 stock updates; the package doubles the period. The enhanced
+        # run opens with a phase where no logic runs, which must not mark the run as slowed.
+        flip = {"mode": lambda n, v: "1", "flag": lambda n, v: str((n // 45) % 2)}
+        _sample_csv(self.tmp / "stock.csv", hz=30, seconds=60, columns=flip)
+        _sample_csv(self.tmp / "enh.csv", hz=60, seconds=60,
+                    columns={"mode": lambda n, v: "1", "flag": lambda n, v: str((n // 90) % 2)})
+        lines = (self.tmp / "enh.csv").read_text(encoding="utf-8").splitlines()
+        first_updates = lines[1].split(",")[1]
+        loading = [f"{v},{first_updates},0,0" for v in range(1, 601)]
+        shifted = [",".join([str(int(c[0]) + 600), *c[1:]]) for c in (row.split(",") for row in lines[1:])]
+        (self.tmp / "enh.csv").write_text("\n".join([lines[0], *loading, *shifted]) + "\n", encoding="utf-8")
+        out = StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = enhancement_package.main(["--compare-rates", str(self.tmp / "stock.csv"), str(self.tmp / "enh.csv"),
+                                           "--phase", "mode", "--event", "change:flag",
+                                           "--json", str(self.tmp / "r.json")])
+        data = json.loads((self.tmp / "r.json").read_text(encoding="utf-8"))
+        self.assertEqual(rc, 0, out.getvalue())
+        whole, loading_phase = data["report"]["phases"][0], data["report"]["phases"][1]
+        self.assertEqual((loading_phase["phase"], loading_phase["logic"]), ("0", "ABSENT"))
+        self.assertLess(whole["enhanced"]["updates_per_second"], 57.0)
+        self.assertEqual(whole["events"][0]["verdict"], "PASS")
+        self.assertGreater(whole["events"][0]["stock"], 30)
+
+    def test_a_failing_phase_fails_a_run_whose_totals_pass(self) -> None:
+        # Phase 1 (120 s) is rescaled right; phase 2 (20 s) runs its event at the stock period, so
+        # twice as often per game second. The totals dilute it; the phase row must still fail.
+        boundary = round(120 * 60000 / 1001)
+        n_b = (boundary * 60 * 1001) // 60000
+
+        def mode(n: int, v: int) -> str:
+            return "1" if v < boundary else "2"
+
+        def enhanced_count(n: int, v: int) -> str:
+            return str(n // 18 if v < boundary else n_b // 18 + (n - n_b) // 9)
+
+        rc, text, data = self._run({"mode": mode, "hits": lambda n, v: str(n // 9)},
+                                   {"mode": mode, "hits": enhanced_count},
+                                   "--phase", "mode", "--event", "count:hits", seconds=140)
+        whole, first, second = data["report"]["phases"]
+        self.assertEqual(whole["events"][0]["verdict"], "PASS", text)
+        self.assertEqual(first["events"][0]["verdict"], "PASS", text)
+        self.assertEqual(second["events"][0]["verdict"], "FAIL", text)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("rates: FAIL (1 event(s): 1 result(s) differ [2 count:hits]", text)
+
+    def test_a_truncated_or_one_sided_run_is_incomplete(self) -> None:
+        serves = {"serves": lambda n, v: str(n // 45)}
+        rc, text, data = self._run(serves, {"serves": lambda n, v: str(n // 90)}, "--event", "count:serves")
+        self.assertEqual(rc, 0, text)
+        # The enhanced capture stops halfway: its rates still agree, but it covers half the route.
+        _sample_csv(self.tmp / "stock.csv", hz=30, seconds=60, columns=serves)
+        _sample_csv(self.tmp / "enh.csv", hz=60, seconds=30, columns={"serves": lambda n, v: str(n // 90)})
+        out = StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = enhancement_package.main(["--compare-rates", str(self.tmp / "stock.csv"),
+                                           str(self.tmp / "enh.csv"), "--event", "count:serves"])
+        self.assertEqual(rc, 2, out.getvalue())
+        self.assertIn("the shorter run covers 50% of the longer one's game time (below 90%)", out.getvalue())
+        # A phase that runs logic in one run only means the runs did not follow the same route.
+        rc, text, data = self._run({"mode": lambda n, v: "1", **serves},
+                                   {"mode": lambda n, v: "1" if v < 3000 else "2",
+                                    "serves": lambda n, v: str(n // 90)},
+                                   "--phase", "mode", "--event", "count:serves")
+        self.assertEqual(rc, 2, text)
+        self.assertEqual(data["report"]["one_sided_phases"], ["2"])
+
+    def test_repeated_rows_are_skipped_and_empty_cells_scope_the_event(self) -> None:
+        # The sampler can write one vblank twice: an exact repeat is skipped and counted. An empty
+        # event cell leaves that step out of the event's count and out of its game time.
+        (self.tmp / "s.csv").write_text("vblank,updates,flag\n1,0,0\n2,1,0\n2,1,0\n3,2,1\n4,3,\n5,4,1\n",
+                                        encoding="utf-8")
+        rows = enhancement_package.load_sample_rows(self.tmp / "s.csv", ["updates", "flag"])
+        m = enhancement_package.measure_rates(rows, updates="updates", nominal_hz=30,
+                                              events=[enhancement_package.parse_rate_event("change:flag")])
+        b = m["phases"]["all"]
+        self.assertEqual((m["duplicate_rows"], m["empty_steps"]["change:flag"]), (1, 2))
+        self.assertEqual((b["vblanks"], b["updates"], b["events"]["change:flag"]), (4, 4, 1))
+        self.assertEqual(b["event_updates"]["change:flag"], 2)
+
+    def test_a_capture_that_loses_time_refuses(self) -> None:
+        cases = (
+            ("vblank,updates\n1,0\nx,1\n", r"s.csv:3: column vblank: 'x' is not an integer"),
+            ("vblank,updates\n1,0\n1,1\n", r"s.csv:3: vblank 1 does not follow vblank 1 with new values"),
+            ("vblank,updates\n2,0\n1,1\n", r"s.csv:3: vblank 1 does not follow vblank 2"),
+            ("vblank,updates\n1,0\n2,\n", r"s.csv:3: no updates value"),
+            ("vblank,updates,serves\n1,0,0\n2,1,two\n", r"s.csv:3: column serves: 'two' is not an integer"),
+        )
+        for body, why in cases:
+            (self.tmp / "s.csv").write_text(body, encoding="utf-8")
+            columns = ["updates"] + (["serves"] if "serves" in body else [])
+            rows = enhancement_package.load_sample_rows(self.tmp / "s.csv", columns)
+            events = [enhancement_package.parse_rate_event("count:serves")] if "serves" in body else []
+            with self.subTest(why=why), self.assertRaisesRegex(EnhancementPackageError, why):
+                enhancement_package.measure_rates(rows, updates="updates", nominal_hz=30, events=events,
+                                                  source=str(self.tmp / "s.csv"))
+
+    def test_bad_inputs_and_options_give_a_rates_fail_line(self) -> None:
+        _sample_csv(self.tmp / "good.csv", hz=30, seconds=1, columns={"serves": lambda n, v: str(n // 9)})
+        (self.tmp / "latin1.csv").write_bytes(b"vblank,updates\n1,\xe9\n")
+        good, event = str(self.tmp / "good.csv"), ["--event", "count:serves"]
+        cases = (
+            ([str(self.tmp / "missing.csv"), good, *event], "cannot read the sample file"),
+            ([str(self.tmp / "latin1.csv"), good], "cannot read the sample file"),
+            ([good, good, *event, "--stock-hz", "0"], "the nominal rate must be a positive number"),
+            ([good, good, *event, "--enhanced-hz", "nan"], "the nominal rate must be a positive number"),
+            ([good, good, *event, "--lcg-limit", "0"], "--lcg-limit must be at least 1"),
+            ([good, good, *event, "--min-coverage", "2"], r"--min-coverage must lie in \[0, 1\]"),
+        )
+        for argv, why in cases:
+            err = StringIO()
+            with self.subTest(why=why), mock.patch("sys.stderr", err), mock.patch("sys.stdout", StringIO()):
+                rc = enhancement_package.main(["--compare-rates", *argv])
+                self.assertEqual(rc, 1)
+                self.assertRegex(err.getvalue(), "rates: FAIL: .*" + why)
+
+    def test_bad_sample_files_refuse(self) -> None:
+        for body, why in (("", "empty sample file"), ("frame,updates\n1,0\n", "first column must be vblank"),
+                          ("vblank,updates\n1,0\n2\n", r"s.csv:3: 1 cells, the header has 2")):
+            (self.tmp / "s.csv").write_text(body, encoding="utf-8")
+            with self.subTest(why=why), self.assertRaisesRegex(EnhancementPackageError, why):
+                enhancement_package.load_sample_rows(self.tmp / "s.csv", ["updates"])
+        _sample_csv(self.tmp / "s.csv", hz=30, seconds=1, columns={})
+        err = StringIO()
+        with mock.patch("sys.stderr", err):
+            rc = enhancement_package.main(["--compare-rates", str(self.tmp / "s.csv"), str(self.tmp / "s.csv"),
+                                           "--event", "count:serves"])
+        self.assertEqual(rc, 1)
+        self.assertIn("rates: FAIL:", err.getvalue())
+        self.assertIn("no column serves", err.getvalue())
+
+    def test_bad_event_specs_and_missing_columns_refuse(self) -> None:
+        for spec in ("count", "sum:x", "lcg:x:1", "count:x=0", "change:x:y", "lcg:x:1:1:65"):
+            with self.subTest(spec=spec), self.assertRaises(EnhancementPackageError):
+                enhancement_package.parse_rate_event(spec)
+        _sample_csv(self.tmp / "s.csv", hz=30, seconds=1, columns={})
+        with self.assertRaisesRegex(EnhancementPackageError, "no column serves"):
+            enhancement_package.load_sample_rows(self.tmp / "s.csv", ["updates", "serves"])
 
 
 def _f32_bits_of(value: float) -> int:
