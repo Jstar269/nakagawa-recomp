@@ -10763,6 +10763,17 @@
       }
     },
     {
+      "path": "tests/native/code_capture_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "code-capture-1933",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tests/native/cpu_lle_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -13135,6 +13146,17 @@
       }
     },
     {
+      "path": "tools/code_capture.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "code-capture-1933",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/codegen.py",
       "classification": "upstream_derived",
       "evidence": {
@@ -15065,6 +15087,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "trusted-ci-verdict-20261028",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_codegen_code_capture.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "code-capture-1933",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null

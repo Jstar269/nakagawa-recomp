@@ -64,6 +64,10 @@ _RUNS_BEFORE_PROCESS_TEST = (
     # the target), then on a main-RAM word, where unwatched stores take the inline path.
     "build/mygame/dispatch_isolation_selftest_generic",
     "build/mygame/dispatch_isolation_selftest_generic --watch 0x08801000:4",
+    # code-capture-selftest: the stop that writes a capture, then, linked with the capture's
+    # translation from tools/code_capture.py, the binding that takes the call (#1933).
+    "build/mygame/code_capture_selftest_capture build/mygame/code-capture-selftest",
+    "build/mygame/code_capture_selftest_bound build/mygame/code-capture-selftest",
     "build/test_pgf_public",
     "build/test_core_catalog",
     "build/test_parsers_hostile",

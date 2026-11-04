@@ -1449,7 +1449,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->developer_mode = false;
     memset(settings->enhancement_60hz_discs, 0, sizeof(settings->enhancement_60hz_discs));
     settings->enhancement_60hz_disc_count = 0;
-    /* Ace Mode is off until the player turns it on (owner, 2026-10-31); the features it
+    /* Ace Mode is off until the player turns it on; the features it
        turns on keep their defaults while it is off. */
     settings->ace.enabled = false;
     settings->ace.af = 16;
@@ -3378,6 +3378,12 @@ static bool player_removal_disc_id_ok(const char *disc_id) {
     return true;
 }
 
+bool player_app_logs_dir(char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    return nk_platform_get_path(NK_PATH_LOGS, out, out_size) && nk_platform_mkdir_p(out);
+}
+
 const char *player_app_removal_blocker(const PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return "The game is not in the library.";
     const GameRecord *game = &app->games[game_index];
@@ -3389,9 +3395,18 @@ const char *player_app_removal_blocker(const PlayerApp *app, int game_index) {
     return NULL;
 }
 
-static bool player_removal_add(PlayerRemovalPlan *plan, PlayerRemovalKind kind, bool saves,
-                               const char *keep_child, const char *root, const char *a,
-                               const char *b, const char *c) {
+/* Which opt-in group a removal path belongs to: none (it always goes), the saves, or the
+   disc copy and decrypted files. */
+typedef enum {
+    PLAYER_REMOVAL_ALWAYS = 0,
+    PLAYER_REMOVAL_SAVES,
+    PLAYER_REMOVAL_DISC_COPY
+} PlayerRemovalGroup;
+
+static bool player_removal_add(PlayerRemovalPlan *plan, PlayerRemovalKind kind,
+                               PlayerRemovalGroup group, const char *keep_child,
+                               const char *root, const char *a, const char *b, const char *c) {
+    bool saves = group == PLAYER_REMOVAL_SAVES;
     if (plan->path_count >= PLAYER_REMOVAL_PATH_CAP || !root || !root[0]) return false;
     PlayerRemovalPath *entry = &plan->paths[plan->path_count];
     char sep = nk_platform_path_separator();
@@ -3409,12 +3424,16 @@ static bool player_removal_add(PlayerRemovalPlan *plan, PlayerRemovalKind kind, 
     snprintf(entry->keep_child, sizeof(entry->keep_child), "%s", keep_child ? keep_child : "");
     entry->kind = kind;
     entry->saves = saves;
+    entry->disc_copy = group == PLAYER_REMOVAL_DISC_COPY;
     entry->bytes = 0;
     if (!nk_platform_tree_size(entry->path, keep_child, &entry->bytes)) entry->bytes = 0;
     plan->path_count++;
     if (saves) {
         plan->has_saves = true;
         plan->saves_bytes += entry->bytes;
+    } else if (entry->disc_copy) {
+        plan->has_disc_copy = true;
+        plan->disc_copy_bytes += entry->bytes;
     } else {
         plan->kind_present[kind] = true;
         plan->kind_bytes[kind] += entry->bytes;
@@ -3447,43 +3466,52 @@ bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
     bool have_saves = nk_platform_get_path(NK_PATH_SAVES, saves_root, sizeof(saves_root));
     bool ok = true;
     if (have_build) {
-        ok = player_removal_add(plan, PLAYER_REMOVAL_PACKAGE, false, NULL, build_root,
-                                "packages", disc, NULL) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_PACKAGE, PLAYER_REMOVAL_ALWAYS, NULL,
+                                build_root, "packages", disc, NULL) && ok;
         /* The title's enhanced build, when its enhancement package names one. */
         const PlayerTitleEnhancement *enhancement = &app->title_enhancements[game_index];
         char enhanced_folder[NK_MAX_DISC_ID_LEN + NK_MAX_ENHANCEMENT_PACKAGE_ID + 16];
         if (enhancement->available &&
             nk_title_manifest_package_dir_name(disc, enhancement->package_id, enhanced_folder,
                                                sizeof(enhanced_folder))) {
-            ok = player_removal_add(plan, PLAYER_REMOVAL_PACKAGE, false, NULL, build_root,
-                                    "packages", enhanced_folder, NULL) && ok;
+            ok = player_removal_add(plan, PLAYER_REMOVAL_PACKAGE, PLAYER_REMOVAL_ALWAYS, NULL,
+                                    build_root, "packages", enhanced_folder, NULL) && ok;
         }
-        ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, false, NULL, build_root,
-                                "cache", "packages", disc) && ok;
-        ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, false, NULL, build_root,
-                                "cache", "bringup", disc) && ok;
-        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, NULL, build_root,
-                                "experimental", disc, NULL) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, PLAYER_REMOVAL_ALWAYS, NULL,
+                                build_root, "cache", "packages", disc) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, PLAYER_REMOVAL_ALWAYS, NULL,
+                                build_root, "cache", "bringup", disc) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, PLAYER_REMOVAL_ALWAYS, NULL,
+                                build_root, "experimental", disc, NULL) && ok;
+        /* Opt-in (#2003): the decrypted files the disc check wrote, in the folder where a
+           user may also put their own (docs/SETUP.md, per-title decrypted input folder). */
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, PLAYER_REMOVAL_DISC_COPY, NULL,
+                                build_root, "titles", disc, "decrypted") && ok;
     }
     if (have_data) {
         /* The extracted disc files keep their Memory Stick folder, the saves
            of a game started from them, unless the saves go too. */
-        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, "memstick", data_root,
-                                "games", disc, NULL) && ok;
-        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, true, NULL, data_root,
-                                "games", disc, "memstick") && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, PLAYER_REMOVAL_ALWAYS,
+                                "memstick", data_root, "games", disc, NULL) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, PLAYER_REMOVAL_SAVES, NULL,
+                                data_root, "games", disc, "memstick") && ok;
+        /* Opt-in (#2003): the disc image Nakagawa expanded from a compressed image or
+           converted from a PSN download (nk_disc_expand.c, <data>/discs/<ID>). The shared
+           discs/expanded references only point at it; a missing image is expanded again. */
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, PLAYER_REMOVAL_DISC_COPY, NULL,
+                                data_root, "discs", disc, NULL) && ok;
         /* A disc copy that stopped part way leaves these beside it. */
         char staging[NK_MAX_DISC_ID_LEN + 24];
         snprintf(staging, sizeof(staging), ".staging_%s", disc);
-        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, NULL, data_root,
-                                "games", staging, NULL) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, PLAYER_REMOVAL_ALWAYS, NULL,
+                                data_root, "games", staging, NULL) && ok;
         snprintf(staging, sizeof(staging), ".staging_%s.retired", disc);
-        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, NULL, data_root,
-                                "games", staging, NULL) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, PLAYER_REMOVAL_ALWAYS, NULL,
+                                data_root, "games", staging, NULL) && ok;
     }
     if (have_saves) {
-        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, true, NULL, saves_root, disc,
-                                NULL, NULL) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, PLAYER_REMOVAL_SAVES, NULL,
+                                saves_root, disc, NULL, NULL) && ok;
     }
     return ok;
 }
@@ -3535,8 +3563,10 @@ static PlayerLibraryFileImages player_library_file_other_image(const GameRecord 
     return found;
 }
 
-bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete_saves,
+bool player_app_remove_game_and_data(PlayerApp *app, int game_index, unsigned also,
                                      char *error, size_t error_size) {
+    bool delete_saves = (also & PLAYER_REMOVE_ALSO_SAVES) != 0u;
+    bool delete_disc_copy = (also & PLAYER_REMOVE_ALSO_DISC_COPY) != 0u;
     if (error && error_size) error[0] = '\0';
     PlayerRemovalPlan plan;
     const char *blocker = player_app_removal_blocker(app, game_index);
@@ -3588,6 +3618,7 @@ bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete
             const PlayerRemovalPath *entry = &plan.paths[i];
             if (entry->saves != (pass == 0)) continue;
             if (entry->saves && !delete_saves) continue;
+            if (entry->disc_copy && !delete_disc_copy) continue;
             const char *keep = entry->keep_child[0] && !delete_saves ? entry->keep_child : NULL;
             if (!nk_platform_remove_tree(entry->path, keep)) {
                 if (error && error_size) {
@@ -5704,10 +5735,17 @@ static bool player_app_start_package_build_view(PlayerApp *app, int game_index,
         return false;
     }
 
-    /* Build into the same per-user root that package validation reads. */
+    /* Build into the same per-user root that package validation reads; the build log goes
+       to the one logs folder with the player's and the games' (#2003). */
     char log_dir[NK_MAX_PATH];
-    snprintf(log_dir, sizeof(log_dir), "%.490s%clogs", user_data_root, nk_platform_path_separator());
-    nk_platform_mkdir_p(log_dir);
+    if (!player_app_logs_dir(log_dir, sizeof(log_dir))) {
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "The logs folder could not be made",
+                             "Nakagawa could not create its logs folder, so the build did not "
+                             "start. Free some disk space or check the folder's permissions, "
+                             "then try again.",
+                             "Back to library", VIEW_LIBRARY);
+        return false;
+    }
 
     app->build_session.no_shared_libraries = !app->settings.share_system_libraries;
     NkResult res = package_builder_start(&app->build_session, python_path, cli_path, user_data_root, log_dir);
@@ -6874,7 +6912,7 @@ static bool player_is_usable_mips_elf32(const char *path, bool module) {
     return usable;
 }
 
-/* Built-in game decryption (owner decision 2026-10-27, #295). The largest
+/* Built-in game decryption (#295). The largest
    program file the boundary takes from a disc, as in the module scan. */
 #define PLAYER_DECRYPT_MAX_INPUT (64u * 1024u * 1024u)
 
@@ -8972,7 +9010,7 @@ const PlayerPreflightCheck *player_app_package_build_preflight_blocker(
     return preflight->passed ? NULL : &preflight->blocker;
 }
 
-/* ---- Games built by an older Nakagawa (owner decision, 2026-10-29) ---------------
+/* ---- Games built by an older Nakagawa ----------------------------------------
    The scan compares what each package records about the Nakagawa that built
    it (nk_title_manifest_aot_package_build_identity) with what a build from this
    player's own source tree would record (nk_title_manifest_source_build_identity).

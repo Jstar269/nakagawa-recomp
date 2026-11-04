@@ -8,8 +8,8 @@ Verifies:
 1. Public title catalog only includes titles authorized by assets/public_source_profile.json.
 2. Dropping an excluded or unclassified manifest into assets/titles/ does NOT leak into public C codegen.
 3. tools/title_catalog_codegen.py --verify fails closed if generated C contains unauthorized titles or is out of sync.
-4. The only tracked retail title manifest is the public HST manifest (owner decision,
-   2026-10-27), and it is policy-included; no unclassified manifest is tracked.
+4. The only tracked retail title manifest is the public HST manifest,
+   and it is policy-included; no unclassified manifest is tracked.
 5. The in-memory private overlay mechanism allows local acceptance without modifying public artifacts.
 """
 
@@ -60,7 +60,7 @@ def is_tracked(rel_posix: str) -> bool:
 
 PRIVATE_TITLE_TESTS_ENV = "NK_PRIVATE_TITLE_TESTS"
 
-#: The one retail manifest the public tree carries (owner decision, 2026-10-27).
+#: The one retail manifest the public tree carries.
 PUBLIC_RETAIL_MANIFEST = "hst-ucus98701.json"
 PUBLIC_RETAIL_ID = "hst-ucus98701-v1"
 PUBLIC_RETAIL_DISC_ID = "UCUS98701"

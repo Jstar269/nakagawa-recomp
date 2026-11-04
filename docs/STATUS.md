@@ -17,7 +17,7 @@ linked live issue, and read counts from the generator cited beside each area.
 - Public-source safeguards: exact-tree, provenance, history, security, and
   export gates remain required for proposed changes and release candidates.
 - Unified PSP clocks, waits, and interrupt delivery remain source-owned
-  runtime work.
+  runtime work ([#325](https://github.com/Jstar269/nakagawa-recomp/issues/325)).
 - Direct XB archive/VFS tooling is documented in
   [`docs/ARCHIVE_VFS.md`](ARCHIVE_VFS.md); title inputs
   remain local-only.
@@ -30,12 +30,6 @@ linked live issue, and read counts from the generator cited beside each area.
   distribution review. The derived PGF reader `src/rt/pgf.c` was retired on
   2026-10-25; the public PGF reader is the project-authored
   `src/rt/pgf_public.c` ([#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)).
-- Transient model corruption entering the main menu:
-  [issue #69](https://github.com/Jstar269/nakagawa-recomp/issues/69) is closed
-  as fixed (2026-10-20). The one-frame corruption was traced to VFPU3 compare
-  decode and fixed in [#822](https://github.com/Jstar269/nakagawa-recomp/pull/822).
-  The maintainer confirmed on 2026-10-19, in a live playtest with the GPU
-  presenter, that it no longer appears, and again on 2026-10-27.
 
 ## Records of past closures
 

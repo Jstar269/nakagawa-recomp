@@ -4,8 +4,8 @@
 
 Source-owned end-to-end and known-answer coverage for the production
 decryption boundary under ``src/core/nk_psp_*`` plus the ``nk_decrypt``
-command-line entry, including the built-in game tables (owner decision
-2026-10-27) and the firmware refusal.
+command-line entry, including the built-in game tables
+and the firmware refusal.
 
 Nothing here reads retail bytes or private inputs:
 
@@ -917,7 +917,7 @@ class TestSyntheticEndToEnd(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Built-in game tables (owner decision 2026-10-27) and the firmware refusal
+# Built-in game tables and the firmware refusal
 # ---------------------------------------------------------------------------
 
 BUILTIN_TABLE = ROOT / "src" / "core" / "nk_psp_builtin_keys.c"

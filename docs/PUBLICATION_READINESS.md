@@ -29,7 +29,7 @@ inspects. Each is listed here with its control:
 
 | Channel | Control |
 | --- | --- |
-| Repository wiki | Editing restricted to collaborators. Pages summarize and link to the maintained docs, which stay authoritative. A wiki edit follows the same boundary rules as a tracked change: no private paths, retail-derived data, keys, or redistribution claims. Review the wiki after any boundary-rule change. |
+| Repository wiki | Disabled. The maintained documents in `docs/` are the only reference. |
 | Discussions, issues, and PR/review comments | Maintainer-moderated. The same boundary rules apply; private evidence is described, never attached. |
 | Releases and release assets | Every tag, release, and release-asset operation requires explicit maintainer authorization in the current turn (AGENTS.md section 3); agents never perform one on their own initiative. Tag creation is additionally locked by the `release-tags-locked` ruleset, and packages follow `PREVIEW_RELEASE.md` and its fail-closed scan. Those two are content controls, not authorization. |
 | GitHub Actions logs and job summaries | Public on this repository. Workflows must not print private paths, inputs, evidence, or trusted-authority material, and must not upload artifacts containing them; the provenance attestation job writes only its verdict summary to the step summary and never the trusted ledger. A workflow change that adds output is reviewed against these rules. |
@@ -292,7 +292,9 @@ python tools/contrib_refresh.py
 
 This verifies that no new or removed public paths are introduced, keeps every changed path's claim,
 and writes both controls in their committed form from the public controls alone; for an ordinary
-change neither file changes. Note that `contrib_refresh.py` is a contributor
+change neither file changes. Stage your own changes first: it refuses unstaged edits
+(`CANDIDATE_INDEX_STALE`), and it stages the controls it writes, so commit what it stages.
+`make contrib-refresh` (`mingw32-make contrib-refresh` on Windows) runs it. Note that `contrib_refresh.py` is a contributor
 convenience, not provenance authorization; external trusted attestation still decides acceptance.
 
 The lower-level exact-path API remains available for narrowly scoped refresh
@@ -641,7 +643,9 @@ gates.
 ## Step by step: a pull request that adds a public path
 
 The sections above define each command. This is the order that works for an ordinary pull request that adds or
-removes a public file, with the failure each skipped step produces.
+removes a public file, with the failure each skipped step produces. The maintainer runs these steps. A
+contributor's pull request only says where each new file came from
+([`AGENTS.md`](../AGENTS.md#new-files-what-to-put-in-the-pull-request)) and leaves the rest to the maintainer.
 
 1. **Commit the files with their publication entries.** `python tools/policy_sync.py --apply --regen-export` adds the
    paths to `assets/public_source_profile.json` and regenerates `PUBLIC_EXPORT.json`; commit both with the files. The

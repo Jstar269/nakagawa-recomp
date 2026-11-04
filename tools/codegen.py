@@ -33,6 +33,7 @@ if _TOOLS_DIRECTORY not in sys.path:
 
 # Import the local analyzer
 import build_profile
+import code_capture
 from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans, span_index,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
@@ -79,7 +80,7 @@ class CodegenOptions:
     # never off the seam return, because legitimate HLE errors are nonzero.
     lle_import_seam: bool = False
 
-    # Entry splitting (owner decision, 2026-10-29). A body normally owns every
+    # Entry splitting. A body normally owns every
     # instruction it reaches by a conditional branch, including another entry's code, so
     # each entry of a large branch-connected region translates its own copy of the region
     # (one title: 6,539 entries in a 1.33M-instruction region). A body whose walk would
@@ -235,7 +236,19 @@ def _scaled_store_line(rw: dict, stock_line: str) -> str:
             f"{stock.replace(stored, '_nk_bits')} }}")
 
 
-def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
+def _mapped_factor_stmt(mapping: str, cell: str, site_id: str, addr: int) -> str:
+    """Map a per-update factor just loaded into ``cell``. It is known only at run time:
+    inside (0, 1) it is mapped; outside it keeps its stock value, reported once per site.
+    Decay uses k / (1 + sqrt(1 - k)), equal to 1 - sqrt(1 - k) without its cancellation
+    for small k, in double and rounded once, as the lui path does; sqrtf is already exact."""
+    expr = {"decay": f"(float)((double){cell} / (1.0 + sqrt(1.0 - (double){cell})))",
+            "retention": f"sqrtf({cell})"}[mapping]
+    return (f"if ({cell} > 0.0f && {cell} < 1.0f) {{ {cell} = {expr}; }} "
+            f"else {{ static int nk_kept; "
+            f'nk_enhancement_factor_kept(&nk_kept, "{site_id}", 0x{addr:08x}u, {cell}); }}')
+
+
+def _enhanced_line(rw: dict, stock_line: str, word_line: str | None, site_id: str, addr: int) -> str:
     """Both forms of one rewritten site: the stock statement runs unless the
     experimental toggle is on at run time (nk_enhancement_on())."""
     kind = rw["kind"]
@@ -252,22 +265,14 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
     elif kind == "scale_f_reg":
         enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
     elif kind == "map_f_reg":
-        r = rw["reg"]
-        # A factor read from memory is only known at run time: outside (0, 1) it keeps the stock value.
-        # Decay is evaluated in double and rounded once, as the lui path does; sqrtf is already exact.
-        expr = {"decay": f"(float)(1.0 - sqrt(1.0 - (double)s->f[{r}]))",
-                "retention": f"sqrtf(s->f[{r}])"}[rw["map"]]
-        enh = (f"{stock_line.strip()} if (s->f[{r}] > 0.0f && s->f[{r}] < 1.0f) "
-               f"{{ s->f[{r}] = {expr}; }}")
+        cell = f"s->f[{rw['reg']}]"
+        enh = f"{stock_line.strip()} {_mapped_factor_stmt(rw['map'], cell, site_id, addr)}"
     elif kind == "scale_v_reg":
         v = vreg_indices(rw["vreg"], 1)[0]
         enh = f"{stock_line.strip()} s->v[{v}] *= {rw['factor']!r}f;"
     elif kind == "map_v_reg":
         v = vreg_indices(rw["vreg"], 1)[0]
-        expr = {"decay": f"(float)(1.0 - sqrt(1.0 - (double)s->v[{v}]))",
-                "retention": f"sqrtf(s->v[{v}])"}[rw["map"]]
-        enh = (f"{stock_line.strip()} if (s->v[{v}] > 0.0f && s->v[{v}] < 1.0f) "
-               f"{{ s->v[{v}] = {expr}; }}")
+        enh = f"{stock_line.strip()} {_mapped_factor_stmt(rw['map'], f's->v[{v}]', site_id, addr)}"
     elif kind in ("scale_f_store", "scale_int_store"):
         enh = _scaled_store_line(rw, stock_line)
     elif kind == "scale_f_addend":
@@ -662,8 +667,8 @@ def build_entry_catalog(analyzed, ranges, profile=None, elf=None):
                     f"OWNER DOES NOT COVER RESUME: declared owner "
                     f"0x{owner:08x} does not reach 0x{addr:08x}"
                 )
-            # Wiki doc 26 section 14: a shared tail reachable from owners with
-            # incompatible frame states cannot be given one host contract.
+            # A shared tail reachable from owners with incompatible frame states
+            # cannot be given one host contract.
             owners = entry_frame_balance.find_frame_owners(
                 elf, addr, ranges, callables
             )
@@ -1111,6 +1116,8 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
             f.write("extern uint32_t nk_enhancement_updates;\n")
             f.write("static inline int nk_enhancement_gate_30hz(void) "
                     "{ return (nk_enhancement_updates & 1u) == 0u; }\n")
+            f.write("void nk_enhancement_factor_kept(int *reported, const char *site, uint32_t pc, "
+                    "float value);\n")
             if ENHANCEMENT_STORE_SITES:
                 f.write("uint32_t nk_enh_store(unsigned site, uint32_t bits);\n")
                 f.write("int nk_enh_ready(unsigned site);\n")
@@ -1313,6 +1320,15 @@ def emit_checked_body_call(symbol, call_pc):
         f"{emit_body_call(symbol)} "
         "if (sr_aot_return_boundary_end(s)) return;"
     )
+
+
+def emit_checked_dispatch_call(target_expr, resume_expr):
+    """A guest CALL with no direct body, inside its own return boundary (#1935).
+
+    dispatch_call_checked returns 1 when the call returned elsewhere and the frames
+    between were abandoned, as emit_checked_body_call's end check does.
+    """
+    return f"if (dispatch_call_checked(s, {target_expr}, {resume_expr})) return;"
 
 
 def emit_host_stack_check(entry_expr):
@@ -3028,7 +3044,7 @@ def normal_line(addr, w, lle_cpu=False, delay_branch_pc=None):
         # The trace hook keeps the stock word: guest memory still holds it.
         word_line = _plain_line(addr, rw["word"], w, lle_cpu=lle_cpu,
                                 delay_branch_pc=delay_branch_pc)
-    return _enhanced_line(rw, line, word_line)
+    return _enhanced_line(rw, line, word_line, ENHANCEMENT_SITES[addr]["id"], addr)
 
 class _PromotedLine:
     """GPRs one instruction reads and writes while it is translated with promotion."""
@@ -3748,7 +3764,7 @@ def _emit_unrelocated_jal(ctx, out, addr, w, ds, dsw):
     out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); s->r[31] = {resume}; sr_end(s, 0u, 0);")
     out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
                                 resumable=resumable, indent="      "))
-    out.append(f"      dispatch_call(s, _t, {resume}); }}")
+    out.append(f"      {emit_checked_dispatch_call('_t', resume)} }}")
     _emit_slot_exit(ctx, out, addr)
 
 
@@ -3765,10 +3781,8 @@ def _emit_jal(ctx, out, addr, w, ds, dsw):
         if lle_cpu:
             _call_stmt += f"\n    {_flow_return(resumable)}"
     else:
-        _call_stmt = (
-            f"    dispatch_call(s, {G(target)}, "
-            f"{G((addr + 8) & 0xFFFFFFFF)});"
-        )
+        _call_stmt = "    " + emit_checked_dispatch_call(
+            G(target), G((addr + 8) & 0xFFFFFFFF))
     if _jal_rw is not None:
         # gate_30hz on a call (the only rewrite a call site plans): the delay
         # slot above always runs; the call is gated while the toggle is on.
@@ -3800,7 +3814,7 @@ def _emit_jalr(ctx, out, addr, w, ds, dsw):
                                 indent="      "))
     if d != 0:
         out.append(
-            f"      dispatch_call(s, _t, {G((addr + 8) & 0xFFFFFFFF)}); }}"
+            f"      {emit_checked_dispatch_call('_t', G((addr + 8) & 0xFFFFFFFF))} }}"
         )
         _emit_slot_exit(ctx, out, addr)
     else:
@@ -3939,7 +3953,7 @@ def _emit_conditional_branch(ctx, out, addr, w, ds, dsw):
             if lle_cpu:
                 call += f" {_flow_return(resumable)}"
         else:
-            call = f"dispatch_call(s, {G(target)}, {G((addr + 8) & 0xFFFFFFFF)});"
+            call = emit_checked_dispatch_call(G(target), G((addr + 8) & 0xFFFFFFFF))
         out.extend("   " + line for line in _delay)
         out.append(f"      if (_c) {{ {call} }} }}")
         _emit_slot_exit(ctx, out, addr)
@@ -4341,19 +4355,23 @@ def word_runs(addresses):
 
 
 def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False,
-                             entry_hints=None):
+                             entry_hints=None, data=None, name=None, entries=None):
     """Translate one runtime-placed module in its own link space.
 
     Returns a ``RuntimeModuleTranslation``; a module the build cannot translate
     position-independently still gets a descriptor carrying the reason, so the
     runtime names that boundary if, and only if, the game loads the module.
     Analyzer boundaries keep their existing fail-closed exit status (an int).
+    ``data`` and ``name`` stand for the file's bytes and name when it has none (a code
+    capture); ``entries``, when not None, are the analysis's only seeds (analyze).
     """
     global ADDRESS_SPACE
     import prx_reloc_model
-    with open(module_path, "rb") as source:
-        data = source.read()
-    name = os.path.basename(module_path)
+    if data is None:
+        with open(module_path, "rb") as source:
+            data = source.read()
+        name = os.path.basename(module_path)
+    module_path = module_path or name
     module = RuntimeModuleTranslation(
         index=index, name=name, file_size=len(data),
         file_sha256=hashlib.sha256(data).hexdigest(), file_fnv1a64=fnv1a64(data),
@@ -4400,7 +4418,7 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         # A code overlay's entry points are held by the executable (entry_hints).
         analyzed, _ = analyze(elf, cfg_gate=cfg_gate,
                               entry_hints=entry_hints if overlay else None,
-                              mixed_code_data=fixed_overlay, report=discovery)
+                              mixed_code_data=fixed_overlay, report=discovery, entries=entries)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
         return 1
@@ -4498,6 +4516,43 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         elf, ranges, known,
         translated={a for a, _ in module.functions} - module_stubbed,
         interpreted=module_stubbed)
+    return module
+
+
+def translate_code_capture(index, image, profile=None, cfg_gate=False):
+    """Translate code a game installed at run time (#1933) from the captures of it.
+
+    ``image`` is a ``code_capture.CaptureImage``: a window of guest memory and the addresses
+    runs called in it. It translates as an ELF type 0xFFA8 overlay at the window's address,
+    seeded only from those addresses, so its identity (overlay_check_spans) is the words its
+    code holds and nothing else in the window.
+
+    Its executable authority is exactly that identity: a bound translation lets the
+    interpreter run only words the runtime checked are the captured ones. Words the analysis
+    traced but did not translate (an untranslatable function, and whatever its trace ran
+    into) are neither identity nor authority, and nor is a function that has no translated
+    word. Its range is the extent of the identity, so a capture of other code nearby can be
+    bound beside it, and a call to anything outside the identity stops as target-not-executable
+    (outside the range, with a capture of its own). A target the translation does not give a
+    body is named here."""
+    import code_capture
+    module = translate_runtime_module(index, None, profile=profile, cfg_gate=cfg_gate,
+                                      data=code_capture.image_overlay_elf(image),
+                                      name=image.name, entries=image.targets)
+    if isinstance(module, int):
+        return module
+    identity = [tuple(span) for span in module.overlay_check_spans]
+    kept = [(fn, text) for fn, text in zip(module.functions, module.texts, strict=True)
+            if in_ranges(fn[0], identity)]
+    module.functions = [fn for fn, _ in kept]
+    module.texts = [text for _, text in kept]
+    module.spans = identity
+    if module.unsupported_reason is None and identity:
+        module.link_low, module.link_high = identity[0][0], identity[-1][1]
+    bodies = {a for a, _ in module.functions}
+    for target in sorted(image.targets - bodies):
+        sys.stderr.write(f"codegen: {image.name}: captured target 0x{target:08x} has no "
+                         "translation; a call to it stops as target-not-executable\n")
     return module
 
 
@@ -4939,7 +4994,7 @@ _USAGE = (
     "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
     "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
     "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm] "
-    "[--miss-seeds=FILE]\n"
+    "[--miss-seeds=FILE] [--code-capture=PATH]...\n"
     "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
 )
 
@@ -4951,7 +5006,7 @@ def _command_line_parser():
     splits them off and they never reach this parser.  Options are spelled ``--name=value`` or
     bare ``--name``.  Values stay strings here: ``main`` validates them in one place so each
     refusal keeps its exact message and exit status.  Abbreviations are off, and an unknown
-    ``--option`` is ignored (``parse_known_args``), as it has always been.  ``--help`` is not an
+    ``--option`` is an error (exit status 2, ``_translate``).  ``--help`` is not an
     option: ``_USAGE`` is printed when the positionals are missing.
     """
     parser = argparse.ArgumentParser(
@@ -4981,6 +5036,9 @@ def _command_line_parser():
     flag("--name-imports", "name each import stub after the function its NID imports")
     value("--backend", "c (default) or llvm (#330)")
     value("--miss-seeds", "a dispatch-miss seed list (tools/miss_seeds.py): extra function entries")
+    parser.add_argument("--code-capture", action="append", default=[], metavar="PATH",
+                        help="a code capture a run wrote (SR_CODE_CAPTURE), or a folder of them "
+                             "(tools/code_capture.py, #1933)")
     parser.add_argument("--omit-aot", action="append", default=[], metavar="ADDR[,ADDR...]",
                         help="leave these entries to the dispatcher instead of direct C calls")
     value("--enhancement-package", "enhancement package to apply")
@@ -5447,6 +5505,12 @@ def _registration_lines(elf, ranges, known, base_name, num_files, emitted, resum
             "    return on;",
             "}",
             "uint32_t nk_enhancement_updates;",
+            "void nk_enhancement_factor_kept(int *reported, const char *site, uint32_t pc, float value) {",
+            "    if (*reported) return;",
+            "    *reported = 1;",
+            '    fprintf(stderr, "ENHANCEMENT_FACTOR_KEPT: site %s at 0x%08x loaded %.9g, outside (0, 1); "',
+            '            "it keeps its stock value\\n", site, (unsigned)pc, (double)value);',
+            "}",
             "",
         ]
         main_out += _enhancement_store_lines()
@@ -5666,8 +5730,10 @@ def _translate(argv):
     ``main`` turns it into the message and exit status.
     """
     args = [a for a in argv[1:] if not a.startswith("--")]
-    cli, _unknown = _command_line_parser().parse_known_args(
-        [a for a in argv[1:] if a.startswith("--")])
+    try:
+        cli = _command_line_parser().parse_args([a for a in argv[1:] if a.startswith("--")])
+    except SystemExit as exc:  # argparse has printed the usage and the unknown option
+        raise _Refusal(exc.code, "") from None
 
     use_env_elf = cli.env_elf
     use_env_extra = cli.env_extra_elfs
@@ -6032,6 +6098,13 @@ def _translate(argv):
             module_hashes.append(fnv1a64(source.read()))
     module_translations = []
     main_data_words = data_section_words(elf) if runtime_modules else set()
+    # Code the game installs at run time, from the captures runs wrote (#1933). Each image is
+    # bound only while guest memory holds the words its translation was made from.
+    try:
+        capture_images = code_capture.group_captures(code_capture.read_captures(cli.code_capture))
+    except code_capture.CaptureError as exc:
+        sys.stderr.write(f"codegen: {exc}\n")
+        return 2
     for index, module_path in enumerate(runtime_modules):
         shared = not stack_census and module_hashes.count(module_hashes[index]) == 1
         translated = translate_runtime_module(index, module_path, profile=profile,
@@ -6042,6 +6115,13 @@ def _translate(argv):
         module_translations.append(translated)
         if not translated.shared:
             func_texts.extend(translated.texts)
+    for offset, image in enumerate(capture_images):
+        translated = translate_code_capture(len(runtime_modules) + offset, image,
+                                            profile=profile, cfg_gate=cfg_gate)
+        if isinstance(translated, int):
+            return translated
+        module_translations.append(translated)
+        func_texts.extend(translated.texts)
 
     if stack_census:
         try:
