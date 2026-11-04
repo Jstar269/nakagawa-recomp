@@ -433,7 +433,9 @@ void      ge_set_gpu_hooks(const GeGpuHooks *h);
  * Off (D = 0) is the default and creates nothing. The presenter composes left wing, picture
  * and right wing into one (480 + 2D) x 272 image. */
 #define GE_WIDE_CANVAS_W 512
-#define GE_WIDE_MAX_WING 256              /* 2D must fit the canvas; 32:9 needs 240 */
+/* 2D must fit the canvas, the GE's widest framebuffer: 480 + 2 * 256 = 992 columns, about 32.8:9
+ * (21:9 needs 76, 32:9 needs 240). */
+#define GE_WIDE_MAX_WING 256
 /* The wing width that widens 480x272 to a window_w x window_h window: a multiple of 4 (the
  * software dither and mip-span phase stay the guest's), 0 for a window no wider than 30:17. */
 int       ge_wide_wing_for(int window_w, int window_h);

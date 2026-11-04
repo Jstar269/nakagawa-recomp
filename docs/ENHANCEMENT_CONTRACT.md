@@ -335,10 +335,18 @@ primitives reach the wings, and the software rasterizer's wings), `src/rt/gpu_sd
   and untextured whole-screen sprites (fades) are stretched across the wings; every other 2D draw stays in the centre.
   CPU writes (movies), block transfers, lines and points, and on Vulkan any primitive the backend hands to the software
   rasterizer, do not reach the wings.
-- **Off is the default.** With no wing width set, no canvas exists and nothing in the draw path changes.
-  `gpu-coherence-selftest` (case `wide-fill`) and `ge-cpu-profile-validate-selftest` check that the frame is
-  byte-identical with Fill on and off, that the software and Vulkan wings agree byte for byte, that the 3D reaches the
-  wings and the 2D does not, and that a narrower scissor keeps every draw out of them.
+- **Any window aspect wider than the PSP's.** The wing width comes from the window's shape at the PSP's 272 lines: a
+  multiple of 4, so 21:9 (about 635x272) has 76-pixel wings and 32:9 (about 967x272) has 240-pixel wings. The PSP's
+  480x272 is already 16:9, so 16:9 has none. One canvas holds both wings in a 512-column image, the GE's widest
+  framebuffer, so the Vulkan canvas shares every target's size, viewport and readback. That caps a wing at 256 pixels,
+  a picture of 992x272 (about 32.8:9); a wider window (three screens) gets the widest Fill and black beyond it.
+- **Off is the default.** With no wing width set, no canvas exists and no wing is drawn or submitted. What Off still
+  costs is a test per primitive in `src/rt/ge.c` (`s_wide_d`), plus tests of an always-NULL pointer in the software
+  rasterizer's pixel accessors (`s_wing`) and the Vulkan backend's batch path (`s_wing_dst`).
+  `gpu-coherence-selftest` (case `wide-fill`) and `ge-cpu-profile-validate-selftest` run at 16:9, 21:9 and 32:9. They
+  check that all of guest VRAM, the frame included, is byte-identical with Fill on and off, that the software and
+  Vulkan wings agree byte for byte, that the 3D reaches the wings and the 2D does not, and that a narrower scissor
+  keeps every draw out of them.
 
 **Next layers.** Presentation composes the left wing, the picture and the right wing into one image the window's
 shape, shows black wings for a frame that drew none, and turns on `wide=fill`. Then **layer 2**, per title: a game

@@ -183,7 +183,7 @@ draws them through `hook_wing_tri` / `hook_wing_sprite`, which run the ordinary 
 canvas columns as the scissor's x and the guest scissor's rows, and `submit_pending` submits those
 batches after the target's own, so every resource a pending batch names is released at the same
 boundaries as before. A canvas (`WingEnt`) is a 512x272 colour and depth pair at render scale
-that is never in `s_tgts` or `s_deps`: no readback, upload, coherence or texture path reaches it.
+(the size of every target, so both wings of up to 256 columns each fit; 32:9 uses 240) that is never in `s_tgts` or `s_deps`: no readback, upload, coherence or texture path reaches it.
 It is cleared whenever ge.c clears its own (`ge_wide_epoch`). A state this backend would draw in
 software is dropped from the wings with no flush or readback. `gegpu_wide_read` reads a canvas
 back for `gpu-coherence-selftest`'s `wide-fill` case, which compares it with the software

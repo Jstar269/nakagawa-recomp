@@ -5004,12 +5004,16 @@ static uint32_t wide_build(int fade) {
     return WIDE_LIST;
 }
 
-/* Run the list on one renderer with wing width `wing`; copy the frame and, with Fill on, the
- * canvas (512 x 272 RGBA8888 words). */
-static int wide_run(int gpu, int wing, int fade, uint32_t *frame, uint32_t *canvas) {
+#define WIDE_VRAM      0x04000000u
+#define WIDE_VRAM_SIZE 0x00200000u
+
+/* Run the list on one renderer with wing width `wing` from zeroed VRAM; copy all of guest VRAM
+ * (after the Vulkan frame is synced back) and, with Fill on, the canvas (512 x 272 RGBA8888
+ * words). */
+static int wide_run(int gpu, int wing, int fade, uint32_t *vram, uint32_t *canvas) {
     coherence_reset_targets();
-    memset(SR_HOST(WIDE_FB), 0, 512u * FB_H * 4u);
-    sr_gpu_vram_dirty(WIDE_FB, 512u * FB_H * 4u);
+    memset(SR_HOST(WIDE_VRAM), 0, WIDE_VRAM_SIZE);
+    sr_gpu_vram_dirty(WIDE_VRAM, WIDE_VRAM_SIZE);
     if (ge_wide_set_wing(wing) != wing) return 0;
     ge_wide_note_display(WIDE_FB);
     ge_set_gpu_hooks(gpu ? &k_hooks : NULL);
@@ -5020,7 +5024,7 @@ static int wide_run(int gpu, int wing, int fade, uint32_t *frame, uint32_t *canv
         GeGpuFbDescriptor desc = { .addr = WIDE_FB, .format = 3, .stride = 512, .width = 480, .height = FB_H };
         if (gegpu_sync_guest_fb(&desc) != GEGPU_SYNC_OK) ok = 0;
     }
-    memcpy(frame, SR_HOST(WIDE_FB), 512u * FB_H * 4u);
+    memcpy(vram, SR_HOST(WIDE_VRAM), WIDE_VRAM_SIZE);
     if (ok && wing) {
         if (gpu) ok = gegpu_wide_read(WIDE_FB, canvas);
         else {
@@ -5036,72 +5040,82 @@ static int wide_run(int gpu, int wing, int fade, uint32_t *frame, uint32_t *canv
     return ok;
 }
 
-/* The canvas colour the list leaves at canvas pixel (x, y): wings are x < 2 * WIDE_D. */
-static uint32_t wide_expect(int fade, uint32_t x, uint32_t y) {
-    if (x >= 2u * WIDE_D) return 0u;
+/* The canvas colour the list leaves at canvas pixel (x, y): wings are x < 2 * wing. */
+static uint32_t wide_expect(int wing, int fade, uint32_t x, uint32_t y) {
+    if (x >= 2u * (uint32_t)wing) return 0u;
     if (fade) return WIDE_FADE;
     return (y >= 68u && y <= 203u) ? WIDE_QUAD : WIDE_BG;
 }
 
-static int coherence_run_wide_fill(void) {
-    const size_t px = (size_t)512 * FB_H;
-    uint32_t *buf = (uint32_t *)malloc(px * 4u * 6u);
-    if (!buf) return 0;
-    uint32_t *sw_off = buf, *sw_on = buf + px, *gpu_off = buf + 2 * px, *gpu_on = buf + 3 * px;
-    uint32_t *sw_wing = buf + 4 * px, *gpu_wing = buf + 5 * px;
-    int ok = 1;
-    if (ge_wide_wing_for(2520, 1080) != WIDE_D || ge_wide_wing_for(1920, 1080) != 0) {
-        fprintf(stderr, "gpu coherence selftest [wide-fill]: wing width for 21:9 or 16:9 is wrong\n");
-        ok = 0;
+/* One window aspect: Fill off and on, software and Vulkan. Guest VRAM (the authentic frame
+ * included) must match Fill off byte for byte on each renderer, and the two canvases must
+ * match each other and the expected picture. */
+static int wide_aspect(const char *name, int win_w, int win_h, int want_wing, uint32_t *buf, size_t px) {
+    const size_t vw = WIDE_VRAM_SIZE / 4u;
+    uint32_t *sw_off = buf, *sw_on = buf + vw, *gpu_off = buf + 2 * vw, *gpu_on = buf + 3 * vw;
+    uint32_t *sw_wing = buf + 4 * vw, *gpu_wing = buf + 4 * vw + px;
+    const int wing = ge_wide_wing_for(win_w, win_h);
+    if (wing != want_wing) {
+        fprintf(stderr, "gpu coherence selftest [wide-fill]: %s (%dx%d) gives wing %d, want %d\n",
+                name, win_w, win_h, wing, want_wing);
+        return 0;
     }
+    int ok = 1;
     for (int fade = 0; ok && fade < 2; fade++) {
         unsigned long drawn0, dropped0, drawn1, dropped1, drawn2, dropped2;
         gegpu_wide_counts(&drawn0, &dropped0);
-        if (!wide_run(0, 0, fade, sw_off, NULL) || !wide_run(0, WIDE_D, fade, sw_on, sw_wing)) {
-            fprintf(stderr, "gpu coherence selftest [wide-fill]: a software run failed (fade=%d)\n", fade);
+        if (!wide_run(0, 0, fade, sw_off, NULL) || !wide_run(0, wing, fade, sw_on, sw_wing)) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: a software run failed (%s fade=%d)\n", name, fade);
             ok = 0; break;
         }
         if (!wide_run(1, 0, fade, gpu_off, NULL)) { ok = 0; break; }
         gegpu_wide_counts(&drawn1, &dropped1);
-        if (!wide_run(1, WIDE_D, fade, gpu_on, gpu_wing)) {
-            fprintf(stderr, "gpu coherence selftest [wide-fill]: a Vulkan run failed (fade=%d)\n", fade);
+        if (!wide_run(1, wing, fade, gpu_on, gpu_wing)) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: a Vulkan run failed (%s fade=%d)\n", name, fade);
             ok = 0; break;
         }
         gegpu_wide_counts(&drawn2, &dropped2);
-        if (drawn1 != drawn0 || dropped1 != dropped0 || drawn2 == drawn1 || dropped2 != dropped1) {
-            fprintf(stderr, "gpu coherence selftest [wide-fill]: wing primitives off=%lu on=%lu dropped=%lu\n",
-                    drawn1 - drawn0, drawn2 - drawn1, dropped2 - dropped0);
+        if (drawn1 != drawn0 || dropped1 != dropped0 || (wing ? drawn2 == drawn1 : drawn2 != drawn1) ||
+            dropped2 != dropped1) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: %s wing primitives off=%lu on=%lu dropped=%lu\n",
+                    name, drawn1 - drawn0, drawn2 - drawn1, dropped2 - dropped0);
             ok = 0;
         }
-        if (memcmp(sw_off, sw_on, px * 4u) || memcmp(gpu_off, gpu_on, px * 4u)) {
-            fprintf(stderr, "gpu coherence selftest [wide-fill]: Fill changed the authentic frame (fade=%d)\n", fade);
+        if (memcmp(sw_off, sw_on, WIDE_VRAM_SIZE) || memcmp(gpu_off, gpu_on, WIDE_VRAM_SIZE)) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: %s Fill changed guest VRAM (fade=%d)\n", name, fade);
             ok = 0;
         }
-        for (uint32_t y = 0; ok && y < FB_H; y++) {
+        for (uint32_t y = 0; ok && wing && y < FB_H; y++) {
             for (uint32_t x = 0; x < 512u; x++) {
                 const size_t i = (size_t)y * 512u + x;
-                const uint32_t want = wide_expect(fade, x, y);
-                if (x < 2u * WIDE_D && sw_wing[i] != gpu_wing[i]) {
-                    fprintf(stderr, "gpu coherence selftest [wide-fill]: canvas (%u,%u) software=%08x vulkan=%08x\n",
-                            x, y, (unsigned)sw_wing[i], (unsigned)gpu_wing[i]);
-                    ok = 0; break;
-                }
+                const uint32_t want = wide_expect(wing, fade, x, y);
                 if (sw_wing[i] != want || gpu_wing[i] != want) {
-                    fprintf(stderr, "gpu coherence selftest [wide-fill]: canvas (%u,%u) software=%08x vulkan=%08x want=%08x (fade=%d)\n",
-                            x, y, (unsigned)sw_wing[i], (unsigned)gpu_wing[i], (unsigned)want, fade);
+                    fprintf(stderr, "gpu coherence selftest [wide-fill]: %s canvas (%u,%u) software=%08x vulkan=%08x want=%08x (fade=%d)\n",
+                            name, x, y, (unsigned)sw_wing[i], (unsigned)gpu_wing[i], (unsigned)want, fade);
                     ok = 0; break;
                 }
             }
         }
-        /* The bar is in the authentic frame, so the test above saw a list that drew it. */
+        /* The bar is in the authentic frame, so the comparison above saw a list that drew it. */
         if (ok && !fade && sw_on[120u * 512u + 240u] != WIDE_BAR) {
             fprintf(stderr, "gpu coherence selftest [wide-fill]: the bar is missing from the frame\n");
             ok = 0;
         }
         if (ok)
-            printf("gpu coherence selftest: PASS %-22s fade=%d wing=%d scale=%d\n",
-                   "wide-fill", fade, WIDE_D, s_scale);
+            printf("gpu coherence selftest: PASS %-22s %s fade=%d wing=%d scale=%d\n",
+                   "wide-fill", name, fade, wing, s_scale);
     }
+    return ok;
+}
+
+static int coherence_run_wide_fill(void) {
+    const size_t px = (size_t)512 * FB_H;
+    uint32_t *buf = (uint32_t *)malloc((size_t)WIDE_VRAM_SIZE * 4u + px * 4u * 2u);
+    if (!buf) return 0;
+    /* The PSP's 480x272 is already 16:9 to within 4 pixels, so 16:9 has no wings. */
+    int ok = wide_aspect("16:9", 1920, 1080, 0, buf, px) &&
+             wide_aspect("21:9", 2520, 1080, WIDE_D, buf, px) &&
+             wide_aspect("32:9", 3840, 1080, 240, buf, px);
     coherence_reset_targets();
     free(buf);
     return ok;

@@ -1128,54 +1128,76 @@ static void build_wide_list(int fade, int narrow) {
     W(0x0C, 0u);
 }
 
-static void run_wide_list(int wing, int fade, int narrow, uint32_t *frame) {
-    memset(SR_HOST(WIDE_FB), 0, 512u * 272u * 4u);
+#define WIDE_VRAM      0x04000000u
+#define WIDE_VRAM_SIZE 0x00200000u
+
+/* Run the list with wing width `wing` from zeroed VRAM and copy all of guest VRAM to `vram`. */
+static void run_wide_list(int wing, int fade, int narrow, uint8_t *vram) {
+    memset(SR_HOST(WIDE_VRAM), 0, WIDE_VRAM_SIZE);
     expect(ge_wide_set_wing(wing) == wing, "wide_fill", "the wing width is taken as given");
     ge_wide_note_display(WIDE_FB);
     build_wide_list(fade, narrow);
     expect(ge_run_list(LIST_WIDE, 0) == 0, "wide_fill", "list did not reach END");
-    memcpy(frame, SR_HOST(WIDE_FB), 512u * 272u * 4u);
+    memcpy(vram, SR_HOST(WIDE_VRAM), WIDE_VRAM_SIZE);
 }
 
 static void test_ge_wide_fill(void) {
-    expect(ge_wide_wing_for(2520, 1080) == WIDE_D, "wide_fill", "21:9 is a 76-pixel wing");
-    expect(ge_wide_wing_for(3840, 1080) == 240, "wide_fill", "32:9 is a 240-pixel wing");
-    expect(ge_wide_wing_for(1920, 1080) == 0 && ge_wide_wing_for(1280, 1024) == 0,
-           "wide_fill", "a window no wider than 30:17 has no wings");
+    /* Window sizes at 16:9, 21:9 and 32:9 and the wing each gives: the PSP's 480x272 is
+     * already 16:9 to within 4 pixels, so 16:9 has no wings. */
+    static const struct { int w, h, wing; const char *name; } aspects[] = {
+        { 1920, 1080, 0, "16:9" }, { 2520, 1080, WIDE_D, "21:9" }, { 3840, 1080, 240, "32:9" },
+    };
+    for (size_t i = 0; i < sizeof aspects / sizeof aspects[0]; i++)
+        expect(ge_wide_wing_for(aspects[i].w, aspects[i].h) == aspects[i].wing, "wide_fill",
+               "the wing width of a 16:9, 21:9 or 32:9 window");
+    expect(ge_wide_wing_for(1280, 1024) == 0, "wide_fill", "a window narrower than 30:17 has no wings");
     expect(ge_wide_wing_for(7680, 1080) == GE_WIDE_MAX_WING, "wide_fill", "the wing is capped");
     expect(ge_wide_set_wing(77) == 76 && ge_wide_set_wing(0) == 0, "wide_fill",
            "a wing width rounds down to a multiple of 4");
 
-    const size_t px = 512u * 272u;
-    uint32_t *off = (uint32_t *)malloc(px * 4u), *on = (uint32_t *)malloc(px * 4u);
+    uint8_t *off = (uint8_t *)malloc(WIDE_VRAM_SIZE), *on = (uint8_t *)malloc(WIDE_VRAM_SIZE);
     if (!off || !on) { expect(0, "wide_fill", "no memory"); free(off); free(on); return; }
-    for (int fade = 0; fade < 2; fade++) {
-        run_wide_list(0, fade, 0, off);
-        expect(!ge_wide_canvas(WIDE_FB, NULL) && !ge_wide_drawn(WIDE_FB), "wide_fill",
-               "Fill off makes no canvas");
-        run_wide_list(WIDE_D, fade, 0, on);
-        expect(!memcmp(off, on, px * 4u), "wide_fill", "Fill leaves the authentic frame unchanged");
-        expect(fade || on[120u * 512u + 240u] == WIDE_BAR, "wide_fill", "the bar is in the frame");
-        int fmt = -1;
-        const uint32_t *c = ge_wide_canvas(WIDE_FB, &fmt);
-        expect(c && fmt == 3 && ge_wide_drawn(WIDE_FB), "wide_fill", "Fill on draws the canvas");
-        size_t bad = 0;
-        for (uint32_t y = 0; c && y < 272u; y++)
-            for (uint32_t x = 0; x < 512u; x++) {
-                uint32_t want = x >= 2u * WIDE_D ? 0u
-                              : fade ? WIDE_FADE
-                              : (y >= 68u && y <= 203u) ? WIDE_QUAD : WIDE_BG;
-                if (c[y * 512u + x] != want) {
-                    if (!bad)
-                        fprintf(stderr, "wide_fill: canvas (%u,%u) = %08x, want %08x (fade=%d)\n",
-                                x, y, (unsigned)c[y * 512u + x], (unsigned)want, fade);
-                    bad++;
-                }
+    for (size_t a = 0; a < sizeof aspects / sizeof aspects[0]; a++) {
+        const int wing = ge_wide_wing_for(aspects[a].w, aspects[a].h);
+        for (int fade = 0; fade < 2; fade++) {
+            run_wide_list(0, fade, 0, off);
+            expect(!ge_wide_canvas(WIDE_FB, NULL) && !ge_wide_drawn(WIDE_FB), "wide_fill",
+                   "Fill off makes no canvas");
+            run_wide_list(wing, fade, 0, on);
+            if (memcmp(off, on, WIDE_VRAM_SIZE)) {
+                fprintf(stderr, "wide_fill: %s (wing %d) changed guest VRAM (fade=%d)\n",
+                        aspects[a].name, wing, fade);
+                expect(0, "wide_fill", "Fill leaves guest VRAM and the authentic frame unchanged");
             }
-        expect(!bad, "wide_fill", "the wings hold the 3D quad and the clear, never the bar");
-        ge_wide_shown(WIDE_FB);
-        expect(!ge_wide_drawn(WIDE_FB), "wide_fill", "showing a frame resets its drawn flag");
-        ge_wide_set_wing(0);
+            uint32_t bar;
+            memcpy(&bar, on + (120u * 512u + 240u) * 4u, 4u);
+            expect(fade || bar == WIDE_BAR, "wide_fill", "the bar is in the frame");
+            int fmt = -1;
+            const uint32_t *c = ge_wide_canvas(WIDE_FB, &fmt);
+            if (!wing) {
+                expect(!c && !ge_wide_drawn(WIDE_FB), "wide_fill", "a 16:9 window makes no canvas");
+                continue;
+            }
+            expect(c && fmt == 3 && ge_wide_drawn(WIDE_FB), "wide_fill", "Fill on draws the canvas");
+            size_t bad = 0;
+            for (uint32_t y = 0; c && y < 272u; y++)
+                for (uint32_t x = 0; x < GE_WIDE_CANVAS_W; x++) {
+                    uint32_t want = x >= 2u * (uint32_t)wing ? 0u
+                                  : fade ? WIDE_FADE
+                                  : (y >= 68u && y <= 203u) ? WIDE_QUAD : WIDE_BG;
+                    if (c[y * GE_WIDE_CANVAS_W + x] != want) {
+                        if (!bad)
+                            fprintf(stderr, "wide_fill: %s canvas (%u,%u) = %08x, want %08x (fade=%d)\n",
+                                    aspects[a].name, x, y, (unsigned)c[y * GE_WIDE_CANVAS_W + x],
+                                    (unsigned)want, fade);
+                        bad++;
+                    }
+                }
+            expect(!bad, "wide_fill", "the wings hold the 3D quad and the clear, never the bar");
+            ge_wide_shown(WIDE_FB);
+            expect(!ge_wide_drawn(WIDE_FB), "wide_fill", "showing a frame resets its drawn flag");
+            ge_wide_set_wing(0);
+        }
     }
     run_wide_list(WIDE_D, 0, 1, on);
     expect(!ge_wide_canvas(WIDE_FB, NULL) && !ge_wide_drawn(WIDE_FB), "wide_fill",
