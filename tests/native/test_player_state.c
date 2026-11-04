@@ -2293,8 +2293,8 @@ static void test_report_this_game(void) {
         assert(player_error_report_problem(&app->last_error, value, sizeof(value)) > 0);
         assert(strcmp(value, "RUNTIME_PREMATURE_EXIT, exit code 3") == 0);
         /* A card that is not about a game stopping offers no report. */
-        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library", "x",
-                             "Return to Library", VIEW_LIBRARY);
+        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library", "x",
+                             "Back to library", VIEW_LIBRARY);
         assert(!player_error_offers_report(&app->last_error));
         assert(app->last_error.stop_boundary[0] == '\0');
         /* The title page's report has no problem line. */
@@ -2408,7 +2408,7 @@ static void test_library_card_status_text(void) {
     assert(n == strlen(out));
 
     player_library_status_text(false, true, false, false, 0, NULL, out, sizeof(out));
-    assert(strcmp(out, "Status: Checking package...") == 0);
+    assert(strcmp(out, "Status: Checking package…") == 0);
 
     /* The reason from a copied library: the identity record is missing. */
     const char *reason =
@@ -3294,7 +3294,7 @@ static void test_error_cards_are_plain(void) {
 
     /* An unknown code gets a plain badge, never the code. */
     player_app_set_error(app, "SOME_INTERNAL_CODE", "Something Went Wrong", "Plain words.",
-                         "Return to Library", VIEW_LIBRARY);
+                         "Back to library", VIEW_LIBRARY);
     assert(strcmp(player_error_badge(&app->last_error), "Problem") == 0);
     assert(player_error_retry_label(&app->last_error) == NULL);
     assert(!player_app_retry_from_error(app));
@@ -3312,7 +3312,7 @@ static void test_error_cards_are_plain(void) {
     player_app_set_game_stop_error(app, "RUNTIME_SEMANTIC_BOUNDARY",
                                    "unsupported-import-scenetadhocinit", 308u, 9, 9000u,
                                    "TEST00042", report_run_log);
-    assert(strcmp(app->last_error.title, "Game Stopped Early") == 0);
+    assert(strcmp(app->last_error.title, "Game stopped early") == 0);
     assert(strcmp(player_error_badge(&app->last_error), "Game stopped") == 0);
     assert(strstr(app->last_error.message, "ad hoc wireless play") != NULL);
     assert(strstr(app->last_error.message, "unsupported-") == NULL);
@@ -3322,7 +3322,7 @@ static void test_error_cards_are_plain(void) {
     char report[PLAYER_ERROR_DETAILS_MAX + 4096];
     assert(player_app_format_error_report(app, "v0.0.1", report, sizeof(report)) > 0);
     assert(strstr(report, "Nakagawa Recomp v0.0.1\n") != NULL);
-    assert(strstr(report, "Problem: Game Stopped Early\n") != NULL);
+    assert(strstr(report, "Problem: Game stopped early\n") != NULL);
     assert(strstr(report, "Code: RUNTIME_SEMANTIC_BOUNDARY\n") != NULL);
     assert(strstr(report, "Game: Plain Card Fixture\n") != NULL);
     assert(strstr(report, "Disc ID: TEST00042\n") != NULL);
@@ -3355,7 +3355,7 @@ static void test_error_cards_are_plain(void) {
     package_builder_init_session(&app->build_session, "TEST00042", "Plain Card Fixture");
     player_app_set_build_error(app, "compile", "PACKAGE_BUILD_FAILED: build exited with code 2",
                                NULL);
-    assert(strcmp(app->last_error.title, "Couldn't Finish Building") == 0);
+    assert(strcmp(app->last_error.title, "Couldn't finish building") == 0);
     assert(strstr(app->last_error.message, "PACKAGE_BUILD_FAILED") == NULL);
     assert(strcmp(player_error_retry_label(&app->last_error), "Try again") == 0);
     assert(player_error_leads_with_message(&app->last_error));
@@ -3363,14 +3363,14 @@ static void test_error_cards_are_plain(void) {
                                "PACKAGE_DISK_FULL: At least 1,234 bytes are needed for "
                                "the package files; 56 bytes are free.", NULL);
     assert(strcmp(app->last_error.error_code, "PACKAGE_DISK_FULL") == 0);
-    assert(strcmp(app->last_error.title, "Not Enough Disk Space") == 0);
+    assert(strcmp(app->last_error.title, "Not enough disk space") == 0);
     assert(strstr(app->last_error.message, "1,234 bytes") != NULL);
     assert(strstr(app->last_error.message, "56 bytes") != NULL);
     assert(strstr(app->last_error.message, "PACKAGE_DISK_FULL") == NULL);
     player_app_set_build_error(app, "package",
                                "[Errno 28] No space left on device: 'package.staging'", NULL);
     assert(strcmp(app->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
-    assert(strcmp(app->last_error.title, "Couldn't Finish Building") == 0);
+    assert(strcmp(app->last_error.title, "Couldn't finish building") == 0);
     assert(strstr(app->last_error.message, "Compilation ran out of disk space") != NULL);
     assert(strstr(app->last_error.message, "package size could be measured") != NULL);
     assert(strcmp(player_error_retry_label(&app->last_error), "Try again") == 0);
@@ -3474,14 +3474,14 @@ static void test_windows_block_cards_name_the_block(void) {
         const char *title;
         const char *names;
     } blocks[] = {
-        {5, "WINDOWS_BLOCKED_START", "Windows Blocked the Game",
+        {5, "WINDOWS_BLOCKED_START", "Windows blocked the game",
          "attack surface reduction rule"},
-        {225, "WINDOWS_DEFENDER_THREAT", "Windows Security Blocked the Game",
+        {225, "WINDOWS_DEFENDER_THREAT", "Windows Security blocked the game",
          "contains a threat"},
-        {226, "WINDOWS_DEFENDER_THREAT", "Windows Security Blocked the Game",
+        {226, "WINDOWS_DEFENDER_THREAT", "Windows Security blocked the game",
          "contains a threat"},
-        {1260, "WINDOWS_POLICY_BLOCKED", "Windows Blocked the Game", "A Windows policy"},
-        {4551, "WINDOWS_POLICY_BLOCKED", "Windows Blocked the Game", "A Windows policy"},
+        {1260, "WINDOWS_POLICY_BLOCKED", "Windows blocked the game", "A Windows policy"},
+        {4551, "WINDOWS_POLICY_BLOCKED", "Windows blocked the game", "A Windows policy"},
     };
     for (size_t i = 0; i < sizeof(blocks) / sizeof(blocks[0]); i++) {
         work->session.process.spawn_error = blocks[i].os_error;
@@ -3506,7 +3506,7 @@ static void test_windows_block_cards_name_the_block(void) {
     assert(!player_app_launch_finish(app, work));
     assert(strcmp(app->last_error.error_code, "PROCESS_SPAWN_FAILED") == 0);
     NkSpawnBlockReport report;
-    assert(!nk_launch_describe_spawn_block(0, "the game", "Game", "x.exe", &report));
+    assert(!nk_launch_describe_spawn_block(0, "the game", "game", "x.exe", &report));
     assert(report.code[0] == '\0');
     free(work);
     free(app);
@@ -5358,7 +5358,7 @@ static void test_psn_package_imports_as_its_iso(void) {
     assert(app->wizard.extraction_percent == 50);
     player_app_wizard_cancel(app);
     assert(player_app_wizard_cancel_requested(app));
-    assert(strcmp(app->wizard.status_message, "Cancelling the conversion...") == 0);
+    assert(strcmp(app->wizard.status_message, "Cancelling the conversion…") == 0);
     player_app_psn_conversion_finish(app);
     assert(app->active_view == VIEW_LIBRARY);
     assert(!app->wizard.is_extracting && !app->psn_conversion_active);
@@ -9601,7 +9601,7 @@ int main(int argc, char **argv) {
         /* #1286: a preflight refusal is not a failed build. The card leads with
            the reason, without its code. */
         assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_REFUSED") == 0);
-        assert(strcmp(bapp->last_error.title, "Build Not Started") == 0);
+        assert(strcmp(bapp->last_error.title, "Build not started") == 0);
         assert(strncmp(bapp->last_error.message, "EBOOT.BIN is encrypted and built-in", 35) == 0);
         assert(strstr(bapp->last_error.message, "ENCRYPTED_EXECUTABLE") == NULL);
         assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
@@ -10522,7 +10522,7 @@ int main(int argc, char **argv) {
         assert(rep->active_view == VIEW_ERROR);
         assert(strcmp(rep->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0);
         assert(rep->last_error.message[0] != '\0');
-        assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
+        assert(strcmp(rep->last_error.recovery_action_label, "Back to library") == 0);
         assert(rep->last_error.return_view == VIEW_LIBRARY);
         /* Recovery: restore the executable and launch again. */
         copy_executable_file(self_path, package_exe);
@@ -10554,7 +10554,7 @@ int main(int argc, char **argv) {
                       "LAUNCH_DETAILS_UNAVAILABLE") == 0);
         assert(strstr(rep->last_error.message, "launch details") != NULL);
         assert(strcmp(rep->last_error.recovery_action_label,
-                      "Return to Library") == 0);
+                      "Back to library") == 0);
         assert(rep->last_error.return_view == VIEW_LIBRARY);
         restore_environment_value(cache_root_env, old_cache_root_env,
                                   had_cache_root_env);
@@ -10613,13 +10613,13 @@ int main(int argc, char **argv) {
         assert(rep->active_view == VIEW_ERROR);
         assert(strcmp(rep->last_error.error_code, "RUNTIME_PREMATURE_EXIT") == 0);
         /* #1282: a plain title and sentence; the exit code is in the details. */
-        assert(strcmp(rep->last_error.title, "Game Couldn't Start") == 0);
+        assert(strcmp(rep->last_error.title, "Game couldn't start") == 0);
         assert(strstr(rep->last_error.message, "Child") == NULL);
         assert(strstr(rep->last_error.message, "7") == NULL);
         assert(strstr(rep->last_error.details, "Exit code 7") != NULL);
         assert(strcmp(player_error_retry_label(&rep->last_error), "Restart game") == 0);
         assert(strcmp(rep->last_error.subject_disc_id, rep->games[0].disc_id) == 0);
-        assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
+        assert(strcmp(rep->last_error.recovery_action_label, "Back to library") == 0);
         assert(rep->last_error.return_view == VIEW_LIBRARY);
         /* Recovery after the premature exit. */
         set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
@@ -10637,7 +10637,7 @@ int main(int argc, char **argv) {
         assert_session_released(&rep->launch_session);
         assert(rep->active_view == VIEW_ERROR);
         assert(strcmp(rep->last_error.error_code, "RUNTIME_ERROR_EXIT") == 0);
-        assert(strcmp(rep->last_error.title, "Game Closed Unexpectedly") == 0);
+        assert(strcmp(rep->last_error.title, "Game closed unexpectedly") == 0);
         assert(strstr(rep->last_error.message, "last in-game save") != NULL);
         assert(strstr(rep->last_error.message, "9") == NULL);
         assert(strstr(rep->last_error.details, "Exit code 9") != NULL);
@@ -10657,7 +10657,7 @@ int main(int argc, char **argv) {
         assert(strcmp(rep->last_error.error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0);
         /* #1282: what the game needed, in plain words, and what happens to
            progress; the raw boundary and its tracker issue are the details. */
-        assert(strcmp(rep->last_error.title, "Game Stopped Early") == 0);
+        assert(strcmp(rep->last_error.title, "Game stopped early") == 0);
         assert(strstr(rep->last_error.message, "a processor feature") != NULL);
         assert(strstr(rep->last_error.message, "last in-game save") != NULL);
         assert(strstr(rep->last_error.message, "unsupported-") == NULL);
@@ -10726,7 +10726,7 @@ int main(int argc, char **argv) {
         assert_session_released(&rep->launch_session);
         assert(rep->active_view == VIEW_ERROR);
         assert(strcmp(rep->last_error.error_code, "RUNTIME_START_TIMEOUT") == 0);
-        assert(strcmp(rep->last_error.title, "Game Couldn't Start") == 0);
+        assert(strcmp(rep->last_error.title, "Game couldn't start") == 0);
         assert(strstr(rep->last_error.message, "The game didn't start") != NULL);
         assert(strcmp(player_error_badge(&rep->last_error), "Game didn't start") == 0);
         assert(player_error_leads_with_message(&rep->last_error));
@@ -10734,7 +10734,7 @@ int main(int argc, char **argv) {
         assert(strstr(rep->last_error.details, "15000 ms") != NULL);
         assert(strcmp(player_error_retry_label(&rep->last_error), "Restart game") == 0);
         assert(strcmp(rep->last_error.subject_disc_id, rep->games[0].disc_id) == 0);
-        assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
+        assert(strcmp(rep->last_error.recovery_action_label, "Back to library") == 0);
         assert(rep->last_error.return_view == VIEW_LIBRARY);
         assert(strcmp(rep->last_error.log_file_path, run_log_last) == 0);
         assert(!nk_platform_file_exists(hold_event_path));
@@ -10923,7 +10923,7 @@ int main(int argc, char **argv) {
                 warning_stopped_game = !rep->is_game_running &&
                     strcmp(rep->last_error.error_code, "RUNTIME_NO_NEW_FRAMES") == 0;
                 warning_card_has_details =
-                    strcmp(rep->last_error.title, "Game Stopped Early") == 0 &&
+                    strcmp(rep->last_error.title, "Game stopped early") == 0 &&
                     strstr(rep->last_error.message, "last in-game save") != NULL &&
                     strstr(rep->last_error.details, "no_frame_vblanks=1800") != NULL &&
                     strstr(rep->last_error.details, "ready=1 delay=2 wait=3 spin=4") != NULL;
@@ -11016,7 +11016,7 @@ int main(int argc, char **argv) {
                 player_app_stop_stalled_game(rep);
                 dark_stopped = !rep->is_game_running &&
                     strcmp(rep->last_error.error_code, "RUNTIME_NO_PICTURE") == 0 &&
-                    strcmp(rep->last_error.title, "Game Stopped Early") == 0 &&
+                    strcmp(rep->last_error.title, "Game stopped early") == 0 &&
                     strstr(rep->last_error.message, "black screen") != NULL &&
                     strstr(rep->last_error.details, "dark_vblanks=2400") != NULL;
             }
@@ -11336,7 +11336,7 @@ int main(int argc, char **argv) {
                 assert(capp->active_view == VIEW_ERROR);
                 assert(capp->prerequisites.phase == PLAYER_PREREQ_FAILED);
                 assert(strcmp(capp->last_error.error_code, errors[i]) == 0);
-                assert(strcmp(capp->last_error.recovery_action_label, "Retry Download") == 0);
+                assert(strcmp(capp->last_error.recovery_action_label, "Retry download") == 0);
                 assert(capp->last_error.return_view == VIEW_PREREQ_CONSENT);
                 player_app_prereq_retry(capp);
                 assert(capp->active_view == VIEW_PREREQ_CONSENT);

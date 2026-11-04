@@ -1089,6 +1089,7 @@ uint32_t mpeg_query_userdata_es_size(uint32_t mpegAddr, uint32_t esSizeAddr, uin
 uint32_t mpeg_get_userdata_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint32_t resultAddr);
 #ifndef SR_HLE_THREAD_SELFTEST
 uint32_t mpeg_flush_all_stream(uint32_t mpegAddr);
+uint32_t mpeg_flush_stream(uint32_t mpegAddr, uint32_t sid);
 uint32_t mpeg_avc_decode_flush(uint32_t mpegAddr);
 #endif
 
@@ -1208,6 +1209,22 @@ static uint32_t h_MpegFlushAllStream(CpuState *s) {
     return 0;
 }
 
+/* sceMpegFlushStream(mpeg, stream): validates the context and the stream id (the value
+ * sceMpegRegistStream returned) and returns 0, following PPSSPP (caa91b54, Core/HLE/sceMpeg.cpp),
+ * whose handler does no flush.  What a PSP discards is unmeasured; the stream and ring state stay
+ * as they are (sceMpegFlushAllStream clears them).  The descriptor check matches
+ * sceMpegFlushAllStream.  In the executable HLE harness mpeg.c is not linked, so the handler only
+ * checks the descriptor there. */
+static uint32_t h_MpegFlushStream(CpuState *s) {
+    uint32_t mpegAddr = A0;
+    if (!mpegAddr || !sr_guest_span_readable(mpegAddr, 4u)) return 0x80020003u;
+#ifndef SR_HLE_THREAD_SELFTEST
+    return mpeg_flush_stream(mpegAddr, A1);
+#else
+    return 0;
+#endif
+}
+
 /* sceMpegAvcDecodeFlush(mpeg): flush queued AVC decoding frames/packets.
  * Public behaviour reference: PSPSDK pspmpeg.h and PPSSPP Core/HLE/sceMpeg.cpp.
  * Resets the ring packet counters and any pending AVC decode timestamps. */
@@ -1232,6 +1249,7 @@ void hle_register_mpeg_shared_handlers(void) {
     /* MPEG flush/destruct family: shared between selftest harness and production. */
     sr_hle_register(0x13407f13, "sceMpegRingbufferDestruct", h_MpegRingbufferDestruct);
     sr_hle_register(0x707b7629, "sceMpegFlushAllStream", h_MpegFlushAllStream);
+    sr_hle_register(0x500f0429, "sceMpegFlushStream", h_MpegFlushStream);
     sr_hle_register(0x4571cc64, "sceMpegAvcDecodeFlush", h_MpegAvcDecodeFlush);
 }
 
