@@ -225,8 +225,8 @@ int sr_vfpu_validate_sin_interval(const int16_t *delta, size_t count,
  *   vfpu_sin_lut_delta  [arg>>6]    arg <= 0x7FFFFF -> <= 131071
  *   vfpu_exp2_lut65536  [x>>16]     x <= 0x7FFFFF -> <= 127 (128 entries)
  *   vfpu_exp2_lut       [x>>6]      x <= 0x7FFFFF -> <= 131071
- *   vfpu_log2_lut65536  [x>>16+0/1] x <= 0x7FFFFF -> <= 128 (129 entries)
- *   vfpu_log2_lut65536_quadratic [x>>16] -> <= 127 (128 entries)
+ *   vfpu_log2_lut65536  [x>>16+0/1] x <= 0x7FFFFF -> <= 128; x == 0x800000 -> [128] only (129 entries)
+ *   vfpu_log2_lut65536_quadratic [x>>16] x <= 0x7FFFFF -> <= 127, unread at 0x800000 (128 entries)
  *   vfpu_log2_lut       [d][i>>6]   d in [0,7], i <= 0x7FFFFF -> in 8x131072x2
  *   vfpu_asin_lut65536  [x>>16]     x <= 0x800000 -> <= 127 (512 entries)
  *

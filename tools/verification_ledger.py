@@ -112,6 +112,29 @@ VFPU_MEASURED_SELFTESTS = {
         "oracle_id": "PSP-VFPU-FORMS-001",
         "reason": "compares the AOT body and the interpreter with the result words the PSP-3000 run recorded",
     },
+    "vfpu-interp-selftest:check_vfpu_compare_measured_words": {
+        "oracle_id": "PSP-VFPU-CMP-001",
+        "reason": "runs vscmp.s, vsge.s and vslt.s through the AOT body and the interpreter on the 15 "
+                  "measured operand pairs and compares the 45 result words",
+    },
+    "vfpu-interp-selftest:check_psp_measured_funnel": {
+        "oracle_id": "PSP-VFPU-FUNNEL-001",
+        "reason": "replays every pass-0 vfad/vavg cell (.p/.t/.q, three S prefixes) through the interpreter, "
+                  "which the generated code routes to",
+    },
+    "vfpu-interp-selftest:check_psp_measured_sort": {
+        "oracle_id": "PSP-VFPU-SORT-001",
+        "reason": "replays every pass-0 vsrt1-4.q cell through the interpreter, which the generated code routes to",
+    },
+    "vfpu-interp-selftest:check_psp_measured_forms2": {
+        "oracle_id": "PSP-VFPU-FORMS2-001",
+        "reason": "replays pass 0 of the vrnd*, vf2h and vc2i log through the interpreter, which the generated "
+                  "code routes to",
+    },
+    "vfpu-interp-selftest:check_vrexp2_measured_words": {
+        "oracle_id": "PSP-VFPU-TRANSCENDENTAL-001",
+        "reason": "compares vrexp2.s in the AOT body and the interpreter with the 63 measured result words",
+    },
 }
 
 #: The `src/rt/recomp.c` section whose kernels carry the PPSSPP table-kernel derivation.

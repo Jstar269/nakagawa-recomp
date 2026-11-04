@@ -1676,6 +1676,9 @@ static inline void hle_register_media_selftest_handlers(void) {
     hle_register_mpeg_ycbcr_handlers();
     hle_register_mpeg_avc_decode_handler();
     hle_register_mpeg_userdata_handlers();
+    /* The flush family (sceMpegFlushStream among it), so its stream state is checked through the
+     * production handlers. */
+    hle_register_mpeg_shared_handlers();
     /* The media fixture drives the production scePsmfPlayer handlers through sr_syscall,
      * so the guest getter and the A/V presentation boundaries are reachable from a
      * production-path test (issue #279). */

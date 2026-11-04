@@ -669,7 +669,7 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
             raise PackageBuildError(
                 f"DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than "
                 f"{MAX_GUEST_MODULES} guest-module candidates; larger "
-                "module sets are in the works."
+                "module sets aren't supported yet."
             )
 
     candidates.extend(_iso_embedded_module_candidates(iso_path, file_size, walked, selected_name))
@@ -677,7 +677,7 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
         raise PackageBuildError(
             f"DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than "
             f"{MAX_GUEST_MODULES} guest-module candidates; larger "
-            "module sets are in the works."
+            "module sets aren't supported yet."
         )
 
     names: dict[str, str] = {}
