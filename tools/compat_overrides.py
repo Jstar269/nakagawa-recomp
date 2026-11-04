@@ -184,17 +184,10 @@ GUEST_PATCHES = [
 
 # --- tools/codegen.py: custom per-address stubs -----------------------------
 CODEGEN_CUSTOM_STUBS = [
-    dict(address=0x000011b0, category="hle_boundary", name="__register_frame_info bypass",
-         reason="C++ exception-frame registration; no real dynamic unwinder underneath the "
-                "recompiled runtime for it to register with",
-         test="none"),
-    dict(address=0x0000260c, category="hle_boundary", name="exception helper bypass",
-         reason="same rationale as 0x11b0 -- libc exception-support internal, no-op here",
-         test="none"),
-    dict(address=0x0000fe3c, category="faithful_abi_bridge", name="_getmodreent / FileIO_GetState",
-         reason="native reimplementation of newlib's per-thread reentrancy-struct lookup, "
-                "adapted to this runtime's k0-based thread model",
-         test="none"),
+    # 0x000011b0 (__register_frame_info bypass), 0x0000260c (exception helper bypass),
+    # 0x0000fe3c (_getmodreent), 0x00015ea0 (CSV tokenizer) and 0x000149a8 (strcpy):
+    # retired under #363. Each now translates as written: the guest's own frame
+    # registration, reent lookup through the thread's k0, strtok and strcpy.
     dict(address=0x00010738, category="hle_boundary", name="_malloc_r -> sr_newlib_malloc bridge",
          reason="bridges retail dlmalloc to the host-owned arena. Retail memalign/realloc edit "
                 "dlmalloc headers directly, where bit 0 is PREV_INUSE; the host header uses bit "
@@ -216,9 +209,6 @@ CODEGEN_CUSTOM_STUBS = [
          reason="the retail body walks, unlinks, and rewrites dlmalloc chunks, so it must share "
                 "the host metadata ABI used by malloc/free/memalign.",
          test="tools/test_codegen_retail_allocator.py"),
-    dict(address=0x00015ea0, category="faithful_abi_bridge", name="CSV tokenizer (strtok-family)",
-         reason="native reimplementation of FUN_00015ea0's cached-token-table tokenizer",
-         test="none"),
     dict(address=0x000143b0, category="faithful_abi_bridge", name="guest sprintf",
          reason="the translated original formatter corrupted %s arguments during boot; this "
                 "native implementation preserves PSP EABI varargs placement (r6..r11, then stack), "
@@ -253,10 +243,6 @@ CODEGEN_CUSTOM_STUBS = [
     dict(address=0x000114a8, category="faithful_abi_bridge", name="sceKernelMemset native (alias)",
          reason="see 0x114c0",
          test="make gpu-coherence-selftest (native-bulk-copy: rendered 5551 rect read and fill kept coherent, #1170)"),
-    dict(address=0x000149a8, category="faithful_abi_bridge", name="strcpy native",
-         reason="the boot file-open wrapper's source path copy was previously miscompiled as "
-                "strcmp, corrupting every resource path; this native strcpy replaces it",
-         test="none"),
 ]
 
 # --- tools/codegen.py: HST profile entry roles -----------------------------
