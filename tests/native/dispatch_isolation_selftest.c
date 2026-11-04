@@ -2185,7 +2185,8 @@ static void test_null_code_pointer_is_not_the_offset0_function(const char *self_
 /* #2016: release a frame and return to the resume PC in t3: addiu sp, sp, 0x10 ;
  * addu ra, t3, zero ; jr ra ; nop */
 #define HOSTRET_PAST_INTERP  (HOSTRET_EXEC_START + 0x40u)
-#define HOSTRET_OUTER_CALL_PC (HOSTRET_EXEC_START + 0x50u)  /* the outer caller's jal (not run) */
+/* The outer caller's site: jal HOSTRET_INTERP_RET ; nop. Only the recursive check runs it. */
+#define HOSTRET_OUTER_CALL_PC (HOSTRET_EXEC_START + 0x50u)
 #define HOSTRET_OUTER_RESUME (HOSTRET_OUTER_CALL_PC + 8u)   /* addiu v1, v1, 0x100 ; jr t1 ; nop */
 #define HOSTRET_EXEC_END     (HOSTRET_EXEC_START + 0x68u)
 
@@ -2278,6 +2279,8 @@ static void hostret_setup(void) {
     MEM_W32(HOSTRET_PAST_INTERP + 4u, 0x0160f821u);
     MEM_W32(HOSTRET_PAST_INTERP + 8u, 0x03e00008u);
     MEM_W32(HOSTRET_PAST_INTERP + 12u, 0x00000000u);
+    MEM_W32(HOSTRET_OUTER_CALL_PC, 0x0c000000u | ((HOSTRET_INTERP_RET >> 2) & 0x03ffffffu));
+    MEM_W32(HOSTRET_OUTER_CALL_PC + 4u, 0x00000000u);
     MEM_W32(HOSTRET_OUTER_RESUME, 0x24630100u);
     MEM_W32(HOSTRET_OUTER_RESUME + 4u, 0x01200008u);
     MEM_W32(HOSTRET_OUTER_RESUME + 8u, 0x00000000u);
@@ -2377,6 +2380,27 @@ static void test_host_entries_return_through_the_host_return_address(const char 
           "an interpreted return past an unchecked call was accepted "
           "(result=%d flow=%u target=0x%08x handoffs=%d v1=0x%08x end=%d)",
           result, s.flow_kind, s.flow_target, g_interp_handoff_hits, s.r[3], outer_end);
+    sr_cpu_clear_flow(&s);
+
+    /* A recursive shape: the interpreter runs the enclosing call's own site again, one frame
+     * deeper, and its inline callee returns to that site's resume PC. The target matches the
+     * enclosing call's resume, but $sp is below the $sp that call was made at, so this is the
+     * inline call's return, not one past the interpreter's call: it is followed (v1 + 0x100,
+     * then t1's body). Without the $sp condition it was taken for a return past the call and
+     * stopped by name. */
+    g_interp_handoff_hits = 0;
+    s = hostret_state();
+    CHECK(!sr_aot_return_boundary_begin(&s, HOSTRET_OUTER_RESUME, HOSTRET_OUTER_CALL_PC, 1u),
+          "the enclosing boundary was refused");
+    s.r[29] -= 0x10u;
+    result = dispatch_call_try(&s, HOSTRET_OUTER_CALL_PC, HOSTRET_RESUME);
+    const int deeper_flow = (int)s.flow_kind;
+    (void)sr_aot_return_boundary_end(&s);
+    CHECK(result >= 0 && deeper_flow == SR_FLOW_NONE && s.r[3] == 0x100u &&
+              g_interp_handoff_hits == 1 && sr_aot_return_boundary_top == NULL,
+          "a deeper frame's inline return to an enclosing call's resume PC was not followed "
+          "(result=%d flow=%d v1=0x%08x handoffs=%d)",
+          result, deeper_flow, s.r[3], g_interp_handoff_hits);
     sr_cpu_clear_flow(&s);
 
     /* A native body that TAIL-steps into interpreted code, which then returns to the host:

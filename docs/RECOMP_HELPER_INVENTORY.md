@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **455** (declared in `recomp.h`: 385)
-- reach class: emitter-reached 81, production-runtime-only 339, selftest-only 0, address-only 8, none 27
-- provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 420
+- helpers: **457** (declared in `recomp.h`: 387)
+- reach class: emitter-reached 81, production-runtime-only 341, selftest-only 0, address-only 8, none 27
+- provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 422
 
 ## Helpers
 
@@ -229,7 +229,9 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_aot_return_boundaries_reset` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_begin` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_capture_resume` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_aot_return_boundary_capture_return` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_discard_to_floor` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_aot_return_boundary_encloses_resume` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_end` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_grow` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_resume_live_frame` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |

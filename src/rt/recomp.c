@@ -2438,10 +2438,7 @@ int sr_aot_return_boundary_end(CpuState *s) {
          * so everything it needs is read now. */
         const uint32_t target = (uint32_t)boundary->observed_target;
         const uint32_t resume_pc = boundary->resume_pc;
-        /* The frame is the callee's, entered at the call's $sp: a `jr $ra` that leaves it
-         * there or above is its return (#2016). It owes no $sp restore. */
-        const SrGuestInterpCallBoundary call = {
-            .resume_pc = resume_pc, .entry_sp = boundary->call_sp };
+        const SrGuestInterpCallBoundary call = { .resume_pc = resume_pc };
         /* A host wrapper of an abandoned body (the stack census) may have restored its own
          * entry $sp on the way out; the frame runs on the $sp the guest restored. */
         s->r[29] = boundary->resume_sp;
@@ -2904,11 +2901,9 @@ int dispatch_call_checked(CpuState *s, uint32_t target, uint32_t resume_pc) {
  * unwinds a return elsewhere; any other caller runs its own continuation, so the body gets
  * a boundary of its own and a return elsewhere is the named #1034 stop. */
 int dispatch_call_continue(CpuState *s, uint32_t target, const SrGuestInterpCallBoundary *call) {
-    /* The rest of the call runs in its callee's frame: a `jr $ra` that leaves it at or above
-     * the call's entry $sp is the call's return (#2016). It owes no restore of its own. */
     const SrGuestInterpCallBoundary rest = {
-        .resume_pc = call->resume_pc, .entry_sp = call->entry_sp,
-        .site_boundary = call->site_boundary, .continuation = 1u };
+        .resume_pc = call->resume_pc, .site_boundary = call->site_boundary,
+        .continuation = 1u };
     if (dispatch_try_with_boundary(s, target, &rest, SR_DRAIN_CHAIN) < 0) {
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, target, call->resume_pc, 0u);
         fflush(stderr);
