@@ -38874,6 +38874,174 @@ static void test_route_stick_reaches_the_guest_through_the_controller_sample(voi
     ctrl_drain(&cpu);
 }
 
+/* Recording a live session and replaying it: SR_INLOG's ctrl_latch lines are what
+ * padscript_from_log turns into a pad-script table, so the stick has to survive both halves.
+ * The log used to print a line only when a button changed, and the table had no stick column,
+ * so a walk recorded with the analog stick replayed standing still. Also here: an unread stick
+ * press names the position in its failure, and a long route program loads (the step limit was
+ * 256, which a walked level route passes before its first obstacle). */
+static void test_route_recording_carries_the_stick_from_log_to_replay(void) {
+    extern void sr_hle_test_inlog(int on);
+    CpuState cpu;
+    RouteStickRead r[12];
+
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();
+    ctrl_env("1", "", "", "");
+    sr_ctrl_test_reset_live_input();
+    sr_hle_test_ctrl_sampling_reset();
+    starve_reset();
+    route_stick_mode(&cpu, 1u);
+    ctrl_drain(&cpu);
+
+    /* --- the latch log prints a stick that moves with no button change ---------- */
+    rt_write("STICK 255 0 PRESS 0 2\nSTICK 40 200 PRESS 0 2\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a route of stick-only presses loads");
+    {
+        char err[4096] = "";
+        FILE *capture = NULL;
+        int saved = -1;
+        sr_hle_test_inlog(1);
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        for (int i = 0; i < 6; i++) { starve_batch(1u); (void)route_stick_read(&cpu); }
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        sr_hle_test_inlog(0);
+        expect(strstr(err, "buttons 0x0000 -> 0x0000 lx=255 ly=0") != NULL,
+               "SR_INLOG logs a stick-only move, so a recording keeps where the stick went");
+        expect(strstr(err, "buttons 0x0000 -> 0x0000 lx=40 ly=200") != NULL,
+               "and each later stick-only move");
+        expect(strstr(err, "buttons 0x0000 -> 0x0000 lx=128 ly=128") != NULL,
+               "and the stick's return to centre");
+    }
+    remove(RT_PATH);
+
+    /* --- a table row holds the stick in its two extra columns ------------------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    rt_write("1 0x0000 3 255 0\n6 0x4000 2\n");
+    expect(sr_route_load(RT_PATH) == 1, "a pad-script table with a stick column loads");
+    int stick_only = 0, stick_with_cross = 0, cross_centred = 0;
+    for (int i = 0; i < 12; i++) {
+        starve_batch(1u);
+        r[0] = route_stick_read(&cpu);
+        if (route_stick_is(r[0], 0u, 255u, 0u)) stick_only++;
+        if ((r[0].buttons & NK_PSP_BTN_CROSS_BIT) && r[0].lx == 255u) stick_with_cross = 1;
+        if (route_stick_is(r[0], NK_PSP_BTN_CROSS_BIT, 128u, 128u)) cross_centred = 1;
+    }
+    expect(stick_only == 3, "a stick row with no button holds the stick for its width");
+    expect(cross_centred && !stick_with_cross, "a row without a stick column leaves the stick centred");
+    remove(RT_PATH);
+
+    /* --- overlapping rows hold the stick of the row that started last ----------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    rt_write("1 0x4000 6\n3 0x0000 2 0 128\n");
+    expect(sr_route_load(RT_PATH) == 1, "a stick row inside a press loads");
+    int pushed_while_held = 0, held_after = 0;
+    for (int i = 0; i < 10; i++) {
+        starve_batch(1u);
+        r[0] = route_stick_read(&cpu);
+        if (route_stick_is(r[0], NK_PSP_BTN_CROSS_BIT, 0u, 128u)) pushed_while_held++;
+        if (pushed_while_held && route_stick_is(r[0], NK_PSP_BTN_CROSS_BIT, 128u, 128u)) held_after = 1;
+    }
+    expect(pushed_while_held == 2, "the stick row moves the stick while the earlier press stays down");
+    expect(held_after, "and the press is still down, stick centred, once the stick row ends");
+    remove(RT_PATH);
+
+    static const char *const refused_rows[] = {
+        "1 0x4000 2 256 0\n",        /* past the axis */
+        "1 0x4000 2 128\n",          /* one axis */
+        "1 0x4000 2 12a 0\n",        /* a stray character */
+        "1 0x4000 2 0 0 7\n",        /* something after the stick */
+        "1 0x4000 2 abc\n",          /* a word where the stick would be */
+        "1 0x4000 2 -1 128\n",       /* a negative axis */
+        "1 0x4000 2 x 0\n",          /* a stray column */
+    };
+    for (size_t i = 0; i < sizeof refused_rows / sizeof refused_rows[0]; i++) {
+        sr_route_reset();
+        rt_write(refused_rows[i]);
+        expect(sr_route_load(RT_PATH) == 0 && sr_route_status() == RT_FAILED,
+               "a pad-script row whose stick columns are not '<lx> <ly>' is refused at load");
+    }
+    {
+        char err[1024] = "";
+        FILE *capture = NULL;
+        int saved = -1;
+        sr_route_reset();
+        rt_write("1 0x4000 2\n4 0x0000 3 abc\n");
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        int loaded = sr_route_load(RT_PATH);
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        expect(loaded == 0, "a row with a word after its width is refused, not replayed with a centred stick");
+        expect(strstr(err, ":2: a pad-script row's stick is '<lx> <ly>'") != NULL,
+               "the refusal names the row's line");
+    }
+    sr_route_reset();
+    rt_write("1 0x4000 2 # jump\n4 0x0000 2 0 255 # walk\n");
+    expect(sr_route_load(RT_PATH) == 1, "a comment still ends a row, with or without a stick");
+    remove(RT_PATH);
+
+    /* --- an unread stick press names the stick in its failure -------------------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", "30");
+    rt_write("STICK 128 0 PRESS 0 4\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a stick-only press with a 30-vblank read budget loads");
+    {
+        char err[2048] = "";
+        FILE *capture = NULL;
+        int saved = -1;
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        starve_batch(1u);
+        starve_batch(28u);
+        starve_batch(2u);
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        expect(sr_route_status() == RT_FAILED, "the unread stick press fails the route");
+        expect(strstr(err, "while the left stick at 128,0 was held") != NULL,
+               "the failure names the stick position the guest never read");
+    }
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", NULL);
+    remove(RT_PATH);
+
+    /* --- a long route program loads, and one past the limit is refused by name --- */
+    {
+        const int long_steps = 4096;
+        size_t cap = (size_t)(long_steps + 2) * 8u;
+        char *text = (char *)malloc(cap);
+        expect(text != NULL, "the long route's text is allocated");
+        if (text) {
+            size_t used = 0;
+            for (int i = 0; i < 300; i++) used += (size_t)snprintf(text + used, cap - used, "DELAY 1\n");
+            snprintf(text + used, cap - used, "END\n");
+            sr_route_reset();
+            rt_write(text);
+            expect(sr_route_load(RT_PATH) == 1, "a 301-step route program loads");
+            used = 0;
+            for (int i = 0; i < long_steps; i++) used += (size_t)snprintf(text + used, cap - used, "DELAY 1\n");
+            snprintf(text + used, cap - used, "END\n");
+            sr_route_reset();
+            rt_write(text);
+            char err[1024] = "";
+            FILE *capture = NULL;
+            int saved = -1;
+            int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+            int loaded = sr_route_load(RT_PATH);
+            if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+            expect(loaded == 0 && sr_route_status() == RT_FAILED,
+                   "a route program one step past the limit is refused, not cut short");
+            expect(strstr(err, "more than 4096 steps") != NULL, "the refusal names the limit");
+            free(text);
+        }
+        remove(RT_PATH);
+    }
+
+    sr_route_reset();
+    sr_hle_test_ctrl_sampling_reset();
+    ctrl_env("1", "", "", "");
+    ctrl_drain(&cpu);
+}
+
 /* sceKernelExitGame is `void sceKernelExitGame(void)`:
  *   - PSPSDK psp/sdk/include/psploadexec.h declares it with no parameter, and
  *     every psp/sdk/samples call site invokes it with no argument.
@@ -46522,6 +46690,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_scripted_input_reaches_a_starved_guest();
     test_route_read_widths_hold_for_their_reads_on_a_starved_host();
     test_route_stick_reaches_the_guest_through_the_controller_sample();
+    test_route_recording_carries_the_stick_from_log_to_replay();
 
     check_coroutine_lifecycle();
 
