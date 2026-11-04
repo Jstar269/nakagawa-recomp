@@ -837,6 +837,32 @@ class PlayerUiIdSourceTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
 
+class ErrorCodeSourceTests(unittest.TestCase):
+    """#2007: every code the player raises as a card has a badge, so none falls through to a
+    bare "Problem". The codes are read from the source, so a new one fails here until
+    player_error_badge (player_state.c) knows it."""
+
+    RAISERS = re.compile(
+        r"player_app_(?:set_error|set_error_with_details|prereq_fail)\(\s*&?\w+\s*,"
+        r"\s*\"([A-Z][A-Z0-9_]+)\"")
+
+    def test_every_literal_error_code_has_a_badge(self) -> None:
+        state = (ROOT / "src" / "player" / "player_state.c").read_text(encoding="utf-8")
+        table = state[state.index("k_error_badges[]"):state.index("const char *player_error_badge")]
+        codes_part, families_part = table.split("k_error_badge_families")
+        exact = set(re.findall(r'\{"([A-Z][A-Z0-9_]+)",\s*"', codes_part))
+        prefixes = re.findall(r'\{"([A-Z][A-Z0-9_]*_)",\s*"', families_part)
+        self.assertGreater(len(exact), 30)
+        codes: dict[str, str] = {}
+        for path in sorted((ROOT / "src" / "player").glob("*.c")):
+            for code in self.RAISERS.findall(path.read_text(encoding="utf-8")):
+                codes.setdefault(code, path.name)
+        self.assertGreater(len(codes), 20, codes)
+        missing = sorted(f"{code} ({path})" for code, path in codes.items()
+                         if code not in exact and not any(code.startswith(p) for p in prefixes))
+        self.assertEqual(missing, [], "codes raised as cards with no badge in player_error_badge")
+
+
 class LegacyRendererSourceTests(unittest.TestCase):
     """The shipped player never reaches the old renderer (owner, v0.0.1)."""
 
@@ -3955,6 +3981,62 @@ class NativePlayerUiTests(unittest.TestCase):
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertTrue(has_amber_badge(run["bmp"], badge_rect(frames[-1])))
+
+    def test_several_dropped_files_open_one_disc_and_say_what_happened(self) -> None:
+        # The real SDL drop events through the player's event loop: two disc images and a text
+        # file. The first image opens, the other waits in the queue, and the library will say
+        # what was skipped (#2007).
+        run = self.run_player(
+            "library",
+            (
+                "DROP_BEGIN",
+                "DROP_FILE=Z:/dropped/first.iso",
+                "DROP_FILE=Z:/dropped/notes.txt",
+                "DROP_FILE=Z:/dropped/second.iso",
+                "DROP_COMPLETE",
+                "WAIT_MS=100",
+            ),
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["drop_pending"], "0")
+        self.assertEqual(frames[-1]["drop_pending"], "1")
+        self.assertEqual(frames[-1]["drop_notice"], "summary")
+        self.assertEqual(frames[-1]["error"], "ISO_CORRUPT")  # the first image was looked at
+
+    def test_a_lone_dropped_file_opens_and_gets_no_summary(self) -> None:
+        run = self.run_player("library", ("DROP_FILE=Z:/dropped/only.iso", "WAIT_MS=100"))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["error"], "ISO_CORRUPT")
+        self.assertEqual(frames[-1]["drop_pending"], "0")
+        self.assertEqual(frames[-1]["drop_notice"], "none")
+
+    def test_files_dropped_while_a_game_is_being_set_up_are_ignored(self) -> None:
+        # wizard-staging has a worker extracting. A lone file (no DROP_BEGIN, as SDL sends one
+        # file) and a bracketed batch are both ignored, as a dropped file always was then:
+        # nothing is queued to open later, and no error card opens over the setup.
+        for events in (
+            ("DROP_FILE=Z:/dropped/lone.iso", "WAIT_MS=100"),
+            (
+                "DROP_BEGIN",
+                "DROP_FILE=Z:/dropped/a.iso",
+                "DROP_FILE=Z:/dropped/b.iso",
+                "DROP_COMPLETE",
+                "WAIT_MS=100",
+            ),
+        ):
+            with self.subTest(events=events):
+                run = self.run_player("wizard-staging", events)
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                for frame in frames:
+                    self.assertEqual(frame["view"], "wizard")
+                    self.assertEqual(frame["extracting"], "1")
+                    self.assertEqual(frame["error"], "NONE")
+                # The queue fills as a batch's files arrive and is emptied when it completes.
+                self.assertEqual(frames[-1]["drop_pending"], "0")
+                self.assertEqual(frames[-1]["drop_notice"], "none")
 
     def test_staging_and_package_build_cancellation_render_progress(self) -> None:
         staging = self.run_player("wizard-staging", ("KEY_ESCAPE",))

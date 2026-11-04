@@ -3664,6 +3664,28 @@ void player_app_drop_finish(PlayerApp *app) {
     app->drop_notice_visible = kept == 0 && app->active_view == VIEW_LIBRARY;
 }
 
+void player_app_drop_discard(PlayerApp *app, const char *reason) {
+    if (!app) return;
+    if (app->drop_seen > 0) {
+        player_dev_log_add(app, "drop", "%llu dropped file%s ignored: %s",
+                           (unsigned long long)app->drop_seen, app->drop_seen == 1 ? "" : "s",
+                           reason ? reason : "not taken");
+    }
+    bool on_library = app->active_view == VIEW_LIBRARY && app->drop_seen > 0;
+    app->drop_count = 0;
+    app->drop_next = 0;
+    app->drop_seen = 0;
+    app->drop_active = false;
+    app->drop_notice[0] = '\0';
+    app->drop_notice_visible = false;
+    if (on_library) {
+        /* The one place a person drops files: say why nothing opened. */
+        snprintf(app->drop_notice, sizeof(app->drop_notice),
+                 "A game is being set up. Drop the file again when it has finished.");
+        app->drop_notice_visible = true;
+    }
+}
+
 bool player_app_drop_take(PlayerApp *app, char *out, size_t out_size) {
     if (!app || !out || out_size == 0 || app->drop_next >= app->drop_count) return false;
     snprintf(out, out_size, "%s", app->drop_paths[app->drop_next]);
@@ -3870,6 +3892,9 @@ static const struct { const char *code; const char *badge; } k_error_badges[] = 
     {"TOOLS_IN_USE", "Build tools busy"},
     {"TOOLS_REMOVE_FAILED", "Not removed"},
     {"REMOVE_FAILED", "Not removed"},
+    {"LAUNCH_DETAILS_UNAVAILABLE", "Game not started"},
+    {"ENHANCEMENT_UNAVAILABLE", "Enhancement unavailable"},
+    {"PACKAGE_REBUILD_NOT_INCOMPATIBLE", "Rebuild not needed"},
     {"LIBRARY_WRITE_FAILED", "Library not saved"},
     {"FOLDER_OPEN_FAILED", "Folder not opened"},
     {"LINK_OPEN_FAILED", "Link not opened"},

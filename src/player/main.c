@@ -283,6 +283,18 @@ static void player_open_next_dropped_disc(PlayerApp *app) {
     on_file_dialog_callback(app, files, 0);
 }
 
+/* The end of a drop, whether SDL bracketed it with begin and complete or sent a lone file: a
+   worker that owns the current game's files ignores it, as a dropped file always was then
+   (nothing waits to open later); otherwise the first disc image opens now. */
+static void player_finish_drop(PlayerApp *app) {
+    player_app_drop_finish(app);
+    if (app->wizard.is_extracting || app->psn_conversion_active) {
+        player_app_drop_discard(app, "a game is being set up");
+        return;
+    }
+    player_open_next_dropped_disc(app);
+}
+
 /* Where a picker opens (player_app_picker_start_folder). SDL keeps reading
    the filters, and may read this, until the dialog's callback runs, so
    neither lives on the stack. */
@@ -916,23 +928,11 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             /* A host that sends no begin and complete delivers a lone file. */
             const bool in_batch = app->drop_active;
             if (event->drop.data) player_app_drop_add(app, event->drop.data);
-            if (!in_batch) {
-                player_app_drop_finish(app);
-                player_open_next_dropped_disc(app);
-            }
+            if (!in_batch) player_finish_drop(app);
         }
         return true;
     case SDL_EVENT_DROP_COMPLETE:
-        player_app_drop_finish(app);
-        if (app->wizard.is_extracting || app->psn_conversion_active) {
-            /* A worker owns the current game's files: the drop waits for no one. */
-            app->drop_count = app->drop_next = 0;
-            snprintf(app->drop_notice, sizeof(app->drop_notice),
-                     "A game is being set up. Drop the file again when it has finished.");
-            app->drop_notice_visible = app->active_view == VIEW_LIBRARY;
-            return true;
-        }
-        player_open_next_dropped_disc(app);
+        player_finish_drop(app);
         return true;
     default:
         return false;

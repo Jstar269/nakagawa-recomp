@@ -204,11 +204,12 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_PROGRESS, FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE,
                FLOW_WIZ_BAD_DISC, FLOW_WIZ_CHOSEN,
                FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
-               FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_BLOCKED,
+               FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_OPTIONS_ON, FLOW_WIZ_BLOCKED,
                FLOW_WIZ_COPY_FAILED, FLOW_WIZ_GUIDED, FLOW_ERROR_STOP, FLOW_ERROR_CRASH,
                FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
-               FLOW_DISC_GUIDED, FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
+               FLOW_DISC_GUIDED, FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_ONLINE_ON,
+               FLOW_SETTINGS_NOTICES,
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
                FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
@@ -340,7 +341,8 @@ static const char *const k_settings_tools[] = {
 static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     PlayerUiSettingsModel settings;
     memset(&settings, 0, sizeof(settings));
-    settings.page = which == FLOW_SETTINGS_ONLINE ? PLAYER_UI_SETTINGS_PAGE_ONLINE
+    settings.page = which == FLOW_SETTINGS_ONLINE || which == FLOW_SETTINGS_ONLINE_ON
+        ? PLAYER_UI_SETTINGS_PAGE_ONLINE
         : which == FLOW_SETTINGS_NOTICES ? PLAYER_UI_SETTINGS_PAGE_NOTICES
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
@@ -368,7 +370,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.volume = 80;
     settings.controller_line = "keyboard and mouse";
     settings.saves_folder = "C:/synthetic/Nakagawa/saves";
-    settings.online_mode = true;
+    /* Off, the default; its own case has the stored setting On (#2007). */
+    settings.online_mode = which == FLOW_SETTINGS_ONLINE_ON;
     settings.developer_mode = true;
     settings.share_system_libraries = true;
     /* Accessibility: a size picked, high contrast following Windows (off), and
@@ -661,8 +664,9 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
                                   "Sound 80% \xC2\xB7 Package ready";
             break;
         case FLOW_WIZ_OPTIONS:
+        case FLOW_WIZ_OPTIONS_ON:
             wizard.step = 1;
-            wizard.online_mode = true;
+            wizard.online_mode = which == FLOW_WIZ_OPTIONS_ON;
             break;
         case FLOW_WIZ_BLOCKED:
             /* #1280: an experimental disc this version cannot use. */
@@ -2752,6 +2756,18 @@ static void test_settings_pages(void) {
               activate_flow_button(PLAYER_UI_ID_SETTINGS_ONLINE_MODE, FLOW_SETTINGS_ONLINE).kind ==
                   PLAYER_UI_ACTION_NONE,
           "Online and developer shows one plain line instead of an inert online switch");
+    /* A stored online_mode of On still shows its switch, so it can be turned off. */
+    CHECK(flow_case_fits(FLOW_SETTINGS_ONLINE_ON, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Online mode is on in your settings") != NULL &&
+              settings_op_is(activate_flow_button(PLAYER_UI_ID_SETTINGS_ONLINE_MODE,
+                                                  FLOW_SETTINGS_ONLINE_ON),
+                             PLAYER_UI_SETTINGS_TOGGLE_ONLINE),
+          "Online and developer offers the switch while the stored online mode is On");
+    CHECK(flow_case_fits(FLOW_WIZ_OPTIONS_ON, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Online mode is on in your settings") != NULL &&
+              wizard_op_is(activate_flow_button(PLAYER_UI_ID_WIZARD_ONLINE, FLOW_WIZ_OPTIONS_ON),
+                           PLAYER_UI_WIZARD_TOGGLE_ONLINE),
+          "the options step offers the switch while the stored online mode is On");
     CHECK(dump_flow_case(FLOW_WIZ_OPTIONS, dump, sizeof(dump)) &&
               strstr(dump, "Online features aren't built yet") != NULL &&
               strstr(dump, "ONLINE MODE") == NULL &&

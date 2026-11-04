@@ -863,8 +863,15 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         nk_ui_text_role(ui, FLOW_ID_LEAD, SCR_ONLINE_NOT_BUILT_LINE, NK_UI_TYPE_BODY_S,
                         theme->warning);
         if (scr_wizard_box_begin(ui, 0u)) {
-            WizardColumn column = scr_online_developer_column(ui, model->developer_mode,
+            WizardColumn column = scr_online_developer_column(ui, model->online_mode,
+                                                              model->developer_mode,
                                                               inner - 32.0f);
+            if (model->online_mode &&
+                scr_wizard_switch(ui, PLAYER_UI_ID_SETTINGS_ONLINE_MODE, SET_ID_TEXT + 0x80u,
+                                  "Online mode", SCR_ONLINE_STORED_ON_SENTENCE, true,
+                                  inner - 32.0f, &column)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ONLINE);
+            }
             if (scr_wizard_switch(ui, PLAYER_UI_ID_SETTINGS_DEVELOPER, SET_ID_TEXT + 0x90u,
                               "Developer mode", WIZARD_DEVELOPER_SENTENCE,
                               model->developer_mode, inner - 32.0f, &column)) {

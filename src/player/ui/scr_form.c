@@ -152,9 +152,12 @@ bool scr_wizard_switch(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
     return scr_wizard_value(ui, id, text_id, name, on ? "On" : "Off", sentence, on, width, column);
 }
 
-WizardColumn scr_online_developer_column(NkUi *ui, bool developer, float width) {
+WizardColumn scr_online_developer_column(NkUi *ui, bool online_on, bool developer, float width) {
+    /* The Online mode row is there only while the stored setting is On. */
     const WizardRow rows[] = {
+        {"Online mode", "On", SCR_ONLINE_STORED_ON_SENTENCE},
         {"Developer mode", developer ? "On" : "Off", WIZARD_DEVELOPER_SENTENCE}
     };
-    return scr_wizard_column(ui, rows, sizeof(rows) / sizeof(rows[0]), width);
+    return online_on ? scr_wizard_column(ui, rows, 2u, width)
+                     : scr_wizard_column(ui, rows + 1, 1u, width);
 }

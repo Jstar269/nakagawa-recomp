@@ -9,8 +9,9 @@ diagnosing new issues.
 
 ## Principles
 
-- **Asked once, changeable anytime.** The setup wizard asks about online mode and developer mode on one step.
-  Both start switched off, and each is a switch in Settings afterwards.
+- **Asked once, changeable anytime.** The setup wizard step offers the switches for online mode and developer
+  mode, and each is a switch in Settings afterwards. Both start switched off. Until the online features exist
+  the Online mode switch is not shown to anyone whose stored setting is Off (see the note under the table).
 - **One host.** Online mode talks to `nakagawa.jaycast.net` over HTTPS and nothing else. The news site (The
   FreshWire) cross-posts to it, so the player's allowlist stays one host. (The update check, outside online mode,
   uses GitHub's hosts for the releases themselves.)
@@ -26,8 +27,8 @@ diagnosing new issues.
 
 ## Setup wizard step: "Online and developer options"
 
-Shown right after Welcome, before the game step, so every first run sees it (it needs no game). Two switches, each
-with one plain sentence:
+Shown right after Welcome, before the game step, so every first run sees it (it needs no game). The design is two
+switches, each with one plain sentence (today the Online mode row is hidden, as the note below the table says):
 
 | Switch | Default | Sentence |
 | --- | --- | --- |
@@ -36,7 +37,8 @@ with one plain sentence:
 
 Until news and reports exist, the wizard step and Settings > Online and developer do not show the Online mode
 switch or its two parts (news, reports): they say in one line that online features are not built yet, and
-only the Developer mode switch is there. The `online_mode`, `online_news` and `online_reports` settings are still
+only the Developer mode switch is there. A user whose stored `online_mode` is On still gets the Online mode
+switch (with a sentence that it does nothing yet), so it can be turned off. The `online_mode`, `online_news` and `online_reports` settings are still
 stored and still default to off, so a build that adds the features keeps what the user chose; with online mode
 on, Settings will show its two parts again, each on by default and each switchable alone. The step is skippable;
 skipping keeps developer mode off.

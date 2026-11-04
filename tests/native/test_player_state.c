@@ -1891,7 +1891,7 @@ static bool dev_log_contains(const PlayerApp *app, const char *needle) {
 static void repeat_launch_and_settle(PlayerApp *app, int game_index,
                                      uint64_t launch_tick, uint64_t settle_tick,
                                      const char *expected_memstick) {
-    char error_before[32];
+    char error_before[48];
     snprintf(error_before, sizeof(error_before), "%s", app->last_error.error_code);
     assert(player_app_launch_game(app, game_index));
     assert(app->is_game_running);
@@ -3194,11 +3194,13 @@ static void test_every_error_code_has_a_friendly_card(void) {
         "PACKAGE_BUILD_IN_PROGRESS", "PROCESS_SPAWN_FAILED", "DISC_NOT_PSP",
         "DISC_IMAGE_TRUNCATED", "PBP_PACKAGE_UNSUPPORTED", "PREREQUISITE_FETCH_START_FAILED",
         "PYTHON_BOOTSTRAP_FAILED", "DISK_FULL", "OFFLINE_OR_NETWORK_ERROR", "HASH_MISMATCH",
+        "ENHANCEMENT_UNAVAILABLE", "PACKAGE_REBUILD_NOT_INCOMPATIBLE", "LAUNCH_DETAILS_UNAVAILABLE",
     };
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
     assert(app != NULL);
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
         player_app_set_error(app, codes[i], "Title", "A plain sentence.", "Back", VIEW_LIBRARY);
+        assert(strcmp(app->last_error.error_code, codes[i]) == 0); /* never cut short */
         assert(strcmp(player_error_badge(&app->last_error), "Problem") != 0);
         assert(player_error_leads_with_message(&app->last_error));
         assert(strstr(player_error_badge(&app->last_error), "_") == NULL);
@@ -3355,6 +3357,24 @@ static void test_dropped_files_are_queued_and_summarised(void) {
     player_app_drop_finish(app);
     assert(strstr(app->drop_notice, "Only the first 16 were looked at") != NULL);
     assert(strstr(app->drop_notice, "drop the other 4 again") != NULL);
+
+    /* A drop that arrives while a worker owns the current game's files is ignored, not queued
+       to open later; on the library the user is told why (the lone-file path included). */
+    app->active_view = VIEW_LIBRARY;
+    player_app_drop_begin(app);
+    player_app_drop_add(app, one);
+    player_app_drop_add(app, one);
+    player_app_drop_finish(app);
+    assert(app->drop_count == 2u && app->drop_notice[0] != '\0');
+    player_app_drop_discard(app, "a game is being set up");
+    assert(app->drop_count == 0u && app->drop_next == 0u && !app->drop_active);
+    assert(!player_app_drop_take(app, path, sizeof(path)));
+    assert(strstr(app->drop_notice, "A game is being set up") != NULL && app->drop_notice_visible);
+    app->active_view = VIEW_SETUP_WIZARD;
+    player_app_drop_add(app, one);
+    player_app_drop_finish(app);
+    player_app_drop_discard(app, "a game is being set up");
+    assert(app->drop_notice[0] == '\0' && !player_app_drop_take(app, path, sizeof(path)));
     free(app);
     printf("[PLAYER_STATE_TEST] dropped files are queued and summarised PASS\n");
 }
@@ -10526,7 +10546,7 @@ int main(int argc, char **argv) {
            and exits cleanly (elapsed >= 500 ms, code 0: no error). */
         set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
         {
-            char error_before[32];
+            char error_before[48];
             snprintf(error_before, sizeof(error_before), "%s",
                      rep->last_error.error_code);
             assert(player_app_launch_game(rep, 0));

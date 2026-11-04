@@ -356,6 +356,11 @@ int player_ui_test_next_event(const char *script, size_t *cursor,
         event->user.timestamp = total_bytes;
         return 1;
     }
+    if (strcmp(token, "DROP_BEGIN") == 0 || strcmp(token, "DROP_COMPLETE") == 0) {
+        /* The brackets SDL puts around several dropped files. */
+        event->type = token[5] == 'B' ? SDL_EVENT_DROP_BEGIN : SDL_EVENT_DROP_COMPLETE;
+        return 1;
+    }
     if (strncmp(token, "DROP_FILE=", 10) == 0) {
         event->type = SDL_EVENT_DROP_FILE;
         event->drop.data = SDL_strdup(token + 10);
@@ -715,7 +720,7 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "rebuild_reminder=%d rebuild_queue=%d rebuild_queue_active=%d "
            "rebuild_queue_paused=%d prompt_version=%s "
            "input_class=%s input_files=%zu next_input_class=%s next_input_files=%zu "
-           "backdrop=%d backdrop_shown=%d disc_check=%d\n",
+           "backdrop=%d backdrop_shown=%d disc_check=%d drop_pending=%zu drop_notice=%s\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -798,7 +803,10 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->wizard.preflight.input.files_needed,
            selected_input ? player_input_class_name(selected_input->input_class) : "none",
            selected_input ? selected_input->files_needed : (size_t)0,
-           backdrop_index, backdrop_shown ? 1 : 0, app->disc_check.running ? 1 : 0);
+           backdrop_index, backdrop_shown ? 1 : 0, app->disc_check.running ? 1 : 0,
+           app->drop_count > app->drop_next ? app->drop_count - app->drop_next : (size_t)0,
+           !app->drop_notice[0] ? "none"
+               : strstr(app->drop_notice, "being set up") ? "busy" : "summary");
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {

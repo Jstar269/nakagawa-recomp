@@ -407,7 +407,7 @@ typedef enum {
 } PlayerErrorRetry;
 
 typedef struct {
-    char error_code[32];
+    char error_code[48]; /* PACKAGE_REBUILD_NOT_INCOMPATIBLE is 32 characters */
     char title[128];
     char message[512];
     char details[PLAYER_ERROR_DETAILS_MAX];
@@ -1102,6 +1102,9 @@ void player_app_drop_begin(PlayerApp *app);
 void player_app_drop_add(PlayerApp *app, const char *path);
 void player_app_drop_finish(PlayerApp *app);
 bool player_app_drop_take(PlayerApp *app, char *out, size_t out_size);
+/* Ignores the files of a drop, queue and summary both, and logs why (the player cannot take
+   a new disc image while a worker owns the current game's files). */
+void player_app_drop_discard(PlayerApp *app, const char *reason);
 /* A .iso by its name, or a compressed disc image or PSN package by its contents. */
 bool player_path_looks_like_disc_image(const char *path);
 
