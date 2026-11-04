@@ -23,6 +23,9 @@ CACHE_SCHEMA_VERSION = 2
 COMPLETION_SCHEMA_VERSION = 2
 TITLE_INPUT_IDENTITY_FORMAT = "nakagawa-title-input-identity"
 TITLE_INPUT_IDENTITY_SCHEMA_VERSION = 2
+# The container facts that are part of the identity. inspect_iso also reports diagnostics and
+# provenance there (format_warnings, source_format); the builder projects onto these keys.
+TITLE_INPUT_CONTAINER_KEYS = ("format", "volume_id", "size_bytes", "pvd_sector", "sector_size")
 ANALYZER_CODEGEN_SEMANTICS_EPOCH = "analyzer-codegen-v1"
 GENERATED_CODE_ABI_EPOCH = 3
 RUNTIME_ABI_EPOCH = 2
@@ -120,7 +123,14 @@ def build_title_input_identity(
     container: Mapping[str, Any] | None = None,
     source_media: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the private, versioned identity record for one package input set."""
+    """Build the private, versioned identity record for one package input set.
+
+    ``container`` is projected onto ``TITLE_INPUT_CONTAINER_KEYS``. The other keys that
+    ``inspect_iso`` reports there (``format_warnings`` parser notes, ``source_format`` of a
+    compressed image) describe how the disc was read, not its content: left in, they would fail
+    the exact container schema, and a reworded note would change the identity digest. A missing
+    identity key still fails validation, and a stored record with any extra key is refused.
+    """
     module_records = [
         {"name": item.get("name"), "sha256": item.get("sha256")}
         for item in sorted(modules, key=lambda item: str(item.get("name", "")))
@@ -138,7 +148,10 @@ def build_title_input_identity(
             "disc_version": disc_version,
         },
         "param_sfo": dict(param_sfo) if param_sfo is not None else None,
-        "container": dict(container) if container is not None else None,
+        "container": (
+            {key: container[key] for key in TITLE_INPUT_CONTAINER_KEYS if key in container}
+            if container is not None else None
+        ),
         "main_executable": {"name": executable_name, "sha256": executable_sha256},
         "modules": module_records,
         "psp_header": (
@@ -192,9 +205,7 @@ def validate_title_input_identity(value: Any) -> dict[str, Any]:
             raise PackageCacheError("title input identity PARAM.SFO fact is invalid")
     container = value.get("container")
     if container is not None:
-        if not isinstance(container, dict) or set(container) != {
-            "format", "volume_id", "size_bytes", "pvd_sector", "sector_size",
-        }:
+        if not isinstance(container, dict) or set(container) != set(TITLE_INPUT_CONTAINER_KEYS):
             raise PackageCacheError("title input identity container metadata is invalid")
         if not isinstance(container.get("format"), str) or not isinstance(container.get("volume_id"), str):
             raise PackageCacheError("title input identity container label is invalid")
