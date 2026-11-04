@@ -572,6 +572,24 @@ should ignore the trailing uid/vblank columns.
 | `SR_NAN_TRAP_LIMIT=N` | Report limit for the `SR_NAN_TRAP` build option below (default 20; `0` silences it). Only has an effect in a package built with `make NAN_TRAP=1` |
 | `SR_NAN_TRAP_CONTEXT=1` | After each `NAN_TRAP` line, a `NAN_TRAP_CTX` line with `ra`, `v0`, `a0`..`a3`, `t0`, `s0`, `s1` and `f12`, then one line per readable 16-byte span behind `v0` and `a0`..`a3` (four floats), so an origin instruction's inputs in guest memory can be read without editing generated code. Same build requirement as the limit. |
 
+### Does a title enable mipmapping? (issue #1373)
+
+The GE prints one line, with no environment variable, at the first textured draw made with mip
+sampling enabled: a mip filter bit in `TEXFILTER` and a highest level above 0 in `TEXMODE`. It
+covers every route that textures (PRIM, BEZIER and SPLINE patches, and immediate vertices):
+
+```text
+GE mip: first draw with mip sampling enabled at frame 412, highest level 3, filter 0x6, level mode 0, bias 0/16 (#1373)
+```
+
+The line says mip sampling is enabled, not that a level above 0 was picked: a constant level 0 or a
+magnified draw counts too. No such line in a run means no textured draw had mip sampling enabled, so
+mip levels cannot be the cause of a defect seen in that run. A line means mipmapping is enabled and
+may or may not be the cause; read the draw's level mode, bias and size to tell. The line names the
+first draw only; `g_ge_mip_draws` (`src/rt/recomp.h`) counts all of them for the whole run and
+`g_ge_mip_lines_printed` counts the lines (0 or 1). `test_ge_texture_mip_levels` and
+`test_ge_mip_use_trace_routes` check both.
+
 ### Locating the instruction that produced a NaN (issue #69)
 
 The `SR_GE_TRANSITION_TRACE` above tells you **that** a draw's bone matrices went NaN. It cannot
