@@ -1975,5 +1975,259 @@ class TestEnhancementBuildPackageWiring(unittest.TestCase):
             package_cache.enhancement_package_options({"ENHANCEMENT_PACKAGE": str(path)})
 
 
+def _f32_bits_of(value: float) -> int:
+    return struct.unpack("<I", struct.pack("<f", value))[0]
+
+
+class TestEnhancementStoreSites(unittest.TestCase):
+    """Load-time store sites: stock_values, the applied and mismatch lines, and requires."""
+
+    SWC1 = 0xE4820000   # swc1 f2, 0(a0)
+    SW = 0xAC850000     # sw a1, 0(a0)
+    SW_SELF = 0xAC840000  # sw a0, 0(a0): the value register is also the base
+    ADDIU = 0x2406001E  # addiu a2, zero, 30
+
+    def _site(self, sid: str, word: int, **extra: Any) -> dict[str, Any]:
+        return dict({"id": sid, "function": "synth_fn", "insn_offset": 0,
+                     "stock_digest": compute_stock_words_digest([word]), "transform": "count_x2"},
+                    **extra)
+
+    def _package(self, sites: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
+        return dict({
+            "schema_version": 1, "id": "synth.store", "display_name": "Synthetic store sites",
+            "version": "1.0.0", "category": "timing_frame_presentation",
+            "target_title_id": "synthetic-allegrex-v1", "game_version": "1.00",
+            "executable_sha256": "a" * 64, "capabilities": ["count_x2"],
+            "rng_policy": {"mode": "subtick_30hz", "reason": "No random rolls in this fixture."},
+            "sites": sites,
+        }, **extra)
+
+    def _plan(self, word: int, **extra: Any) -> dict[str, Any]:
+        return plan_site_rewrite(dict({"id": "S", "transform": "count_x2"}, **extra), word)
+
+    def _refused(self, word: int, why: str, **extra: Any) -> None:
+        with self.subTest(word=hex(word), extra=extra):
+            with self.assertRaisesRegex(EnhancementPackageError, why):
+                self._plan(word, **extra)
+
+    def test_validator_accepts_store_sites_with_stock_values(self) -> None:
+        pkg = self._package([
+            self._site("F_STORE", self.SWC1, stock_values=[30, 60.5]),
+            self._site("I_STORE", self.SW, function="synth_other", stock_values=[9, -9]),
+        ])
+        validate_package(pkg)
+        rw = self._plan(self.SWC1, stock_values=[30, 60.5])
+        self.assertEqual(rw["kind"], "scale_f_store")
+        self.assertEqual(rw["reg"], 2)
+        self.assertEqual(rw["stock_values"], [[_f32_bits_of(30.0), _f32_bits_of(60.0)],
+                                              [_f32_bits_of(60.5), _f32_bits_of(121.0)]])
+        rw = self._plan(self.SW, stock_values=[9, -9])
+        self.assertEqual(rw["kind"], "scale_int_store")
+        self.assertEqual(rw["reg"], 5)
+        self.assertEqual(rw["stock_values"], [[9, 18], [0xFFFFFFF7, 0xFFFFFFEE]])
+        # A store without stock_values keeps its plain rewrite.
+        self.assertEqual(self._plan(self.SWC1), {"kind": "scale_f_store", "reg": 2, "factor": 2.0})
+
+    def test_stock_values_refusals(self) -> None:
+        self._refused(self.ADDIU, "stock_values belongs only to", stock_values=[30])
+        self._refused(self.SW, "needs stock_values")
+        self._refused(self.SW, "no defined rewrite", transform="step_x0.5", stock_values=[8])
+        self._refused(self.SW_SELF, "base register", stock_values=[8])
+        self._refused(self.SWC1, "duplicate", stock_values=[1.0, 1.0])
+        self._refused(self.SWC1, "duplicate", stock_values=[0.1, 0.10000000149011612])
+        self._refused(self.SWC1, "not finite", stock_values=[float("nan")])
+        self._refused(self.SWC1, "not finite", stock_values=[float("inf")])
+        self._refused(self.SWC1, "not finite", stock_values=[1e39])
+        self._refused(self.SWC1, "not finite", stock_values=[3.0e38])   # doubled, past f32
+        self._refused(self.SW, "duplicate", stock_values=[9, 9])
+        self._refused(self.SW, "s32", stock_values=[2 ** 31])
+        self._refused(self.SW, "s32", stock_values=[2 ** 30])           # doubled, 2^31 does not fit
+        self._refused(self.SW, "s32", stock_values=[-2 ** 30 - 1])
+        self._refused(self.SW, "integer", stock_values=[1.5])
+        # The shape is checked before any instruction is read.
+        for bad in ([], "30", [True], ["30"], [None], 30):
+            with self.subTest(stock_values=bad):
+                with self.assertRaisesRegex(EnhancementPackageError, "stock_values must be a non-empty list of numbers"):
+                    validate_package(self._package([self._site("F_STORE", self.SWC1, stock_values=bad)]))
+
+    def test_requires_validation(self) -> None:
+        store = self._site("F_STORE", self.SWC1, stock_values=[30])
+        other = self._site("G_COUNT", self.ADDIU, function="synth_gate", requires=["F_STORE"])
+        validate_package(self._package([store, other]))
+        cases = (
+            ("unknown", [store, dict(other, requires=["NOPE"])], "names sites that declare stock_values"),
+            ("self", [dict(store, requires=["F_STORE"])], "its own"),
+            ("duplicate", [store, dict(other, requires=["F_STORE", "F_STORE"])], "duplicate"),
+            ("no stock_values", [self._site("PLAIN", self.ADDIU, function="synth_plain"),
+                                 dict(other, requires=["PLAIN"])],
+             "names sites that declare stock_values"),
+            ("empty", [store, dict(other, requires=[])], "requires must be a non-empty list"),
+            ("not a list", [store, dict(other, requires="F_STORE")], "requires must be a non-empty list"),
+        )
+        for name, sites, why in cases:
+            with self.subTest(name):
+                with self.assertRaisesRegex(EnhancementPackageError, why):
+                    validate_package(self._package(sites))
+        # A required site may not itself wait on another site.
+        first = self._site("A_STORE", self.SW, function="synth_a", stock_values=[9])
+        chained = self._site("B_STORE", self.SWC1, function="synth_b", stock_values=[30],
+                             requires=["A_STORE"])
+        with self.assertRaisesRegex(EnhancementPackageError, "itself declares requires"):
+            validate_package(self._package([first, chained, dict(other, requires=["B_STORE"])]))
+        # A data entry is not a site.
+        data_site = {"id": "D_COUNT", "symbol": "synth_table", "offset": 0, "type": "s32",
+                     "stock_digest": hashlib.sha256(struct.pack("<i", 21)).hexdigest(),
+                     "transform": "count_x2"}
+        with self.assertRaisesRegex(EnhancementPackageError, "names sites that declare stock_values"):
+            validate_package(self._package([store, dict(other, requires=["D_COUNT"])],
+                                           data_sites=[data_site]))
+
+    # -- compile and run ---------------------------------------------------------------
+
+    def _generate(self, tmp: Path) -> dict[str, str]:
+        def jal(target: int) -> int:
+            return 0x0C000000 | ((target >> 2) & 0x03FFFFFF)
+
+        words = {
+            0x1000: jal(0x1100), 0x1004: 0, 0x1008: jal(0x1200), 0x100C: 0,
+            0x1010: jal(0x1300), 0x1014: 0, 0x1018: 0x03E00008, 0x101C: 0,
+            0x1100: self.SWC1, 0x1104: 0x03E00008, 0x1108: 0,
+            0x1200: self.SW, 0x1204: 0x03E00008, 0x1208: 0,
+            0x1300: self.ADDIU, 0x1304: 0x03E00008, 0x1308: 0,
+        }
+        elf = _write_synthetic_mips_elf(tmp / "synth.elf", words, 0x1000)
+        sites = [
+            dict(self._site("F_STORE", self.SWC1, stock_values=[30, 60]), function="fstore"),
+            dict(self._site("I_STORE", self.SW, stock_values=[9, -9]), function="istore"),
+            dict(self._site("G_COUNT", self.ADDIU, requires=["F_STORE"]), function="gcount"),
+        ]
+        pkg = self._package(sites, executable_sha256=hashlib.sha256(elf).hexdigest())
+        (tmp / "store.json").write_text(json.dumps(pkg), encoding="utf-8")
+        (tmp / "store.symbols.json").write_text(
+            json.dumps({"fstore": "0x1100", "istore": "0x1200", "gcount": "0x1300"}), encoding="utf-8")
+        out_dir = tmp / "out"
+        out_dir.mkdir()
+        rc, output, files = TestEnhancementAotCodegenAndCache._run_codegen(
+            self, tmp / "synth.elf", out_dir / "out.c", [f"--enhancement-package={tmp / 'store.json'}"])  # type: ignore[arg-type]
+        self.assertEqual(rc, 0, output)
+        return {name: data.decode("utf-8") for name, data in files.items()}
+
+    @staticmethod
+    def _statement(chunk: str, pc: int) -> str:
+        """The toggle-on and stock lines of the rewritten site at ``pc``."""
+        lines = chunk.splitlines()
+        marker = f"sr_begin(s, 0x{pc:08x}u"
+        at = next(i for i, line in enumerate(lines)
+                  if line.lstrip().startswith("else {") and marker in line)
+        if not lines[at - 1].lstrip().startswith("if (nk_enhancement_on())"):
+            raise AssertionError(lines[at - 1])
+        return lines[at - 1] + "\n" + lines[at]
+
+    @unittest.skipUnless(GCC, "needs a host C compiler")
+    def test_store_sites_check_report_and_gate_when_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            files = self._generate(tmp)
+            main, chunk = files["out.c"], files["out_0.c"]
+            begin = main.index("/* Enhancement store sites. */")
+            end = main.index("/* End of enhancement store sites. */")
+            block = main[begin:end]
+            harness = (
+                "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n"
+                "typedef struct { uint32_t r[32]; union { float f[32]; uint32_t fi[32]; }; } CpuState;\n"
+                "static uint32_t mem[4];\n"
+                "#define sr_begin(s, pc, op) ((void)0)\n#define sr_end(s, a, n) ((void)0)\n"
+                "#define MEM_W32_PC(a, v, pc) (mem[((a) >> 2) & 3u] = (uint32_t)(v))\n"
+                f"int nk_enhancement_on(void) {{ return NK_ON; }}\n{block}\n"
+                f"static void run_f(CpuState *s) {{\n{self._statement(chunk, 0x1100)}\n}}\n"
+                f"static void run_i(CpuState *s) {{\n{self._statement(chunk, 0x1200)}\n}}\n"
+                f"static void run_g(CpuState *s) {{\n{self._statement(chunk, 0x1300)}\n}}\n"
+                "int main(int argc, char **argv) {\n"
+                "    CpuState s; memset(&s, 0, sizeof s); s.r[4] = 4;\n"
+                "    for (int i = 1; i < argc; i++) {\n"
+                "        char k = argv[i][0]; long v = k == 'G' ? 0 : strtol(argv[i] + 2, NULL, 0);\n"
+                "        mem[1] = 0xdeadbeefu;\n"
+                "        if (k == 'F') { s.fi[2] = (uint32_t)v; run_f(&s); "
+                "printf(\"F %08x %08x\\n\", mem[1], s.fi[2]); }\n"
+                "        if (k == 'I') { s.r[5] = (uint32_t)v; run_i(&s); "
+                "printf(\"I %08x %08x\\n\", mem[1], s.r[5]); }\n"
+                "        if (k == 'G') { s.r[6] = 0; run_g(&s); printf(\"G %u\\n\", s.r[6]); }\n"
+                "        fflush(stdout);\n"
+                "    }\n    return 0;\n}\n")
+            src = tmp / "store_harness.c"
+            src.write_text(harness, encoding="utf-8")
+            exes = {}
+            for on in (0, 1):
+                exes[on] = tmp / f"store{on}.exe"
+                subprocess.run([GCC, "-std=gnu11", "-Wall", "-Werror", "-Wno-unused-function",
+                                f"-DNK_ON={on}", "-o", str(exes[on]), str(src)],
+                               check=True, capture_output=True, text=True)
+
+            def run(on: int, *args: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run([str(exes[on]), *args], capture_output=True, text=True)
+
+            f30, f60, f120 = (f"0x{_f32_bits_of(v):08x}" for v in (30.0, 60.0, 120.0))
+            # Toggle on, a stock value: the doubled value is stored, the register is not changed.
+            res = run(1, f"F:{f30}", "I:9", "I:-9")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stdout.splitlines(), [
+                f"F {f60[2:]} {f30[2:]}", "I 00000012 00000009", "I ffffffee fffffff7"])
+            self.assertEqual(res.stderr.splitlines(), [
+                "ENHANCEMENT_DATA_APPLIED: site F_STORE at 0x00001100: 30 -> 60",
+                "ENHANCEMENT_DATA_APPLIED: site I_STORE at 0x00001200: 9 -> 18",
+                "ENHANCEMENT_DATA_APPLIED: site I_STORE at 0x00001200: -9 -> -18",
+            ])
+            # A value that is not a stock value stops the run before it is stored.
+            res = run(1, f"F:{f60}", f"F:0x{_f32_bits_of(1.0):08x}", f"F:{f120}")
+            self.assertEqual(res.returncode, 1)
+            self.assertEqual(res.stdout.splitlines(), [f"F {f120[2:]} {f60[2:]}"])
+            self.assertIn("ENHANCEMENT_DATA_MISMATCH: site F_STORE at 0x00001100 stores 1 (0x3f800000), "
+                          "not one of the package's stock values; the run stops here", res.stderr)
+            res = run(1, "I:10")
+            self.assertEqual(res.returncode, 1)
+            self.assertIn("ENHANCEMENT_DATA_MISMATCH: site I_STORE at 0x00001200 stores 10 (0x0000000a), "
+                          "not one of the package's stock values; the run stops here", res.stderr)
+            self.assertEqual(res.stdout, "")
+            # Toggle off: the stock statement, no check, no output.
+            res = run(0, f"F:{f30}", "F:0x3f800000", "I:9", "I:10", "G")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stdout.splitlines(), [
+                f"F {f30[2:]} {f30[2:]}", "F 3f800000 3f800000", "I 00000009 00000009",
+                "I 0000000a 0000000a", "G 30"])
+            self.assertEqual(res.stderr, "")
+            # Only the first 16 applications of a site are logged.
+            res = run(1, *(f"F:{f30}" for _ in range(20)))
+            self.assertEqual(res.returncode, 0, res.stderr)
+            lines = res.stderr.splitlines()
+            self.assertEqual(len(lines), 17, res.stderr)
+            self.assertTrue(all(line == "ENHANCEMENT_DATA_APPLIED: site F_STORE at 0x00001100: 30 -> 60"
+                                for line in lines[:16]))
+            self.assertEqual(lines[16],
+                             "ENHANCEMENT_DATA_APPLIED: site F_STORE: later applications are not logged")
+            # requires: stock until the required site has applied, one line per run.
+            res = run(1, "G", "G", f"F:{f30}", "G")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stdout.splitlines(), ["G 30", "G 30", f"F {f60[2:]} {f30[2:]}", "G 60"])
+            self.assertEqual(res.stderr.splitlines(), [
+                "ENHANCEMENT_SITE_GATED: site G_COUNT at 0x00001300 runs stock: F_STORE has not applied",
+                "ENHANCEMENT_DATA_APPLIED: site F_STORE at 0x00001100: 30 -> 60",
+            ])
+
+    def test_package_without_store_keys_emits_no_store_table(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            case = TestEnhancementAotCodegenAndCache(
+                "test_gated_sites_count_logic_updates_at_the_update_boundary")
+            case.setUp()
+            elf = _write_synthetic_mips_elf(tmp / "synth.elf", case.words, case.entry)
+            pkg, symbols = case._make_package_and_symbols(elf)
+            rc, output, files = case._codegen_with(tmp, "plain", pkg, symbols)
+            self.assertEqual(rc, 0, output)
+            combined = b"\n".join(files.values()).decode("utf-8")
+            self.assertNotIn("nk_enh_store", combined)
+            self.assertNotIn("nk_enh_ready", combined)
+            self.assertNotIn("Enhancement store sites", combined)
+
+
 if __name__ == "__main__":
     unittest.main()
