@@ -301,7 +301,8 @@ class NkCliProgressTests(unittest.TestCase):
                 messages.append(message.value)
             elif isinstance(message, ast.JoinedStr):
                 messages.append("".join(part.value for part in message.values
-                                        if isinstance(part, ast.Constant)))
+                                        if isinstance(part, ast.Constant)
+                                        and isinstance(part.value, str)))
         self.assertGreaterEqual(len(messages), 10)
         for text in messages:
             with self.subTest(message=text):
