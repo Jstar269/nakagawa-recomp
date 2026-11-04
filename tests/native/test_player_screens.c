@@ -89,44 +89,44 @@ static const PlayerUiTitle k_titles[] = {
      "", "", "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "", "",
      "RETRY PACKAGE CHECK", "◆", 0xC29AF4FFu,
      PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "", "",
      "BUILD PACKAGE", "?", 0xC29AF4FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_WONT_BOOT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL}
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
 };
 
 /* A library with the demos that come with Nakagawa among the user's games, in
@@ -137,25 +137,25 @@ static const PlayerUiTitle k_demo_titles[] = {
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL}
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
 };
 
 /* The demos alone: a first start with nothing added yet. */
@@ -165,13 +165,13 @@ static const PlayerUiTitle k_demo_only_titles[] = {
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL}
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
 };
 
 /* What-to-expect cards: a player tier with plain words, with known issues, the
@@ -213,7 +213,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
                FLOW_SETTINGS_ACCESSIBILITY, FLOW_SETTINGS_ACE, FLOW_SETTINGS_ACE_OFF,
-               FLOW_SETTINGS_REPORT, FLOW_SETTINGS_REPORT_NO_PYTHON,
+               FLOW_SETTINGS_REPORT, FLOW_SETTINGS_REPORT_NO_PYTHON, FLOW_SETTINGS_REFRESH,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
@@ -334,7 +334,7 @@ static const char *const k_font_lines[18];
 
 static const char *const k_settings_tools[] = {
     "synthetic-compiler 14.2 \xC2\xB7 GPL-3.0-or-later",
-    "synthetic-headers 0.9 \xC2\xB7 licence review in the works"
+    "synthetic-headers 0.9 \xC2\xB7 licence not yet reviewed"
 };
 
 static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
@@ -363,6 +363,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.pacing = "PSP timing";
     settings.scaling = "Sharp";
     settings.vsync = true;
+    /* The refresh-rate advisory case runs on a 144 Hz display; the rest on 60 Hz. */
+    settings.display_refresh_hz = which == FLOW_SETTINGS_REFRESH ? 144.0 : 60.0;
     settings.volume = 80;
     settings.controller_line = "keyboard and mouse";
     settings.saves_folder = "C:/synthetic/Nakagawa/saves";
@@ -417,7 +419,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         /* The download stopped at the signature; nothing was fetched after it. */
         settings.update_step = PLAYER_UI_UPDATE_FAILED;
         settings.update_failed_step = PLAYER_UI_UPDATE_DOWNLOADING;
-        settings.update_error_title = "Signature Didn't Match";
+        settings.update_error_title = "Signature didn't match";
         settings.update_error_message =
             "The release's signature doesn't match its checksum file, so Nakagawa did not "
             "download the update. Nothing was installed. Try again later, or download it from "
@@ -426,7 +428,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     if (which == FLOW_SETTINGS_UPDATE_FAILED) {
         settings.update_step = PLAYER_UI_UPDATE_FAILED;
         settings.update_failed_step = PLAYER_UI_UPDATE_CHECKING;
-        settings.update_error_title = "Couldn't Reach GitHub";
+        settings.update_error_title = "Couldn't reach GitHub";
         settings.update_error_message =
             "Nakagawa couldn't reach GitHub. Check your internet connection and try again "
             "later. Nothing was changed.";
@@ -832,11 +834,11 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         PlayerUiErrorModel error;
         memset(&error, 0, sizeof(error));
         error.badge = which == FLOW_ERROR_STOP ? "Game stopped" : "Game closed";
-        error.title = which == FLOW_ERROR_STOP ? "Game Stopped Early"
-                                               : "Game Closed Unexpectedly";
+        error.title = which == FLOW_ERROR_STOP ? "Game stopped early"
+                                               : "Game closed unexpectedly";
         error.message = "The game needed ad hoc wireless play that this version can't run yet.";
         error.details = "Stopped at a synthetic boundary (not supported yet).";
-        error.recovery_label = "Return to Library";
+        error.recovery_label = "Back to library";
         error.retry_label = "Restart game";
         error.copy_available = true;
         error.report_available = true;
@@ -1993,7 +1995,7 @@ static void test_plain_cards(void) {
           "Copy details asks for the report on the clipboard");
     CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_RECOVER, FLOW_ERROR_STOP).kind ==
               PLAYER_UI_ACTION_ERROR_RECOVER,
-          "Return to Library still leaves the card");
+          "Back to library still leaves the card");
     CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_RETRY, FLOW_ERROR).kind ==
               PLAYER_UI_ACTION_NONE,
           "a card without a retry action draws no retry button");
@@ -2008,7 +2010,7 @@ static void test_plain_cards(void) {
     /* Report this game: a known cause says so and links its issue, and the
        report steps back to a small button; an unknown one leads with it. */
     CHECK(strstr(dump, "This is a known issue (#308).") != NULL &&
-              strstr(dump, "\"SEE ISSUE #308\"") != NULL &&
+              strstr(dump, "\"VIEW ISSUE #308 ON GITHUB\"") != NULL &&
               strstr(dump, "\"REPORT THIS GAME\"") != NULL &&
               strstr(dump, "\"SEE EXISTING REPORTS\"") != NULL,
           "a known stop names its issue next to Report this game and the existing reports");
@@ -2049,7 +2051,7 @@ static void test_plain_cards(void) {
           "a rejected file keeps its plain reason and next step visible in the wizard");
     CHECK(dump_flow_case(FLOW_WIZ_COPY_FAILED, dump, sizeof(dump)) &&
               strstr(dump, "Synthetic reason") != NULL &&
-              strstr(dump, "listed in the native title catalog") == NULL,
+              strstr(dump, "Nakagawa recognises this disc") == NULL,
           "a failed copy shows its reason in place of the catalog note");
     /* The fonts step says how to get the PSP's own fonts, in plain words, with its button. */
     CHECK(dump_flow_case(FLOW_WIZ_FONTS, dump, sizeof(dump)) &&
@@ -2673,6 +2675,14 @@ static void test_settings_pages(void) {
     CHECK(activate_flow_button(PLAYER_UI_ID_TAB_LIBRARY, FLOW_SETTINGS).kind ==
               PLAYER_UI_ACTION_OPEN_LIBRARY,
           "the LIBRARY tab on Settings opens the library");
+    CHECK(flow_case_fits(FLOW_SETTINGS_REFRESH, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Your display runs at 144 Hz") != NULL &&
+              strstr(dump, "set it to 60, 120 or 180 Hz") != NULL &&
+              strstr(dump, "\"DONE\"") != NULL,
+          "Settings on a 144 Hz display shows the refresh-rate advisory and still fits");
+    CHECK(dump_flow_case(FLOW_SETTINGS, dump, sizeof(dump)) &&
+              strstr(dump, "Your display runs at") == NULL,
+          "Settings on a 60 Hz display shows no refresh-rate advisory");
     CHECK(activate_flow_button(PLAYER_UI_ID_TAB_ABOUT, FLOW_SETTINGS).kind ==
               PLAYER_UI_ACTION_OPEN_ABOUT,
           "the ABOUT tab on Settings opens About");
@@ -2709,6 +2719,8 @@ static void test_settings_pages(void) {
               strstr(dump, "\"CRISP SYSTEM TEXT: ON\"") != NULL &&
               strstr(dump, "\"SPEED READOUT: OFF\"") != NULL &&
               strstr(dump, "\"GAME BADGE: ON\"") != NULL &&
+              strstr(dump, "\"SMOOTH MOTION: ") != NULL &&
+              strstr(dump, "about 17 ms of delay.\"") != NULL &&
               strstr(dump, "keep the filtering.\"") != NULL &&
               strstr(dump, "Boost") == NULL &&
               strstr(dump, "\xE2\x80\xA6\"") == NULL,
@@ -2766,7 +2778,7 @@ static void test_settings_pages(void) {
               strstr(dump, "\"DOWNLOAD\"") != NULL,
           "Updates shows this and the newest version, the notes, the link and the size");
     CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_FAILED, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "Couldn't Reach GitHub") != NULL &&
+              strstr(dump, "Couldn't reach GitHub") != NULL &&
               strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
           "offline, Updates says it couldn't reach GitHub and offers only Check again");
     CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_FAILED, 960, 540, dump, sizeof(dump)) &&
@@ -2777,7 +2789,7 @@ static void test_settings_pages(void) {
               strstr(dump, "\"OPEN RELEASE PAGE\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
           "a build without a signing key says so and offers only the release page");
     CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_REFUSED, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "Signature Didn't Match") != NULL &&
+              strstr(dump, "Signature didn't match") != NULL &&
               strstr(dump, "\"OPEN RELEASE PAGE\"") != NULL &&
               strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"INSTALL\"") == NULL,
           "a download refused at its signature offers the release page and Check again");
@@ -2906,7 +2918,7 @@ static void test_controller_and_developer_log_pages(void) {
           "mapping it edits, with no Save step");
     CHECK(dump_flow_case(FLOW_CONTROLLER_GAME, dump, sizeof(dump)) &&
               strstr(dump, "TEST00005 ONLY") != NULL &&
-              strstr(dump, "\"PRESS A BUTTON...\"") != NULL &&
+              strstr(dump, "\"PRESS A BUTTON…\"") != NULL &&
               strstr(dump, "Conflict: Y (Triangle)") != NULL &&
               strstr(dump, "\"USE THE GLOBAL MAPPING\"") != NULL,
           "a game's own mapping is named, with the waiting control and the conflict");
@@ -3002,7 +3014,7 @@ static void test_controller_binding_glyphs(void) {
     CHECK(dump_flow_case(FLOW_CONTROLLER_KEYS, dump, sizeof(dump)) &&
               dump_has_element(dump, PLAYER_UI_ID_CONTROLLER_GLYPH(1u), "TEXT", "ENTER", NULL,
                                NULL) &&
-              strstr(dump, "\"PRESS A KEY...\"") != NULL,
+              strstr(dump, "\"PRESS A KEY…\"") != NULL,
           "the control waiting for a key keeps the glyph of the key it has");
 }
 
@@ -3057,7 +3069,7 @@ static void test_controller_keyboard_page(void) {
         }
         CHECK(strstr(dump, quoted) != NULL, "every PSP control shows its keyboard key");
     }
-    CHECK(strstr(dump, "\"PRESS A KEY...\"") != NULL &&
+    CHECK(strstr(dump, "\"PRESS A KEY…\"") != NULL &&
               strstr(dump, "\"KEYS \xC2\xB7 TEST00005 ONLY\"") != NULL,
           "the control waiting for a key says so, and the mapping being edited is named");
     CHECK(strstr(dump, "Esc or F1 pauses the game.") != NULL &&
@@ -3131,6 +3143,33 @@ static void test_every_screen_fits_the_window(void) {
     g_flow_text_size_pct = 100;
 }
 
+static void test_refresh_advice_classifier(void) {
+    static const double silent[] = {60.0, 120.0, 180.0, 240.0, 59.94, 119.88, 179.82,
+                                    60000.0 / 1001.0, 59.9401, 0.0, -1.0};
+    static const double advised[] = {75.0, 144.0, 165.0, 90.0, 100.0, 30.0, 200.0, 59.0, 61.0,
+                                     143.98};
+    char text[192];
+    for (size_t i = 0u; i < sizeof(silent) / sizeof(silent[0]); ++i) {
+        CHECK(player_ui_refresh_advice(silent[i]) == PLAYER_UI_REFRESH_SILENT,
+              "60, 120, 180, 59.94 Hz and an unknown rate give no advisory");
+    }
+    CHECK(player_ui_refresh_advice(0.0 / 0.0) == PLAYER_UI_REFRESH_SILENT &&
+              player_ui_refresh_advice(1.0 / 0.0) == PLAYER_UI_REFRESH_SILENT,
+          "a NaN or infinite rate gives no advisory");
+    for (size_t i = 0u; i < sizeof(advised) / sizeof(advised[0]); ++i) {
+        CHECK(player_ui_refresh_advice(advised[i]) == PLAYER_UI_REFRESH_ADVISORY,
+              "75, 144 and 165 Hz (and other non-multiples of 60) get the advisory");
+    }
+    player_ui_refresh_advisory_text(75.0, text, sizeof(text));
+    CHECK(strstr(text, "Your display runs at 75 Hz") != NULL, "the advisory names a whole rate");
+    player_ui_refresh_advisory_text(143.98, text, sizeof(text));
+    CHECK(strstr(text, "143.98 Hz") != NULL, "the advisory keeps a fractional rate's decimals");
+    player_ui_refresh_advisory_text(60.0, text, sizeof(text));
+    CHECK(text[0] == '\0', "a silent rate gives an empty advisory");
+    player_ui_refresh_advisory_text(144.0, text, 16u);
+    CHECK(strlen(text) < 16u, "a short buffer is cut, not overrun");
+}
+
 static void test_error_details_fit_the_minimum_window(void) {
     static char dump[CASE_DUMP_CAP];
     static const char details[] =
@@ -3157,11 +3196,11 @@ static void test_error_details_fit_the_minimum_window(void) {
     set_test_viewport(ui, 960, 540);
     memset(&error, 0, sizeof(error));
     error.badge = "CLI_NOT_FOUND";
-    error.title = "Build Tools Not Found";
+    error.title = "Build tools not found";
     error.message = "Nakagawa Recomp's build tools were not found next to the app. Reinstall "
                     "Nakagawa Recomp and keep its folder together.";
     error.details = details;
-    error.recovery_label = "Return to Library";
+    error.recovery_label = "Back to library";
     error.logical_width = 960.0f;
     error.logical_height = 540.0f;
     for (int frame = 0; frame < 2; ++frame) {
@@ -5073,6 +5112,7 @@ int main(int argc, char **argv) {
     title[0] = '\0';
     test_router();
     test_screen_actions();
+    test_refresh_advice_classifier();
     test_error_details_fit_the_minimum_window();
     test_every_screen_fits_the_window();
     test_psp_fonts_page();

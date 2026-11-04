@@ -2148,14 +2148,14 @@ static float tex_footprint_rho2(float du_dx, float dv_dx, float du_dy, float dv_
  *                   through mode): one level above the slope at w = 1 (s-s1-w1), one more per
  *                   doubling of w (s-s1-w2 .. s-s1-w8), and the texture size plays no part
  *                   (s-s1-w2-4x). log16(1/3) = -27 gives w = 3 level 2 + 11/16 (s-s1-w3).
- * Those cells draw with one footprint, or one w, per window. Where w varies across a
- * triangle (a-quad-w1to4, s-s1-w1to8) the PSP holds one level of detail per 4-pixel span of
- * a row, at a point that depends on the triangle, and the per-fragment value here differs
- * from it; that rule is not modelled. */
-static int tex_detail16(float rho2, float q) {
+ * `auto16` is the automatic mode's value before the bias; the caller computes it, since a
+ * triangle's differs from a sprite's or a line's (raster_tri_lod_span).
+ * Where w varies across a triangle (a-quad-w1to4, s-s1-w1to8) a triangle's fragment takes q,
+ * in both modes, from its span's reference pixel (raster_tri_lod_span). */
+static int tex_detail16(int auto16, float q) {
     int bias16 = (int)(ge.tex_lod_bias * 16.0f);
     switch (ge.tex_level_mode) {
-    case 0u: return ge_lod_log16(sqrtf(rho2)) + bias16;
+    case 0u: return auto16 + bias16;
     case 2u: return 16 + ge_lod_log16(ge.tex_lod_slope) - ge_lod_log16(q) + bias16;
     default: return bias16;
     }
@@ -2818,10 +2818,11 @@ static int color_test(int r, int g, int b) {
 }
 
 /* Compute final pixel colour from interpolated texcoord+colour+fog.
- * `rho2` is tex_footprint_rho2() of the texel coordinate (0 for a point), `q` the fragment's
- * interpolated 1/w (1 in through mode).
+ * `rho2` is tex_footprint_rho2() of the texel coordinate (0 for a point), `auto16` the
+ * automatic level of detail before the bias (tex_detail16), `q` the 1/w the level of detail
+ * reads (1 in through mode).
  * `fog` is fixed-point 0..256 (256 = no fog). Returns 0 if the alpha test rejects. */
-static int shade(float u, float fv, float rho2, float q, int fog,
+static int shade(float u, float fv, float rho2, int auto16, float q, int fog,
                  int vr, int vg, int vb, int va, int *or_, int *og, int *ob, int *oa) {
     int r, g, b, a;
     int dbg_ta = -1;
@@ -2837,7 +2838,7 @@ static int shade(float u, float fv, float rho2, float q, int fog,
         uint32_t level = 0u;
         int frac = 0, minifying = rho2 > 1.0f;
         if (ge_tex_mip_active(&ge)) {
-            int detail16 = tex_detail16(rho2, q);
+            int detail16 = tex_detail16(auto16, q);
             ge_tex_level_pick(detail16, ge.tex_filter, ge.tex_max_level, &level, &frac);
             minifying = detail16 > 0;
         }
@@ -3341,6 +3342,24 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     long long bias0 = (dy0 < 0 || (dy0 == 0 && dx0 > 0)) ? 0 : -1;
     long long bias1 = (dy1 < 0 || (dy1 == 0 && dx1 > 0)) ? 0 : -1;
     long long bias2 = (dy2 < 0 || (dy2 == 0 && dx2 > 0)) ? 0 : -1;
+    /* raster_tri_lod_span: the level of detail of a triangle (#1373), measured on a PSP-3000
+     * (PSP-GE-MIP-001: a-quad-w1to4, s-s1-w1to8 and the varying-w confirmation cells; the
+     * largest of all four components, not u along x and v along y only: a-quad-v16-w1to8,
+     * a-quad-v8-w1to8; two separate logarithms: a-quad-u48-w1to4). The GE
+     * holds one value per span of 4 pixels of a row (x & ~3) and triangle, read at the span's
+     * reference pixel: its second pixel, or its first covered pixel when that lies further
+     * right. The automatic mode is log16(rho) - log16(q), two quantised logarithms like the
+     * slope mode's, with rho the largest |screen gradient| of u * q and v * q (the planes the
+     * triangle interpolates, in level-0 texels) and q the 1/w at the reference pixel; the
+     * slope mode reads that q too. A per-fragment, perspective-correct footprint does not
+     * match those two cells. */
+    int lod_rho16 = 0;
+    if (textured) {
+        float su_dx = w0_dx * iu_ac + w1_dx * iu_bc, su_dy = w0_dy * iu_ac + w1_dy * iu_bc;
+        float sv_dx = w0_dx * iv_ac + w1_dx * iv_bc, sv_dy = w0_dy * iv_ac + w1_dy * iv_bc;
+        lod_rho16 = ge_lod_log16(fmaxf(fmaxf(fabsf(su_dx), fabsf(su_dy)),
+                                       fmaxf(fabsf(sv_dx), fabsf(sv_dy))));
+    }
     long long px0 = (long long)minx*16 + 8, py0 = (long long)miny*16 + 8;
     long long e0r = dx0*(py0-ay)  - dy0*(px0-ax);
     long long e1r = dx1*(py0-by)  - dy1*(px0-bx);
@@ -3348,8 +3367,13 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
 
     for (int y=miny; y<=maxy; y++, e0r+=dx0*16, e1r+=dx1*16, e2r+=dx2*16) {
         long long e0=e0r, e1=e1r, e2=e2r;
+        int span_x = -1, span_ref = 0;   /* raster_tri_lod_span, per row */
         for (int x=minx; x<=maxx; x++, e0-=dy0*16, e1-=dy1*16, e2-=dy2*16) {
             if ((e0+bias0) < 0 || (e1+bias1) < 0 || (e2+bias2) < 0) continue;
+            if ((x & ~3) != span_x) {
+                span_x = x & ~3;
+                span_ref = x > span_x + 1 ? x : span_x + 1;
+            }
             float w0f = (float)e1*inv, w1f = (float)e2*inv;
             AT_PIX(irw, rw); AT_PIX(iz, z); AT_PIX(ifog, fog);
             if (!zrange_ok(iz, persp)) { if (s_stat_on > 0) s_stat.zrange++; continue; }
@@ -3377,8 +3401,13 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             }
 
             float u = 0, fv = 0;
-            float rho2 = 0.0f;
+            float rho2 = 0.0f, lod_q = irw;
+            int auto16 = 0;
             if (textured) {
+                long long d = (long long)(span_ref - x);
+                float rw0 = (float)(e1 - dy1 * 16 * d) * inv, rw1 = (float)(e2 - dy2 * 16 * d) * inv;
+                lod_q = VC->rw + rw0 * irw_ac + rw1 * irw_bc;
+                auto16 = lod_rho16 - ge_lod_log16(lod_q);
                 AT_PIX(iu, u); AT_PIX(iv, v);
                 float iu_dx = w0_dx * iu_ac + w1_dx * iu_bc;
                 float iv_dx = w0_dx * iv_ac + w1_dx * iv_bc;
@@ -3405,7 +3434,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             int fog = use_fog ? (int)(clampf01(ifog) * 256.0f) : 256;
 
             int sr,sg,sb,sa;
-            if (!shade(u,fv,rho2,irw,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+            if (!shade(u,fv,rho2,auto16,lod_q,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
 
             /* SR_PIXWHO=x,y: log every triangle that writes the chosen pixel — identifies
              * which draw owns a misrendered region without guessing from geometry. */
@@ -3508,7 +3537,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         if (!zrange_ok(lz, persp)) { if (s_stat_on > 0) s_stat.zrange++; continue; }
         int fog = use_fog ? (int)(clampf01(A->fog+(B->fog-A->fog)*t)*256.0f) : 256;
         int sr,sg,sb,sa;
-        if (!shade(u,fv,rho2,lq,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+        if (!shade(u,fv,rho2,ge_lod_log16(sqrtf(rho2)),lq,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
         put_px_rgba_tested(x,y,clamp_z(lz),use_z,sr,sg,sb,sa);
     }
 }
@@ -3533,7 +3562,7 @@ static void draw_point_vtx(const Vtx *A, int persp) {
     int fog = (persp && ge.fog_enable && !ge.clear) ? (int)(clampf01(A->fog)*256.0f) : 256;
     s_in3d = persp;
     int sr,sg,sb,sa;
-    if (!shade(u,fv,0.0f,persp ? A->rw : 1.0f,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
+    if (!shade(u,fv,0.0f,ge_lod_log16(0.0f),persp ? A->rw : 1.0f,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
     int use_z = persp ? ge.ztest_enable : thru_ztest();
     put_px_rgba_tested((int)A->x,(int)A->y,clamp_z(A->z),use_z,sr,sg,sb,sa);
 }
@@ -3614,6 +3643,277 @@ static const LightConsts *light_consts(void) {
     return lc;
 }
 
+/* ge_powf: the specular and powered-diffuse power, written once in the subset of C and GLSL
+ * the two share (the blocks between the BEGIN and END markers), so the CPU T&L here and the
+ * GPU T&L (shaders/psp_tnl.vert) compute the same bits (#318). These definitions give C the GLSL
+ * names the shared text uses; the tables are the same numbers in each language's syntax. */
+#define uint uint32_t
+#define uvec2 GePowV2
+#define GE_POW_FN static inline
+typedef struct { uint32_t x, y; } GePowV2;
+static inline GePowV2 ge_v2(uint32_t h, uint32_t l) { GePowV2 v; v.x = h; v.y = l; return v; }
+static inline uint32_t floatBitsToUint(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
+static inline float uintBitsToFloat(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
+static inline int findMSB(uint32_t v) { return v ? 31 - __builtin_clz(v) : -1; }
+static inline int ge_i(uint32_t v) { return (int)v; }
+static inline uint32_t ge_u(int v) { return (uint32_t)v; }
+static inline uint32_t ge_pow_mulhi(uint32_t a, uint32_t b) { return (uint32_t)(((uint64_t)a * b) >> 32); }
+static const uint32_t GE_POW_R[92] = {
+    0xB60B60B7u, 0xB40B40B5u, 0xB21642C9u, 0xB02C0B03u, 0xAE4C415Du, 0xAC769185u,
+    0xAAAAAAABu, 0xA8E83F58u, 0xA72F053Au, 0xA57EB503u, 0xA3D70A3Eu, 0xA237C32Cu,
+    0xA0A0A0A1u, 0x9F1165E8u, 0x9D89D89Eu, 0x9C09C09Du, 0x9A90E7DAu, 0x991F1A52u,
+    0x97B425EEu, 0x964FDA6Du, 0x94F20950u, 0x939A85C5u, 0x92492493u, 0x90FDBC0Au,
+    0x8FB823EFu, 0x8E78356Eu, 0x8D3DCB09u, 0x8C08C08Du, 0x8AD8F2FCu, 0x89AE408Au,
+    0x88888889u, 0x8767AB60u, 0x864B8A7Eu, 0x85340854u, 0x84210843u, 0x83126E98u,
+    0x82082083u, 0x81020409u, 0x80000000u, 0x7F01FC08u, 0x7E07E07Fu, 0x7D11967Au,
+    0x7C1F07C2u, 0x7B301ECDu, 0x7A44C6B0u, 0x795CEB25u, 0x78787879u, 0x77975B90u,
+    0x76B981DBu, 0x75DED953u, 0x75075076u, 0x7432D63Eu, 0x73615A25u, 0x7292CC16u,
+    0x71C71C72u, 0x70FE3C08u, 0x70381C0Fu, 0x6F74AE27u, 0x6EB3E454u, 0x6DF5B0F8u,
+    0x6D3A06D4u, 0x6C80D902u, 0x6BCA1AF3u, 0x6B15C06Cu, 0x6A63BD82u, 0x69B4069Cu,
+    0x6906906Au, 0x685B4FE6u, 0x67B23A55u, 0x670B453Cu, 0x66666667u, 0x65C393E1u,
+    0x6522C3F4u, 0x6483ED28u, 0x63E7063Fu, 0x634C0635u, 0x62B2E43Eu, 0x621B97C3u,
+    0x61861862u, 0x60F25DEBu, 0x60606061u, 0x5FD017F5u, 0x5F417D06u, 0x5EB48824u,
+    0x5E293206u, 0x5D9F7391u, 0x5D1745D2u, 0x5C90A1FEu, 0x5C0B8171u, 0x5B87DDAEu,
+    0x5B05B05Cu, 0x5A84F346u
+};
+static const uint32_t GE_POW_TH[92] = {
+    0xBEF50AD0u, 0xC0FF6A2Du, 0xC3041402u, 0xC50327EAu, 0xC6FCC479u, 0xC8F1074Fu,
+    0xCAE00D1Cu, 0xCCC9F1A9u, 0xCEAECFE9u, 0xD08EC1F9u, 0xD269E12Eu, 0xD440461Bu,
+    0xD6120899u, 0xD7DF3FCFu, 0xD9A80238u, 0xDB6C65A8u, 0xDD2C7F58u, 0xDEE863E4u,
+    0xE0A02755u, 0xE253DD2Au, 0xE4039856u, 0xE5AF6B49u, 0xE75767F4u, 0xE8FB9FCDu,
+    0xEA9C23D4u, 0xEC390499u, 0xEDD2523Du, 0xEF681C71u, 0xF0FA728Bu, 0xF2896372u,
+    0xF414FDB3u, 0xF59D4F7Fu, 0xF72266ACu, 0xF8A450B7u, 0xFA231ACCu, 0xFB9ED1C6u,
+    0xFD17822Du, 0xFE8D3844u, 0x00000000u, 0x016FE50Bu, 0x02DCF2CFu, 0x04473474u,
+    0x05AEB4DDu, 0x07137EACu, 0x08759C4Fu, 0x09D517EDu, 0x0B31FB7Cu, 0x0C8C50B6u,
+    0x0DE42120u, 0x0F397608u, 0x108C588Bu, 0x11DCD196u, 0x132AE9E0u, 0x1476A9F8u,
+    0x15C01A39u, 0x170742D3u, 0x184C2BCEu, 0x198EDD06u, 0x1ACF5E2Cu, 0x1C0DB6CCu,
+    0x1D49EE4Bu, 0x1E840BE6u, 0x1FBC16B8u, 0x20F215B5u, 0x22260FB5u, 0x23580B63u,
+    0x24880F54u, 0x25B621F8u, 0x26E2499Bu, 0x280C8C75u, 0x2934F096u, 0x2A5B7BF7u,
+    0x2B803472u, 0x2CA31FC7u, 0x2DC4439Au, 0x2EE3A574u, 0x30014AC5u, 0x311D38E5u,
+    0x32377511u, 0x33500471u, 0x3466EC13u, 0x357C30F1u, 0x368FD7EEu, 0x37A1E5D2u,
+    0x38B25F5Au, 0x39C14924u, 0x3ACEA7BFu, 0x3BDA7FA6u, 0x3CE4D542u, 0x3DEDACE4u,
+    0x3EF50ACFu, 0x3FFAF333u
+};
+static const uint32_t GE_POW_TL[92] = {
+    0x9DE8DE1Du, 0x635E9463u, 0xABCB01ECu, 0x4537E136u, 0xE99B246Eu, 0x960D1402u,
+    0xA196263Bu, 0xD48889C9u, 0xEA7B4B22u, 0xEB5D97B6u, 0x92D93835u, 0x192F2E6Du,
+    0xF4CFBBEEu, 0x7A3CA98Bu, 0x93A382D6u, 0xB4F8820Au, 0x73E87040u, 0x0A115F73u,
+    0xCDAD2B4Du, 0xECC6E3F3u, 0xEB0BDB3Cu, 0x7E1B3CD8u, 0x596E03A6u, 0x06868946u,
+    0xC2EEB845u, 0xC147BD63u, 0x1B1636B0u, 0xD3ED2660u, 0x1316EFD4u, 0x372745B8u,
+    0xF68D6608u, 0xB6A8E33Cu, 0xDD35C662u, 0x2E904B74u, 0x3AF53F6Fu, 0x2D104E32u,
+    0xDC14D474u, 0x87AC478Bu, 0x00000000u, 0x57DB3DB3u, 0x4CCB20B9u, 0x07686F0Du,
+    0x4CAA1A67u, 0xCE73B87Fu, 0x74FAAFC5u, 0x19FC7055u, 0x94CA08B0u, 0xF4EF1E8Du,
+    0x2E70A041u, 0x8EC5A157u, 0x521025E0u, 0xE786683Eu, 0xF609AE42u, 0xAE7278CAu,
+    0x9F816A0Bu, 0x6698C173u, 0x9549FFBCu, 0x5B0439A7u, 0x156D8ED5u, 0xDB63DCE9u,
+    0x90C47C05u, 0xC9AFF242u, 0x32A88796u, 0xCC6BB175u, 0x100C9B85u, 0xD52C556Bu,
+    0x657A2684u, 0x72D021EDu, 0xF521FCA0u, 0x71D3B410u, 0x8537BD3Fu, 0x24F647BEu,
+    0xCB986F1Du, 0x74B81EDEu, 0x30A507A4u, 0x87A969E3u, 0x962E5854u, 0x2877524Bu,
+    0x57594776u, 0xD749460Fu, 0xCCE6AF3Fu, 0x1C625F66u, 0x59EFF9E3u, 0xDCC0F3B1u,
+    0x19017A80u, 0x1B3E84EBu, 0x50D4C53Fu, 0xBC885692u, 0x29654D24u, 0x674013D7u,
+    0x9A397AEDu, 0x9C7010FCu
+};
+static const uint32_t GE_POW_EH[64] = {
+    0x80000000u, 0x8164D1F3u, 0x82CD8698u, 0x843A28C3u, 0x85AAC367u, 0x871F6196u,
+    0x88980E80u, 0x8A14D575u, 0x8B95C1E3u, 0x8D1ADF5Bu, 0x8EA4398Bu, 0x9031DC43u,
+    0x91C3D373u, 0x935A2B2Fu, 0x94F4EFA8u, 0x96942D37u, 0x9837F051u, 0x99E04593u,
+    0x9B8D39B9u, 0x9D3ED9A7u, 0x9EF53260u, 0xA0B0510Fu, 0xA2704303u, 0xA43515AEu,
+    0xA5FED6A9u, 0xA7CD93B4u, 0xA9A15AB4u, 0xAB7A39B5u, 0xAD583EEAu, 0xAF3B78ADu,
+    0xB123F581u, 0xB311C412u, 0xB504F333u, 0xB6FD91E3u, 0xB8FBAF47u, 0xBAFF5AB2u,
+    0xBD08A39Fu, 0xBF1799B6u, 0xC12C4CCAu, 0xC346CCDAu, 0xC5672A11u, 0xC78D74C8u,
+    0xC9B9BD86u, 0xCBEC14FEu, 0xCE248C15u, 0xD06333DAu, 0xD2A81D91u, 0xD4F35AABu,
+    0xD744FCCAu, 0xD99D15C2u, 0xDBFBB797u, 0xDE60F482u, 0xE0CCDEECu, 0xE33F8972u,
+    0xE5B906E7u, 0xE8396A50u, 0xEAC0C6E7u, 0xED4F301Eu, 0xEFE4B99Bu, 0xF281773Cu,
+    0xF5257D15u, 0xF7D0DF73u, 0xFA83B2DBu, 0xFD3E0C0Cu
+};
+static const uint32_t GE_POW_EL[64] = {
+    0x00000000u, 0xBC030773u, 0xAC2BA1D7u, 0xACDE4046u, 0xCC487B15u, 0x9E8D1010u,
+    0x92DA8527u, 0x496EFD9Au, 0xEA8BD6E7u, 0x7E5BA9E6u, 0x45CD53C0u, 0x1466B1DCu,
+    0xAB11C336u, 0x13E6E92Cu, 0xFEF70961u, 0x20185A00u, 0x8DB8A96Fu, 0x20B7FA65u,
+    0xD54E5539u, 0x2CFFB751u, 0x91A111AEu, 0xB9714FC2u, 0x0C496819u, 0x09E6809Eu,
+    0xB15138EAu, 0xE965356Au, 0xEA7C0EF8u, 0xA93ED337u, 0x42A14AC6u, 0x690A4375u,
+    0xD2AC2590u, 0xA9112489u, 0xF9DE6484u, 0x28D17791u, 0x62FB9EE9u, 0x133E45FBu,
+    0x580C36BFu, 0x7A731083u, 0x66709456u, 0x24976407u, 0x5506DADDu, 0xABB9B15Du,
+    0x6E2F27A3u, 0xF2727C5Du, 0x1F8480E4u, 0xEF2B2595u, 0xF12AE45Au, 0xCFEDFA1Fu,
+    0xD69D6AF4u, 0x78AFD7B6u, 0xDAF23755u, 0x5E0E9124u, 0x2A94E111u, 0xBE8A5A51u,
+    0x7C8348A8u, 0x3C4BDC68u, 0xDD24392Fu, 0xD9942B84u, 0xDCDAF5CBu, 0x59FFB13Au,
+    0x2486CC2Cu, 0x0AD13BB9u, 0x722A033Au, 0xF486C175u
+};
+/* ---- BEGIN ge_pow helpers (shared text: identical in src/rt/ge.c and shaders/psp_tnl.vert) ---- */
+/* x^y for the GE's specular and powered-diffuse terms, in unsigned 32-bit integer arithmetic
+ * only, so the C and GLSL copies give the same bits with no libm and no fused multiply-add.
+ * The result is the correctly rounded float (nearest even) for every finite x >= 0 and y > 0
+ * the lighting passes, subnormal results included; tools/test_shader_embed.py keeps the copies
+ * identical and the tnl-parity selftest compares their output. Fixed-point values are
+ * (high word, low word) pairs. ge_pow_mul is the high 64 bits of a 64 x 64-bit product:
+ * ge_pow_mul_limbs here, or the same product from a 128-bit multiply where C has one. */
+GE_POW_FN uvec2 ge_pow_add(uvec2 a, uvec2 b) {
+    uint lo = a.y + b.y;
+    return ge_v2(a.x + b.x + (lo < a.y ? 1u : 0u), lo);
+}
+GE_POW_FN uvec2 ge_pow_sub(uvec2 a, uvec2 b) {
+    return ge_v2(a.x - b.x - (a.y < b.y ? 1u : 0u), a.y - b.y);
+}
+GE_POW_FN uvec2 ge_pow_mul_limbs(uvec2 a, uvec2 b) {
+    uint t = ge_pow_mulhi(a.y, b.y);
+    uint u = t + a.y * b.x;
+    uint k = u < t ? 1u : 0u;
+    uint v = u + a.x * b.y;
+    k = k + (v < u ? 1u : 0u);
+    uint d = ge_pow_mulhi(a.y, b.x);
+    uint e = d + ge_pow_mulhi(a.x, b.y);
+    uint j = e < d ? 1u : 0u;
+    uint f = e + a.x * b.x;
+    j = j + (f < e ? 1u : 0u);
+    uint g = f + k;
+    j = j + (g < f ? 1u : 0u);
+    return ge_v2(ge_pow_mulhi(a.x, b.x) + j, g);
+}
+/* ---- END ge_pow helpers ---- */
+#if defined(__SIZEOF_INT128__)
+__extension__ typedef unsigned __int128 GePowU128;
+static inline GePowV2 ge_pow_mul(GePowV2 a, GePowV2 b) {
+    GePowU128 p = (GePowU128)(((uint64_t)a.x << 32) | a.y) * (((uint64_t)b.x << 32) | b.y);
+    uint64_t h = (uint64_t)(p >> 64);
+    return ge_v2((uint32_t)(h >> 32), (uint32_t)h);
+}
+#else
+static inline GePowV2 ge_pow_mul(GePowV2 a, GePowV2 b) { return ge_pow_mul_limbs(a, b); }
+#endif
+/* ---- BEGIN ge_powf (shared text) ---- */
+/* log2 x = xe + log2 m, m in [sqrt(1/2), sqrt(2)): GE_POW_R[i] is 1/m rounded up for the 92
+ * intervals of m (i = mq >> 24), GE_POW_TH:TL[i] = -log2 R, and a = m R - 1 in [0, 1/90) is
+ * exact; a six-term series gives log2(1 + a). |y log2 x| is formed in 16.48 fixed point and
+ * split as n + g, and 2^g = 2^(j/64) 2^d with GE_POW_E[j] and a five-term series in d. A NaN
+ * x or y is returned as is, a negative x or y gives NaN, x^0 is 1 and 0^y is +0. */
+GE_POW_FN float ge_powf(float x, float y) {
+    uint xb = floatBitsToUint(x);
+    uint yb = floatBitsToUint(y);
+    if ((xb & 0x7FFFFFFFu) > 0x7F800000u) return x;
+    if ((yb & 0x7FFFFFFFu) > 0x7F800000u) return y;
+    if ((yb & 0x7FFFFFFFu) == 0u) return 1.0f;
+    if (yb > 0x7FFFFFFFu) return uintBitsToFloat(0x7FC00000u);
+    if ((xb & 0x7FFFFFFFu) == 0u) return 0.0f;
+    if (xb > 0x7FFFFFFFu) return uintBitsToFloat(0x7FC00000u);
+    if (xb == 0x3F800000u) return 1.0f;
+    if (xb == 0x7F800000u || yb == 0x7F800000u)
+        return xb > 0x3F800000u ? uintBitsToFloat(0x7F800000u) : 0.0f;
+    /* x = xm * 2^(xe - 23) and y = ym * 2^(ye - 23), xm and ym in [2^23, 2^24). */
+    int xe = ge_i((xb >> 23) & 0xFFu);
+    uint xm = xb & 0x7FFFFFu;
+    if (xe == 0) { int sh = 23 - findMSB(xm); xm = xm << sh; xe = 1 - sh; }
+    else xm = xm | 0x800000u;
+    xe = xe - 127;
+    int ye = ge_i((yb >> 23) & 0xFFu);
+    uint ym = yb & 0x7FFFFFu;
+    if (ye == 0) { int sh = 23 - findMSB(ym); ym = ym << sh; ye = 1 - sh; }
+    else ym = ym | 0x800000u;
+    ye = ye - 127;
+    /* x = m * 2^xe, m as mq in 1.31 fixed point. */
+    uint mq = xm << 8;
+    if (xm > 0xB504F3u) { mq = xm << 7; xe = xe + 1; }
+    uint ix = (mq >> 24) - 90u;
+    /* a = m R - 1 in 0.64 fixed point. */
+    uint ph = ge_pow_mulhi(mq, GE_POW_R[ix]);
+    uint pl = mq * GE_POW_R[ix];
+    uvec2 a = ge_v2(((ph - 0x40000000u) << 2) | (pl >> 30), pl << 2);
+    /* log2(1 + a) = a (1/ln 2 - a (1/(2 ln 2) - a (... - a / (6 ln 2)))), coefficients 1.63. */
+    uvec2 b = ge_pow_sub(ge_v2(0x24EED8A1u, 0xDF37FCF2u), ge_pow_mul(a, ge_v2(0x1EC709DCu, 0x3A03FD75u)));
+    b = ge_pow_sub(ge_v2(0x2E2A8ECAu, 0x5705FC2Fu), ge_pow_mul(a, b));
+    b = ge_pow_sub(ge_v2(0x3D8E13B8u, 0x7407FAE9u), ge_pow_mul(a, b));
+    b = ge_pow_sub(ge_v2(0x5C551D94u, 0xAE0BF85Eu), ge_pow_mul(a, b));
+    b = ge_pow_sub(ge_v2(0xB8AA3B29u, 0x5C17F0BCu), ge_pow_mul(a, b));
+    /* log2 m = log2(1 + a) - log2 R, 1.63 two's complement. */
+    uvec2 l = ge_pow_add(ge_v2(GE_POW_TH[ix], GE_POW_TL[ix]), ge_pow_mul(a, b));
+    /* |log2 x| = |xe + log2 m| as l * 2^-fb, shifted to its top bit; lneg its sign. */
+    int fb = 63;
+    if (xe != 0) {
+        l = ge_v2((l.x >> 9) | ((l.x & 0x80000000u) != 0u ? 0xFF800000u : 0u), (l.y >> 9) | (l.x << 23));
+        l.x = l.x + (ge_u(xe) << 22);
+        fb = 54;
+    }
+    uint lneg = l.x >> 31;
+    if (lneg != 0u) l = ge_pow_sub(ge_v2(0u, 0u), l);
+    if ((l.x | l.y) == 0u) return 1.0f;
+    int nz = l.x != 0u ? 31 - findMSB(l.x) : 63 - findMSB(l.y);
+    if (nz >= 32) l = ge_v2(l.y << (nz - 32), 0u);
+    else if (nz > 0) l = ge_v2((l.x << nz) | (l.y >> (32 - nz)), l.y << nz);
+    fb = fb + nz;
+    /* |y log2 x| = w * 2^(9 + ye - fb), w = ym * l / 2^32, as p in 16.48 fixed point, held at
+     * 512 once the result is 0 or infinite anyway. */
+    uvec2 w = ge_pow_mul(ge_v2(ym, 0u), l);
+    int s = 57 + ye - fb;
+    uvec2 p = ge_v2(0x02000000u, 0u);
+    if (s >= 0) {
+        if (32 + findMSB(w.x) + s < 57)
+            p = s == 0 ? w : ge_v2((w.x << s) | (w.y >> (32 - s)), w.y << s);
+    } else if (s > -32) {
+        p = ge_v2(w.x >> (-s), (w.y >> (-s)) | (w.x << (32 + s)));
+    } else if (s > -64) {
+        p = ge_v2(0u, s == -32 ? w.x : w.x >> (-32 - s));
+    } else {
+        p = ge_v2(0u, 0u);
+    }
+    /* y log2 x = n + g, g in [0, 1) as 0.48 fixed point (g.x holds its top 16 bits). */
+    int n = ge_i(p.x >> 16);
+    uvec2 g = ge_v2(p.x & 0xFFFFu, p.y);
+    if (lneg != 0u) {
+        n = -n;
+        if ((g.x | g.y) != 0u) { n = n - 1; g = ge_pow_sub(ge_v2(0x10000u, 0u), g); }
+    }
+    if (n >= 128) return uintBitsToFloat(0x7F800000u);
+    if (n <= -151) return 0.0f;
+    /* 2^g = 2^(j/64) 2^d, d = g - j/64 in 0.64 fixed point, and
+     * 2^d - 1 = d (ln 2 + d ((ln 2)^2/2 + d (... + d (ln 2)^5/120))), coefficients 0.64. */
+    uint j = g.x >> 10;
+    uvec2 d = ge_v2(((g.x & 0x3FFu) << 16) | (g.y >> 16), g.y << 16);
+    b = ge_pow_add(ge_v2(0x0276556Du, 0xF749CEE5u), ge_pow_mul(d, ge_v2(0x005761FFu, 0x9E299CC4u)));
+    b = ge_pow_add(ge_v2(0x0E35846Bu, 0x82505FC6u), ge_pow_mul(d, b));
+    b = ge_pow_add(ge_v2(0x3D7F7BFFu, 0x058B1D51u), ge_pow_mul(d, b));
+    b = ge_pow_add(ge_v2(0xB17217F7u, 0xD1CF79ACu), ge_pow_mul(d, b));
+    b = ge_pow_mul(d, b);
+    /* 2^(j/64) (1.63) times 1 + b (1.63): r in 2.62 fixed point, in [1, 2). */
+    uvec2 r = ge_pow_mul(ge_v2(GE_POW_EH[j], GE_POW_EL[j]), ge_v2(0x80000000u | (b.x >> 1), (b.y >> 1) | (b.x << 31)));
+    /* r * 2^(n - 62) to a float, rounded to nearest even. */
+    int be = n + 127;
+    if (be >= 1) {
+        uint m = r.x >> 7;
+        uint rem = r.x & 0x7Fu;
+        if (rem > 0x40u || (rem == 0x40u && (r.y != 0u || (m & 1u) != 0u))) m = m + 1u;
+        if (m >= 0x1000000u) { m = m >> 1; be = be + 1; }
+        if (be >= 255) return uintBitsToFloat(0x7F800000u);
+        return uintBitsToFloat((ge_u(be) << 23) | (m & 0x7FFFFFu));
+    }
+    int sh = -119 - n;
+    uint sm = r.x >> sh;
+    uint srem = r.x & ((1u << sh) - 1u);
+    uint hb = 1u << (sh - 1);
+    if (srem > hb || (srem == hb && (r.y != 0u || (sm & 1u) != 0u))) sm = sm + 1u;
+    return uintBitsToFloat(sm);
+}
+/* ---- END ge_powf ---- */
+#undef GE_POW_FN
+#undef uvec2
+#undef uint
+
+/* Which power light_vertex uses: 0 (the default) the C library's powf, 1 ge_powf. Only with 1
+ * does the GPU T&L take specular and powered-diffuse lights, since only then are the two
+ * routes' bits the same. ge_powf stays off until it is measured against the PSP (#1732: the
+ * ge-light oracle case). */
+static int s_ge_pow_exact;
+
+void ge_pow_set_exact(int on) { s_ge_pow_exact = on ? 1 : 0; }
+
+static float ge_light_pow(float x, float y) { return s_ge_pow_exact ? ge_powf(x, y) : powf(x, y); }
+
+/* Test seams: ge_powf, and the 64 x 64-bit high product both ways (out[0..1] the one C uses,
+ * out[2..3] ge_pow_mul_limbs, the one the shader runs), each as (high word, low word). */
+float ge_pow_selftest_powf(float x, float y) { return ge_powf(x, y); }
+void ge_pow_selftest_mul(const uint32_t a[2], const uint32_t b[2], uint32_t out[4]) {
+    GePowV2 p = ge_pow_mul(ge_v2(a[0], a[1]), ge_v2(b[0], b[1]));
+    GePowV2 q = ge_pow_mul_limbs(ge_v2(a[0], a[1]), ge_v2(b[0], b[1]));
+    out[0] = p.x; out[1] = p.y; out[2] = q.x; out[3] = q.y;
+}
+
 /* Per-vertex lighting in world space: emissive + scene ambient, plus per-light
  * ambient/diffuse/specular for up to 4 directional/point lights (spot treated as point).
  * Material colours come from the registers or the vertex colour per MATERIALUPDATE bits. */
@@ -3657,7 +3957,7 @@ static int light_vertex(float wx, float wy, float wz, float nx, float ny, float 
         }
         float ndl = nx*lx + ny*ly + nz*lz;
         if (ndl < 0.0f) ndl = 0.0f;
-        if (comp == 2 && ge.spec_coef > 0.0f) ndl = powf(ndl, ge.spec_coef);   /* powered diffuse */
+        if (comp == 2 && ge.spec_coef > 0.0f) ndl = ge_light_pow(ndl, ge.spec_coef);   /* powered diffuse */
 
         r += att*(l->acol[0]*mar + l->dcol[0]*mdr*ndl);
         g += att*(l->acol[1]*mag + l->dcol[1]*mdg*ndl);
@@ -3669,7 +3969,7 @@ static int light_vertex(float wx, float wy, float wz, float nx, float ny, float 
             if (hd > 0.0f) {
                 float ndh = (nx*hx + ny*hy + nz*hz) / hd;
                 if (ndh > 0.0f) {
-                    float s = ge.spec_coef > 0.0f ? powf(ndh, ge.spec_coef) : ndh;
+                    float s = ge.spec_coef > 0.0f ? ge_light_pow(ndh, ge.spec_coef) : ndh;
                     r += att*l->scol[0]*msr*s;
                     g += att*l->scol[1]*msg*s;
                     b += att*l->scol[2]*msb*s;
@@ -4273,6 +4573,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     float u_start = u_left + 0.5f * u_dir;
     float v_start = v_top + 0.5f * v_dir;
     float rho2 = tex_footprint_rho2(u_dir, 0.0f, 0.0f, v_dir);
+    int spr_auto16 = ge_lod_log16(sqrtf(rho2));
     /* The slope mode's 1/w: 1 in through mode; a transform-mode sprite takes its second
      * vertex's, as it does for colour, depth and fog (unmeasured on a PSP). */
     float sq = persp ? p1->rw : 1.0f;
@@ -4301,7 +4602,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
         for (int x = xa; x < xb; x++) {
             float u = u_start + (float)(x - xa) * u_dir;
             int r, g, b, a;
-            if (!shade(u, fv, rho2, sq, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
+            if (!shade(u, fv, rho2, spr_auto16, sq, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
             put_px_rgba_tested(x, y, pz, use_z, r, g, b, a);
         }
     }
@@ -4514,7 +4815,8 @@ static int tnl_state_ok(int type, const VFmt *vf) {
         for (int i = 0; i < GE_TNL_LIGHTS; i++) {
             if (!ge.light_on[i]) continue;
             int comp = (int)(ge.light_type[i] & 3u);
-            if ((comp & 1) || (comp == 2 && ge.spec_coef > 0.0f)) return 0;   /* powf */
+            if (((comp & 1) || (comp == 2 && ge.spec_coef > 0.0f)) && !s_ge_pow_exact)
+                return 0;   /* the C library's powf: no shader counterpart */
             if (!tnl_nums_ok(ge.light_pos[i], 3) || !tnl_nums_ok(ge.light_att[i], 3)) return 0;
         }
     }
@@ -4616,7 +4918,9 @@ static void tnl_params(const VFmt *vf, GeTnlParams *p) {
             p->mat_dif[ch] = lc->mat_dif[ch];
             p->emissive[ch] = lc->emissive[ch];
             p->amb[ch] = lc->amb[ch];
+            p->mat_spe[ch] = lc->mat_spe[ch];
         }
+        p->spec_coef = ge.spec_coef;
         for (int i = 0; i < GE_TNL_LIGHTS; i++) {
             const LightConst *l = &lc->light[i];
             GeTnlLight *o = &p->light[i];
@@ -4627,7 +4931,9 @@ static void tnl_params(const VFmt *vf, GeTnlParams *p) {
                 o->acol[ch] = l->acol[ch];
                 o->dcol[ch] = l->dcol[ch];
                 o->att[ch] = ge.light_att[i][ch];
+                o->scol[ch] = l->scol[ch];
             }
+            o->comp = (uint32_t)l->comp;
         }
     }
 }

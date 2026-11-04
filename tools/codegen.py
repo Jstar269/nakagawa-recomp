@@ -242,6 +242,23 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
         enh = " ".join([stock_line.strip()] + [f"s->r[{r}] <<= 1;" for r in rw["regs"]])
     elif kind == "scale_f_reg":
         enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
+    elif kind == "map_f_reg":
+        r = rw["reg"]
+        # A factor read from memory is only known at run time: outside (0, 1) it keeps the stock value.
+        # Decay is evaluated in double and rounded once, as the lui path does; sqrtf is already exact.
+        expr = {"decay": f"(float)(1.0 - sqrt(1.0 - (double)s->f[{r}]))",
+                "retention": f"sqrtf(s->f[{r}])"}[rw["map"]]
+        enh = (f"{stock_line.strip()} if (s->f[{r}] > 0.0f && s->f[{r}] < 1.0f) "
+               f"{{ s->f[{r}] = {expr}; }}")
+    elif kind == "scale_v_reg":
+        v = vreg_indices(rw["vreg"], 1)[0]
+        enh = f"{stock_line.strip()} s->v[{v}] *= {rw['factor']!r}f;"
+    elif kind == "map_v_reg":
+        v = vreg_indices(rw["vreg"], 1)[0]
+        expr = {"decay": f"(float)(1.0 - sqrt(1.0 - (double)s->v[{v}]))",
+                "retention": f"sqrtf(s->v[{v}])"}[rw["map"]]
+        enh = (f"{stock_line.strip()} if (s->v[{v}] > 0.0f && s->v[{v}] < 1.0f) "
+               f"{{ s->v[{v}] = {expr}; }}")
     elif kind == "scale_f_store":
         enh = _scaled_store_line(rw, stock_line)
     elif kind == "scale_f_addend":
@@ -1838,6 +1855,32 @@ _VFPU9_INTERP_ROUTED = {
 }
 
 
+# vqmul.q and vcrsp.t lanes as (sign, S lane, T lane) terms, in source order. The emitted
+# lane is a left-to-right chain of sr_vf_* calls (src/rt/recomp.h), the same chain
+# sr_vfpu_interp evaluates, so both lanes return one NaN word (issue #326).
+_VQMUL_TERMS = (
+    ((1, 0, 3), (1, 1, 2), (-1, 2, 1), (1, 3, 0)),
+    ((-1, 0, 2), (1, 1, 3), (1, 2, 0), (1, 3, 1)),
+    ((1, 0, 1), (-1, 1, 0), (1, 2, 3), (1, 3, 2)),
+    ((-1, 0, 0), (-1, 1, 1), (-1, 2, 2), (1, 3, 3)),
+)
+_VCRSP_TERMS = (
+    ((1, 1, 2), (-1, 2, 1)),
+    ((1, 2, 0), (-1, 0, 2)),
+    ((1, 0, 1), (-1, 1, 0)),
+)
+
+
+def _vf_chain(terms):
+    sign, i, j = terms[0]
+    acc = f"sr_vf_mul({'-' if sign < 0 else ''}_s[{i}],_t[{j}])"
+    for sign, i, j in terms[1:]:
+        # Each helper is written as a call literal so tools/recomp_helper_inventory.py sees it.
+        call = "sr_vf_add(" if sign > 0 else "sr_vf_sub("
+        acc = f"{call}{acc},sr_vf_mul(_s[{i}],_t[{j}]))"
+    return acc
+
+
 def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
     # VFPU memory forms under --lle-cpu use the same sr_cpu_guard_access() call
     # as _lle_access_stmt() (spec 3.3, runs PSP-A3-08..15): lv.s/sv.s width 4,
@@ -2235,12 +2278,12 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             writes.append(f"float _sc = s->v[{scalar_vidx}];")
             for row in range(side - 1):
                 for col in range(side):
-                    writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * _sc;")
+                    writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = sr_vf_mul(s->v[{mreg_index(vs, side, col, row)}], _sc);")
             last_row_vs = [mreg_index(vs, side, col, side - 1) for col in range(side)]
             last_row_vd = [mreg_index(vd, side, col, side - 1) for col in range(side)]
             writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
             writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
-            writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
+            writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = sr_vf_mul(_s[_i], _t[_i]);")
             writes.append(_nanv(addr, "vmscl", vd, "_d", side, "_s", side, "_t", side))
             writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
             return "{ " + " ".join(writes) + _EAT + " }", None, 0
@@ -2250,17 +2293,14 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         if n == 4:
             body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},4,s->vfpuCtrl[0]); "
                     f"sr_vread(_t,s,{_arr(ti)},4,s->vfpuCtrl[1]); "
-                    f"_d[0]=_s[0]*_t[3]+_s[1]*_t[2]-_s[2]*_t[1]+_s[3]*_t[0]; "
-                    f"_d[1]=-_s[0]*_t[2]+_s[1]*_t[3]+_s[2]*_t[0]+_s[3]*_t[1]; "
-                    f"_d[2]=_s[0]*_t[1]-_s[1]*_t[0]+_s[2]*_t[3]+_s[3]*_t[2]; "
-                    f"_d[3]=-_s[0]*_t[0]-_s[1]*_t[1]-_s[2]*_t[2]+_s[3]*_t[3]; "
+                    + "".join(f"_d[{lane}]={_vf_chain(terms)}; " for lane, terms in enumerate(_VQMUL_TERMS))
                     + _nanv(addr, "vqmul.q", vd, "_d", 4, "_s", 4, "_t", 4)
                     + f"sr_vwrite(s,{_arr(di)},_d,4,s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         if n == 3:
             body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},3,s->vfpuCtrl[0]); "
                     f"sr_vread(_t,s,{_arr(ti)},3,s->vfpuCtrl[1]); "
-                    f"_d[0]=_s[1]*_t[2]-_s[2]*_t[1]; _d[1]=_s[2]*_t[0]-_s[0]*_t[2]; _d[2]=_s[0]*_t[1]-_s[1]*_t[0]; "
+                    + "".join(f"_d[{lane}]={_vf_chain(terms)}; " for lane, terms in enumerate(_VCRSP_TERMS))
                     + _nanv(addr, "vcrsp.t", vd, "_d", 3, "_s", 3, "_t", 3)
                     + f"sr_vwrite(s,{_arr(di)},_d,3,s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
@@ -2289,11 +2329,13 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         return "{ " + " ".join(lines) + " }", None, 0
     if (op == 0x18 and sub in (0, 1, 7)) or (op == 0x19 and sub == 0):
         ti = vreg_indices(vt, n)
-        oper = {(0x18, 0): "+", (0x18, 1): "-", (0x18, 7): "/", (0x19, 0): "*"}[(op, sub)]
+        # Call literals, so tools/recomp_helper_inventory.py sees every helper the emitter writes.
+        call = {(0x18, 0): "sr_vf_add(", (0x18, 1): "sr_vf_sub(", (0x18, 7): "sr_vf_div(",
+                (0x19, 0): "sr_vf_mul("}[(op, sub)]
         body = (f"float _s[4],_t[4],_d[4]; "
                 f"sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"for(int _i=0;_i<{n};_i++) _d[_i]=_s[_i]{oper}_t[_i]; "
+                f"for(int _i=0;_i<{n};_i++) _d[_i]={call}_s[_i],_t[_i]); "
                 + _nanv(addr, _BINOP_NAME[(op, sub)], vd, "_d", n, "_s", n, "_t", n)
                 + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
@@ -2302,7 +2344,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         dst = vreg_indices(vd, 1)[0]
         body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"float _d=0.0f; for(int _i=0;_i<{n};_i++) _d+=_s[_i]*_t[_i]; "
+                f"float _d=0.0f; for(int _i=0;_i<{n};_i++) _d=sr_vf_add(_d,sr_vf_mul(_s[_i],_t[_i])); "
                 f"float _dd[1]={{_d}};"
                 + _nanv(addr, "vdot.s", vd, "_dd", 1, "_s", n, "_t", n)
                 + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
@@ -2312,8 +2354,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         dst = vreg_indices(vd, 1)[0]
         body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"float _d=0.0f; for(int _i=0;_i<{n - 1};_i++) _d+=_s[_i]*_t[_i]; "
-                f"_d+=1.0f*_t[{n - 1}]; _d=isnan(_d)?fabsf(_d):_d; "
+                f"float _d=0.0f; for(int _i=0;_i<{n - 1};_i++) _d=sr_vf_add(_d,sr_vf_mul(_s[_i],_t[_i])); "
+                f"_d=sr_vf_add(_d,sr_vf_mul(1.0f,_t[{n - 1}])); _d=isnan(_d)?fabsf(_d):_d; "
                 f"float _dd[1]={{_d}};"
                 + _nanv(addr, "vhdp.s", vd, "_dd", 1, "_s", n, "_t", n)
                 + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
@@ -2324,7 +2366,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         ti = vreg_indices(vt, n)
         di = vreg_indices(vd, n)
         ss, ts = (1, 2, 0, 3), (2, 0, 1, 3)
-        muls = " ".join(f"_d[{i}]=_s[{ss[i]}]*_t[{ts[i]}];" for i in range(n))
+        muls = " ".join(f"_d[{i}]=sr_vf_mul(_s[{ss[i]}],_t[{ts[i]}]);" for i in range(n))
         body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); {muls} "
                 + _nanv(addr, "vcrs.t", vd, "_d", n, "_s", n, "_t", n)
@@ -2335,16 +2377,15 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         lines = []
         for a in range(side):
             for b in range(side):
-                # Accumulate into a local float with one += per term, exactly
-                # matching sr_vfpu_interp's vmmul loop shape. A single chained
-                # expression (0.0f+t0+t1+...) compiles to a different addss
-                # operand order at -O0, and x86-64 SSE selects the *first* NaN
-                # source on NaN+NaN, so the two paths can pick different NaN
-                # payloads for exotic inputs (issue #40). Same term order, so
-                # finite results are bit-identical.
+                # Accumulate into a local float one term at a time, in the same
+                # term order as sr_vfpu_interp's vmmul loop, through the sr_vf_*
+                # helpers: x86-64 SSE keeps the *first* NaN source on NaN+NaN and
+                # an optimiser may swap the operands of a plain + or *, so the two
+                # paths could keep different NaN payloads for exotic inputs (issue
+                # #40 at -O0, issue #326 at -O1/-O2). Finite results are unchanged.
                 lines.append(f"float _m{a}_{b}=0.0f;")
                 for c in range(side):
-                    lines.append(f"_m{a}_{b}+=s->v[{mreg_index(vs, side, b, c)}]*s->v[{mreg_index(vt, side, a, c)}];")
+                    lines.append(f"_m{a}_{b}=sr_vf_add(_m{a}_{b},sr_vf_mul(s->v[{mreg_index(vs, side, b, c)}],s->v[{mreg_index(vt, side, a, c)}]));")
         writes = " ".join(f"s->v[{mreg_index(vd, side, a, b)}]=_m{a}_{b};"
                           for a in range(side) for b in range(side))
         return "{ " + " ".join(lines) + " " + _nan_matrix(
@@ -2365,9 +2406,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             # vmmul comment above for the NaN payload rationale, issue #40).
             lines.append(f"float _v{i}=0.0f;")
             for k in range(tn):
-                lines.append(f"_v{i}+=s->v[{mreg_index(vs, side, i, k)}]*s->v[{ti[k]}];")
+                lines.append(f"_v{i}=sr_vf_add(_v{i},sr_vf_mul(s->v[{mreg_index(vs, side, i, k)}],s->v[{ti[k]}]));")
             if ins >= n:
-                lines.append(f"_v{i}+=s->v[{mreg_index(vs, side, i, ins)}];")
+                lines.append(f"_v{i}=sr_vf_add(_v{i},s->v[{mreg_index(vs, side, i, ins)}]);")
         writes = " ".join(f"s->v[{di[i]}]=_v{i};" for i in range(side))
         return "{ " + " ".join(lines) + " " + _nan_matrix(
             addr, "vtfm", vd,
@@ -2379,7 +2420,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         scalar = vreg_indices(vt, 1)[0]
         body = (f"float _s[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"float _sc=s->v[{scalar}]; "
-                f"for(int _i=0;_i<{n};_i++) _d[_i]=_s[_i]*_sc; "
+                f"for(int _i=0;_i<{n};_i++) _d[_i]=sr_vf_mul(_s[_i],_sc); "
                 + _nanv(addr, "vscl.s", vd, "_d", n, "_s", n, "(&_sc)", 1)
                 + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
@@ -2391,12 +2432,12 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         writes.append(f"float _sc = s->v[{scalar_vidx}];")
         for row in range(side - 1):
             for col in range(side):
-                writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * _sc;")
+                writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = sr_vf_mul(s->v[{mreg_index(vs, side, col, row)}], _sc);")
         last_row_vs = [mreg_index(vs, side, col, side - 1) for col in range(side)]
         last_row_vd = [mreg_index(vd, side, col, side - 1) for col in range(side)]
         writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
         writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
-        writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
+        writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = sr_vf_mul(_s[_i], _t[_i]);")
         writes.append(_nanv(addr, "vmscl", vd, "_d", side, "_s", side, "_t", side))
         writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
         return "{ " + " ".join(writes) + _EAT + " }", None, 0
@@ -3246,6 +3287,594 @@ static void sr_sv_check(CpuState *s, uint32_t pc, int reg, uint32_t expect) {
     }
 }"""
 
+@dataclass(frozen=True)
+class _BodyContext:
+    """What the steps of one ``emit_function`` share once its flow is known; read only.
+
+    ``labels`` already carries the planned skip targets and the entry label, ``dup_slot_skips``
+    maps a control instruction to the word its inline delay slot lets control jump over, and
+    ``resumable`` is the final answer, after a body that loads ``$sp`` has claimed every exit,
+    and ``guest_exits`` are the exits of a body that claimed only some (#1935).
+    """
+    elf: object
+    ranges: object
+    known: object
+    resume_owners: dict
+    dispatch_boundaries: object
+    labels: set
+    continuations: dict
+    dup_slot_skips: dict
+    hst_profile: bool
+    lle_cpu: bool
+    resumable: bool
+    stack_census: bool
+    start: int
+    guest_exits: frozenset
+
+
+def _check_delay_slot_labels(elf, start, insns, labels, continuations, ranges):
+    """Refuse a label on a delay slot whose owner leaves the slot without an owned successor."""
+    for label in labels:
+        # A label on the delay slot of a transfer that never falls through runs the slot
+        # as an ordinary word; when that word goes on to the next one, the walk owns that
+        # path (_walk_body terminator_slots). Without it the label's C would fall into
+        # whatever block the address order puts next.
+        owner_word = read32(elf, label - 4) if label - 4 in insns else None
+        slot_word = read32(elf, label)
+        if (owner_word is not None and ends_straight_line(label - 4, owner_word)
+                and slot_word is not None and continues_to_next_word(slot_word)
+                and label + 4 not in insns and label not in continuations
+                and in_ranges(label + 4, ranges)):
+            raise AssertionError(
+                f"0x{start:08x}: label 0x{label:08x} on the delay slot of 0x{label - 4:08x} "
+                f"has no owned successor")
+
+
+def _dup_slot_skips(elf, insns, labels):
+    """Map each control instruction whose slot is also a label to the word after that slot."""
+    # A delay slot that is itself a branch target is emitted twice: inline at its
+    # owning control instruction (where it must execute as the slot) and again
+    # under its own label (so branches can land on it).  On fall-through past the
+    # owning instruction, control must NOT run the labelled duplicate: that would
+    # execute the slot twice for non-likely branches and jal/jalr, and would run
+    # an annulled slot for not-taken likely branches.  Plan a skip target at
+    # slot+4 for every such site and jump over the duplicate explicitly.
+    # (Observed in this image at f_00022d7c's tail byte-fill: the loop count in
+    # the shared slot was decremented twice per entry, underfilling by one byte
+    # or, for a tail count of exactly 1, wrapping to ~4GiB of writes.)
+    dup_slot_skips = {}
+    for _a in insns:
+        _w = read32(elf, _a)
+        if _w is None or not is_control(_w):
+            continue
+        _op, _fn = _w >> 26, _w & 0x3F
+        if _op == 2 or (_op == 0 and _fn == 0x08) or is_eret(_w):
+            continue  # j / jr / eret never fall through past their slot
+        _ds = _a + 4
+        if _ds in labels and _ds + 4 in insns:
+            dup_slot_skips[_a] = _ds + 4
+    return dup_slot_skips
+
+
+def _emit_hst_patch_site(hst_profile, addr, w, out, consumed):
+    """The ``--profile=hst`` sites that are not a plain word: a fused loop or an abort guard.
+
+    Returns True when the lines appended replace the word's own emission, False when the word
+    is still emitted normally after them. Every site tests ``hst_profile`` itself, so no
+    other profile can reach one (``test_codegen_profile_isolation`` checks the gates).
+    """
+    # LOOP_CAPS retired (F4, 2026-07-11): the table is empty and the emission block
+    # is gone. Every remaining capped loop was statically proven terminating and
+    # verified never-firing across the retained log corpus (docs/audit/F4_LOOPCAPS.md):
+    #   SCAN_CAP    0x000147e0  f_00014788: word-at-a-time strlen (0xfefefeff/0x80808080
+    #               stopword scan). Induction variable a0 increases by 4 every
+    #               iteration; MEM_R32 is bounds-checked, so the loop either finds a
+    #               NUL or traps -- no same-PC spin is possible. The 1024-iteration
+    #               cap silently corrupted strlen for any string >= 4 KiB.
+    #   RSRC_CAP    0x0001b688  f_0001b584: counted loop (s3++ vs callee-saved s0).
+    #               The guarded retry-starvation spin was an allocator-corruption
+    #               symptom. The structural fix is one retail newlib allocator
+    #               backed by its untouched UserSbrk partition block.
+    #   HASHFN_CAP  0x0001b73c  f_0001b73c: pure NUL-terminated string hash
+    #               (monotonic pointer walk) + divu by table size; terminates for
+    #               any terminated string. The cap counted *calls*, not iterations,
+    #               and forged r2=1 (phantom hash) on fire. Never fired.
+    #   RSRC2-6     0x0019357c/0x001935d0/0x00193620/0x00193678/0x001936cc
+    #               f_001934c8: five identical counted loops (s2++ vs u32 count
+    #               reloaded from a descriptor the body never writes). Bounded
+    #               unless callee-save discipline is broken -- which is exactly the
+    #               P0 recompiler chain a cap must not mask. Never fired.
+    #   SENT_CAP    0x001b9570  f_001b94f8: doubly-linked-list unlink-until-sentinel.
+    #               Terminates for any well-formed list; the known list-corruption
+    #               sources (WALKER_CAP truncation, LoadLayout runaway) are gone.
+    #               Never fired.
+    #   SCENELOOP   0x0006dc2c  f_0006dab0: begin/end iterator, r17 += 0x70 until
+    #               r17 == r16 (compiler-emitted `it != end` idiom, always aligned).
+    #               Never fired.
+    #   RESINIT_CAP 0x0005a608  f_0005a500: element-init loop, a2++ vs count in a
+    #               freshly-allocated, correctly-sized disjoint buffer. Bounded
+    #               unless the allocator aliases the descriptor (prevented by the
+    #               unified retail newlib/UserSbrk path). Never fired.
+    #   TABLEWALK/LOOKUP/STRLIST sentinels (0x00102908/0x00102734/0x0019668c): the
+    #               "dedicated blocks" the sentinels pointed at were never
+    #               implemented; the entries were dead configuration.
+    # Cooperative scheduling does not depend on any of this: codegen emits SR_YIELD
+    # on every backward branch and function entry, and the SR_YIELD macro yields on
+    # timeslice expiry, so even a genuinely stuck loop cannot starve other fibers --
+    # it is watchdog-diagnosable by its unique back-edge PC in the thread dump.
+    # If a spin reappears, root-cause it; do not re-cap.
+    #
+    # WALKER_CAP (0x0000095c, f_000008d8) REMOVED in F3: it was an absolute
+    # 2048-hit permanent sentinel on a bounded "apply callback to N elements"
+    # iterator, not a spin detector. A single legitimate table-init call
+    # (RSRC init, hst_recomp_0.c:147346-147360) needs r8=0xc005=49157 iterations
+    # in one call, so the cap tripped mid-init and permanently no-op'd the
+    # iterator, leaving dispatch tables half-populated. The historical allocator
+    # corruption it guarded is fixed at the retail newlib/UserSbrk boundary. See
+    # docs/audit/F3_LOOPCAPS.md.
+    # ARRAY_CAP (0x00100e98) and LISTWALK_CAP (0x0001038c) REMOVED in F3 (second
+    # round, 2026-07-09): both still fired on every boot after WALKER_CAP's removal.
+    # ARRAY_CAP force-broke a loop inside the 0x100xxx menu-layout/registration code
+    # region after an absolute 20000 same-PC iterations — the same "bounded init
+    # mistaken for a spin" failure mode as WALKER_CAP, and a direct candidate for
+    # why dispatch tables (0x3070c0 +0xc/+0x10) remain half-populated. LISTWALK_CAP
+    # broke f_0001034c's next-pointer chain walk on the theory the list could be
+    # circular/corrupt; the known corruption sources upstream (WALKER_CAP truncation,
+    # the LoadLayout runaway) are gone, so the guard's premise is stale. If either
+    # loop genuinely spins again, the watchdog thread-dump PC identifies it uniquely
+    # (0x00100e98 vs 0x0001038c) — root-cause that spin; do not re-cap (see
+    # docs/audit/F3_LOOPCAPS.md and docs/DESIGN_FONT_HLE.md F3 re-scope).
+
+    # MEMSET_FASTPATH: f_0006e9bc's post-alloc zero-fill loop (body 0x6ea28-0x6ea44,
+    # count/base reloaded at 0x6ea1c/0x6ea28). Confirmed by static trace of the lifted
+    # instructions: base (MEM[r16+8]) and count (MEM[r16+0]) are both read-only for the
+    # entire loop body -- nothing between 0x6ea1c and 0x6ea44 writes r16+0 or r16+8 --
+    # so `for (i=0;i<count;i++) base[i]=0` is a provably exact rewrite of the interpreted
+    # per-byte loop as one native pass. This function is called ~100x from the resource-
+    # table init loop at 0x6da44; under one-MIPS-
+    # instruction-per-dispatch interpretation the accumulated SR_YIELD/dispatch overhead
+    # per byte stalls the worker thread past the 1200-vblank watchdog before a second
+    # frame ever presents. Dead-code checked: r3/r4 are never read again after the loop
+    # (L_0006ea48's epilogue only restores r31/r17/r16 from the stack) and r2 (the
+    # function's implicit return value, set by the alloc call at 0x6ea18) is untouched
+    # by the loop, so skipping the interpreted instructions is transparent to the caller.
+    # MEM_W8/MEM_R32 are already bounds-checked (src/rt/recomp.h sr_inrange).  The
+    # fast path now rejects a non-contiguous/overflowing span before any host pointer
+    # is formed; the >1MB warning exists to flag malformed counts without attempting
+    # an unbounded scalar fallback.
+    if hst_profile and addr == 0x0006ea1c:
+        out.append(f"    sr_begin(s, 0x0006ea1cu, 0x{w:08x}u); s->r[3] = MEM_R32(s->r[16] + 0x00000000u); sr_end(s, 0u, 0);")
+        out.append(
+            "    { uint32_t _mf_cnt = s->r[3]; uint32_t _mf_base = MEM_R32(s->r[16] + 0x00000008u);\n"
+            "      if (_mf_cnt > 0x00100000u) fprintf(stderr, \"MEMSET_FASTPATH: large count=0x%x base=0x%x r16=0x%08x MEM[r16+0]=0x%08x MEM[r16+4]=0x%08x MEM[r16+8]=0x%08x ra=0x%08x\\n\", _mf_cnt, _mf_base, s->r[16], (s->r[16]<0x0c000000u?MEM_R32(s->r[16]):0xDEADu), (s->r[16]<0x0c000000u?MEM_R32(s->r[16]+4u):0xDEADu), (s->r[16]<0x0c000000u?MEM_R32(s->r[16]+8u):0xDEADu), s->r[31]);\n"
+            "      if (_mf_cnt > 0 && _mf_cnt < 0x04000000u && sr_guest_span_writable(_mf_base, _mf_cnt)) {\n"
+            "          if (g_sr_heap_watch) sr_heap_note_bulk_write(_mf_base, _mf_cnt, 0x0006ea1cu);\n"
+            "          memset(SR_HOST(SR_DATA_SPAN(_mf_base, _mf_cnt)), 0, _mf_cnt);\n"
+            "      } else {\n"
+            "          if (_mf_cnt) sr_oor(_mf_base, 0u, 1);\n"
+            "      }\n"
+            "      s->r[4] = _mf_cnt; s->r[3] = 0u; }"
+        )
+        for _skip in (0x0006ea20, 0x0006ea24, 0x0006ea28, 0x0006ea2c, 0x0006ea30,
+                      0x0006ea34, 0x0006ea38, 0x0006ea3c, 0x0006ea40, 0x0006ea44):
+            consumed.add(_skip)
+        return True
+
+    # ARRSHIFT_FASTPATH: f_001084b8's element-shift loop (setup 0x108630-0x108654,
+    # body 0x108658-0x108690). Confirmed by static trace of the lifted instructions:
+    # this is a reverse, element-by-element 8-byte block move -- the source pointer
+    # (r6) and dest pointer (r4) both start high and decrement by exactly 8 every
+    # iteration in lockstep, terminating when r6 reaches r5 (the fixed source base
+    # loaded once at 0x108634 and never written again in the loop). The trip count is
+    # exactly n = MEM[r19+4] (read once, at 0x108630, before anything in the loop body
+    # can touch r19+4). This is the classic "grow a packed array, shift n existing
+    # elements into the new buffer" pattern: the code immediately after the loop
+    # (0x108694-0x1086c8) swaps the struct's base/count/capacity fields at r19+0/+4/+8
+    # with the new ones staged on the stack and calls f_00108bf4 (frees the old
+    # buffer) -- realloc-and-shift. A reverse per-element copy over
+    # [src,src+n*8) <-> [dst-n*8,dst) is exactly what memmove() computes (memmove is
+    # correct for either overlap direction, a superset of what the hand-unrolled
+    # reverse loop covers for its one intended direction). Under one-MIPS-instruction-
+    # per-dispatch interpretation this loop was a historical bring-up blocker: the
+    # worker cycles between pc=0x0006517c (an unrelated inlined "r2=r5<<1" leaf called
+    # from elsewhere, just this loop's most recent PCSAMPLE neighbour) and this loop's
+    # own SR_YIELD checkpoint at pc=0x0010868c for the entire watchdog window without
+    # the loop ever finishing. Historical details are retained in the local archive.
+    # Two stack slots track the same trip progress in different units and both must
+    # land on the same final value as the interpreted loop would leave them: MEM[sp+
+    # 0x5c] (decrements by 1/iter) and MEM[sp+0x50] (increments by 1/iter, consumed by
+    # the caller as the new element count at 0x1086c0-0x1086c4). Registers r1-r6's
+    # loop-final values are dead: everything from 0x108694 onward reloads r2/r3 fresh
+    # from memory and overwrites r4/r5/r6 before any further read (confirmed by
+    # reading through to the f_00108bf4 call at 0x1086c8), so only the copied bytes
+    # and the two stack slots need to be reproduced. The r4==0 mid-loop edge case
+    # (dest pointer hits exactly address 0) is not special-cased in the fast path --
+    # it would require the dest range to span across address 0, which cannot happen
+    # for a legitimate guest-RAM pointer -- but the bounds-checked fallback below
+    # still reproduces it exactly if it ever did.
+    if hst_profile and addr == 0x00108630:
+        out.append(f"    sr_begin(s, 0x00108630u, 0x{w:08x}u); s->r[4] = MEM_R32(s->r[19] + 0x00000004u); sr_end(s, 0u, 0);")
+        out.append(
+            "    { uint32_t _as_n = s->r[4];\n"
+            "      uint32_t _as_src_base = MEM_R32(s->r[19] + 0x00000000u);\n"
+            "      uint32_t _as_sp5c0 = MEM_R32(s->r[29] + 0x0000005cu);\n"
+            "      uint32_t _as_sp500 = MEM_R32(s->r[29] + 0x00000050u);\n"
+            "      uint32_t _as_dst_base = MEM_R32(s->r[29] + 0x0000004cu);\n"
+            "      uint32_t _as_dst_hi = _as_dst_base + (_as_sp5c0 << 3);\n"
+            "      if (_as_n > 0x00100000u) fprintf(stderr, \"ARRSHIFT_FASTPATH: large n=0x%x src=0x%x dst_hi=0x%x at f_001084b8 (0x108630)\\n\", _as_n, _as_src_base, _as_dst_hi);\n"
+            "      if (_as_n > 0u) {\n"
+            "          uint32_t _as_dst_lo = _as_dst_hi - (_as_n << 3);\n"
+            "          uint64_t _as_nbytes = (uint64_t)_as_n << 3;\n"
+            "          if (_as_dst_lo < _as_dst_hi && _as_src_base < 0x0c000000u && _as_dst_lo < 0x0c000000u &&\n"
+            "              (uint64_t)_as_src_base + _as_nbytes <= 0x0c000000u && (uint64_t)_as_dst_lo + _as_nbytes <= 0x0c000000u) {\n"
+            "              if (g_sr_heap_watch) sr_heap_note_bulk_write(_as_dst_lo, (uint32_t)_as_nbytes, 0x00108630u);\n"
+            "              memmove(SR_HOST(SR_DATA_SPAN(_as_dst_lo, _as_nbytes)),\n"
+            "                      SR_HOST(SR_DATA_SPAN(_as_src_base, _as_nbytes)), (size_t)_as_nbytes);\n"
+            "          } else {\n"
+            "              for (uint32_t _as_i = 0; _as_i < _as_n; _as_i++) {\n"
+            "                  uint32_t _as_d = _as_dst_hi - 8u * (_as_i + 1u);\n"
+            "                  uint32_t _as_s = _as_src_base + (_as_n - 1u - _as_i) * 8u;\n"
+            "                  if (_as_d != 0u) {\n"
+            "                      MEM_W32(_as_d + 0u, MEM_R32(_as_s + 0u));\n"
+            "                      MEM_W32(_as_d + 4u, MEM_R32(_as_s + 4u));\n"
+            "                  }\n"
+            "              }\n"
+            "          }\n"
+            "      }\n"
+            "      MEM_W32(s->r[29] + 0x0000005cu, _as_sp5c0 - _as_n);\n"
+            "      MEM_W32(s->r[29] + 0x00000050u, _as_sp500 + _as_n);\n"
+            "      s->r[1] = 0u; s->r[5] = _as_src_base; s->r[6] = _as_src_base;\n"
+            "    }"
+        )
+        for _skip in (0x00108634, 0x00108638, 0x0010863c, 0x00108640, 0x00108644, 0x00108648,
+                      0x0010864c, 0x00108650, 0x00108654, 0x00108658, 0x0010865c, 0x00108660,
+                      0x00108664, 0x00108668, 0x0010866c, 0x00108670, 0x00108674, 0x00108678,
+                      0x0010867c, 0x00108680, 0x00108684, 0x00108688, 0x0010868c, 0x00108690):
+            consumed.add(_skip)
+        return True
+
+    # GUEST_ABORT: f_00000a1c is the game's own compiled abort() path -- its body
+    # (jal 0x000015ec, a diagnostic/handler-table walk, immediately followed by an
+    # unconditional self-branch at L_00000a24, with NO guard of any kind) is only
+    # ever reached indirectly: a raw jal/j word scan of the whole image confirms
+    # there is no static call site targeting this address, so it can only be
+    # entered via a function pointer / dispatch() (i.e. it is the registered
+    # abort/terminate handler). NOTE: this is address 0x00000a1c, not the adjacent
+    # 0x00000a14 -- analyze()'s static function-boundary detection recognizes BOTH
+    # as independent function starts (confirmed: both are in the `known` set with
+    # zero static jal/j callers), but they are different functions. f_00000a14 is a
+    # harmless stub whose very first instruction (`beq r0,r0`) unconditionally
+    # branches around this exact jal+loop body to a plain epilogue/return --
+    # verified to fire routinely and harmlessly during ordinary boot (regression-
+    # tested: a probe placed at 0x00000a14 false-positived on a known-good run that
+    # only reaches mode-select). f_00000a1c has no such guard: every entry
+    # unconditionally calls the diagnostic walk and then spins forever. Left alone,
+    # reaching it means the emulator silently spins forever on the guest's own
+    # infinite loop, presenting nothing, until an external timeout kills the
+    # process -- observed via both heap exhaustion and a missing character/stage
+    # asset validation failure, minutes apart in wall-clock terms. Fail fast
+    # instead, mirroring the existing unimplemented-HLE-NID convention in hle.c
+    # (search "_Exit(7)" there) with a distinct, reserved exit code so the two
+    # fatal classes are distinguishable from the process exit status alone.
+    if hst_profile and addr == 0x00000a1c:
+        out.append(
+            "    fprintf(stderr, \"GUEST_ABORT: game called abort() (f_00000a1c), "
+            "called from ra=0x%08x arg0=0x%08x -- terminating instead of silent infinite hang\\n\", "
+            "s->r[31], s->r[4]); fflush(stderr); _Exit(9);"
+        )
+    return False
+
+
+def _emit_non_control_word(ctx, out, addr, w, sv_points):
+    """One word that is not a control transfer, with its static checks and continuation edge."""
+    continuations, lle_cpu = ctx.continuations, ctx.lle_cpu
+    resumable = ctx.resumable
+    out.append(normal_line(addr, w, lle_cpu=lle_cpu))
+    if _is_cop0_move(w):
+        # MFC0/MTC0 can raise (privilege/reserved encoding): propagate
+        # the resulting flow before any native continuation (spec 3.4).
+        out.append(f"    {_flow_return(resumable)}")
+    if addr in sv_points:
+        for _sv_r, _sv_v in sv_points[addr]:
+            out.append(f"    sr_sv_check(s, {G(addr)}, {_sv_r}, 0x{_sv_v:08x}u);")
+    if addr in continuations:
+        out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
+
+
+def _emit_eret(out, addr, w):
+    """``eret`` has no delay slot; it leaves the native body (spec 3.4)."""
+    out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u);")
+    out.append(f"    (void)sr_cpu_eret(s, {G(addr)});")
+    out.append(f"    sr_end(s, 0u, 0);")
+    out.append(f"    return;")
+
+
+def _emit_slot_exit(ctx, out, addr, ran="slot already ran inline"):
+    """After a transfer whose delay slot ran inline: the continuation edge, else skip the slot's duplicate."""
+    continuations, dup_slot_skips = ctx.continuations, ctx.dup_slot_skips
+    if addr in continuations:
+        out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
+    elif addr in dup_slot_skips:
+        out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* {ran}; skip its labelled duplicate */")
+
+
+def _emit_unrelocated_jal(ctx, out, addr, w, ds, dsw):
+    """``jal`` the loader leaves as linked."""
+    lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
+    resume = G((addr + 8) & 0xFFFFFFFF)
+    out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
+    out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); s->r[31] = {resume}; sr_end(s, 0u, 0);")
+    out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
+                                resumable=resumable, indent="      "))
+    out.append(f"      dispatch_call(s, _t, {resume}); }}")
+    _emit_slot_exit(ctx, out, addr)
+
+
+def _emit_jal(ctx, out, addr, w, ds, dsw):
+    """``jal`` to a known entry, or a dispatched call."""
+    known, resume_owners = ctx.known, ctx.resume_owners
+    lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
+    target = jump_target(addr, w)
+    _jal_rw = _enhancement_rewrite(addr)
+    out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
+    out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
+    if target in known or target in resume_owners:
+        _call_stmt = f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
+        if lle_cpu:
+            _call_stmt += f"\n    {_flow_return(resumable)}"
+    else:
+        _call_stmt = (
+            f"    dispatch_call(s, {G(target)}, "
+            f"{G((addr + 8) & 0xFFFFFFFF)});"
+        )
+    if _jal_rw is not None:
+        # gate_30hz on a call (the only rewrite a call site plans): the delay
+        # slot above always runs; the call is gated while the toggle is on.
+        out.append(
+            f"    if (!nk_enhancement_on() || nk_enhancement_gate_30hz()) {{\n"
+            f"{_call_stmt}\n"
+            f"    }}"
+        )
+    else:
+        out.extend(_call_stmt.split("\n"))
+    _emit_slot_exit(ctx, out, addr)
+
+
+def _emit_jalr(ctx, out, addr, w, ds, dsw):
+    """``jalr rd, rs``: the target is read at the transfer, before the slot."""
+    lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
+    stack_census = ctx.stack_census
+    guest_exits = ctx.guest_exits
+    d, a = rd(w), rs(w)
+    link = f"s->r[{d}] = {G((addr + 8) & 0xFFFFFFFF)}; " if d != 0 else ""
+    # The transfer target is read AT the transfer, before its delay slot
+    # runs. Reading it after the slot lets a slot that writes the target
+    # register redirect the call -- proven divergent against the
+    # production interpreter by the `jrslot` cosim cell.
+    out.append(f"    {{ uint32_t _t = {R(a)};")
+    out.append(f"      {emit_code_pointer_check('_t', addr)}")
+    out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
+    out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,
+                                indent="      "))
+    if d != 0:
+        out.append(
+            f"      dispatch_call(s, _t, {G((addr + 8) & 0xFFFFFFFF)}); }}"
+        )
+        _emit_slot_exit(ctx, out, addr)
+    else:
+        out.append(
+            f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}"
+        )
+
+
+def _emit_jr(ctx, out, addr, w, ds, dsw):
+    """``jr rs``: a return, a syscall bridge, or a computed tail call."""
+    lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
+    stack_census = ctx.stack_census
+    guest_exits = ctx.guest_exits
+    ds_is_syscall = dsw is not None and (dsw >> 26) == 0 and (dsw & 0x3F) == 0x0C
+    a = rs(w)
+    if a == 31:
+        # Capture the architectural target at transfer, before a delay
+        # slot (or syscall bridge) can rewrite the live register.
+        out.append(f"    {{ uint32_t _sr_return_target = {R(a)};")
+        out.append(f"      SR_AOT_RETURN_CAPTURE(s, _sr_return_target);")
+        if ds_is_syscall and dsw is not None and not lle_cpu:
+            out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
+            # JR with syscall in delay slot. Route it through the raw
+            # syscall mechanism after latching the guest return target.
+            out.append(f"      sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, {G(ds)});")
+        elif ds_is_syscall and dsw is not None:
+            # LLE: the delay-slot syscall raises with BD set (spec 3.4).
+            out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
+            out.extend(delay_slot_lines(ds, dsw, addr,
+                                        lle_cpu=lle_cpu, resumable=resumable,
+                                        indent="      "))
+        else:
+            out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
+            out.extend(delay_slot_lines(ds, dsw, addr,
+                                        lle_cpu=lle_cpu, resumable=resumable,
+                                        indent="      "))
+        out.append(f"      {emit_host_return(resumable or addr in guest_exits, stack_census=stack_census)} }}")
+    elif ds_is_syscall and dsw is not None and not lle_cpu:
+        out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
+        # JR with syscall in delay slot. This is not reachable for current eboot stubs (handled by is_stub),
+        # but if reached in general code, route it via the correct raw-syscall mechanism with PC.
+        out.append(f"    sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, {G(ds)}); {emit_host_return(resumable or addr in guest_exits, stack_census=stack_census)}")
+    elif ds_is_syscall and dsw is not None:
+        # LLE: the delay-slot syscall raises with BD set (spec 3.4).
+        out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
+        out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
+    else:
+        # Computed return/tail-call: same contract as jalr above -- the
+        # target register is read at the transfer, not after the slot.
+        out.append(f"    {{ uint32_t _t = {R(a)};")
+        out.append(f"      {emit_code_pointer_check('_t', addr)}")
+        out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
+        out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,
+                                    indent="      "))
+        out.append(f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
+
+
+def _emit_unrelocated_j(ctx, out, addr, w, ds, dsw):
+    """``j`` the loader leaves as linked."""
+    lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
+    stack_census = ctx.stack_census
+    guest_exits = ctx.guest_exits
+    out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
+    out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); sr_end(s, 0u, 0);")
+    out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
+                                resumable=resumable, indent="      "))
+    out.append(f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
+
+
+def _emit_j(ctx, out, addr, w, ds, dsw):
+    """``j``: a self-loop, a tail transfer or a jump inside the body."""
+    known, resume_owners, labels = ctx.known, ctx.resume_owners, ctx.labels
+    lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
+    stack_census = ctx.stack_census
+    guest_exits = ctx.guest_exits
+    target = jump_target(addr, w)
+    out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
+    out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
+    if target == ctx.start:
+        # A `j` to the entry is a tail edge, not a label, so the check on labels
+        # in emit_function misses it; it enters the entry again and would double again.
+        _refuse_argument_site_on_a_loop(ctx.start)
+    if target == addr:
+        # Self-loop (a spin wait): the native call below would recurse on the host
+        # stack once per iteration. Keep it a backward goto with the preemption point.
+        out.append(f"    SR_YIELD(s, {G(addr)}); goto L_{target:08x};")
+    elif (target in known or target in resume_owners) and not (
+        target in resume_owners and target in labels
+    ):
+        out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable or addr in guest_exits, stack_census)}")
+    elif target in labels:
+        y = f"SR_YIELD(s, {G(addr)}); " if target <= addr else ""   # backward j: loop edge
+        out.append(f"    {y}goto L_{target:08x};")
+    else:
+        out.append(f"    {{ uint32_t _t = {G(target)}; {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
+
+
+def _emit_conditional_branch(ctx, out, addr, w, ds, dsw):
+    """A conditional branch, a linked one (a call) included, with its delay slot."""
+    elf, ranges, known = ctx.elf, ctx.ranges, ctx.known
+    resume_owners, labels, hst_profile = ctx.resume_owners, ctx.labels, ctx.hst_profile
+    lle_cpu, resumable, stack_census = ctx.lle_cpu, ctx.resumable, ctx.stack_census
+    guest_exits = ctx.guest_exits
+    target = branch_target(addr, w)
+    y = f"SR_YIELD(s, {G(addr)}); " if target <= addr else ""
+    link = f"s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; " if is_link(w) else ""
+    cond = cond_expr(w)
+    inject_stmt = ""
+    if hst_profile and addr in GUEST_PATCHES:
+        p = GUEST_PATCHES[addr]
+        if p["kind"] == "cond":
+            cond = p["value"]
+            if p.get("stmt"):
+                inject_stmt += p["stmt"]
+        elif p["kind"] == "inject":
+            inject_stmt += p["stmt"]
+        inject_stmt += compat_fired_stmt("GUEST_PATCHES", addr)
+
+    out.append(f"    {{ uint32_t _c = {cond};{inject_stmt}")
+    out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
+    _delay = delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable)
+    _delay_inline = " ".join(line.strip() for line in _delay)
+    if is_linked_call(elf, addr, w, ranges):
+        # bltzal/bgezal (bal = bgezal $zero) to a callable is a CALL (#968), inside
+        # or outside this body: the taken path calls the target exactly as `jal`
+        # (known target) or `jalr rd` (dispatch with the resume PC) does, so the
+        # callee's `jr $ra` returns here and both paths continue at addr + 8.
+        # function_flow never labels the target for this site; another branch may
+        # still label it, so this test comes before the label test. The link and
+        # the delay slot above run once on either path; cond_expr refuses the
+        # branch-likely linked forms, so no annulled slot reaches this point.
+        if target in known or target in resume_owners:
+            call = emit_checked_body_call(
+                ADDRESS_SPACE.symbol(target, resume_owners), addr
+            )
+            if lle_cpu:
+                call += f" {_flow_return(resumable)}"
+        else:
+            call = f"dispatch_call(s, {G(target)}, {G((addr + 8) & 0xFFFFFFFF)});"
+        out.extend("   " + line for line in _delay)
+        out.append(f"      if (_c) {{ {call} }} }}")
+        _emit_slot_exit(ctx, out, addr)
+        return
+    if target in labels:
+        if is_likely(w):
+            out.append(f"      if (_c) {{ {_delay_inline} {y}goto L_{target:08x}; }} }}")
+        else:
+            out.extend("   " + line for line in _delay)
+            out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
+    elif in_ranges(target, ranges) and (target in known or target in resume_owners):
+        # A split body's edge into another entry (function_flow): the same TAIL
+        # transfer as `j` to that entry, after the delay slot (annulled on the
+        # not-taken path of a likely branch).
+        tail = emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners),
+                                  resumable or addr in guest_exits, stack_census)
+        if is_likely(w):
+            out.append(f"      if (_c) {{ {_delay_inline} {tail} }} }}")
+        else:
+            out.extend("   " + line for line in _delay)
+            out.append(f"      if (_c) {{ {tail} }} }}")
+    else:
+        if is_likely(w):
+            out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable or addr in guest_exits, stack_census)} }} }} }}")
+        else:
+            out.extend("   " + line for line in _delay)
+            out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable or addr in guest_exits, stack_census)} }} }} }}")
+    _emit_slot_exit(ctx, out, addr, "slot already ran inline (or was annulled)")
+
+
+def _emit_control_transfer(ctx, out, consumed, addr, w):
+    """The C for the control transfer at ``addr`` and its delay slot (consumed unless it is a label)."""
+    op, fn = w >> 26, w & 0x3F
+    ds = addr + 4
+    dsw = ADDRESS_SPACE.instruction_word(ds, read32(ctx.elf, ds))
+    if ds not in ctx.labels:
+        consumed.add(ds)
+    if op == 3 and ADDRESS_SPACE.unrelocated_jump(addr):
+        _emit_unrelocated_jal(ctx, out, addr, w, ds, dsw)
+    elif op == 3:
+        _emit_jal(ctx, out, addr, w, ds, dsw)
+    elif op == 0 and fn == 0x09:
+        _emit_jalr(ctx, out, addr, w, ds, dsw)
+    elif op == 0 and fn == 0x08:
+        _emit_jr(ctx, out, addr, w, ds, dsw)
+    elif op == 2 and ADDRESS_SPACE.unrelocated_jump(addr):
+        _emit_unrelocated_j(ctx, out, addr, w, ds, dsw)
+    elif op == 2:
+        _emit_j(ctx, out, addr, w, ds, dsw)
+    else:
+        _emit_conditional_branch(ctx, out, addr, w, ds, dsw)
+
+
+def _emit_continuation_blocks(ctx, out):
+    """The blocks that continue a body past a synthetic boundary, after the sorted words."""
+    resume_owners, dispatch_boundaries, continuations = ctx.resume_owners, ctx.dispatch_boundaries, ctx.continuations
+    resumable, stack_census = ctx.resumable, ctx.stack_census
+    guest_exits = ctx.guest_exits
+    # Do not let an unrelated natural end path fall into the first continuation
+    # block merely because the blocks live after the sorted instruction bodies.
+    out.append("    goto _sr_fallthrough_return;")
+    for target in sorted(set(continuations.values())):
+        out.append(f"  _sr_cont_{target:08x}: ;")
+        if dispatch_boundaries and target in dispatch_boundaries:
+            # An omitted address remains a guest execution boundary even when a
+            # separate discovery anchor reaches it by linear fall-through. There
+            # is no native symbol to call, and this edge is a tail-shaped transfer:
+            # dispatch the guest target and then leave the current native body.
+            out.append(
+                f"    {{ uint32_t _t = {G(target)}; "
+                f"{emit_tail_transfer('_t', None, resumable or target in guest_exits, stack_census)} }}"
+            )
+        else:
+            out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable or target in guest_exits, stack_census, 'synthetic boundary: the owning entry frame is restored after the chain')}")
+    out.append("  _sr_fallthrough_return: ;")
+
+
 def emitter_seed_check(elf, profile=None, omitted=(), stack_census=False):
     """A ``seed_check`` for ``analyze`` (miss seeds, #1848): what the primary image's emission loop
     in ``main`` does with an entry set. It maps each entry that loop would emit to None for a body
@@ -3323,46 +3952,13 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             stack_census = False
     if start in labels:
         _refuse_argument_site_on_a_loop(start)
-    for label in labels:
-        # A label on the delay slot of a transfer that never falls through runs the slot
-        # as an ordinary word; when that word goes on to the next one, the walk owns that
-        # path (_walk_body terminator_slots). Without it the label's C would fall into
-        # whatever block the address order puts next.
-        owner_word = read32(elf, label - 4) if label - 4 in insns else None
-        slot_word = read32(elf, label)
-        if (owner_word is not None and ends_straight_line(label - 4, owner_word)
-                and slot_word is not None and continues_to_next_word(slot_word)
-                and label + 4 not in insns and label not in continuations
-                and in_ranges(label + 4, ranges)):
-            raise AssertionError(
-                f"0x{start:08x}: label 0x{label:08x} on the delay slot of 0x{label - 4:08x} "
-                f"has no owned successor")
+    _check_delay_slot_labels(elf, start, insns, labels, continuations, ranges)
     # Static verification asserts translation-time constants; a runtime module's
     # relocated immediates and link values are not constants, so it carries none.
     # A variable-import site's immediate is the linker's too, so its body carries none either.
     sv_points = ({} if ADDRESS_SPACE.runtime_module or not ADDRESS_SPACE.patched.keys().isdisjoint(insns)
                  else sv_plan(elf, insns, labels, hst_profile=hst_profile))
-    # A delay slot that is itself a branch target is emitted twice: inline at its
-    # owning control instruction (where it must execute as the slot) and again
-    # under its own label (so branches can land on it).  On fall-through past the
-    # owning instruction, control must NOT run the labelled duplicate: that would
-    # execute the slot twice for non-likely branches and jal/jalr, and would run
-    # an annulled slot for not-taken likely branches.  Plan a skip target at
-    # slot+4 for every such site and jump over the duplicate explicitly.
-    # (Observed in this image at f_00022d7c's tail byte-fill: the loop count in
-    # the shared slot was decremented twice per entry, underfilling by one byte
-    # or, for a tail count of exactly 1, wrapping to ~4GiB of writes.)
-    dup_slot_skips = {}
-    for _a in insns:
-        _w = read32(elf, _a)
-        if _w is None or not is_control(_w):
-            continue
-        _op, _fn = _w >> 26, _w & 0x3F
-        if _op == 2 or (_op == 0 and _fn == 0x08) or is_eret(_w):
-            continue  # j / jr / eret never fall through past their slot
-        _ds = _a + 4
-        if _ds in labels and _ds + 4 in insns:
-            dup_slot_skips[_a] = _ds + 4
+    dup_slot_skips = _dup_slot_skips(elf, insns, labels)
     if dup_slot_skips:
         labels = set(labels) | set(dup_slot_skips.values())
     out = []
@@ -3376,6 +3972,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         labels = set(labels)
         labels.add(start)
         out.append(f"    goto L_{start:08x};")
+    ctx = _BodyContext(elf, ranges, known, resume_owners, dispatch_boundaries, labels, continuations,
+                       dup_slot_skips, hst_profile, lle_cpu, resumable, stack_census, start, guest_exits)
     consumed = set()
     promo = RegisterPromotion() if OPTIONS.promote_registers else None
     for addr in sorted(insns):
@@ -3388,7 +3986,6 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         w = ADDRESS_SPACE.instruction_word(addr, read32(elf, addr))
         if w is None:
             continue
-        op, fn = w >> 26, w & 0x3F
         if promo is not None:
             promoted = None
             if (not is_control(w) and not _is_cop0_move(w) and addr not in sv_points
@@ -3400,459 +3997,18 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 continue
             out.extend(promo.flush())
 
-        # LOOP_CAPS retired (F4, 2026-07-11): the table is empty and the emission block
-        # is gone. Every remaining capped loop was statically proven terminating and
-        # verified never-firing across the retained log corpus (docs/audit/F4_LOOPCAPS.md):
-        #   SCAN_CAP    0x000147e0  f_00014788: word-at-a-time strlen (0xfefefeff/0x80808080
-        #               stopword scan). Induction variable a0 increases by 4 every
-        #               iteration; MEM_R32 is bounds-checked, so the loop either finds a
-        #               NUL or traps -- no same-PC spin is possible. The 1024-iteration
-        #               cap silently corrupted strlen for any string >= 4 KiB.
-        #   RSRC_CAP    0x0001b688  f_0001b584: counted loop (s3++ vs callee-saved s0).
-        #               The guarded retry-starvation spin was an allocator-corruption
-        #               symptom. The structural fix is one retail newlib allocator
-        #               backed by its untouched UserSbrk partition block.
-        #   HASHFN_CAP  0x0001b73c  f_0001b73c: pure NUL-terminated string hash
-        #               (monotonic pointer walk) + divu by table size; terminates for
-        #               any terminated string. The cap counted *calls*, not iterations,
-        #               and forged r2=1 (phantom hash) on fire. Never fired.
-        #   RSRC2-6     0x0019357c/0x001935d0/0x00193620/0x00193678/0x001936cc
-        #               f_001934c8: five identical counted loops (s2++ vs u32 count
-        #               reloaded from a descriptor the body never writes). Bounded
-        #               unless callee-save discipline is broken -- which is exactly the
-        #               P0 recompiler chain a cap must not mask. Never fired.
-        #   SENT_CAP    0x001b9570  f_001b94f8: doubly-linked-list unlink-until-sentinel.
-        #               Terminates for any well-formed list; the known list-corruption
-        #               sources (WALKER_CAP truncation, LoadLayout runaway) are gone.
-        #               Never fired.
-        #   SCENELOOP   0x0006dc2c  f_0006dab0: begin/end iterator, r17 += 0x70 until
-        #               r17 == r16 (compiler-emitted `it != end` idiom, always aligned).
-        #               Never fired.
-        #   RESINIT_CAP 0x0005a608  f_0005a500: element-init loop, a2++ vs count in a
-        #               freshly-allocated, correctly-sized disjoint buffer. Bounded
-        #               unless the allocator aliases the descriptor (prevented by the
-        #               unified retail newlib/UserSbrk path). Never fired.
-        #   TABLEWALK/LOOKUP/STRLIST sentinels (0x00102908/0x00102734/0x0019668c): the
-        #               "dedicated blocks" the sentinels pointed at were never
-        #               implemented; the entries were dead configuration.
-        # Cooperative scheduling does not depend on any of this: codegen emits SR_YIELD
-        # on every backward branch and function entry, and the SR_YIELD macro yields on
-        # timeslice expiry, so even a genuinely stuck loop cannot starve other fibers --
-        # it is watchdog-diagnosable by its unique back-edge PC in the thread dump.
-        # If a spin reappears, root-cause it; do not re-cap.
-        #
-        # WALKER_CAP (0x0000095c, f_000008d8) REMOVED in F3: it was an absolute
-        # 2048-hit permanent sentinel on a bounded "apply callback to N elements"
-        # iterator, not a spin detector. A single legitimate table-init call
-        # (RSRC init, hst_recomp_0.c:147346-147360) needs r8=0xc005=49157 iterations
-        # in one call, so the cap tripped mid-init and permanently no-op'd the
-        # iterator, leaving dispatch tables half-populated. The historical allocator
-        # corruption it guarded is fixed at the retail newlib/UserSbrk boundary. See
-        # docs/audit/F3_LOOPCAPS.md.
-        # ARRAY_CAP (0x00100e98) and LISTWALK_CAP (0x0001038c) REMOVED in F3 (second
-        # round, 2026-07-09): both still fired on every boot after WALKER_CAP's removal.
-        # ARRAY_CAP force-broke a loop inside the 0x100xxx menu-layout/registration code
-        # region after an absolute 20000 same-PC iterations — the same "bounded init
-        # mistaken for a spin" failure mode as WALKER_CAP, and a direct candidate for
-        # why dispatch tables (0x3070c0 +0xc/+0x10) remain half-populated. LISTWALK_CAP
-        # broke f_0001034c's next-pointer chain walk on the theory the list could be
-        # circular/corrupt; the known corruption sources upstream (WALKER_CAP truncation,
-        # the LoadLayout runaway) are gone, so the guard's premise is stale. If either
-        # loop genuinely spins again, the watchdog thread-dump PC identifies it uniquely
-        # (0x00100e98 vs 0x0001038c) — root-cause that spin; do not re-cap (see
-        # docs/audit/F3_LOOPCAPS.md and docs/DESIGN_FONT_HLE.md F3 re-scope).
-
-        # MEMSET_FASTPATH: f_0006e9bc's post-alloc zero-fill loop (body 0x6ea28-0x6ea44,
-        # count/base reloaded at 0x6ea1c/0x6ea28). Confirmed by static trace of the lifted
-        # instructions: base (MEM[r16+8]) and count (MEM[r16+0]) are both read-only for the
-        # entire loop body -- nothing between 0x6ea1c and 0x6ea44 writes r16+0 or r16+8 --
-        # so `for (i=0;i<count;i++) base[i]=0` is a provably exact rewrite of the interpreted
-        # per-byte loop as one native pass. This function is called ~100x from the resource-
-        # table init loop at 0x6da44; under one-MIPS-
-        # instruction-per-dispatch interpretation the accumulated SR_YIELD/dispatch overhead
-        # per byte stalls the worker thread past the 1200-vblank watchdog before a second
-        # frame ever presents. Dead-code checked: r3/r4 are never read again after the loop
-        # (L_0006ea48's epilogue only restores r31/r17/r16 from the stack) and r2 (the
-        # function's implicit return value, set by the alloc call at 0x6ea18) is untouched
-        # by the loop, so skipping the interpreted instructions is transparent to the caller.
-        # MEM_W8/MEM_R32 are already bounds-checked (src/rt/recomp.h sr_inrange).  The
-        # fast path now rejects a non-contiguous/overflowing span before any host pointer
-        # is formed; the >1MB warning exists to flag malformed counts without attempting
-        # an unbounded scalar fallback.
-        if hst_profile and addr == 0x0006ea1c:
-            out.append(f"    sr_begin(s, 0x0006ea1cu, 0x{w:08x}u); s->r[3] = MEM_R32(s->r[16] + 0x00000000u); sr_end(s, 0u, 0);")
-            out.append(
-                "    { uint32_t _mf_cnt = s->r[3]; uint32_t _mf_base = MEM_R32(s->r[16] + 0x00000008u);\n"
-                "      if (_mf_cnt > 0x00100000u) fprintf(stderr, \"MEMSET_FASTPATH: large count=0x%x base=0x%x r16=0x%08x MEM[r16+0]=0x%08x MEM[r16+4]=0x%08x MEM[r16+8]=0x%08x ra=0x%08x\\n\", _mf_cnt, _mf_base, s->r[16], (s->r[16]<0x0c000000u?MEM_R32(s->r[16]):0xDEADu), (s->r[16]<0x0c000000u?MEM_R32(s->r[16]+4u):0xDEADu), (s->r[16]<0x0c000000u?MEM_R32(s->r[16]+8u):0xDEADu), s->r[31]);\n"
-                "      if (_mf_cnt > 0 && _mf_cnt < 0x04000000u && sr_guest_span_writable(_mf_base, _mf_cnt)) {\n"
-                "          if (g_sr_heap_watch) sr_heap_note_bulk_write(_mf_base, _mf_cnt, 0x0006ea1cu);\n"
-                "          memset(SR_HOST(SR_DATA_SPAN(_mf_base, _mf_cnt)), 0, _mf_cnt);\n"
-                "      } else {\n"
-                "          if (_mf_cnt) sr_oor(_mf_base, 0u, 1);\n"
-                "      }\n"
-                "      s->r[4] = _mf_cnt; s->r[3] = 0u; }"
-            )
-            for _skip in (0x0006ea20, 0x0006ea24, 0x0006ea28, 0x0006ea2c, 0x0006ea30,
-                          0x0006ea34, 0x0006ea38, 0x0006ea3c, 0x0006ea40, 0x0006ea44):
-                consumed.add(_skip)
+        if hst_profile and _emit_hst_patch_site(hst_profile, addr, w, out, consumed):
             continue
-
-        # ARRSHIFT_FASTPATH: f_001084b8's element-shift loop (setup 0x108630-0x108654,
-        # body 0x108658-0x108690). Confirmed by static trace of the lifted instructions:
-        # this is a reverse, element-by-element 8-byte block move -- the source pointer
-        # (r6) and dest pointer (r4) both start high and decrement by exactly 8 every
-        # iteration in lockstep, terminating when r6 reaches r5 (the fixed source base
-        # loaded once at 0x108634 and never written again in the loop). The trip count is
-        # exactly n = MEM[r19+4] (read once, at 0x108630, before anything in the loop body
-        # can touch r19+4). This is the classic "grow a packed array, shift n existing
-        # elements into the new buffer" pattern: the code immediately after the loop
-        # (0x108694-0x1086c8) swaps the struct's base/count/capacity fields at r19+0/+4/+8
-        # with the new ones staged on the stack and calls f_00108bf4 (frees the old
-        # buffer) -- realloc-and-shift. A reverse per-element copy over
-        # [src,src+n*8) <-> [dst-n*8,dst) is exactly what memmove() computes (memmove is
-        # correct for either overlap direction, a superset of what the hand-unrolled
-        # reverse loop covers for its one intended direction). Under one-MIPS-instruction-
-        # per-dispatch interpretation this loop was a historical bring-up blocker: the
-        # worker cycles between pc=0x0006517c (an unrelated inlined "r2=r5<<1" leaf called
-        # from elsewhere, just this loop's most recent PCSAMPLE neighbour) and this loop's
-        # own SR_YIELD checkpoint at pc=0x0010868c for the entire watchdog window without
-        # the loop ever finishing. Historical details are retained in the local archive.
-        # Two stack slots track the same trip progress in different units and both must
-        # land on the same final value as the interpreted loop would leave them: MEM[sp+
-        # 0x5c] (decrements by 1/iter) and MEM[sp+0x50] (increments by 1/iter, consumed by
-        # the caller as the new element count at 0x1086c0-0x1086c4). Registers r1-r6's
-        # loop-final values are dead: everything from 0x108694 onward reloads r2/r3 fresh
-        # from memory and overwrites r4/r5/r6 before any further read (confirmed by
-        # reading through to the f_00108bf4 call at 0x1086c8), so only the copied bytes
-        # and the two stack slots need to be reproduced. The r4==0 mid-loop edge case
-        # (dest pointer hits exactly address 0) is not special-cased in the fast path --
-        # it would require the dest range to span across address 0, which cannot happen
-        # for a legitimate guest-RAM pointer -- but the bounds-checked fallback below
-        # still reproduces it exactly if it ever did.
-        if hst_profile and addr == 0x00108630:
-            out.append(f"    sr_begin(s, 0x00108630u, 0x{w:08x}u); s->r[4] = MEM_R32(s->r[19] + 0x00000004u); sr_end(s, 0u, 0);")
-            out.append(
-                "    { uint32_t _as_n = s->r[4];\n"
-                "      uint32_t _as_src_base = MEM_R32(s->r[19] + 0x00000000u);\n"
-                "      uint32_t _as_sp5c0 = MEM_R32(s->r[29] + 0x0000005cu);\n"
-                "      uint32_t _as_sp500 = MEM_R32(s->r[29] + 0x00000050u);\n"
-                "      uint32_t _as_dst_base = MEM_R32(s->r[29] + 0x0000004cu);\n"
-                "      uint32_t _as_dst_hi = _as_dst_base + (_as_sp5c0 << 3);\n"
-                "      if (_as_n > 0x00100000u) fprintf(stderr, \"ARRSHIFT_FASTPATH: large n=0x%x src=0x%x dst_hi=0x%x at f_001084b8 (0x108630)\\n\", _as_n, _as_src_base, _as_dst_hi);\n"
-                "      if (_as_n > 0u) {\n"
-                "          uint32_t _as_dst_lo = _as_dst_hi - (_as_n << 3);\n"
-                "          uint64_t _as_nbytes = (uint64_t)_as_n << 3;\n"
-                "          if (_as_dst_lo < _as_dst_hi && _as_src_base < 0x0c000000u && _as_dst_lo < 0x0c000000u &&\n"
-                "              (uint64_t)_as_src_base + _as_nbytes <= 0x0c000000u && (uint64_t)_as_dst_lo + _as_nbytes <= 0x0c000000u) {\n"
-                "              if (g_sr_heap_watch) sr_heap_note_bulk_write(_as_dst_lo, (uint32_t)_as_nbytes, 0x00108630u);\n"
-                "              memmove(SR_HOST(SR_DATA_SPAN(_as_dst_lo, _as_nbytes)),\n"
-                "                      SR_HOST(SR_DATA_SPAN(_as_src_base, _as_nbytes)), (size_t)_as_nbytes);\n"
-                "          } else {\n"
-                "              for (uint32_t _as_i = 0; _as_i < _as_n; _as_i++) {\n"
-                "                  uint32_t _as_d = _as_dst_hi - 8u * (_as_i + 1u);\n"
-                "                  uint32_t _as_s = _as_src_base + (_as_n - 1u - _as_i) * 8u;\n"
-                "                  if (_as_d != 0u) {\n"
-                "                      MEM_W32(_as_d + 0u, MEM_R32(_as_s + 0u));\n"
-                "                      MEM_W32(_as_d + 4u, MEM_R32(_as_s + 4u));\n"
-                "                  }\n"
-                "              }\n"
-                "          }\n"
-                "      }\n"
-                "      MEM_W32(s->r[29] + 0x0000005cu, _as_sp5c0 - _as_n);\n"
-                "      MEM_W32(s->r[29] + 0x00000050u, _as_sp500 + _as_n);\n"
-                "      s->r[1] = 0u; s->r[5] = _as_src_base; s->r[6] = _as_src_base;\n"
-                "    }"
-            )
-            for _skip in (0x00108634, 0x00108638, 0x0010863c, 0x00108640, 0x00108644, 0x00108648,
-                          0x0010864c, 0x00108650, 0x00108654, 0x00108658, 0x0010865c, 0x00108660,
-                          0x00108664, 0x00108668, 0x0010866c, 0x00108670, 0x00108674, 0x00108678,
-                          0x0010867c, 0x00108680, 0x00108684, 0x00108688, 0x0010868c, 0x00108690):
-                consumed.add(_skip)
-            continue
-
-        # GUEST_ABORT: f_00000a1c is the game's own compiled abort() path -- its body
-        # (jal 0x000015ec, a diagnostic/handler-table walk, immediately followed by an
-        # unconditional self-branch at L_00000a24, with NO guard of any kind) is only
-        # ever reached indirectly: a raw jal/j word scan of the whole image confirms
-        # there is no static call site targeting this address, so it can only be
-        # entered via a function pointer / dispatch() (i.e. it is the registered
-        # abort/terminate handler). NOTE: this is address 0x00000a1c, not the adjacent
-        # 0x00000a14 -- analyze()'s static function-boundary detection recognizes BOTH
-        # as independent function starts (confirmed: both are in the `known` set with
-        # zero static jal/j callers), but they are different functions. f_00000a14 is a
-        # harmless stub whose very first instruction (`beq r0,r0`) unconditionally
-        # branches around this exact jal+loop body to a plain epilogue/return --
-        # verified to fire routinely and harmlessly during ordinary boot (regression-
-        # tested: a probe placed at 0x00000a14 false-positived on a known-good run that
-        # only reaches mode-select). f_00000a1c has no such guard: every entry
-        # unconditionally calls the diagnostic walk and then spins forever. Left alone,
-        # reaching it means the emulator silently spins forever on the guest's own
-        # infinite loop, presenting nothing, until an external timeout kills the
-        # process -- observed via both heap exhaustion and a missing character/stage
-        # asset validation failure, minutes apart in wall-clock terms. Fail fast
-        # instead, mirroring the existing unimplemented-HLE-NID convention in hle.c
-        # (search "_Exit(7)" there) with a distinct, reserved exit code so the two
-        # fatal classes are distinguishable from the process exit status alone.
-        if hst_profile and addr == 0x00000a1c:
-            out.append(
-                "    fprintf(stderr, \"GUEST_ABORT: game called abort() (f_00000a1c), "
-                "called from ra=0x%08x arg0=0x%08x -- terminating instead of silent infinite hang\\n\", "
-                "s->r[31], s->r[4]); fflush(stderr); _Exit(9);"
-            )
 
         if not is_control(w):
-            out.append(normal_line(addr, w, lle_cpu=lle_cpu))
-            if _is_cop0_move(w):
-                # MFC0/MTC0 can raise (privilege/reserved encoding): propagate
-                # the resulting flow before any native continuation (spec 3.4).
-                out.append(f"    {_flow_return(resumable)}")
-            if addr in sv_points:
-                for _sv_r, _sv_v in sv_points[addr]:
-                    out.append(f"    sr_sv_check(s, {G(addr)}, {_sv_r}, 0x{_sv_v:08x}u);")
-            if addr in continuations:
-                out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
+            _emit_non_control_word(ctx, out, addr, w, sv_points)
             continue
-
-        if is_eret(w):  # eret: no delay slot; leave the native body (spec 3.4)
-            out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u);")
-            out.append(f"    (void)sr_cpu_eret(s, {G(addr)});")
-            out.append(f"    sr_end(s, 0u, 0);")
-            out.append(f"    return;")
+        if is_eret(w):
+            _emit_eret(out, addr, w)
             continue
-
-        ds = addr + 4
-        dsw = ADDRESS_SPACE.instruction_word(ds, read32(elf, ds))
-        if ds not in labels:
-            consumed.add(ds)
-        ds_is_syscall = dsw is not None and (dsw >> 26) == 0 and (dsw & 0x3F) == 0x0C
-
-        if op == 3 and ADDRESS_SPACE.unrelocated_jump(addr):  # jal the loader leaves as linked
-            resume = G((addr + 8) & 0xFFFFFFFF)
-            out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
-            out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); s->r[31] = {resume}; sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
-                                        resumable=resumable, indent="      "))
-            out.append(f"      dispatch_call(s, _t, {resume}); }}")
-            if addr in continuations:
-                out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
-            elif addr in dup_slot_skips:
-                out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
-            continue
-        if op == 3:  # jal
-            target = jump_target(addr, w)
-            _jal_rw = _enhancement_rewrite(addr)
-            out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
-            if target in known or target in resume_owners:
-                _call_stmt = f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
-                if lle_cpu:
-                    _call_stmt += f"\n    {_flow_return(resumable)}"
-            else:
-                _call_stmt = (
-                    f"    dispatch_call(s, {G(target)}, "
-                    f"{G((addr + 8) & 0xFFFFFFFF)});"
-                )
-            if _jal_rw is not None:
-                # gate_30hz on a call (the only rewrite a call site plans): the delay
-                # slot above always runs; the call is gated while the toggle is on.
-                out.append(
-                    f"    if (!nk_enhancement_on() || nk_enhancement_gate_30hz()) {{\n"
-                    f"{_call_stmt}\n"
-                    f"    }}"
-                )
-            else:
-                out.extend(_call_stmt.split("\n"))
-            if addr in continuations:
-                out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
-            elif addr in dup_slot_skips:
-                out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
-            continue
-        if op == 0 and fn == 0x09:  # jalr rd, rs
-            d, a = rd(w), rs(w)
-            link = f"s->r[{d}] = {G((addr + 8) & 0xFFFFFFFF)}; " if d != 0 else ""
-            # The transfer target is read AT the transfer, before its delay slot
-            # runs. Reading it after the slot lets a slot that writes the target
-            # register redirect the call -- proven divergent against the
-            # production interpreter by the `jrslot` cosim cell.
-            out.append(f"    {{ uint32_t _t = {R(a)};")
-            out.append(f"      {emit_code_pointer_check('_t', addr)}")
-            out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,
-                                        indent="      "))
-            if d != 0:
-                out.append(
-                    f"      dispatch_call(s, _t, {G((addr + 8) & 0xFFFFFFFF)}); }}"
-                )
-                if addr in continuations:
-                    out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
-                elif addr in dup_slot_skips:
-                    out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
-            else:
-                out.append(
-                    f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}"
-                )
-            continue
-        if op == 0 and fn == 0x08:  # jr rs
-            a = rs(w)
-            if a == 31:
-                # Capture the architectural target at transfer, before a delay
-                # slot (or syscall bridge) can rewrite the live register.
-                out.append(f"    {{ uint32_t _sr_return_target = {R(a)};")
-                out.append(f"      SR_AOT_RETURN_CAPTURE(s, _sr_return_target);")
-                if ds_is_syscall and dsw is not None and not lle_cpu:
-                    out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                    # JR with syscall in delay slot. Route it through the raw
-                    # syscall mechanism after latching the guest return target.
-                    out.append(f"      sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, {G(ds)});")
-                elif ds_is_syscall and dsw is not None:
-                    # LLE: the delay-slot syscall raises with BD set (spec 3.4).
-                    out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                    out.extend(delay_slot_lines(ds, dsw, addr,
-                                                lle_cpu=lle_cpu, resumable=resumable,
-                                                indent="      "))
-                else:
-                    out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                    out.extend(delay_slot_lines(ds, dsw, addr,
-                                                lle_cpu=lle_cpu, resumable=resumable,
-                                                indent="      "))
-                out.append(f"      {emit_host_return(resumable or addr in guest_exits, stack_census=stack_census)} }}")
-            elif ds_is_syscall and dsw is not None and not lle_cpu:
-                out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                # JR with syscall in delay slot. This is not reachable for current eboot stubs (handled by is_stub),
-                # but if reached in general code, route it via the correct raw-syscall mechanism with PC.
-                out.append(f"    sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, {G(ds)}); {emit_host_return(resumable or addr in guest_exits, stack_census=stack_census)}")
-            elif ds_is_syscall and dsw is not None:
-                # LLE: the delay-slot syscall raises with BD set (spec 3.4).
-                out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
-            else:
-                # Computed return/tail-call: same contract as jalr above -- the
-                # target register is read at the transfer, not after the slot.
-                out.append(f"    {{ uint32_t _t = {R(a)};")
-                out.append(f"      {emit_code_pointer_check('_t', addr)}")
-                out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,
-                                            indent="      "))
-                out.append(f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
-            continue
-        if op == 2 and ADDRESS_SPACE.unrelocated_jump(addr):  # j the loader leaves as linked
-            out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
-            out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
-                                        resumable=resumable, indent="      "))
-            out.append(f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
-            continue
-        if op == 2:  # j
-            target = jump_target(addr, w)
-            out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
-            if target == start:
-                # A `j` to the entry is a tail edge, not a label, so the check on labels
-                # above misses it; it enters the entry again and would double again.
-                _refuse_argument_site_on_a_loop(start)
-            if target == addr:
-                # Self-loop (a spin wait): the native call below would recurse on the host
-                # stack once per iteration. Keep it a backward goto with the preemption point.
-                out.append(f"    SR_YIELD(s, {G(addr)}); goto L_{target:08x};")
-            elif (target in known or target in resume_owners) and not (
-                target in resume_owners and target in labels
-            ):
-                out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable or addr in guest_exits, stack_census)}")
-            elif target in labels:
-                y = f"SR_YIELD(s, {G(addr)}); " if target <= addr else ""   # backward j: loop edge
-                out.append(f"    {y}goto L_{target:08x};")
-            else:
-                out.append(f"    {{ uint32_t _t = {G(target)}; {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
-            continue
-        # conditional branch
-        target = branch_target(addr, w)
-        y = f"SR_YIELD(s, {G(addr)}); " if target <= addr else ""
-        link = f"s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; " if is_link(w) else ""
-        cond = cond_expr(w)
-        inject_stmt = ""
-        if hst_profile and addr in GUEST_PATCHES:
-            p = GUEST_PATCHES[addr]
-            if p["kind"] == "cond":
-                cond = p["value"]
-                if p.get("stmt"):
-                    inject_stmt += p["stmt"]
-            elif p["kind"] == "inject":
-                inject_stmt += p["stmt"]
-            inject_stmt += compat_fired_stmt("GUEST_PATCHES", addr)
-
-        out.append(f"    {{ uint32_t _c = {cond};{inject_stmt}")
-        out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
-        _delay = delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable)
-        _delay_inline = " ".join(line.strip() for line in _delay)
-        if is_linked_call(elf, addr, w, ranges):
-            # bltzal/bgezal (bal = bgezal $zero) to a callable is a CALL (#968), inside
-            # or outside this body: the taken path calls the target exactly as `jal`
-            # (known target) or `jalr rd` (dispatch with the resume PC) does, so the
-            # callee's `jr $ra` returns here and both paths continue at addr + 8.
-            # function_flow never labels the target for this site; another branch may
-            # still label it, so this test comes before the label test. The link and
-            # the delay slot above run once on either path; cond_expr refuses the
-            # branch-likely linked forms, so no annulled slot reaches this point.
-            if target in known or target in resume_owners:
-                call = emit_checked_body_call(
-                    ADDRESS_SPACE.symbol(target, resume_owners), addr
-                )
-                if lle_cpu:
-                    call += f" {_flow_return(resumable)}"
-            else:
-                call = f"dispatch_call(s, {G(target)}, {G((addr + 8) & 0xFFFFFFFF)});"
-            out.extend("   " + line for line in _delay)
-            out.append(f"      if (_c) {{ {call} }} }}")
-            if addr in continuations:
-                out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
-            elif addr in dup_slot_skips:
-                out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
-            continue
-        if target in labels:
-            if is_likely(w):
-                out.append(f"      if (_c) {{ {_delay_inline} {y}goto L_{target:08x}; }} }}")
-            else:
-                out.extend("   " + line for line in _delay)
-                out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
-        elif in_ranges(target, ranges) and (target in known or target in resume_owners):
-            # A split body's edge into another entry (function_flow): the same TAIL
-            # transfer as `j` to that entry, after the delay slot (annulled on the
-            # not-taken path of a likely branch).
-            tail = emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners),
-                                      resumable or addr in guest_exits, stack_census)
-            if is_likely(w):
-                out.append(f"      if (_c) {{ {_delay_inline} {tail} }} }}")
-            else:
-                out.extend("   " + line for line in _delay)
-                out.append(f"      if (_c) {{ {tail} }} }}")
-        else:
-            if is_likely(w):
-                out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable or addr in guest_exits, stack_census)} }} }} }}")
-            else:
-                out.extend("   " + line for line in _delay)
-                out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable or addr in guest_exits, stack_census)} }} }} }}")
-        if addr in continuations:
-            out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
-        elif addr in dup_slot_skips:
-            out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled); skip its labelled duplicate */")
+        _emit_control_transfer(ctx, out, consumed, addr, w)
     if continuations:
-        # Do not let an unrelated natural end path fall into the first continuation
-        # block merely because the blocks live after the sorted instruction bodies.
-        out.append("    goto _sr_fallthrough_return;")
-        for target in sorted(set(continuations.values())):
-            out.append(f"  _sr_cont_{target:08x}: ;")
-            if dispatch_boundaries and target in dispatch_boundaries:
-                # An omitted address remains a guest execution boundary even when a
-                # separate discovery anchor reaches it by linear fall-through. There
-                # is no native symbol to call, and this edge is a tail-shaped transfer:
-                # dispatch the guest target and then leave the current native body.
-                out.append(
-                    f"    {{ uint32_t _t = {G(target)}; "
-                    f"{emit_tail_transfer('_t', None, resumable or target in guest_exits, stack_census)} }}"
-                )
-            else:
-                out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable or target in guest_exits, stack_census, 'synthetic boundary: the owning entry frame is restored after the chain')}")
-        out.append("  _sr_fallthrough_return: ;")
+        _emit_continuation_blocks(ctx, out)
     if promo is not None:
         out.extend(promo.flush())
         declaration = promo.declaration()
@@ -4697,101 +4853,77 @@ def _command_line_parser():
     return parser
 
 
-def main(argv):
-    args = [a for a in argv[1:] if not a.startswith("--")]
-    cli, _unknown = _command_line_parser().parse_known_args(
-        [a for a in argv[1:] if a.startswith("--")])
+class _Refusal(Exception):
+    """A run the generator turns down: ``message`` goes to stderr and the process exits with ``status``."""
 
-    use_env_elf = cli.env_elf
-    use_env_extra = cli.env_extra_elfs
-    # The ELF is a positional only in the legacy form; with --env-elf the first
-    # positional is the output .c.  Supplying both is a conflict, not a
-    # precedence question: silently treating the ELF as the output path would
-    # overwrite the guest image with generated C.
-    expected = 1 if use_env_elf else 2
-    if len(args) < expected:
-        sys.stderr.write(_USAGE)
-        return 2
-    if use_env_elf and len(args) > 1:
-        sys.stderr.write(
-            "codegen: --env-elf takes exactly one positional (<out.c>); refusing to guess "
-            f"which of {args!r} is the output. Pass the ELF or --env-elf, not both.\n"
-        )
-        return 2
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+        self.message = message
 
-    cli_elf = None if use_env_elf else args[0]
-    out_c = args[0] if use_env_elf else args[1]
-    try:
-        elf_path = build_profile.resolve_path(
-            "GAME_ELF", cli_value=cli_elf, use_env=use_env_elf,
-            cli_label="<elf> argument", flag="--env-elf",
-        )
-    except build_profile.BuildInputError as exc:
-        sys.stderr.write(f"codegen: {exc}\n")
-        return 2
 
-    base = int(cli.base, 16) if cli.base is not None else None
-    profile = cli.profile
-    funcs_per_chunk = 2000
-    chunk_target_bytes = 0
-    extra_span_arg = cli.extra_span
-    cfg_gate = cli.cfg_gate
-    stack_census = cli.stack_census
-    omit_aot = _OmitAot()
-    enhancement_pkg_path = cli.enhancement_package
-    enhancement_data_root = cli.enhancement_data_root
-    extra_elfs = []  # list of (elf_path, base_addr)
-    cli_extra_specs = cli.extra_elf  # raw "ELF@BASE" strings from --extra-elf=
-    cfg_report_path = cli.cfg_report
-    symbol_map_path = cli.symbol_map
-    name_imports = cli.name_imports  # name each import stub after its NID's function
-    backend = "c"
-    for option, given in (("--enhancement-data-root", enhancement_data_root),
-                          ("--enhancement-package", enhancement_pkg_path),
-                          ("--symbol-map", symbol_map_path),
+@dataclass(frozen=True)
+class _CheckedOptions:
+    """The command-line values that have a shape, once ``_validated_options`` has accepted them."""
+    backend: str
+    region_split_threshold_given: bool
+    region_split_threshold: object
+    funcs_per_chunk: int
+    chunk_target_bytes: int
+    omit_aot: object
+
+
+def _validated_options(cli):
+    """Check every option value that has a shape (a path, a number, a backend, addresses).
+
+    Each refusal keeps its exact message and exit status 2, in the order the options are checked.
+    Nothing is changed here: ``_apply_options`` sets the module options once all are accepted.
+    """
+    for option, given in (("--enhancement-data-root", cli.enhancement_data_root),
+                          ("--enhancement-package", cli.enhancement_package),
+                          ("--symbol-map", cli.symbol_map),
                           ("--miss-seeds", cli.miss_seeds),
-                          ("--cfg-report", cfg_report_path)):
+                          ("--cfg-report", cli.cfg_report)):
         if given == "":
-            sys.stderr.write(f"{option} requires a path\n")
-            return 2
+            raise _Refusal(2, f"{option} requires a path\n")
+    backend = "c"
     if cli.backend is not None:
         # #330: --backend=llvm lowers each function the LLVM backend supports to
         # LLVM IR (<g>_recomp_<n>.ll beside its C chunk) and keeps a C body, with
         # the recorded reason, for every other one. The default is C, unchanged.
         backend = cli.backend
         if backend not in ("c", "llvm"):
-            sys.stderr.write(f"--backend must be c or llvm, not {backend!r}\n")
-            return 2
+            raise _Refusal(2, f"--backend must be c or llvm, not {backend!r}\n")
     threshold_arg = cli.region_split_threshold
+    threshold = None
     if threshold_arg is not None:
         try:
             threshold = None if threshold_arg == "off" else int(threshold_arg, 10)
         except ValueError:
             threshold = -1
         if threshold is not None and threshold < 0:
-            sys.stderr.write(
-                f"invalid --region-split-threshold value: --region-split-threshold={threshold_arg}\n")
-            return 2
+            raise _Refusal(
+                2, f"invalid --region-split-threshold value: --region-split-threshold={threshold_arg}\n")
+    funcs_per_chunk = 2000
     if cli.funcs_per_chunk is not None:
         try:
             funcs_per_chunk = int(cli.funcs_per_chunk, 10)
         except ValueError:
-            sys.stderr.write(
-                f"invalid --funcs-per-chunk value: --funcs-per-chunk={cli.funcs_per_chunk}\n")
-            return 2
+            raise _Refusal(
+                2, f"invalid --funcs-per-chunk value: --funcs-per-chunk={cli.funcs_per_chunk}\n") from None
         if funcs_per_chunk < 1:
-            sys.stderr.write("--funcs-per-chunk must be at least 1\n")
-            return 2
+            raise _Refusal(2, "--funcs-per-chunk must be at least 1\n")
+    chunk_target_bytes = 0
     if cli.target_chunk_bytes is not None:
         try:
             chunk_target_bytes = int(cli.target_chunk_bytes, 10)
         except ValueError:
-            sys.stderr.write(
-                f"invalid --target-chunk-bytes value: --target-chunk-bytes={cli.target_chunk_bytes}\n")
-            return 2
+            raise _Refusal(
+                2, f"invalid --target-chunk-bytes value: --target-chunk-bytes={cli.target_chunk_bytes}\n"
+            ) from None
         if chunk_target_bytes < 1:
-            sys.stderr.write("--target-chunk-bytes must be at least 1\n")
-            return 2
+            raise _Refusal(2, "--target-chunk-bytes must be at least 1\n")
+    omit_aot = _OmitAot()
     for occurrence in cli.omit_aot:
         for part in occurrence.split(","):
             part = part.strip()
@@ -4800,10 +4932,152 @@ def main(argv):
             try:
                 omit_aot.addrs.add(int(part, 16))
             except ValueError:
-                sys.stderr.write(f"invalid --omit-aot address: --omit-aot={occurrence}\n")
-                return 2
+                raise _Refusal(2, f"invalid --omit-aot address: --omit-aot={occurrence}\n") from None
+    return _CheckedOptions(backend, threshold_arg is not None, threshold, funcs_per_chunk,
+                           chunk_target_bytes, omit_aot)
 
-    # The options are set only once every option has been accepted.
+
+def _extra_images(use_env_extra, cli_extra_specs):
+    """``(fixed-base extra ELFs as (path, base), runtime-placed module paths)`` from ``--extra-elf``."""
+    try:
+        extra_specs = build_profile.resolve_list(
+            "GAME_EXTRA_ELFS_ENV", use_env=use_env_extra, cli_values=cli_extra_specs,
+            flag="--env-extra-elfs",
+        )
+    except build_profile.BuildInputError as exc:
+        raise _Refusal(2, f"codegen: {exc}\n") from None
+    extra_elfs = []  # list of (elf_path, base_addr)
+    runtime_modules = []  # module paths placed by the runtime's guest allocator
+    runtime_names = set()
+    for spec in extra_specs:
+        if "@" not in spec:
+            raise _Refusal(2, f"invalid extra-elf format (want ELF@BASE or ELF@runtime): {spec}\n")
+        extra_path, base_str = spec.rsplit("@", 1)
+        if base_str == RUNTIME_PLACEMENT:
+            name = os.path.basename(extra_path)
+            if not name or name.casefold() in runtime_names:
+                raise _Refusal(2, f"runtime-placed module names must be distinct: {spec}\n")
+            runtime_names.add(name.casefold())
+            runtime_modules.append(extra_path)
+            continue
+        try:
+            extra_elfs.append((extra_path, int(base_str, 16)))
+        except ValueError:
+            raise _Refusal(2, f"invalid extra-elf base address: {spec}\n") from None
+    return extra_elfs, runtime_modules
+
+
+def _refuse_offset0_pointers(images):
+    """Refuse an image whose relocations take the address of module offset 0 (#1375).
+
+    ``images`` is a list of ``(path, base)``; a module placed at base 0 cannot tell such a pointer
+    from a null code pointer.
+    """
+    import prx_reloc_model
+    for image_path, image_base in images:
+        try:
+            with open(image_path, "rb") as source:
+                image_data = source.read()
+            offset0_sites = zero_based_offset0_pointers(image_data, image_base, image_path)
+        except (OSError, prx_reloc_model.RelocationModelError) as exc:
+            raise _Refusal(
+                2, f"codegen: {image_path}: cannot tell a pointer to module offset 0 from a "
+                   f"null code pointer at base 0x{image_base or 0:08x} (#1375): {exc}\n") from None
+        if offset0_sites:
+            listed = ", ".join(f"{kind} at 0x{site:08x}" for site, kind in offset0_sites[:8])
+            more = f" and {len(offset0_sites) - 8} more" if len(offset0_sites) > 8 else ""
+            raise _Refusal(
+                2, f"codegen: {image_path}: relocations take the address of module offset 0 "
+                   f"({listed}{more}), which a module placed at base 0 cannot tell from a null "
+                   "code pointer (#1375); place it at a nonzero base\n")
+
+
+def _cfg_report_and_gate(elf, analyzed, ranges, extra_spans, cfg_report_path, cfg_gate,
+                         miss_seed_outcome=None):
+    """The canonical CFG report of the primary image, written when asked, and the opt-in ownership gate.
+
+    Returns the report, or None when neither ``--cfg-report`` nor ``--cfg-gate`` is on.
+    """
+    if cfg_report_path is None and not cfg_gate:
+        return None
+    # This opt-in gate audits the primary image. Extra modules have their own
+    # analyzer invocation and remain a separate bring-up surface until
+    # their ownership roots have an equivalent source-owned contract.
+    report_entries, report_ranges = analyzed, ranges
+    if not cfg_gate:
+        # A report-only run describes gate-mode analysis but must not change
+        # the entry set that feeds code emission.
+        try:
+            report_entries, report_ranges = analyze(
+                elf, extra_spans=extra_spans, cfg_gate=True,
+                **({"seeds": seeds_in_analysis(miss_seed_outcome)}
+                   if miss_seed_outcome is not None else {}))
+        except ImportTableError as exc:
+            raise _Refusal(1, f"codegen: {format_boundary(exc)}\n") from None
+    cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
+    if cfg_report_path is not None:
+        parent = os.path.dirname(cfg_report_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(cfg_report_path, "w", encoding="ascii", newline="\n") as output:
+            output.write(canonical_cfg_json(cfg_report))
+        print("wrote CFG report:", cfg_report_path)
+    if cfg_gate:
+        cfg_findings = canonical_cfg_gate(cfg_report)
+        if cfg_findings:
+            raise _Refusal(1, "".join(
+                f"CFG_GATE {finding['code']}: {finding['message']}\n" for finding in cfg_findings))
+        print(
+            "CFG_GATE PASS: "
+            f"{len(cfg_report['instructions'])} executable words, "
+            f"{len(cfg_report['entries'])} entries, "
+            f"{len(cfg_report['unowned_executable'])} unowned words recorded"
+        )
+    return cfg_report
+
+
+def _refuse_unemitted_enhancement_sites():
+    """Fail closed when a verified package site was never rewritten by an emitted statement."""
+    if ENHANCEMENT_PKG_META is None:
+        return
+    missing = sorted(
+        site["id"] for addr, site in ENHANCEMENT_SITES.items()
+        if addr not in ENHANCEMENT_APPLIED
+    )
+    if (ENHANCEMENT_UPDATE_BOUNDARY is not None
+            and ENHANCEMENT_UPDATE_BOUNDARY not in ENHANCEMENT_APPLIED):
+        missing.append("update_boundary")
+    if missing:
+        # A verified site that no emitted statement rewrites (an unreached address, a
+        # stubbed function, a fused fast path) would leave the epoch stamp claiming
+        # it: refuse before anything is written.
+        raise _Refusal(
+            1, "codegen: enhancement package refused (fail-closed): "
+               f"{len(missing)} of {len(ENHANCEMENT_SITES)} sites were not emitted: "
+               + ", ".join(missing) + "\n")
+
+
+def _registrable_exec_spans(owned_exec_ranges):
+    """The analyzer's exact end-exclusive executable spans, deduplicated, for generated registration."""
+    # The analyzer, not mapped-RAM reachability, owns executable-byte authority.
+    # Preserve its exact end-exclusive ranges in generated registration. Exact
+    # duplicates can arise when an extra module describes the same span; removing
+    # those does not widen or merge ownership across a gap.
+    exec_spans = sorted(set((lo, hi) for lo, hi in owned_exec_ranges if hi > lo))
+    for lo, hi in exec_spans:
+        if lo < 0 or hi > 0xffffffff:
+            raise _Refusal(
+                2, f"codegen: executable span 0x{lo:x},0x{hi:x} cannot be "
+                   "represented by the runtime registry\n")
+    return exec_spans
+
+
+def _apply_options(cli, checked):
+    """Switch on the module options the command line asked for.
+
+    The options are set only once every option has been accepted. Each default (the switch absent)
+    reproduces the historical output byte for byte.
+    """
     if cli.static_verify:
         OPTIONS.static_verify = True
     if cli.lle_cpu:
@@ -4815,8 +5089,8 @@ def main(argv):
         # sr_import_call instead of sr_syscall. Default (absent)
         # preserves byte-identical HLE stubs.
         enable_lle_import_seam()
-    if threshold_arg is not None:
-        OPTIONS.region_split_threshold = threshold
+    if checked.region_split_threshold_given:
+        OPTIONS.region_split_threshold = checked.region_split_threshold
     if cli.stale_detect:
         # TD-27 stale-code detection: emit the compact translation-time
         # record table and route `cache` through the check hook.
@@ -4834,152 +5108,14 @@ def main(argv):
         # generated C is byte-identical to a pre-trap build.
         OPTIONS.nan_trap = True
 
-    if stack_census:
-        # The dynamic run is meaningful only after the static ownership floor
-        # accepts the same image.
-        cfg_gate = True
 
-    symbols = {}
-    if symbol_map_path is not None:
-        # Read before the analysis so a bad map fails in a second, not after it.
-        try:
-            symbols = load_symbol_map(symbol_map_path)
-        except (OSError, UnicodeDecodeError, SymbolMapError) as exc:
-            sys.stderr.write(f"codegen: symbol map: {exc}\n")
-            return 2
+def _load_enhancement_package(elf, known, symbols, enhancement_pkg_path, enhancement_data_root,
+                              symbol_map_path):
+    """Load, verify and resolve the ``--enhancement-package`` into the ``ENHANCEMENT_*`` tables.
 
-    try:
-        extra_specs = build_profile.resolve_list(
-            "GAME_EXTRA_ELFS_ENV", use_env=use_env_extra, cli_values=cli_extra_specs,
-            flag="--env-extra-elfs",
-        )
-    except build_profile.BuildInputError as exc:
-        sys.stderr.write(f"codegen: {exc}\n")
-        return 2
-    runtime_modules = []  # module paths placed by the runtime's guest allocator
-    runtime_names = set()
-    for spec in extra_specs:
-        if "@" not in spec:
-            sys.stderr.write(f"invalid extra-elf format (want ELF@BASE or ELF@runtime): {spec}\n")
-            return 2
-        extra_path, base_str = spec.rsplit("@", 1)
-        if base_str == RUNTIME_PLACEMENT:
-            name = os.path.basename(extra_path)
-            if not name or name.casefold() in runtime_names:
-                sys.stderr.write(f"runtime-placed module names must be distinct: {spec}\n")
-                return 2
-            runtime_names.add(name.casefold())
-            runtime_modules.append(extra_path)
-            continue
-        try:
-            extra_elfs.append((extra_path, int(base_str, 16)))
-        except ValueError:
-            sys.stderr.write(f"invalid extra-elf base address: {spec}\n")
-            return 2
-    import prx_reloc_model
-    for image_path, image_base in [(elf_path, base)] + extra_elfs:
-        try:
-            with open(image_path, "rb") as source:
-                image_data = source.read()
-            offset0_sites = zero_based_offset0_pointers(image_data, image_base, image_path)
-        except (OSError, prx_reloc_model.RelocationModelError) as exc:
-            sys.stderr.write(
-                f"codegen: {image_path}: cannot tell a pointer to module offset 0 from a "
-                f"null code pointer at base 0x{image_base or 0:08x} (#1375): {exc}\n")
-            return 2
-        if offset0_sites:
-            listed = ", ".join(f"{kind} at 0x{site:08x}" for site, kind in offset0_sites[:8])
-            more = f" and {len(offset0_sites) - 8} more" if len(offset0_sites) > 8 else ""
-            sys.stderr.write(
-                f"codegen: {image_path}: relocations take the address of module offset 0 "
-                f"({listed}{more}), which a module placed at base 0 cannot tell from a null "
-                "code pointer (#1375); place it at a nonzero base\n")
-            return 2
-    elf = Elf(elf_path, base=base)
-    OPTIONS.null_page_guard = (
-        min(seg["vaddr"] for seg in elf.segments if seg["type"] == 1) < PSP_UNMAPPED_END)
-    try:
-        module_record = main_module_record(elf)
-    except MainModuleRecordError as exc:
-        # The image still translates; the runtime answers a module-info query for it with
-        # a named refusal instead of a guessed record.
-        sys.stderr.write(f"codegen: MAIN_MODULE_RECORD_REFUSED: {exc}\n")
-        module_record = None
-    # Only the primary image may carry an explicit extra executable span (its title's
-    # configuration, from --extra-span or the TITLE_EXTRA_SPANS seam). Every extra guest
-    # module below is rebased to its own load address and is analyzed with no extra
-    # span at all, so one module's title configuration can never reach another's.
-    extra_spans = resolve_extra_spans(extra_span_arg)
-    # Seeds from a run's dispatch misses (tools/miss_seeds.py, #1848) are extra entries for the
-    # primary image only. Without --miss-seeds the analysis call is exactly the one it always was.
-    seed_args = {}
-    if cli.miss_seeds is not None:
-        try:
-            seed_args = {"seeds": set(miss_seeds.read_seed_file(cli.miss_seeds).seeds),
-                         "report": {}}
-        except miss_seeds.SeedFileError as exc:
-            sys.stderr.write(f"codegen: {exc}\n")
-            return 2
-    try:
-        if seed_args:
-            seed_args["seed_check"] = emitter_seed_check(elf, profile, frozenset(omit_aot.addrs),
-                                                         stack_census)
-        analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate, **seed_args)
-    except ImportTableError as exc:
-        sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
-        return 1
-    miss_seed_outcome = seed_args["report"]["miss_seeds"] if seed_args else None
-    if miss_seed_outcome is not None:
-        miss_seeds.report_outcome(miss_seed_outcome, prefix="CODEGEN_MISS_SEEDS")
-    if cfg_report_path is not None or cfg_gate:
-        # This opt-in gate audits the primary image. Extra modules have their own
-        # analyzer invocation below and remain a separate bring-up surface until
-        # their ownership roots have an equivalent source-owned contract.
-        report_entries, report_ranges = analyzed, ranges
-        if not cfg_gate:
-            # A report-only run describes gate-mode analysis but must not change
-            # the entry set that feeds code emission.
-            try:
-                report_entries, report_ranges = analyze(
-                    elf, extra_spans=extra_spans, cfg_gate=True,
-                    **({"seeds": seeds_in_analysis(miss_seed_outcome)} if seed_args else {}))
-            except ImportTableError as exc:
-                sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
-                return 1
-        cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
-        if cfg_report_path is not None:
-            parent = os.path.dirname(cfg_report_path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            with open(cfg_report_path, "w", encoding="ascii", newline="\n") as output:
-                output.write(canonical_cfg_json(cfg_report))
-            print("wrote CFG report:", cfg_report_path)
-        if cfg_gate:
-            cfg_findings = canonical_cfg_gate(cfg_report)
-            if cfg_findings:
-                for finding in cfg_findings:
-                    sys.stderr.write(
-                        f"CFG_GATE {finding['code']}: {finding['message']}\n"
-                    )
-                return 1
-            print(
-                "CFG_GATE PASS: "
-                f"{len(cfg_report['instructions'])} executable words, "
-                f"{len(cfg_report['entries'])} entries, "
-                f"{len(cfg_report['unowned_executable'])} unowned words recorded"
-            )
-    owned_exec_ranges = list(ranges)
-    catalog = build_entry_catalog(analyzed, ranges, profile=profile, elf=elf)
-    omitted = omit_aot.apply(catalog, elf.entry)
-    dispatch_boundaries = set(omit_aot.addrs)
-    if omitted:
-        for addr in sorted(omit_aot.addrs):
-            sys.stderr.write(f"CODEGEN_OMIT_AOT 0x{addr:08x} dispatch-fallback\n")
-    known = {addr for addr, info in catalog.items() if info.callable}
-    resume_owners = {
-        addr: info.owner for addr, info in catalog.items() if info.resumable
-    }
-
+    The tables are reset first, so a run without a package starts empty. A package that fails
+    verification refuses the run (fail closed).
+    """
     global ENHANCEMENT_SITES, ENHANCEMENT_PKG_META, ENHANCEMENT_UPDATE_BOUNDARY
     ENHANCEMENT_SITES = {}
     ENHANCEMENT_PKG_META = None
@@ -4987,7 +5123,6 @@ def main(argv):
     ENHANCEMENT_APPLIED.clear()
     ENHANCEMENT_DATA_PATCHES.clear()
     ENHANCEMENT_DATA_FILES.clear()
-    GUEST_SP_ENTRIES.clear()
     if enhancement_pkg_path is not None:
         import hashlib
         from pathlib import Path
@@ -5089,10 +5224,418 @@ def main(argv):
                 "data_files_count": len(ENHANCEMENT_DATA_FILES),
             }
         except enhancement_package.EnhancementPackageError as exc:
+            raise _Refusal(1, f"codegen: enhancement package refused (fail-closed): {exc}\n") from None
+
+
+def _symbol_names(symbol_map_path, name_imports, symbols, import_nids, emitted, resume_owners, func_texts):
+    """``(renames, symbol_table)`` from ``--symbol-map`` and ``--name-imports``; both empty without them."""
+    # Names from --symbol-map and --name-imports are applied as each file is
+    # written, after the partition, so they change symbol spellings and nothing
+    # else. A map's name for an address wins over the stub's NID name.
+    renames = {}
+    symbol_table = []
+    if symbol_map_path is not None or name_imports:
+        names = import_stub_names(import_nids) if name_imports else {}
+        named_imports = sum(1 for a in names if a not in symbols)
+        names.update(symbols)
+        renames = symbol_map_renames(names, emitted, resume_owners)
+        collisions = symbol_map_collisions(renames, func_texts)
+        if collisions:
+            raise _Refusal(2, "codegen: symbol map: a name would spell a generator-owned symbol: "
+                           + ", ".join(collisions) + "\n")
+        emitted_set = set(emitted)
+        emitted_sorted = sorted(emitted_set)
+
+        def holds_an_entry(a, size):
+            i = bisect.bisect_left(emitted_sorted, a)
+            return i < len(emitted_sorted) and emitted_sorted[i] - a < size
+
+        # The runtime names an address inside a function from this table, so a
+        # function whose own start is not an entry is in it when an entry is inside.
+        symbol_table = sorted(
+            (a, name, size) for a, (name, size) in names.items()
+            if a in emitted_set or (size and holds_an_entry(a, size)))
+        if symbol_map_path is not None:
+            renamed = [int(symbol[2:], 16) for symbol in renames]
+            named_resumes = sum(1 for a in renamed
+                                if a in resume_owners and resume_owners[a] in names)
+            inside = sum(1 for a in renamed if a not in names
+                         and not (a in resume_owners and resume_owners[a] in names))
             sys.stderr.write(
-                f"codegen: enhancement package refused (fail-closed): {exc}\n"
-            )
-            return 1
+                f"symbol map: {sum(1 for a in symbols if a in emitted_set)} of {len(symbols)} "
+                f"function name(s) name an emitted entry; {named_resumes} resume bodies take "
+                f"their owner's name; {inside} entries inside a named function take its name\n")
+        if name_imports:
+            sys.stderr.write(
+                f"import names: {named_imports} of {len(import_nids)} import stubs named "
+                "from the NID corpus\n")
+    return renames, symbol_table
+
+
+def _registration_lines(elf, ranges, known, base_name, num_files, emitted, resume_owners, dispatch_boundaries,
+                        *, stack_census, module_translations, symbol_table, module_record, main_var_imports,
+                        main_var_exports, main_func_exports, fixed_var_imports, exec_spans, stale_funcs):
+    """The lines of the main generated file: the registration of every chunk, module and span."""
+    # Main recomp.c
+    main_out = [
+        "/* Generated by tools/codegen.py. Do not edit by hand. */",
+        f'#include "{os.path.basename(base_name)}_funcs.h"',
+        "#include <math.h>",
+        "#include <stdlib.h>",
+        "#include <string.h>",
+        "#include <stdio.h>",
+        ""
+    ]
+    if ENHANCEMENT_PKG_META is not None:
+        main_out.append(
+            f"/* AOT Enhancement Epoch: {ENHANCEMENT_PKG_META['epoch']} "
+            f"id={ENHANCEMENT_PKG_META['id']} v={ENHANCEMENT_PKG_META['version']} "
+            f"sites={ENHANCEMENT_PKG_META['sites_count']} "
+            f"sha256={ENHANCEMENT_PKG_META['digest']} */"
+        )
+        main_out += [
+            "int nk_enhancement_on(void) {",
+            "    static int on = -1;",
+            "    if (on < 0) {",
+            '        const char *v = getenv("SR_EXPERIMENTAL_60HZ");',
+            "        on = (v && v[0] == '1' && v[1] == '\\0') ? 1 : 0;",
+            "    }",
+            "    return on;",
+            "}",
+            "uint32_t nk_enhancement_updates;",
+            "",
+        ]
+        main_out += _enhancement_data_lines()
+    census_entries = sorted({a for a in emitted if a not in resume_owners})
+    if stack_census:
+        census_values = census_entries or [0]
+        main_out.append(
+            "static const uint32_t sr_stack_census_expected_entries[] = {"
+            + ", ".join(f"0x{addr:08x}u" for addr in census_values)
+            + "};"
+        )
+        main_out.append("")
+    for i in range(num_files):
+        main_out.append(f"void sr_register_chunk_{i}(void);")
+    if module_translations:
+        main_out.append("")
+    for module in module_translations:
+        main_out.extend(runtime_module_descriptor_lines(module))
+    if symbol_table:
+        main_out.append("")
+        main_out.append("/* Guest function names from --symbol-map and --name-imports: "
+                        "names and addresses only. */")
+        main_out.append("static const SrGuestSymbol sr_guest_symbol_table[] = {")
+        for a, name, size in symbol_table:
+            main_out.append(f'    {{0x{a:08x}u, 0x{size:08x}u, "{name}"}},')
+        main_out.append("};")
+    if module_record is not None:
+        main_out.append("")
+        main_out.extend(main_module_record_lines(module_record))
+    if main_var_imports:
+        main_out.append("")
+        main_out.extend(var_import_table_lines("sr_main_var_imports", main_var_imports))
+    for index, (_name, imports_of) in enumerate(fixed_var_imports):
+        main_out.extend(var_import_table_lines(f"sr_x{index}_var_imports", imports_of))
+    if main_var_exports:
+        main_out.append("static const SrVarExportDecl sr_main_var_exports[] = {")
+        main_out.extend(f"    {{ {c_library_name(e.library)}, 0x{e.nid:08x}u, 0x{e.address:08x}u }},"
+                        for e in main_var_exports)
+        main_out.append("};")
+    if main_func_exports:
+        main_out.append("static const SrMainFuncExport sr_main_func_exports[] = {")
+        main_out.extend(f"    {{ 0x{nid:08x}u, 0x{address:08x}u }},"
+                        for nid, address in main_func_exports)
+        main_out.append("};")
+    main_out.append("\nvoid sr_register_all(void) {")
+    if module_record is not None:
+        main_out.append("    sr_main_module_register(&sr_main_module_record);")
+    if main_var_exports:
+        main_out.append(f"    sr_main_var_exports_register(sr_main_var_exports, "
+                        f"{len(main_var_exports)}u);")
+    if main_func_exports:
+        main_out.append(f"    sr_main_func_exports_register(sr_main_func_exports, "
+                        f"{len(main_func_exports)}u);")
+    if main_var_imports:
+        main_out.append(f"    sr_main_var_imports_register(sr_main_var_imports, "
+                        f"{len(main_var_imports)}u);")
+    for index, (name, imports_of) in enumerate(fixed_var_imports):
+        main_out.append(f"    sr_fixed_var_imports_register({c_string(name)}, "
+                        f"sr_x{index}_var_imports, {len(imports_of)}u);")
+    if symbol_table:
+        main_out.append(
+            f"    sr_guest_symbols_register(sr_guest_symbol_table, {len(symbol_table)}u);")
+    if OPTIONS.lle_cpu:
+        main_out.append("    sr_cpu_lle_set_enabled(1);")
+    main_out.append("    sr_exec_span_reset();")
+    for module in module_translations:
+        main_out.append(f"    sr_module_code_register(&sr_m{module.index}_code);")
+    for lo, hi in exec_spans:
+        main_out.append(
+            f"    if (!sr_exec_span_register(0x{lo:08x}u, 0x{hi:08x}u)) {{"
+        )
+        main_out.append(
+            f'        fprintf(stderr, "sr_register_all: executable span '
+            f'0x{lo:08x},0x{hi:08x} rejected\\n");'
+        )
+        main_out.append("        exit(1);")
+        main_out.append("    }")
+    if stack_census:
+        main_out.append(
+            "    sr_stack_census_begin(sr_stack_census_expected_entries, "
+            f"{len(census_entries)}u);"
+        )
+    if OPTIONS.stale_detect:
+        # TD-27 compact translation-time records (address + entry word +
+        # word count + FNV-1a per translated primary-image function). No raw
+        # code bodies are embedded; the runtime compares these against live
+        # guest bytes at cache-invalidate time behind SR_STALE_DETECT.
+        main_out.append("    sr_stale_reset();")
+        stale_records = 0
+        for a in stale_funcs:
+            rec = stale_block_for_function(
+                elf, a, ranges, known, resume_owners, dispatch_boundaries)
+            if rec is None:
+                sys.stderr.write(f"stale-detect: no record for 0x{a:08x} (unreadable entry)\n")
+                continue
+            entry_word, nwords, digest = rec
+            main_out.append(f"    sr_stale_register_word(0x{a:08x}u, 0x{entry_word:08x}u);")
+            main_out.append(f"    sr_stale_register_block(0x{a:08x}u, {nwords}u, 0x{digest:08x}u);")
+            stale_records += 1
+        main_out.append(
+            f'    fprintf(stderr, "sr_register_all: registered {stale_records} '
+            'stale-detect record(s)\\n");'
+        )
+    main_out.append(
+        f'    fprintf(stderr, "sr_register_all: registered {len(exec_spans)} '
+        'executable span(s)\\n");'
+    )
+    if ENHANCEMENT_PKG_META is not None:
+        main_out.append("    if (nk_enhancement_on()) nk_enhancement_apply_data();")
+    main_out.append(f'    fprintf(stderr, "sr_register_all: starting {len(emitted)} registrations\\n");')
+    for i in range(num_files):
+        main_out.append(f"    sr_register_chunk_{i}();")
+    main_out.append('    fprintf(stderr, "sr_register_all: completed\\n");\n}')
+    return main_out
+
+
+def _write_chunks(base_name, boundaries, renames, backend, llvm_lowered, llvm_fallbacks):
+    """Write each chunk's C (and LLVM IR) and the LLVM manifest; returns the manifest's path."""
+    for i, chunk in enumerate(boundaries):
+        parts = ["/* Generated by tools/codegen.py. Do not edit by hand. */\n",
+                 f'#include "{os.path.basename(base_name)}_funcs.h"\n#include <math.h>\n#include <string.h>\n#include <stdio.h>\n\n']
+        if OPTIONS.static_verify:
+            parts.append(SR_SV_CHECK + "\n\n")
+        parts.append("\n\n".join(chunk) + "\n\n")
+        parts.append(f"void sr_register_chunk_{i}(void) {{\n")
+        for ft in chunk:
+            if isinstance(ft, ModuleText):
+                continue  # reached through its module descriptor, never at a fixed address
+            m = re.search(r'void ([fr])_([0-9a-fA-F]+)\(', ft)
+            if m:
+                prefix = m.group(1)
+                a_val = int(m.group(2), 16)
+                parts.append(f"    sr_register(0x{a_val:08x}u, {prefix}_{a_val:08x});\n")
+        parts.append("}\n")
+        with open(f"{base_name}_{i}.c", "w", encoding="ascii", newline="\n") as f:
+            f.write(rename_generated_entries("".join(parts), renames))
+        llvm_bodies = [ft for ft in chunk if isinstance(ft, codegen_llvm.LLVMBody)]
+        llvm_path = f"{base_name}_{i}.ll"
+        if llvm_bodies:
+            module = codegen_llvm.chunk_module(os.path.basename(llvm_path), llvm_bodies, renames)
+            with open(llvm_path, "w", encoding="ascii", newline="\n") as f:
+                f.write(module.render())
+        else:
+            for stale in (llvm_path, f"{base_name}_{i}_ll.o", f"{base_name}_{i}_ll.bc"):
+                if os.path.exists(stale):
+                    os.remove(stale)
+    llvm_manifest_path = f"{base_name}_llvm.json"
+    if backend == "llvm":
+        with open(llvm_manifest_path, "w", encoding="ascii", newline="\n") as f:
+            f.write(codegen_llvm.manifest(llvm_lowered, llvm_fallbacks))
+    elif os.path.exists(llvm_manifest_path):
+        os.remove(llvm_manifest_path)
+    return llvm_manifest_path
+
+
+def _write_unit_fallbacks(base_name, boundaries, renames, module_translations):
+    """The makefile naming the units that build at a lower optimisation level, and a line for each."""
+    unit_fallbacks = [
+        row for row in (fallback_unit_row(f"{os.path.basename(base_name)}_{i}", chunk, renames)
+                        for i, chunk in enumerate(boundaries))
+        if row is not None
+    ]
+    unit_fallbacks += write_shared_library_sources(os.path.dirname(base_name) or ".",
+                                                   module_translations)
+    write_unit_opt_makefile(f"{base_name}_opt.mk", unit_fallbacks)
+    for stem, symbol, weight in unit_fallbacks:
+        print(f"CODEGEN_OPT_FALLBACK unit={stem} body={symbol} bytes={weight} "
+              f"level={BODY_FALLBACK_OPT}")
+
+
+def _remove_stale_chunks(base_name, num_files):
+    """Delete the chunk files of an earlier, longer run."""
+    j = num_files
+    while True:
+        stale = [f"{base_name}_{j}{suffix}" for suffix in (".c", ".o", ".ll", "_ll.o", "_ll.bc")]
+        present = [path for path in stale if os.path.exists(path)]
+        if not present:
+            break
+        for path in present:
+            os.remove(path)
+        j += 1
+
+
+def _print_summary(out_c, base_name, num_files, funcs_per_chunk, chunk_target_bytes, emitted, resume_owners,
+                   stubbed, backend, llvm_lowered, llvm_fallbacks, llvm_manifest_path):
+    """The closing lines: what was written and which opt-in modes added statistics."""
+    resume_count = sum(1 for a in emitted if a in resume_owners)
+    if chunk_target_bytes > 0:
+        chunk_desc = f"{num_files} chunks (target {chunk_target_bytes} bytes, cap {funcs_per_chunk} functions)"
+    else:
+        chunk_desc = f"{num_files} chunks ({funcs_per_chunk} functions/chunk)"
+    print(f"wrote {out_c} and {chunk_desc}; "
+          f"{len(emitted) - resume_count} callable functions + {resume_count} resume entries, "
+          f"{len(stubbed)} fallbacks. "
+          f"Stub list: {base_name}_stubs.txt")
+    if backend == "llvm":
+        print(f"llvm backend: {len(llvm_lowered)} functions lowered to LLVM IR, "
+              f"{len(llvm_fallbacks)} kept in C (reasons: {llvm_manifest_path})")
+    if OPTIONS.static_verify:
+        print(f"static-verify: {SV_STATS['checks']} register assertions "
+              f"across {SV_STATS['funcs']} functions")
+    if OPTIONS.promote_registers:
+        print(promotion_summary())
+
+
+
+def _translate(argv):
+    """Run one translation: the options, the images, the emitted functions, then the files.
+
+    In order: validate and apply the options, resolve the extra images, analyse the primary
+    image (the CFG report and gate), load the enhancement package, emit every entry of the
+    primary image, the fixed-base extra modules and the runtime-placed modules, then write the
+    registration source, the chunks and the reports. A refusal is raised as ``_Refusal``;
+    ``main`` turns it into the message and exit status.
+    """
+    args = [a for a in argv[1:] if not a.startswith("--")]
+    cli, _unknown = _command_line_parser().parse_known_args(
+        [a for a in argv[1:] if a.startswith("--")])
+
+    use_env_elf = cli.env_elf
+    use_env_extra = cli.env_extra_elfs
+    # The ELF is a positional only in the legacy form; with --env-elf the first
+    # positional is the output .c.  Supplying both is a conflict, not a
+    # precedence question: silently treating the ELF as the output path would
+    # overwrite the guest image with generated C.
+    expected = 1 if use_env_elf else 2
+    if len(args) < expected:
+        sys.stderr.write(_USAGE)
+        return 2
+    if use_env_elf and len(args) > 1:
+        sys.stderr.write(
+            "codegen: --env-elf takes exactly one positional (<out.c>); refusing to guess "
+            f"which of {args!r} is the output. Pass the ELF or --env-elf, not both.\n"
+        )
+        return 2
+
+    cli_elf = None if use_env_elf else args[0]
+    out_c = args[0] if use_env_elf else args[1]
+    try:
+        elf_path = build_profile.resolve_path(
+            "GAME_ELF", cli_value=cli_elf, use_env=use_env_elf,
+            cli_label="<elf> argument", flag="--env-elf",
+        )
+    except build_profile.BuildInputError as exc:
+        sys.stderr.write(f"codegen: {exc}\n")
+        return 2
+
+    base = int(cli.base, 16) if cli.base is not None else None
+    profile = cli.profile
+    extra_span_arg = cli.extra_span
+    cfg_gate = cli.cfg_gate
+    stack_census = cli.stack_census
+    enhancement_pkg_path = cli.enhancement_package
+    enhancement_data_root = cli.enhancement_data_root
+    cli_extra_specs = cli.extra_elf  # raw "ELF@BASE" strings from --extra-elf=
+    cfg_report_path = cli.cfg_report
+    symbol_map_path = cli.symbol_map
+    name_imports = cli.name_imports  # name each import stub after its NID's function
+    checked = _validated_options(cli)
+    backend, funcs_per_chunk = checked.backend, checked.funcs_per_chunk
+    chunk_target_bytes, omit_aot = checked.chunk_target_bytes, checked.omit_aot
+
+    _apply_options(cli, checked)
+
+    if stack_census:
+        # The dynamic run is meaningful only after the static ownership floor
+        # accepts the same image.
+        cfg_gate = True
+
+    symbols = {}
+    if symbol_map_path is not None:
+        # Read before the analysis so a bad map fails in a second, not after it.
+        try:
+            symbols = load_symbol_map(symbol_map_path)
+        except (OSError, UnicodeDecodeError, SymbolMapError) as exc:
+            sys.stderr.write(f"codegen: symbol map: {exc}\n")
+            return 2
+
+    extra_elfs, runtime_modules = _extra_images(use_env_extra, cli_extra_specs)
+    _refuse_offset0_pointers([(elf_path, base)] + extra_elfs)
+    elf = Elf(elf_path, base=base)
+    OPTIONS.null_page_guard = (
+        min(seg["vaddr"] for seg in elf.segments if seg["type"] == 1) < PSP_UNMAPPED_END)
+    try:
+        module_record = main_module_record(elf)
+    except MainModuleRecordError as exc:
+        # The image still translates; the runtime answers a module-info query for it with
+        # a named refusal instead of a guessed record.
+        sys.stderr.write(f"codegen: MAIN_MODULE_RECORD_REFUSED: {exc}\n")
+        module_record = None
+    # Only the primary image may carry an explicit extra executable span (its title's
+    # configuration, from --extra-span or the TITLE_EXTRA_SPANS seam). Every extra guest
+    # module below is rebased to its own load address and is analyzed with no extra
+    # span at all, so one module's title configuration can never reach another's.
+    extra_spans = resolve_extra_spans(extra_span_arg)
+    # Seeds from a run's dispatch misses (tools/miss_seeds.py, #1848) are extra entries for the
+    # primary image only. Without --miss-seeds the analysis call is exactly the one it always was.
+    seed_args = {}
+    if cli.miss_seeds is not None:
+        try:
+            seed_args = {"seeds": set(miss_seeds.read_seed_file(cli.miss_seeds).seeds),
+                         "report": {}}
+        except miss_seeds.SeedFileError as exc:
+            sys.stderr.write(f"codegen: {exc}\n")
+            return 2
+    try:
+        if seed_args:
+            seed_args["seed_check"] = emitter_seed_check(elf, profile, frozenset(omit_aot.addrs),
+                                                         stack_census)
+        analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate, **seed_args)
+    except ImportTableError as exc:
+        sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
+        return 1
+    miss_seed_outcome = seed_args["report"]["miss_seeds"] if seed_args else None
+    if miss_seed_outcome is not None:
+        miss_seeds.report_outcome(miss_seed_outcome, prefix="CODEGEN_MISS_SEEDS")
+    cfg_report = _cfg_report_and_gate(elf, analyzed, ranges, extra_spans, cfg_report_path, cfg_gate,
+                                      miss_seed_outcome)
+    owned_exec_ranges = list(ranges)
+    catalog = build_entry_catalog(analyzed, ranges, profile=profile, elf=elf)
+    omitted = omit_aot.apply(catalog, elf.entry)
+    dispatch_boundaries = set(omit_aot.addrs)
+    if omitted:
+        for addr in sorted(omit_aot.addrs):
+            sys.stderr.write(f"CODEGEN_OMIT_AOT 0x{addr:08x} dispatch-fallback\n")
+    known = {addr for addr, info in catalog.items() if info.callable}
+    resume_owners = {
+        addr: info.owner for addr, info in catalog.items() if info.resumable
+    }
+
+    GUEST_SP_ENTRIES.clear()
+    _load_enhancement_package(elf, known, symbols, enhancement_pkg_path, enhancement_data_root,
+                              symbol_map_path)
 
     try:
         impmap = primary_import_map(elf)
@@ -5369,67 +5912,10 @@ def main(argv):
     num_files = len(boundaries)
     base_name = os.path.splitext(out_c)[0]
 
-    if ENHANCEMENT_PKG_META is not None:
-        missing = sorted(
-            site["id"] for addr, site in ENHANCEMENT_SITES.items()
-            if addr not in ENHANCEMENT_APPLIED
-        )
-        if (ENHANCEMENT_UPDATE_BOUNDARY is not None
-                and ENHANCEMENT_UPDATE_BOUNDARY not in ENHANCEMENT_APPLIED):
-            missing.append("update_boundary")
-        if missing:
-            # A verified site that no emitted statement rewrites (an unreached address, a
-            # stubbed function, a fused fast path) would leave the epoch stamp claiming
-            # it: refuse before anything is written.
-            sys.stderr.write(
-                "codegen: enhancement package refused (fail-closed): "
-                f"{len(missing)} of {len(ENHANCEMENT_SITES)} sites were not emitted: "
-                + ", ".join(missing) + "\n"
-            )
-            return 1
+    _refuse_unemitted_enhancement_sites()
 
-    # Names from --symbol-map and --name-imports are applied as each file is
-    # written, after the partition, so they change symbol spellings and nothing
-    # else. A map's name for an address wins over the stub's NID name.
-    renames = {}
-    symbol_table = []
-    if symbol_map_path is not None or name_imports:
-        names = import_stub_names(import_nids) if name_imports else {}
-        named_imports = sum(1 for a in names if a not in symbols)
-        names.update(symbols)
-        renames = symbol_map_renames(names, emitted, resume_owners)
-        collisions = symbol_map_collisions(renames, func_texts)
-        if collisions:
-            sys.stderr.write(
-                "codegen: symbol map: a name would spell a generator-owned symbol: "
-                + ", ".join(collisions) + "\n")
-            return 2
-        emitted_set = set(emitted)
-        emitted_sorted = sorted(emitted_set)
-
-        def holds_an_entry(a, size):
-            i = bisect.bisect_left(emitted_sorted, a)
-            return i < len(emitted_sorted) and emitted_sorted[i] - a < size
-
-        # The runtime names an address inside a function from this table, so a
-        # function whose own start is not an entry is in it when an entry is inside.
-        symbol_table = sorted(
-            (a, name, size) for a, (name, size) in names.items()
-            if a in emitted_set or (size and holds_an_entry(a, size)))
-        if symbol_map_path is not None:
-            renamed = [int(symbol[2:], 16) for symbol in renames]
-            named_resumes = sum(1 for a in renamed
-                                if a in resume_owners and resume_owners[a] in names)
-            inside = sum(1 for a in renamed if a not in names
-                         and not (a in resume_owners and resume_owners[a] in names))
-            sys.stderr.write(
-                f"symbol map: {sum(1 for a in symbols if a in emitted_set)} of {len(symbols)} "
-                f"function name(s) name an emitted entry; {named_resumes} resume bodies take "
-                f"their owner's name; {inside} entries inside a named function take its name\n")
-        if name_imports:
-            sys.stderr.write(
-                f"import names: {named_imports} of {len(import_nids)} import stubs named "
-                "from the NID corpus\n")
+    renames, symbol_table = _symbol_names(symbol_map_path, name_imports, symbols, import_nids,
+                                          emitted, resume_owners, func_texts)
 
     # Write the codegen gap report
     with open(f"{base_name}_stubs.txt", "w", encoding="ascii", newline="\n") as f:
@@ -5449,159 +5935,13 @@ def main(argv):
     write_funcs_header(funcs_h_path, emitted, resume_owners, module_translations, renames,
                        enhancement=ENHANCEMENT_PKG_META is not None)
 
-    # The analyzer, not mapped-RAM reachability, owns executable-byte authority.
-    # Preserve its exact end-exclusive ranges in generated registration. Exact
-    # duplicates can arise when an extra module describes the same span; removing
-    # those does not widen or merge ownership across a gap.
-    exec_spans = sorted(set((lo, hi) for lo, hi in owned_exec_ranges if hi > lo))
-    for lo, hi in exec_spans:
-        if lo < 0 or hi > 0xffffffff:
-            sys.stderr.write(
-                f"codegen: executable span 0x{lo:x},0x{hi:x} cannot be "
-                "represented by the runtime registry\n"
-            )
-            return 2
+    exec_spans = _registrable_exec_spans(owned_exec_ranges)
 
-    # Main recomp.c
-    main_out = [
-        "/* Generated by tools/codegen.py. Do not edit by hand. */",
-        f'#include "{os.path.basename(base_name)}_funcs.h"',
-        "#include <math.h>",
-        "#include <stdlib.h>",
-        "#include <string.h>",
-        "#include <stdio.h>",
-        ""
-    ]
-    if ENHANCEMENT_PKG_META is not None:
-        main_out.append(
-            f"/* AOT Enhancement Epoch: {ENHANCEMENT_PKG_META['epoch']} "
-            f"id={ENHANCEMENT_PKG_META['id']} v={ENHANCEMENT_PKG_META['version']} "
-            f"sites={ENHANCEMENT_PKG_META['sites_count']} "
-            f"sha256={ENHANCEMENT_PKG_META['digest']} */"
-        )
-        main_out += [
-            "int nk_enhancement_on(void) {",
-            "    static int on = -1;",
-            "    if (on < 0) {",
-            '        const char *v = getenv("SR_EXPERIMENTAL_60HZ");',
-            "        on = (v && v[0] == '1' && v[1] == '\\0') ? 1 : 0;",
-            "    }",
-            "    return on;",
-            "}",
-            "uint32_t nk_enhancement_updates;",
-            "",
-        ]
-        main_out += _enhancement_data_lines()
-    census_entries = sorted({a for a in emitted if a not in resume_owners})
-    if stack_census:
-        census_values = census_entries or [0]
-        main_out.append(
-            "static const uint32_t sr_stack_census_expected_entries[] = {"
-            + ", ".join(f"0x{addr:08x}u" for addr in census_values)
-            + "};"
-        )
-        main_out.append("")
-    for i in range(num_files):
-        main_out.append(f"void sr_register_chunk_{i}(void);")
-    if module_translations:
-        main_out.append("")
-    for module in module_translations:
-        main_out.extend(runtime_module_descriptor_lines(module))
-    if symbol_table:
-        main_out.append("")
-        main_out.append("/* Guest function names from --symbol-map and --name-imports: "
-                        "names and addresses only. */")
-        main_out.append("static const SrGuestSymbol sr_guest_symbol_table[] = {")
-        for a, name, size in symbol_table:
-            main_out.append(f'    {{0x{a:08x}u, 0x{size:08x}u, "{name}"}},')
-        main_out.append("};")
-    if module_record is not None:
-        main_out.append("")
-        main_out.extend(main_module_record_lines(module_record))
-    if main_var_imports:
-        main_out.append("")
-        main_out.extend(var_import_table_lines("sr_main_var_imports", main_var_imports))
-    for index, (_name, imports_of) in enumerate(fixed_var_imports):
-        main_out.extend(var_import_table_lines(f"sr_x{index}_var_imports", imports_of))
-    if main_var_exports:
-        main_out.append("static const SrVarExportDecl sr_main_var_exports[] = {")
-        main_out.extend(f"    {{ {c_library_name(e.library)}, 0x{e.nid:08x}u, 0x{e.address:08x}u }},"
-                        for e in main_var_exports)
-        main_out.append("};")
-    if main_func_exports:
-        main_out.append("static const SrMainFuncExport sr_main_func_exports[] = {")
-        main_out.extend(f"    {{ 0x{nid:08x}u, 0x{address:08x}u }},"
-                        for nid, address in main_func_exports)
-        main_out.append("};")
-    main_out.append("\nvoid sr_register_all(void) {")
-    if module_record is not None:
-        main_out.append("    sr_main_module_register(&sr_main_module_record);")
-    if main_var_exports:
-        main_out.append(f"    sr_main_var_exports_register(sr_main_var_exports, "
-                        f"{len(main_var_exports)}u);")
-    if main_func_exports:
-        main_out.append(f"    sr_main_func_exports_register(sr_main_func_exports, "
-                        f"{len(main_func_exports)}u);")
-    if main_var_imports:
-        main_out.append(f"    sr_main_var_imports_register(sr_main_var_imports, "
-                        f"{len(main_var_imports)}u);")
-    for index, (name, imports_of) in enumerate(fixed_var_imports):
-        main_out.append(f"    sr_fixed_var_imports_register({c_string(name)}, "
-                        f"sr_x{index}_var_imports, {len(imports_of)}u);")
-    if symbol_table:
-        main_out.append(
-            f"    sr_guest_symbols_register(sr_guest_symbol_table, {len(symbol_table)}u);")
-    if OPTIONS.lle_cpu:
-        main_out.append("    sr_cpu_lle_set_enabled(1);")
-    main_out.append("    sr_exec_span_reset();")
-    for module in module_translations:
-        main_out.append(f"    sr_module_code_register(&sr_m{module.index}_code);")
-    for lo, hi in exec_spans:
-        main_out.append(
-            f"    if (!sr_exec_span_register(0x{lo:08x}u, 0x{hi:08x}u)) {{"
-        )
-        main_out.append(
-            f'        fprintf(stderr, "sr_register_all: executable span '
-            f'0x{lo:08x},0x{hi:08x} rejected\\n");'
-        )
-        main_out.append("        exit(1);")
-        main_out.append("    }")
-    if stack_census:
-        main_out.append(
-            "    sr_stack_census_begin(sr_stack_census_expected_entries, "
-            f"{len(census_entries)}u);"
-        )
-    if OPTIONS.stale_detect:
-        # TD-27 compact translation-time records (address + entry word +
-        # word count + FNV-1a per translated primary-image function). No raw
-        # code bodies are embedded; the runtime compares these against live
-        # guest bytes at cache-invalidate time behind SR_STALE_DETECT.
-        main_out.append("    sr_stale_reset();")
-        stale_records = 0
-        for a in stale_funcs:
-            rec = stale_block_for_function(
-                elf, a, ranges, known, resume_owners, dispatch_boundaries)
-            if rec is None:
-                sys.stderr.write(f"stale-detect: no record for 0x{a:08x} (unreadable entry)\n")
-                continue
-            entry_word, nwords, digest = rec
-            main_out.append(f"    sr_stale_register_word(0x{a:08x}u, 0x{entry_word:08x}u);")
-            main_out.append(f"    sr_stale_register_block(0x{a:08x}u, {nwords}u, 0x{digest:08x}u);")
-            stale_records += 1
-        main_out.append(
-            f'    fprintf(stderr, "sr_register_all: registered {stale_records} '
-            'stale-detect record(s)\\n");'
-        )
-    main_out.append(
-        f'    fprintf(stderr, "sr_register_all: registered {len(exec_spans)} '
-        'executable span(s)\\n");'
-    )
-    if ENHANCEMENT_PKG_META is not None:
-        main_out.append("    if (nk_enhancement_on()) nk_enhancement_apply_data();")
-    main_out.append(f'    fprintf(stderr, "sr_register_all: starting {len(emitted)} registrations\\n");')
-    for i in range(num_files):
-        main_out.append(f"    sr_register_chunk_{i}();")
-    main_out.append('    fprintf(stderr, "sr_register_all: completed\\n");\n}')
+    main_out = _registration_lines(
+        elf, ranges, known, base_name, num_files, emitted, resume_owners, dispatch_boundaries,
+        stack_census=stack_census, module_translations=module_translations, symbol_table=symbol_table,
+        module_record=module_record, main_var_imports=main_var_imports, main_var_exports=main_var_exports,
+        main_func_exports=main_func_exports, fixed_var_imports=fixed_var_imports, exec_spans=exec_spans, stale_funcs=stale_funcs)
 
     if llvm_lowered:
         # The IR addresses CpuState fields by byte offset; this build's compiler checks them.
@@ -5611,52 +5951,9 @@ def main(argv):
     with open(out_c, "w", encoding="ascii", newline="\n") as f:
         f.write(rename_generated_entries("\n".join(main_out), renames))
 
-    for i, chunk in enumerate(boundaries):
-        parts = ["/* Generated by tools/codegen.py. Do not edit by hand. */\n",
-                 f'#include "{os.path.basename(base_name)}_funcs.h"\n#include <math.h>\n#include <string.h>\n#include <stdio.h>\n\n']
-        if OPTIONS.static_verify:
-            parts.append(SR_SV_CHECK + "\n\n")
-        parts.append("\n\n".join(chunk) + "\n\n")
-        parts.append(f"void sr_register_chunk_{i}(void) {{\n")
-        for ft in chunk:
-            if isinstance(ft, ModuleText):
-                continue  # reached through its module descriptor, never at a fixed address
-            m = re.search(r'void ([fr])_([0-9a-fA-F]+)\(', ft)
-            if m:
-                prefix = m.group(1)
-                a_val = int(m.group(2), 16)
-                parts.append(f"    sr_register(0x{a_val:08x}u, {prefix}_{a_val:08x});\n")
-        parts.append("}\n")
-        with open(f"{base_name}_{i}.c", "w", encoding="ascii", newline="\n") as f:
-            f.write(rename_generated_entries("".join(parts), renames))
-        llvm_bodies = [ft for ft in chunk if isinstance(ft, codegen_llvm.LLVMBody)]
-        llvm_path = f"{base_name}_{i}.ll"
-        if llvm_bodies:
-            module = codegen_llvm.chunk_module(os.path.basename(llvm_path), llvm_bodies, renames)
-            with open(llvm_path, "w", encoding="ascii", newline="\n") as f:
-                f.write(module.render())
-        else:
-            for stale in (llvm_path, f"{base_name}_{i}_ll.o", f"{base_name}_{i}_ll.bc"):
-                if os.path.exists(stale):
-                    os.remove(stale)
-    llvm_manifest_path = f"{base_name}_llvm.json"
-    if backend == "llvm":
-        with open(llvm_manifest_path, "w", encoding="ascii", newline="\n") as f:
-            f.write(codegen_llvm.manifest(llvm_lowered, llvm_fallbacks))
-    elif os.path.exists(llvm_manifest_path):
-        os.remove(llvm_manifest_path)
+    llvm_manifest_path = _write_chunks(base_name, boundaries, renames, backend, llvm_lowered, llvm_fallbacks)
 
-    unit_fallbacks = [
-        row for row in (fallback_unit_row(f"{os.path.basename(base_name)}_{i}", chunk, renames)
-                        for i, chunk in enumerate(boundaries))
-        if row is not None
-    ]
-    unit_fallbacks += write_shared_library_sources(os.path.dirname(base_name) or ".",
-                                                   module_translations)
-    write_unit_opt_makefile(f"{base_name}_opt.mk", unit_fallbacks)
-    for stem, symbol, weight in unit_fallbacks:
-        print(f"CODEGEN_OPT_FALLBACK unit={stem} body={symbol} bytes={weight} "
-              f"level={BODY_FALLBACK_OPT}")
+    _write_unit_fallbacks(base_name, boundaries, renames, module_translations)
 
     if cfg_report_path is not None:
         cfg_report["emitted_ownership_map"] = build_emitted_ownership_map(
@@ -5668,35 +5965,20 @@ def main(argv):
         with open(cfg_report_path, "w", encoding="ascii", newline="\n") as output:
             output.write(canonical_cfg_json(cfg_report))
 
-    # Delete stale chunk files from previous runs
-    j = num_files
-    while True:
-        stale = [f"{base_name}_{j}{suffix}" for suffix in (".c", ".o", ".ll", "_ll.o", "_ll.bc")]
-        present = [path for path in stale if os.path.exists(path)]
-        if not present:
-            break
-        for path in present:
-            os.remove(path)
-        j += 1
+    _remove_stale_chunks(base_name, num_files)
 
-    resume_count = sum(1 for a in emitted if a in resume_owners)
-    if chunk_target_bytes > 0:
-        chunk_desc = f"{num_files} chunks (target {chunk_target_bytes} bytes, cap {funcs_per_chunk} functions)"
-    else:
-        chunk_desc = f"{num_files} chunks ({funcs_per_chunk} functions/chunk)"
-    print(f"wrote {out_c} and {chunk_desc}; "
-          f"{len(emitted) - resume_count} callable functions + {resume_count} resume entries, "
-          f"{len(stubbed)} fallbacks. "
-          f"Stub list: {base_name}_stubs.txt")
-    if backend == "llvm":
-        print(f"llvm backend: {len(llvm_lowered)} functions lowered to LLVM IR, "
-              f"{len(llvm_fallbacks)} kept in C (reasons: {llvm_manifest_path})")
-    if OPTIONS.static_verify:
-        print(f"static-verify: {SV_STATS['checks']} register assertions "
-              f"across {SV_STATS['funcs']} functions")
-    if OPTIONS.promote_registers:
-        print(promotion_summary())
+    _print_summary(out_c, base_name, num_files, funcs_per_chunk, chunk_target_bytes, emitted, resume_owners,
+                   stubbed, backend, llvm_lowered, llvm_fallbacks, llvm_manifest_path)
     return 0
+
+
+def main(argv):
+    try:
+        return _translate(argv)
+    except _Refusal as refusal:
+        sys.stderr.write(refusal.message)
+        return refusal.status
+
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

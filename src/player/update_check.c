@@ -253,7 +253,7 @@ void nk_update_short_notes(const char *markdown, char *out, size_t out_size) {
         text[limit] = '\0';
         cut = true;
     }
-    snprintf(out, out_size, "%s%s", text, cut ? "..." : "");
+    snprintf(out, out_size, "%s%s", text, cut ? "…" : "");
 }
 
 /* ---- The release list ----------------------------------------------------------- */
@@ -301,7 +301,7 @@ static bool asset_size(const NkJsonNode *asset, uint64_t *out) {
 }
 
 static bool unexpected_release(NkUpdateError *error) {
-    set_error(error, "UPDATE_ANSWER_UNEXPECTED", "Unexpected Answer from GitHub",
+    set_error(error, "UPDATE_ANSWER_UNEXPECTED", "Unexpected answer from GitHub",
               "GitHub's list of releases named a page or file outside the Nakagawa repository, "
               "so Nakagawa ignored it. Try again later.");
     return false;
@@ -368,7 +368,7 @@ bool nk_update_parse_releases(const char *json, size_t length, NkUpdateRelease *
     memset(newest, 0, sizeof(*newest));
     NkJsonNode *root = json ? nk_json_parse(json, length, parse_error, sizeof(parse_error)) : NULL;
     if (!nk_json_is_array(root)) {
-        set_error(error, "UPDATE_ANSWER_UNREADABLE", "Unexpected Answer from GitHub",
+        set_error(error, "UPDATE_ANSWER_UNREADABLE", "Unexpected answer from GitHub",
                   "GitHub's answer was not a list of releases. Try again later.");
         nk_json_free(root);
         return false;
@@ -394,7 +394,7 @@ bool nk_update_parse_releases(const char *json, size_t length, NkUpdateRelease *
         }
     }
     if (!best) {
-        set_error(error, "UPDATE_NO_RELEASES", "No Releases Yet",
+        set_error(error, "UPDATE_NO_RELEASES", "No releases yet",
                   "GitHub lists no Nakagawa release yet.");
         nk_json_free(root);
         return false;
@@ -454,7 +454,7 @@ bool nk_update_parse_checksum(const char *text, size_t length, const char *file_
     if (name_end - name_start != strlen(file_name) ||
         strncmp(text + name_start, file_name, name_end - name_start) != 0) {
         out_sha256[0] = '\0';
-        set_error(error, "UPDATE_CHECKSUM_WRONG_FILE", "Checksum for Another File",
+        set_error(error, "UPDATE_CHECKSUM_WRONG_FILE", "Checksum for another file",
                   "The release's checksum file is for a different file than this release's "
                   "Windows ZIP, so Nakagawa did not download it. You can download it from the "
                   "release page instead.");
@@ -463,7 +463,7 @@ bool nk_update_parse_checksum(const char *text, size_t length, const char *file_
     return true;
 invalid:
     if (out_sha256) out_sha256[0] = '\0';
-    set_error(error, "UPDATE_CHECKSUM_INVALID", "Checksum File Not Readable",
+    set_error(error, "UPDATE_CHECKSUM_INVALID", "Checksum file not readable",
               "The release's checksum file is not in the expected form, so Nakagawa did not "
               "download the update. You can download it from the release page instead.");
     return false;
@@ -487,21 +487,21 @@ bool nk_update_builtin_signing_key(NkMinisignKey *out) {
 }
 
 static void no_signing_key_error(NkUpdateError *error) {
-    set_error(error, "UPDATE_NO_SIGNING_KEY", "Can't Check Downloads",
+    set_error(error, "UPDATE_NO_SIGNING_KEY", "Can't check downloads",
               "This build of Nakagawa has no update signing key, so it can't check that a "
               "download really comes from the Nakagawa project, and it won't fetch one. You "
               "can download the new version from the release page instead.");
 }
 
 static void checksum_missing_error(NkUpdateError *error) {
-    set_error(error, "UPDATE_CHECKSUM_MISSING", "No Checksum Published",
+    set_error(error, "UPDATE_CHECKSUM_MISSING", "No checksum published",
               "This release has no checksum file for its Windows ZIP, so Nakagawa can't "
               "check the download and won't fetch it. You can download it from the "
               "release page instead.");
 }
 
 static void signature_missing_error(NkUpdateError *error) {
-    set_error(error, "UPDATE_SIGNATURE_MISSING", "Release Not Signed",
+    set_error(error, "UPDATE_SIGNATURE_MISSING", "Release not signed",
               "This release has no signature for its checksum file, so Nakagawa can't check "
               "that the download comes from the Nakagawa project and won't fetch it. You can "
               "download it from the release page instead.");
@@ -516,21 +516,21 @@ static bool verify_checksum_signature(const NkMinisignKey *key, const char *chec
         case NK_MINISIGN_VALID:
             return true;
         case NK_MINISIGN_UNKNOWN_KEY:
-            set_error(error, "UPDATE_SIGNATURE_UNKNOWN_KEY", "Signed With Another Key",
+            set_error(error, "UPDATE_SIGNATURE_UNKNOWN_KEY", "Signed with another key",
                       "The release is signed with a key this version of Nakagawa doesn't know, "
                       "so it did not download the update. You can download it from the release "
                       "page instead.");
             return false;
         case NK_MINISIGN_BAD_SIGNATURE:
         case NK_MINISIGN_BAD_COMMENT:
-            set_error(error, "UPDATE_SIGNATURE_INVALID", "Signature Didn't Match",
+            set_error(error, "UPDATE_SIGNATURE_INVALID", "Signature didn't match",
                       "The release's signature doesn't match its checksum file, so Nakagawa did "
                       "not download the update. Nothing was installed. Try again later, or "
                       "download it from the release page.");
             return false;
         case NK_MINISIGN_MALFORMED:
         default:
-            set_error(error, "UPDATE_SIGNATURE_UNREADABLE", "Signature Not Readable",
+            set_error(error, "UPDATE_SIGNATURE_UNREADABLE", "Signature not readable",
                       "The release's signature file is not in the expected form, so Nakagawa "
                       "did not download the update. You can download it from the release page "
                       "instead.");
@@ -576,7 +576,7 @@ bool nk_update_expected_sha256(const NkUpdateRelease *release, const NkMinisignK
     }
     if (release->zip_digest[0] && strcmp(release->zip_digest, out_sha256) != 0) {
         out_sha256[0] = '\0';
-        set_error(error, "UPDATE_CHECKSUM_CONFLICT", "Checksums Disagree",
+        set_error(error, "UPDATE_CHECKSUM_CONFLICT", "Checksums disagree",
                   "The release's checksum file and GitHub's own checksum for the ZIP don't "
                   "match, so Nakagawa did not download it. Try again later.");
         return false;
@@ -614,7 +614,7 @@ static bool url_host_allowed(const char *url, const char *allowed_hosts) {
 }
 
 static void offline_error(NkUpdateError *error) {
-    set_error(error, "UPDATE_OFFLINE", "Couldn't Reach GitHub",
+    set_error(error, "UPDATE_OFFLINE", "Couldn't reach GitHub",
               "Nakagawa couldn't reach GitHub. Check your internet connection and try again "
               "later. Nothing was changed.");
 }
@@ -627,7 +627,7 @@ static PackageHttpOpen resolve_transport(PackageHttpOpen transport, void **conte
 }
 
 static bool unsupported(NkUpdateError *error) {
-    set_error(error, "UPDATE_PLATFORM_UNSUPPORTED", "Not Available Here",
+    set_error(error, "UPDATE_PLATFORM_UNSUPPORTED", "Not available here",
               "Checking for updates from Nakagawa works on Windows only for now. The release "
               "page on GitHub lists every version.");
     return false;
@@ -651,7 +651,7 @@ static bool fetch_text(PackageHttpOpen transport, void *context, const char *url
     }
     if (!response.final_url || !url_host_allowed(response.final_url, allowed_hosts) ||
         !response.read) {
-        set_error(error, "UPDATE_REDIRECT_REJECTED", "Unexpected Answer from GitHub",
+        set_error(error, "UPDATE_REDIRECT_REJECTED", "Unexpected answer from GitHub",
                   "GitHub sent Nakagawa to a host it doesn't use for updates, so it stopped. "
                   "Nothing was downloaded.");
         goto done;
@@ -688,7 +688,7 @@ static bool fetch_text(PackageHttpOpen transport, void *context, const char *url
     ok = true;
     goto done;
 too_large:
-    set_error(error, "UPDATE_ANSWER_TOO_LARGE", "Unexpected Answer from GitHub",
+    set_error(error, "UPDATE_ANSWER_TOO_LARGE", "Unexpected answer from GitHub",
               "GitHub's answer was much larger than expected, so Nakagawa stopped reading it. "
               "Try again later.");
 done:
@@ -707,7 +707,7 @@ bool nk_update_check(PackageHttpOpen transport, void *transport_context,
     if (!result) return false;
     memset(result, 0, sizeof(*result));
     if (!nk_semver_parse(current_version, &result->current)) {
-        set_error(error, "UPDATE_VERSION_UNKNOWN", "Version Unknown",
+        set_error(error, "UPDATE_VERSION_UNKNOWN", "Version unknown",
                   "This build doesn't carry a version Nakagawa can compare.");
         return false;
     }
@@ -730,19 +730,19 @@ static void download_error(const char *code, const char *message, const char *fo
     if (strcmp(code, "OFFLINE_OR_NETWORK_ERROR") == 0) {
         offline_error(error);
     } else if (strcmp(code, "HASH_MISMATCH") == 0) {
-        set_error(error, "UPDATE_HASH_MISMATCH", "Download Didn't Match",
+        set_error(error, "UPDATE_HASH_MISMATCH", "Download didn't match",
                   "The download didn't match the release's published SHA-256, so Nakagawa "
                   "deleted it. Nothing was installed. Try again later, or download it from the "
                   "release page.");
     } else if (strcmp(code, "SIZE_MISMATCH") == 0 || strcmp(code, "TRUNCATED_BODY") == 0) {
-        set_error(error, "UPDATE_INCOMPLETE_DOWNLOAD", "Download Incomplete",
+        set_error(error, "UPDATE_INCOMPLETE_DOWNLOAD", "Download incomplete",
                   "The download was not the size the release lists, so Nakagawa deleted it. "
                   "Try again later.");
     } else if (strcmp(code, "INSTALL_CANCELLED") == 0) {
-        set_error(error, "UPDATE_DOWNLOAD_CANCELLED", "Download Cancelled",
+        set_error(error, "UPDATE_DOWNLOAD_CANCELLED", "Download cancelled",
                   "You cancelled the download. The partial file was deleted.");
     } else if (strcmp(code, "REDIRECT_REJECTED") == 0) {
-        set_error(error, "UPDATE_REDIRECT_REJECTED", "Unexpected Answer from GitHub",
+        set_error(error, "UPDATE_REDIRECT_REJECTED", "Unexpected answer from GitHub",
                   "GitHub sent the download to a host Nakagawa doesn't use for updates, so it "
                   "stopped. Nothing was downloaded.");
     } else if (strcmp(code, "PLATFORM_UNSUPPORTED") == 0) {
@@ -752,11 +752,11 @@ static void download_error(const char *code, const char *message, const char *fo
         snprintf(text, sizeof(text),
                  "Nakagawa couldn't save the download in %.300s. Free some disk space and try "
                  "again.", folder);
-        set_error(error, "UPDATE_SAVE_FAILED", "Couldn't Save the Download", text);
+        set_error(error, "UPDATE_SAVE_FAILED", "Couldn't save the download", text);
     } else {
         snprintf(text, sizeof(text), "%.480s", message && message[0] ? message
                  : "The download could not be checked. Nothing was installed.");
-        set_error(error, code, "Download Failed", text);
+        set_error(error, code, "Download failed", text);
     }
 }
 
@@ -778,7 +778,7 @@ bool nk_update_download(PackageHttpOpen transport, void *transport_context,
     clear_error(error);
     if (out_zip_path && out_zip_path_size) out_zip_path[0] = '\0';
     if (!release || !downloads_dir || !out_zip_path || !release->has_zip) {
-        set_error(error, "UPDATE_NO_WINDOWS_ZIP", "No Windows Download",
+        set_error(error, "UPDATE_NO_WINDOWS_ZIP", "No Windows download",
                   "This release has no Windows ZIP to download.");
         return false;
     }
@@ -835,10 +835,10 @@ bool nk_update_download(PackageHttpOpen transport, void *transport_context,
     }
     /* Antivirus software may remove a file as soon as it is written. */
     if (!nk_platform_file_exists(destination)) {
-        set_error(error, "UPDATE_DOWNLOAD_REMOVED", "Download Removed",
+        set_error(error, "UPDATE_DOWNLOAD_REMOVED", "Download removed",
                   "The checked download is no longer in its folder. Windows Security may have "
                   "removed it; Protection history in Windows Security names the detection. "
-                  "Please don't turn Windows Security off.");
+                  "Don't turn Windows Security off.");
         return false;
     }
     snprintf(out_zip_path, out_zip_path_size, "%s", destination);
@@ -979,7 +979,7 @@ bool nk_update_install(const char *zip_path, const char *target_dir, const char 
     DWORD length;
     if (!zip_path || !target_dir || !target_dir[0] ||
         snprintf(staging, sizeof(staging), "%s.partial", target_dir) >= (int)sizeof(staging)) {
-        set_error(error, "UPDATE_INSTALL_PATH", "Couldn't Install",
+        set_error(error, "UPDATE_INSTALL_PATH", "Couldn't install",
                   "The folder for the new version has too long a path. Move Nakagawa to a "
                   "shorter folder, or unpack the ZIP yourself.");
         return false;
@@ -988,20 +988,20 @@ bool nk_update_install(const char *zip_path, const char *target_dir, const char 
         snprintf(text, sizeof(text),
                  "%.300s already exists, so Nakagawa left it alone. If it holds this version, "
                  "start it from there.", target_dir);
-        set_error(error, "UPDATE_INSTALL_EXISTS", "Already Unpacked", text);
+        set_error(error, "UPDATE_INSTALL_EXISTS", "Already unpacked", text);
         return false;
     }
     if (!nk_platform_path_missing(staging)) {
         snprintf(text, sizeof(text),
                  "%.300s is left from an earlier try. Delete it, then try again.", staging);
-        set_error(error, "UPDATE_INSTALL_LEFTOVER", "Couldn't Install", text);
+        set_error(error, "UPDATE_INSTALL_LEFTOVER", "Couldn't install", text);
         return false;
     }
     if (!nk_platform_mkdir_p(staging)) {
         snprintf(text, sizeof(text),
                  "Nakagawa couldn't create a folder next to this version (%.300s). Unpack the "
                  "ZIP yourself, or move Nakagawa to a folder you can write to.", target_dir);
-        set_error(error, "UPDATE_INSTALL_NOT_WRITABLE", "Couldn't Install", text);
+        set_error(error, "UPDATE_INSTALL_NOT_WRITABLE", "Couldn't install", text);
         return false;
     }
     length = GetSystemDirectoryW(system_directory_w,
@@ -1012,7 +1012,7 @@ bool nk_update_install(const char *zip_path, const char *target_dir, const char 
         snprintf(tar_exe, sizeof(tar_exe), "%s\\tar.exe", system_directory) >=
             (int)sizeof(tar_exe)) {
         (void)nk_platform_remove_tree(staging, NULL);
-        set_error(error, "UPDATE_UNPACK_UNAVAILABLE", "Couldn't Install",
+        set_error(error, "UPDATE_UNPACK_UNAVAILABLE", "Couldn't install",
                   "Windows' own archive tool (tar.exe) was not found. Unpack the ZIP yourself.");
         return false;
     }
@@ -1024,10 +1024,10 @@ bool nk_update_install(const char *zip_path, const char *target_dir, const char 
             (void)nk_platform_remove_tree(staging, NULL);
             if (nk_launch_describe_spawn_block(process.spawn_error,
                                                "Windows' archive tool (tar.exe)",
-                                               "Archive Tool", tar_exe, &block)) {
+                                               "archive tool", tar_exe, &block)) {
                 set_error(error, block.code, block.title, block.message);
             } else {
-                set_error(error, "UPDATE_UNPACK_FAILED", "Couldn't Install",
+                set_error(error, "UPDATE_UNPACK_FAILED", "Couldn't install",
                           "Windows' archive tool (tar.exe) did not start. Unpack the ZIP "
                           "yourself.");
             }
@@ -1041,7 +1041,7 @@ bool nk_update_install(const char *zip_path, const char *target_dir, const char 
         snprintf(text, sizeof(text),
                  "Windows' archive tool stopped with code %d while unpacking. Its output is in "
                  "%.300s.", exit_code, log_path ? log_path : "the logs folder");
-        set_error(error, "UPDATE_UNPACK_FAILED", "Couldn't Install", text);
+        set_error(error, "UPDATE_UNPACK_FAILED", "Couldn't install", text);
         return false;
     }
     if (!listed_files_present(staging, missing, sizeof(missing), &sums_found) ||
@@ -1051,11 +1051,11 @@ bool nk_update_install(const char *zip_path, const char *target_dir, const char 
         (void)nk_platform_remove_tree(staging, NULL);
         snprintf(text, sizeof(text),
                  "%s%.200s%s Windows Security may have removed a file; Protection history in "
-                 "Windows Security names the detection. Please don't turn Windows Security off.",
+                 "Windows Security names the detection. Don't turn Windows Security off.",
                  sums_found ? "Unpacking left out " : "The ZIP has no file list",
                  sums_found ? (missing[0] ? missing : "bin\\nakagawa_player.exe") : "",
                  sums_found ? "." : " (SHA256SUMS.txt).");
-        set_error(error, "UPDATE_INSTALL_INCOMPLETE", "Install Incomplete", text);
+        set_error(error, "UPDATE_INSTALL_INCOMPLETE", "Install incomplete", text);
         return false;
     }
     if (nk_rename_utf8(staging, target_dir) != 0) {
@@ -1063,7 +1063,7 @@ bool nk_update_install(const char *zip_path, const char *target_dir, const char 
         snprintf(text, sizeof(text),
                  "Nakagawa couldn't move the unpacked files into %.300s. Close any window "
                  "showing that folder and try again.", target_dir);
-        set_error(error, "UPDATE_INSTALL_MOVE_FAILED", "Couldn't Install", text);
+        set_error(error, "UPDATE_INSTALL_MOVE_FAILED", "Couldn't install", text);
         return false;
     }
     return true;
@@ -1071,7 +1071,7 @@ bool nk_update_install(const char *zip_path, const char *target_dir, const char 
     (void)zip_path;
     (void)target_dir;
     (void)log_path;
-    set_error(error, "UPDATE_PLATFORM_UNSUPPORTED", "Not Available Here",
+    set_error(error, "UPDATE_PLATFORM_UNSUPPORTED", "Not available here",
               "Installing updates from Nakagawa works on Windows only for now.");
     return false;
 #endif

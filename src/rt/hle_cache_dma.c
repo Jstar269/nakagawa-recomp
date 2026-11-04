@@ -164,7 +164,10 @@ void sr_stale_note_cache_op(uint32_t addr) {
  * Evidence/implementation boundary for the PSP-3000 / 6.61-ARK route:
  *
  *   HARDWARE_MEASURED:
- *   - a zero request returns 0x80000104 (illegal size);
+ *   - a zero request returns 0x80000104 (illegal size), whatever its pointers:
+ *     a NULL destination, a NULL source or destination 0xFFFFFFFF with size 0
+ *     answer the same and write nothing, for both APIs (PSP-DMAC-001 S0,
+ *     2026-11-03), so the size check comes before the pointer checks;
  *   - a NULL pointer returns 0x80000103 before guest/GPU side effects, and
  *     both checks come before BUSY and the wait: a pending transfer does not
  *     change either result, and a blocking call returns them at once
@@ -227,8 +230,7 @@ void sr_stale_note_cache_op(uint32_t addr) {
  *     dispatch, no guest thread) keep the synchronous copy and open no window;
  *   - span validation runs before BUSY and the wait.
  *
- * The size-before-address ordering below is a runtime ordering; the combined
- * size-zero-plus-invalid-pointer case was not part of the probe.
+ * The size-before-address ordering below follows the S0 cells above.
  * Guest RAM/VRAM share the runtime's unified host allocation, and this target
  * does not currently translate guest self-modifying code or maintain a separate
  * instruction-cache/dispatch-table invalidation layer. DMA therefore exposes
@@ -346,8 +348,8 @@ static uint32_t dmac_transfer(CpuState *s, int try_only) {
     /* a0=dst, a1=src, a2=size. A real DMA copy in guest memory. */
     uint32_t dst = A0, src = A1, n = A2;
 
-    /* Validate size and null pointers before touching guest memory; both come
-     * before BUSY and the wait (measured). */
+    /* Validate size, then null pointers, before touching guest memory; both come
+     * before BUSY and the wait, and size wins over a bad pointer (measured). */
     if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;
     if (dst == 0u || src == 0u) return SCE_DMAC_ERROR_ILLEGAL_ADDR;
 

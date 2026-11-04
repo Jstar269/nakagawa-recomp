@@ -157,6 +157,32 @@ class LibraryBuildTests(unittest.TestCase):
         self.assertIn("| compile | COMPILE_FAILED | 1 |", markdown)
         self.assertIn("`sceUsb:sceUsbDeactivate`", markdown)
 
+    def test_only_builds_the_named_discs_and_keeps_every_other_record(self) -> None:
+        self.disc("ok-test70011.iso", "TEST70011")
+        self.disc("Sub/ok-test70012.iso", "TEST70012")
+        self.disc("ok-test70013.iso", "TEST70013")
+        self.build(only=frozenset({"ok-test70011.iso"})).run()
+        self.assertEqual(self.calls(), ["ok-test70011"])
+        self.assertEqual(set(self.by_source(self.manifest())), {"ok-test70011.iso"})
+        # A later --only run of another disc rebuilds nothing else and drops no record.
+        result = self.build(only=frozenset({"sub/ok-test70012.iso"}), retry_failed=True).run()
+        self.assertEqual(self.calls(), ["ok-test70011", "ok-test70012"])
+        self.assertEqual({source: record["outcome"] for source, record in self.by_source(result).items()},
+                         {"ok-test70011.iso": "BUILT", "Sub/ok-test70012.iso": "BUILT"})
+
+    def test_only_refuses_a_name_that_matches_no_disc(self) -> None:
+        self.disc("ok-test70014.iso", "TEST70014")
+        with self.assertRaises(library_build.OnlyListError):
+            self.build(only=frozenset({"ok-test70014.iso", "no-such-disc.iso"})).run()
+        self.assertEqual(self.calls(), [])
+
+    def test_an_only_list_accepts_windows_separators_and_any_case(self) -> None:
+        listing = self.root / "only.txt"
+        windows_path = "\\".join(["Sub", "OK-Test70015.iso"])
+        listing.write_text(windows_path + "\r\n\n  ok-test70016.iso  \n", encoding="utf-8")
+        self.assertEqual(library_build.read_only_list(listing),
+                         frozenset({"sub/ok-test70015.iso", "ok-test70016.iso"}))
+
     def test_a_disc_id_seen_before_is_a_duplicate_and_builds_once(self) -> None:
         self.disc("a/ok-test70010.iso", "TEST70010")
         self.disc("b/ok-test70010.iso", "TEST70010")
