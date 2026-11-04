@@ -51,7 +51,7 @@ EXPECTED_PRX_SHA256 = {
     "ladder-sched": "00fd299577c9cc11f53c5402e794916c3d659e6a11320327120c34a299247373",
     "ladder-fpu": "a4bae6e8b8e0f6ce2064fb9ed249dd32f2a00f666fab3300f04e87ee91aaa986",
     "ladder-fs": "08c03b1b17693e943554be1e3d3a611ce139d87f07bfa734783de1ef95d1e76e",
-    "ladder-title2": "5b993d88991246de5b814469cceb61d83bd5175b16fbafea5916919e3301447e",
+    "ladder-title2": "db7b7b26b7b0283f13fc8fd1db540a94011fdc17ccf868cab83678a5249304da",
     "ladder-title2-negative": "a35dffbda426acf3e2faa0a366be98bb181cca57c94521d9512ebec73054b219",
     "ladder-overlay": "51f9d8b4f2ce761f59900046a8d7523f2a39f85acc4cd64240a4854fca2a5c79",
 }

@@ -1114,18 +1114,47 @@ PYTHON_SHARDS_FULL = 6
 PYTHON_SHARDS_MAKEFILE = 4
 
 
+_MAKEFILE_INCLUDE_RE = re.compile(r"^[ \t]*include[ \t]+(mk/[A-Za-z0-9_./-]+\.mk)[ \t]*$")
+
+
+def _is_makefile_source(path: str) -> bool:
+    """The root Makefile or one of the ``mk/*.mk`` fragments it includes."""
+
+    return path == "Makefile" or (path.startswith("mk/") and path.endswith(".mk"))
+
+
+def _makefile_text_at(revision: str, path: str = "Makefile", seen: tuple[str, ...] = ()) -> str:
+    """The Makefile at ``revision`` with each literal ``include mk/<name>.mk`` inlined.
+
+    The root Makefile includes its fragments where their text used to be, so the
+    inlined text is the single text GNU Make evaluates.  A fragment that is missing
+    at the revision raises, and the caller keeps the full routing.
+    """
+
+    if path in seen:
+        raise ValueError(f"include cycle through {path}")
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{path}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    lines: list[str] = []
+    for line in result.stdout.decode("utf-8").split("\n"):
+        match = _MAKEFILE_INCLUDE_RE.match(line)
+        if match is not None:
+            lines.append(_makefile_text_at(revision, match.group(1), seen + (path,)).rstrip("\n"))
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def _makefile_revisions(left: str, right: str) -> tuple[str, str] | None:
     texts: list[str] = []
     for revision in (left, right):
         try:
-            result = subprocess.run(
-                ["git", "show", f"{revision}:Makefile"],
-                cwd=ROOT,
-                check=True,
-                capture_output=True,
-            )
-            texts.append(result.stdout.decode("utf-8"))
-        except (OSError, subprocess.CalledProcessError, UnicodeDecodeError):
+            texts.append(_makefile_text_at(revision))
+        except (OSError, ValueError, subprocess.CalledProcessError, UnicodeDecodeError):
             return None
     return texts[0], texts[1]
 
@@ -1172,10 +1201,10 @@ def classify(
     manager_powershell = force_full or any(_is_manager(path) for path in files)
     title_manifest = force_full or any(_is_title_manifest(path) for path in files)
     makefile_recipe_only = (
-        not force_full and makefile_change is not None and "Makefile" in files
+        not force_full and makefile_change is not None and any(_is_makefile_source(path) for path in files)
     )
     build_system = force_full or any(
-        _is_build_system(path) and not (makefile_recipe_only and path == "Makefile") for path in files
+        _is_build_system(path) and not (makefile_recipe_only and _is_makefile_source(path)) for path in files
     )
     native_runtime = force_full or any(_is_native_runtime(path) for path in files)
     python_tools = force_full or any(_is_python_tool(path) for path in files)
@@ -1187,7 +1216,7 @@ def classify(
     gated = [path for path in files if not _is_unexecuted_test(path)]
     native_without_recipe = force_full or any(
         _is_native_runtime(path)
-        or (_is_build_system(path) and not (makefile_recipe_only and path == "Makefile"))
+        or (_is_build_system(path) and not (makefile_recipe_only and _is_makefile_source(path)))
         or _is_manager(path)
         or _is_title_manifest(path)
         or _is_native_tool(path)
@@ -1331,7 +1360,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         paths = _changed_files_from_git(args.event_name, event)
     makefile_change: tuple[str, ...] | None = None
-    if args.files is None and "Makefile" in {_normalise(path) for path in paths}:
+    if args.files is None and any(_is_makefile_source(_normalise(path)) for path in paths):
         endpoints = _diff_endpoints(args.event_name, event)
         if endpoints is not None:
             makefile_change = makefile_change_from_git(*endpoints)

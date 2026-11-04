@@ -52,10 +52,10 @@ Semantic handler census: **557** handlers across **27** API families, covering *
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 256 | 264 |
+| `partial` | 263 | 271 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 3 | 7 |
-| `unreviewed` | 283 | 291 |
+| `unreviewed` | 276 | 284 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -64,14 +64,14 @@ Semantic handler census: **557** handlers across **27** API families, covering *
 | `sceAtrac` | 0 | 0 | 0 | 0 | 32 | 32 | 33 |
 | `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
 | `sceCtrl` | 0 | 10 | 0 | 0 | 2 | 12 | 12 |
-| `sceDisplay` | 1 | 7 | 0 | 0 | 8 | 16 | 16 |
+| `sceDisplay` | 1 | 8 | 0 | 0 | 7 | 16 | 16 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 7 | 0 | 0 | 11 | 18 | 18 |
-| `sceGe` | 2 | 10 | 0 | 0 | 2 | 14 | 14 |
+| `sceGe` | 2 | 11 | 0 | 0 | 1 | 14 | 14 |
 | `sceHprm` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
-| `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 3 | 104 | 0 | 0 | 83 | 190 | 208 |
+| `sceIo` | 2 | 27 | 0 | 0 | 3 | 32 | 32 |
+| `sceKernel` | 3 | 107 | 0 | 0 | 80 | 190 | 208 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 12 | 0 | 2 | 26 | 40 | 40 |
 | `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
@@ -86,7 +86,7 @@ Semantic handler census: **557** handlers across **27** API families, covering *
 | `sceUtility` | 0 | 10 | 0 | 0 | 27 | 37 | 37 |
 | `sceVaudio` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **256** | **1** | **3** | **283** | **557** | **586** |
+| **Total** | **14** | **263** | **1** | **3** | **276** | **557** | **586** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -265,6 +265,10 @@ Semantic handler census: **557** handlers across **27** API families, covering *
   - Evidence: Makefile:display-smoke-run
   - Evidence: fixtures/display_smoke/generate.py:verify
   - Evidence: fixtures/display_smoke/generate.py:run
+- **`h_DisplaySetMode`** (`sceDisplay`): `sceDisplaySetMode` (0x0e20f177)
+  - Limitation: only the argument results are modelled: the PSP blocks until a vblank ('Vblank after set: 1'), the runtime returns at once, and sceDisplayGetMode reports the fixed mode 0 at 480x272 (#341)
+  - Evidence: PSPAutotests tests/display/setmode.expected (1a9e6c31, recorded on a PSP): mode 0 at 480x272 returns 0, any other mode 0x80000107, mode 0 at another size 0x80000104, mode checked first
+  - Evidence: tests/native/hle_thread_selftest.c:test_title_config_hle_bindings
 - **`h_DisplayWaitVblankStart`** (`sceDisplay`): `sceDisplayWaitVblankStart` (0x984c27e7)
   - Limitation: display-smoke covers ordinary guest-thread waits; interrupt-context behavior and callback wait variants remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
@@ -344,6 +348,11 @@ Semantic handler census: **557** handlers across **27** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_ge_break_continue
   - Evidence: tests/native/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list
   - Evidence: tests/native/hle_thread_selftest.c:test_ge_sync_ids_match_psp
+- **`h_GeListUpdateStallAddr`** (`sceGe`): `sceGeListUpdateStallAddr` (0xe0d68148)
+  - Limitation: a list the runtime already ran to its END returns 0 as a deliberate no-op (a GU ring buffer issues one update per chunk), where the 'Completed' cell returns 0x80000020; the 'Same stackAddr' cells that depend on the compiled SDK version are not compared (#341)
+  - Evidence: PSPAutotests tests/gpu/ge/queue.expected (2ed7c9c5, recorded on a PSP): an id naming no list (0, or a dequeued list) returns 0x80000100, updating an enqueued list returns 0
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_update_stall_unknown_id
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_guest_sentinel
 - **`h_GeSetCallback`** (`sceGe`): `sceGeSetCallback` (0xa4fc06a4)
   - Limitation: registration with null handlers returning an ID is captured on the PSP-3000 (the P1/P2 envelope is CAPTURED, not acceptance-eligible); the PSP returned 1 for the first registration it saw while this runtime hands out the lowest free ID from 0, the table size (16 here) and the full-table result are not measured, and a struct that is not readable returns the illegal-address code unmeasured (#341)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: sceGeSetCallback with a {NULL, NULL} struct returned ID 1 and queued no handler)
@@ -392,9 +401,18 @@ Semantic handler census: **557** handlers across **27** API families, covering *
   - Limitation: the measured cells establish results and close outcomes for six fixed UMD/disc path calls only; directory contents/order, MS0 paths and general error precedence remain unmeasured (#341)
   - Evidence: tests/native/hle_thread_selftest.c:test_umd_io_console_model
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0000..0005)
+- **`h_IoDread`** (`sceIo`): `sceIoDread` (0xe3eb004c)
+  - Limitation: the PSP lists '.' and '..' (with a 4096-byte '..'), upper-cases 8.3 names and fills times; the runtime's listing order, size of directory entries, names' case and timestamps are not compared, d_private is zeroed where a PSP leaves the caller's pointer, st_private[0] carries the LBA, and only ms0:, fatms0: and device-less listings take the FAT mode/attr: disc0 and flash0 listings keep their 0x124 mode bits, which no cell measures (#341)
+  - Evidence: PSPAutotests tests/io/directory/directory.expected (2ed7c9c5, recorded on a PSP): a bad descriptor returns 0x80020323; tests/io/stat/stat.expected (1a9e6c31): the listing reports the same mode and attr as sceIoGetstat
+  - Evidence: tests/native/hle_thread_selftest.c:test_fd_namespace
+  - Evidence: tests/native/hle_thread_selftest.c:test_ms0_unified_namespace
 - **`h_IoGetAsyncStat`** (`sceIo`): `sceIoGetAsyncStat` (0xcb05f8d6)
   - Limitation: the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing
   - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoGetstat`** (`sceIo`): `sceIoGetstat` (0xace946e8)
+  - Limitation: only the Memory Stick host leg is held to the recorded shape; the PSP's ctime/atime/mtime are written as zero, the ms0 volume root (0x80010016 on a PSP) and the disc, data-archive and flash0 legs have no recorded stat cell, and the SceIoStat pointer is not validated (#341)
+  - Evidence: PSPAutotests tests/io/stat/stat.expected (1a9e6c31, recorded on a PSP): an ms0 file reports mode 0x21ff attr 0x0020 and its size, a directory mode 0x11ff attr 0x0010, bytes [0..63] are written and st_private is left untouched
+  - Evidence: tests/native/hle_thread_selftest.c:test_ms0_unified_namespace
 - **`h_IoIoctlAsync`** (`sceIo`): `sceIoIoctlAsync` (0xe95a012b)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP ioctl timing and callback ordering remain unmeasured
   - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
@@ -540,6 +558,12 @@ Semantic handler census: **557** handlers across **27** API families, covering *
   - Limitation: the cited cells cover the measured count and attribute rules plus initial-count retention; name-pointer behavior, object exhaustion, and invalid-argument precedence remain unmeasured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: CreateSema accepts init greater than max and max zero, and rejects invalid attributes)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema restores the create-time initial count)
+- **`h_CreateThread`** (`sceKernel`): `sceKernelCreateThread` (0x446d8de6)
+  - Limitation: the argument checks above match the recorded cells one argument at a time; which error wins when several arguments are wrong is not measured, kernel-mode creates (priority under 8) are not modelled, the entry check is only 'readable guest memory', the SceKernelThreadOptParam in $t1 is ignored, and the 'Create 1024' cell (a PSP fails the 29th 1 MiB stack with 0x80020190) is not reproduced because the stack arena's capacity differs (#341)
+  - Evidence: PSPAutotests tests/threads/threads/create.expected (2ed7c9c5, recorded on a PSP): NULL name 0x80020001, a 64-character name cut to 31, attribute bits outside 0xf8f060ff 0x80020191, stack under 0x200 0x80020194, 0x01000001 rounded to 0x01000100, priority outside 8..0x77 0x80020193, NULL entry creates, 0xDEADBEEF entry 0x800200D3, two threads with one name
+  - Evidence: tests/native/hle_thread_selftest.c:test_create_thread_contract
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: CreateThread with a NULL entry returned a UID)
+  - Evidence: docs/research/PSP_THREADING_SEMANTICS.md (FIRMWARE_CREATE_THREAD_ARG5_T0: attribute arrives in $t0)
 - **`h_CreateVTimer`** (`sceKernel`): `sceKernelCreateVTimer` (0x20fff560)
   - Limitation: the option struct is ignored, as on a PSP (pspautotests vtimers/create.expected at 2ed7c9c5, recorded on a PSP: every declared size creates the same timer), and an unreadable one stops the run by name; 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64, while the same PSP-recorded output shows 1024 creates succeed; a NULL name is accepted here, where that output shows 0x80020001; the no-slot code 0x80020190 is unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)
 - **`h_CreateVpl`** (`sceKernel`): `sceKernelCreateVpl` (0x56c039b5)
@@ -628,6 +652,10 @@ Semantic handler census: **557** handlers across **27** API families, covering *
 - **`h_GetSystemTimeWide`** (`sceKernel`): `sceKernelGetSystemTimeWide` (0x82bc5777)
   - Limitation: the two system-clock reads advanced 220,608 around a bounded 20 ms delay, but host0 logging offset the intervals and the VTimer/system-clock deltas agree only within about 8%; this is consistent with the microsecond unit but does not establish a precise rate or absolute system-time values
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-VTIMER-002: system-clock reads around the bounded delay)
+- **`h_GetThreadIdSched`** (`sceKernel`): `sceKernelGetThreadId` (0x293b45b8)
+  - Limitation: the value is the runtime's UID for the calling thread, not the number a PSP would assign; the result with no guest thread current is not measured (#341)
+  - Evidence: PSPAutotests tests/threads/threads/start.expected (2ed7c9c5, recorded on a PSP): StartThread(sceKernelGetThreadId()) from the running thread is 0x800201a4, and no 'stack should start with thread ID' line appears, so the stack-base and k0 UID words equal the id
+  - Evidence: tests/native/hle_thread_selftest.c:test_get_thread_id_names_calling_thread
 - **`h_GetVTimerBase`** (`sceKernel`): `sceKernelGetVTimerBase` (0xb3a59970)
   - Limitation: returns the same base as ReferVTimerStatus, measured equal while running and 0 once stopped (PSP-HLE-VTIMER-002); the value, guest time at the most recent Start, is consistent with that run's system-clock reads, not measured exactly; NULL out-pointer returns ILLEGAL_ADDR as a runtime safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), not as a measured VTimer result; deleted-UID code is unmeasured and reused by analogy; no game relies on the NULL output (#325)
 - **`h_GetVTimerTime`** (`sceKernel`): `sceKernelGetVTimerTime` (0x034a921f)
@@ -753,6 +781,12 @@ Semantic handler census: **557** handlers across **27** API families, covering *
 - **`h_SleepThread`** (`sceKernel`): `sceKernelSleepThread` (0x9ace131e)
   - Limitation: the cited cell covers a helper sleeping and resuming after a wakeup; no-current-thread, disabled-dispatch precedence, callbacks during sleep, and other wake races are not established
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: SleepThread and wakeup sequence)
+- **`h_StartThread`** (`sceKernel`): `sceKernelStartThread` (0xf475845d)
+  - Limitation: the 'Priorities' resched/deferred cells (marked reorderable in start.expected), the 'Stack' cells (a thread started with the Low-stack, no-fill or clear-stack attributes) and an argument block larger than the stack (a PSP crashes; the runtime drops the block and logs) are not reproduced; the entry $sp is argv - 0x40 for every length although only the four-byte record measures it, scratchpad and kernel-segment (0x88800000) argument blocks are unmeasured (the first is accepted; the second is accepted although a PSP may refuse it), the thread's initial $sp without an argument and the order of the not-dormant and argument errors are not measured (#341)
+  - Evidence: PSPAutotests tests/threads/threads/start.expected (2ed7c9c5, recorded on a PSP): ids (0 -> 0x80020197, unknown or deleted -> 0x80020198, twice or current -> 0x800201a4), a negative argument length or a block that is not memory -> 0x800200d3 with the thread left dormant, a NULL block starts with no argument, the copied block at stack + size - 0x100 - round16(len); docs/HARDWARE_ORACLE.md PSP-NULLCODE-001: entry sp 0x40 below a four-byte block
+  - Evidence: tests/native/hle_thread_selftest.c:test_start_thread_contract
+  - Evidence: tests/native/hle_thread_selftest.c:test_start_thread_error_semantics
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: StartThread of a NULL-entry thread returned 0)
 - **`h_StartVTimer`** (`sceKernel`): `sceKernelStartVTimer` (0xc68d9437)
   - Limitation: deleted-UID code 0x800201BE measured (PSP-HLE-VTIMER-003); already-running return 1 is repo-documented, not measured by PSP-HLE-VTIMER-001, -002 or -003; base = system time at Start and the microsecond unit are consistent with PSP-HLE-VTIMER-002, not measured exactly (#325)
 - **`h_StopVTimer`** (`sceKernel`): `sceKernelStopVTimer` (0xd0aeee87)

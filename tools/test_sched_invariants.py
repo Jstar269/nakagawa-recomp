@@ -45,6 +45,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hle_sources  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHED = (ROOT / "src" / "rt" / "sched.c").read_text(encoding="utf-8")
@@ -325,7 +326,7 @@ class LifecycleInstrumentationIsMandatoryTests(unittest.TestCase):
         self.assertIn("#error", selftest)
 
     def test_makefile_defines_it_for_that_target_only(self):
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         # Recipe lines only: a comment mentioning the macro compiles nothing.
         defines = [line for line in makefile.splitlines()
                    if line.startswith("\t") and "-DSR_CORO_LIFECYCLE_TEST" in line]

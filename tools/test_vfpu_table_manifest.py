@@ -21,8 +21,12 @@ import hashlib
 import json
 import re
 import struct
+import sys
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets" / "vfpu"
@@ -185,7 +189,7 @@ class VfpuTableManifestTests(unittest.TestCase):
             "test_concurrent_first_use",
         ):
             self.assertIn(marker, source, f"selftest missing {marker}")
-        make = MAKEFILE.read_text(encoding="utf-8")
+        make = read_makefile(ROOT)
         self.assertIn("vfpu-tables-selftest:", make)
         self.assertIn("src/rt/vfpu_tables.c \\", make)  # in RT_SRCS
         manager = (ROOT / "nk_manager.ps1").read_text(encoding="utf-8")
