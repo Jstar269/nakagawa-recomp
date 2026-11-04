@@ -1157,7 +1157,8 @@ def _scale_value(transform: str, value: float) -> float:
     if not 0.0 < value < 1.0:
         raise ValueError(f"{value!r} is outside (0, 1)")
     if transform == "decay_k_to_1-sqrt(1-k)":
-        return 1.0 - math.sqrt(1.0 - value)
+        # 1 - sqrt(1 - k) without its cancellation, which loses a small k entirely
+        return value / (1.0 + math.sqrt(1.0 - value))
     return math.sqrt(value)
 
 
@@ -1597,11 +1598,7 @@ def _plan_word_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
         value = _f32(imm16 << 16)
         if not 0.0 < value < 1.0:
             _refuse(site, w, f"float constant {value!r} is outside (0, 1)")
-        if tf == "decay_k_to_1-sqrt(1-k)":
-            new_value = 1.0 - math.sqrt(1.0 - value)
-        else:
-            new_value = math.sqrt(value)
-        bits = _f32_bits(new_value)
+        bits = _f32_bits(_scale_value(tf, value))
         hi = ((bits + 0x8000) >> 16) & 0xFFFF
         return {"kind": "word", "word": _with_imm(w, hi)}
 

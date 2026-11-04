@@ -17,11 +17,11 @@ Tests fail-closed boundaries:
 from __future__ import annotations
 
 import copy
+import decimal
 import hashlib
 import itertools
 from io import StringIO
 import json
-import math
 import os
 from pathlib import Path
 import random
@@ -52,6 +52,7 @@ from enhancement_package import (
     VALID_CATEGORIES,
     EnhancementPackageError,
     _gpr_written,
+    _scale_value,
     _validate_site_extras,
     compute_stock_words_digest,
     draft_package_declaration,
@@ -70,6 +71,15 @@ from nk_core import package_cache
 
 SCHEMA_PATH = ROOT / "assets" / "enhancement_package.schema.json"
 GCC = shutil.which("gcc") or shutil.which("cc")
+
+
+def _f32_decay_reference(k: float) -> int:
+    """The f32 bits nearest 1 - sqrt(1 - k), evaluated to 60 decimal digits."""
+    with decimal.localcontext() as ctx:
+        ctx.prec = 60
+        exact = 1 - (1 - decimal.Decimal(k)).sqrt()
+    return _bits_of(float(exact))
+
 
 
 class TestEnhancementPackageSchema(unittest.TestCase):
@@ -1103,6 +1113,8 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         self.assertEqual(plan("step_x0.5", 0x24840001), {"kind": "gate"})  # addiu a0,a0,1
         self.assertEqual(plan("count_x2", 0x2484FFFF), {"kind": "gate"})  # addiu a0,a0,-1
         self.assertEqual(plan("retention_m_to_sqrt(m)", 0x3C023F40)["word"], 0x3C023F5E)
+        # k = 2^-126: 1 - sqrt(1 - k) cancels to 0 in double; the result is k / 2 = 2^-127
+        self.assertEqual(plan("decay_k_to_1-sqrt(1-k)", 0x3C020080)["word"], 0x3C020040)
         self.assertEqual(plan("decay_k_to_1-sqrt(1-k)", 0xC4430010),  # lwc1 f3: map the loaded factor
                          {"kind": "map_f_reg", "reg": 3, "map": "decay"})
         self.assertEqual(plan("retention_m_to_sqrt(m)", 0xC4430010),
@@ -1321,23 +1333,27 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         self.assertEqual(names, {"synth_vblank_wait": 0x1100})
 
     def test_mapped_factor_runs_only_when_enabled_and_inside_the_unit_interval(self) -> None:
-        """An lwc1 factor is mapped after the stock load, behind the toggle, and only inside (0, 1)."""
+        """An lwc1 factor is mapped after the stock load, behind the toggle, and only inside (0, 1);
+        outside it keeps its stock value and the site reports it."""
         lwc1 = 0xC4430010  # lwc1 $f3, 0x10($v0)
         saved = codegen.ENHANCEMENT_SITES
         try:
-            for kind, expr in (("decay", "(float)(1.0 - sqrt(1.0 - (double)s->f[3]))"),
+            for kind, expr in (("decay", "(float)((double)s->f[3] / (1.0 + sqrt(1.0 - (double)s->f[3])))"),
                                ("retention", "sqrtf(s->f[3])")):
                 with self.subTest(map=kind):
                     codegen.ENHANCEMENT_SITES = {
-                        0x1300: {"rewrite": {"kind": "map_f_reg", "reg": 3, "map": kind}}
+                        0x1300: {"id": "F3", "rewrite": {"kind": "map_f_reg", "reg": 3, "map": kind}}
                     }
                     codegen.ENHANCEMENT_APPLIED.clear()
                     line = codegen.normal_line(0x1300, lwc1, lle_cpu=False)
-                    enhanced, stock = line.split("else", 1)
+                    enhanced, stock = line.rsplit("else", 1)
                     self.assertIn("nk_enhancement_on()", enhanced)
-                    self.assertIn(f"if (s->f[3] > 0.0f && s->f[3] < 1.0f) {{ s->f[3] = {expr}; }}", enhanced)
+                    self.assertIn(f"if (s->f[3] > 0.0f && s->f[3] < 1.0f) {{ s->f[3] = {expr}; }} "
+                                  'else { static int nk_kept; nk_enhancement_factor_kept(&nk_kept, "F3", '
+                                  "0x00001300u, s->f[3]); }", enhanced)
                     self.assertLess(enhanced.index("s->fi[3]"), enhanced.index(expr))
-                    self.assertNotIn("sqrtf", stock)
+                    self.assertNotIn("sqrt", stock)
+                    self.assertNotIn("nk_enhancement_factor_kept", stock)
         finally:
             codegen.ENHANCEMENT_SITES = saved
             codegen.ENHANCEMENT_APPLIED.clear()
@@ -1351,11 +1367,12 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             for rewrite, expr in (({"kind": "scale_v_reg", "vreg": 39, "factor": 2.0}, f"s->v[{v}] *= 2.0f;"),
                                   ({"kind": "map_v_reg", "vreg": 39, "map": "decay"},
                                    f"if (s->v[{v}] > 0.0f && s->v[{v}] < 1.0f) "
-                                   f"{{ s->v[{v}] = (float)(1.0 - sqrt(1.0 - (double)s->v[{v}])); }}")):
+                                   f"{{ s->v[{v}] = (float)((double)s->v[{v}] / "
+                                   f"(1.0 + sqrt(1.0 - (double)s->v[{v}]))); }}")):
                 with self.subTest(kind=rewrite["kind"]):
-                    codegen.ENHANCEMENT_SITES = {0x1300: {"rewrite": rewrite}}
+                    codegen.ENHANCEMENT_SITES = {0x1300: {"id": "S131", "rewrite": rewrite}}
                     codegen.ENHANCEMENT_APPLIED.clear()
-                    enhanced, stock = codegen.normal_line(0x1300, lvs, lle_cpu=False).split("else", 1)
+                    enhanced, stock = codegen.normal_line(0x1300, lvs, lle_cpu=False).rsplit("else", 1)
                     self.assertIn(expr, enhanced)
                     self.assertLess(enhanced.index(f"s->vi[{v}] = MEM_R32("), enhanced.index(expr))
                     self.assertNotIn(f"s->v[{v}]", stock)
@@ -1365,13 +1382,19 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
 
     @unittest.skipUnless(GCC, "needs a host C compiler")
     def test_mapped_factor_values_match_the_lui_path(self) -> None:
-        """Compile the emitted map and run it: each result is the f32 that the lui path's double
-        formula rounds to, including factors so small that a float evaluation loses them."""
+        """Compile the emitted map and run it. Inside (0, 1) each result is bit for bit the f32 the
+        lui path's formula gives, and that is the f32 nearest the exact map down to the smallest
+        normal result; 1 - sqrt(1 - k) cancels to 0 there even in double. A subnormal result may
+        round once more, so it is within one step of the nearest. Outside (0, 1) the value keeps
+        its stock bits and the site reports once."""
         lwc1 = 0xC4430010  # lwc1 $f3, 0x10($v0)
         rng = random.Random(1932)
-        ks = [2.0 ** -25, 1e-7, 1e-4, 0.2, 0.5, 0.75, 0.999, struct.unpack("<f", bytes.fromhex("ffff7f3f"))[0]]
+        ks = [2.0 ** -25, 1e-7, 1e-4, 0.2, 0.5, 0.75, 0.999, _f32_of(0x3F7FFFFF),
+              1e-17, 1e-30, 2.0 ** -126, _f32_of(0x00000001), _f32_of(0x007FFFFF)]
         ks += [rng.random() for _ in range(2000)]
+        ks += [2.0 ** rng.uniform(-149, -20) for _ in range(500)]
         ks = [struct.unpack("<f", struct.pack("<f", k))[0] for k in ks]
+        outside = [0.0, 1.0, 1.5, -0.25, -0.0, _f32_of(0x7FC00000)]  # the last is a quiet NaN
         lvs = 0xC844C410  # lv.s S100.s, -0x3bf0($v0)
         v4 = codegen.vreg_indices(4, 1)[0]
         forms = (("map_f_reg", {"reg": 3}, lwc1, "s->f[3]"), ("map_v_reg", {"vreg": 4}, lvs, f"s->v[{v4}]"))
@@ -1380,22 +1403,29 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             for (rkind, operand, word, cell), kind in itertools.product(forms, ("decay", "retention")):
                 with self.subTest(rewrite=rkind, map=kind):
                     codegen.ENHANCEMENT_SITES = {
-                        0x1300: {"rewrite": {"kind": rkind, **operand, "map": kind}}
+                        0x1300: {"id": "K", "rewrite": {"kind": rkind, **operand, "map": kind}}
                     }
                     codegen.ENHANCEMENT_APPLIED.clear()
-                    enhanced = codegen.normal_line(0x1300, word, lle_cpu=False).split("else", 1)[0]
+                    enhanced = codegen.normal_line(0x1300, word, lle_cpu=False).rsplit("else", 1)[0]
                     mapped = enhanced[enhanced.index(f"if ({cell} >"):].rsplit("}", 1)[0]
+                    values = ks + outside
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         tmp = Path(tmp_dir)
-                        (tmp / "k.txt").write_text("\n".join(struct.pack("<f", k).hex() for k in ks),
+                        (tmp / "k.txt").write_text("\n".join(struct.pack("<f", k).hex() for k in values),
                                                    encoding="utf-8")
                         harness = tmp / "map.c"
                         harness.write_text(
                             "#include <math.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n"
                             "typedef struct { float f[32]; float v[128]; } S;\n"
+                            "static int reports;\n"
+                            "static void nk_enhancement_factor_kept(int *reported, const char *site, "
+                            "uint32_t pc, float value) {\n"
+                            "    (void)site; (void)pc; (void)value;\n"
+                            "    if (!*reported) { *reported = 1; reports++; }\n"
+                            "}\n"
                             "int main(int argc, char **argv) {\n"
                             "    FILE *in = fopen(argv[1], \"r\"); char hex[16]; S st, *s = &st;\n"
-                            "    if (!in) return 1;\n"
+                            "    if (argc < 2 || !in) return 1;\n"
                             "    while (fscanf(in, \"%15s\", hex) == 1) {\n"
                             "        uint8_t b[4]; uint32_t bits;\n"
                             "        for (int i = 0; i < 4; i++) sscanf(hex + 2 * i, \"%2hhx\", &b[i]);\n"
@@ -1403,6 +1433,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                             f"        {mapped}\n"
                             f"        memcpy(&bits, &{cell}, 4); printf(\"%08x\\n\", (unsigned)bits);\n"
                             "    }\n"
+                            "    printf(\"reports=%d\\n\", reports);\n"
                             "    fclose(in); return 0;\n"
                             "}\n",
                             encoding="utf-8",
@@ -1412,10 +1443,18 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                                         str(harness), "-lm"], check=True, capture_output=True, text=True)
                         out = subprocess.run([str(exe), str(tmp / "k.txt")], check=True, capture_output=True,
                                              text=True).stdout.split()
-                    for k, got in zip(ks, out, strict=True):
-                        exact = 1.0 - math.sqrt(1.0 - k) if kind == "decay" else math.sqrt(k)
-                        want = struct.unpack("<I", struct.pack("<f", exact))[0]
+                    self.assertEqual(out.pop(), "reports=1")
+                    transform = {"decay": "decay_k_to_1-sqrt(1-k)", "retention": "retention_m_to_sqrt(m)"}[kind]
+                    for k, got in zip(values, out, strict=True):
+                        if not 0.0 < k < 1.0:
+                            self.assertEqual(int(got, 16), struct.unpack("<I", struct.pack("<f", k))[0])
+                            continue
+                        want = struct.unpack("<I", struct.pack("<f", _scale_value(transform, k)))[0]
                         self.assertEqual(int(got, 16), want, f"k={k!r}")
+                        if kind == "decay":
+                            nearest = _f32_decay_reference(k)
+                            self.assertLessEqual(abs(want - nearest), 0 if nearest >= 0x00800000 else 1,
+                                                 f"k={k!r}")
         finally:
             codegen.ENHANCEMENT_SITES = saved
             codegen.ENHANCEMENT_APPLIED.clear()
@@ -1426,7 +1465,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         saved = (codegen.ENHANCEMENT_SITES, codegen.OPTIONS.lle_cpu)
         try:
             codegen.ENHANCEMENT_SITES = {
-                0x1300: {"rewrite": {"kind": "scale_f_store", "reg": 4, "factor": 0.5}}
+                0x1300: {"id": "F4", "rewrite": {"kind": "scale_f_store", "reg": 4, "factor": 0.5}}
             }
             codegen.ENHANCEMENT_APPLIED.clear()
             for lle in (False, True):
@@ -1452,6 +1491,9 @@ class TestEnhancementDataTransforms(unittest.TestCase):
         self.assertEqual(plan_data_value("step_x0.5", "u16", struct.pack("<H", 40)), struct.pack("<H", 20))
         self.assertEqual(plan_data_value("retention_m_to_sqrt(m)", "f32", struct.pack("<f", 0.25)),
                          struct.pack("<f", 0.5))
+        tiny = struct.unpack("<f", struct.pack("<f", 1e-30))[0]
+        self.assertEqual(plan_data_value("decay_k_to_1-sqrt(1-k)", "f32", struct.pack("<f", tiny)),
+                         struct.pack("<I", _f32_decay_reference(tiny)))
         for transform, dtype, raw in (
             ("step_x0.5", "s32", struct.pack("<i", 7)),          # odd count
             ("count_x2", "u8", struct.pack("<B", 200)),          # overflow
