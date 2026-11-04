@@ -31,6 +31,9 @@ Usage:
   python tools/picture_gate.py check ROUTE.json [--runs N] [--accept] [--strict]
   python tools/picture_gate.py display-smoke --build-dir DIR [--work-dir DIR]
 
+``check --accept`` captures at least twice. ``display-smoke`` clears only a work folder it
+made (it holds a marker file) and refuses any other non-empty folder.
+
 A route file is private JSON next to the title's other private inputs:
   {"title": "...", "command": ["runtime.exe", "..."], "env": {"K": "V"},
    "pad": "route.pad", "vblank": 600, "window": 8, "reference": "ref.ppm",
@@ -65,6 +68,8 @@ PASS, FAIL, SKIP, NOT_RUN = "PASS", "FAIL", "SKIP", "NOT_RUN"
 ACCEPTED = "ACCEPTED"
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_NOT_PROVEN = 0, 1, 2, 3
 DEFAULT_WINDOW = 8
+MIN_ACCEPT_RUNS = 2
+MAX_RGB_DISTANCE = 442  # sqrt(3 * 255^2) rounded up
 DEFAULT_TIMEOUT_SECONDS = 600
 # Inherited selectors that would change what the run captures or where it reads input.
 _STRIPPED_ENV = re.compile(r"^(SR_FBSNAP.*|SR_FBDUMP|SR_PADSCRIPT.*|SR_FLIGHT.*|SR_DATAROOT|"
@@ -149,6 +154,8 @@ def load_picture(path: Path) -> Frame:
             width, height, rows = pngcmp.decode(path)
         except SystemExit as exc:
             raise PictureError(str(exc)) from None
+        except Exception as exc:  # a truncated or corrupt stream: struct, zlib, index errors
+            raise PictureError(f"{path.name}: corrupt PNG ({type(exc).__name__})") from None
         return Frame(width, height, b"".join(rows))
     return parse_ppm(data, path.name)
 
@@ -297,6 +304,18 @@ def collect_frame(run_dir: Path, vblank: int | None) -> tuple[Path | None, str]:
     return found[0][1], f"vblank={found[0][0]}"
 
 
+def capture_failure(how: str) -> Verdict:
+    """Verdict for a run that produced no frame.
+
+    A runtime that started and then exited nonzero or hit the timeout is a regression
+    signal, so it is a FAIL (exit 1). NOT_RUN is for a run that could not start or that
+    published nothing (no runtime, no pad script, no frame).
+    """
+    if how.startswith(("runtime-exit-", "timeout-")):
+        return Verdict(FAIL, how)
+    return Verdict(NOT_RUN, how)
+
+
 def run_capture(command: list[str], env: dict, run_dir: Path,
                 vblank: int | None, timeout: int,
                 mkdirs: tuple[str, ...] = ()) -> tuple[Path | None, str]:
@@ -336,7 +355,8 @@ def run_route(route_path: Path, runs: int = 1, work_root: Path | None = None,
     """Capture and compare one title route. Returns (title, verdict).
 
     ``accept_frame`` stores the captured frame as the reference instead of comparing; it
-    still requires every run to agree, so a nondeterministic route is never accepted.
+    captures at least ``MIN_ACCEPT_RUNS`` times and requires every run to agree, so a
+    nondeterministic route is never accepted.
     """
     route_path = Path(route_path)
     title = route_path.stem
@@ -384,23 +404,36 @@ def run_route(route_path: Path, runs: int = 1, work_root: Path | None = None,
     mkdirs = tuple(mkdirs)
     threshold, max_percent = route.get("threshold", 0), route.get("max_percent", 0.0)
     timeout = route.get("timeout", DEFAULT_TIMEOUT_SECONDS)
+    if (not isinstance(threshold, int) or isinstance(threshold, bool)
+            or not 0 <= threshold <= MAX_RGB_DISTANCE):
+        return title, Verdict(NOT_RUN, "route-threshold-invalid")
+    if (not isinstance(max_percent, (int, float)) or isinstance(max_percent, bool)
+            or not 0 <= max_percent <= 100):
+        return title, Verdict(NOT_RUN, "route-max_percent-invalid")
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
+        return title, Verdict(NOT_RUN, "route-timeout-invalid")
 
     own_tmp = work_root is None
     work = Path(tempfile.mkdtemp(prefix="picture-gate-")) if own_tmp else Path(work_root)
     try:
         env = sandbox_env(os.environ, extra, vblank, window, pad)
         frames, how = [], ""
+        if accept_frame:
+            runs = max(runs, MIN_ACCEPT_RUNS)  # a reference is never taken from one run
         for n in range(max(1, runs)):
             frame, how = run_capture(command, env, work / f"run{n}", vblank, timeout, mkdirs)
             if frame is None:
-                return title, Verdict(NOT_RUN, how)
+                return title, capture_failure(how)
             frames.append(frame)
         if len(frames) > 1:
             first = frames[0].read_bytes()
             for other in frames[1:]:
                 if other.read_bytes() != first:
-                    pct = judge(compare_frames(parse_ppm(first), parse_ppm(other.read_bytes())),
-                                0.0)
+                    try:
+                        pct = judge(compare_frames(parse_ppm(first),
+                                                   parse_ppm(other.read_bytes())), 0.0)
+                    except PictureError as exc:
+                        return title, Verdict(FAIL, f"nondeterministic unreadable-frame ({exc})")
                     return title, Verdict(FAIL, f"nondeterministic {pct.detail}", pct.percent,
                                           pct.over, pct.differing, pct.total, pct.max_delta)
         if accept_frame:
@@ -455,12 +488,43 @@ def write_ppm(path: Path, frame: Frame) -> None:
     path.write_bytes(b"P6\n%d %d\n255\n" % (frame.width, frame.height) + frame.pixels)
 
 
+WORK_MARKER = ".picture-gate-work"
+
+
+def claim_work_dir(work: Path) -> bool:
+    """Make ``work`` an empty folder this gate owns. Never deletes what it did not create.
+
+    A folder with the marker file was made by an earlier run and is cleared; a missing or
+    empty folder is taken; any other non-empty folder is refused untouched.
+    """
+    work = Path(work)
+    if work.exists():
+        if not work.is_dir():
+            return False
+        if (work / WORK_MARKER).is_file():
+            for child in work.iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+        elif any(work.iterdir()):
+            return False
+    work.mkdir(parents=True, exist_ok=True)
+    (work / WORK_MARKER).write_text("created by tools/picture_gate.py display-smoke\n",
+                                    encoding="utf-8")
+    return True
+
+
 def display_smoke(build_dir: Path, work_dir: Path | None = None) -> int:
     """Headless twice: SKIP with no reference, PASS 0.00% after accept, FAIL after one pixel."""
     build_dir = Path(build_dir).resolve()
     work = Path(work_dir).resolve() if work_dir else build_dir / "picture-gate"
     if not _inside_build(work):
         print(f"display-smoke picture gate: work dir {work} must be under build/", file=sys.stderr)
+        return EXIT_USAGE
+    if not claim_work_dir(work):
+        print(f"display-smoke picture gate: {work} is not empty and was not created by this "
+              "gate; give an empty or new folder", file=sys.stderr)
         return EXIT_USAGE
     try:
         command = display_smoke_command(build_dir)
@@ -471,7 +535,6 @@ def display_smoke(build_dir: Path, work_dir: Path | None = None) -> int:
         print("PICTURE_GATE display-smoke: NOT_RUN fixture-not-built (run display-smoke first)")
         return EXIT_NOT_PROVEN
     env = sandbox_env(os.environ, {"SR_PRESENT_TRACE": "1"}, None, 1, None)
-    shutil.rmtree(work, ignore_errors=True)
     reference = work / "reference" / "display-smoke.ppm"
     results = []
 
@@ -482,15 +545,17 @@ def display_smoke(build_dir: Path, work_dir: Path | None = None) -> int:
     # 1. No reference: SKIP, with the frame itself not required.
     first, how = run_capture(command, env, work / "run1", None, DEFAULT_TIMEOUT_SECONDS)
     if first is None:
-        print(f"PICTURE_GATE display-smoke: NOT_RUN {how}")
-        return EXIT_NOT_PROVEN
+        failed = capture_failure(how)
+        print(failed.line("display-smoke"))
+        return _exit_for(failed, True)
     step("no reference", compare_files(reference, first), SKIP)
     # 2. accept, then a second run must match the reference exactly.
     accept(first, work / "reference" / "display-smoke.ppm", commit="display-smoke")
     second, how = run_capture(command, env, work / "run2", None, DEFAULT_TIMEOUT_SECONDS)
     if second is None:
-        print(f"PICTURE_GATE display-smoke: NOT_RUN {how}")
-        return EXIT_NOT_PROVEN
+        failed = capture_failure(how)
+        print(failed.line("display-smoke"))
+        return _exit_for(failed, True)
     exact = compare_files(reference, second)
     step("second run against accepted reference", exact, PASS)
     results.append(exact.percent == 0 and exact.differing == 0)

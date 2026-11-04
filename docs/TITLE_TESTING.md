@@ -210,7 +210,10 @@ A route file is private JSON next to the title's other private inputs: `command`
 `timeout`. References are game pixels: they stay in the title's private folder, and `accept`
 refuses a path inside the checkout. Verdicts are `PASS`, `FAIL` (too many pixels over the
 threshold, a size mismatch, or runs that differ under `--runs N`), `SKIP no-reference` and
-`NOT_RUN <reason>`. SKIP and NOT_RUN are never a pass; `--strict` exits 3 on them.
+`NOT_RUN <reason>`. SKIP and NOT_RUN are never a pass; `--strict` exits 3 on them. A runtime that
+starts and then exits nonzero or times out is a `FAIL` (exit 1); `NOT_RUN` is for a run that could
+not start or published no frame. `check --accept` captures at least twice and stores the frame
+only when the runs agree. `display-smoke --work-dir` clears only a folder it made.
 
 ## Local presented-frame acceptance
 

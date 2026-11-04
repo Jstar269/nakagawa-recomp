@@ -143,6 +143,22 @@ class FileAndVerdictTests(Base):
                         + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
         self.assertEqual(pg.compare_files(self.ppm("r.ppm", frame()), png).status, pg.PASS)
 
+    def test_corrupt_png_is_a_verdict_not_a_traceback(self):
+        import struct, zlib
+        good_idat = zlib.compress(b"\x00" + bytes(3))
+        head = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+
+        def chunk(tag, payload):
+            return (struct.pack(">I", len(payload)) + tag + payload
+                    + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+        bad = self.dir / "bad.png"
+        bad.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", head)
+                        + chunk(b"IDAT", good_idat[:-6]) + chunk(b"IEND", b""))
+        with self.assertRaises(pg.PictureError):
+            pg.load_picture(bad)
+        ref = self.ppm("r.ppm", frame(w=1, h=1))
+        self.assertEqual(pg.compare_files(ref, bad).status, pg.NOT_RUN)
+
     def test_ppm_parser_rejects_malformed_input(self):
         for name, data in {"magic": b"P5\n1 1\n255\n\x00", "maxval": b"P6\n1 1\n65535\n\x00\x00",
                            "short": b"P6\n2 2\n255\n\x00", "long": b"P6\n1 1\n255\n\x00\x00\x00\x00",
@@ -236,6 +252,23 @@ class RouteTests(Base):
         self.assertTrue(ref.is_file() and pg.sidecar_path(ref).is_file())
         self.assertEqual(self.check(route).status, pg.PASS)
 
+    def test_accept_from_one_requested_run_still_checks_two(self):
+        shared = self.dir / "counter.txt"
+        flaky = self.dir / "flaky.py"
+        flaky.write_text(
+            "import sys\nfrom pathlib import Path\n"
+            f"c = Path({str(shared)!r}); n = int(c.read_text()) if c.exists() else 0; c.write_text(str(n + 1))\n"
+            + FAKE_RUNTIME.replace("int(sys.argv[2])", "int(sys.argv[2]) + n"), encoding="utf-8")
+        route = self.route()
+        data = json.loads(route.read_text())
+        data["command"] = [sys.executable, "-I", str(flaky), "ok", "5"]
+        route.write_text(json.dumps(data))
+        _, v = pg.run_route(route, 1, self.dir / "work", accept_frame=True)
+        self.assertEqual(v.status, pg.FAIL)
+        self.assertTrue(v.detail.startswith("nondeterministic"))
+        self.assertEqual(shared.read_text(), "2")  # it ran twice although runs=1 was asked
+        self.assertFalse((self.dir / "priv" / "ref.ppm").exists())
+
     def test_check_accept_refuses_a_reference_inside_the_checkout(self):
         route = self.route()
         data = json.loads(route.read_text())
@@ -258,12 +291,37 @@ class RouteTests(Base):
         self.assertEqual(v.status, pg.PASS)
         self.assertIn("first-frame", v.detail)
 
-    def test_runtime_failure_or_missing_frame_is_not_run(self):
+    def test_missing_frame_is_not_run_but_a_crash_is_a_fail(self):
         pg.accept(self.ppm("seed.ppm", frame(5)), self.dir / "priv" / "ref.ppm", commit="c")
-        self.assertEqual(self.check(self.route("exit3")).detail, "runtime-exit-3")
-        self.assertEqual(self.check(self.route("noframe")).detail, "no-frame-captured")
-        for v in (self.check(self.route("exit3")), self.check(self.route("noframe"))):
-            self.assertEqual(v.status, pg.NOT_RUN)
+        crashed = self.check(self.route("exit3"))
+        self.assertEqual((crashed.status, crashed.detail), (pg.FAIL, "runtime-exit-3"))
+        silent = self.check(self.route("noframe"))
+        self.assertEqual((silent.status, silent.detail), (pg.NOT_RUN, "no-frame-captured"))
+
+    def test_a_timeout_is_a_fail(self):
+        route = self.route()
+        data = json.loads(route.read_text())
+        data["command"] = [sys.executable, "-I", "-c", "import time; time.sleep(60)"]
+        data["timeout"] = 1
+        route.write_text(json.dumps(data))
+        v = self.check(route)
+        self.assertEqual((v.status, v.detail), (pg.FAIL, "timeout-1s"))
+
+    def test_route_values_are_validated(self):
+        route = self.route()
+        base = json.loads(route.read_text())
+        cases = [("threshold", "5"), ("threshold", -3), ("threshold", 500), ("threshold", True),
+                 ("threshold", 1.5), ("max_percent", "1"), ("max_percent", 1000),
+                 ("max_percent", -1), ("max_percent", True), ("timeout", 0),
+                 ("timeout", "5"), ("timeout", False)]
+        for key, value in cases:
+            data = dict(base, **{key: value})
+            route.write_text(json.dumps(data))
+            with self.subTest(key=key, value=value):
+                v = self.check(route)
+                self.assertEqual((v.status, v.detail), (pg.NOT_RUN, f"route-{key}-invalid"))
+        route.write_text(json.dumps(dict(base, threshold=0, max_percent=0, timeout=30)))
+        self.assertEqual(self.check(route).status, pg.SKIP)  # valid values reach the compare
 
     def test_run_folder_placeholder_and_mkdirs(self):
         route = self.route(mode="ok", mkdirs=["ms", "fs/sub"], env={"SR_MEMSTICK": "{run}/ms"})
@@ -364,6 +422,43 @@ class CommandLineTests(Base):
         code, text = self.run_cli("display-smoke", "--build-dir", str(self.dir / "nobuild"))
         self.assertEqual(code, 3)
         self.assertIn("NOT_RUN", text)
+
+    def test_a_crash_is_a_nonzero_exit_without_strict(self):
+        fake = self.dir / "fake_runtime.py"
+        fake.write_text(FAKE_RUNTIME, encoding="utf-8")
+        route = self.dir / "route.json"
+        route.write_text(json.dumps({"command": [sys.executable, "-I", str(fake), "exit3", "5"],
+                                     "reference": "ref.ppm", "vblank": 20}))
+        self.assertEqual(self.run_cli("check", str(route))[0], 1)
+        route.write_text(json.dumps({"command": [sys.executable, "-I", str(fake), "noframe", "5"],
+                                     "reference": "ref.ppm", "vblank": 20}))
+        self.assertEqual(self.run_cli("check", str(route))[0], 0)
+        self.assertEqual(self.run_cli("check", str(route), "--strict")[0], 3)
+
+    def test_display_smoke_never_deletes_a_folder_it_did_not_create(self):
+        keep = self.dir / "mine"
+        keep.mkdir()
+        (keep / "notes.txt").write_text("unrelated", encoding="utf-8")
+        code, _ = self.run_cli("display-smoke", "--build-dir", str(self.dir), "--work-dir", str(keep))
+        self.assertEqual(code, 2)
+        self.assertEqual((keep / "notes.txt").read_text(encoding="utf-8"), "unrelated")
+        self.assertFalse((keep / pg.WORK_MARKER).exists())
+
+    def test_work_dir_claim_rules(self):
+        fresh = self.dir / "new" / "deeper"
+        self.assertTrue(pg.claim_work_dir(fresh))
+        (fresh / "run1").mkdir()
+        (fresh / "run1" / "x.ppm").write_bytes(b"x")
+        (fresh / "loose.txt").write_text("a")
+        self.assertTrue(pg.claim_work_dir(fresh))  # marked by us, so it is cleared
+        self.assertEqual(sorted(p.name for p in fresh.iterdir()), [pg.WORK_MARKER])
+        empty = self.dir / "empty"
+        empty.mkdir()
+        self.assertTrue(pg.claim_work_dir(empty))
+        a_file = self.dir / "file.txt"
+        a_file.write_text("x")
+        self.assertFalse(pg.claim_work_dir(a_file))
+        self.assertEqual(a_file.read_text(), "x")
 
     def test_display_smoke_work_dir_must_be_outside_tracked_tree(self):
         code, _ = self.run_cli("display-smoke", "--build-dir", str(self.dir),
