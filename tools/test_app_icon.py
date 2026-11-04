@@ -304,12 +304,17 @@ class VersionInfoMakefileTests(unittest.TestCase):
 class VersionInfoWindowsExecutableTests(unittest.TestCase):
     """Compile the generated script and link a tiny program, as the Makefile does."""
 
+    windres: str
+    gcc: str
+    powershell: str
+
     @classmethod
     def setUpClass(cls) -> None:
-        cls.windres, cls.gcc = shutil.which("windres"), shutil.which("gcc")
-        cls.powershell = shutil.which("pwsh") or shutil.which("powershell")
-        if not (cls.windres and cls.gcc and cls.powershell):
+        windres, gcc = shutil.which("windres"), shutil.which("gcc")
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        if not (windres and gcc and powershell):
             raise unittest.SkipTest("SKIP: windres, gcc and PowerShell are needed")
+        cls.windres, cls.gcc, cls.powershell = windres, gcc, powershell
 
     def build_exe(self, tmp: Path, name: str, *tool_args: str) -> Path:
         rc, obj, src, exe = (tmp / "nakagawa_icon.rc", tmp / "nakagawa_icon.o",
@@ -331,7 +336,8 @@ class VersionInfoWindowsExecutableTests(unittest.TestCase):
         done = subprocess.run([self.powershell, "-NoProfile", "-Command", command],
                               capture_output=True, text=True, encoding="utf-8", check=True,
                               env={**os.environ, "NK_VI_EXE": str(exe)})
-        return json.loads(done.stdout)
+        info: dict[str, str] = json.loads(done.stdout)
+        return info
 
     def test_player_executable_reports_its_friendly_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
