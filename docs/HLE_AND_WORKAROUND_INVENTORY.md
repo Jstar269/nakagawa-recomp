@@ -46,8 +46,8 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **685** (dedicated **579**, fake_success **4**, controlled_unsupported **102**).
-Semantic handler census: **557** handlers across **27** API families, covering **586** handler-associated NID registrations.
+Registered NIDs: **687** (dedicated **581**, fake_success **4**, controlled_unsupported **102**).
+Semantic handler census: **559** handlers across **27** API families, covering **588** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -55,7 +55,7 @@ Semantic handler census: **557** handlers across **27** API families, covering *
 | `partial` | 263 | 271 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 3 | 7 |
-| `unreviewed` | 276 | 284 |
+| `unreviewed` | 278 | 286 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -70,7 +70,7 @@ Semantic handler census: **557** handlers across **27** API families, covering *
 | `sceGe` | 2 | 11 | 0 | 0 | 1 | 14 | 14 |
 | `sceHprm` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
-| `sceIo` | 2 | 27 | 0 | 0 | 3 | 32 | 32 |
+| `sceIo` | 2 | 27 | 0 | 0 | 5 | 34 | 34 |
 | `sceKernel` | 3 | 107 | 0 | 0 | 80 | 190 | 208 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 12 | 0 | 2 | 26 | 40 | 40 |
@@ -86,7 +86,7 @@ Semantic handler census: **557** handlers across **27** API families, covering *
 | `sceUtility` | 0 | 10 | 0 | 0 | 27 | 37 | 37 |
 | `sceVaudio` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **263** | **1** | **3** | **276** | **557** | **586** |
+| **Total** | **14** | **263** | **1** | **3** | **278** | **559** | **588** |
 
 #### Complete Handlers (Evidence-Backed)
 
