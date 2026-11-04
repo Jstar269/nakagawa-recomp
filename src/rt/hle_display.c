@@ -242,6 +242,8 @@ static void display_present_active(void) {
         (void)ace_flip(s_display_active.addr & 0x1FFFFFu, bytes, s_vcount,
                        sr_host_monotonic_ms() * 1000000ull);
     }
+    /* A recording counts the guest's own flips beside the picture (videorec.h). */
+    sr_videorec_guest_flip();
     display_present_frame();
     sr_capture_cancel();
     uint32_t brightest;

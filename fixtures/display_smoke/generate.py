@@ -1519,15 +1519,19 @@ def videorec_smoke(build_dir: Path) -> int:
         shown = _videorec_frames(out_dir / "video.bgr0", frames)
         if len(shown) != count:
             raise RuntimeError(f"video.bgr0 holds {len(shown)} frames, record.json {count}")
-        new = sum(1 for row in rows if row.endswith(",new"))
+        cells = [row.split(",") for row in rows]
+        new = sum(1 for cell in cells if cell[3] == "new")
         if new != int(record["new_frames"]) or len(set(shown)) > new:
             raise RuntimeError("new frames in frames.csv and the pictures disagree")
+        flips = sum(int(cell[4]) for cell in cells)
+        if flips < 1 or flips != int(record["guest_flips"]):
+            raise RuntimeError(f"frames.csv counts {flips} guest flips, record.json {record['guest_flips']}")
         wav = (out_dir / "audio.wav").read_bytes()
         samples = (len(wav) - 44) // 4
         if samples != count * 44144100 // 60000 or any(wav[44:]):
             raise RuntimeError(f"audio.wav holds {samples} samples; the fixture is silent")
     print(
-        f"DISPLAY_SMOKE_VIDEOREC status=PASS frames={count} new={new} "
+        f"DISPLAY_SMOKE_VIDEOREC status=PASS frames={count} new={new} guest_flips={flips} "
         f"guest_frames={shown[0]}..{shown[-1]} audio_samples={samples} guest=MATCH pixels=EXACT"
     )
     return 0

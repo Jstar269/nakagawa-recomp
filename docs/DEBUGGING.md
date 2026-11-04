@@ -2181,15 +2181,26 @@ recorder is host-side only: it writes no guest memory and changes no guest-visib
 unrecorded run).
 
 On the Vulkan presenter the recorded picture is the one the window shows (Ace Mode's smooth motion
-included), scaled with the window's own scaling mode into a fixed-size target, without the HUD or the
-pause overlay. `SR_VIDEOREC_SIZE=3840x2160` records 4K whatever the window's size. The CPU presenters
-(GDI, offscreen) record their 480x272 frame.
+included), scaled with the window's own scaling mode into a fixed-size target. It is a clean capture:
+no host overlay reaches it, neither the HUD and its frame-rate readout nor the player's notices nor
+the pause overlay. `SR_VIDEOREC_SIZE=3840x2160` records 4K whatever the window's size. The CPU
+presenters (GDI, offscreen) record their 480x272 frame.
 
-The folder receives `video.mkv` (FFV1, piped to FFmpeg's standard input; FFmpeg is found on `PATH`, or
-set `SR_VIDEOREC_FFMPEG`), `audio.wav`, `frames.csv` (one row per frame: VBLANK, guest time, and
-whether it is a `new` picture, a `repeat` or a `gap`), `record.json` (the summary, `PASS` or `FAIL`
-with the reason) and `recording.mkv`, the two muxed without re-encoding. Without FFmpeg, or with
-`SR_VIDEOREC_CODEC=raw`, the frames go to `video.bgr0` (raw BGRX, size and rate in `record.json`).
+The game's own frame rate is kept beside the picture instead, so footage of a 60 Hz presentation
+still says how many frames the game drew: `frames.csv` gives each video frame's count of guest flips
+(`sceDisplaySetFrameBuf` changes; Ace Mode's in-between pictures are not flips), `logic.srt` gives
+one subtitle per 60 frames (`game 29.9 fps (30 frames)`), and `record.json` gives the total.
+
+The folder receives `video.mkv` (FFV1, piped to FFmpeg's standard input), `audio.wav`, `frames.csv`
+(one row per frame: VBLANK, guest time, whether it is a `new` picture, a `repeat` or a `gap`, and its
+guest flips), `logic.srt`, `record.json` (the summary, `PASS` or `FAIL` with the reason) and
+`recording.mkv`: picture, sound and the frame-rate subtitles (a track that is off by default) muxed
+without re-encoding. Without FFmpeg, or with `SR_VIDEOREC_CODEC=raw`, the frames go to `video.bgr0`
+(raw BGRX, size and rate in `record.json`).
+
+FFmpeg is the user's own local tool: Nakagawa never ships, downloads or bundles it. The recorder
+starts the FFmpeg it finds in an absolute `PATH` entry, or the one `SR_VIDEOREC_FFMPEG` names, without
+a shell, and only when `SR_VIDEOREC_DIR` is set.
 
 Guest time still follows the host clock in the default paced mode, so a host that cannot keep up
 with the encoder (FFV1 at 4K is CPU-heavy; `nvenc` or `x264rgb` is faster) makes the guest skip

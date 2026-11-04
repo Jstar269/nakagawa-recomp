@@ -124,6 +124,7 @@ static void test_timeline(const char *root) {
             last_value = 0x00010000u * (uint32_t)step + 0x40u;
             fill(px, last_value);
             memcpy(copy, px, sizeof px);
+            sr_videorec_guest_flip();
             sr_videorec_frame(px, W, H, W * 4u, SR_CAP_ORDER_BGRX);
             CHECK(memcmp(copy, px, sizeof px) == 0, "the recorder leaves the presented pixels alone");
         }
@@ -170,6 +171,7 @@ static void test_timeline(const char *root) {
     CHECK(st.first_vcount == 100, "the recording starts at the first presented picture");
     CHECK(st.frames == 41, "40 serviced VBLANKs plus one gap give 41 frames");
     CHECK(st.new_frames == 20, "20 flips are 20 new frames");
+    CHECK(st.guest_flips == 20, "the guest's 20 flips are counted");
     CHECK(st.repeat_frames == 20, "VBLANKs without a flip repeat the picture");
     CHECK(st.gap_frames == 1, "the skipped VCOUNT step is one gap frame");
     CHECK(st.late_vblanks == 0, "an exact guest-time grid has no late VBLANKs");
@@ -226,6 +228,17 @@ static void test_timeline(const char *root) {
         fclose(f);
     }
     CHECK(rows == 42 && gaps == 1, "frames.csv has a header and one row per frame");
+    path_in(p, sizeof p, dir, "logic.srt");
+    f = fopen(p, "r");
+    char srt[256] = { 0 };
+    if (f) {
+        size_t n = fread(srt, 1, sizeof srt - 1, f);
+        srt[n] = 0;
+        fclose(f);
+    }
+    /* 41 frames: one partial cue, frames 0..41, with the 20 flips. */
+    CHECK(strstr(srt, "1\n00:00:00,000 --> 00:00:00,684\ngame 29.2 fps (20 frames)") != NULL,
+          "logic.srt carries the game's frame rate for the recorded stretch");
 }
 
 /* A GE render target (RGBX) is written in BGRX order, and a clean recording reports PASS. */

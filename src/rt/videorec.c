@@ -81,6 +81,14 @@ static int s_ch_seen[SR_VIDEOREC_CHANNELS];
 static uint64_t s_audio_samples, s_audio_overflow, s_audio_trimmed, s_audio_before_start;
 static uint64_t s_audio_clipped, s_max_lead;
 
+/* The guest's own frame rate, kept apart from the picture: the flips each written frame
+ * carries (frames.csv) and one subtitle cue per 60 frames (logic.srt), so the footage needs no
+ * host readout drawn into it and still says honestly how many game frames each second had. */
+static uint64_t s_flips_pending, s_guest_flips;
+static uint64_t s_block_flips;
+static FILE *s_srt;
+static unsigned s_srt_cues;
+
 static FILE *s_wav;
 static FILE *s_csv;
 static FILE *s_raw;
@@ -400,11 +408,13 @@ static int vr_open_files(void) {
     s_wav = fopen(p, "wb");
     vr_path(p, sizeof p, "frames.csv");
     s_csv = fopen(p, "w");
-    if (!s_wav || !s_csv) return 0;
+    vr_path(p, sizeof p, "logic.srt");
+    s_srt = fopen(p, "w");
+    if (!s_wav || !s_csv || !s_srt) return 0;
     uint8_t h[44];
     vr_wav_header(h, 0);
     if (fwrite(h, 1, sizeof h, s_wav) != sizeof h) return 0;
-    fputs("frame,vcount,guest_us,kind\n", s_csv);
+    fputs("frame,vcount,guest_us,kind,guest_flips\n", s_csv);
     s_ring = (int32_t *)calloc((size_t)VR_RING_FRAMES * 2u, sizeof *s_ring);
     return s_ring != NULL;
 }
@@ -534,6 +544,29 @@ void sr_videorec_resolve_pending(void) {
     }
 }
 
+static void vr_srt_time(char *out, size_t n, uint64_t frame) {
+    uint64_t ms = frame * 1001000u / 60000u;
+    snprintf(out, n, "%02llu:%02llu:%02llu,%03llu", (unsigned long long)(ms / 3600000u),
+             (unsigned long long)(ms / 60000u % 60u), (unsigned long long)(ms / 1000u % 60u),
+             (unsigned long long)(ms % 1000u));
+}
+
+/* One logic.srt cue for frames [from, to): the guest flips in that stretch, per second. */
+static void vr_srt_cue(uint64_t from, uint64_t to) {
+    if (!s_srt || to <= from) return;
+    char a[32], b[32];
+    vr_srt_time(a, sizeof a, from);
+    vr_srt_time(b, sizeof b, to);
+    double fps = (double)s_block_flips * 60000.0 / (1001.0 * (double)(to - from));
+    fprintf(s_srt, "%u\n%s --> %s\ngame %.1f fps (%llu frames)\n\n", ++s_srt_cues, a, b, fps,
+            (unsigned long long)s_block_flips);
+    s_block_flips = 0;
+}
+
+void sr_videorec_guest_flip(void) {
+    if (sr_videorec_wants_frames()) s_flips_pending++;
+}
+
 static void vr_write_frame(uint32_t vcount, uint64_t guest_us, const char *kind) {
     if (s_failed && !s_raw && !s_enc.running) return;
     size_t bytes = (size_t)s_w * s_h * 4u;
@@ -546,9 +579,17 @@ static void vr_write_frame(uint32_t vcount, uint64_t guest_us, const char *kind)
     } else if (s_raw) {
         if (fwrite(px, 1, bytes, s_raw) != bytes) vr_fail("raw video write failed");
     }
-    fprintf(s_csv, "%llu,%u,%llu,%s\n", (unsigned long long)s_frames, vcount,
-            (unsigned long long)guest_us, kind);
+    uint64_t flips = 0;
+    if (strcmp(kind, "gap") != 0) {
+        flips = s_flips_pending;
+        s_flips_pending = 0;
+    }
+    fprintf(s_csv, "%llu,%u,%llu,%s,%llu\n", (unsigned long long)s_frames, vcount,
+            (unsigned long long)guest_us, kind, (unsigned long long)flips);
+    s_guest_flips += flips;
+    s_block_flips += flips;
     s_frames++;
+    if (s_frames % 60u == 0u) vr_srt_cue(s_frames - 60u, s_frames);
 }
 
 /* Finalise mixed samples [s_flushed, upto) into the WAV file. */
@@ -669,9 +710,14 @@ static int vr_mux(void) {
     vr_path(video, sizeof video, "video.mkv");
     vr_path(audio, sizeof audio, "audio.wav");
     vr_path(out, sizeof out, "recording.mkv");
+    char srt[1024];
+    vr_path(srt, sizeof srt, "logic.srt");
+    /* The logic-rate subtitles go in as a track that is off by default. */
     const char *argv[] = { "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                           "-i", video, "-i", audio, "-map", "0:v:0", "-map", "1:a:0",
-                           "-c", "copy", out, NULL };
+                           "-i", video, "-i", audio, "-i", srt,
+                           "-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0",
+                           "-c", "copy", "-metadata:s:s:0", "title=Game frame rate",
+                           "-disposition:s:0", "0", out, NULL };
     VrProc p;
     if (!vr_proc_start(&p, s_ffmpeg, argv, 0)) return -1;
     return vr_proc_finish(&p);
@@ -693,6 +739,11 @@ int sr_videorec_finish(void) {
         s_wav = NULL;
     }
     if (s_csv) { fclose(s_csv); s_csv = NULL; }
+    if (s_srt) {
+        if (s_frames % 60u) vr_srt_cue(s_frames - s_frames % 60u, s_frames);
+        fclose(s_srt);
+        s_srt = NULL;
+    }
     if (s_raw) {
         if (fclose(s_raw) != 0) vr_fail("raw video close failed");
         s_raw = NULL;
@@ -720,6 +771,7 @@ int sr_videorec_finish(void) {
                 "  \"width\": %u,\n  \"height\": %u,\n"
                 "  \"fps_num\": %u,\n  \"fps_den\": %u,\n  \"first_vcount\": %u,\n"
                 "  \"frames\": %llu,\n  \"new_frames\": %llu,\n  \"repeat_frames\": %llu,\n"
+                "  \"guest_flips\": %llu,\n"
                 "  \"gap_frames\": %llu,\n  \"late_vblanks\": %llu,\n  \"refused_frames\": %llu,\n"
                 "  \"readback_failures\": %llu,\n"
                 "  \"audio_rate\": %u,\n  \"audio_samples\": %llu,\n"
@@ -732,6 +784,7 @@ int sr_videorec_finish(void) {
                 mux_status == 0 ? "true" : "false", s_w, s_h, SR_VIDEOREC_FPS_NUM,
                 SR_VIDEOREC_FPS_DEN, s_vcount0, (unsigned long long)s_frames,
                 (unsigned long long)s_new_frames, (unsigned long long)s_repeat_frames,
+                (unsigned long long)s_guest_flips,
                 (unsigned long long)s_gap_frames, (unsigned long long)s_late_vblanks,
                 (unsigned long long)s_refused_frames, (unsigned long long)s_resolve_failures,
                 SR_VIDEOREC_AUDIO_RATE, (unsigned long long)s_audio_samples,
@@ -776,6 +829,7 @@ void sr_videorec_test_stats(SrVideoRecStats *out) {
     memset(out, 0, sizeof *out);
     out->frames = s_frames;
     out->new_frames = s_new_frames;
+    out->guest_flips = s_guest_flips;
     out->repeat_frames = s_repeat_frames;
     out->gap_frames = s_gap_frames;
     out->late_vblanks = s_late_vblanks;
@@ -792,6 +846,7 @@ void sr_videorec_test_stats(SrVideoRecStats *out) {
 void sr_videorec_test_reset(void) {
     if (s_wav) fclose(s_wav);
     if (s_csv) fclose(s_csv);
+    if (s_srt) fclose(s_srt);
     if (s_raw) fclose(s_raw);
     if (s_enc.running) (void)vr_proc_finish(&s_enc);
     free(s_buf[0]);
@@ -803,7 +858,9 @@ void sr_videorec_test_reset(void) {
     s_dir[0] = s_codec[0] = s_encoder_note[0] = s_ffmpeg[0] = s_fail_why[0] = '\0';
     s_cur = NULL;
     s_ring = NULL;
-    s_wav = s_csv = s_raw = NULL;
+    s_wav = s_csv = s_raw = s_srt = NULL;
+    s_flips_pending = s_guest_flips = s_block_flips = 0;
+    s_srt_cues = 0;
     memset(&s_enc, 0, sizeof s_enc);
     s_w = s_h = 0;
     s_have_frame = s_cur_new = s_started = s_failed = 0;

@@ -17,7 +17,8 @@
 //
 // Files in SR_VIDEOREC_DIR: video.mkv (FFV1 through FFmpeg, see SR_VIDEOREC_CODEC) or
 // video.bgr0 (raw frames, when FFmpeg is not used), audio.wav, frames.csv (one row per
-// video frame), record.json (the summary) and, when FFmpeg muxed them, recording.mkv.
+// video frame), logic.srt (the game's frame rate per second), record.json (the summary) and,
+// when FFmpeg muxed them, recording.mkv. The picture carries no host readout or overlay.
 #ifndef SR_VIDEOREC_H
 #define SR_VIDEOREC_H
 
@@ -47,6 +48,11 @@ int sr_videorec_requested_size(uint32_t *w, uint32_t *h);
  * size is refused, counted and reported, and the previous picture is written in its place. */
 void sr_videorec_frame(const void *px, uint32_t w, uint32_t h, uint32_t row_bytes,
                        sr_cap_order order);
+
+/* The guest flipped to a new frame (sceDisplaySetFrameBuf). Counted per written frame in
+ * frames.csv and per second in logic.srt, the game's own frame rate beside a picture that carries
+ * no host readout. */
+void sr_videorec_guest_flip(void);
 
 /* A presenter whose readback is still on the GPU registers how to finish it: the callback waits
  * for it and calls sr_videorec_frame (returns 1), or reports that it could not (0). The recorder
@@ -78,7 +84,7 @@ uint64_t sr_videorec_frame_sample(uint64_t k);
 int sr_videorec_test_start(const char *dir, const char *codec);
 int sr_videorec_test_start_at(const char *dir, const char *codec, uint32_t start_vcount);
 typedef struct {
-    uint64_t frames, new_frames, repeat_frames, gap_frames, late_vblanks, refused_frames;
+    uint64_t frames, new_frames, guest_flips, repeat_frames, gap_frames, late_vblanks, refused_frames;
     uint64_t audio_samples, audio_overflow, audio_trimmed;
     uint32_t width, height, first_vcount;
     int failed;
