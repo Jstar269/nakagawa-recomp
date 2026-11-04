@@ -1616,8 +1616,11 @@ void psmf_av_audio_submit(int ch, uint32_t buf, uint32_t bytes, uint32_t bytes_p
     st->boundary_hits++;
 }
 
+void sr_mpeg_pictures_report_all(const char *reason);   /* mpeg.c */
+
 void psmf_av_final(const char *reason) {
     if (!psmf_av_on()) return;
+    sr_mpeg_pictures_report_all(reason);
     PsmfAvStream *v = &s_psmf_av.s[PSMF_AV_VIDEO], *a = &s_psmf_av.s[PSMF_AV_AUDIO];
     if (!v->delivered && !a->delivered) return;
     psmf_av_window_close(psmf_av_now_us());
