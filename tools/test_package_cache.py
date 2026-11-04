@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,7 +37,7 @@ def _aot_gap_report(cache: dict, region_count: int) -> str:
     nodes and comma separators. 6000 records is about 1.3 MB, the measured
     size of a flagship build report, so the fixture reproduces that route.
     """
-    return package_cache.canonical_json({
+    return str(package_cache.canonical_json({
         "cache": cache,
         "unsupported": {
             "regions": [
@@ -51,20 +52,20 @@ def _aot_gap_report(cache: dict, region_count: int) -> str:
                 for index in range(region_count)
             ]
         },
-    })
+    }))
 
 
 class PackageCacheTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="package_cache_")
         self.root = Path(self.temp.name)
-        self.inputs = {
+        self.inputs: dict[str, Any] = {
             "manifest": {"sha256": "1" * 64},
             "executable": {"sha256": "2" * 64},
             "modules": [],
             "psp_header": None,
         }
-        self.identity = package_cache.build_title_input_identity(
+        self.identity: dict[str, Any] = package_cache.build_title_input_identity(
             manifest={"id": "synthetic-cache-test", "schema_version": 1},
             executable_name="EBOOT.BIN",
             executable_sha256="2" * 64,
@@ -420,6 +421,7 @@ class PackageCacheTests(unittest.TestCase):
             native_test,
         )
         self.assertIsNotNone(table)
+        assert table is not None
         cases = re.findall(
             r'^\s*\{"((?:\\.|[^"\\])*)",\s*(true|false)\},?\s*$',
             table.group("cases"),
@@ -1059,10 +1061,10 @@ class PackageCacheTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, stdout=str(programs[name]) + "\n",
                                                stderr="")
         with mock.patch.object(package_cache.subprocess, "run", side_effect=run):
-            return package_cache.compiler_identity(
+            return str(package_cache.compiler_identity(
                 environment=environment,
                 repository_root=root if root is not None else self._toolchain_root,
-            )
+            ))
 
     def test_compiler_identity_names_the_programs_the_driver_runs(self) -> None:
         # A binutils update replaces the assembler and the linker and leaves the driver
@@ -1369,7 +1371,7 @@ class PackageCacheTests(unittest.TestCase):
                     raise failures.pop()
                 real_replace(src, dst)
 
-            waits = []
+            waits: list[float] = []
             with mock.patch.object(nk_cli.os, "replace", side_effect=flaky_replace):
                 nk_cli._replace_package_folder(source, target, sleeper=waits.append,
                                                delays=(0.1, 0.2, 0.3))
@@ -1394,7 +1396,7 @@ class PackageCacheTests(unittest.TestCase):
             target = Path(tmp) / "ABCD12345"
             real_replace = os.replace
             sharing_violation = OSError(13, "The process cannot access the file")
-            sharing_violation.winerror = 32
+            setattr(sharing_violation, "winerror", 32)
             failures = [sharing_violation]
 
             def flaky_replace(src, dst):
@@ -1402,7 +1404,7 @@ class PackageCacheTests(unittest.TestCase):
                     raise failures.pop()
                 real_replace(src, dst)
 
-            waits = []
+            waits: list[float] = []
             with mock.patch.object(nk_cli.os, "replace", side_effect=flaky_replace):
                 nk_cli._replace_package_folder(source, target, sleeper=waits.append,
                                                delays=(0.1, 0.2))
@@ -1439,7 +1441,7 @@ class PackageCacheTests(unittest.TestCase):
                     raise failures.pop()
                 real_replace(src, dst)
 
-            waits = []
+            waits: list[float] = []
             real_helper = nk_cli._replace_package_folder
 
             def windows_retry(source, destination):
@@ -1655,7 +1657,7 @@ class BoundedJsonArtifactTests(unittest.TestCase):
     failure that embeds it) -- never a parser-implementation exception.
     """
 
-    def _pkg(self, tmp: Path, name: str, payload: str) -> Path:
+    def _pkg(self, tmp: Path | str, name: str, payload: str) -> Path:
         package_dir = Path(tmp) / name
         package_dir.mkdir(parents=True)
         (package_dir / "package.json").write_text(payload, encoding="utf-8")
@@ -2074,12 +2076,12 @@ class ObjectCacheTests(unittest.TestCase):
     def test_key_names_compiler_command_and_input_but_not_the_build_folder(self) -> None:
         def key(line: str, *, build_dir: str, preprocessed: bytes = b"int x;\n",
                 compiler: str = "gcc:1") -> str:
-            return package_cache.object_cache_key(
+            return str(package_cache.object_cache_key(
                 package_cache.parse_compile_command(line),
                 compiler_identity_text=compiler,
                 build_dir=build_dir,
                 preprocessed=preprocessed,
-            )
+            ))
 
         base = key("gcc -O0 -I/one/b -c a.c -o /one/b/a.o", build_dir="/one/b")
         self.assertEqual(base, key("gcc -O0 -I/two/b -c a.c -o /two/b/a.o", build_dir="/two/b"))
