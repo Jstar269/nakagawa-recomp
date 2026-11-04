@@ -544,16 +544,21 @@ should ignore the trailing uid/vblank columns.
 
 ### Does a title enable mipmapping? (issue #1373)
 
-The GE prints one line, with no environment variable, at the first textured draw that samples mip
-levels (a mip filter bit in `TEXFILTER` and a highest level above 0 in `TEXMODE`):
+The GE prints one line, with no environment variable, at the first textured draw made with mip
+sampling enabled: a mip filter bit in `TEXFILTER` and a highest level above 0 in `TEXMODE`. It
+covers every route that textures (PRIM, BEZIER and SPLINE patches, and immediate vertices):
 
 ```text
-GE mip: first draw that samples mip levels at frame 412, highest level 3, filter 0x6, level mode 0, bias 0/16 (#1373)
+GE mip: first draw with mip sampling enabled at frame 412, highest level 3, filter 0x6, level mode 0, bias 0/16 (#1373)
 ```
 
-No such line in a run means no draw sampled a mip level, so mip levels cannot be the cause of a
-defect seen in that run. The line names the first draw only; `g_ge_mip_draws` (`src/rt/recomp.h`)
-counts all of them for the whole run and is what `test_ge_texture_mip_levels` checks.
+The line says mip sampling is enabled, not that a level above 0 was picked: a constant level 0 or a
+magnified draw counts too. No such line in a run means no textured draw had mip sampling enabled, so
+mip levels cannot be the cause of a defect seen in that run. A line means mipmapping is enabled and
+may or may not be the cause; read the draw's level mode, bias and size to tell. The line names the
+first draw only; `g_ge_mip_draws` (`src/rt/recomp.h`) counts all of them for the whole run and
+`g_ge_mip_lines_printed` counts the lines (0 or 1). `test_ge_texture_mip_levels` and
+`test_ge_mip_use_trace_routes` check both.
 
 ### Locating the instruction that produced a NaN (issue #69)
 

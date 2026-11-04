@@ -521,8 +521,12 @@ static void mip_fill_texture(void) {
 /* Draw the texture (UV 0-8) onto a size x size sprite; return the one RGB colour the sprite
  * holds (framebuffer alpha is the stencil, which these draws leave alone), or 0 when it is
  * not uniform or the list did not end. */
-static uint32_t mip_draw(uint32_t max_level, uint32_t level_word, uint32_t min_filter,
-                         unsigned size) {
+/* The route that submits the textured draw (#1373): PRIM, a BEZIER patch or immediate vertices.
+ * Each reaches the sampler through its own entry in ge.c, and each must reach the mip-use count. */
+enum { MIP_ROUTE_PRIM, MIP_ROUTE_PATCH, MIP_ROUTE_IMMEDIATE };
+
+static uint32_t mip_draw_route(int route, uint32_t max_level, uint32_t level_word,
+                               uint32_t min_filter, unsigned size) {
     const float verts[10] = { 0.0f, 0.0f, (float)MIP_X, (float)MIP_Y, 0.0f,
                               8.0f, 8.0f, (float)(MIP_X + size), (float)(MIP_Y + size), 0.0f };
     memcpy(SR_HOST(MIP_VERTS), verts, sizeof verts);
@@ -551,8 +555,32 @@ static uint32_t mip_draw(uint32_t max_level, uint32_t level_word, uint32_t min_f
     W(0xC8, level_word);                    /* TEXLEVEL */
     W(0xC9, 3u | 0x100u);                   /* TEXFUNC replace, RGBA */
     W(0x1E, 1u);                            /* TEXTUREMAPENABLE */
-    W(0x12, 3u | (3u << 7) | (1u << 23));   /* float UV and position, through mode */
-    prim(6u, 2u, MIP_VERTS);
+    if (route == MIP_ROUTE_PATCH) {
+        /* A 4x4 BEZIER patch of zeroed transform-mode control points: it draws nothing visible,
+         * but it takes the patch route into the sampler state, which is all the count reads. */
+        static const unsigned char zeros[16 * 20];
+        memcpy(SR_HOST(MIP_VERTS), zeros, sizeof zeros);
+        W(0x12, 3u | (3u << 7));            /* float UV and position, transform mode */
+        W(0x36, (1u << 8) | 1u);            /* PATCHDIVISION 1x1 */
+        W(0x37, 0u);                        /* PATCHPRIMITIVE triangles */
+        W(0x01, MIP_VERTS);
+        W(0x05, 0x0404u);                   /* BEZIER 4x4 */
+    } else if (route == MIP_ROUTE_IMMEDIATE) {
+        /* An immediate sprite: texture flag in VAP, VTCS/VTCT normalized (1.0 is the level-0 size). */
+        const uint32_t flags = 0x00200000u;                  /* GE_IMM_TEXTURE */
+        W(0x12, 3u | (3u << 7) | (1u << 23));
+        W(0xF6, 0x00FFFFFFu);                                /* VCV: white */
+        W(0xF8, 255u);                                       /* VFC */
+        W(0xF3, 0u); W(0xF4, 0u);                            /* VTCS, VTCT */
+        W(0xF0, 0x8000u + MIP_X * 16u); W(0xF1, 0x8000u + MIP_Y * 16u); W(0xF2, 0u);
+        W(0xF7, (6u << 8) | 0xFFu | flags);                  /* sprite, first corner */
+        W(0xF3, 0x3F8000u); W(0xF4, 0x3F8000u);              /* 1.0 */
+        W(0xF0, 0x8000u + (MIP_X + size) * 16u); W(0xF1, 0x8000u + (MIP_Y + size) * 16u);
+        W(0xF7, (7u << 8) | 0xFFu | flags);                  /* second corner flushes the sprite */
+    } else {
+        W(0x12, 3u | (3u << 7) | (1u << 23));   /* float UV and position, through mode */
+        prim(6u, 2u, MIP_VERTS);
+    }
     W(0x0C, 0u);
     if (ge_run_list(MIP_LIST, 0) != 0) return 0u;
     uint32_t first = MEM_R32(MIP_FB + (MIP_Y * 512u + MIP_X) * 4u) & 0x00FFFFFFu;
@@ -561,6 +589,42 @@ static uint32_t mip_draw(uint32_t max_level, uint32_t level_word, uint32_t min_f
             if ((MEM_R32(MIP_FB + ((MIP_Y + y) * 512u + MIP_X + x) * 4u) & 0x00FFFFFFu) != first)
                 return 0u;
     return first;
+}
+
+static uint32_t mip_draw(uint32_t max_level, uint32_t level_word, uint32_t min_filter,
+                         unsigned size) {
+    return mip_draw_route(MIP_ROUTE_PRIM, max_level, level_word, min_filter, size);
+}
+
+/* The mip-use count is the evidence that a title enables mipmapping (#1373), so a route that
+ * textures without reaching it would let a title mip unseen. Each route counts once with a mip
+ * filter and a highest level above 0, and not at all with either off; the "GE mip:" line has
+ * printed exactly once by the end, however many draws were counted. */
+static void test_ge_mip_use_trace_routes(void) {
+    static const struct { int route; const char *name; } routes[] = {
+        { MIP_ROUTE_PRIM, "prim" }, { MIP_ROUTE_PATCH, "patch" },
+        { MIP_ROUTE_IMMEDIATE, "immediate" },
+    };
+    static const struct { uint32_t max_level, min_filter; unsigned long want; } states[] = {
+        { 3u, 4u, 1ul },   /* mip filter and a highest level: counted */
+        { 0u, 4u, 0ul },   /* highest level 0 */
+        { 3u, 1u, 0ul },   /* no mip filter bit */
+    };
+    mip_fill_texture();
+    for (size_t r = 0; r < sizeof routes / sizeof routes[0]; r++) {
+        for (size_t k = 0; k < sizeof states / sizeof states[0]; k++) {
+            unsigned long before = g_ge_mip_draws;
+            (void)mip_draw_route(routes[r].route, states[k].max_level, MIP_LEVEL(1, 16),
+                                 states[k].min_filter, 8u);
+            char detail[128];
+            snprintf(detail, sizeof detail, "%s route, max level %u, filter %u: count rose by %lu, expected %lu",
+                     routes[r].name, (unsigned)states[k].max_level, (unsigned)states[k].min_filter,
+                     g_ge_mip_draws - before, states[k].want);
+            expect(g_ge_mip_draws - before == states[k].want, "mip_use_trace_routes", detail);
+        }
+    }
+    expect(g_ge_mip_lines_printed == 1ul, "mip_use_trace_once",
+           "the GE mip: line was not printed exactly once");
 }
 
 static void test_ge_texture_mip_levels(void) {
@@ -1878,6 +1942,7 @@ int main(int argc, char **argv) {
     test_vram_mirror_cpu_stores();
     test_ge_zbuf_span_bounds_cache();
     test_ge_texture_mip_levels();
+    test_ge_mip_use_trace_routes();
     test_ge_immediate_mode();
     test_ge_immediate_stream();
     build_lists();

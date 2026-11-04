@@ -4712,12 +4712,36 @@ static void submit_model_point(const ModelVtx *a,int through){
     Vtx v;project_cvtx(&c,&v);draw_point_vtx(&v,1);
 }
 
+/* Draws made with mip sampling enabled (#1373): a textured, non-clear draw whose TEXFILTER has a
+ * mip filter and whose TEXMODE highest level is above 0 (ge_tex_mip_active, the predicate both the
+ * software sampler and the Vulkan texture cache use). This says the title enables mipmapping, not
+ * that a level above 0 was picked: a constant level 0 or a magnified draw counts too. Every route
+ * that textures calls it before it rasterizes: PRIM (draw_prim), BEZIER and SPLINE (draw_patch)
+ * and immediate vertices (ge_imm_draw). The count covers the whole run on the GE thread, like the
+ * g_ge_list_* counters, and is not reset per list. The first such draw prints one line;
+ * g_ge_mip_lines_printed says how many lines were printed (0 or 1). */
+unsigned long g_ge_mip_draws = 0;
+unsigned long g_ge_mip_lines_printed = 0;
+
+static void ge_note_mip_draw(void) {
+    if (!ge.tex_enable || !ge.tex_addr || ge.clear || !ge_tex_mip_active(&ge)) return;
+    g_ge_mip_draws++;
+    if (g_ge_mip_lines_printed) return;
+    g_ge_mip_lines_printed++;
+    fprintf(stderr, "GE mip: first draw with mip sampling enabled at frame %" PRIu32
+            ", highest level %" PRIu32 ", filter 0x%" PRIx32 ", level mode %" PRIu32
+            ", bias %d/16 (#1373)\n",
+            s_ge_frame, ge.tex_max_level, ge.tex_filter, ge.tex_level_mode,
+            (int)(ge.tex_lod_bias * 16.0f));
+}
+
 static void draw_patch(uint32_t op,int spline){
     int nu=(int)(op&255),nv=(int)((op>>8)&255);
     VFmt vf;decode_vtype(ge.vtype,&vf);int idxfmt=(int)((ge.vtype>>11)&3),count=nu*nv;
     uint32_t vbase=ge.vaddr,ibase=ge.iaddr;
     if(idxfmt)ge.iaddr+=(uint32_t)(count<<(idxfmt-1));else ge.vaddr+=(uint32_t)(count*vf.stride);
     if(nu<4||nv<4)return;
+    ge_note_mip_draw();
     ModelVtx *all=(ModelVtx*)malloc((size_t)count*sizeof(*all));if(!all)return;
     for(int i=0;i<count;i++)decode_model_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i,vf.stride),&vf,&all[i]);
     int pu=spline?nu-3:(nu-1)/3,pv=spline?nv-3:(nv-1)/3;
@@ -5065,24 +5089,6 @@ uint32_t g_frame_prims = 0;
  * provenance traces.  Count at the command frontend before either the Vulkan
  * hook or software rasterizer can accept/drop the draw. */
 unsigned long g_ge_list_through_cmds = 0, g_ge_list_transform_cmds = 0;
-
-/* Draws that sample mip levels (#1373): a textured, non-clear draw with ge_tex_mip_active().
- * Counted at the command frontend for both backends and not reset per list, so a run's total
- * says whether the title enables mipmapping at all. The first such draw prints one line. */
-unsigned long g_ge_mip_draws = 0;
-
-static void ge_note_mip_draw(void) {
-    static int noted;
-    if (!ge.tex_enable || ge.clear || !ge_tex_mip_active(&ge)) return;
-    g_ge_mip_draws++;
-    if (noted) return;
-    noted = 1;
-    fprintf(stderr, "GE mip: first draw that samples mip levels at frame %" PRIu32
-            ", highest level %" PRIu32 ", filter 0x%" PRIx32 ", level mode %" PRIu32
-            ", bias %d/16 (#1373)\n",
-            s_ge_frame, ge.tex_max_level, ge.tex_filter, ge.tex_level_mode,
-            (int)(ge.tex_lod_bias * 16.0f));
-}
 unsigned long g_ge_list_through_vertices = 0, g_ge_list_transform_vertices = 0;
 unsigned long g_ge_list_through_sprites = 0, g_ge_list_transform_sprites = 0;
 static int s_strip_cache = -1;
@@ -5855,6 +5861,7 @@ static void ge_imm_draw(int type, const Vtx *a, const Vtx *b, const Vtx *c, int 
     ge.fog_enable = (flags & GE_IMM_FOG) != 0u;
     ge.dither_enable = (flags & GE_IMM_DITHER) != 0u;
     ge.shade_gouraud = (flags & GE_IMM_SHADING) != 0u;
+    ge_note_mip_draw();
 
     if (type == 0) {
         draw_point_vtx(a, 0);
