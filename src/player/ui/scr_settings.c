@@ -1011,12 +1011,18 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         scr_flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
         nk_ui_text_role(ui, FLOW_ID_TITLE, "PSP fonts", NK_UI_TYPE_TITLE, theme->paper);
         nk_ui_text_role(ui, FLOW_ID_LEAD,
-                        "Optional. Games look right with your PSP's own fonts: connect your PSP "
-                        "by USB and choose Get fonts from my PSP, or copy the .pgf files from "
-                        "flash0:/font on your PSP to a folder on this PC (docs/SETUP.md, "
-                        "\"Copying the fonts from your PSP\") and choose them here. The import "
-                        "reads ltn0.pgf to ltn15.pgf, jpn0.pgf and kr0.pgf from that folder; "
-                        "until then similar fonts stand in.",
+                        /* #2005: what the stand-in fonts change, in the words of
+                           font/README.md and docs/SETUP.md. */
+                        "Optional. Without your PSP's own fonts, every game still runs and "
+                        "shows its text in open stand-in fonts. They look different: the "
+                        "letters are shaped differently, English lines come out a little wider "
+                        "or narrower, a few characters such as Cyrillic letters are missing, "
+                        "and Japanese and Korean text is smaller. For the PSP's own look, "
+                        "connect your PSP by USB and choose Get fonts from my PSP, or copy the "
+                        ".pgf files from flash0:/font on your PSP to a folder on this PC "
+                        "(docs/SETUP.md, \"Copying the fonts from your PSP\") and choose them "
+                        "here. The import reads ltn0.pgf to ltn15.pgf, jpn0.pgf and kr0.pgf "
+                        "from that folder.",
                         NK_UI_TYPE_BODY_S, theme->muted);
         if (model->font_summary != NULL && model->font_summary[0] != '\0') {
             nk_ui_text_role(ui, SET_ID_TEXT + 0xDDu, model->font_summary, NK_UI_TYPE_BODY_S,

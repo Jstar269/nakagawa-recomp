@@ -793,6 +793,8 @@ static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
         remove.disc_id = "TEST00009";
         remove.has_saves = true;
         remove.saves_bytes = 2u * 1024u * 1024u;
+        remove.has_disc_copy = true;
+        remove.disc_copy_bytes = 700u * 1024u * 1024u;
         remove.items = items;
         remove.item_count = sizeof(items) / sizeof(items[0]);
         remove.logical_width = g_flow_width;
@@ -2856,6 +2858,9 @@ static void test_psp_fonts_page(void) {
     CHECK(dump_flow_case(FLOW_SETTINGS_FONTS, dump, sizeof(dump)) &&
               strstr(dump, "Optional.") != NULL && strstr(dump, "flash0:/font") != NULL &&
               strstr(dump, "Copying the fonts from your PSP") != NULL &&
+              /* #2005: what a player without the PSP's fonts sees, before they decide. */
+              strstr(dump, "every game still runs") != NULL &&
+              strstr(dump, "Japanese and Korean text is smaller") != NULL &&
               strstr(dump, "Japanese: synthetic fallback") != NULL &&
               strstr(dump, "Korean: synthetic fallback") != NULL &&
               strstr(dump, "Latin 16: synthetic fallback") != NULL &&
@@ -4479,6 +4484,8 @@ static void test_remove_from_library(void) {
     remove.item_count = sizeof(items) / sizeof(items[0]);
     remove.has_saves = true;
     remove.saves_bytes = 2048u;
+    remove.has_disc_copy = true;
+    remove.disc_copy_bytes = 3u * 1024u * 1024u;
     remove.logical_width = 1280.0f;
     remove.logical_height = 800.0f;
     nk_ui_begin(ui, 0.0);
@@ -4504,6 +4511,13 @@ static void test_remove_from_library(void) {
           "Remove without the box keeps the saves");
     action = activate_remove_button(PLAYER_UI_ID_REMOVE_SAVES, &remove);
     CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES, "the saves box toggles");
+    /* #2003: the decrypted files and disc copy have their own box, also unticked. */
+    CHECK(strstr(dump, "Also delete the decrypted files and disc copy (3.0 MB)") != NULL &&
+              strstr(dump, "They stay, so adding this game again is quicker.") != NULL,
+          "the disc copy box starts unticked with its size and says the files stay");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_DISC_COPY, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_DISC_COPY && action.title_index == 3u,
+          "the disc copy box toggles");
     action = activate_remove_button(PLAYER_UI_ID_REMOVE_CANCEL, &remove);
     CHECK(action.kind == PLAYER_UI_ACTION_BACK, "Cancel leaves the dialog");
     remove.delete_saves = true;
@@ -4514,8 +4528,37 @@ static void test_remove_from_library(void) {
     CHECK(strstr(dump, "Your saves for this game will be deleted too.") != NULL,
           "a ticked box says the saves go too");
     action = activate_remove_button(PLAYER_UI_ID_REMOVE_CONFIRM, &remove);
-    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM && action.primary == 1,
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM &&
+              (unsigned)action.primary == PLAYER_UI_REMOVE_ALSO_SAVES,
           "Remove with the box ticked deletes the saves");
+    remove.delete_saves = false;
+    remove.delete_disc_copy = true;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_remove(ui, &remove);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "They go too, with any decrypted files you added yourself.") != NULL &&
+              strstr(dump, "Your disc image stays.") != NULL,
+          "a ticked disc copy box says what goes and that the disc image stays");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_CONFIRM, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM &&
+              (unsigned)action.primary == PLAYER_UI_REMOVE_ALSO_DISC_COPY,
+          "Remove with the disc copy box ticked deletes the disc copy, not the saves");
+    remove.delete_saves = true;
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_CONFIRM, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM &&
+              (unsigned)action.primary ==
+                  (PLAYER_UI_REMOVE_ALSO_SAVES | PLAYER_UI_REMOVE_ALSO_DISC_COPY),
+          "both boxes ticked delete both");
+    remove.files_shared = true;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_remove(ui, &remove);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "disc copy") == NULL, "files another image uses offer no disc copy box");
+    remove.files_shared = false;
+    remove.has_disc_copy = false;
+    remove.delete_disc_copy = false;
     remove.item_count = 0u;
     remove.has_saves = false;
     remove.delete_saves = false;

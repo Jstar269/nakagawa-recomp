@@ -2687,7 +2687,7 @@ static void test_disc_check_after_add(void) {
     assert(player_app_plan_game_removal(app, translated_index, &plan));
     assert(plan.files_shared && plan.path_count == 0);
     char error[256];
-    assert(player_app_remove_game_and_data(app, translated_index, true, error, sizeof(error)));
+    assert(player_app_remove_game_and_data(app, translated_index, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
     assert(app->game_count == 1 && strcmp(app->games[0].iso_path, retail_iso) == 0);
     assert(nk_library_load(&loaded, path) == NK_OK && nk_library_count(&loaded) == 1 &&
            nk_library_find_by_key(&loaded, "TEST70021", retail.sha1) != NULL);
@@ -2712,7 +2712,7 @@ static void test_disc_check_after_add(void) {
         assert(app->game_count == 1);
         assert(player_app_plan_game_removal(app, 0, &plan) && !plan.files_shared &&
                plan.path_count > 0);
-        assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        assert(player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
         FILE *kept = fopen(marker, "rb");
         assert(kept != NULL);
         fclose(kept);
@@ -2735,7 +2735,7 @@ static void test_disc_check_after_add(void) {
         rehashed.disc_verification = NK_DISC_TIER_UNKNOWN;
         loaded.entries[0] = rehashed;
         assert(nk_library_save(&loaded, path) == NK_OK);
-        assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        assert(player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
         kept = fopen(marker, "rb");
         assert(kept != NULL);
         fclose(kept);
@@ -2757,7 +2757,7 @@ static void test_disc_check_after_add(void) {
                  "%s", retail.crc32);
         loaded.entries[0].disc_verification = NK_DISC_TIER_VERIFIED_RETAIL;
         assert(nk_library_save(&loaded, path) == NK_OK);
-        assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        assert(player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
         kept = fopen(marker, "rb");
         assert(kept != NULL);
         fclose(kept);
@@ -2768,7 +2768,7 @@ static void test_disc_check_after_add(void) {
         assert(player_app_add_game(app, &retail_game));
         static const char newer[] = "{\"schema_version\": 99, \"games\": []}\n";
         write_text_file(path, newer);
-        assert(!player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        assert(!player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
         assert(strstr(error, "could not be read") != NULL);
         kept = fopen(marker, "rb");
         assert(kept != NULL);
@@ -4616,6 +4616,15 @@ static void test_package_build_lifecycle(const char *self_executable) {
     rebuild_app->last_error.error_code[0] = '\0';
     rebuild_app->active_view = VIEW_LIBRARY;
     assert(player_app_start_package_build(rebuild_app, 0));
+    {
+        /* #2003: the build log is in the one logs folder Settings opens, not in a logs
+           folder of the build root. */
+        char logs_dir[NK_MAX_PATH];
+        assert(nk_platform_get_path(NK_PATH_LOGS, logs_dir, sizeof(logs_dir)));
+        assert(native_test_path_within(rebuild_app->build_session.log_file_path, logs_dir));
+        assert(!native_test_path_within(rebuild_app->build_session.log_file_path, user_root));
+        printf("[PLAYER_STATE_TEST] the package build log is in the logs folder PASS\n");
+    }
     poll_player_package_build_to_terminal(rebuild_app);
     assert(rebuild_app->build_session.is_complete);
     assert(!rebuild_app->build_session.is_failed);
@@ -4745,12 +4754,14 @@ typedef struct {
     char staging[NK_MAX_PATH];
     char saves[NK_MAX_PATH];
     char decrypted[NK_MAX_PATH];
+    char discs[NK_MAX_PATH];
     char manifests[NK_MAX_PATH];
     char iso[NK_MAX_PATH];
 } RemovalFixture;
 
-/* Everything Nakagawa keeps for one disc, plus what it must never delete:
-   the disc image, the user's decrypted files and the shared manifests. */
+/* Everything Nakagawa keeps for one disc, plus what it must never delete (the
+   disc image and the shared manifests) and what goes only when asked (the
+   saves, the decrypted files and the disc copy, #2003). */
 static void removal_fixture_make(RemovalFixture *f, const char *disc) {
     char name[64];
     memset(f, 0, sizeof(*f));
@@ -4772,6 +4783,7 @@ static void removal_fixture_make(RemovalFixture *f, const char *disc) {
     removal_test_path(f->saves, sizeof(f->saves), f->saves_root, disc, NULL, NULL);
     removal_test_path(f->decrypted, sizeof(f->decrypted), f->build_root, "titles", disc,
                       "decrypted");
+    removal_test_path(f->discs, sizeof(f->discs), f->data_root, "discs", disc, NULL);
     removal_test_path(f->manifests, sizeof(f->manifests), f->build_root, "manifests", NULL,
                       NULL);
     snprintf(name, sizeof(name), "%s.iso", disc);
@@ -4784,6 +4796,7 @@ static void removal_fixture_make(RemovalFixture *f, const char *disc) {
     removal_test_tree(f->staging, "partial.bin", 7);
     removal_test_tree(f->saves, "SAVE.BIN", 2);
     removal_test_tree(f->decrypted, "EBOOT.BIN", 9);
+    removal_test_tree(f->discs, "expanded.iso", 11);
     removal_test_tree(f->manifests, "title.json", 5);
     write_text_file(f->iso, "disc image");
 }
@@ -4939,8 +4952,9 @@ static void test_remove_tree_deeper_than_max_path(void) {
 #endif
 
 /* #1304: Remove from library deletes the package, the build cache and the disc
-   files Nakagawa copied, keeps the saves unless asked, and never touches the
-   disc image, the user's decrypted files or another title's data. */
+   files Nakagawa copied, keeps the saves and (#2003) the decrypted files and
+   disc copy unless asked, and never touches the disc image or another title's
+   data. */
 static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     RemovalFixture f;
     PlayerRemovalPlan plan;
@@ -4958,16 +4972,21 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     assert(plan.kind_present[PLAYER_REMOVAL_EXTRACTED] &&
            plan.kind_bytes[PLAYER_REMOVAL_EXTRACTED] == 1007u);
     assert(plan.has_saves && plan.saves_bytes == 42u);
+    /* The decrypted files and the expanded disc image are their own opt-in group. */
+    assert(plan.has_disc_copy && plan.disc_copy_bytes == 20u);
     for (size_t i = 0; i < plan.path_count; ++i) {
+        bool in_copy = native_test_path_within(plan.paths[i].path, f.decrypted) ||
+                       native_test_path_within(plan.paths[i].path, f.discs);
         assert(strcmp(plan.paths[i].path, f.iso) != 0);
-        assert(!native_test_path_within(plan.paths[i].path, f.decrypted));
+        assert(in_copy == plan.paths[i].disc_copy);
+        assert(!(plan.paths[i].disc_copy && plan.paths[i].saves));
         assert(!native_test_path_within(plan.paths[i].path, f.manifests));
     }
 
     /* Nothing goes while the game starts, runs or builds. */
     app->launch_pending = true;
     assert(player_app_removal_blocker(app, 0) != NULL);
-    assert(!player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    assert(!player_app_remove_game_and_data(app, 0, 0u, error, sizeof(error)));
     assert(error[0] != '\0');
     app->launch_pending = false;
     app->is_game_running = true;
@@ -4978,7 +4997,7 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     app->build_session.is_building = false;
     assert(nk_platform_dir_exists(f.package));
 
-    assert(player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    assert(player_app_remove_game_and_data(app, 0, 0u, error, sizeof(error)));
     assert(app->game_count == 1 && strcmp(app->games[0].disc_id, "RMV01305") == 0);
     assert(!nk_platform_dir_exists(f.package));
     assert(!nk_platform_dir_exists(f.cache_packages));
@@ -4992,6 +5011,7 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     }
     assert(nk_platform_dir_exists(f.saves));
     assert(nk_platform_dir_exists(f.decrypted));
+    assert(nk_platform_dir_exists(f.discs));
     assert(nk_platform_dir_exists(f.manifests));
     assert(nk_platform_file_exists(f.iso));
     remove(app->library.library_path);
@@ -5000,11 +5020,27 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     /* With the box ticked the saves go too, and so does the emptied folder. */
     removal_fixture_make(&f, "RMV01304");
     app = removal_test_app(&f, "RMV01304");
-    assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+    assert(player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error, sizeof(error)));
     assert(!nk_platform_dir_exists(f.games));
     assert(!nk_platform_dir_exists(f.saves));
     assert(!nk_platform_dir_exists(f.package));
     assert(nk_platform_dir_exists(f.decrypted));
+    assert(nk_platform_dir_exists(f.discs));
+    assert(nk_platform_file_exists(f.iso));
+    remove(app->library.library_path);
+    free(app);
+
+    /* #2003: with the other box ticked the decrypted files and the disc copy go,
+       and the saves, the manifests and the disc image stay. */
+    removal_fixture_make(&f, "RMV01304");
+    app = removal_test_app(&f, "RMV01304");
+    assert(player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_DISC_COPY, error,
+                                           sizeof(error)));
+    assert(!nk_platform_dir_exists(f.decrypted));
+    assert(!nk_platform_dir_exists(f.discs));
+    assert(!nk_platform_dir_exists(f.package));
+    assert(nk_platform_dir_exists(f.saves) && nk_platform_dir_exists(f.memstick));
+    assert(nk_platform_dir_exists(f.manifests));
     assert(nk_platform_file_exists(f.iso));
     remove(app->library.library_path);
 
@@ -5015,10 +5051,10 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     app->games[0].title_id[0] = '\0';
     snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "..");
     assert(player_app_removal_blocker(app, 0) != NULL);
-    assert(!player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    assert(!player_app_remove_game_and_data(app, 0, 0u, error, sizeof(error)));
     free(app);
     printf("PASS: remove from library deletes what Nakagawa built and keeps the disc "
-           "image and, unless asked, the saves\n");
+           "image and, unless asked, the saves and the disc copy\n");
 }
 
 /* #1285: a release zip's verified prereqs/ tree beside bin/ runs BUILD PACKAGE
