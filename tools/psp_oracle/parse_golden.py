@@ -1924,6 +1924,18 @@ _register_campaign_probe(
     dict(IO_SEEK_EOF_ROWS),
 )
 
+# hle-utility-none (140, probe_hle_measure.c): #1386 at status NONE, with no InitStart
+# imported: for savedata, the message dialog, netconf, gamedata install and game sharing,
+# GetStatus, Update(1), GetStatus, ShutdownStart, GetStatus, ShutdownStart, GetStatus.
+HLE_UTILITY_NONE_ROWS = (
+    ("utility-none-savedata", 7), ("utility-none-msgdialog", 7), ("utility-none-netconf", 7),
+    ("utility-none-gamedata", 7), ("utility-none-sharing", 7),
+)
+_register_campaign_probe(
+    "hle-utility-none", "PSP-HLE-UTILITY-NONE-001",
+    tuple(row for row, _ in HLE_UTILITY_NONE_ROWS), dict(HLE_UTILITY_NONE_ROWS),
+)
+
 # io-umd-eof (137, probe_kernel_semantics.c): #1380 on the UMD, read-only: the drive state
 # before and after; for two disc0: files (a = UMD_DATA.BIN, b = PSP_GAME/PARAM.SFO) the open
 # and size, seeks past the end, reads past and across the end, negative seeks and seeks at and

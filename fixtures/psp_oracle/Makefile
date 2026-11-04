@@ -206,6 +206,9 @@ else ifeq ($(CASE),hle-timer-order)
 CASE_ID = 103
 else ifeq ($(CASE),hle-savedata-getsize)
 CASE_ID = 104
+# 140: #1386's utility dialog calls at NONE (no InitStart is imported).
+else ifeq ($(CASE),hle-utility-none)
+CASE_ID = 140
 # 106-108: the HLE issue cells (probe_hle_issues.c). 106 is the #356 model-getter and
 # #326 vrnd carry / vscmp batch; 107 the #325 interrupt and timer delivery cells; 108 the
 # #326 VFPU form words (vh2f, vuc2i, vsocp, vwbn, vrndf1/2).
@@ -509,6 +512,9 @@ OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),hle-savedata-getsize)
 TARGET = $(BUILD_DIR)/hle_savedata_getsize
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_utility_imports.o
+else ifeq ($(CASE),hle-utility-none)
+TARGET = $(BUILD_DIR)/hle_utility_none
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_utility_imports.o
 # HLE issue cells: their own source, which installs and removes interrupt and timer
 # handlers (107) and reaches a kernel getter through the kernel bridge (106), so they
 # stay out of probe_hle_measure.c. Same ThreadManForUser block and module lifecycle.
@@ -735,6 +741,11 @@ USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUtility=0xA5DA2406,0x34B78343
 endif
 ifeq ($(CASE),hle-savedata-getsize)
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUtility=0xA5DA2406,0x34B78343,0x50C4CD57,0x8874DBE0,0xD4B95FFB,0x9790B33C
+endif
+# hle-utility-none: GetStatus, Update and ShutdownStart of five dialogs and no InitStart, so no
+# dialog can be opened by this build.
+ifeq ($(CASE),hle-utility-none)
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUtility=0xA5DA2406,0x34B78343,0x8874DBE0,0xD4B95FFB,0x9790B33C,0x9A1C91D7,0x95FC253B,0x67AF3428,0x6332AA39,0x91E70E35,0xF88155F6,0xB57E95D9,0x4AECD179,0x32E32DCB,0x946963F3,0x7853182D,0xEFC6F80F
 endif
 ifeq ($(CASE),cpu-timing)
 # The shared probe cleanup checks interrupt state; cpu-timing also calls the
