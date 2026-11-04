@@ -193,7 +193,7 @@ class ShortcutFlagTests(unittest.TestCase):
 
     def _main(self, *flags: str) -> int:
         with contextlib.redirect_stdout(io.StringIO()):
-            return stage_install.main(["--dest", str(self.root / "install"), *flags])
+            return int(stage_install.main(["--dest", str(self.root / "install"), *flags]))
 
     def test_start_menu_shortcut_goes_to_the_programs_folder(self):
         with mock.patch.object(stage_install, "IS_WINDOWS", True):
@@ -306,6 +306,22 @@ class LinuxInstallTests(unittest.TestCase):
                                     r"build it with `make player`"):
             stage_install.stage_install(self.root / "x", self.root / "absent",
                                         repo=self.repo)
+
+    def test_integration_list_keeps_earlier_shortcuts(self):
+        # #2006 review: a second run with only one shortcut flag, or staging again, must not
+        # forget a shortcut an earlier run wrote outside the install folder.
+        dest = self.root / "install"
+        stage_install.stage_install(dest, self.player, repo=self.repo)
+        first, second = self.root / "Desktop.lnk", self.root / "Programs.lnk"
+        stage_install.record_integration(dest, [first])
+        stage_install.record_integration(dest, [second, first])
+        marker = dest / stage_install.MARKER
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["integration"],
+                         [str(first), str(second)])
+        record = stage_install.stage_install(dest, self.player, repo=self.repo)
+        self.assertEqual(record["integration"], [str(first), str(second)])
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["integration"],
+                         [str(first), str(second)])
 
     def test_linux_stage_skips_the_pe_runtime(self):
         dest = self.root / "install"

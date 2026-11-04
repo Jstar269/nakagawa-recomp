@@ -4946,6 +4946,10 @@ typedef struct {
     NkInstanceResult result;
     int owner_pid;
     bool release;
+    /* Windows: the process's open handles before the acquire and after the release. A start
+       that finds another holder opens nothing it keeps. */
+    unsigned long handles_before;
+    unsigned long handles_after;
 } InstanceProbe;
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -4955,11 +4959,21 @@ static void *instance_probe_thread(void *data) {
 #endif
     InstanceProbe *probe = (InstanceProbe *)data;
     NkSingleInstance instance;
+#if defined(_WIN32) || defined(_WIN64)
+    DWORD count = 0;
+    (void)GetProcessHandleCount(GetCurrentProcess(), &count);
+    probe->handles_before = (unsigned long)count;
+#endif
     probe->result = nk_platform_single_instance_acquire(&instance, probe->name);
     probe->owner_pid = instance.owner_pid;
     /* Without a release the thread ends holding it, as a crashed launcher would. The handles
        stay open in this process, as a crash's would until the OS closed them. */
     if (probe->release) nk_platform_single_instance_release(&instance);
+#if defined(_WIN32) || defined(_WIN64)
+    count = 0;
+    (void)GetProcessHandleCount(GetCurrentProcess(), &count);
+    probe->handles_after = (unsigned long)count;
+#endif
 #if defined(_WIN32) || defined(_WIN64)
     return 0u;
 #else
@@ -4982,7 +4996,7 @@ static void run_instance_probe(InstanceProbe *probe) {
 
 static void test_single_instance_per_data_folder(void) {
     char name[NATIVE_TEST_PATH_MAX + 64];
-    char same[NATIVE_TEST_PATH_MAX + 64];
+    char same[sizeof(name) + 2u];  /* name, a '/', the terminator */
     char other[NATIVE_TEST_PATH_MAX + 64];
     NkSingleInstance first;
     InstanceProbe probe;
@@ -5016,7 +5030,15 @@ static void test_single_instance_per_data_folder(void) {
     assert(probe.result == NK_INSTANCE_RUNNING);
 #if defined(_WIN32) || defined(_WIN64)
     assert(probe.owner_pid == (int)GetCurrentProcessId());
+    assert(probe.handles_after == probe.handles_before);
 #endif
+    /* A name the OS can't use opens nothing either. */
+    memset(&probe, 0, sizeof(probe));
+    probe.name = "";
+    probe.release = true;
+    run_instance_probe(&probe);
+    assert(probe.result == NK_INSTANCE_UNAVAILABLE);
+    assert(probe.handles_after == probe.handles_before);
     /* Another data folder has its own launcher. */
     memset(&probe, 0, sizeof(probe));
     probe.name = other;

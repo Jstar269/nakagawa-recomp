@@ -4023,7 +4023,10 @@ static int player_claim_single_instance(PlayerRun *run) {
     case NK_INSTANCE_RUNNING:
         break;
     }
-    if (run->initial_iso_path) {
+    if (run->launch_now || run->launch_index_requested) {
+        fprintf(stderr, "[PLAYER] Nakagawa Recomp is already open on this data folder, so the "
+                        "game was not started. Start it from the open window.\n");
+    } else if (run->initial_iso_path) {
         fprintf(stderr, "[PLAYER] Nakagawa Recomp is already open, so %s was not added. "
                         "Add it from the open window.\n", run->initial_iso_path);
     } else {

@@ -30,7 +30,10 @@ in the user's Start menu (#2003); both may be given.
 On Linux, either flag writes a per-user ``.desktop`` entry (which the desktop
 shows in its application menu) and a 256 px icon under ``$XDG_DATA_HOME``
 (``~/.local/share`` when unset). The marker records the paths written outside
-``--dest`` in ``integration``.
+``--dest`` in ``integration`` and keeps them across runs. Nothing removes them
+yet: to uninstall, delete them by hand (docs/SETUP.md). Neither flag runs on its
+own: the portable ZIP writes no shortcut, so a Start-menu entry needs this tool,
+for example ``python tools/stage_install.py --dest <folder> --start-menu-shortcut``.
 
 The Windows install's ``bin/`` also carries ``runtime-manifest.json``
 (``tools/stage_runtime_dlls.py``): the size, SHA-256 and imports of the player
@@ -183,6 +186,9 @@ def stage_install(dest: Path, player: Path, *, repo: Path = ROOT,
         )
     _check_destination(dest)
     dest.mkdir(parents=True, exist_ok=True)
+    # Shortcuts an earlier staging wrote stay recorded: staging again replaces bin/ and
+    # source/, not the shortcuts outside dest.
+    integration = _recorded_integration(dest)
     stage = dest / f".staging-{os.getpid()}"
     if stage.exists():
         shutil.rmtree(stage)
@@ -219,7 +225,7 @@ def stage_install(dest: Path, player: Path, *, repo: Path = ROOT,
         "player": f"bin/{player.name}",
         "runtime_stage": runtime_stage,
         "runtime_files": sorted(staged),
-        "integration": [],
+        "integration": integration,
         "staged_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
     }
     _write_marker(dest, record)
@@ -230,11 +236,27 @@ def _write_marker(dest: Path, record: dict) -> None:
     (dest / MARKER).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
 
+def _recorded_integration(dest: Path) -> list[str]:
+    """The paths an earlier run recorded in ``dest``'s marker, or [] without a readable one."""
+    try:
+        record = json.loads((dest / MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    paths = record.get("integration") if isinstance(record, dict) else None
+    return [str(path) for path in paths] if isinstance(paths, list) else []
+
+
 def record_integration(dest: Path, paths) -> None:
-    """Record the paths a shortcut wrote outside ``dest`` in the install marker."""
+    """Add the paths a shortcut wrote outside ``dest`` to the install marker, keeping the
+    ones recorded before. Nothing reads the list back yet: it says what to delete by hand
+    (docs/SETUP.md), and a later uninstall step can use it."""
     marker = dest.resolve() / MARKER
     record = json.loads(marker.read_text(encoding="utf-8"))
-    record["integration"] = [str(path) for path in paths]
+    kept = [str(path) for path in record.get("integration", [])]
+    for path in paths:
+        if str(path) not in kept:
+            kept.append(str(path))
+    record["integration"] = kept
     _write_marker(dest.resolve(), record)
 
 
