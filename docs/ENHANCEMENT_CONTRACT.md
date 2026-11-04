@@ -313,8 +313,21 @@ Ace run's log, the acceptance checkpoint refuses an Ace run (`reason=ace_mode`),
 everything off, its 60 FPS game logic included; its `ace` turns Ace on whatever the library says; otherwise the
 library's switch decides. A feature takes the title's value where it has one, else the library's.
 
-A title that launches its 60 FPS game logic gets `smooth=off` on its line, whatever the settings say: logic and
-interpolation are refused together, not stacked (#1272).
+A title's 60 FPS game logic and smooth motion may be on together (owner decision of 2026-11-04, replacing the earlier
+rule that refused the pair, #1272): the package keeps the game's logic at 60 Hz, and interpolation presents
+in-between frames above that rate. The two are separate switches. Smooth motion keeps its own key (`smooth`) and its
+own library and title settings, is off by default, and stays off by default until the "nothing worse" evidence of
+section 11.2, item 4 exists for the stack. The 60 FPS package's own switch does not turn it on or off.
+
+What stays refused is a second interpolator: one interpolation mode runs at a time, so `smooth=match` and `smooth=x2`
+are never both on, and a launch line that names a mode this build does not carry is refused whole (section 10.1).
+
+This build does not yet interpolate above 30 Hz. Smooth motion acts only on a title the detector holds at 30 (section
+10.6); a title running 60 FPS game logic is presented frame by frame as it comes, as without the feature. The
+interpolator for a 60 Hz source is its own item under section 11, with its own key, entry and evidence. Until it
+lands, the player still turns smooth motion off for a launch of the enhanced 60 FPS build, and the title page says
+so. That is a limit of this build, not a rule of the contract; the item that lands the interpolator removes it and
+updates the tests that pin it.
 
 Ultrawide (a host-only wide mirror of the GE's draws) is designed and tracked in #1272; it is not part of this build.
 
@@ -330,7 +343,8 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
   guest made it, so a frame is never predicted. The cost is one VBLANK of added delay (about 17 ms), reported in the
   run's report as `added_delay_ms`. A flip that arrives first replaces the held frame.
 - **Only at 30.** Every other detector class, a pause and a static picture show each frame as it comes, as without
-  the feature. The detector enters 30 Hz after a second of agreement and leaves after half a second of disagreement.
+  the feature. A title that runs 60 FPS game logic is such a class
+  in this build (section 10.5). The detector enters 30 Hz after a second of agreement and leaves after half a second of disagreement.
 - **UI.** A pixel that did not change between the two frames is copied, so a HUD stays exact while the scene moves
   behind it.
 - **Cuts.** When a third of the blocks fit nothing or disagree with their neighbours, the two frames are different
