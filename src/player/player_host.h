@@ -43,6 +43,12 @@ bool player_host_open_folder(const char *path);
  * (assets/brand/nakagawa.rc). */
 void player_host_set_window_icon(SDL_Window *window);
 
+/* Give this process the player's identity (#2006, NK_APP_* in src/core/nk_launch.h) before
+ * SDL starts and before any window exists: the Windows AppUserModelID, so the launcher, every
+ * game it starts and a pinned shortcut share one taskbar group, and SDL's app metadata (the
+ * Wayland app ID and X11 class elsewhere). A refusal only costs the grouping; it is logged. */
+void player_host_set_app_identity(void);
+
 #ifdef __cplusplus
 }
 #endif
