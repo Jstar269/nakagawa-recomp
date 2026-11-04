@@ -44,6 +44,7 @@ PUBLIC_TARGETS := \
 	showcase-linux \
 	display-smoke \
 	display-smoke-run \
+	display-smoke-picture-gate \
 	display-smoke-gui \
 	display-smoke-quit \
 	display-smoke-player \
@@ -204,6 +205,7 @@ HELP_DESCRIPTION_showcase-smoke := run bundled demos headlessly with telemetry c
 HELP_DESCRIPTION_showcase-linux := build and smoke the showcase demos on this POSIX host (Linux CI gate)
 HELP_DESCRIPTION_display-smoke := build the display smoke fixture
 HELP_DESCRIPTION_display-smoke-run := run display smoke and compare its GE/present flight bundle
+HELP_DESCRIPTION_display-smoke-picture-gate := compare display smoke frames with an accepted reference (SKIP, PASS, FAIL)
 HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
 HELP_DESCRIPTION_display-smoke-quit := close the display smoke window mid-run and check the orderly quit
 HELP_DESCRIPTION_display-smoke-player := build the player and run display smoke
