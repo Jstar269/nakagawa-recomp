@@ -1273,7 +1273,12 @@ float sr_vfpu_asin(float x){
     x=(float)(int32_t)bits*9.31322574615478515625e-10f;return sign?-x:x;
 }
 
+/* x is a mantissa offset in [0, 0x800000]: sr_vfpu_log2's upper knot (i+64)&~63 reaches the
+ * end point 0x800000 (log2 2) for mantissas from 0x7FFFC0 up, FLT_MAX among them. On a knot
+ * (x & 0xFFFF == 0) the next entry and the quadratic term carry zero weight, so the value is
+ * the knot's own entry; returning it reads nothing past the 129- and 128-entry tables (#326). */
 static uint32_t sr_log2_approx(uint32_t x){
+    if(!(x&0xFFFFu))return sr_log2_lut65536[x>>16];
     uint32_t a=sr_log2_lut65536[(x>>16)+0],b=sr_log2_lut65536[(x>>16)+1];
     uint32_t c=sr_log2_lut65536_quadratic[x>>16];x&=0xFFFFu;
     uint64_t ret=(uint64_t)a*(0x10000u-x)+(uint64_t)b*x;

@@ -1554,13 +1554,21 @@ int main(int argc, char **argv) {{
                                  "native layout rule")
 
     def test_start_entry_is_shared_by_python_and_c(self) -> None:
-        # module_start wins over e_entry, then module_bootstart, then e_entry; an image with
-        # no module info (p_paddr == p_vaddr) starts at e_entry.
+        # module_start wins over e_entry, then module_bootstart, then e_entry; a NID listed
+        # twice resolves to its last entry; an image with no module info (p_paddr ==
+        # p_vaddr) starts at e_entry.
         cases = [
             ("module-start-over-e-entry", build_module_start_elf(entry=0x08804008),
              0x08804004, None),
             ("module-start-over-bootstart", build_module_start_elf(entry=0, exports=(
                 (MODULE_BOOTSTART_NID, 0x8), (MODULE_START_NID, 0x4))), 0x08804004, None),
+            # A table that lists module_start twice (The BIGS and The BIGS 2 list a game
+            # routine first and their crt0 entry last): uofw's module manager assigns every
+            # match, so the last one is entered (sr_prx_start_entry names the revision).
+            ("module-start-listed-twice", build_module_start_elf(entry=0x08804008, exports=(
+                (MODULE_START_NID, 0x4), (MODULE_START_NID, 0x8))), 0x08804008, None),
+            ("bootstart-listed-twice", build_module_start_elf(entry=0, exports=(
+                (MODULE_BOOTSTART_NID, 0x4), (MODULE_BOOTSTART_NID, 0xC))), 0x0880400C, None),
             ("bootstart-without-start", build_module_start_elf(
                 entry=0x08804008, exports=((MODULE_BOOTSTART_NID, 0xC),)), 0x0880400C, None),
             ("e-entry-without-exports", build_module_start_elf(
@@ -1872,12 +1880,12 @@ int main(int argc, char **argv) {{
         create_test_iso_with_module_tree(iso_file, modules)
         with self.assertRaisesRegex(
             IsoInspectionError,
-            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets are in the works",
+            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets aren't supported yet",
         ):
             list_disc_module_candidates(iso_file)
         with self.assertRaisesRegex(
             nk_cli.PackageBuildError,
-            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets are in the works",
+            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets aren't supported yet",
         ):
             nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
 
@@ -2206,6 +2214,36 @@ int main(int argc, char **argv) {{
         iso_file = self.temp_dir / "standard.iso"
         create_test_iso(iso_file, disc_id="TEST00001", title="Standard Disc")
         self.assertNotIn("format_warnings", inspect_iso(iso_file).container_metadata)
+
+    def test_quirky_disc_inspection_builds_a_valid_title_identity(self) -> None:
+        # The inspector's container metadata goes straight into the package identity,
+        # so a disc with a tolerated quirk must still yield a valid identity record.
+        from nk_core import package_cache
+
+        iso_file = self.temp_dir / "quirk-identity.iso"
+        sfo = build_custom_param_sfo([
+            ("DISC_ID", 0x0204, b"TEST00001\0"),
+            ("DISC_VERSION", 0x0204, b"1.00\0"),
+            ("TITLE", 0x0204, b"Fixture \x96 Edition\0"),
+        ])
+        create_test_iso(iso_file, volume_id="VOLUME_ID", sfo_bytes=sfo)
+        meta = inspect_iso(iso_file)
+        self.assertIn("format_warnings", meta.container_metadata)
+        identity = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-quirk-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[],
+            disc_id=meta.disc_id,
+            region="OTHER",
+            disc_version=meta.version,
+            param_sfo=dict(meta.param_sfo_facts),
+            container=dict(meta.container_metadata),
+        )
+        self.assertEqual(
+            set(identity["container"]),
+            {"format", "volume_id", "size_bytes", "pvd_sector", "sector_size"},
+        )
 
     # A synthetic beta disc: a 12-character placeholder DISC_ID, outside the retail
     # format, and a small executable. Its key is pinned below, because a library

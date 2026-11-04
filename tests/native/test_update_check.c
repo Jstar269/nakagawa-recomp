@@ -384,7 +384,7 @@ static void test_short_notes(void) {
     assert(strcmp(notes, "Bold and code with a link . one two") == 0);
     nk_update_short_notes("A long sentence that is cut at a word boundary before the end of "
                           "the room.", notes, 32);
-    assert(strcmp(notes, "A long sentence that is cut...") == 0);
+    assert(strcmp(notes, "A long sentence that is cut…") == 0);
     nk_update_short_notes(NULL, notes, sizeof(notes));
     assert(notes[0] == '\0');
     printf("[UPDATE_CHECK_TEST] short notes: PASS\n");
@@ -570,7 +570,7 @@ static void test_signatures(void) {
     assert(!nk_update_expected_sha256(&release, &key, k_good_checksum, good_length, NULL, 0, sha,
                                       &error));
     assert(strcmp(error.code, "UPDATE_SIGNATURE_MISSING") == 0);
-    assert(strcmp(error.title, "Release Not Signed") == 0);
+    assert(strcmp(error.title, "Release not signed") == 0);
     release.has_signature = true;
     /* A build with no key: nothing is trusted, whatever the files say. */
     assert(!nk_update_expected_sha256(&release, NULL, k_good_checksum, good_length, minisig,
@@ -617,7 +617,7 @@ static void test_check_failures(void) {
     net.answers[0].reachable = false;
     assert(!nk_update_check(fake_open, &net, "0.0.1", &result, &error));
     assert(strcmp(error.code, "UPDATE_OFFLINE") == 0);
-    assert(strcmp(error.title, "Couldn't Reach GitHub") == 0);
+    assert(strcmp(error.title, "Couldn't reach GitHub") == 0);
     assert(net.request_count == 1);   /* no retry */
     /* A redirect to another host. */
     memset(&net, 0, sizeof(net));

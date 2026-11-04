@@ -1133,7 +1133,7 @@ class TestModinfo(PrxTestBase):
 # Item 5: exports
 # ---------------------------------------------------------------------------
 
-def build_export_fixture(zero_len=False):
+def build_export_fixture(zero_len=False, start_twice=False):
     g = BASE + 0x1000
     data = bytearray()
     data += modinfo_block(name=b"expmod")  # placeholder, patched below
@@ -1157,8 +1157,8 @@ def build_export_fixture(zero_len=False):
     vv = g + 0x700
     struct.pack_into("<IHHBBHI", raw, rec0_off, 0, 0, 0, 4, 1, 2,
                      g + etab0_off)
-    struct.pack_into("<3I", raw, etab0_off, 0xD632ACDB, 0xCEE05613,
-                     0xF01D73A7)
+    struct.pack_into("<3I", raw, etab0_off, 0xD632ACDB,
+                     0xD632ACDB if start_twice else 0xCEE05613, 0xF01D73A7)
     struct.pack_into("<3I", raw, etab0_off + 12, f0, f1, vv)
     struct.pack_into("<IHHBBHI", raw, rec1_off, g + str_off, 0, 0, 4, 1, 1,
                      g + etab1_off)
@@ -1189,6 +1189,16 @@ class TestExports(PrxTestBase):
         self.assertEqual(info["modstart"], BASE + 0x1000 + 0x500)
         # Entry is separate from module_start.
         self.assertEqual(info["entry"], BASE + 0x10)
+
+    def test_module_start_listed_twice_enters_the_last(self):
+        # uofw's module manager assigns every module_start entry it walks past, so
+        # the last one listed is the one it enters (sr_prx_start_entry, prx_loader.h).
+        m = Module(e_entry=0x10)
+        m.add_seg(0x1000, build_export_fixture(start_twice=True), 256)
+        info = self.run_load(m.build())
+        self.assertEqual(info.get("result"), "ok", info.get("err"))
+        self.assertEqual(info["hasstart"], 1)
+        self.assertEqual(info["modstart"], BASE + 0x1000 + 0x600)
 
     def test_zero_length_record_fails(self):
         m = Module()

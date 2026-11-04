@@ -1848,6 +1848,23 @@ uint32_t mpeg_flush_all_stream(uint32_t mpegAddr) {
     return 0;
 }
 
+/* sceMpegFlushStream(mpeg, stream): checks its arguments and changes nothing, as PPSSPP does
+ * (hrydgard/ppsspp caa91b54, Core/HLE/sceMpeg.cpp, sceMpegFlushStream, NID 0x500f0429: the flush
+ * itself is commented out there; it returns -1 for an invalid address in its second argument or an
+ * unknown context, and 0 otherwise).  What a PSP discards here is not measured.  The ring
+ * counters, the queued frames and the stream state stay as they are; sceMpegFlushAllStream
+ * clears them.  PPSSPP's address test on the stream argument is not copied: this port hands out
+ * small stream ids from sceMpegRegistStream, which are not guest addresses, so the stream is
+ * checked against the ids this context issued.  A stream this context registered and has since
+ * unregistered takes the call, as in sceMpegChangeGetAuMode; any other id is refused. */
+uint32_t mpeg_flush_stream(uint32_t mpegAddr, uint32_t sid) {
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    if (mpeg_stream_index(ctx, sid) < 0 && !mpeg_stream_retired(ctx, sid))
+        return mpeg_contract_error("sceMpegFlushStream", "unknown stream", SCE_MPEG_ERROR_INVALID_VALUE);
+    return 0;
+}
+
 /* sceMpegAvcDecodeFlush(mpeg): clear queued video decoding state and reset
  * the video timestamp to stream start. Public behaviour reference: PSPSDK
  * pspmpeg.h and PPSSPP Core/HLE/sceMpeg.cpp. */

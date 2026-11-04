@@ -34,7 +34,7 @@ TOOLS = Path(__file__).resolve().parent
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
-from nk_core import disc_expand_tool  # noqa: E402
+from nk_core import disc_expand_tool, package_cache  # noqa: E402
 from nk_core.iso_inspect import IsoInspectionError, inspect_iso  # noqa: E402
 from test_iso_parity import create_test_iso_with_executables  # noqa: E402
 
@@ -222,6 +222,14 @@ class DiscExpandToolTests(unittest.TestCase):
                                  (plain.disc_id, plain.title, plain.version, plain.size_bytes))
                 self.assertEqual(info.container_metadata["format"], "iso9660")
                 self.assertEqual(info.container_metadata["source_format"], name)
+                identity = package_cache.build_title_input_identity(
+                    manifest={"id": "synthetic-expand-test", "schema_version": 1},
+                    executable_name="EBOOT.BIN",
+                    executable_sha256="2" * 64,
+                    modules=[],
+                    container=dict(info.container_metadata),
+                )
+                self.assertNotIn("source_format", identity["container"])
                 expanded = data_root / "discs" / "TEST00042" / f"TEST00042.{name}.iso"
                 self.assertEqual(expanded.read_bytes(), self.iso)
 
