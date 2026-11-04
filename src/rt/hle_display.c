@@ -942,6 +942,9 @@ void sr_vblank_tick(void) {
         display_present_active();
     }
     if (g_ace_on) gui_ace_vblank(s_vcount);
+    /* SR_VIDEOREC_DIR (videorec.h): this VBLANK's video frame is the newest picture presented
+     * above, and the audio up to it is final. Host-side only; off, nothing is read. */
+    sr_videorec_vblank(s_vcount, sched_vtime_us());
     /* Periodic VCOUNT cadences are boundary crossings, not an exact modulus: a serviced
      * tick can step over a multiple or repeat one (see sr_vcount_window_crossed). */
     static uint32_t tick_log_window = 0;
@@ -1096,6 +1099,8 @@ void sr_vblank_tick(void) {
             /* _Exit skips atexit, so the SR_AUDIODUMP file is closed here whether or not
              * SR_AUDIOSTAT is set; after the stats call above it is a no-op. */
             hle_exit_close_audio_dump();
+            /* The same for a video recording: its encoder is finished and the files muxed. */
+            (void)sr_videorec_finish();
             sr_dump_calls();
             fflush(stderr);
             fflush(stdout);

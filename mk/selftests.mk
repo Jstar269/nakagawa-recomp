@@ -135,6 +135,17 @@ fbcap-selftest:
 		tests/native/fbcap_selftest.c src/rt/fbcap.c src/rt/fbcap_policy.c
 	$(BUILD_DIR)/fbcap_selftest.exe $(BUILD_DIR)/fbcap_selftest
 
+# videorec-selftest - the run recorder (src/rt/videorec.c, #1273) driven with synthetic pictures,
+# VBLANKs and audio hand-offs: one frame per VBLANK (new, repeat and gap frames), audio exactly as
+# long as the video, impulses landing on the samples their guest time names, channel volume,
+# summing and clipping, RGBX order, refused sizes, and the guest's buffers left alone. With FFmpeg
+# on PATH it also encodes FFV1 and muxes; without it that part reports SKIP. No GPU or game input.
+native-core-tests: videorec-selftest
+videorec-selftest:
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -DSR_VIDEOREC_SELFTEST \
+		-o $(BUILD_DIR)/videorec_selftest.exe tests/native/videorec_selftest.c src/rt/videorec.c
+	$(BUILD_DIR)/videorec_selftest.exe $(BUILD_DIR)/videorec_selftest
+
 # osk-text-entry-selftest - the on-screen keyboard's text entry (src/rt/osk_text_entry.c)
 # with a fake native input box: a poll never waits for the person, the box runs off the
 # polling thread, answers are handed over once, an abandoned box is closed whether or not it

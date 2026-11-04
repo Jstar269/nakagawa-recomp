@@ -284,6 +284,7 @@ The runtime executes generated guest functions and implements the host side of P
 | `domain_mode.c` / `domain_mode.h` | LLE Phase 1 per-domain HLE/LLE mode table (every domain defaults to HLE), the NID-to-domain and export registries, and the `sr_import_call()` seam that generated import stubs use instead of calling `sr_syscall()` directly |
 | `fbcap.c` / `fbcap.h` | Presenter-neutral frame-capture service: owns the capture state and the atomic P6 PPM publisher, so a capture means the same thing whichever presenter showed the frame |
 | `fbcap_policy.c` / `fbcap_policy.h` | Deterministic policy for who owns the single frame-capture slot when both `SR_FBDUMP` and `SR_FBSNAP` are set |
+| `videorec.c` / `videorec.h` | Run recorder (`SR_VIDEOREC_DIR`): one video frame per VBLANK from the presenter plus the guest's mixed audio on one guest timeline, encoded through FFmpeg or written raw |
 
 ### HLE
 

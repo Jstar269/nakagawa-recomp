@@ -132,6 +132,7 @@ PUBLIC_TARGETS := \
 	atrac3p-bridge-selftest \
 	ge-texture-ref-selftest \
 	fbcap-selftest \
+	videorec-selftest \
 	osk-text-entry-selftest \
 	osk-overlay-selftest \
 	ace-selftest \
@@ -298,6 +299,7 @@ HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
 HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
 HELP_DESCRIPTION_ge-texture-ref-selftest := run the GE texture sampling reference selftest
 HELP_DESCRIPTION_fbcap-selftest := run the presenter-neutral frame capture selftest
+HELP_DESCRIPTION_videorec-selftest := run the run-recorder (video and audio capture) selftest
 HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blocking text-entry selftest
 HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-machine selftest (pure C)
 HELP_DESCRIPTION_ace-selftest := run Ace Mode's CPU-only selftest (launch line, 30 Hz detector, readout, report; pure C)

@@ -843,6 +843,7 @@ def run(
     offscreen: bool = False,
     flight_output: Path | None = None,
     flight_trigger: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> int:
     # The runtime is spawned with cwd=ROOT, so a relative build_dir would make the
     # CHILD resolve the executable/image paths against ROOT rather than the
@@ -902,6 +903,11 @@ def run(
             env.pop(key, None)
         if flight_trigger is not None:
             env["SR_FLIGHT_TRIGGER"] = flight_trigger
+    # A recording is opted into per route: an inherited one would change what this run writes.
+    for key in ("SR_VIDEOREC_DIR", "SR_VIDEOREC_CODEC", "SR_VIDEOREC_SIZE"):
+        env.pop(key, None)
+    if extra_env:
+        env.update(extra_env)
     completed = subprocess.run(
         command, cwd=run_cwd, env=env, capture_output=True, text=True
     )
@@ -1417,6 +1423,116 @@ def flight_smoke(build_dir: Path) -> int:
     return 0
 
 
+def _videorec_frames(video: Path, frames: int) -> list[int]:
+    """Decode a raw BGRX recording into the guest frame index each picture shows.
+
+    Every recorded picture must be one complete guest frame of the stripe pattern, exactly,
+    and the guest frame index may only stay or grow from one recorded frame to the next.
+    """
+    size = DISPLAY_WIDTH * DISPLAY_HEIGHT * 4
+    data = video.read_bytes()
+    if len(data) % size:
+        raise RuntimeError(f"video.bgr0 is {len(data)} bytes, not a whole number of frames")
+    expected_cache: dict[int, bytes] = {}
+    shown: list[int] = []
+    for index in range(len(data) // size):
+        bgrx = data[index * size:(index + 1) * size]
+        rgb = bytearray(DISPLAY_WIDTH * DISPLAY_HEIGHT * 3)
+        rgb[0::3] = bgrx[2::4]
+        rgb[1::3] = bgrx[1::4]
+        rgb[2::3] = bgrx[0::4]
+        frame = rgb[0]
+        if frames <= 256 and frame >= frames:
+            raise RuntimeError(f"recorded frame {index} shows guest frame {frame}, outside the run")
+        if frame not in expected_cache:
+            expected_cache[frame] = _expected_present_pixels(frame)
+        if bytes(rgb) != expected_cache[frame]:
+            raise RuntimeError(f"recorded frame {index} is not exactly guest frame {frame}")
+        if shown and frame < shown[-1]:
+            raise RuntimeError(f"recorded frame {index} goes back to guest frame {frame}")
+        shown.append(frame)
+    return shown
+
+
+def videorec_smoke(build_dir: Path) -> int:
+    """Record the fixture's run and prove the recording leaves the guest unchanged (#1273).
+
+    Two offscreen runs, one recording with the raw encoder: the guest's GE and SetFrameBuf
+    flight events match after host presents are projected out, both finish with the exact
+    framebuffer word, and the recording holds one exact guest picture per VBLANK with a
+    silent WAV exactly as long as the video.
+    """
+    build_dir = build_dir.resolve()
+    manifest = _read_manifest(build_dir / "fixture")
+    frames = int(manifest["frames"])
+    with tempfile.TemporaryDirectory(prefix="display-smoke-videorec-") as temp_dir:
+        temp = Path(temp_dir)
+        plain_dir = temp / "plain"
+        rec_dir = temp / "recorded"
+        out_dir = temp / "video"
+        plain_dir.mkdir()
+        rec_dir.mkdir()
+        plain_path = plain_dir / "flight.json"
+        rec_path = rec_dir / "flight.json"
+        run(build_dir, gui=True, offscreen=True, flight_output=plain_path)
+        run(build_dir, gui=True, offscreen=True, flight_output=rec_path,
+            extra_env={"SR_VIDEOREC_DIR": str(out_dir), "SR_VIDEOREC_CODEC": "raw"})
+        log = (build_dir / f"{ARTIFACT_STEM}.gui-offscreen.stderr.log").read_text(
+            encoding="utf-8", errors="replace")
+        if "VIDEOREC: PASS" not in log:
+            raise RuntimeError("the recording run did not report VIDEOREC: PASS")
+
+        plain = json.loads(plain_path.read_text(encoding="utf-8"))
+        recorded = json.loads(rec_path.read_text(encoding="utf-8"))
+        for label, bundle, run_dir in (
+            ("plain", plain, plain_dir), ("recorded", recorded, rec_dir)
+        ):
+            if bundle["recorder"]["dropped"] != 0:
+                raise RuntimeError(f"{label} flight bundle dropped events")
+            _require_vblank_progress(bundle, label)
+            _require_exact_present_pixels(run_dir / "frame_first.ppm", frames, label)
+        plain_path.write_text(json.dumps(_without_host_present_events(plain), sort_keys=True),
+                              encoding="utf-8")
+        rec_path.write_text(json.dumps(_without_host_present_events(recorded), sort_keys=True),
+                            encoding="utf-8")
+        match = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "flight_diff.py"), str(plain_path),
+             str(rec_path)],
+            capture_output=True, text=True, check=False,
+        )
+        if match.returncode != 0 or "MATCH:" not in match.stdout:
+            raise RuntimeError(
+                f"recording changed the guest's flight events: {match.stdout}{match.stderr}")
+
+        record = json.loads((out_dir / "record.json").read_text(encoding="utf-8"))
+        if record["status"] != "PASS" or record["encoder"] != "raw":
+            raise RuntimeError(f"record.json reports {record['status']}: {record['reason']}")
+        if (record["width"], record["height"]) != (DISPLAY_WIDTH, DISPLAY_HEIGHT):
+            raise RuntimeError("the offscreen recording is not at the presenter's 480x272")
+        count = int(record["frames"])
+        rows = (out_dir / "frames.csv").read_text(encoding="utf-8").splitlines()[1:]
+        if count < 2 or len(rows) != count:
+            raise RuntimeError(f"record.json counts {count} frames, frames.csv {len(rows)}")
+        vcounts = [int(row.split(",")[1]) for row in rows]
+        if vcounts != list(range(vcounts[0], vcounts[0] + count)):
+            raise RuntimeError("the recording does not hold one frame per VBLANK")
+        shown = _videorec_frames(out_dir / "video.bgr0", frames)
+        if len(shown) != count:
+            raise RuntimeError(f"video.bgr0 holds {len(shown)} frames, record.json {count}")
+        new = sum(1 for row in rows if row.endswith(",new"))
+        if new != int(record["new_frames"]) or len(set(shown)) > new:
+            raise RuntimeError("new frames in frames.csv and the pictures disagree")
+        wav = (out_dir / "audio.wav").read_bytes()
+        samples = (len(wav) - 44) // 4
+        if samples != count * 44144100 // 60000 or any(wav[44:]):
+            raise RuntimeError(f"audio.wav holds {samples} samples; the fixture is silent")
+    print(
+        f"DISPLAY_SMOKE_VIDEOREC status=PASS frames={count} new={new} "
+        f"guest_frames={shown[0]}..{shown[-1]} audio_samples={samples} guest=MATCH pixels=EXACT"
+    )
+    return 0
+
+
 def run_player(build_dir: Path) -> int:
     """Drive PLAY NOW through the native player without human input.
 
@@ -1582,6 +1698,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     vramdump_parser.add_argument("--build-dir", type=Path, required=True)
     flight_parser = subparsers.add_parser("flight")
     flight_parser.add_argument("--build-dir", type=Path, required=True)
+    videorec_parser = subparsers.add_parser("videorec")
+    videorec_parser.add_argument("--build-dir", type=Path, required=True)
     player_parser = subparsers.add_parser("run-player")
     player_parser.add_argument("--build-dir", type=Path, required=True)
     quit_parser = subparsers.add_parser("quit")
@@ -1605,6 +1723,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_vramdump(args.build_dir)
         if args.command == "flight":
             return flight_smoke(args.build_dir)
+        if args.command == "videorec":
+            return videorec_smoke(args.build_dir)
         if args.command == "run-player":
             return run_player(args.build_dir)
         if args.command == "quit":

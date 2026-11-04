@@ -309,6 +309,7 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
          * which is exactly the case the counters exist to describe. */
         psmf_av_audio_submit((int)ch, buf, bytes, mono ? 2u : 4u, 44100u);   /* queue lead read before the push */
         uint64_t out_started = sr_perf_now_ns();
+        sr_videorec_audio((int)ch, lr, (int)n, voll, volr, sched_vtime_us());
         sr_audio_push((int)ch, lr, (int)n, voll, volr);
         if (out_started) sr_perf_audio_output(out_started, n);
     }
@@ -511,6 +512,8 @@ static uint32_t audio_src_output(CpuState *s, int owner, uint32_t vol, uint32_t 
             &s_audio_src_resampler, converted, 4111u);
         if (converted_frames > 0u) {
             uint64_t out_started = sr_perf_now_ns();
+            sr_videorec_audio(AUDIO_OUTPUT2_CHANNEL, converted, (int)converted_frames,
+                              (int)vol, (int)vol, sched_vtime_us());
             sr_audio_push(AUDIO_OUTPUT2_CHANNEL, converted, (int)converted_frames,
                           (int)vol, (int)vol);
             if (out_started)
