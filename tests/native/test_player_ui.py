@@ -4943,9 +4943,11 @@ class NativePlayerUiTests(unittest.TestCase):
 
     # Remove from library is the title page's lowest control, beside Report a
     # problem: Down presses reach that row whichever action-row buttons are
-    # enabled (the ENHANCEMENTS card's left-aligned Ace Mode button leads Down to
-    # Report a problem), and Right ends on Remove.
-    DOWN_TO_REMOVE = ("KEY_DOWN", "WAIT_MS=80") * 6 + ("KEY_RIGHT", "WAIT_MS=80")
+    # enabled. Down lands on whichever of the two lies nearest the button above
+    # (the ENHANCEMENTS card's Play mode label is wide enough to lead to either),
+    # so Left settles on Report a problem and Right ends on Remove.
+    DOWN_TO_REMOVE = (("KEY_DOWN", "WAIT_MS=80") * 6 +
+                      ("KEY_LEFT", "WAIT_MS=80", "KEY_RIGHT", "WAIT_MS=80"))
 
     def remove_run(self, events: tuple[str, ...]) -> list[dict[str, str]]:
         run = self.run_player("library", events, ui_mode="next", wait_background=True)
