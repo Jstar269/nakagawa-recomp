@@ -580,10 +580,12 @@ NkInstanceResult nk_platform_single_instance_acquire(NkSingleInstance *instance,
     if (wait == WAIT_TIMEOUT) {
         result = NK_INSTANCE_RUNNING;
         if (mapping) {
-            LONG *owner = (LONG *)MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(LONG));
+            /* A plain aligned read: an interlocked one writes, and this view is read-only. */
+            const volatile LONG *owner =
+                (const volatile LONG *)MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(LONG));
             if (owner) {
-                instance->owner_pid = (int)InterlockedCompareExchange(owner, 0, 0);
-                UnmapViewOfFile(owner);
+                instance->owner_pid = (int)*owner;
+                UnmapViewOfFile((LPCVOID)owner);
             }
         }
     }
