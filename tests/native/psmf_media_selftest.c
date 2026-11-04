@@ -4356,6 +4356,13 @@ static void test_mpeg_feed_end_without_stream_size(int mode) {
     }
     EF_CHECK(s_ef_next == packets, "mpeg-eof (%s): the whole movie went in");
     for (int guard = 0; guard < 16 && !ctx->videoEnd; guard++) pictures += eof_drain(avc);
+    /* As a guest player does at the end of a movie, DecodeStopYCbCr hands over a picture the
+     * decoder still holds (status 1), if it holds one. */
+    MEM_W32(EF_INIT, 0xdeadbeefu);
+    EF_CHECK(guest_mpeg_import(NID_STOP_YCBCR, EF_DESC, EF_YCPTR, EF_INIT, 0u, 0u) == 0u &&
+                 MEM_R32(EF_INIT) <= 1u,
+             "mpeg-eof (%s): DecodeStopYCbCr takes the end of the movie");
+    pictures += (int)MEM_R32(EF_INIT);
     /* A YCbCr call can take more than one decoded frame and write one picture, so the count is
      * of access units handed out and frames decoded, not of pictures written. */
     if (ctx->h264Units != AV_PICTURES || ctx->h264Frames != AV_PICTURES || !ctx->videoEnd)
