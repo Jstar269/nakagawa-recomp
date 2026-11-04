@@ -5089,6 +5089,59 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(steps[stopped[0] - 1][0], self.STOP_ROUTE)
         self.assertEqual(steps[stopped[0]][0], "2")
 
+    def game_exit_steps(self, exit_code: int) -> list[tuple[str, str, str, str, str]]:
+        """Each change of (route, focus, running, view, error) while a game run from its
+        title page ends with `exit_code`, then Esc twice."""
+        run = self.run_player(
+            "ready",
+            ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=700",  # open the running game's title page
+             f"GAME_EXIT={exit_code}", "WAIT_MS=300",  # the game ends on its own
+             "KEY_ESCAPE", "WAIT_MS=300", "KEY_ESCAPE", "WAIT_MS=300", "CLOSE"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_GAME_RUNNING": "TEST00006"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        self.assertIn(f"game_exit code={exit_code} result=PASS", str(run["stdout"]))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        steps: list[tuple[str, str, str, str, str]] = []
+        for frame in frames:
+            step = (frame["next_route"], frame["next_focus"], frame["game_running"],
+                    frame["view"], frame["error"])
+            if not steps or steps[-1] != step:
+                steps.append(step)
+        return steps
+
+    def test_a_game_that_ends_returns_to_its_title_page(self) -> None:
+        """#2002: Quit to library ends the game cleanly, and the launcher is still on that
+        game's page, with its focus: the run never left the page, and the exit is reaped
+        without a view change (player_app_monitor_game_session)."""
+        steps = self.game_exit_steps(0)
+        ended = [i for i, step in enumerate(steps) if step[2] == "0"]
+        self.assertTrue(ended, f"the game never ended: {steps}")
+        running = steps[ended[0] - 1]
+        after = steps[ended[0]]
+        self.assertEqual(running[0], "2", f"the game was not run from its page: {steps}")
+        self.assertEqual(after[0], "2", f"the title page did not survive the exit: {steps}")
+        self.assertEqual(after[1], running[1], f"the page lost its focus: {steps}")
+        self.assertEqual(after[3], running[3], f"a clean exit changed the view: {steps}")
+        self.assertEqual(after[4], "NONE", f"a clean exit raised a card: {steps}")
+
+    def test_a_game_that_crashes_shows_its_card_over_its_title_page(self) -> None:
+        """#2002: a game that exits with an error shows its card, and leaving the card
+        lands on the same game's page."""
+        steps = self.game_exit_steps(3)
+        ended = [i for i, step in enumerate(steps) if step[2] == "0"]
+        self.assertTrue(ended, f"the game never ended: {steps}")
+        after = steps[ended[0]]
+        self.assertEqual(after[3], "error", f"a crash showed no card: {steps}")
+        self.assertEqual(after[4], "RUNTIME_ERROR_EXIT", f"the wrong card: {steps}")
+        self.assertEqual(after[0], "2", f"the title page went under the card: {steps}")
+        dismissed = [step for step in steps[ended[0]:] if step[3] != "error"]
+        self.assertTrue(dismissed, f"Esc did not leave the card: {steps}")
+        self.assertEqual(dismissed[0][0], "2", f"leaving the card left the page: {steps}")
+
     def test_preflight_refusal_is_not_a_build_failure(self) -> None:
         """#1286: a build refused at preflight never started, so its card is not
         "Package Build Failed" and its badge is not a code."""
