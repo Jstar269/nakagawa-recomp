@@ -4951,7 +4951,7 @@ def _command_line_parser():
     splits them off and they never reach this parser.  Options are spelled ``--name=value`` or
     bare ``--name``.  Values stay strings here: ``main`` validates them in one place so each
     refusal keeps its exact message and exit status.  Abbreviations are off, and an unknown
-    ``--option`` is ignored (``parse_known_args``), as it has always been.  ``--help`` is not an
+    ``--option`` is an error (exit status 2, ``_translate``).  ``--help`` is not an
     option: ``_USAGE`` is printed when the positionals are missing.
     """
     parser = argparse.ArgumentParser(
@@ -5666,8 +5666,10 @@ def _translate(argv):
     ``main`` turns it into the message and exit status.
     """
     args = [a for a in argv[1:] if not a.startswith("--")]
-    cli, _unknown = _command_line_parser().parse_known_args(
-        [a for a in argv[1:] if a.startswith("--")])
+    try:
+        cli = _command_line_parser().parse_args([a for a in argv[1:] if a.startswith("--")])
+    except SystemExit as exc:  # argparse has printed the usage and the unknown option
+        raise _Refusal(exc.code, "") from None
 
     use_env_elf = cli.env_elf
     use_env_extra = cli.env_extra_elfs

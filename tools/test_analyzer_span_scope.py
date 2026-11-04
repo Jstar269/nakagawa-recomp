@@ -736,6 +736,36 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
+    def test_analyze_cli_refuses_an_unknown_option_or_an_extra_positional(self) -> None:
+        # A mistyped option used to be dropped silently, so the run went ahead without it.
+        for extra in ("--cfg-reprot=report.json", "second.elf"):
+            with self.subTest(extra=extra):
+                proc = subprocess.run(
+                    [sys.executable, str(TOOLS / "analyze.py"), str(self.elf), "--base=0", "--quiet",
+                     extra],
+                    cwd=ROOT, env=self._clean_env(), capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+                self.assertIn(f"unrecognized arguments: {extra}", proc.stderr)
+
+    def test_codegen_cli_refuses_an_unknown_option_before_writing(self) -> None:
+        out_c = self.root / "refused.c"
+        proc = subprocess.run(
+            [sys.executable, str(TOOLS / "codegen.py"), str(self.elf), str(out_c),
+             "--base=0", "--profile=none", "--funcs-per-chunk=2000", "--lle-cpus"],
+            cwd=ROOT, env=self._clean_env(), capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("unrecognized arguments: --lle-cpus", proc.stderr)
+        self.assertFalse(out_c.exists())
+        # In process, main() returns the status instead of raising SystemExit.
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            status = codegen.main(["codegen.py", str(self.elf), str(out_c), "--base=0", "--lle-cpus"])
+        self.assertEqual(status, 2)
+        self.assertIn("unrecognized arguments: --lle-cpus", stderr.getvalue())
+        self.assertFalse(out_c.exists())
+
     def test_cfg_report_preserves_continuation_and_call_ownership(self) -> None:
         target = PRIMARY_BASE + 0x10
         tail_source = PRIMARY_BASE + 0x20
