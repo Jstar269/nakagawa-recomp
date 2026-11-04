@@ -197,7 +197,7 @@ class RuntimeModuleTranslation(unittest.TestCase):
             self.assertIn(f"{self.prefix(index)}_{ladder.OVERLAY_MIX_OFF:08x}(s);", start)
             self.assertIn(f"{self.prefix(index)}_{ladder.OVERLAY_STUB_OFF:08x}(s);", start)
             # jalr through the relocated function pointer carries a module-relative resume.
-            self.assertRegex(start, rf"dispatch_call\(s, _t, \({base} \+ 0x[0-9a-f]{{8}}u\)\);")
+            self.assertRegex(start, rf"dispatch_call_checked\(s, _t, \({base} \+ 0x[0-9a-f]{{8}}u\)\)\) return;")
             literals = re.findall(r"\b0x([0-9a-f]{8})u\b", start)
             self.assertFalse(
                 [value for value in literals if 0x08000000 <= int(value, 16) < 0x0C000000],
@@ -1152,7 +1152,7 @@ class RelocatedImmediateEmission(unittest.TestCase):
         decoded = ("((((sr_m7_base + 0x{0:08x}u) + 4u) & 0xF0000000u) | "
                    "((MEM_R32((sr_m7_base + 0x{0:08x}u)) & 0x03FFFFFFu) << 2))")
         self.assertIn(f"uint32_t _t = {decoded.format(0x00)};", text)
-        self.assertIn("dispatch_call(s, _t, (sr_m7_base + 0x00000008u));", text)
+        self.assertIn("if (dispatch_call_checked(s, _t, (sr_m7_base + 0x00000008u))) return;", text)
         self.assertIn("m7_00000020(s);", text)
         self.assertIn(f"uint32_t _t = {decoded.format(0x10)};", text)
         self.assertIn("sr_tail_record(s, _t, NULL, _sp_entry, 1u); return;", text)

@@ -86,7 +86,8 @@ def c_signature(text: str) -> dict:
         r"sr_aot_return_boundary_begin\(s, 0x[0-9a-f]{8}u, (0x[0-9a-f]{8}u), 1u\)\) return; "
         r"(\w+)\(s\);", text)]
     dispatches = [(None if target == "_t" else _addr(target), _addr(resume)) for target, resume in
-                  re.findall(r"dispatch_call\(s, (0x[0-9a-f]{8}u|_t), (0x[0-9a-f]{8}u)\)", text)]
+                  re.findall(r"dispatch_call_checked\(s, (0x[0-9a-f]{8}u|_t), (0x[0-9a-f]{8}u)\)\) return;",
+                             text)]
     yields = [_addr(pc) for pc in re.findall(r"SR_YIELD\(s, (0x[0-9a-f]{8}u)\); goto", text)]
     return {"labels": sorted(int(a, 16) for a in re.findall(r"^  L_([0-9a-f]{8}): ;$", text, re.M)),
             "continuations": sorted(int(a, 16) for a in re.findall(r"^  _sr_cont_([0-9a-f]{8}): ;$",
