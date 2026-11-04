@@ -29187,6 +29187,7 @@ static void test_atrac_aa3_and_reinit_1379(void) {
 #define NID_SCE_MPEG_RINGBUFFER_DESTRUCT             0x13407f13u
 #define NID_SCE_MPEG_FLUSH_ALL_STREAM                0x707b7629u
 #define NID_SCE_MPEG_AVC_DECODE_FLUSH                0x4571cc64u
+#define NID_SCE_MPEG_FLUSH_STREAM                    0x500f0429u
 #define NID_TD24D_CREATE_LWMUTEX                     0x19cff145u
 #define NID_TD24D_DELETE_LWMUTEX                     0x60107536u
 #define NID_SCE_KERNEL_REFER_LWMUTEX_STATUS          0xc1734599u
@@ -29382,6 +29383,21 @@ static void test_td24d_hle_batch(void) {
                MEM_R32(TD24D_RB_ADDR + 8u) == 0u &&
                MEM_R32(TD24D_RB_ADDR + 12u) == 0u,
            "sceMpegAvcDecodeFlush flushes ring packet counters");
+
+    /* FlushStream is registered next to them; it only validates its arguments and leaves the
+     * shared ring counters alone. The stream-id check lives in mpeg.c, which this harness does
+     * not link; the psmf-media-selftest checks it. */
+    expect(td24b_dispatch4(NID_SCE_MPEG_FLUSH_STREAM, 0u, 1u, 0u, 0u) == 0x80020003u,
+           "sceMpegFlushStream rejects null pointer with 0x80020003");
+    MEM_W32(TD24D_RB_ADDR + 4u, 13u);
+    MEM_W32(TD24D_RB_ADDR + 8u, 23u);
+    MEM_W32(TD24D_RB_ADDR + 12u, 33u);
+    expect(td24b_dispatch4(NID_SCE_MPEG_FLUSH_STREAM, TD24D_MPEG_DESC, 1u, 0u, 0u) == 0u,
+           "sceMpegFlushStream succeeds on valid MPEG descriptor");
+    expect(MEM_R32(TD24D_RB_ADDR + 4u) == 13u &&
+               MEM_R32(TD24D_RB_ADDR + 8u) == 23u &&
+               MEM_R32(TD24D_RB_ADDR + 12u) == 33u,
+           "sceMpegFlushStream leaves the ring packet counters alone");
 
     /* =========================================================================
      * 6. LwMutex family (2 NIDs):
