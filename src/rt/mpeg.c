@@ -883,7 +883,8 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     /* A decoder gives a picture up one access unit late, so the stream's end finds it holding some.
      * Their access units have left the ring: each is handed out again to be decoded out. */
     int held = ctx->streamEnded && ctx->h264Frames < ctx->h264Units;
-    if (!held && ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets &&
+    /* With no stream size known, the feed's end is the one mpeg_feed_stopped found (#286). */
+    if (!held && (ctx->totalPackets ? ctx->fedPackets >= ctx->totalPackets : ctx->streamEnded) &&
         rb_get(ring, RB_packetsAvail) == 0) ctx->videoEnd = 1;
     if (!held && (rb_get(ring, RB_packetsRead) == 0 || rb_get(ring, RB_packetsAvail) == 0)) {
         g_mpeg_nodata++;

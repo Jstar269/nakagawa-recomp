@@ -4283,8 +4283,11 @@ static void test_mpeg_feed_end_without_stream_size(int mode) {
     const uint32_t ps = size - 2048u;
     const uint32_t packets = (ps + MPEG_PACKET_SIZE - 1u) / MPEG_PACKET_SIZE;
     const uint32_t pad = packets * MPEG_PACKET_SIZE - ps;
+    /* The ring has room past the movie, as a guest's does, so the last put asks for more
+     * packets than are left and the callback runs short. */
+    const uint32_t ring_packets = packets + 32u;
     uint8_t *source = calloc(packets, MPEG_PACKET_SIZE);
-    if (!source || (pad && pad < 6u) || EF_RING_DATA + packets * MPEG_PACKET_SIZE > EF_CALLBACK) {
+    if (!source || (pad && pad < 6u) || EF_RING_DATA + ring_packets * MPEG_PACKET_SIZE > EF_CALLBACK) {
         CHECK(0, "mpeg-eof: the movie and its padding fit the fixture");
         free(source);
         free(image);
@@ -4310,8 +4313,8 @@ static void test_mpeg_feed_end_without_stream_size(int mode) {
     memcpy(SR_HOST(EF_HDR + 4u), "0015", 4u);
     be32_at((uint8_t *)SR_HOST(EF_HDR + 12u), packets * MPEG_PACKET_SIZE);
     MEM_W32(EF_DESC, 0u);
-    CHECK(mpeg_ringbuffer_construct(EF_RING, packets, EF_RING_DATA, packets * MPEG_RING_BYTES_PER_PKT,
-                                    EF_CALLBACK, 0u) == 0u &&
+    CHECK(mpeg_ringbuffer_construct(EF_RING, ring_packets, EF_RING_DATA,
+                                    ring_packets * MPEG_RING_BYTES_PER_PKT, EF_CALLBACK, 0u) == 0u &&
               mpeg_create(EF_DESC, EF_DATA, 0x10000u, EF_RING, 512u, 0u, 0u) == 0u,
           "mpeg-eof: the ring with its fill callback and the context are set up");
     if (mode == 2)
@@ -4353,9 +4356,17 @@ static void test_mpeg_feed_end_without_stream_size(int mode) {
     }
     EF_CHECK(s_ef_next == packets, "mpeg-eof (%s): the whole movie went in");
     for (int guard = 0; guard < 16 && !ctx->videoEnd; guard++) pictures += eof_drain(avc);
-    EF_CHECK(pictures == AV_PICTURES, "mpeg-eof (%s): every picture comes out, the last one included");
+    /* A YCbCr call can take more than one decoded frame and write one picture, so the count is
+     * of access units handed out and frames decoded, not of pictures written. */
+    if (ctx->h264Units != AV_PICTURES || ctx->h264Frames != AV_PICTURES || !ctx->videoEnd)
+        fprintf(stderr, "mpeg-eof (%s): units %d, frames %d of %d (pictures written %d), streamEnded %d, "
+                        "videoEnd %d, ring free %u of %u\n", tag[mode], ctx->h264Units, ctx->h264Frames,
+                AV_PICTURES, pictures, ctx->streamEnded, ctx->videoEnd,
+                guest_mpeg_import(NID_MPEG_RINGBUFFER_AVAIL, EF_RING, 0u, 0u, 0u, 0u), ring_packets);
+    EF_CHECK(ctx->h264Units == AV_PICTURES && ctx->h264Frames == AV_PICTURES,
+             "mpeg-eof (%s): every access unit is handed out and decoded, the last one included");
     EF_CHECK(ctx->videoEnd, "mpeg-eof (%s): the video ends");
-    EF_CHECK(guest_mpeg_import(NID_MPEG_RINGBUFFER_AVAIL, EF_RING, 0u, 0u, 0u, 0u) == packets,
+    EF_CHECK(guest_mpeg_import(NID_MPEG_RINGBUFFER_AVAIL, EF_RING, 0u, 0u, 0u, 0u) == ring_packets,
           "mpeg-eof (%s): the ring reads empty at the end");
     EF_CHECK(guest_mpeg_import(NID_MPEG_GET_AVC_AU, EF_DESC, avc, EF_AU, EF_ATTR, 0u) == SCE_MPEG_ERROR_NO_DATA,
           "mpeg-eof (%s): after the end GetAvcAu says there is no data");
