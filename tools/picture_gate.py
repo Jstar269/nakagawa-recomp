@@ -34,9 +34,11 @@ Usage:
 A route file is private JSON next to the title's other private inputs:
   {"title": "...", "command": ["runtime.exe", "..."], "env": {"K": "V"},
    "pad": "route.pad", "vblank": 600, "window": 8, "reference": "ref.ppm",
+   "mkdirs": ["fs", "memstick"],
    "threshold": 0, "max_percent": 0.0, "timeout": 600}
 Relative paths resolve against the route file's folder. The gate adds the offscreen
-presenter, dummy SDL drivers and the capture window; it removes inherited ``SR_FBSNAP*``,
+presenter, dummy SDL drivers and the capture window; ``{run}`` in the command and in env
+values is the run's fresh scratch folder (``mkdirs`` creates folders in it); it removes inherited ``SR_FBSNAP*``,
 ``SR_PADSCRIPT``, ``SR_FLIGHT*`` and ``SR_DATAROOT`` so the route file alone decides them.
 """
 
@@ -291,11 +293,25 @@ def collect_frame(run_dir: Path, vblank: int | None) -> tuple[Path | None, str]:
 
 
 def run_capture(command: list[str], env: dict, run_dir: Path,
-                vblank: int | None, timeout: int) -> tuple[Path | None, str]:
-    """Run once in a fresh scratch folder; return the frame file or a NOT_RUN reason."""
+                vblank: int | None, timeout: int,
+                mkdirs: tuple[str, ...] = ()) -> tuple[Path | None, str]:
+    """Run once in a fresh scratch folder; return the frame file or a NOT_RUN reason.
+
+    ``{run}`` in the command and in env values becomes the scratch folder, so a route can
+    point a memory stick or file-system root at a folder that is new for every run; ``mkdirs``
+    lists the folders (relative to it) to create first.
+    """
     if run_dir.exists():
         shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True)
+    for name in mkdirs:
+        (run_dir / name).mkdir(parents=True, exist_ok=True)
+    if vblank is not None:
+        # No build step creates the capture folder (src/rt/fbcap.c), so the gate does.
+        (run_dir / "build" / "snapshots").mkdir(parents=True, exist_ok=True)
+    here = str(run_dir)
+    command = [c.replace("{run}", here) for c in command]
+    env = {k: v.replace("{run}", here) for k, v in env.items()}
     # The runtime writes build/snapshots/ and frame_first.ppm relative to its working
     # directory, so the run happens in the scratch folder.
     try:
@@ -354,6 +370,11 @@ def run_route(route_path: Path, runs: int = 1, work_root: Path | None = None) ->
     extra = route.get("env", {})
     if not isinstance(extra, dict) or not all(isinstance(v, str) for v in extra.values()):
         return title, Verdict(NOT_RUN, "route-env-invalid")
+    mkdirs = route.get("mkdirs", [])
+    if (not isinstance(mkdirs, list) or not all(isinstance(m, str) for m in mkdirs)
+            or any(Path(m).anchor or m.startswith(("/", "\\")) or ".." in Path(m).parts for m in mkdirs)):
+        return title, Verdict(NOT_RUN, "route-mkdirs-invalid")
+    mkdirs = tuple(mkdirs)
     threshold, max_percent = route.get("threshold", 0), route.get("max_percent", 0.0)
     timeout = route.get("timeout", DEFAULT_TIMEOUT_SECONDS)
 
@@ -363,7 +384,7 @@ def run_route(route_path: Path, runs: int = 1, work_root: Path | None = None) ->
         env = sandbox_env(os.environ, extra, vblank, window, pad)
         frames, how = [], ""
         for n in range(max(1, runs)):
-            frame, how = run_capture(command, env, work / f"run{n}", vblank, timeout)
+            frame, how = run_capture(command, env, work / f"run{n}", vblank, timeout, mkdirs)
             if frame is None:
                 return title, Verdict(NOT_RUN, how)
             frames.append(frame)

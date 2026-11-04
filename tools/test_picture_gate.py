@@ -30,6 +30,7 @@ px = bytes((fill + i) & 0xFF for i in range(w * h * 3))
 ppm = b"P6\n%d %d\n255\n" % (w, h) + px
 Path("seen_env.json").write_text(json.dumps({k: v for k, v in os.environ.items()
                                              if k.startswith(("SR_", "SDL_"))}))
+Path("seen_argv.json").write_text(json.dumps(sys.argv))
 if mode == "exit3":
     sys.exit(3)
 if mode == "noframe":
@@ -37,7 +38,7 @@ if mode == "noframe":
 win = os.environ.get("SR_FBSNAP_WINDOWS")
 if win:
     lo = int(win.split("-")[0])
-    d = Path("build/snapshots"); d.mkdir(parents=True)
+    d = Path("build/snapshots")
     # a later frame first in name order must not win over the earliest one
     (d / ("frame_v%d.ppm" % (lo + 3))).write_bytes(ppm[:-1] + b"\x00")
     (d / ("frame_v%d.ppm" % lo)).write_bytes(ppm)
@@ -239,6 +240,23 @@ class RouteTests(Base):
         self.assertEqual(self.check(self.route("noframe")).detail, "no-frame-captured")
         for v in (self.check(self.route("exit3")), self.check(self.route("noframe"))):
             self.assertEqual(v.status, pg.NOT_RUN)
+
+    def test_run_folder_placeholder_and_mkdirs(self):
+        route = self.route(mode="ok", mkdirs=["ms", "fs/sub"], env={"SR_MEMSTICK": "{run}/ms"})
+        data = json.loads(route.read_text())
+        data["command"].append("{run}/arg")
+        route.write_text(json.dumps(data))
+        self.check(route)
+        run = self.dir / "work" / "run0"
+        seen = json.loads((run / "seen_env.json").read_text())
+        self.assertEqual(Path(seen["SR_MEMSTICK"]), run / "ms")
+        self.assertEqual(Path(json.loads((run / "seen_argv.json").read_text())[-1]), run / "arg")
+        self.assertTrue((run / "ms").is_dir() and (run / "fs" / "sub").is_dir())
+        self.assertTrue((run / "build" / "snapshots").is_dir())
+        for bad in (["/abs"], ["../up"]):
+            data["mkdirs"] = bad
+            route.write_text(json.dumps(data))
+            self.assertEqual(self.check(route).detail, "route-mkdirs-invalid")
 
     def test_bad_routes_are_not_run(self):
         missing = pg.run_route(self.dir / "absent.json")[1]
