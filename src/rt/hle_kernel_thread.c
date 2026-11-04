@@ -133,6 +133,7 @@ static uint32_t h_ExitThread(CpuState *s) {
         fflush(stderr);
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, s->pc, uid, 1u);
         SR_VERIFY_REPORT_NOW();  /* _exit skips atexit, which would have written the report */
+        sr_perf_shutdown();      /* the end-of-process reports, as on the _Exit paths */
         _exit(1);
     }
     int delete_request = s_exit_delete_request;
