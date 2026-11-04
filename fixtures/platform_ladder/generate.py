@@ -2758,11 +2758,15 @@ def verify(build_dir: Path, workload: str) -> int:
         # crossing, not a bespoke fixture hook. Under the current #126/#127
         # contract a linked CALL carries explicit target and resume_pc through
         # dispatch_call (resume_pc is the call's link value; live $ra is not
-        # the resume descriptor). ladder-gap also exercises a TAIL crossing;
+        # the resume descriptor). Generated code reaches it through
+        # dispatch_call_checked, which runs the call inside its own return
+        # boundary and makes the caller return when the call came back
+        # elsewhere (#1935). ladder-gap also exercises a TAIL crossing;
         # Title-2 intentionally needs only the linked CALL from its primary
         # production flow.
         call_seam = re.search(
-            rf"dispatch_call\(s, 0x{omitted_addr:08x}u, 0x[0-9a-f]{{8}}u\)",
+            rf"if \(dispatch_call_checked\(s, 0x{omitted_addr:08x}u, "
+            rf"0x[0-9a-f]{{8}}u\)\) return;",
             generated_text,
         )
         tail_seam = f"uint32_t _t = 0x{omitted_addr:08x}u; sr_tail_record(s, _t, NULL," in generated_text
