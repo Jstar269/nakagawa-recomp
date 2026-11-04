@@ -9,8 +9,8 @@
  *     SR_ACE=off
  *     SR_ACE=v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off
  *
- * Every key is required in v1, in any order, each once. A key for a feature this build does not
- * carry (wide, smooth) is still parsed and must be off. Anything else (an unknown version, key
+ * Every key is required in v1, in any order, each once. A key or value for a feature this build
+ * does not carry (wide=fill, smooth=match) is still parsed and refused. Anything else (an unknown version, key
  * or value, a duplicate, a missing key, an empty field) refuses the whole line: Ace is off for
  * the run and one "ACE_MODE: refused (<reason>)" line says why. Unset is off and says nothing.
  *
@@ -34,7 +34,8 @@
 
 /* Features that are part of this build. A feature that is not must be off in SR_ACE. */
 #define ACE_HAS_WIDE 0
-#define ACE_HAS_SMOOTH 0
+#define ACE_HAS_SMOOTH 1        /* smooth=x2: one in-between per 30 Hz frame */
+#define ACE_HAS_SMOOTH_MATCH 0  /* smooth=match: the monitor's rate */
 
 typedef enum { ACE_WIDE_OFF = 0, ACE_WIDE_FILL = 1 } AceWide;
 typedef enum { ACE_SMOOTH_OFF = 0, ACE_SMOOTH_MATCH = 1, ACE_SMOOTH_X2 = 2 } AceSmooth;
@@ -204,6 +205,81 @@ typedef struct {
     uint64_t draws, flips, new_frames, host_wait_ns, skipped_slots, windows;
 } AceCounters;
 void ace_counters(AceCounters *out);
+
+/* ---- smooth motion: which frame each present shows ------------------------------------------- */
+
+/* A title that flips a new frame every second VBLANK leaves every other VBLANK without a present.
+ * Smooth motion fills it: the flip of frame B shows the in-between of A and B, and the VBLANK
+ * after it shows B, so B reaches the screen one VBLANK late and nothing is ever guessed ahead of
+ * the guest. Host side only: these presents read private copies (gpu_sdl3vk/ace_smooth.h), and
+ * the flip's own present still gives the capture and guest VRAM the real frame.
+ *
+ * Only the detector's stable 30 Hz class interpolates. Anything else shows each frame as it
+ * comes (and keeps a copy, so the first frame of a 30 Hz stretch has a predecessor). */
+typedef enum {
+    ACE_SHOW_REAL = 0,     /* no new frame, or smooth off: this present is today's */
+    ACE_SHOW_KEEP,         /* a new frame outside 30 Hz: show it and keep a copy */
+    ACE_SHOW_BETWEEN       /* a new 30 Hz frame: show the in-between, hold the frame */
+} AceShow;
+
+typedef struct {
+    AceShow show;          /* the flip's verdict, until its present takes it */
+    int held;              /* a frame waits for its VBLANK */
+    uint32_t held_after;   /* the VCOUNT of the present that holds it */
+    uint64_t flip_ns;      /* when the latest flip arrived */
+    uint64_t held_ns;      /* when the in-between of the held frame was presented */
+    int reflip;            /* this flip shows the held frame again: it is the held present */
+} AcePace;
+
+void ace_pace_reset(AcePace *p);
+/* A flip. The verdict stands until ace_pace_take. A new frame supersedes a frame still held; a
+ * flip of the unchanged frame (a title that flips each frame twice) shows it, so that present
+ * is the held one and the VBLANK has nothing left to show. */
+void ace_pace_flip(AcePace *p, int new_frame, AceRate rate, int smooth, uint64_t now_ns);
+/* The flip's present: returns the verdict and clears it. */
+AceShow ace_pace_take(AcePace *p);
+/* The in-between went to the screen at now_ns (the presenter's clock): the frame is held for the
+ * VBLANK after `vcount`. Without smooth motion the frame would have been shown then, so the
+ * held present's time less this one is the delay smooth motion adds. */
+void ace_pace_shown_between(AcePace *p, uint32_t vcount, uint64_t now_ns);
+/* One VBLANK. Returns 1 when the held frame is due; it is then no longer held. */
+int ace_pace_vblank(AcePace *p, uint32_t vcount);
+
+typedef enum {
+    ACE_PRESENT_REAL = 0,  /* the flip's own frame */
+    ACE_PRESENT_BETWEEN,   /* an in-between */
+    ACE_PRESENT_HELD,      /* the held frame, one VBLANK after its flip */
+    ACE_PRESENT_KINDS
+} AcePresentKind;
+
+/* Present-to-present time in 1 ms bins, the last bin open-ended. */
+#define ACE_PACE_BINS 50u
+
+typedef struct {
+    uint64_t kind[ACE_PRESENT_KINDS];
+    uint64_t interval[ACE_PACE_BINS];
+    uint64_t interval_count;
+    uint64_t interval_sum_ns;
+    uint64_t hold_count;
+    uint64_t hold_sum_ns;         /* flip to held present: the delay smooth motion adds */
+    uint64_t hold_max_ns;
+    uint64_t superseded;          /* a held frame a later flip replaced */
+    uint64_t last_ns;
+} AcePaceStats;
+
+/* The kind of the flip's present when it shows no in-between: REAL, or HELD for a re-flip. */
+AcePresentKind ace_pace_flip_kind(const AcePace *p);
+
+/* The run's verdict for the flip ace_flip just saw. */
+AceShow ace_smooth_take(void);
+void ace_smooth_shown_between(uint64_t now_ns);
+/* One VBLANK: 1 when the held frame should be presented now. Off, it reads nothing. */
+int ace_smooth_vblank(uint32_t vcount);
+/* A present reached the swapchain. A flip's present that showed no in-between is passed as
+ * REAL and counted as HELD when it re-showed the held frame. */
+void ace_smooth_note_present(AcePresentKind kind, uint64_t now_ns);
+void ace_pace_stats(AcePaceStats *out);
+void ace_pace_stats_add(AcePaceStats *s, AcePresentKind kind, uint64_t now_ns);
 
 /* ---- the per-run report -------------------------------------------------------------------- */
 

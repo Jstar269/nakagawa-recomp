@@ -2003,6 +2003,7 @@ void     gui_consume_button_pulses(void);          /* after one PSP VBLANK sampl
 uint32_t gui_pad_pulses_take(void);
 void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128=centre) */
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
+void     gui_ace_vblank(uint32_t vcount);        /* Ace Mode's smooth motion: a held frame's VBLANK */
 /* Returns 1 only when the selected presenter accepted the validated frame. */
 int      gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
 void     gui_pump(void);                         /* service the window's pending events */

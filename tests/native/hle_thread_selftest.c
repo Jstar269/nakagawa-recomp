@@ -596,6 +596,7 @@ void gui_analog(uint8_t *lx, uint8_t *ly) {
     if (ly) *ly = 128;
 }
 int gui_pad_present(void) { return 0; }
+void gui_ace_vblank(uint32_t vcount) { (void)vcount; }
 int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     s_test_gui_present_calls++;
     s_test_gui_last_addr = fbaddr;

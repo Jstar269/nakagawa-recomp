@@ -489,6 +489,18 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                                                 PLAYER_UI_PRIMARY_NONE);
                             }
                         }
+                        if (title->smooth_shown) {
+                            const char *smooth = safe_text(title->smooth_label, "Smooth motion");
+                            nk_ui_flow_item(ui, &buttons, nk_ui_button_width(ui, smooth, 0u));
+                            if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_SMOOTH, smooth,
+                                             NK_UI_BUTTON_NOT_DEFAULT |
+                                                 (title->smooth_on ? NK_UI_BUTTON_PRIMARY : 0u) |
+                                                 (title->smooth_enabled ? 0u
+                                                                        : NK_UI_BUTTON_DISABLED))) {
+                                result = action(PLAYER_UI_ACTION_CYCLE_SMOOTH, model->title_index,
+                                                PLAYER_UI_PRIMARY_NONE);
+                            }
+                        }
                         if (title->enhancement_shown) {
                             nk_ui_flow_item(ui, &buttons, nk_ui_button_width(ui, label, 0u));
                             if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_60FPS, label,
