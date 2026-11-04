@@ -220,7 +220,7 @@ typedef enum {
 
 /* The library's Ace Mode settings. The feature values are kept while the switch is off. */
 typedef struct {
-    bool enabled;   /* the master switch: off until the player turns it on (owner, 2026-10-31) */
+    bool enabled;   /* the master switch: off until the player turns it on */
     int af;         /* texture filtering: 0, 2, 4, 8 or 16; 16 by default */
     bool text;      /* crisp system text (the on-screen keyboard); on by default */
     bool readout;   /* the speed readout; off by default */
@@ -642,7 +642,7 @@ typedef struct {
     void *userdata;
 } PlayerPsnConvertCallbacks;
 
-/* Games built by an older Nakagawa (owner decision, 2026-10-29). A package
+/* Games built by an older Nakagawa. A package
  * records the Nakagawa that built it (NkPackageBuildIdentity in
  * nk_title_manifest.h); one whose identity is not this player's is outdated.
  * It still validates and launches: the player suggests a rebuild and never
@@ -1934,7 +1934,7 @@ bool player_app_request_license_folder(PlayerApp *app);
 bool player_app_request_user_folder(PlayerApp *app, NkPathType kind);
 void player_app_remove_prerequisites(PlayerApp *app);
 
-/* Factory reset (owner, 2026-10-29): the player goes back to a first run by
+/* Factory reset: the player goes back to a first run by
  * moving its user data aside, never by deleting it. The folders that move are
  * the config, data, cache and saves folders (library, settings, saves,
  * imported PSP fonts, keys, built games and downloaded build tools), and the

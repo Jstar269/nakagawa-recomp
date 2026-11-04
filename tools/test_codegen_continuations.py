@@ -514,7 +514,7 @@ class ContinuationFlowTests(unittest.TestCase):
                 self.assertEqual(following.split()[0], "SR_TAIL_DRAIN(s);", following)
 
     def test_conditional_successors_stay_native_below_the_split_threshold(self):
-        # Changed deliberately with entry splitting (owner decision, 2026-10-29): a body
+        # Changed deliberately with entry splitting: a body
         # copies another entry's code over conditional edges only while its walk stays
         # within REGION_SPLIT_THRESHOLD, and never with the threshold off.
         # EntrySplitTests covers the same shape split.

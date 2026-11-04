@@ -12,7 +12,7 @@ another entry. Each instruction becomes an ``Op`` that names its semantic
 operation and operands; each transfer a ``Transfer`` with its kind, target,
 link, condition and slot. A backend renders the plan and decides nothing.
 
-Design rule (owner, 2026-10-29): every backend lowers from the same analysis
+Design rule: every backend lowers from the same analysis
 representation, so a semantic fix lands once and backends cannot drift. Where
 that stands:
 

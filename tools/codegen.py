@@ -80,7 +80,7 @@ class CodegenOptions:
     # never off the seam return, because legitimate HLE errors are nonzero.
     lle_import_seam: bool = False
 
-    # Entry splitting (owner decision, 2026-10-29). A body normally owns every
+    # Entry splitting. A body normally owns every
     # instruction it reaches by a conditional branch, including another entry's code, so
     # each entry of a large branch-connected region translates its own copy of the region
     # (one title: 6,539 entries in a 1.33M-instruction region). A body whose walk would
@@ -667,8 +667,8 @@ def build_entry_catalog(analyzed, ranges, profile=None, elf=None):
                     f"OWNER DOES NOT COVER RESUME: declared owner "
                     f"0x{owner:08x} does not reach 0x{addr:08x}"
                 )
-            # Wiki doc 26 section 14: a shared tail reachable from owners with
-            # incompatible frame states cannot be given one host contract.
+            # A shared tail reachable from owners with incompatible frame states
+            # cannot be given one host contract.
             owners = entry_frame_balance.find_frame_owners(
                 elf, addr, ranges, callables
             )
