@@ -33,7 +33,8 @@ Before you change anything:
    not already fixed there and that no open pull request already covers it.
 4. Make the change, with a test that fails before it and passes after it.
 5. Run the checks for the files you changed (below, and Section 9).
-6. Open a **Draft** pull request and fill in the template.
+6. Open the pull request and fill in the template. Use **Draft** only while the change is unfinished; once it is
+   finished, with its tests and checks run and the template filled, it is ready for review.
 
 If you were asked only to review or diagnose, report what you found and stop: no branch, commit or
 pull request.
@@ -102,7 +103,8 @@ the full rules.
 
 ### What a good pull request looks like
 
-- A **Draft** pull request from a branch on your fork, with **Allow edits by maintainers** left on.
+- A pull request from a branch on your fork, with **Allow edits by maintainers** left on. It is a
+  **Draft** only while it is unfinished, and a finished one is ready for review, never left as a Draft.
   Related changes may share it; unrelated ones go in separate pull requests, and none is stacked on
   another.
 - It says what was wrong, links the issue (`Tracks #123`), and lists what each change does.
@@ -117,6 +119,9 @@ the full rules.
   under GPL-3.0-or-later. A DCO sign-off is optional; if the person wants one, they review the final
   diff and add it themselves (`git commit -s`). The agent never adds it ([DCO policy](docs/DCO_POLICY.md)).
 - It says where every new file came from (next section).
+- It meets the professional-finish checks in [`REVIEW.md`](REVIEW.md#professional-finish): code that matches
+  its surroundings, plain prose with no filler, hype or emoji, no leftovers or stray files, the existing
+  terms, short UI text, and PR text that states what changed, the evidence and what is not done.
 
 ### New files: what to put in the pull request
 
@@ -164,7 +169,7 @@ request; [`CONTRIBUTING.md`](CONTRIBUTING.md#provenance-controls) says what each
   `oracle/...`) with a date or issue suffix.
 - Keep the change coherent, avoid stacked pull requests, and leave other people's unmerged work
   alone.
-- By default, stop and report after a bounded implementation, its tests, or a Draft pull request.
+- By default, stop and report after a bounded implementation, its tests, or its pull request.
 - Only the maintainer's agents ever integrate. An explicit maintainer mission may authorize
   autonomous integration only when the exact head has required hosted CI green, no open
   review/change request remains, provenance/publication gates pass, no private-input or hardware
@@ -269,8 +274,8 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   they are never committed, packaged, shipped or uploaded. Nakagawa never decrypts firmware, even
   privately: updater PSAR archives, the IPL, the Media Engine image, system-menu files and
   encrypted `flash0` modules are refused by name before any decryption step runs.
-- Presentation screenshots and short clips are the exception (established recomp practice in Zelda64Recomp,
-  Unleashed Recompiled and Ship of Harkinian): curated PNGs, and H.264 MP4 clips of about 60 seconds at most with the game's own sound, of a title
+- Presentation screenshots and short clips are the exception (established practice in other recompilation
+  projects): curated PNGs, and H.264 MP4 clips of about 60 seconds at most with the game's own sound, of a title
   running in Nakagawa, including the launcher or library with it loaded, may be published when each is checked for
   personal data (no profile names, user paths or private menus) and carries a notice that the game belongs to its
   publisher, that no game data is in the repository, and that users need their own copy. Raw evidence captures,
@@ -286,8 +291,8 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   connection unless the user enables a documented, opt-in feature; today there are two: the
   consented prerequisite download, and Check for updates:
   GitHub's Releases API for this repository when the user asks, or once at start if they turned
-  that on (off by default), then that release's Windows ZIP on a separate click, kept only if it
-  matches the release's published SHA-256. A new egress needs a maintainer decision, a "Network use"
+  that on (off by default), then that release's Windows ZIP on a separate click, kept only if its published SHA-256
+  checksum file carries a valid signature from the project's update-signing key and the ZIP matches it. A new egress needs a maintainer decision, a "Network use"
   entry in `docs/SETUP.md`, and an update to the egress allowlist test in
   `tools/test_prereq_fetcher.py`. The reserved `network_mode` setting accepts only `"offline"`,
   and a value a build does not know reads back as offline, never as something more permissive.
@@ -410,15 +415,18 @@ handler, run one native self-test, capture frames unattended):
 
 ## 10. PR and integration authorization
 
-- When the task includes a pull request, push early: open a Draft PR after the first valid commit.
+- When the task includes a pull request, push early: open a Draft PR after the first valid commit,
+  and mark it Ready as soon as the change is finished (tests and checks run, template filled), or open
+  it ready for review when it is finished at the first push. A ready PR is never left as a Draft.
   Group related work: one PR may carry several related fixes in the same area or a whole feature
   slice, and fewer, larger PRs are better than one PR per finding. Include exact base/head SHAs,
   scope, new-path provenance, failing-before evidence, tests, uncertainty, private/hardware status,
   and blockers.
-- Never mark Ready, merge, enable auto-merge, close other PRs, or bypass required checks
-  unless Section 2's autonomous-integration conditions hold; local success never means a
-  Draft is hosted-CI green. A contributor's agent leaves Ready to its person. A substantive
-  correction after Ready returns the PR to Draft and requires fresh exact-head validation.
+- Ready means finished and open for review, not approved or integrated. Never merge, enable
+  auto-merge, close other PRs, or bypass required checks unless Section 2's autonomous-integration
+  conditions hold; local success never means a PR is hosted-CI green. A contributor's agent leaves
+  the switch to Ready to its person. A substantive correction after Ready returns the PR to Draft
+  and requires fresh exact-head validation.
 - Before readiness, fetch `origin/main` and merge it when needed; never rebase or
   force-push a pushed branch. Preserve newer-main behavior, regenerate only required
   canonical metadata, rerun affected gates, and freeze the exact validated head.
@@ -436,7 +444,7 @@ MISSION:
 BASE_SHA:
 HEAD_SHA:
 PR:
-STATUS: DRAFT / BLOCKED / READY-QUALITY
+STATUS: DRAFT / READY / BLOCKED
 RESULT:
 ROOT_CAUSE:
 CHANGED_FILES:

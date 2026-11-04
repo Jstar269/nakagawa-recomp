@@ -96,7 +96,8 @@ The process is meant to be forgiving. An unticked box, a missing sign-off or an 
 
 - Nobody, person or agent, adds a sign-off on someone else's behalf.
 - History is not rewritten to add sign-offs to commits already merged.
-- If you want to add sign-offs to your own open pull request, amend your own commits:
+- If you want to add sign-offs to your own open pull request, amend your own commits on your own branch.
+  Only the person does this; an agent never adds a sign-off or force-pushes:
 
 ### Single Commit Branch
 

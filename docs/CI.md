@@ -38,7 +38,7 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 ### What else starts on a pull request push
 
-The table above is the `CI` workflow. Four other workflows start on the same push, and
+The table above is the `CI` workflow. Other workflows start on the same push, and
 two of them are now path-gated too (measured on the repository's Actions usage export
 of 2026-11-02, whole history, hosted runners):
 
@@ -131,7 +131,8 @@ a ready pull request. No `Ready for review` transition or manual
 `opened`, `synchronize` and `reopened` - the events that can carry a new head -
 so a `Ready for review` (or back-to-draft) transition, which cannot change the
 head, does not start a second run over a tree that already carries its
-validation. That workflow still cancels superseded runs, and docs-only or other
+validation. `ci-trust-verdict.yml` and `provenance-attestation.yml` do list
+`ready_for_review`, so marking a pull request Ready re-runs only those two. `ci.yml` still cancels superseded runs, and docs-only or other
 irrelevant jobs remain skipped by the classifier. `workflow_dispatch` remains
 available when a maintainer deliberately wants the complete matrix regardless of
 changed paths.
@@ -185,8 +186,9 @@ the page's status text in step with `README.md`, `docs/COMPATIBILITY.md` and the
 
 ### Hygiene beside the substantive gates
 
-The Python, native and Windows jobs wait only for `classify` and the
-public-export audit (`needs: [classify, public_export]`). They do not wait for
+The native job waits only for `classify` and the public-export audit
+(`needs: [classify, public_export]`); the Python and Windows jobs also wait for the
+profile-zero fixture build (`profile_zero_fixture`). None of them waits for
 `hygiene`, which runs beside them. Before this change they waited for hygiene too,
 so its all-files pre-commit run, Betterleaks history scan and canaries (98 s median
 across 40 recent pull requests, as measured from their job timings) sat in front of
@@ -784,8 +786,8 @@ belongs to a new subsystem.
 ## Cost and caching rules
 
 GitHub-hosted Windows time is billed at a higher multiplier than Linux time. The
-workflow therefore gates the Windows runner behind the cheaper Linux hygiene and
-native gates, cancels superseded PR runs, and avoids repeating the full matrix on
+workflow therefore starts the Windows runner only after the cheaper Linux classify,
+public-export and fixture jobs, cancels superseded PR runs, and avoids repeating the full matrix on
 ordinary main pushes. Besides dependency and tool caches (pip, the SDL3 installs),
 the only cache is the Windows compiler cache below. Build trees and generated
 shader/code output are not cached across jobs or runs, so the repository's
@@ -876,17 +878,21 @@ dispatch run with `--ref` naming the branch.
 
 A merge queue lands each reviewed pull request on a *group commit*: the trunk, every
 queued pull request ahead of it, and this one. Each group is a ref in this repository
-(`refs/heads/gh-readonly-queue/main/pr-<n>-<sha>`), and its required checks must pass
-before `main` moves. These workflows carry a `merge_group` trigger (`checks_requested`).
-`codeql.yml` does not: CodeQL on a group comes from the group's CodeQL wake run, as described below.
+(`refs/heads/gh-readonly-queue/main/pr-<n>-<sha>`), and the ruleset's required contexts must pass
+before `main` moves. The ruleset requires only `Trusted CI verdict` and `CodeQL` (see above).
+`ci-trust-verdict.yml` has no `merge_group` trigger, so a group gets no verdict yet
+([Trusted CI verdict](#trusted-ci-verdict)). The table lists the checks the verdict judges on a pull
+request and what each does on a group commit. These workflows carry a `merge_group` trigger
+(`checks_requested`). `codeql.yml` does not: CodeQL on a group comes from the group's CodeQL wake run,
+as described below.
 
-| Required context | Behaviour on a group commit |
+| Check the verdict judges | Behaviour on a group commit |
 | --- | --- |
 | `CI required` | `ci.yml` runs the complete matrix, as for a manual dispatch. `hygiene` and `public_export` run ungated. |
 | `Hygiene and security` | Ungated, as on every event. |
 | `OSV Vulnerability Scan` | `osv-scanner.yml` already triggers on `merge_group`. |
 | `dependency-review` | Passes `base-ref` and `head-ref` from the group payload. On a pull request they are empty, which the action reads as unset. |
-| `CodeQL` | The group's CodeQL wake (`merge_group` run) starts the trusted `codeql.yml` through `workflow_run`, which analyses the group commit (below). |
+| `CodeQL` (required by the ruleset itself) | The group's CodeQL wake (`merge_group` run) starts the trusted `codeql.yml` through `workflow_run`, which analyses the group commit (below). |
 
 **Trust argument.** A group exists only because a user with write access enqueued a
 pull request that was reviewed. `codeql.yml` runs from the default branch for both
