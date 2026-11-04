@@ -1,6 +1,5 @@
 name: Feature request
 description: Propose a focused improvement
-title: "[Feature]: "
 labels:
   - enhancement
 body:
@@ -35,6 +34,7 @@ body:
     attributes:
       label: Component
       options:
+        - Player (library, settings or a running game)
         - Runtime
         - Pipeline tools
         - Reference interpreter
