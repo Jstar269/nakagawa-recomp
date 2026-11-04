@@ -1,6 +1,5 @@
 name: Accessibility barrier
 description: Report something in the player, setup or documentation that you cannot use or find hard to use
-title: "[Accessibility]: "
 labels:
   - accessibility
 body:
