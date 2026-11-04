@@ -1500,7 +1500,8 @@ def _elf32_psp_start_entry(read, image_size: int) -> tuple[int, str | None]:
     Python mirror of sr_prx_start_entry in src/rt/prx_loader.h (which documents the
     rule and its uofw reference); tools/test_iso_parity.py keeps the two in
     agreement. The module manager enters the syslib module_start export, else
-    module_bootstart, else e_entry. Returns ``(entry, None)``, or ``(e_entry, rule)``
+    module_bootstart, else e_entry; a NID listed twice resolves to its last entry.
+    Returns ``(entry, None)``, or ``(e_entry, rule)``
     naming the first rule the image breaks.
     """
     header = _image_read(read, 0, 52) if image_size >= 52 else None
@@ -1566,7 +1567,8 @@ def _elf32_psp_start_entry(read, image_size: int) -> tuple[int, str | None]:
             for index in range(functions):
                 nid = struct.unpack_from("<I", exports, 4 * index)[0]
                 if nid in (PSP_NID_MODULE_START, PSP_NID_MODULE_BOOTSTART):
-                    found.setdefault(nid, struct.unpack_from("<I", exports, 4 * (total + index))[0])
+                    # Every match overwrites the one before it: the last entry wins.
+                    found[nid] = struct.unpack_from("<I", exports, 4 * (total + index))[0]
             break
         if cursor + 4 * words > ent_end:
             return e_entry, "module-exports-range"
