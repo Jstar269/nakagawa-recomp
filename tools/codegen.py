@@ -236,7 +236,19 @@ def _scaled_store_line(rw: dict, stock_line: str) -> str:
             f"{stock.replace(stored, '_nk_bits')} }}")
 
 
-def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
+def _mapped_factor_stmt(mapping: str, cell: str, site_id: str, addr: int) -> str:
+    """Map a per-update factor just loaded into ``cell``. It is known only at run time:
+    inside (0, 1) it is mapped; outside it keeps its stock value, reported once per site.
+    Decay uses k / (1 + sqrt(1 - k)), equal to 1 - sqrt(1 - k) without its cancellation
+    for small k, in double and rounded once, as the lui path does; sqrtf is already exact."""
+    expr = {"decay": f"(float)((double){cell} / (1.0 + sqrt(1.0 - (double){cell})))",
+            "retention": f"sqrtf({cell})"}[mapping]
+    return (f"if ({cell} > 0.0f && {cell} < 1.0f) {{ {cell} = {expr}; }} "
+            f"else {{ static int nk_kept; "
+            f'nk_enhancement_factor_kept(&nk_kept, "{site_id}", 0x{addr:08x}u, {cell}); }}')
+
+
+def _enhanced_line(rw: dict, stock_line: str, word_line: str | None, site_id: str, addr: int) -> str:
     """Both forms of one rewritten site: the stock statement runs unless the
     experimental toggle is on at run time (nk_enhancement_on())."""
     kind = rw["kind"]
@@ -253,22 +265,14 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
     elif kind == "scale_f_reg":
         enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
     elif kind == "map_f_reg":
-        r = rw["reg"]
-        # A factor read from memory is only known at run time: outside (0, 1) it keeps the stock value.
-        # Decay is evaluated in double and rounded once, as the lui path does; sqrtf is already exact.
-        expr = {"decay": f"(float)(1.0 - sqrt(1.0 - (double)s->f[{r}]))",
-                "retention": f"sqrtf(s->f[{r}])"}[rw["map"]]
-        enh = (f"{stock_line.strip()} if (s->f[{r}] > 0.0f && s->f[{r}] < 1.0f) "
-               f"{{ s->f[{r}] = {expr}; }}")
+        cell = f"s->f[{rw['reg']}]"
+        enh = f"{stock_line.strip()} {_mapped_factor_stmt(rw['map'], cell, site_id, addr)}"
     elif kind == "scale_v_reg":
         v = vreg_indices(rw["vreg"], 1)[0]
         enh = f"{stock_line.strip()} s->v[{v}] *= {rw['factor']!r}f;"
     elif kind == "map_v_reg":
         v = vreg_indices(rw["vreg"], 1)[0]
-        expr = {"decay": f"(float)(1.0 - sqrt(1.0 - (double)s->v[{v}]))",
-                "retention": f"sqrtf(s->v[{v}])"}[rw["map"]]
-        enh = (f"{stock_line.strip()} if (s->v[{v}] > 0.0f && s->v[{v}] < 1.0f) "
-               f"{{ s->v[{v}] = {expr}; }}")
+        enh = f"{stock_line.strip()} {_mapped_factor_stmt(rw['map'], f's->v[{v}]', site_id, addr)}"
     elif kind in ("scale_f_store", "scale_int_store"):
         enh = _scaled_store_line(rw, stock_line)
     elif kind == "scale_f_addend":
@@ -1112,6 +1116,8 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
             f.write("extern uint32_t nk_enhancement_updates;\n")
             f.write("static inline int nk_enhancement_gate_30hz(void) "
                     "{ return (nk_enhancement_updates & 1u) == 0u; }\n")
+            f.write("void nk_enhancement_factor_kept(int *reported, const char *site, uint32_t pc, "
+                    "float value);\n")
             if ENHANCEMENT_STORE_SITES:
                 f.write("uint32_t nk_enh_store(unsigned site, uint32_t bits);\n")
                 f.write("int nk_enh_ready(unsigned site);\n")
@@ -3029,7 +3035,7 @@ def normal_line(addr, w, lle_cpu=False, delay_branch_pc=None):
         # The trace hook keeps the stock word: guest memory still holds it.
         word_line = _plain_line(addr, rw["word"], w, lle_cpu=lle_cpu,
                                 delay_branch_pc=delay_branch_pc)
-    return _enhanced_line(rw, line, word_line)
+    return _enhanced_line(rw, line, word_line, ENHANCEMENT_SITES[addr]["id"], addr)
 
 class _PromotedLine:
     """GPRs one instruction reads and writes while it is translated with promotion."""
@@ -5492,6 +5498,12 @@ def _registration_lines(elf, ranges, known, base_name, num_files, emitted, resum
             "    return on;",
             "}",
             "uint32_t nk_enhancement_updates;",
+            "void nk_enhancement_factor_kept(int *reported, const char *site, uint32_t pc, float value) {",
+            "    if (*reported) return;",
+            "    *reported = 1;",
+            '    fprintf(stderr, "ENHANCEMENT_FACTOR_KEPT: site %s at 0x%08x loaded %.9g, outside (0, 1); "',
+            '            "it keeps its stock value\\n", site, (unsigned)pc, (double)value);',
+            "}",
             "",
         ]
         main_out += _enhancement_store_lines()
