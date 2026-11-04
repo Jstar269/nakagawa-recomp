@@ -258,8 +258,8 @@ RECOMP_C = REPO_ROOT / "src" / "rt" / "recomp.c"
 
 def extract_codegen_custom_stub_addresses() -> set[int]:
     """The addresses codegen.py replaces with a hand-written body: the keys of
-    codegen_hst_stubs.HST_CUSTOM_STUBS plus the game-loop wrapper's address."""
-    return set(codegen.HST_CUSTOM_STUBS) | {codegen.HST_GAME_LOOP_ADDR}
+    codegen_hst_stubs.HST_CUSTOM_STUBS."""
+    return set(codegen.HST_CUSTOM_STUBS)
 
 
 def extract_dispatch_hook_table(table_name: str) -> list[tuple[int, str]]:

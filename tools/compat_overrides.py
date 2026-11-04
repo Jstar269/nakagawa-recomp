@@ -234,10 +234,8 @@ CODEGEN_CUSTOM_STUBS = [
     # delay-slot setter and a computed-goto resume point). The real translations
     # are guarded by tools/test_codegen_no_shadow_stubs.py; "unexplained" count
     # is now zero.
-    dict(address=0x000468c8, category="faithful_abi_bridge", name="main_RunGameLoop scheduler wrapper",
-         reason="wraps the real per-frame body in a SR_YIELD loop so the cooperative scheduler "
-                "gets a fiber-switch point every frame; structural, does not alter game logic",
-         test="none"),
+    # 0x000468c8 (main_RunGameLoop scheduler wrapper): retired under #363. The worker
+    # thread's own loop yields through its syscalls, so the function translates as written.
     dict(address=0x00011090, category="faithful_abi_bridge", name="memcpy native",
          reason="native memmove-backed reimplementation (sr_native_memmove), same semantics as "
                 "the translated body, including the scalar accessors' VRAM read-back and write "

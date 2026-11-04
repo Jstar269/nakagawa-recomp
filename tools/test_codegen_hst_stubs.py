@@ -21,7 +21,6 @@ import test_codegen_profile_isolation as isolation  # noqa: E402
 from host_stubs import HST_SIMPLE_STUBS  # noqa: E402
 
 STUBS = codegen_hst_stubs.HST_CUSTOM_STUBS
-LOOP = codegen_hst_stubs.HST_GAME_LOOP_ADDR
 
 
 class StubDataShape(unittest.TestCase):
@@ -32,22 +31,14 @@ class StubDataShape(unittest.TestCase):
                 self.assertTrue(text.endswith("}"))
                 self.assertNotIn("@ADDR@", text)
 
-    def test_the_game_loop_wrapper_replaces_the_translated_body(self):
-        text = codegen_hst_stubs.HST_GAME_LOOP_WRAPPER
-        self.assertEqual(LOOP, 0x000468C8)
-        self.assertTrue(text.startswith(f"void f_{LOOP:08x}(CpuState *s) {{"))
-        self.assertIn(f"f_{LOOP:08x}_real(s);", text)
-        self.assertNotIn(LOOP, STUBS)
-
     def test_no_address_has_two_bodies(self):
         self.assertEqual(set(STUBS) & set(HST_SIMPLE_STUBS), set())
-        self.assertEqual({LOOP} & set(HST_SIMPLE_STUBS), set())
 
 
 class StubsReachTheGeneratedC(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        extra = {addr: isolation._body_leaf() for addr in [*STUBS, LOOP]}
+        extra = {addr: isolation._body_leaf() for addr in STUBS}
         words = isolation._build_specimen_words(extra)
         cls.hst = isolation._codegen_functions(words, "hst")
         cls.none = isolation._codegen_functions(words, "none")
@@ -57,15 +48,36 @@ class StubsReachTheGeneratedC(unittest.TestCase):
             with self.subTest(addr=f"0x{addr:08x}"):
                 self.assertEqual(self.hst[f"f_{addr:08x}"], text)
 
-    def test_hst_wraps_the_game_loop_around_its_translated_body(self):
-        self.assertEqual(self.hst[f"f_{LOOP:08x}"], codegen_hst_stubs.HST_GAME_LOOP_WRAPPER)
-        self.assertIn(f"f_{LOOP:08x}_real", self.hst)
-
     def test_profile_none_emits_none_of_them(self):
-        for addr in [*STUBS, LOOP]:
+        for addr in STUBS:
             with self.subTest(addr=f"0x{addr:08x}"):
                 self.assertNotIn("custom stub", self.none[f"f_{addr:08x}"])
                 self.assertNotIn(f"f_{addr:08x}_real", self.none)
+
+
+#: The main_RunGameLoop scheduler wrapper, retired under #363: the worker thread's own loop runs.
+GAME_LOOP = 0x000468C8
+
+
+class GameLoopTranslatesAsWritten(unittest.TestCase):
+    """profile=hst emits 0x000468c8 exactly as profile=none does: no wrapper, no renamed body."""
+
+    @classmethod
+    def setUpClass(cls):
+        words = isolation._build_specimen_words({GAME_LOOP: isolation._body_leaf()})
+        cls.hst = isolation._codegen_functions(words, "hst")
+        cls.none = isolation._codegen_functions(words, "none")
+
+    def test_no_hand_written_body_or_wrapper(self):
+        self.assertNotIn(GAME_LOOP, STUBS)
+        self.assertNotIn(GAME_LOOP, HST_SIMPLE_STUBS)
+        self.assertFalse(hasattr(codegen_hst_stubs, "HST_GAME_LOOP_WRAPPER"))
+
+    def test_hst_translates_the_game_loop_as_written(self):
+        name = f"f_{GAME_LOOP:08x}"
+        self.assertNotIn(f"{name}_real", self.hst)
+        self.assertNotIn("custom stub", self.hst[name])
+        self.assertEqual(self.hst[name], self.none[name])
 
 
 if __name__ == "__main__":
