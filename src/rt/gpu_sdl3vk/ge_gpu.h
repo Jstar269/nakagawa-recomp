@@ -207,6 +207,9 @@ typedef struct GeGpuReplayStats {
     /* Stencil primitives that started a new batch because their box met the batch's
      * earlier primitives and the state reads what it writes (a snapshot copy between). */
     unsigned long long stencil_splits;
+    /* Stencil state builds that need no destination read (stencil_fixed_alpha in ge_gpu.c):
+     * the colour takes the fixed-function path and the stencil is a constant or kept. */
+    unsigned long long stencil_fixed;
     /* CPU writes into resident targets: each one noted, and the groups applied to an image
      * when the GE next used the target (one or more patch uploads per group). */
     unsigned long long cpu_write_notes;

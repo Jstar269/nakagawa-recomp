@@ -982,7 +982,7 @@ void player_ui_test_prepare_app(PlayerUiTest *t, PlayerApp *app) {
     }
     if (t->error_code) {
         if (strcmp(t->error_code, "CLI_NOT_FOUND") == 0) {
-            player_app_set_cli_not_found_error(app, "Return to Library",
+            player_app_set_cli_not_found_error(app, "Back to library",
                                                VIEW_LIBRARY);
         } else if (strcmp(t->error_code, "UI_TEST_LONG_ERROR") == 0) {
             static const char long_error_message[] =
@@ -995,7 +995,7 @@ void player_ui_test_prepare_app(PlayerUiTest *t, PlayerApp *app) {
                 "player can read the complete instruction before leaving this screen.";
             player_app_set_error(app, t->error_code,
                                  "Synthetic Long Error", long_error_message,
-                                 "Return to Library", VIEW_LIBRARY);
+                                 "Back to library", VIEW_LIBRARY);
         } else if (strcmp(t->error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0 ||
                    strcmp(t->error_code, "RUNTIME_PREMATURE_EXIT") == 0 ||
                    strcmp(t->error_code, "RUNTIME_ERROR_EXIT") == 0) {
@@ -1037,7 +1037,7 @@ void player_ui_test_prepare_app(PlayerUiTest *t, PlayerApp *app) {
         } else {
             player_app_set_error(app, t->error_code, t->error_code,
                                  "Synthetic UI regression error state.",
-                                 "Return to Library", VIEW_LIBRARY);
+                                 "Back to library", VIEW_LIBRARY);
         }
     }
 }

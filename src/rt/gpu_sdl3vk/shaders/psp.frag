@@ -43,7 +43,9 @@ layout(set = 0, binding = 1) uniform sampler2D u_dst;   /* destination snapshot 
  * 16384 per-fragment level of detail (#1373): TEXLEVEL automatic or slope mode, chosen
  * per fragment as ge.c tex_detail16 and ge_tex_level_pick choose it; cfg.y bits 24-31 =
  * slope mode | mipmap-linear << 1 | highest level << 2, texenv.a = TEXLODSLOPE,
- * fogcol.a = the TEXLEVEL bias in 1/16 (the sampler spans every level). */
+ * fogcol.a = the TEXLEVEL bias in 1/16 (the sampler spans every level).
+ * 32768 constant stencil (ge_gpu.c stencil_fixed_alpha): an 8888 stencil state that reads
+ * no destination stores bl.z (0-255) as its alpha; u_dst is not read. */
 layout(push_constant) uniform PC {
     ivec4 cfg;      /* x = texfunc | flags<<8, y = alpha test (func|ref<<8|mask<<16),
                        z = minz, w = maxz */
@@ -52,7 +54,8 @@ layout(push_constant) uniform PC {
     vec4  texsize;  /* xy = tex dimensions, zw = texel offset (render-target sub-rect) */
     ivec4 dith;     /* 4x4 GE dither matrix, one row per component, 4 x s8 packed per int */
     ivec4 bl;       /* x = blend srcf | dstf<<8 | eq<<16, y = render scale (>= 1),
-                       z = stencil test, w = stencil ops | alpha write mask<<24 */
+                       z = stencil test (32768: the constant stencil), w = stencil ops |
+                       alpha write mask<<24 */
     vec4  fixa;     /* rgb = GE_BLENDFIXEDA / 255 (src FIX constant) */
     vec4  fixb;     /* rgb = GE_BLENDFIXEDB / 255 (dst FIX constant) */
 } pc;
@@ -342,6 +345,9 @@ void main() {
         int a = quant_alpha(stencil, fbfmt);
         col.a = float((a & ~amask) | (spx.a & amask));
     }
+    /* A stencil state that stores a constant without reading the destination (ge_gpu.c
+     * stencil_fixed_alpha, 8888 targets only): ZERO or REPLACE under a full write mask. */
+    if ((flags & 32768) != 0) col.a = float(pc.bl.z & 0xFF);
 
     o_color = col * (1.0 / 255.0);
 }

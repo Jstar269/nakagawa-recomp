@@ -32,7 +32,7 @@ switches, each with one plain sentence (today the Online mode row is hidden, as 
 
 | Switch | Default | Sentence |
 | --- | --- | --- |
-| Online mode | Off | "Check nakagawa.jaycast.net for news and let you send reports. Nothing is sent without you." |
+| Online mode | Off | "When on, Nakagawa checks nakagawa.jaycast.net for news and lets you send reports. Nothing is sent without you." |
 | Developer mode | Off | "Show a developer log on screen to help track down problems. Stays on this PC." |
 
 Until news and reports exist, the wizard step and Settings > Online and developer do not show the Online mode

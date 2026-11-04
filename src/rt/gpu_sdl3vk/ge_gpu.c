@@ -69,6 +69,11 @@
  *    other states take the software rasterizer. A stencil state whose result depends on
  *    the stencil it overwrites (stencil_reads_own_writes) never shares a batch between
  *    primitives whose boxes meet, so each reads a snapshot holding the ones before it.
+ *    An 8888 state whose test always passes and whose stored stencil is the old one or a
+ *    constant (stencil_fixed_alpha) reads no destination: the colour mask keeps the
+ *    stencil, the shader writes the constant as alpha, or, blended, the alpha blend factors
+ *    store 0, with no snapshot; a blended colour is then the fixed-function blend's, within
+ *    blend-parity-ff's bound of ge.c, as for a draw without the stencil test.
  *  - Approximated (no software fallback): partial-byte write masks (>= 0x80 disables
  *    the channel), lines/points (1px quads, not DDA).
  *  - Render scale (default 1): SR_RESOLUTION_SCALE carries the player's Settings >
@@ -169,7 +174,7 @@ typedef struct { int32_t cfg[4]; float texenv[4]; float fogcol[4]; float texsize
                  int32_t dith[4]; int32_t bl[4]; float fixa[4]; float fixb[4]; } PushPC;
 enum { F_TEX = 1, F_RGBA = 2, F_DBL = 4, F_FOG = 8, F_PERSP = 16, F_CLEAR = 32,
        F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DITHER = 512, F_SHBLEND = 4096,
-       F_STENCIL = 8192, F_LODFRAG = 16384 };
+       F_STENCIL = 8192, F_LODFRAG = 16384, F_SALPHA = 32768 };
 #define F_FMT_SHIFT 10                     /* bits 10-11: framebuffer psm for quantization */
 
 typedef struct {
@@ -178,6 +183,7 @@ typedef struct {
     uint8_t ztest, zwrite, zfunc;          /* VkCompareOp */
     uint8_t cmask;                         /* VkColorComponentFlags */
     uint8_t tnl;                           /* 1: psp_tnl.vert over GeTnlVtx (#318) */
+    uint8_t azero;                         /* 1: alpha blend factors ZERO, ZERO (stores 0) */
 } PipeKey;
 
 typedef struct {
@@ -1249,8 +1255,9 @@ static VkPipeline pipe_create(const PipeKey *k) {
     ba.srcColorBlendFactor = (VkBlendFactor)k->srcf;
     ba.dstColorBlendFactor = (VkBlendFactor)k->dstf;
     ba.colorBlendOp = (VkBlendOp)k->eq;
-    ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;    /* PSP: dst alpha = clamp(sa + da) */
-    ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    /* PSP: dst alpha = clamp(sa + da); a constant stencil of 0 (stencil_fixed_alpha) stores 0 */
+    ba.srcAlphaBlendFactor = k->azero ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE;
+    ba.dstAlphaBlendFactor = k->azero ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE;
     ba.alphaBlendOp = VK_BLEND_OP_ADD;
     ba.colorWriteMask = k->cmask;
     VkPipelineColorBlendStateCreateInfo cb = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
@@ -3129,6 +3136,39 @@ static int blend_needs_shader(uint32_t sfp, uint32_t dfp, uint32_t eq, uint32_t 
            blend_dual_fix(sfp, dfp, fixa, fixb);
 }
 
+/* Stencil states that never read the destination, for an 8888 target outside clear mode. A
+ * test that always passes never runs the stencil-fail op, and the depth-fail op is KEEP
+ * wherever the depth test can fail (stencil_gpu_supported), so a written pixel stores the
+ * depth-pass op's value under the alpha write mask (ge.c put_px_rgba_tested):
+ *  - KEEP, or a mask that keeps all eight bits: the old stencil, which the colour write mask
+ *    preserves (SFIX_KEEP), as for a draw without the stencil test;
+ *  - ZERO or REPLACE under a mask of 0: a constant, 0 or the unmasked reference. Unblended,
+ *    the shader stores it as its alpha (F_SALPHA). Blended, the alpha blend factors ZERO and
+ *    ZERO store 0 (PipeKey.azero), while the colour factors still read the source alpha; no
+ *    blend factor stores another constant, so those keep the shader.
+ * The colour is what the same draw without the stencil test gives: the source colour, or the
+ * fixed-function blend, which is within blend-parity-ff's bound of ge.c. A blend that needs
+ * the shader, dither, the stencil-reading ops (INVERT, INCR, DECR), a test that compares, a
+ * partial alpha mask and a 16-bit target keep the shader's stencil (SFIX_NONE), which reads a
+ * destination snapshot and splits overlapping primitives. In a title that tags its blended
+ * sprites with REPLACE 0, those splits and copies are most of the GPU replay's CPU cost
+ * (#1931). */
+enum { SFIX_NONE = -1, SFIX_KEEP = -2 };
+static int stencil_fixed_alpha(const GeState *g) {
+    if ((g->fbfmt & 3u) != 3u || (g->stencil_test & 7u) != 1u) return SFIX_NONE;
+    const int blended = g->blend_enable != 0;
+    if (blended && (g->dither_enable ||
+                    blend_needs_shader(g->blend_mode & 0xFu, (g->blend_mode >> 4) & 0xFu,
+                                       (g->blend_mode >> 8) & 7u, g->blend_fixa, g->blend_fixb)))
+        return SFIX_NONE;
+    const uint32_t amask = (uint32_t)g->mask_alpha & 0xFFu, zpass = (g->stencil_op >> 16) & 7u;
+    if (zpass == 0u || amask == 0xFFu) return SFIX_KEEP;
+    if (amask != 0u) return SFIX_NONE;
+    const int value = zpass == 1u ? 0 : zpass == 2u ? (int)((g->stencil_test >> 8) & 0xFFu) : -1;
+    if (value < 0 || (blended && value != 0)) return SFIX_NONE;
+    return value;
+}
+
 /* Find the target that holds VRAM offset `a` (gpu_valid not required). The GE has no buffer height
  * register, so a target's span below is its widest case, 272 rows: a title that stacks short
  * targets puts the next target's base inside that span. The nearest base at or below `a` owns the
@@ -3180,9 +3220,14 @@ static void build_state(int persp, int sprite, Batch *b) {
          * value, which already carries the alpha write mask. */
         k->cmask = (mr >= 0x80 ? 0 : VK_COLOR_COMPONENT_R_BIT) | (mg >= 0x80 ? 0 : VK_COLOR_COMPONENT_G_BIT)
                  | (mb >= 0x80 ? 0 : VK_COLOR_COMPONENT_B_BIT);
-        if (g->stencil_enable) k->cmask |= VK_COLOR_COMPONENT_A_BIT;
+        if (g->stencil_enable && stencil_fixed_alpha(g) != SFIX_KEEP) k->cmask |= VK_COLOR_COMPONENT_A_BIT;
     }
-    const int stencil = !clear && g->stencil_enable;
+    /* A stencil state that cannot read the destination (stencil_fixed_alpha) needs no shader
+     * stencil test: the colour takes the path of a draw without the stencil test (blended, the
+     * fixed-function blend, within blend-parity-ff's bound of ge.c), and the stored stencil is
+     * the write mask above, F_SALPHA's value or, blended, PipeKey.azero's 0. */
+    const int sfix = !clear && g->stencil_enable ? stencil_fixed_alpha(g) : SFIX_NONE;
+    const int stencil = !clear && g->stencil_enable && sfix == SFIX_NONE;
 
     /* blending: fixed-function VK when it maps exactly, shader blend otherwise */
     int shblend = 0;
@@ -3312,7 +3357,13 @@ static void build_state(int persp, int sprite, Batch *b) {
         flags |= F_STENCIL;
         b->pc.bl[2] = (int32_t)(g->stencil_test & 0xFFFFFFu);
         b->pc.bl[3] = (int32_t)((g->stencil_op & 0x070707u) | ((uint32_t)(g->mask_alpha & 0xFF) << 24));
+    } else if (sfix >= 0 && k->blend_on) {
+        k->azero = 1;                     /* stencil_fixed_alpha: blended, the constant is 0 */
+    } else if (sfix >= 0) {
+        flags |= F_SALPHA;
+        b->pc.bl[2] = sfix;
     }
+    if (sfix != SFIX_NONE) s_replay_stats.stencil_fixed++;
 
     b->pc.cfg[1] = (int32_t)(((!clear && g->atest_enable) ? (g->atest & 0xFFFFFFu) : 1u /* ALWAYS */) |
                              (lodcfg << 24));

@@ -225,6 +225,7 @@ typedef struct {
     bool text;      /* crisp system text (the on-screen keyboard); on by default */
     bool readout;   /* the speed readout; off by default */
     bool notice;    /* the in-game badge at start; on by default */
+    int smooth;     /* smooth motion (#1272): 0 off (the default), 1 x2 */
 } PlayerAceSettings;
 
 /* One title's choice, saved only while it differs from the library: -1 follows the library. */
@@ -235,6 +236,7 @@ typedef struct {
     int text;       /* -1, 0 or 1 */
     int readout;
     int notice;
+    int smooth;     /* -1 follows the library, 0 off, 1 x2 */
 } PlayerAceTitle;
 
 /* What a title launches with (player_ace_resolve). */
@@ -245,6 +247,7 @@ typedef struct {
     bool text;
     bool readout;
     bool notice;
+    int smooth;                /* 0 off, 1 x2; player_ace_apply_logic_60 forces 0 */
 } PlayerAceResolved;
 
 typedef struct {
@@ -1464,9 +1467,14 @@ const PlayerAceTitle *player_settings_ace_title(const PlayerSettings *settings,
  * turns Ace on; each feature then takes the title's value, else the library's. */
 void player_ace_resolve(const PlayerSettings *settings, const char *disc_id,
                         PlayerAceResolved *out);
+/* True 60 Hz game logic and smooth motion are refused together, not stacked (#1272): a title
+ * that launches its enhanced 60 FPS build (GameRecord.enhancement_package_id set) calls this
+ * with logic_60 true, and smooth motion is off for that launch whatever the settings say.
+ * Ace's other features are untouched. */
+void player_ace_apply_logic_60(PlayerAceResolved *ace, bool logic_60);
 /* The SR_ACE line for a resolution: "off", or "v1;af=16;text=on;readout=off;notice=on;
- * wide=off;smooth=off" (features this build does not carry are always off). Returns false
- * when it does not fit. */
+ * wide=off;smooth=off" (smooth=x2 when smooth motion is on; wide is always off, and
+ * smooth=match is never written). Returns false when it does not fit. */
 bool player_ace_launch_line(const PlayerAceResolved *ace, char *out, size_t cap);
 /* <user_root>/ace/<disc ID>.json: the runtime's per-run report for that disc. */
 bool player_ace_report_path(const char *user_root, const char *disc_id, char *out, size_t cap);
@@ -1480,12 +1488,17 @@ void player_app_cycle_ace_filtering(PlayerApp *app);   /* 16x, 8x, 4x, 2x, Off *
 void player_app_toggle_ace_text(PlayerApp *app);
 void player_app_toggle_ace_readout(PlayerApp *app);
 void player_app_toggle_ace_notice(PlayerApp *app);
+void player_app_toggle_ace_smooth(PlayerApp *app);     /* Off, x2 */
 /* "16x", "8x", "4x", "2x" or "Off". */
 const char *player_ace_filtering_label(int af);
 /* The title page: Library default, On, Authentic, then Library default again. Authentic
  * also takes the title's 60 FPS game logic off for as long as it is chosen. */
 void player_app_cycle_title_ace_mode(PlayerApp *app, int game_index);
 PlayerAceTitleMode player_app_title_ace_mode(const PlayerApp *app, int game_index);
+/* The title page's smooth motion: Library default, On, Off, then Library default again. */
+void player_app_cycle_title_ace_smooth(PlayerApp *app, int game_index);
+/* The title's own smooth motion choice: -1 follows the library, 0 off, 1 x2. */
+int player_app_title_ace_smooth(const PlayerApp *app, int game_index);
 /* The title's "Last session" line from the report under the user data folder; false, with
  * out empty, when there is none. */
 bool player_app_ace_last_session(const PlayerApp *app, int game_index, char *out, size_t cap);
