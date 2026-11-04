@@ -4744,8 +4744,10 @@ static int umd_test_sectors_match(uint32_t dst, uint32_t sector, uint32_t count)
  * return sector positions and SEEK_END is relative to the last sector; reads take and return
  * sector counts and advance the position by them; a position below zero or past the last
  * sector is refused with 0x8001b003 and leaves the position unchanged; a zero count is refused
- * with 0x80010016. Uncaptured cases stay visible: a read crossing the last sector stops at the
- * raw-device boundary, and so does every data operation while no disc image is open. */
+ * with 0x80010016. At the end (PSP-IO-EOF-002, measured): a read from the last sector that asks
+ * for two returns 1 and copies one sector, the position is then one past the last sector, a
+ * SEEK_CUR 0 there is refused, and a read there answers 0x80210002. Every data operation while
+ * no disc image is open stays at the raw-device boundary. */
 static void test_umd_block_device_sectors(uint32_t fd, uint32_t data_addr) {
     uint32_t high = 0;
     expect(umd_test_seek64(fd, 0, 0u, &high) == 0u && high == 0u, "UMD SEEK_SET 0 is sector 0");
@@ -4795,16 +4797,26 @@ static void test_umd_block_device_sectors(uint32_t fd, uint32_t data_addr) {
                umd_test_seek32(fd, 0, 1u) == 16u,
            "a zero-count UMD read is refused with 0x80010016 and keeps the position");
 
-    /* A read crossing the last sector is not captured: it stops at the boundary and changes
-     * neither guest memory nor the position. */
-    MEM_W32(data_addr, 0xaabbccddu);
+    /* A read crossing the last sector returns the one sector left and copies only it. */
+    MEM_W32(data_addr + 2048u, 0xaabbccddu);
     expect(umd_test_seek32(fd, (int32_t)UMD_SYNTHETIC_SECTORS - 1, 0u) ==
                UMD_SYNTHETIC_SECTORS - 1u &&
-               umd_test_read(fd, data_addr, 2u) == 0x80010086u &&
-               MEM_R32(data_addr) == 0xaabbccddu &&
-               umd_test_seek32(fd, 0, 1u) == UMD_SYNTHETIC_SECTORS - 1u,
-           "a UMD read across the last sector stops at the raw-device boundary");
-    expect(umd_test_read(fd, data_addr, 1u) == 1u &&
+               umd_test_read(fd, data_addr, 2u) == 1u &&
+               umd_test_sectors_match(data_addr, UMD_SYNTHETIC_SECTORS - 1u, 1u) &&
+               MEM_R32(data_addr + 2048u) == 0xaabbccddu,
+           "a UMD read across the last sector returns 1 and copies only the last sector");
+    /* The position is now one past the last sector: SEEK_CUR 0 is refused there, and a read
+     * answers 0x80210002 without touching guest memory. */
+    MEM_W32(data_addr, 0x11223344u);
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 0x8001b003u && high == 0xffffffffu &&
+               umd_test_read(fd, data_addr, 1u) == 0x80210002u &&
+               MEM_R32(data_addr) == 0x11223344u,
+           "after the last sector a UMD SEEK_CUR 0 is refused and a read answers 0x80210002");
+    expect(umd_test_seek64(fd, 1, 2u, &high) == 0x8001b003u && high == 0xffffffffu,
+           "UMD SEEK_END +1 is refused");
+    expect(umd_test_seek32(fd, (int32_t)UMD_SYNTHETIC_SECTORS - 1, 0u) ==
+               UMD_SYNTHETIC_SECTORS - 1u &&
+               umd_test_read(fd, data_addr, 1u) == 1u &&
                umd_test_sectors_match(data_addr, UMD_SYNTHETIC_SECTORS - 1u, 1u),
            "the last UMD sector itself is readable");
     expect(umd_test_seek32(fd, 0, 0u) == 0u && umd_test_read(fd, 0x0bffff00u, 1u) == 0x80010016u &&
@@ -4924,13 +4936,14 @@ static void test_umd_block_device_async(uint32_t fd, uint32_t data_addr, uint32_
                umd_test_async_result(result_addr) == 16 && umd_test_seek32(fd, 0, 1u) == 16u,
            "a raw UMD sceIoLseek32Async SEEK_SET 16 completes with sector 16");
 
-    /* A read crossing the last sector stays at the named boundary as its result. */
+    /* A queued read crossing the last sector completes with the one sector left, as the
+     * synchronous read does (PSP-IO-EOF-002). */
     expect(umd_test_seek32(fd, (int32_t)UMD_SYNTHETIC_SECTORS - 1, 0u) ==
                UMD_SYNTHETIC_SECTORS - 1u &&
                umd_test_async_call(UMD_NID_READ_ASYNC, fd, data_addr, 2u, 0u, 0u) == 0u &&
                umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
-               umd_test_async_result(result_addr) == (int64_t)(int32_t)0x80010086u,
-           "a queued UMD read across the last sector completes at the raw-device boundary");
+               umd_test_async_result(result_addr) == 1,
+           "a queued UMD read across the last sector completes with 1");
 }
 
 void sr_hle_test_var_reset(void);
@@ -5078,7 +5091,12 @@ static void test_main_function_exports_link_from_boot(void) {
 }
 
 static void test_umd_io_console_model(void) {
-    enum { PATH_ADDR = 0x09010000u, DATA_ADDR = 0x09012000u, FD_KIND_RAW_DEVICE = 3 };
+    enum {
+        PATH_ADDR = 0x09010000u,
+        DATA_ADDR = 0x09012000u,
+        FD_KIND_FILE = 2,
+        FD_KIND_RAW_DEVICE = 3
+    };
     static const uint32_t nid_io_open = 0x109f50bcu;
     static const uint32_t nid_io_close = 0x810c4bc3u;
     static const uint32_t nid_io_write = 0x42ec03acu;
@@ -5228,6 +5246,48 @@ static void test_umd_io_console_model(void) {
         cpu.r[4] = raw_fd;
         expect(sr_syscall(&cpu, nid_io_close) == 0u, "each UMD block device closes");
     }
+
+    /* A disc0: file's position stays inside [0, size] (PSP-IO-EOF-002, measured): every seek
+     * before the start or past the end answers 0x80010005, sceIoLseek's high word 0xFFFFFFFF,
+     * and leaves the position; the end itself is a valid position, where a read returns 0. */
+    fd_set_path(&cpu, PATH_ADDR, "disc0:/UMD_DATA.BIN");
+    cpu.r[5] = 1u;
+    const uint32_t disc_fd = sr_syscall(&cpu, nid_io_open);
+    expect(disc_fd < 64u && sr_hle_test_fd_kind(disc_fd) == FD_KIND_FILE,
+           "a disc0: file opens read-only");
+    {
+        uint32_t high = 0;
+        expect(umd_test_seek64(disc_fd, 0, 2u, &high) == 2048u && high == 0u,
+               "a disc0: SEEK_END 0 is the file size");
+        expect(umd_test_seek64(disc_fd, 8, 0u, &high) == 8u, "disc0: seek setup");
+        static const struct { int64_t offset; uint32_t whence; const char *what; } refused[] = {
+            {16, 2u, "a disc0: SEEK_END +16 is refused with 0x80010005"},
+            {2048 + 0x1000, 0u, "a disc0: SEEK_SET past the end is refused with 0x80010005"},
+            {-1, 0u, "a disc0: SEEK_SET -1 is refused with 0x80010005"},
+            {-(2048 + 1), 2u, "a disc0: SEEK_END before the start is refused with 0x80010005"},
+            {-9, 1u, "a disc0: SEEK_CUR before the start is refused with 0x80010005"},
+            {0xffffffffll, 0u, "a disc0: SEEK_SET 0xFFFFFFFF is refused with 0x80010005"},
+            {0x100000000ll, 0u, "a disc0: SEEK_SET 0x100000000 is refused with 0x80010005"},
+        };
+        for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+            expect(umd_test_seek64(disc_fd, refused[i].offset, refused[i].whence, &high) ==
+                           0x80010005u && high == 0xffffffffu &&
+                       umd_test_seek64(disc_fd, 0, 1u, &high) == 8u,
+                   refused[i].what);
+        }
+        expect(umd_test_seek32(disc_fd, 16, 2u) == 0x80010005u &&
+                   umd_test_seek32(disc_fd, -1, 0u) == 0x80010005u &&
+                   umd_test_seek32(disc_fd, 0, 1u) == 8u,
+               "disc0: sceIoLseek32 past the end and before the start is refused, position kept");
+        MEM_W32(DATA_ADDR, 0xaabbccddu);
+        expect(umd_test_seek32(disc_fd, 0, 2u) == 2048u &&
+                   umd_test_read(disc_fd, DATA_ADDR, 16u) == 0u &&
+                   MEM_R32(DATA_ADDR) == 0xaabbccddu && umd_test_seek32(disc_fd, 0, 1u) == 2048u,
+               "a read at the end of a disc0: file returns 0 and keeps the position");
+    }
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = disc_fd;
+    expect(sr_syscall(&cpu, nid_io_close) == 0u, "the disc0: file closes");
 
     fd_set_path(&cpu, PATH_ADDR, "umd0:");
     cpu.r[5] = 1u;
@@ -8311,7 +8371,8 @@ static void test_utility_dialog_single_slot(void) {
     osk_env("SR_OSK_SCRIPT", NULL);
     osk_env("SR_OSK_TEXT", NULL);
 
-    /* No dialog ever opened: every type's Update, GetStatus and ShutdownStart is WRONG_TYPE. */
+    /* No dialog ever opened: every type's Update, GetStatus and ShutdownStart is WRONG_TYPE
+     * (measured for all but the OSK by PSP-HLE-UTILITY-NONE-001, and for the OSK by #363). */
     for (size_t i = 0; i < count; i++) {
         snprintf(what, sizeof(what), "%sUpdate, GetStatus and ShutdownStart with no dialog ever "
                  "opened return WRONG_TYPE", dialogs[i].name);
