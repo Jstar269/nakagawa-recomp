@@ -6,7 +6,7 @@
 Compiles the portable C99 decryption engine under ``src/core`` into a
 cached helper binary under ``build/`` that the Python tooling and the
 test suite invoke.  The binary decrypts with the built-in game tables
-(owner decision 2026-10-27); a test may replace them with a key file of
+; a test may replace them with a key file of
 synthetic keys.  A missing entry fails closed naming the exact entry the
 container needs, and firmware is refused before any key lookup.
 """

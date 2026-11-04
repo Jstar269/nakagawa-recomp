@@ -24,8 +24,10 @@
  *   - coalescing never merges across a LIVE block, even when that block's payload
  *     happens to contain a footer-shaped word (the merge validators must reject
  *     it);
- *   - a merged block still hands back clean (zeroed) payload, preserving free()'s
- *     existing guarantee across the absorbed metadata words;
+ *   - a merged block still hands back clean (zeroed) payload, preserving the
+ *     allocator's guarantee that a block it hands out starts zeroed, across the
+ *     absorbed metadata words;
+ *   - free() keeps a freed block's payload until the block is handed out again;
  *   - randomized alloc/free churn leaves metadata valid and the free list finite.
  */
 
@@ -593,6 +595,68 @@ static void test_adjacent_allocated_successor_realloc_fallback(void) {
     CHECK(st.metadata_valid, "metadata invalid after draining fallback heap");
 }
 
+/* free() leaves the payload as it was, as newlib's free does on the PSP apart from its two
+ * free-list words: a guest that reads an object it has just freed must see its old fields,
+ * not zeroes (Hot Shots Tennis reads a freed mesh group at the end of every match). The
+ * block is still handed out clean when it is reused. */
+static void test_freed_payload_keeps_contents(void) {
+    heap_reset();
+    uint32_t a = sr_newlib_malloc(64u, 0u);
+    uint32_t guard = sr_newlib_malloc(64u, 0u);
+    CHECK(a && guard, "setup mallocs failed");
+    for (uint32_t off = 0; off < 64u; off += 4u) MEM_W32(a + off, 0xC3C3C3C3u);
+    sr_newlib_free(a, 0u);
+    int kept = 0;
+    for (uint32_t off = 0; off < 64u; off += 4u)
+        if (MEM_R32(a + off) == 0xC3C3C3C3u) kept++;
+    CHECK(kept == 16, "%d of 16 payload words kept after free", kept);
+    uint32_t again = sr_newlib_malloc(64u, 0u);
+    CHECK(again == a, "freed block was not reused (a=0x%08x again=0x%08x)", a, again);
+    int dirty = 0;
+    for (uint32_t off = 0; off < 64u; off += 4u)
+        if (MEM_R32(again + off) != 0u) dirty++;
+    CHECK(dirty == 0, "%d non-zero words in a reused block", dirty);
+}
+
+/* A split reuse clears only what it hands out; the remainder is cleared when it is
+ * handed out in turn. */
+static void test_split_reuse_hands_out_clean_bytes(void) {
+    heap_reset();
+    uint32_t a = sr_newlib_malloc(4096u, 0u);
+    uint32_t guard = sr_newlib_malloc(64u, 0u);
+    CHECK(a && guard, "setup mallocs failed");
+    for (uint32_t off = 0; off < 4096u; off += 4u) MEM_W32(a + off, 0x3C3C3C3Cu);
+    sr_newlib_free(a, 0u);
+    uint32_t first = sr_newlib_malloc(1000u, 0u);
+    uint32_t second = sr_newlib_malloc(2000u, 0u);
+    CHECK(first == a && second > first && second < guard, "split reuse did not stay inside the freed block");
+    int dirty = 0;
+    for (uint32_t off = 0; off < 1000u; off += 4u) if (MEM_R32(first + off) != 0u) dirty++;
+    for (uint32_t off = 0; off < 2000u; off += 4u) if (MEM_R32(second + off) != 0u) dirty++;
+    CHECK(dirty == 0, "%d non-zero words handed out from a split freed block", dirty);
+}
+
+/* realloc that grows into a freed successor hands back clean bytes for the grown part,
+ * although that successor kept its last occupant's bytes when it was freed. */
+static void test_realloc_growth_tail_is_clean(void) {
+    heap_reset();
+    uint32_t a = sr_newlib_malloc(64u, 0u);
+    uint32_t b = sr_newlib_malloc(128u, 0u);
+    uint32_t c = sr_newlib_malloc(64u, 0u);
+    CHECK(a && b && c, "setup mallocs failed");
+    for (uint32_t off = 0; off < 64u; off += 4u) MEM_W32(a + off, 0x11111111u);
+    for (uint32_t off = 0; off < 128u; off += 4u) MEM_W32(b + off, 0x77777777u);
+    sr_newlib_free(b, 0u);
+    uint32_t grown = sr_newlib_realloc(a, 160u, 0u);
+    CHECK(grown == a, "realloc did not grow in place (got 0x%08x, expected 0x%08x)", grown, a);
+    int kept = 0, dirty = 0;
+    for (uint32_t off = 0; off < 64u; off += 4u) if (MEM_R32(grown + off) == 0x11111111u) kept++;
+    for (uint32_t off = 64u; off < 160u; off += 4u) if (MEM_R32(grown + off) != 0u) dirty++;
+    CHECK(kept == 16, "%d of 16 original words kept by the in-place growth", kept);
+    CHECK(dirty == 0, "%d non-zero words in the grown part", dirty);
+    CHECK(sr_heap_stats().metadata_valid, "metadata invalid after in-place growth");
+}
+
 int main(void) {
     /* 64 MB host arena. g_mem maps guest 0x08000000 -> arena[0], so the heap
      * region [0x0a000008,0x0c000000) lands inside arena[0x02000008,0x04000000). */
@@ -614,6 +678,9 @@ int main(void) {
     test_adjacent_free_successor_realloc_growth();
     test_adjacent_free_successor_realloc_exact_consume();
     test_adjacent_allocated_successor_realloc_fallback();
+    test_freed_payload_keeps_contents();
+    test_split_reuse_hands_out_clean_bytes();
+    test_realloc_growth_tail_is_clean();
 
     if (g_failures) {
         fprintf(stderr, "heap selftest: %d FAILURE(S)\n", g_failures);

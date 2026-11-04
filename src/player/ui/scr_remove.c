@@ -2,8 +2,9 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 /* Remove from library (#1304): the game, what Nakagawa built for it with
-   sizes, the promise about the disc image, and the saves box, which stays
-   off until the user ticks it. Cancel holds focus first. */
+   sizes, the promise about the disc image, and two boxes that stay off until
+   the user ticks them: the saves, and the decrypted files and disc copy
+   (#2003). Cancel holds focus first. */
 
 #include "player_ui_nk.h"
 #include "nk_ui_widgets.h"
@@ -91,6 +92,23 @@ PlayerUiAction player_ui_screen_remove(NkUi *ui, const PlayerUiRemoveModel *mode
         nk_ui_text_role(ui, FLOW_ID_MESSAGE, "This game has no saves.", NK_UI_TYPE_BODY_S,
                         theme->muted);
     }
+    if (model->has_disc_copy && !model->files_shared) {
+        scr_flow_bytes(size, sizeof(size), model->disc_copy_bytes);
+        (void)snprintf(text, sizeof(text),
+                       "%sAlso delete the decrypted files and disc copy (%s)",
+                       model->delete_disc_copy ? FLOW_MARK_CHECK : "", size);
+        if (nk_ui_button(ui, PLAYER_UI_ID_REMOVE_DISC_COPY, nk_ui_frame_text(ui, text), 0u)) {
+            result = action(PLAYER_UI_ACTION_REMOVE_TOGGLE_DISC_COPY, model->title_index,
+                            PLAYER_UI_PRIMARY_NONE);
+        }
+        nk_ui_text_role(ui, FLOW_ID_NOTICE,
+                        model->delete_disc_copy
+                            ? "They go too, with any decrypted files you added yourself. "
+                              "Your disc image stays."
+                            : "They stay, so adding this game again is quicker.",
+                        NK_UI_TYPE_BODY_S,
+                        model->delete_disc_copy ? theme->error : theme->muted);
+    }
     {
         NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
                                      NK_UI_SPACE_3);
@@ -100,9 +118,13 @@ PlayerUiAction player_ui_screen_remove(NkUi *ui, const PlayerUiRemoveModel *mode
                                 PLAYER_UI_PRIMARY_NONE);
             }
             if (nk_ui_button(ui, PLAYER_UI_ID_REMOVE_CONFIRM, "Remove", NK_UI_BUTTON_DANGER)) {
+                unsigned also =
+                    (model->delete_saves ? PLAYER_UI_REMOVE_ALSO_SAVES : 0u) |
+                    (model->delete_disc_copy && model->has_disc_copy && !model->files_shared
+                         ? PLAYER_UI_REMOVE_ALSO_DISC_COPY
+                         : 0u);
                 result = action(PLAYER_UI_ACTION_REMOVE_CONFIRM, model->title_index,
-                                model->delete_saves ? (PlayerUiPrimaryAction)1
-                                                    : PLAYER_UI_PRIMARY_NONE);
+                                (PlayerUiPrimaryAction)also);
             }
             nk_ui_end_container(ui);
         }

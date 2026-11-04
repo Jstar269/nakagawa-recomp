@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
-/* Check for updates (owner decision 2026-10-28, AGENTS.md section 5).
+/* Check for updates (AGENTS.md section 5).
  *
  * The player asks GitHub's public Releases API which Nakagawa versions exist,
  * only when the user presses Check for updates or has turned on the check at

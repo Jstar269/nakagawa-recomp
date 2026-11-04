@@ -11,7 +11,7 @@
  * host-specific implementation lives entirely in sr_coro.c:
  *
  *   - Windows: Win32 fibers (ConvertThreadToFiber / CreateFiberEx / SwitchToFiber). Fibers
- *     reserve a large stack but commit it lazily, which the deep guest→native call chains need.
+ *     reserve a large stack but commit it lazily, which the deep guest->native call chains need.
  *   - POSIX (Linux / Steam Deck): ucontext_t + swapcontext over an mmap'd, lazily-committed
  *     stack (MAP_NORESERVE), matching the fibers' lazy-commit behaviour, with a PROT_NONE
  *     guard band below it, matching the fibers' guard page.

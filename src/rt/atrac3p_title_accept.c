@@ -2,7 +2,7 @@
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
 /*
- * atrac3p_title_accept.c — PRIVATE title acceptance for the ATRAC3+ lane
+ * atrac3p_title_accept.c — PRIVATE title acceptance for the ATRAC3+ path
  * (PR-C, issues #286/#32).
  *
  * Bounded private-route acceptance: reads the lawful private title stream

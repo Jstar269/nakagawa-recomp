@@ -65,7 +65,7 @@ PSP UMD disc images contain executables in two primary container formats:
 #### Encrypted containers
 
 The player decrypts a UMD disc's encrypted executable and modules locally with built-in tables
-([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The player and CLI refuse an encrypted
+([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)). The player and CLI refuse an encrypted
 `~PSP`/`~SCE` executable or PRX that has no plain copy after that as `ENCRYPTED_EXECUTABLE`
 or `ENCRYPTED_MODULE`, and the analyzer requires plain ELF/PRX inputs. PGD-protected game data
 remains unsupported.

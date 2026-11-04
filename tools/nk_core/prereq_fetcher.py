@@ -522,7 +522,7 @@ BUNDLE_REQUIRED_FILES = (
     "msys64/ucrt64/bin/gcc.exe",
     "msys64/ucrt64/bin/mingw32-make.exe",
 )
-# Owner decision (2026-10-26, #1285): the GFDL-licensed documentation in these folders
+# Release policy (#1285): the GFDL-licensed documentation in these folders
 # of every msys64 prefix is not needed to build and is not shipped in prereqs/. Every
 # package's licence and copying files stay in notices/, and the full upstream
 # documentation is in the corresponding-source archive.
@@ -752,7 +752,7 @@ def verify_bundle(manifest_path: Path, bundle_root: Path) -> dict:
 
 
 # ---- Corresponding source (#1285) -------------------------------------------
-# Owner decisions (2026-10-26 and 2026-10-27): the release ships the source of
+# Release policy (#1285): the release ships the source of
 # every bundled package, not only the copyleft ones, as one archive published
 # next to the zip, instead of a written offer. Every ready artifact names an
 # entry of the manifest's "sources" list in "source": the MSYS2 source package
