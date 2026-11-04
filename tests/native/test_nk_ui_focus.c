@@ -185,6 +185,20 @@ static int test_ragged_row(void) {
           "an overlapping row beats a staggered one");
     CHECK(nk_ui_focus_directional(list, 2, 1u, NK_UI_DIR_RIGHT) == 2u,
           "a staggered tile is reachable when it is the only candidate");
+
+    /* A card's actions: a primary button and a second button on one row, and a link
+       under the primary one whose centre is a few pixels to the right of the
+       primary's centre. Right from the primary reaches the second button, not the
+       link below it. */
+    list[0].id = 1u; list[0].rect = (NkUiRect){228.0f, 435.0f, 157.0f, 45.0f};
+    list[1].id = 2u; list[1].rect = (NkUiRect){397.0f, 435.0f, 133.0f, 45.0f};
+    list[2].id = 3u; list[2].rect = (NkUiRect){228.0f, 493.0f, 165.0f, 45.0f};
+    CHECK(nk_ui_focus_directional(list, 3, 1u, NK_UI_DIR_RIGHT) == 2u,
+          "right from a button skips a wider control under it");
+    CHECK(nk_ui_focus_directional(list, 3, 1u, NK_UI_DIR_DOWN) == 3u,
+          "down from the button still reaches the control under it");
+    CHECK(nk_ui_focus_directional(list, 3, 3u, NK_UI_DIR_RIGHT) == 2u,
+          "right from a control under a button still reaches the next row's button");
     nk_ui_focus_graph_destroy(g);
     return 1;
 }

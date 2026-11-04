@@ -69,6 +69,11 @@
  *    other states take the software rasterizer. A stencil state whose result depends on
  *    the stencil it overwrites (stencil_reads_own_writes) never shares a batch between
  *    primitives whose boxes meet, so each reads a snapshot holding the ones before it.
+ *    An 8888 state whose test always passes and whose stored stencil is the old one or a
+ *    constant (stencil_fixed_alpha) reads no destination: the colour mask keeps the
+ *    stencil, the shader writes the constant as alpha, or, blended, the alpha blend factors
+ *    store 0, with no snapshot; a blended colour is then the fixed-function blend's, within
+ *    blend-parity-ff's bound of ge.c, as for a draw without the stencil test.
  *  - Approximated (no software fallback): partial-byte write masks (>= 0x80 disables
  *    the channel), lines/points (1px quads, not DDA).
  *  - Render scale (default 1): SR_RESOLUTION_SCALE carries the player's Settings >
@@ -169,7 +174,7 @@ typedef struct { int32_t cfg[4]; float texenv[4]; float fogcol[4]; float texsize
                  int32_t dith[4]; int32_t bl[4]; float fixa[4]; float fixb[4]; } PushPC;
 enum { F_TEX = 1, F_RGBA = 2, F_DBL = 4, F_FOG = 8, F_PERSP = 16, F_CLEAR = 32,
        F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DITHER = 512, F_SHBLEND = 4096,
-       F_STENCIL = 8192, F_LODFRAG = 16384 };
+       F_STENCIL = 8192, F_LODFRAG = 16384, F_SALPHA = 32768 };
 #define F_FMT_SHIFT 10                     /* bits 10-11: framebuffer psm for quantization */
 
 typedef struct {
@@ -178,6 +183,7 @@ typedef struct {
     uint8_t ztest, zwrite, zfunc;          /* VkCompareOp */
     uint8_t cmask;                         /* VkColorComponentFlags */
     uint8_t tnl;                           /* 1: psp_tnl.vert over GeTnlVtx (#318) */
+    uint8_t azero;                         /* 1: alpha blend factors ZERO, ZERO (stores 0) */
 } PipeKey;
 
 typedef struct {
@@ -1249,8 +1255,9 @@ static VkPipeline pipe_create(const PipeKey *k) {
     ba.srcColorBlendFactor = (VkBlendFactor)k->srcf;
     ba.dstColorBlendFactor = (VkBlendFactor)k->dstf;
     ba.colorBlendOp = (VkBlendOp)k->eq;
-    ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;    /* PSP: dst alpha = clamp(sa + da) */
-    ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    /* PSP: dst alpha = clamp(sa + da); a constant stencil of 0 (stencil_fixed_alpha) stores 0 */
+    ba.srcAlphaBlendFactor = k->azero ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE;
+    ba.dstAlphaBlendFactor = k->azero ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE;
     ba.alphaBlendOp = VK_BLEND_OP_ADD;
     ba.colorWriteMask = k->cmask;
     VkPipelineColorBlendStateCreateInfo cb = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
@@ -1690,7 +1697,12 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
     int ok = cmd_batch_record(SR_PERF_GE_RENDER_BATCH);
     t->gpu_valid = 1;
     t->render_gen++;
-    if (t->dep) t->dep->guest_dirty = 1;
+    /* Only a batch that writes depth (a depth test with writes on, or a clear that fills depth)
+     * makes the depth surface newer than guest VRAM. A title that writes no depth may leave zbp on
+     * a colour buffer, and writing the untouched surface back would overwrite those pixels. */
+    int zwrite = 0;
+    for (uint32_t i = b0; i < b1 && !zwrite; i++) zwrite = s_batch[i].key.zwrite;
+    if (t->dep && zwrite) t->dep->guest_dirty = 1;
     sr_vram_mark_renderer_pending();
     s_cnt_submit++;
     if (s_stats) {
@@ -2548,15 +2560,36 @@ static const uint8_t *tex_source_ptr(uint32_t addr, uint32_t bytes) {
     return (const uint8_t *)SR_HOST(addr);
 }
 
+static uint32_t tex_level_bytes(const TexEnt *e, uint32_t l) {
+    return l ? e->mip_bytes[l - 1u] : e->bytes;
+}
+
+/* A shadow holds the source bytes of every level of an entry, level 0 first, so a notified
+ * write that left the bytes as they were (a whole-cache writeback, say) revalidates a mip
+ * chain as it does a single level. Fills `src` with each level's host pointer; returns the
+ * shadow's size, or 0 when a level has no direct host view (tex_source_ptr). */
+static uint32_t tex_shadow_sources(const TexEnt *e, const uint8_t **src) {
+    uint32_t total = 0;
+    for (uint32_t l = 0; l <= e->mip.max_level; l++) {
+        if (!(src[l] = tex_source_ptr(l ? e->mip.addr[l - 1u] : e->addr, tex_level_bytes(e, l))))
+            return 0;
+        total += tex_level_bytes(e, l);
+    }
+    return total;
+}
+
 static int tex_shadow_matches(TexEnt *e) {
-    if (!s_tex_shadow_enabled || !e->shadow || e->shadow_bytes != e->bytes) return 0;
-    const uint8_t *src = tex_source_ptr(e->addr, e->bytes);
-    if (!src) return 0;
+    const uint8_t *src[8];
+    if (!s_tex_shadow_enabled || !e->shadow) return 0;
+    uint32_t total = tex_shadow_sources(e, src);
+    if (!total || total != e->shadow_bytes) return 0;
     uint64_t started = cpu_profile_now();
     s_cnt_shadow_checks++;
     if (s_cpu_profile) s_cpu_profile_stats.texture_shadow_checks++;
-    int match = memcmp(e->shadow, src, e->bytes) == 0;
-    uint64_t compared = e->bytes;
+    int match = 1;
+    for (uint32_t l = 0, off = 0; match && l <= e->mip.max_level; off += tex_level_bytes(e, l++))
+        match = memcmp(e->shadow + off, src[l], tex_level_bytes(e, l)) == 0;
+    uint64_t compared = total;
     if (match && s_ge->tex_fmt >= 4 && s_ge->tex_fmt <= 7) {
         compared += sizeof(e->shadow_clut);
         match = e->shadow_clut_valid && e->shadow_clut_fmt == s_ge->clut_fmt &&
@@ -2565,45 +2598,11 @@ static int tex_shadow_matches(TexEnt *e) {
     s_cnt_shadow_bytes += compared;
     if (match) s_cnt_shadow_hits++; else s_cnt_shadow_misses++;
     if (s_cpu_profile) {
-        s_cpu_profile_stats.texture_shadow_bytes += e->bytes;
+        s_cpu_profile_stats.texture_shadow_bytes += total;
         if (match) s_cpu_profile_stats.texture_shadow_hits++;
         cpu_profile_add(GEGPU_CPU_TEXTURE_SHADOW, started);
     }
     return match;
-}
-
-static void tex_shadow_store(TexEnt *e) {
-    /* A shadow holds level 0's bytes only, so it cannot prove a mip chain unchanged: an
-     * invalidated chain is decoded again (tex_shadow_matches then finds no shadow). */
-    if (!s_tex_shadow_enabled || !e->bytes || e->mip.max_level) return;
-    const uint8_t *src = tex_source_ptr(e->addr, e->bytes);
-    if (!src) return;
-    if (!e->shadow || e->shadow_bytes != e->bytes) {
-        size_t retained = s_tex_shadow_bytes - e->shadow_bytes;
-        if (retained + e->bytes > TEX_SHADOW_MAX_BYTES) return;
-        uint64_t heap_started = cpu_profile_now();
-        uint8_t *replacement = (uint8_t *)malloc(e->bytes);
-        if (s_cpu_profile) cpu_profile_add(GEGPU_CPU_HEAP, heap_started);
-        if (!replacement) return;
-        free(e->shadow);
-        s_tex_shadow_bytes = retained + e->bytes;
-        e->shadow = replacement;
-        e->shadow_bytes = e->bytes;
-    }
-    uint64_t memcpy_started = cpu_profile_now();
-    memcpy(e->shadow, src, e->bytes);
-    if (s_ge->tex_fmt >= 4 && s_ge->tex_fmt <= 7) {
-        memcpy(e->shadow_clut, s_ge->clutram, sizeof(e->shadow_clut));
-        e->shadow_clut_fmt = s_ge->clut_fmt;
-        e->shadow_clut_valid = 1;
-    } else {
-        e->shadow_clut_valid = 0;
-    }
-    if (s_cpu_profile) {
-        cpu_profile_add(GEGPU_CPU_MEMCPY, memcpy_started);
-        s_cpu_profile_stats.memcpy_bytes += e->bytes +
-            (e->shadow_clut_valid ? sizeof(e->shadow_clut) : 0u);
-    }
 }
 
 static void tex_shadow_release(TexEnt *e) {
@@ -2615,6 +2614,43 @@ static void tex_shadow_release(TexEnt *e) {
     e->shadow = NULL;
     e->shadow_bytes = 0;
     e->shadow_clut_valid = 0;
+}
+
+static void tex_shadow_store(TexEnt *e) {
+    const uint8_t *src[8];
+    if (!s_tex_shadow_enabled || !e->bytes) return;
+    uint32_t total = tex_shadow_sources(e, src);
+    if (!total) {
+        tex_shadow_release(e);          /* it holds an older content's bytes */
+        return;
+    }
+    if (!e->shadow || e->shadow_bytes != total) {
+        size_t retained = s_tex_shadow_bytes - e->shadow_bytes;
+        if (retained + total > TEX_SHADOW_MAX_BYTES) return;
+        uint64_t heap_started = cpu_profile_now();
+        uint8_t *replacement = (uint8_t *)malloc(total);
+        if (s_cpu_profile) cpu_profile_add(GEGPU_CPU_HEAP, heap_started);
+        if (!replacement) return;
+        free(e->shadow);
+        s_tex_shadow_bytes = retained + total;
+        e->shadow = replacement;
+        e->shadow_bytes = total;
+    }
+    uint64_t memcpy_started = cpu_profile_now();
+    for (uint32_t l = 0, off = 0; l <= e->mip.max_level; off += tex_level_bytes(e, l++))
+        memcpy(e->shadow + off, src[l], tex_level_bytes(e, l));
+    if (s_ge->tex_fmt >= 4 && s_ge->tex_fmt <= 7) {
+        memcpy(e->shadow_clut, s_ge->clutram, sizeof(e->shadow_clut));
+        e->shadow_clut_fmt = s_ge->clut_fmt;
+        e->shadow_clut_valid = 1;
+    } else {
+        e->shadow_clut_valid = 0;
+    }
+    if (s_cpu_profile) {
+        cpu_profile_add(GEGPU_CPU_MEMCPY, memcpy_started);
+        s_cpu_profile_stats.memcpy_bytes += total +
+            (e->shadow_clut_valid ? sizeof(e->shadow_clut) : 0u);
+    }
 }
 
 static uint64_t fnv64(uint64_t h, const void *data, size_t n) {
@@ -2743,6 +2779,12 @@ static int tex_upload_level(VkImage img, VkImageLayout *lay, uint32_t level, int
     return upload_finish(&upload, SR_PERF_GE_TEXTURE_UPLOAD);
 }
 
+#ifdef SR_GPU_COHERENCE_SELFTEST
+/* The coherence selftest's texture-upload-failure cells: fail the upload once, right after
+ * this level has been copied. UINT32_MAX = never; reset to it when the failure is taken. */
+static uint32_t s_selftest_upload_fail_after = UINT32_MAX;
+#endif
+
 /* Decode the current texture's levels 0..levels-1 through ge.c's sampler and upload them.
  * Chain level L is max(1, w >> L) x max(1, h >> L), which tex_mip_chain_supported() checked
  * is the level's own TEXSIZE. */
@@ -2763,6 +2805,12 @@ static int tex_decode_upload(VkImage img, int w, int h, uint32_t levels) {
         cpu_profile_add(GEGPU_CPU_TEXTURE_DECODE, decode_started);
         if (!tex_upload_level(img, &lay, level, level + 1u == levels, s_texscratch, lw, lh))
             return 0;
+#ifdef SR_GPU_COHERENCE_SELFTEST
+        if (level == s_selftest_upload_fail_after) {
+            s_selftest_upload_fail_after = UINT32_MAX;
+            return 0;
+        }
+#endif
     }
     return 1;
 }
@@ -2978,7 +3026,13 @@ static VkDescriptorSet tex_get(void) {
         /* same texture state, new contents: update in place (cache stays bounded) */
         if (e->pending) submit_pending();
         if (!e->content_valid) s_cnt_shadow_required++;
-        if (!tex_decode_upload(e->img, e->w, e->h, levels)) return s_white_set;
+        if (!tex_decode_upload(e->img, e->w, e->h, levels)) {
+            /* The image may be partly undefined now: with no valid mark and no shadow, the next
+             * lookup decodes again, whatever the content hash says. */
+            e->content_valid = 0;
+            tex_shadow_release(e);
+            return s_white_set;
+        }
         e->hash = hash;
         e->content_valid = 1;
         tex_note_valid();
@@ -3124,6 +3178,39 @@ static int blend_needs_shader(uint32_t sfp, uint32_t dfp, uint32_t eq, uint32_t 
            blend_dual_fix(sfp, dfp, fixa, fixb);
 }
 
+/* Stencil states that never read the destination, for an 8888 target outside clear mode. A
+ * test that always passes never runs the stencil-fail op, and the depth-fail op is KEEP
+ * wherever the depth test can fail (stencil_gpu_supported), so a written pixel stores the
+ * depth-pass op's value under the alpha write mask (ge.c put_px_rgba_tested):
+ *  - KEEP, or a mask that keeps all eight bits: the old stencil, which the colour write mask
+ *    preserves (SFIX_KEEP), as for a draw without the stencil test;
+ *  - ZERO or REPLACE under a mask of 0: a constant, 0 or the unmasked reference. Unblended,
+ *    the shader stores it as its alpha (F_SALPHA). Blended, the alpha blend factors ZERO and
+ *    ZERO store 0 (PipeKey.azero), while the colour factors still read the source alpha; no
+ *    blend factor stores another constant, so those keep the shader.
+ * The colour is what the same draw without the stencil test gives: the source colour, or the
+ * fixed-function blend, which is within blend-parity-ff's bound of ge.c. A blend that needs
+ * the shader, dither, the stencil-reading ops (INVERT, INCR, DECR), a test that compares, a
+ * partial alpha mask and a 16-bit target keep the shader's stencil (SFIX_NONE), which reads a
+ * destination snapshot and splits overlapping primitives. In a title that tags its blended
+ * sprites with REPLACE 0, those splits and copies are most of the GPU replay's CPU cost
+ * (#1931). */
+enum { SFIX_NONE = -1, SFIX_KEEP = -2 };
+static int stencil_fixed_alpha(const GeState *g) {
+    if ((g->fbfmt & 3u) != 3u || (g->stencil_test & 7u) != 1u) return SFIX_NONE;
+    const int blended = g->blend_enable != 0;
+    if (blended && (g->dither_enable ||
+                    blend_needs_shader(g->blend_mode & 0xFu, (g->blend_mode >> 4) & 0xFu,
+                                       (g->blend_mode >> 8) & 7u, g->blend_fixa, g->blend_fixb)))
+        return SFIX_NONE;
+    const uint32_t amask = (uint32_t)g->mask_alpha & 0xFFu, zpass = (g->stencil_op >> 16) & 7u;
+    if (zpass == 0u || amask == 0xFFu) return SFIX_KEEP;
+    if (amask != 0u) return SFIX_NONE;
+    const int value = zpass == 1u ? 0 : zpass == 2u ? (int)((g->stencil_test >> 8) & 0xFFu) : -1;
+    if (value < 0 || (blended && value != 0)) return SFIX_NONE;
+    return value;
+}
+
 /* Find the target that holds VRAM offset `a` (gpu_valid not required). The GE has no buffer height
  * register, so a target's span below is its widest case, 272 rows: a title that stacks short
  * targets puts the next target's base inside that span. The nearest base at or below `a` owns the
@@ -3175,9 +3262,14 @@ static void build_state(int persp, int sprite, Batch *b) {
          * value, which already carries the alpha write mask. */
         k->cmask = (mr >= 0x80 ? 0 : VK_COLOR_COMPONENT_R_BIT) | (mg >= 0x80 ? 0 : VK_COLOR_COMPONENT_G_BIT)
                  | (mb >= 0x80 ? 0 : VK_COLOR_COMPONENT_B_BIT);
-        if (g->stencil_enable) k->cmask |= VK_COLOR_COMPONENT_A_BIT;
+        if (g->stencil_enable && stencil_fixed_alpha(g) != SFIX_KEEP) k->cmask |= VK_COLOR_COMPONENT_A_BIT;
     }
-    const int stencil = !clear && g->stencil_enable;
+    /* A stencil state that cannot read the destination (stencil_fixed_alpha) needs no shader
+     * stencil test: the colour takes the path of a draw without the stencil test (blended, the
+     * fixed-function blend, within blend-parity-ff's bound of ge.c), and the stored stencil is
+     * the write mask above, F_SALPHA's value or, blended, PipeKey.azero's 0. */
+    const int sfix = !clear && g->stencil_enable ? stencil_fixed_alpha(g) : SFIX_NONE;
+    const int stencil = !clear && g->stencil_enable && sfix == SFIX_NONE;
 
     /* blending: fixed-function VK when it maps exactly, shader blend otherwise */
     int shblend = 0;
@@ -3307,7 +3399,13 @@ static void build_state(int persp, int sprite, Batch *b) {
         flags |= F_STENCIL;
         b->pc.bl[2] = (int32_t)(g->stencil_test & 0xFFFFFFu);
         b->pc.bl[3] = (int32_t)((g->stencil_op & 0x070707u) | ((uint32_t)(g->mask_alpha & 0xFF) << 24));
+    } else if (sfix >= 0 && k->blend_on) {
+        k->azero = 1;                     /* stencil_fixed_alpha: blended, the constant is 0 */
+    } else if (sfix >= 0) {
+        flags |= F_SALPHA;
+        b->pc.bl[2] = sfix;
     }
+    if (sfix != SFIX_NONE) s_replay_stats.stencil_fixed++;
 
     b->pc.cfg[1] = (int32_t)(((!clear && g->atest_enable) ? (g->atest & 0xFFFFFFu) : 1u /* ALWAYS */) |
                              (lodcfg << 24));

@@ -26,6 +26,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import analyze
+from makefile_text import read_makefile
 import codegen
 import gen_nidnames
 import import_fixtures
@@ -257,9 +258,7 @@ class ImportStubNameTest(unittest.TestCase):
         self.assertNotIn("SrGuestSymbol", plain["out.c"])
 
     def test_makefile_passes_the_option_and_regenerates_when_the_corpus_changes(self):
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Makefile"),
-                  encoding="utf-8") as fh:
-            makefile = fh.read()
+        makefile = read_makefile(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
         self.assertIn("NAME_IMPORTS_ARG := --name-imports", makefile)
         self.assertIn("NAME_IMPORTS_PREREQ := tools/nid_corpus.json tools/gen_nidnames.py", makefile)
         self.assertIn("NAME_IMPORTS_PROFILE_LINE := $(NEWLINE)NAME_IMPORTS=1", makefile)

@@ -1,0 +1,83 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 the Nakagawa Recomp authors */
+/* ace_match.comp - one level of Ace Mode's motion search (gpu_sdl3vk/ace_smooth.c). For each block
+ * of a grid over the frame that is to be made, it finds the half-step d that best fits the old
+ * frame at p - d to the new frame at p + d, so the in-between has no holes to fill. The coarsest
+ * level searches widely; each finer level tries the vectors of the level above and refines them.
+ * A still block wins ties, which keeps a HUD or a border in place. */
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D old_frame;
+layout(set = 0, binding = 1) uniform sampler2D new_frame;
+layout(set = 0, binding = 2) uniform sampler2D coarser;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D field;
+layout(set = 0, binding = 5, std430) buffer Stats { uint bad_blocks; } stats;
+
+layout(push_constant) uniform Level {
+    ivec2 grid;      /* blocks */
+    vec2 texel;      /* one sample at this level, in UV */
+    float lod;       /* the mip that matches texel */
+    int window;      /* samples per block side */
+    int range;       /* the search reaches this many samples either way */
+    int first;       /* 1: the coarsest level: no level above */
+    int count_bad;   /* 1: this level counts blocks for the cut rule */
+} lv;
+
+const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+const float STILL_BIAS = 0.92;       /* a still block wins unless motion fits 8% better */
+const float SMOOTH_COST = 0.15;      /* cost per UV of leaving the vector the level above chose */
+const float BAD_BLOCK = 0.11;        /* mean luma difference no match should leave */
+const float TORN = 6.0;              /* samples between a block's vector and its neighbours' */
+
+float block_cost(vec2 centre, vec2 d) {
+    float cost = 0.0;
+    float half_w = float(lv.window - 1) * 0.5;
+    for (int y = 0; y < lv.window; y++) {
+        for (int x = 0; x < lv.window; x++) {
+            vec2 p = centre + (vec2(x, y) - half_w) * lv.texel;
+            float a = dot(textureLod(old_frame, p - d, lv.lod).rgb, LUMA);
+            float b = dot(textureLod(new_frame, p + d, lv.lod).rgb, LUMA);
+            cost += abs(a - b);
+        }
+    }
+    return cost / float(lv.window * lv.window);
+}
+
+void main() {
+    ivec2 cell = ivec2(gl_GlobalInvocationID.xy);
+    if (cell.x >= lv.grid.x || cell.y >= lv.grid.y) return;
+    vec2 centre = (vec2(cell) + 0.5) / vec2(lv.grid);
+
+    vec2 best = vec2(0.0);
+    float best_raw = block_cost(centre, best);
+    float best_cost = best_raw * STILL_BIAS;
+    vec2 anchor = vec2(0.0);
+    bool torn = false;
+    if (lv.first == 0) {
+        const ivec2 around[5] = ivec2[5](ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+        vec2 step_up = 1.0 / vec2(textureSize(coarser, 0));
+        for (int i = 0; i < 5; i++) {
+            vec2 d = textureLod(coarser, centre + vec2(around[i]) * step_up, 0.0).xy;
+            if (i == 0) anchor = d;
+            /* Across a cut the search still finds something for each block, but a different
+             * something: neighbours stop agreeing. Within one picture they mostly agree. */
+            if (length((d - anchor) / lv.texel) > TORN) torn = true;
+            float raw = block_cost(centre, d);
+            float cost = raw + SMOOTH_COST * length(d - anchor);
+            if (cost < best_cost) { best_cost = cost; best_raw = raw; best = d; }
+        }
+    }
+    vec2 start = best;
+    for (int y = -lv.range; y <= lv.range; y++) {
+        for (int x = -lv.range; x <= lv.range; x++) {
+            if (x == 0 && y == 0) continue;
+            vec2 d = start + vec2(x, y) * lv.texel;
+            float raw = block_cost(centre, d);
+            float cost = raw + SMOOTH_COST * length(d - anchor);
+            if (cost < best_cost) { best_cost = cost; best_raw = raw; best = d; }
+        }
+    }
+    imageStore(field, cell, vec4(best, best_raw, 0.0));
+    if (lv.count_bad != 0 && (torn || best_raw > BAD_BLOCK)) atomicAdd(stats.bad_blocks, 1u);
+}

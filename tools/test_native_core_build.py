@@ -17,6 +17,10 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,6 +59,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     () if os.name == "nt" else ("build/mygame/coro_selftest_asm",)
 ) + (
     "build/mygame/ge_raster_ref_selftest",
+    "build/mygame/psmf_media_focused_selftest --fuzz-iters 0",
     # memory-watch-selftest: the store watch on the interpreter's data word (SR_WATCH from
     # the target), then on a main-RAM word, where unwatched stores take the inline path.
     "build/mygame/dispatch_isolation_selftest_generic",
@@ -230,7 +235,7 @@ class StandaloneTestBinTargetTests(unittest.TestCase):
         commands = _dry_run("package-builder-test-bin")
         self.assertTrue(any("-DPYTHON_VERSION_PROBE_TIMEOUT_MS=3000" in c and "src/player/package_builder.c" in c
                             for c in commands))
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertEqual(makefile.count("PYTHON_VERSION_PROBE_TIMEOUT_MS"), 1)
         source = (ROOT / "src" / "player" / "package_builder.c").read_text(encoding="utf-8")
         self.assertIn("#ifndef PYTHON_VERSION_PROBE_TIMEOUT_MS\n#define PYTHON_VERSION_PROBE_TIMEOUT_MS 10000\n#endif",

@@ -152,7 +152,8 @@ class VfpuCoverageCensusTests(unittest.TestCase):
         self.assertEqual(rows[0]["compatibility_disposition"], "aot-direct")
         self.assertIsNone(rows[0]["boundary_issue"])
         self.assertEqual(rows[0]["differential_tests"],
-                         ["vfpu-interp-selftest:check_overlap_diff",
+                         ["vfpu-interp-selftest:check_alias_edge_sweep",
+                          "vfpu-interp-selftest:check_overlap_diff",
                           "vfpu-interp-selftest:check_vrndi_rule_cells"])
 
     def test_vfpu_forms_are_direct_in_both_lanes_at_measured_widths(self):
@@ -253,8 +254,6 @@ class VfpuCoverageCensusTests(unittest.TestCase):
     # fails this test until it gains evidence (add its word to the overlap-diff, fuzz
     # or interpreter-selftest paths) or is added here deliberately (issue #326).
     EXPECTED_UNVERIFIED = (
-        # mfv/mtv with rt = r0 or a register the oracle corpus does not drive.
-        ("0x12", "0x48600000"), ("0x12", "0x48e0008f"), ("0x12", "0x48e00000"),
         # lv.s/sv.s/lv.q/sv.q rows visited only with base register r0: the fuzz harness
         # refuses r0 (it cannot relocate the address), so these decode paths have no
         # cross-check of their own; their rs != 0 neighbours are verified.
@@ -265,9 +264,8 @@ class VfpuCoverageCensusTests(unittest.TestCase):
         ("0x3a", "0xe8050101"), ("0x3a", "0xe8058181"), ("0x3a", "0xe80a8010"),
         ("0x3e", "0xf8000000"), ("0x3e", "0xf801810f"), ("0x3e", "0xf8050101"),
         # VFPU4 forms the AOT routes to sr_vfpu_interp: both lanes are one implementation,
-        # so a cross-check would compare the interpreter with itself.
-        ("0x34", "0xd0200000"), ("0x34", "0xd0328090"), ("0x34", "0xd0390000"),
-        ("0x34", "0xd046807f"), ("0x34", "0xd04780ff"), ("0x34", "0xd0488090"),
+        # so a cross-check would compare the interpreter with itself, and no PSP oracle row
+        # pins these widths (vsgn.p/.q, vt4444 other than .q).
         ("0x34", "0xd04a0000"), ("0x34", "0xd04a80ff"), ("0x34", "0xd0598090"),
         # vflush (AOT-owned control).
         ("0x3f", "0xfc000000"),
@@ -424,6 +422,61 @@ class VfpuCoverageCensusTests(unittest.TestCase):
             self.assertIn("No SIMD path exists", markdown)
 
 
+    def test_alias_edge_sweep_covers_every_direct_form(self):
+        # Issue #326: every census form the AOT emits directly and the interpreter
+        # supports (memory forms and the 0x3F prefix reset aside) is run by
+        # check_alias_edge_sweep, and its row names that check.
+        import vfpu_overlap_diff_gen as gen
+
+        forms, cases = gen.build_sweep_cases()
+        swept = {forms[index] for _, index, _ in cases}
+        direct = [form_id for form_id, key, _ in census.supported_direct_forms()
+                  if key[0] not in gen.SWEEP_EXCLUDED_OPS]
+        self.assertGreater(len(direct), 300)
+        for form_id in direct:
+            with self.subTest(form=form_id):
+                self.assertIn(form_id, swept)
+                self.assertIn("vfpu-interp-selftest:check_alias_edge_sweep",
+                              self.rows[form_id]["differential_tests"])
+
+    def test_alias_edge_sweep_instances_stay_in_their_form(self):
+        import vfpu_overlap_diff_gen as gen
+
+        forms, cases = gen.build_sweep_cases()
+        keys = {form_id: key for form_id, key, _ in census.supported_direct_forms()}
+        records = {int(r["word"]): r for r in census.classify_words(w for w, _, _ in cases)}
+        for word, index, _ in cases:
+            self.assertEqual(census.row_key(records[word]), keys[forms[index]], f"0x{word:08x}")
+        signatures = {signature for _, _, signature in cases}
+        for relation in ("d=s", "d~s", "d|s", "d=t", "d~t", "s=t", "s~t"):
+            self.assertTrue(any(relation in signature for signature in signatures), relation)
+
+    def test_alias_signature_names_each_overlap(self):
+        import vfpu_overlap_diff_gen as gen
+
+        self.assertEqual(gen.alias_signature({"d": 0x00, "s": 0x00}, 4), "d=s")
+        self.assertEqual(gen.alias_signature({"d": 0x00, "s": 0x01}, 4), "d|s")  # C000 / C010
+        self.assertEqual(gen.alias_signature({"d": 0x00, "s": 0x20}, 4), "d~s")  # C000 / R000
+        self.assertEqual(gen.alias_signature({"d": 0x00, "s": 0x00, "t": 0x04}, 4), "d=s,d|t,s|t")
+        self.assertEqual(gen.alias_signature({}, 1), "as-encoded")
+
+    def test_measured_selftests_credit_only_the_measured_widths(self):
+        # Each PSP-pinned check is credited to the forms and widths it runs; the widths it
+        # refuses as unmeasured are not.
+        def tests(word):
+            record = census.classify_words([word])[0]
+            return census._differential_tests(record, set())
+
+        self.assertIn("vfpu-interp-selftest:check_vfpu_compare_measured_words", tests(0x6EA00040))
+        self.assertNotIn("vfpu-interp-selftest:check_vfpu_compare_measured_words", tests(0x6EA00080))
+        self.assertIn("vfpu-interp-selftest:check_psp_measured_sort", tests(0xD0408088))
+        self.assertNotIn("vfpu-interp-selftest:check_psp_measured_sort", tests(0xD0400088))
+        self.assertIn("vfpu-interp-selftest:check_psp_measured_funnel", tests(0xD0468008))
+        self.assertIn("vfpu-interp-selftest:check_psp_measured_forms2", tests(0xD0390008))
+        self.assertNotIn("vfpu-interp-selftest:check_psp_measured_forms2", tests(0xD0390088))
+        self.assertIn("vfpu-interp-selftest:check_vrexp2_measured_words", tests(0xD01C0040))
+
+
 class VfpuRouteCensusTests(unittest.TestCase):
     """Join the census to the VFPU words a route's AOT actually emits."""
 
@@ -449,6 +502,24 @@ class VfpuRouteCensusTests(unittest.TestCase):
         self.assertEqual(clean["status"], "pass")
         self.assertIsNone(clean["tracking_issue"])
         self.assertNotIn(f"0x{ROUTE_TAIL[0]:08x}", entries)
+
+    def test_route_report_gives_one_disposition_per_form(self):
+        # Issue #326: a route report lists each census form it emits once, with how its
+        # result is checked and whether a PSP oracle row measured it.
+        vadd_other_registers = 0x60010203 & ~0x8080
+        vscmp_measured = 0x6EA00040  # vscmp.s S002, S000, S001 (PSP-VFPU-CMP-001)
+        rc, report = self._run_route([ROUTE_CLEAN_WORD, vadd_other_registers, vscmp_measured, *ROUTE_TAIL])
+        self.assertEqual(rc, 0)
+        forms = {form["form_id"]: form for form in report["forms"]}
+        self.assertEqual(len(forms), 2)
+        entries = {entry["word"]: entry for entry in report["entries"]}
+        vadd = forms[entries[f"0x{ROUTE_CLEAN_WORD:08x}"]["form_id"]]
+        self.assertEqual(vadd["words"], 2)
+        self.assertEqual(vadd["semantic_verification"], "differential")
+        self.assertEqual(vadd["psp"], "unmeasured")
+        vscmp = forms[entries[f"0x{vscmp_measured:08x}"]["form_id"]]
+        self.assertEqual(vscmp["psp"], "measured-cells")
+        self.assertEqual(vscmp["psp_evidence"], ["PSP-VFPU-CMP-001"])
 
     def test_route_census_fails_closed_on_other_word(self):
         rc, report = self._run_route(

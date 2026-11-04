@@ -26,6 +26,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import stage_install  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 _GIT_ENV = {
     "GIT_AUTHOR_NAME": "fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
@@ -499,7 +500,7 @@ class ReleaseAssetContractTests(unittest.TestCase):
 class ReproducibleBuildTests(unittest.TestCase):
     def test_player_links_carry_the_reproducible_link_flag(self):
         """Without it the PE header holds the link time and two builds of one commit differ (#324)."""
-        makefile = (stage_install.ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(stage_install.ROOT)
         for target in ("$(PLAYER_EXE):", "$(PLAYER_UI_TEST_EXE):"):
             start = makefile.index(f"\n{target} $(PLAYER_SRCS)")
             recipe = makefile[start:makefile.index("\n\n", start)]

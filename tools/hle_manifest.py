@@ -45,6 +45,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_registry_meta as meta  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 import psp_import_table  # noqa: E402
 import publication_policy  # noqa: E402
 import hle_sources  # noqa: E402
@@ -670,6 +671,7 @@ def _evidence_anchor_present(path: Path, anchor: str) -> bool:
         return relative in hle_sources.definitions().get(anchor, [])
     text = path.read_text(encoding="utf-8", errors="replace")
     if path.name == "Makefile":
+        text = read_makefile(path.parent, errors="replace")
         return re.search(rf"^{re.escape(anchor)}\s*:", text, re.MULTILINE) is not None
     return all(
         re.search(rf"\b{re.escape(part)}\b", text) is not None

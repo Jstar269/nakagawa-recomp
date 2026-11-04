@@ -25,6 +25,7 @@ import title_codegen_plan
 from nk_core import package_cache
 from nk_doctor_checks import check_runtime_package_cache
 from nk_doctor_core import Report
+from makefile_text import read_makefile  # noqa: E402
 
 
 def _aot_gap_report(cache: dict, region_count: int) -> str:
@@ -80,6 +81,71 @@ class PackageCacheTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_identity_ignores_container_format_warnings(self) -> None:
+        """inspect_iso records tolerated disc quirks under container["format_warnings"]; they are
+        diagnostics, not identity: the record still validates and its digest does not move."""
+        container = {
+            "format": "iso9660", "volume_id": "CACHE_TEST",
+            "size_bytes": 2048, "pvd_sector": 16, "sector_size": 2048,
+            "format_warnings": ["PARAM.SFO TITLE is not UTF-8 (raw bytes 41 96 42)"],
+        }
+        identity = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[],
+            disc_id="TEST00001",
+            region="TEST",
+            disc_version="1.00",
+            param_sfo={"DISC_ID": "TEST00001", "DISC_VERSION": "1.00"},
+            container=container,
+        )
+        self.assertEqual(identity, self.identity)
+        self.assertEqual(
+            package_cache.title_input_identity_digest(identity),
+            package_cache.title_input_identity_digest(self.identity),
+        )
+        self.assertEqual(package_cache.title_input_identity_changes(self.identity, identity), ())
+        self.assertIn("format_warnings", container, "the caller's metadata is not modified")
+
+    def test_identity_ignores_source_format_of_a_compressed_disc(self) -> None:
+        """inspect_iso adds source_format (cso, zso, chd) to the container metadata of an
+        expanded image; it names the wrapper, not the disc, and stays out of the identity."""
+        container = {**self.identity["container"], "source_format": "cso"}
+        identity = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[],
+            disc_id="TEST00001",
+            region="TEST",
+            disc_version="1.00",
+            param_sfo={"DISC_ID": "TEST00001", "DISC_VERSION": "1.00"},
+            container=container,
+        )
+        self.assertEqual(identity, self.identity)
+        self.assertEqual(identity["container"], self.identity["container"])
+
+    def test_identity_container_schema_stays_exact(self) -> None:
+        # A stored record is validated against exactly the identity keys.
+        for extra in ({"format_warnings": ["note"]}, {"source_format": "cso"}, {"label": "x"}):
+            invalid = dict(self.identity)
+            invalid["container"] = {**self.identity["container"], **extra}
+            with self.assertRaisesRegex(package_cache.PackageCacheError, "container metadata"):
+                package_cache.validate_title_input_identity(invalid)
+        # The builder keeps only the identity keys, so a missing one is still refused.
+        incomplete = {
+            key: value for key, value in self.identity["container"].items() if key != "volume_id"
+        }
+        with self.assertRaisesRegex(package_cache.PackageCacheError, "container metadata"):
+            package_cache.build_title_input_identity(
+                manifest={"id": "synthetic-cache-test", "schema_version": 1},
+                executable_name="EBOOT.BIN",
+                executable_sha256="2" * 64,
+                modules=[],
+                container={**incomplete, "source_format": "cso"},
+            )
 
     def test_native_build_report_byte_ceiling_matches_python(self) -> None:
         header = (ROOT / "src/core/nk_title_manifest.h").read_text(
@@ -1085,7 +1151,7 @@ class PackageCacheTests(unittest.TestCase):
                 if path.suffix in {".c", ".h"} and path.is_file():
                     used.update(include.findall(path.read_text(encoding="utf-8",
                                                                errors="replace")))
-        lines = (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        lines = read_makefile(ROOT).splitlines()
         start = next(i for i, line in enumerate(lines) if line.startswith("RT_NK_UI_FLAGS"))
         flags = [lines[start]]
         while flags[-1].endswith("\\"):
@@ -2162,7 +2228,7 @@ class PackageOptimizationTests(unittest.TestCase):
         self.assertEqual(unset, explicit_o1)
 
     def test_default_recomp_flags_are_the_makefile_s(self):
-        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(Path(__file__).resolve().parents[1])
         line = re.search(r"^RECOMP_FLAGS \?= (.+)$", makefile, re.MULTILINE)
         self.assertIsNotNone(line)
         expanded = (line.group(1).replace("$(RECOMP_OPT)", "-O1")
@@ -2184,7 +2250,7 @@ class PackageOptimizationTests(unittest.TestCase):
 
     def test_the_optimized_cosimulation_lane_runs_the_package_level(self):
         # cosim-selftest-opt proves AOT/interpreter parity for code built the way packages are.
-        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(Path(__file__).resolve().parents[1])
         lane = re.search(r"^COSIM_OPT_LEVEL \?= (\S+)$", makefile, re.MULTILINE)
         self.assertIsNotNone(lane)
         self.assertEqual(lane.group(1), package_cache.PACKAGE_RECOMP_OPT)

@@ -628,6 +628,73 @@ static int coherence_run_undrawn_rows(void) {
     return 1;
 }
 
+/* A title that never writes depth may leave zbp on its own colour buffer: a 16-bit depth surface
+ * at stride 512 covers the first 136 rows of a 32-bit one. Draws that do not write depth leave the
+ * depth surface as it was loaded, so it is not newer than guest VRAM, and a CPU access to those
+ * rows must not write it back over the colour pixels the GPU drew there. */
+static int coherence_run_depth_alias_no_zwrite(void) {
+    const char *name = "depth-alias-no-zwrite";
+    const uint32_t fba = 0x00100000u, base = 0x04000000u | fba, stride = 512u;
+    const uint32_t bytes = stride * FB_H * 4u, probe = (5u * stride + 20u) * 4u;
+    coherence_reset_targets();
+    g_sr_vram_read_pending = 0;
+    for (int i = 0; i < MAX_DEP; i++) {
+        if (s_deps[i].used) {
+            s_deps[i].guest_dirty = 0;
+            s_deps[i].cpu_dirty = 1;
+        }
+    }
+    coherence_fill_raw(SR_HOST(base), stride * FB_H, 4u, coherence_g0(3u));
+    uint8_t *expected = malloc(bytes);
+    if (!expected) return 0;
+
+    memset(s_ge, 0, sizeof(*s_ge));
+    s_ge->fbp = base;
+    s_ge->fbw = stride;
+    s_ge->fbfmt = 3u;
+    s_ge->zbp = base;                      /* depth aliases rows 0..135 of the colour buffer */
+    s_ge->zbw = stride;
+    s_ge->scis_x2 = (int)FB_W - 1;
+    s_ge->scis_y2 = (int)FB_H - 1;
+    s_ge->maxz = 65535u;
+    GeVtx p0 = { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0x40, 0x50, 0x60, 0xff };
+    GeVtx p1 = p0;
+    p1.x = 480.0f;
+    p1.y = (float)FB_H;
+    int ok = hook_sprite(&p0, &p1, 0) && s_nbatch && submit_pending();
+    Target *t = target_find_by_fba(fba);
+    DepthEnt *d = t ? t->dep : NULL;
+    ok = ok && t && d && target_readback(t) && t->clean_gen == t->render_gen;
+    if (ok) memcpy(expected, SR_HOST(base), bytes);
+    uint32_t drawn = 0u;
+    if (ok) memcpy(&drawn, expected + probe, sizeof drawn);
+    if (!ok || drawn == coherence_g0(3u)) {
+        fprintf(stderr, "gpu coherence selftest [%s]: setup failed (target=%p depth=%p drawn=0x%08x)\n",
+                name, (void *)t, (void *)d, drawn);
+        free(expected);
+        coherence_reset_targets();
+        return 0;
+    }
+    const int depth_newer = d->guest_dirty;
+    const uint32_t loaded = MEM_R32(base + probe);
+    const int kept = memcmp(SR_HOST(base), expected, bytes) == 0;
+    uint32_t first_bad = UINT32_MAX;
+    for (uint32_t off = 0; !kept && off < bytes; off += 4u)
+        if (memcmp(SR_HOST(base + off), expected + off, 4u) != 0) { first_bad = off; break; }
+    free(expected);
+    if (depth_newer || loaded != drawn || !kept) {
+        fprintf(stderr, "gpu coherence selftest [%s]: a draw without depth writes marked depth newer "
+                        "(%d) and a CPU load returned 0x%08x, expected 0x%08x; first changed colour row %d\n",
+                name, depth_newer, loaded, drawn,
+                first_bad == UINT32_MAX ? -1 : (int)(first_bad / (stride * 4u)));
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n", name, stride, s_scale);
+    coherence_reset_targets();
+    return 1;
+}
+
 static int coherence_run_tflt_descriptor_capacity(void) {
     const uint32_t stride = FB_W;
     coherence_reset_targets();
@@ -1711,6 +1778,214 @@ static int coherence_run_mip_level_dirty_same_state(void) {
     return ok;
 }
 
+/* ---- texture byte shadow of a mip chain (#1931) -------------------------------------------
+ *
+ * A notified write over a whole chain that leaves its bytes as they were (a title's whole-cache
+ * writeback, once a frame) must not decode the chain again: the byte shadow covers every level,
+ * as it does a single-level texture. Each case draws a chain three times at one constant level
+ * and pixel (level texel (8, 0)): the first draw decodes, the second follows a notified write
+ * over every level with the bytes unchanged and must reuse the shadow, and the third follows a
+ * change that must decode again. A byte change goes to bytes 16-63 of row 0 of one level, which
+ * the content hash does not sample (a level of 4 KiB or more: tex_hash reads 16 of every 64
+ * bytes), so only the shadow's comparison of that level can find it. The palette case changes
+ * the palette entry every texel uses instead. Levels lie one after another from `addr`. */
+#define COH_SHADOW_CLUT 0x085C0000u
+#define COH_SHADOW_INDEX 6u
+
+typedef struct {
+    const char *name;
+    uint32_t addr;          /* level 0; main RAM or VRAM */
+    uint32_t log2;          /* level 0 is 2^log2 texels square */
+    uint32_t fmt;           /* 3 = 8888, 5 = CLUT8 through the palette at COH_SHADOW_CLUT */
+    uint32_t max_level;
+    uint32_t show;          /* the constant level the draws sample */
+    int change;             /* level whose unsampled bytes the third draw changes; -1 = palette */
+} CohShadowCase;
+
+static uint32_t coh_shadow_level(const CohShadowCase *c, uint32_t level, uint32_t *bytes) {
+    uint32_t addr = c->addr, bpp = c->fmt == 3u ? 4u : 1u;
+    for (uint32_t l = 0; l <= level; l++) {
+        uint32_t size = 1u << (c->log2 - l);
+        *bytes = size * size * bpp;
+        if (l < level) addr += *bytes;
+    }
+    return addr;
+}
+
+/* Distinct opaque colours for the levels and the palette entries (ABGR). */
+static uint32_t coh_shadow_colour(uint32_t level) {
+    return 0xFF000000u | (0x50u << 16) | ((0xC0u - 0x30u * level) << 8) | (0x30u + 0x40u * level);
+}
+static uint32_t coh_shadow_entry(uint32_t j) { return 0xFF000000u | ((j * 0x00030507u) & 0x00FFFFFFu); }
+
+/* Every texel of `level` shows `colour` (8888), or palette index COH_SHADOW_INDEX (CLUT8). */
+static void coh_shadow_fill(const CohShadowCase *c, uint32_t level, uint32_t colour) {
+    uint32_t bytes, addr = coh_shadow_level(c, level, &bytes);
+    if (c->fmt == 3u) {
+        uint32_t *tex = (uint32_t *)SR_HOST(addr);
+        for (uint32_t i = 0; i < bytes / 4u; i++) tex[i] = colour;
+    } else {
+        memset(SR_HOST(addr), (int)COH_SHADOW_INDEX, bytes);
+    }
+    sr_gpu_vram_dirty(addr, bytes);
+}
+
+/* The chain's state through the list path; with a palette, it is loaded from COH_SHADOW_CLUT. */
+static void coh_shadow_state(const CohShadowCase *c) {
+    const CohMipCase mc = { c->name, 0x004u, c->max_level, 1u, c->show * 16u, 8, 0, (int)c->show,
+                            0, 0, 0.0f, 0 };
+    ge_run_list(coherence_mip_list(&mc, 0), 0);
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_MIP_RESET);
+    int p = 0;
+    for (uint32_t l = 0; l <= c->max_level; l++) {
+        uint32_t bytes, addr = coh_shadow_level(c, l, &bytes), log2 = c->log2 - l;
+        dl[p++] = ((0xA0u + l) << 24) | (addr & 0x00FFFFFFu);                         /* TEXADDRn */
+        dl[p++] = ((0xA8u + l) << 24) | (1u << log2) | ((addr & 0xFF000000u) >> 8);  /* TEXBUFWIDTHn */
+        dl[p++] = ((0xB8u + l) << 24) | (log2 << 8) | log2;                          /* TEXSIZEn */
+    }
+    dl[p++] = (0xC3u << 24) | c->fmt;
+    if (c->fmt != 3u) {
+        dl[p++] = (0xB0u << 24) | (COH_SHADOW_CLUT & 0x00FFFFFFu);
+        dl[p++] = (0xB1u << 24) | ((COH_SHADOW_CLUT & 0xFF000000u) >> 8);
+        dl[p++] = (0xC5u << 24) | 3u | (0xFFu << 8);    /* 8888 entries, shift 0, mask 0xFF */
+        dl[p++] = (0xC4u << 24) | 32u;                  /* load 256 entries */
+    }
+    dl[p++] = 0x0Fu << 24;
+    dl[p++] = 0x0Cu << 24;
+    ge_run_list(COH_MIP_RESET, 0);
+}
+
+/* Draw `d` of a case at level texel (8, 0), submitted; returns the decodes it took, or -1. */
+static long coh_shadow_draw(const CohShadowCase *c, int d) {
+    const float scale = (float)(1u << c->show), x = (float)(COH_MIP_X + 16 * d);
+    GeVtx p0 = { x, (float)COH_MIP_Y, 1.0f, 1.0f, 8.0f * scale + 0.25f, 0.25f, 1.0f,
+                 255, 255, 255, 255 };
+    GeVtx p1 = { x + 8.0f, (float)(COH_MIP_Y + 8), 1.0f, 1.0f, 9.0f * scale + 0.25f,
+                 scale + 0.25f, 1.0f, 255, 255, 255, 255 };
+    unsigned long before = s_cnt_texup;
+    if (!hook_sprite(&p0, &p1, 0) || !submit_pending()) return -1;
+    return (long)(s_cnt_texup - before);
+}
+
+static int coherence_run_mip_shadow_case(const CohShadowCase *c) {
+    const uint32_t base = 0x04000000u | 0x00160000u, stride = 512u, rgb = 0x00FFFFFFu;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    uint32_t *clut = (uint32_t *)SR_HOST(COH_SHADOW_CLUT);
+    const uint32_t changed = 0xFF40C020u;
+    for (uint32_t l = 0; l <= c->max_level; l++) coh_shadow_fill(c, l, coh_shadow_colour(l));
+    for (uint32_t j = 0; j < 256u; j++) clut[j] = coh_shadow_entry(j);
+    sr_gpu_vram_dirty(COH_SHADOW_CLUT, 256u * 4u);
+    const uint32_t first = c->fmt == 3u ? coh_shadow_colour(c->show) : clut[COH_SHADOW_INDEX];
+    coherence_reset_targets();
+    memset(fb, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    ge_set_gpu_hooks(&k_hooks);
+    coh_shadow_state(c);
+
+    long decodes[3];
+    uint64_t avoided0 = s_cnt_shadow_avoided;
+    decodes[0] = coh_shadow_draw(c, 0);
+    for (uint32_t l = 0; l <= c->max_level; l++) {          /* bytes unchanged */
+        uint32_t bytes, addr = coh_shadow_level(c, l, &bytes);
+        sr_gpu_vram_dirty(addr, bytes);
+    }
+    decodes[1] = coh_shadow_draw(c, 1);
+    if (c->change >= 0) {
+        uint32_t bytes, addr = coh_shadow_level(c, (uint32_t)c->change, &bytes);
+        uint32_t *tex = (uint32_t *)SR_HOST(addr);
+        for (uint32_t u = 4u; u < 16u; u++) tex[u] = changed;      /* row 0 bytes 16-63 */
+        sr_gpu_vram_dirty(addr + 16u, 48u);
+    } else {
+        clut[COH_SHADOW_INDEX] = changed;
+        sr_gpu_vram_dirty(COH_SHADOW_CLUT, 256u * 4u);
+        coh_shadow_state(c);                                        /* reloads the palette */
+    }
+    decodes[2] = coh_shadow_draw(c, 2);
+    const uint64_t avoided = s_cnt_shadow_avoided - avoided0;
+    int ok = decodes[0] >= 0 && decodes[1] >= 0 && decodes[2] >= 0 && s_cur && target_readback(s_cur);
+    uint32_t px[3];
+    for (int d = 0; d < 3; d++) px[d] = fb[COH_MIP_Y * stride + COH_MIP_X + 16u * (uint32_t)d] & rgb;
+    if (!ok || px[0] != (first & rgb) || px[1] != (first & rgb) || px[2] != (changed & rgb) ||
+        decodes[0] != 1 || decodes[1] != 0 || decodes[2] != 1 || avoided != 1u) {
+        fprintf(stderr,
+                "gpu coherence selftest [mip-shadow %s]: draws=%d pixels=%06x %06x %06x (want "
+                "%06x %06x %06x) decodes=%ld %ld %ld (want 1 0 1) shadow reuses=%llu (want 1)%s\n",
+                c->name, ok, px[0], px[1], px[2], first & rgb, first & rgb, changed & rgb,
+                decodes[0], decodes[1], decodes[2], (unsigned long long)avoided,
+                decodes[1] ? " -- an unchanged chain decoded again" :
+                px[2] != (changed & rgb) ? " -- the shadow missed the change" : "");
+        ok = 0;
+    }
+    coherence_mip_reset_state();
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS mip shadow %-15s decodes=1 0 1 shadow-reuses=1\n",
+                   c->name);
+    return ok;
+}
+
+/* An upload that fails partway leaves the image's contents undefined: copying level 0 discards
+ * every level, and a chain stays in its transfer layout. Nothing may reuse that image until a
+ * decode succeeds, even when the guest puts back exactly the bytes the shadow and the content
+ * hash still describe. The selftest fails the upload right after level 0 has been copied
+ * (s_selftest_upload_fail_after). Level 0 turns from one colour to another, the failing draw
+ * follows, the old colour comes back, and the next draw must decode and show it; reusing the
+ * image would show the new colour, or nothing defined at all. */
+static int coherence_run_texture_upload_failure(const CohShadowCase *c) {
+    const uint32_t base = 0x04000000u | 0x00160000u, stride = 512u, rgb = 0x00FFFFFFu;
+    const uint32_t old_colour = coh_shadow_colour(0), new_colour = 0xFF40C020u;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    for (uint32_t l = 0; l <= c->max_level; l++) coh_shadow_fill(c, l, coh_shadow_colour(l));
+    coherence_reset_targets();
+    memset(fb, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    ge_set_gpu_hooks(&k_hooks);
+    coh_shadow_state(c);
+
+    long decodes[3];
+    decodes[0] = coh_shadow_draw(c, 0);
+    coh_shadow_fill(c, 0, new_colour);
+    s_selftest_upload_fail_after = 0u;
+    decodes[1] = coh_shadow_draw(c, 1);
+    const int failed = s_selftest_upload_fail_after == UINT32_MAX;
+    s_selftest_upload_fail_after = UINT32_MAX;
+    coh_shadow_fill(c, 0, old_colour);
+    decodes[2] = coh_shadow_draw(c, 2);
+    int ok = decodes[0] >= 0 && decodes[1] >= 0 && decodes[2] >= 0 && s_cur && target_readback(s_cur);
+    const uint32_t last = fb[COH_MIP_Y * stride + COH_MIP_X + 32u] & rgb;
+    if (!ok || !failed || last != (old_colour & rgb) || decodes[0] != 1 || decodes[1] != 0 ||
+        decodes[2] != 1) {
+        fprintf(stderr,
+                "gpu coherence selftest [texture-upload-failure %s]: draws=%d injected=%d last=%06x "
+                "(want %06x) decodes=%ld %ld %ld (want 1 0 1)%s\n",
+                c->name, ok, failed, last, old_colour & rgb, decodes[0], decodes[1], decodes[2],
+                decodes[2] == 0 ? " -- the partly uploaded image was reused" : "");
+        ok = 0;
+    }
+    coherence_mip_reset_state();
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS texture-upload-failure %-12s decodes=1 0 1\n", c->name);
+    return ok;
+}
+
+static int coherence_run_mip_shadow(void) {
+    static const CohShadowCase shadow[] = {
+        { "vram-level-1", 0x04050000u, 6u, 3u, 1u, 1u, 1 },
+        { "ram-level-0",  0x08560000u, 7u, 3u, 1u, 0u, 0 },
+        { "ram-level-2",  0x08580000u, 7u, 3u, 2u, 2u, 2 },
+        { "ram-palette",  0x085A0000u, 7u, 5u, 1u, 1u, -1 },
+    };
+    static const CohShadowCase failure[] = {
+        { "single-level", 0x08560000u, 7u, 3u, 0u, 0u, 0 },
+        { "chain",        0x08580000u, 7u, 3u, 1u, 0u, 0 },
+    };
+    int ok = 1;
+    for (size_t i = 0; i < sizeof(shadow) / sizeof(shadow[0]); i++)
+        if (!coherence_run_mip_shadow_case(&shadow[i])) ok = 0;
+    for (size_t i = 0; i < sizeof(failure) / sizeof(failure[0]); i++)
+        if (!coherence_run_texture_upload_failure(&failure[i])) ok = 0;
+    return ok;
+}
+
 /* One GPU draw through the hooks, after the state of `c`: a size x size quad at (COH_MIP_X,
  * COH_MIP_Y) whose texel coordinates run from 0.25 by `span` texels across it (`vspan` down
  * it, or `span` when 0), at 1/w = `rw`
@@ -1884,6 +2159,7 @@ static int coherence_run_mip_levels(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         if (!coherence_run_mip_case(&cases[i])) ok = 0;
     if (!coherence_run_mip_level_dirty_same_state()) ok = 0;
+    if (!coherence_run_mip_shadow()) ok = 0;
     if (!coherence_run_mip_lod()) ok = 0;
     if (!coherence_run_mip_slope_change()) ok = 0;
     coherence_mip_reset_state();
@@ -3245,7 +3521,10 @@ static int coherence_run_native_bulk_copy(void) {
 }
 
 /* Stencil parity: the GPU stencil path against ge.c, bit for bit, in every framebuffer
- * format. Each cell of the matrix is one state (test function, reference, mask, the three
+ * format, except the 8888 blended cells whose state took the fixed-function path
+ * (stp_classify): their alpha is exact and their colour within the fixed-function blend's
+ * bound. No state of a 16-bit list may take that path. Each cell of the matrix is one state
+ * (test function, reference, mask, the three
  * ops, the alpha write mask, blending) drawing two overlapping sprites onto a hashed
  * background, so the second sprite reads what the first wrote: a state that reads its own
  * writes must split there (stencil_splits). The depth list fills a striped depth buffer in
@@ -3312,6 +3591,10 @@ static void stp_cell_sprites(StpList *l, uint32_t *vaddr, uint32_t cell, float z
     *vaddr += 4u * (uint32_t)sizeof(ParityGuestVtx);
 }
 
+/* Per cell of the 8888 list being checked: 1 if its state is blended and took the
+ * fixed-function stencil path (stp_classify). */
+static uint8_t s_stp_ff_blend[8u * 6u * 6u];
+
 static void stp_cell_state(StpList *l, uint32_t cell, uint32_t func, uint32_t ops) {
     static const uint32_t smask[5] = { 0xFFu, 0xF0u, 0x0Fu, 0x80u, 0x81u };
     static const uint32_t amask[5] = { 0x00u, 0x00u, 0xF0u, 0x0Fu, 0x80u };
@@ -3322,19 +3605,27 @@ static void stp_cell_state(StpList *l, uint32_t cell, uint32_t func, uint32_t op
     stp_emit(l, 0x21, (cell & 1u) ? 1u : 0u);
 }
 
+/* Two sprites overlap in each cell, so a pixel blends at most twice; each fixed-function blend
+ * adds at most blend-parity-ff's bound, and the second carries the first's error through a
+ * destination factor of at most 1. */
+#define STP_FF_BLEND_BOUND (2 * PARITY_FF_BOUND)
+
 static void stp_end(StpList *l) {
     stp_emit(l, 0x10, 0);                                  /* later lists expect BASE 0 */
     stp_emit(l, 0x0F, 0);
     stp_emit(l, 0x0C, 0);
 }
 
-/* Matrix list: every test function with every stencil-fail and depth-pass op, depth off. */
-static uint32_t stp_matrix_list(uint32_t base, uint32_t fmt) {
+/* Matrix list: every test function with every stencil-fail and depth-pass op, depth off. With
+ * `only` >= 0 the list holds that cell alone. */
+#define STP_MATRIX_CELLS (8u * 6u * 6u)
+static uint32_t stp_matrix_list(uint32_t base, uint32_t fmt, int only) {
     StpList l; stp_begin(&l, base, fmt, 0);
     uint32_t vaddr = 0x08060000u, cell = 0;
     for (uint32_t func = 0; func < 8u; func++)
         for (uint32_t sfail = 0; sfail < 6u; sfail++)
             for (uint32_t zpass = 0; zpass < 6u; zpass++, cell++) {
+                if (only >= 0 && cell != (uint32_t)only) continue;
                 stp_cell_state(&l, cell, func, sfail | (((cell / 7u) % 6u) << 8) | (zpass << 16));
                 stp_cell_sprites(&l, &vaddr, cell, 0.0f);
             }
@@ -3342,26 +3633,32 @@ static uint32_t stp_matrix_list(uint32_t base, uint32_t fmt) {
     return 0x08040000u;
 }
 
-/* Depth list: a striped depth buffer, then depth-tested cells. */
-static uint32_t stp_depth_list(uint32_t base, uint32_t fmt) {
+/* Depth list: a striped depth buffer, then depth-tested cells. With `only` >= 0 the list
+ * holds that cell alone, without the depth buffer. */
+#define STP_DEPTH_CELLS (8u * 6u + 5u)
+static uint32_t stp_depth_list(uint32_t base, uint32_t fmt, int only) {
     static const uint32_t zfunc[4] = { 4u, 5u, 6u, 7u };   /* less, lequal, greater, gequal */
     StpList l; stp_begin(&l, base, fmt, 1);
     uint32_t vaddr = 0x08060000u;
-    stp_emit(&l, 0xD3, 1u | 0x400u | 0x100u);              /* depth and colour, stencil kept */
-    for (uint32_t x = 0; x < STP_CELLS_X * STP_PITCH; x += 2u)
-        stp_sprite(&l, &vaddr, 0xFF808080u, (float)(STP_ORIGIN + x), (float)STP_ORIGIN,
-                   (float)(STP_ORIGIN + x + 2u), (float)(STP_ORIGIN + 8u * STP_PITCH),
-                   (x & 2u) ? 49152.0f : 16384.0f);
-    stp_emit(&l, 0xD3, 0);
+    if (only < 0) {
+        stp_emit(&l, 0xD3, 1u | 0x400u | 0x100u);          /* depth and colour, stencil kept */
+        for (uint32_t x = 0; x < STP_CELLS_X * STP_PITCH; x += 2u)
+            stp_sprite(&l, &vaddr, 0xFF808080u, (float)(STP_ORIGIN + x), (float)STP_ORIGIN,
+                       (float)(STP_ORIGIN + x + 2u), (float)(STP_ORIGIN + 8u * STP_PITCH),
+                       (x & 2u) ? 49152.0f : 16384.0f);
+        stp_emit(&l, 0xD3, 0);
+    }
     uint32_t cell = 0;
     for (uint32_t func = 0; func < 8u; func++)
         for (uint32_t zpass = 0; zpass < 6u; zpass++, cell++) {
+            if (only >= 0 && cell != (uint32_t)only) continue;
             stp_cell_state(&l, cell, func, zpass << 16);
             stp_emit(&l, 0xDE, zfunc[cell % 4u]);
             stp_emit(&l, 0xE7, (cell / 4u) & 1u);          /* depth writes on and off */
             stp_cell_sprites(&l, &vaddr, cell, 32768.0f);
         }
     for (uint32_t sfail = 1; sfail < 6u; sfail++, cell++) {
+        if (only >= 0 && cell != (uint32_t)only) continue;
         stp_cell_state(&l, cell, 1u, sfail | (2u << 16));   /* always: the fail op never runs */
         stp_emit(&l, 0xDE, zfunc[cell % 4u]);
         stp_emit(&l, 0xE7, 0);
@@ -3383,22 +3680,42 @@ static void stp_fill_background(uint32_t base, uint32_t fmt) {
     sr_gpu_vram_dirty(base, FB_W * FB_H * (fmt == 3u ? 4u : 2u));
 }
 
+/* Which cells of an 8888 list took the fixed-function stencil path, as ge_gpu.c decided: each
+ * cell runs alone and its state builds are read from stencil_fixed. Blended ones get the
+ * fixed-function blend's bound; unblended ones stay exact. Returns how many are blended. */
+static unsigned stp_classify(uint32_t base, int depth) {
+    const unsigned cells = depth ? STP_DEPTH_CELLS : STP_MATRIX_CELLS;
+    unsigned blended = 0;
+    memset(s_stp_ff_blend, 0, sizeof s_stp_ff_blend);
+    ge_set_gpu_hooks(&k_hooks);
+    for (unsigned c = 0; c < cells; c++) {
+        const unsigned long long fixed0 = s_replay_stats.stencil_fixed;
+        ge_run_list(depth ? stp_depth_list(base, 3u, (int)c) : stp_matrix_list(base, 3u, (int)c), 0);
+        s_stp_ff_blend[c] = (uint8_t)((c & 1u) && s_replay_stats.stencil_fixed != fixed0);
+        blended += s_stp_ff_blend[c];
+    }
+    coherence_reset_targets();
+    return blended;
+}
+
 static int coherence_run_stencil_parity(void) {
     const uint32_t base = 0x04000000u | 0x00140000u;
     const uint32_t max_bytes = FB_W * FB_H * 4u;
     uint8_t *gpu_out = (uint8_t *)malloc(max_bytes);
     if (!gpu_out) return 0;
     GeState saved = *s_ge;                 /* the lists leave the stencil test and masks on */
-    int ok = 1;
-    unsigned runs = 0, differing = 0;
+    int ok = 1, max_delta = 0;
+    unsigned runs = 0, differing = 0, ff_cells = 0;
     const unsigned long long splits0 = s_replay_stats.stencil_splits;
     for (uint32_t fmt = 0; fmt < 4u && ok; fmt++) {
         for (int depth = 0; depth < 2 && ok; depth++) {
             const uint32_t bytes = FB_W * FB_H * (fmt == 3u ? 4u : 2u);
-            const uint32_t list = depth ? stp_depth_list(base, fmt) : stp_matrix_list(base, fmt);
+            if (fmt == 3u) ff_cells += stp_classify(base, depth);
+            const uint32_t list = depth ? stp_depth_list(base, fmt, -1) : stp_matrix_list(base, fmt, -1);
             coherence_reset_targets();
             stp_fill_background(base, fmt);
             const unsigned long long fallback0 = s_replay_stats.fallback_prims;
+            const unsigned long long fixed0 = s_replay_stats.stencil_fixed;
             ge_set_gpu_hooks(&k_hooks);
             ge_run_list(list, 0);
             GeGpuFbDescriptor desc = { .addr = base, .format = fmt, .stride = 512u,
@@ -3406,6 +3723,12 @@ static int coherence_run_stencil_parity(void) {
             if (gegpu_sync_guest_fb(&desc) != GEGPU_SYNC_OK) { ok = 0; break; }
             memcpy(gpu_out, SR_HOST(base), bytes);
             const unsigned long long fallbacks = s_replay_stats.fallback_prims - fallback0;
+            if (fmt != 3u && s_replay_stats.stencil_fixed != fixed0) {
+                fprintf(stderr, "gpu coherence selftest [stencil-parity]: fmt=%u %s list: %llu states "
+                                "took the fixed-function stencil path, which needs an 8888 target\n",
+                        fmt, depth ? "depth" : "matrix", s_replay_stats.stencil_fixed - fixed0);
+                ok = 0;
+            }
 
             coherence_reset_targets();
             stp_fill_background(base, fmt);
@@ -3436,11 +3759,21 @@ static int coherence_run_stencil_parity(void) {
             }
             for (uint32_t i = 0; i < FB_W * FB_H; i++) {
                 if (i % FB_W >= 480u || !memcmp(gpu_out + i * bpp, sw_out + i * bpp, bpp)) continue;
+                uint32_t g = 0, w = 0;
+                memcpy(&g, gpu_out + i * bpp, bpp); memcpy(&w, sw_out + i * bpp, bpp);
+                uint32_t x = i % FB_W, y = i / FB_W;
+                uint32_t cell = (y - STP_ORIGIN) / STP_PITCH * STP_CELLS_X + (x - STP_ORIGIN) / STP_PITCH;
+                int d = 0;
+                for (uint32_t c = 0; c < bpp; c++) {
+                    int e = abs((int)((g >> (8 * c)) & 0xFFu) - (int)((w >> (8 * c)) & 0xFFu));
+                    if (e > d) d = e;
+                }
+                if (d > max_delta) max_delta = d;
+                if (fmt == 3u && x >= STP_ORIGIN && y >= STP_ORIGIN &&
+                    x < STP_ORIGIN + STP_CELLS_X * STP_PITCH && cell < sizeof s_stp_ff_blend &&
+                    s_stp_ff_blend[cell] && (g >> 24) == (w >> 24) && d <= STP_FF_BLEND_BOUND)
+                    continue;
                 if (!differing++) {
-                    uint32_t g = 0, w = 0;
-                    memcpy(&g, gpu_out + i * bpp, bpp); memcpy(&w, sw_out + i * bpp, bpp);
-                    uint32_t x = i % FB_W, y = i / FB_W;
-                    uint32_t cell = (y - STP_ORIGIN) / STP_PITCH * STP_CELLS_X + (x - STP_ORIGIN) / STP_PITCH;
                     fprintf(stderr, "gpu coherence selftest [stencil-parity]: fmt=%u %s cell=%u "
                                     "x=%u y=%u gpu=%08x ge_c=%08x\n",
                             fmt, depth ? "depth" : "matrix", cell, x, y, g, w);
@@ -3462,8 +3795,192 @@ static int coherence_run_stencil_parity(void) {
                 differing);
         return 0;
     }
-    printf("gpu coherence selftest: PASS %-22s lists=%u splits=%llu max_delta_vs_ge_c=0\n",
-           "stencil-parity", runs, splits);
+    printf("gpu coherence selftest: PASS %-22s lists=%u splits=%llu max_delta_vs_ge_c=%d "
+           "(exact but for %u blended cells on the fixed-function path: alpha exact, rgb bound %d)\n",
+           "stencil-parity", runs, splits, max_delta, ff_cells, STP_FF_BLEND_BOUND);
+    return 1;
+}
+
+/* Constant stencil: on an 8888 target, a test that always passes with a depth-pass op that
+ * keeps the stencil or stores a constant (KEEP, or ZERO and REPLACE under a full alpha write
+ * mask, or any op under a mask that keeps every bit) reads no destination (ge_gpu.c
+ * stencil_fixed_alpha); blended, the constant must be 0 and the blend fixed-function. The
+ * stencil-fail op, which such a test never runs, varies.
+ *  - Unblended cells must match ge.c bit for bit, flat and under GEQUAL and LESS on a striped
+ *    depth buffer with depth writes on and off.
+ *  - Blended cells must store ge.c's alpha bit for bit, and a colour within the fixed-function
+ *    blend's bound of ge.c (STP_FF_BLEND_BOUND), as a draw without the stencil test gives.
+ * Their overlapping sprites must share a batch with no destination snapshot and no software
+ * fallback. The refused list holds the same tests and ops in the states the fast path must
+ * leave to the shader: dither with blending, each kind of blend that needs the shader, a
+ * blended constant other than 0 and a partial alpha mask. None of them may count as fixed,
+ * and all must match ge.c bit for bit. */
+enum { STC_FLAT, STC_DEPTH, STC_BLENDED, STC_REFUSED, STC_KINDS };
+
+static const uint32_t k_stc_blend_modes[4] = {
+    2u | (3u << 4),                  /* src alpha, 1 - src alpha */
+    4u | (5u << 4),                  /* dst alpha (the stencil), 1 - dst alpha */
+    2u | (3u << 4) | (1u << 8),      /* subtract */
+    0u | (1u << 4) | (4u << 8),      /* max */
+};
+
+/* One refused state per entry: blend mode, dither, reference, alpha mask and the depth-pass ops
+ * it is drawn with (a bit per op: KEEP 1, ZERO 2, REPLACE 4). KEEP is left out where it is
+ * still fixed, because the reason for refusing concerns only a stored constant. */
+static const struct { uint32_t mode, dither, ref, amask, zpass_ops; } k_stc_refused[6] = {
+    { 2u | (3u << 4), 1u, 0u, 0u, 7u },                /* dither with blending */
+    { 2u | (3u << 4) | (5u << 8), 0u, 0u, 0u, 7u },    /* absolute difference */
+    { 6u | (3u << 4), 0u, 0u, 0u, 7u },                /* doubled source alpha */
+    { 10u | (10u << 4), 0u, 0u, 0u, 7u },              /* two distinct FIX colours */
+    { 2u | (3u << 4), 0u, 0x5Au, 0u, 4u },             /* blended REPLACE of a constant other than 0 */
+    { 0xFFu, 0u, 0x5Au, 0x0Fu, 6u },                   /* partial alpha mask, unblended */
+};
+
+static uint32_t stc_list(uint32_t base, int kind) {
+    static const uint32_t zfunc[2] = { 7u, 4u };           /* gequal, less */
+    const int depth = kind == STC_DEPTH, blended = kind == STC_BLENDED;
+    StpList l; stp_begin(&l, base, 3u, depth);
+    uint32_t vaddr = 0x08060000u, cell = 0;
+    if (depth) {
+        stp_emit(&l, 0xD3, 1u | 0x400u | 0x100u);          /* depth and colour, stencil kept */
+        for (uint32_t x = 0; x < STP_CELLS_X * STP_PITCH; x += 2u)
+            stp_sprite(&l, &vaddr, 0xFF808080u, (float)(STP_ORIGIN + x), (float)STP_ORIGIN,
+                       (float)(STP_ORIGIN + x + 2u), (float)(STP_ORIGIN + 8u * STP_PITCH),
+                       (x & 2u) ? 49152.0f : 16384.0f);
+        stp_emit(&l, 0xD3, 0);
+    }
+    if (kind == STC_REFUSED) {
+        stp_emit(&l, 0xE2, 0x4E2Bu); stp_emit(&l, 0xE3, 0xC1F3u);   /* a dither matrix */
+        stp_emit(&l, 0xE4, 0x2A7Eu); stp_emit(&l, 0xE5, 0xD05Bu);
+        stp_emit(&l, 0xE0, 0x3C6E91u); stp_emit(&l, 0xE1, 0xA05D27u);
+        for (uint32_t r = 0; r < 6u; r++)
+            for (uint32_t zpass = 0; zpass < 3u; zpass++)
+                for (uint32_t rep = 0; rep < 2u; rep++) {
+                    if (!(k_stc_refused[r].zpass_ops & (1u << zpass))) continue;
+                    uint32_t h = wrap_hash(0x5C7u + cell);
+                    const int blend = k_stc_refused[r].mode != 0xFFu;
+                    stp_emit(&l, 0xDC, 1u | (k_stc_refused[r].ref << 8) | (((h >> 8) & 0xFFu) << 16));
+                    stp_emit(&l, 0xDD, (h >> 16) % 6u | (zpass << 16));
+                    stp_emit(&l, 0xE9, k_stc_refused[r].amask);
+                    stp_emit(&l, 0x21, blend ? 1u : 0u);
+                    stp_emit(&l, 0x20, k_stc_refused[r].dither);
+                    if (blend) stp_emit(&l, 0xDF, k_stc_refused[r].mode);
+                    stp_cell_sprites(&l, &vaddr, cell++, 32768.0f);
+                }
+        stp_emit(&l, 0x20, 0);
+    }
+    for (uint32_t zpass = 0; kind != STC_REFUSED && zpass < 3u; zpass++)
+        for (uint32_t amask = 0; amask < 2u; amask++)
+            for (uint32_t v = 0; v < (blended ? 4u : 6u); v++) {
+                uint32_t h = wrap_hash(0x5C7u + cell);
+                uint32_t ref = blended ? 0u : (h & 0xFFu);  /* blended: only 0 is fixed */
+                stp_emit(&l, 0xDC, 1u | (ref << 8) | (((h >> 8) & 0xFFu) << 16));
+                stp_emit(&l, 0xDD, (blended ? (h >> 16) % 6u : v) | (zpass << 16));
+                stp_emit(&l, 0xE9, amask ? 0xFFu : 0u);
+                stp_emit(&l, 0x21, blended ? 1u : 0u);
+                if (blended) stp_emit(&l, 0xDF, k_stc_blend_modes[v]);
+                if (depth) {
+                    stp_emit(&l, 0xDE, zfunc[cell & 1u]);
+                    stp_emit(&l, 0xE7, (cell >> 1) & 1u);
+                }
+                stp_cell_sprites(&l, &vaddr, cell++, 32768.0f);
+            }
+    stp_emit(&l, 0xDF, 2u | (3u << 4));
+    stp_end(&l);
+    return 0x08040000u;
+}
+
+/* Run `list` on the GPU path (into `out`) or through ge.c (left in VRAM) over a fresh hashed
+ * background. Returns 0 if the GPU target could not be synchronized. */
+static int stc_run(uint32_t base, uint32_t list, int gpu, uint8_t *out) {
+    coherence_reset_targets();
+    stp_fill_background(base, 3u);
+    ge_set_gpu_hooks(gpu ? &k_hooks : NULL);
+    ge_run_list(list, 0);
+    ge_set_gpu_hooks(&k_hooks);
+    if (!gpu) return 1;
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3u, .stride = 512u,
+                               .width = 480, .height = FB_H };
+    if (gegpu_sync_guest_fb(&desc) != GEGPU_SYNC_OK) return 0;
+    memcpy(out, SR_HOST(base), FB_W * FB_H * 4u);
+    return 1;
+}
+
+static int coherence_run_stencil_constant(void) {
+    static const char *const names[STC_KINDS] = { "flat", "depth", "blended", "refused" };
+    const uint32_t base = 0x04000000u | 0x00140000u, bytes = FB_W * FB_H * 4u;
+    uint8_t *gpu_out = (uint8_t *)malloc(bytes);
+    if (!gpu_out) return 0;
+    GeState saved = *s_ge;
+    int ok = 1, max_rgb = 0;
+    unsigned differing = 0;
+    for (int kind = 0; kind < STC_KINDS && ok; kind++) {
+        const int blended = kind == STC_BLENDED, refused = kind == STC_REFUSED;
+        const char *name = names[kind];
+        const GeGpuReplayStats before = s_replay_stats;
+        if (!stc_run(base, stc_list(base, kind), 1, gpu_out)) { ok = 0; break; }
+        const GeGpuReplayStats after = s_replay_stats;
+        (void)stc_run(base, stc_list(base, kind), 0, NULL);
+        const uint8_t *sw_out = (const uint8_t *)SR_HOST(base);
+        if (after.fallback_prims != before.fallback_prims) {
+            fprintf(stderr, "gpu coherence selftest [stencil-constant]: %s list took the software "
+                            "fallback for %llu primitives\n", name,
+                    after.fallback_prims - before.fallback_prims);
+            ok = 0;
+        }
+        if (refused && after.stencil_fixed != before.stencil_fixed) {
+            fprintf(stderr, "gpu coherence selftest [stencil-constant]: refused list: %llu states "
+                            "took the fixed path, want 0\n",
+                    after.stencil_fixed - before.stencil_fixed);
+            ok = 0;
+        }
+        if (!refused && (after.snapshot_copies != before.snapshot_copies ||
+                         after.stencil_splits != before.stencil_splits ||
+                         after.stencil_fixed == before.stencil_fixed)) {
+            fprintf(stderr, "gpu coherence selftest [stencil-constant]: %s list: snapshot_copies=%llu "
+                            "splits=%llu fixed_states=%llu, want 0 0 and some fixed states\n", name,
+                    after.snapshot_copies - before.snapshot_copies,
+                    after.stencil_splits - before.stencil_splits,
+                    after.stencil_fixed - before.stencil_fixed);
+            ok = 0;
+        }
+        unsigned drawn = 0;
+        for (uint32_t i = 0; i < FB_W * FB_H; i++) {
+            uint32_t w = 0, g = 0;
+            memcpy(&w, sw_out + i * 4u, 4u);
+            memcpy(&g, gpu_out + i * 4u, 4u);
+            if (w != wrap_hash(0x3C1u + i * 40503u)) drawn++;
+            if (i % FB_W >= 480u) continue;
+            int bad = (g >> 24) != (w >> 24);
+            for (int c = 0; c < 3; c++) {
+                int d = (int)((g >> (8 * c)) & 0xFFu) - (int)((w >> (8 * c)) & 0xFFu);
+                if (d < 0) d = -d;
+                if (d > max_rgb) max_rgb = d;
+                if (blended ? d > STP_FF_BLEND_BOUND : d != 0) bad = 1;
+            }
+            if (!bad) continue;
+            if (!differing++)
+                fprintf(stderr, "gpu coherence selftest [stencil-constant]: %s x=%u y=%u gpu=%08x "
+                                "ge_c=%08x\n", name, i % FB_W, i / FB_W, g, w);
+            ok = 0;
+        }
+        if (drawn < 1024u) {
+            fprintf(stderr, "gpu coherence selftest [stencil-constant]: %s list changed only %u "
+                            "pixels\n", name, drawn);
+            ok = 0;
+        }
+        coherence_reset_targets();
+    }
+    free(gpu_out);
+    *s_ge = saved;
+    if (!ok) {
+        fprintf(stderr, "gpu coherence selftest [stencil-constant]: %u pixels outside the contract\n",
+                differing);
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s lists=%d fixed lists: snapshot_copies=0 "
+           "alpha_delta_vs_ge_c=0 rgb_max_delta=%d (unblended 0, blended bound %d); refused list: "
+           "fixed_states=0, exact\n", "stencil-constant", STC_KINDS, max_rgb, STP_FF_BLEND_BOUND);
     return 1;
 }
 
@@ -4411,6 +4928,7 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "mip-lod") == 0) return coherence_run_mip_lod();
         if (strcmp(only, "readback-rows") == 0) return coherence_run_readback_rows();
         if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
+        if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }
@@ -4452,6 +4970,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_clut_format_list()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
     if (!coherence_run_undrawn_rows()) ok = 0;
+    if (!coherence_run_depth_alias_no_zwrite()) ok = 0;
     if (!coherence_run_scalar_vram_read(0x04080000u)) ok = 0;
     /* zbp 0x0a2000: bit 13 set, so the absolute XOR differs from the within-buffer form (0x0a6854 vs
      * 0x0a2854 for pixel 10,10). The 0x0ce000 placement used by the software selftest would overlap the
@@ -4466,6 +4985,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_psp_sample_points()) ok = 0;
     /* After the mip fixtures: it rewrites the depth buffer they start from. */
     if (!coherence_run_stencil_parity()) ok = 0;
+    if (!coherence_run_stencil_constant()) ok = 0;
     if (!coherence_run_tnl_parity()) ok = 0;
     /* Last: it rewrites ge.c's depth surface. */
     if (!coherence_run_scaled_upload()) ok = 0;

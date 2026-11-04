@@ -942,6 +942,7 @@ void sr_vblank_tick(void) {
         psmf_av_video_presented(s_display_active.addr, s_display_active.stride, s_display_active.fmt);
         display_present_active();
     }
+    if (g_ace_on) gui_ace_vblank(s_vcount);
     /* Periodic VCOUNT cadences are boundary crossings, not an exact modulus: a serviced
      * tick can step over a multiple or repeat one (see sr_vcount_window_crossed). */
     static uint32_t tick_log_window = 0;
@@ -1109,6 +1110,8 @@ void sr_vblank_tick(void) {
             sr_perf_shutdown();
             SR_VERIFY_REPORT_NOW();
             hle_state_sample_close();
+            /* Ace Mode's exit stamp and report are an atexit hook too (a no-op when off). */
+            ace_finish();
             _Exit(0);
         }
     }
@@ -1130,11 +1133,17 @@ static uint32_t h_DisplayGetAccumulatedHcount(CpuState *s) {
     return sched_display_accumulated_hcount();
 }
 
-/* sceDisplaySetMode: the requested mode and size are logged and the call succeeds. The
- * runtime replays no title display-driver bring-up: a title initializes its own display
- * state through its own code (#363). */
+/* sceDisplaySetMode(mode, width, height). PSPAutotests tests/display/setmode.expected (recorded on a
+ * PSP): only mode 0 at 480x272 is accepted. Any other mode returns 0x80000107 (mode 1, 2, -1, and
+ * mode 1 at 720x480 or 720x503), and mode 0 at any other size returns 0x80000104 (0x0, 512x272,
+ * 960x544, 240x136); the accepted size is the one sceDisplayGetMode reports. The mode check wins
+ * when both are wrong (mode 1 at 720x480). The call does not wait for a vblank as the PSP does
+ * ("Vblank after set: 1"); the runtime replays no title display-driver bring-up: a title
+ * initializes its own display state through its own code (#363). */
 static uint32_t h_DisplaySetMode(CpuState *s) {
     uint32_t mode = s->r[4], width = s->r[5], height = s->r[6];
+    if (mode != 0u) return 0x80000107u;                  /* SCE_DISPLAY_ERROR_INVALID_MODE */
+    if (width != 480u || height != 272u) return 0x80000104u; /* SCE_DISPLAY_ERROR_INVALID_VALUE */
     fprintf(stderr, "DISPLAY_SET_MODE: mode=%u %ux%u (title %s)\n", mode, width, height,
             sr_title_config()->source_id);
     fflush(stderr);

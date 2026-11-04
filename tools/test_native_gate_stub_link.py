@@ -15,6 +15,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -247,7 +248,7 @@ def _ci_inline_sources(build_name: str) -> set[str]:
 
 def _make_target_sources(target: str) -> set[str]:
     """Literal source paths in the canonical Makefile target's recipe."""
-    lines = MAKEFILE.read_text(encoding="utf-8").splitlines()
+    lines = read_makefile(ROOT).splitlines()
     start = None
     for i, line in enumerate(lines):
         if re.match(rf"^{re.escape(target)}:(?:\s|$)", line):

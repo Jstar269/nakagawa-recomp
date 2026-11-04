@@ -173,6 +173,9 @@ ENHANCEMENT_UPDATE_BOUNDARY: int | None = None
 ENHANCEMENT_DATA_PATCHES: list[tuple[str, bytes, bytes, str]] = []
 # Verified disc data files: (disc path, stock sha256, rewritten bytes, id).
 ENHANCEMENT_DATA_FILES: list[tuple[str, str, bytes, str]] = []
+# Sites that keep run-time state (stock_values, requires), numbered by the index their
+# rewrites carry: {"id", "pc", "float", "pairs", "requires"}.
+ENHANCEMENT_STORE_SITES: list[dict] = []
 # Callable entries whose body loads $sp (guest_owns_entry_sp): no exit restores their entry
 # $sp, so the stack census leaves them unwrapped, as it leaves resume bodies.
 GUEST_SP_ENTRIES: set[int] = set()
@@ -215,14 +218,18 @@ def _enhancement_boundary(addr: int) -> bool:
 
 
 def _scaled_store_line(rw: dict, stock_line: str) -> str:
-    """A swc1 site that stores its FPR scaled: the store reads a scaled copy, and the
-    register is never written, so an access fault that leaves the statement early
-    (--lle-cpu) cannot leave it scaled."""
+    """A swc1 or sw site that stores its register scaled: the store reads a scaled copy, and
+    the register is never written, so an access fault that leaves the statement early
+    (--lle-cpu) cannot leave it scaled. With stock_values the copy comes from the site's
+    table, and a value outside it stops the run (nk_enh_store)."""
     r = rw["reg"]
-    stored = f"s->fi[{r}]"
+    stored = f"s->r[{r}]" if rw["kind"] == "scale_int_store" else f"s->fi[{r}]"
     stock = stock_line.strip()
     if stock.count(stored) != 1:
-        raise ValueError(f"scale_f_store: expected one read of {stored} in {stock!r}")
+        raise ValueError(f"{rw['kind']}: expected one read of {stored} in {stock!r}")
+    if "stock_values" in rw:
+        return (f"{{ uint32_t _nk_bits = nk_enh_store({rw['site_index']}u, {stored}); "
+                f"{stock.replace(stored, '_nk_bits')} }}")
     return (f"{{ float _nk_f = s->f[{r}] * {rw['factor']!r}f; uint32_t _nk_bits; "
             f"memcpy(&_nk_bits, &_nk_f, sizeof _nk_bits); "
             f"{stock.replace(stored, '_nk_bits')} }}")
@@ -233,6 +240,8 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
     experimental toggle is on at run time (nk_enhancement_on())."""
     kind = rw["kind"]
     if kind == "word":
+        if word_line is None:
+            raise ValueError("a word rewrite needs its emitted word line")
         enh = word_line
     elif kind == "gate":
         enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"
@@ -259,7 +268,7 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
                 "retention": f"sqrtf(s->v[{v}])"}[rw["map"]]
         enh = (f"{stock_line.strip()} if (s->v[{v}] > 0.0f && s->v[{v}] < 1.0f) "
                f"{{ s->v[{v}] = {expr}; }}")
-    elif kind == "scale_f_store":
+    elif kind in ("scale_f_store", "scale_int_store"):
         enh = _scaled_store_line(rw, stock_line)
     elif kind == "scale_f_addend":
         r = rw["reg"]
@@ -267,6 +276,10 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
                f"{stock_line.strip()} s->f[{r}] = _nk_keep; }}")
     else:
         raise ValueError(f"unknown enhancement rewrite kind {kind!r}")
+    if "requires" in rw:
+        # The rewrite waits until every required site has applied in this run.
+        enh = (f"if (nk_enh_ready({rw['site_index']}u)) {{ {enh.strip()} }} "
+               f"else {{ {stock_line.strip()} }}")
     return (f"    if (nk_enhancement_on()) {{ {enh.strip()} }}\n"
             f"    else {{ {stock_line.strip()} }}")
 
@@ -937,6 +950,132 @@ def _enhancement_data_lines() -> list[str]:
     return out
 
 
+def _enhancement_store_lines() -> list[str]:
+    """The run-time half of store sites and ``requires``: one table row per site that keeps
+    state, the stock-value check of a store, and the gate of a dependent site."""
+    if not ENHANCEMENT_STORE_SITES:
+        return []
+    index = {row["id"]: i for i, row in enumerate(ENHANCEMENT_STORE_SITES)}
+    out = [
+        "/* Enhancement store sites. */",
+        "typedef struct {",
+        "    const char *id; uint32_t pc; int is_float;",
+        "    unsigned nstock; const uint32_t *stock; const uint32_t *scaled;",
+        "    unsigned nreq; const unsigned *req;",
+        "    uint32_t applied; int gated;",
+        "} NkEnhSite;",
+    ]
+    rows = []
+    for i, row in enumerate(ENHANCEMENT_STORE_SITES):
+        stock, scaled, req = "0", "0", "0"
+        if row["pairs"]:
+            stock, scaled = f"nk_enh_stock_{i}", f"nk_enh_scaled_{i}"
+            out.append(f"static const uint32_t {stock}[] = "
+                       f"{{{', '.join(f'0x{a:08x}u' for a, _b in row['pairs'])}}};")
+            out.append(f"static const uint32_t {scaled}[] = "
+                       f"{{{', '.join(f'0x{b:08x}u' for _a, b in row['pairs'])}}};")
+        if row["requires"]:
+            req = f"nk_enh_req_{i}"
+            out.append(f"static const unsigned {req}[] = "
+                       f"{{{', '.join(f'{index[name]}u' for name in row['requires'])}}};")
+        rows.append(f'    {{"{row["id"]}", 0x{row["pc"]:08x}u, {int(row["float"])}, {len(row["pairs"])}u, '
+                    f'{stock}, {scaled}, {len(row["requires"])}u, {req}, 0u, 0}},')
+    out += ["static NkEnhSite nk_enh_sites[] = {", *rows, "};"]
+    out += [
+        "static int nk_enh_stopped;",
+        "static void nk_enh_text(const NkEnhSite *e, uint32_t bits, char *out, size_t n) {",
+        "    if (e->is_float) { float f; memcpy(&f, &bits, sizeof f); snprintf(out, n, \"%.9g\", (double)f); }",
+        "    else snprintf(out, n, \"%d\", (int)(int32_t)bits);",
+        "}",
+        "uint32_t nk_enh_store(unsigned site, uint32_t bits) {",
+        "    NkEnhSite *e = &nk_enh_sites[site];",
+        "    char a[40], b[40];",
+        "    unsigned k;",
+        "    for (k = 0; k < e->nstock; k++) if (e->stock[k] == bits) break;",
+        "    if (k == e->nstock) {",
+        "        nk_enh_text(e, bits, a, sizeof a);",
+        '        fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: site %s at 0x%08x stores %s (0x%08x), '
+        "not one of the package's stock values; the run stops here\\n\", "
+        "e->id, (unsigned)e->pc, a, (unsigned)bits);",
+        "        nk_enh_stopped = 1;",
+        "        exit(1);",
+        "    }",
+        "    if (e->applied < 16u) {",
+        "        nk_enh_text(e, bits, a, sizeof a);",
+        "        nk_enh_text(e, e->scaled[k], b, sizeof b);",
+        '        fprintf(stderr, "ENHANCEMENT_DATA_APPLIED: site %s at 0x%08x: %s -> %s\\n", '
+        "e->id, (unsigned)e->pc, a, b);",
+        "    } else if (e->applied == 16u) {",
+        '        fprintf(stderr, "ENHANCEMENT_DATA_APPLIED: site %s: later applications are not logged\\n", e->id);',
+        "    }",
+        "    if (e->applied != 0xffffffffu) e->applied++;",
+        "    return e->scaled[k];",
+        "}",
+        "int nk_enh_ready(unsigned site) {",
+        "    NkEnhSite *e = &nk_enh_sites[site];",
+        "    unsigned k;",
+        "    for (k = 0; k < e->nreq; k++) {",
+        "        const NkEnhSite *r = &nk_enh_sites[e->req[k]];",
+        "        if (r->applied == 0u) {",
+        "            if (!e->gated) {",
+        "                e->gated = 1;",
+        '                fprintf(stderr, "ENHANCEMENT_SITE_GATED: site %s at 0x%08x runs stock: %s has not applied\\n", '
+        "e->id, (unsigned)e->pc, r->id);",
+        "            }",
+        "            return 0;",
+        "        }",
+        "    }",
+        "    return 1;",
+        "}",
+        "static void nk_enh_report_unreached(void) {",
+        "    static int reported;",
+        "    unsigned i;",
+        "    if (nk_enh_stopped || reported) return;",
+        "    reported = 1;",
+        "    for (i = 0; i < sizeof nk_enh_sites / sizeof nk_enh_sites[0]; i++) {",
+        "        const NkEnhSite *e = &nk_enh_sites[i];",
+        "        if (e->nstock > 0u && e->applied == 0u)",
+        '            fprintf(stderr, "ENHANCEMENT_DATA_SITE_NOT_REACHED: site %s at 0x%08x stored no value '
+        'in this run; whatever it should have rescaled stayed stock\\n", e->id, (unsigned)e->pc);',
+        "    }",
+        "}",
+        "/* With the toggle on, a store site that never runs is reported when the process ends:",
+        " * at an ordinary exit (atexit) and on the runtime's _Exit paths (sr_at_process_end). */",
+        "void sr_at_process_end(void (*report)(void));",
+        "void nk_enh_sites_start(void) {",
+        "    static int registered;",
+        "    if (nk_enhancement_on() && !registered) {",
+        "        registered = 1;",
+        "        (void)atexit(nk_enh_report_unreached);",
+        "        sr_at_process_end(nk_enh_report_unreached);",
+        "    }",
+        "}",
+        "/* End of enhancement store sites. */",
+        "",
+    ]
+    return out
+
+
+def _number_enhancement_store_sites() -> None:
+    """Number the resolved sites that keep run-time state; their rewrites carry the index."""
+    ENHANCEMENT_STORE_SITES.clear()
+    index: dict[str, int] = {}
+    for addr, site in sorted(ENHANCEMENT_SITES.items()):
+        rw = site["rewrite"]
+        if "stock_values" not in rw and "requires" not in rw:
+            continue
+        if site["id"] not in index:
+            index[site["id"]] = len(ENHANCEMENT_STORE_SITES)
+            ENHANCEMENT_STORE_SITES.append({
+                "id": site["id"], "pc": addr, "float": rw["kind"] == "scale_f_store",
+                "pairs": [tuple(pair) for pair in rw.get("stock_values", ())],
+                "requires": list(rw.get("requires", ())),
+            })
+            for note in enhancement_package.store_value_overlaps(site["id"], rw):
+                sys.stderr.write(f"warning: enhancement {note}\n")
+        rw["site_index"] = index[site["id"]]
+
+
 def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), renames=None,
                        enhancement=False):
     """Write the shared generated declarations with the runtime ABI contract."""
@@ -972,6 +1111,9 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
             f.write("extern uint32_t nk_enhancement_updates;\n")
             f.write("static inline int nk_enhancement_gate_30hz(void) "
                     "{ return (nk_enhancement_updates & 1u) == 0u; }\n")
+            if ENHANCEMENT_STORE_SITES:
+                f.write("uint32_t nk_enh_store(unsigned site, uint32_t bits);\n")
+                f.write("int nk_enh_ready(unsigned site);\n")
         f.write("#endif\n")
 
 
@@ -1855,6 +1997,32 @@ _VFPU9_INTERP_ROUTED = {
 }
 
 
+# vqmul.q and vcrsp.t lanes as (sign, S lane, T lane) terms, in source order. The emitted
+# lane is a left-to-right chain of sr_vf_* calls (src/rt/recomp.h), the same chain
+# sr_vfpu_interp evaluates, so both lanes return one NaN word (issue #326).
+_VQMUL_TERMS = (
+    ((1, 0, 3), (1, 1, 2), (-1, 2, 1), (1, 3, 0)),
+    ((-1, 0, 2), (1, 1, 3), (1, 2, 0), (1, 3, 1)),
+    ((1, 0, 1), (-1, 1, 0), (1, 2, 3), (1, 3, 2)),
+    ((-1, 0, 0), (-1, 1, 1), (-1, 2, 2), (1, 3, 3)),
+)
+_VCRSP_TERMS = (
+    ((1, 1, 2), (-1, 2, 1)),
+    ((1, 2, 0), (-1, 0, 2)),
+    ((1, 0, 1), (-1, 1, 0)),
+)
+
+
+def _vf_chain(terms):
+    sign, i, j = terms[0]
+    acc = f"sr_vf_mul({'-' if sign < 0 else ''}_s[{i}],_t[{j}])"
+    for sign, i, j in terms[1:]:
+        # Each helper is written as a call literal so tools/recomp_helper_inventory.py sees it.
+        call = "sr_vf_add(" if sign > 0 else "sr_vf_sub("
+        acc = f"{call}{acc},sr_vf_mul(_s[{i}],_t[{j}]))"
+    return acc
+
+
 def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
     # VFPU memory forms under --lle-cpu use the same sr_cpu_guard_access() call
     # as _lle_access_stmt() (spec 3.3, runs PSP-A3-08..15): lv.s/sv.s width 4,
@@ -2252,12 +2420,12 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             writes.append(f"float _sc = s->v[{scalar_vidx}];")
             for row in range(side - 1):
                 for col in range(side):
-                    writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * _sc;")
+                    writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = sr_vf_mul(s->v[{mreg_index(vs, side, col, row)}], _sc);")
             last_row_vs = [mreg_index(vs, side, col, side - 1) for col in range(side)]
             last_row_vd = [mreg_index(vd, side, col, side - 1) for col in range(side)]
             writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
             writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
-            writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
+            writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = sr_vf_mul(_s[_i], _t[_i]);")
             writes.append(_nanv(addr, "vmscl", vd, "_d", side, "_s", side, "_t", side))
             writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
             return "{ " + " ".join(writes) + _EAT + " }", None, 0
@@ -2267,17 +2435,14 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         if n == 4:
             body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},4,s->vfpuCtrl[0]); "
                     f"sr_vread(_t,s,{_arr(ti)},4,s->vfpuCtrl[1]); "
-                    f"_d[0]=_s[0]*_t[3]+_s[1]*_t[2]-_s[2]*_t[1]+_s[3]*_t[0]; "
-                    f"_d[1]=-_s[0]*_t[2]+_s[1]*_t[3]+_s[2]*_t[0]+_s[3]*_t[1]; "
-                    f"_d[2]=_s[0]*_t[1]-_s[1]*_t[0]+_s[2]*_t[3]+_s[3]*_t[2]; "
-                    f"_d[3]=-_s[0]*_t[0]-_s[1]*_t[1]-_s[2]*_t[2]+_s[3]*_t[3]; "
+                    + "".join(f"_d[{lane}]={_vf_chain(terms)}; " for lane, terms in enumerate(_VQMUL_TERMS))
                     + _nanv(addr, "vqmul.q", vd, "_d", 4, "_s", 4, "_t", 4)
                     + f"sr_vwrite(s,{_arr(di)},_d,4,s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         if n == 3:
             body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},3,s->vfpuCtrl[0]); "
                     f"sr_vread(_t,s,{_arr(ti)},3,s->vfpuCtrl[1]); "
-                    f"_d[0]=_s[1]*_t[2]-_s[2]*_t[1]; _d[1]=_s[2]*_t[0]-_s[0]*_t[2]; _d[2]=_s[0]*_t[1]-_s[1]*_t[0]; "
+                    + "".join(f"_d[{lane}]={_vf_chain(terms)}; " for lane, terms in enumerate(_VCRSP_TERMS))
                     + _nanv(addr, "vcrsp.t", vd, "_d", 3, "_s", 3, "_t", 3)
                     + f"sr_vwrite(s,{_arr(di)},_d,3,s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
@@ -2306,11 +2471,13 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         return "{ " + " ".join(lines) + " }", None, 0
     if (op == 0x18 and sub in (0, 1, 7)) or (op == 0x19 and sub == 0):
         ti = vreg_indices(vt, n)
-        oper = {(0x18, 0): "+", (0x18, 1): "-", (0x18, 7): "/", (0x19, 0): "*"}[(op, sub)]
+        # Call literals, so tools/recomp_helper_inventory.py sees every helper the emitter writes.
+        call = {(0x18, 0): "sr_vf_add(", (0x18, 1): "sr_vf_sub(", (0x18, 7): "sr_vf_div(",
+                (0x19, 0): "sr_vf_mul("}[(op, sub)]
         body = (f"float _s[4],_t[4],_d[4]; "
                 f"sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"for(int _i=0;_i<{n};_i++) _d[_i]=_s[_i]{oper}_t[_i]; "
+                f"for(int _i=0;_i<{n};_i++) _d[_i]={call}_s[_i],_t[_i]); "
                 + _nanv(addr, _BINOP_NAME[(op, sub)], vd, "_d", n, "_s", n, "_t", n)
                 + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
@@ -2319,7 +2486,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         dst = vreg_indices(vd, 1)[0]
         body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"float _d=0.0f; for(int _i=0;_i<{n};_i++) _d+=_s[_i]*_t[_i]; "
+                f"float _d=0.0f; for(int _i=0;_i<{n};_i++) _d=sr_vf_add(_d,sr_vf_mul(_s[_i],_t[_i])); "
                 f"float _dd[1]={{_d}};"
                 + _nanv(addr, "vdot.s", vd, "_dd", 1, "_s", n, "_t", n)
                 + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
@@ -2329,8 +2496,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         dst = vreg_indices(vd, 1)[0]
         body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"float _d=0.0f; for(int _i=0;_i<{n - 1};_i++) _d+=_s[_i]*_t[_i]; "
-                f"_d+=1.0f*_t[{n - 1}]; _d=isnan(_d)?fabsf(_d):_d; "
+                f"float _d=0.0f; for(int _i=0;_i<{n - 1};_i++) _d=sr_vf_add(_d,sr_vf_mul(_s[_i],_t[_i])); "
+                f"_d=sr_vf_add(_d,sr_vf_mul(1.0f,_t[{n - 1}])); _d=isnan(_d)?fabsf(_d):_d; "
                 f"float _dd[1]={{_d}};"
                 + _nanv(addr, "vhdp.s", vd, "_dd", 1, "_s", n, "_t", n)
                 + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
@@ -2341,7 +2508,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         ti = vreg_indices(vt, n)
         di = vreg_indices(vd, n)
         ss, ts = (1, 2, 0, 3), (2, 0, 1, 3)
-        muls = " ".join(f"_d[{i}]=_s[{ss[i]}]*_t[{ts[i]}];" for i in range(n))
+        muls = " ".join(f"_d[{i}]=sr_vf_mul(_s[{ss[i]}],_t[{ts[i]}]);" for i in range(n))
         body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); {muls} "
                 + _nanv(addr, "vcrs.t", vd, "_d", n, "_s", n, "_t", n)
@@ -2352,16 +2519,15 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         lines = []
         for a in range(side):
             for b in range(side):
-                # Accumulate into a local float with one += per term, exactly
-                # matching sr_vfpu_interp's vmmul loop shape. A single chained
-                # expression (0.0f+t0+t1+...) compiles to a different addss
-                # operand order at -O0, and x86-64 SSE selects the *first* NaN
-                # source on NaN+NaN, so the two paths can pick different NaN
-                # payloads for exotic inputs (issue #40). Same term order, so
-                # finite results are bit-identical.
+                # Accumulate into a local float one term at a time, in the same
+                # term order as sr_vfpu_interp's vmmul loop, through the sr_vf_*
+                # helpers: x86-64 SSE keeps the *first* NaN source on NaN+NaN and
+                # an optimiser may swap the operands of a plain + or *, so the two
+                # paths could keep different NaN payloads for exotic inputs (issue
+                # #40 at -O0, issue #326 at -O1/-O2). Finite results are unchanged.
                 lines.append(f"float _m{a}_{b}=0.0f;")
                 for c in range(side):
-                    lines.append(f"_m{a}_{b}+=s->v[{mreg_index(vs, side, b, c)}]*s->v[{mreg_index(vt, side, a, c)}];")
+                    lines.append(f"_m{a}_{b}=sr_vf_add(_m{a}_{b},sr_vf_mul(s->v[{mreg_index(vs, side, b, c)}],s->v[{mreg_index(vt, side, a, c)}]));")
         writes = " ".join(f"s->v[{mreg_index(vd, side, a, b)}]=_m{a}_{b};"
                           for a in range(side) for b in range(side))
         return "{ " + " ".join(lines) + " " + _nan_matrix(
@@ -2382,9 +2548,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             # vmmul comment above for the NaN payload rationale, issue #40).
             lines.append(f"float _v{i}=0.0f;")
             for k in range(tn):
-                lines.append(f"_v{i}+=s->v[{mreg_index(vs, side, i, k)}]*s->v[{ti[k]}];")
+                lines.append(f"_v{i}=sr_vf_add(_v{i},sr_vf_mul(s->v[{mreg_index(vs, side, i, k)}],s->v[{ti[k]}]));")
             if ins >= n:
-                lines.append(f"_v{i}+=s->v[{mreg_index(vs, side, i, ins)}];")
+                lines.append(f"_v{i}=sr_vf_add(_v{i},s->v[{mreg_index(vs, side, i, ins)}]);")
         writes = " ".join(f"s->v[{di[i]}]=_v{i};" for i in range(side))
         return "{ " + " ".join(lines) + " " + _nan_matrix(
             addr, "vtfm", vd,
@@ -2396,7 +2562,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         scalar = vreg_indices(vt, 1)[0]
         body = (f"float _s[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"float _sc=s->v[{scalar}]; "
-                f"for(int _i=0;_i<{n};_i++) _d[_i]=_s[_i]*_sc; "
+                f"for(int _i=0;_i<{n};_i++) _d[_i]=sr_vf_mul(_s[_i],_sc); "
                 + _nanv(addr, "vscl.s", vd, "_d", n, "_s", n, "(&_sc)", 1)
                 + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
@@ -2408,12 +2574,12 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         writes.append(f"float _sc = s->v[{scalar_vidx}];")
         for row in range(side - 1):
             for col in range(side):
-                writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * _sc;")
+                writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = sr_vf_mul(s->v[{mreg_index(vs, side, col, row)}], _sc);")
         last_row_vs = [mreg_index(vs, side, col, side - 1) for col in range(side)]
         last_row_vd = [mreg_index(vd, side, col, side - 1) for col in range(side)]
         writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
         writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
-        writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
+        writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = sr_vf_mul(_s[_i], _t[_i]);")
         writes.append(_nanv(addr, "vmscl", vd, "_d", side, "_s", side, "_t", side))
         writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
         return "{ " + " ".join(writes) + _EAT + " }", None, 0
@@ -5099,6 +5265,7 @@ def _load_enhancement_package(elf, known, symbols, enhancement_pkg_path, enhance
     ENHANCEMENT_APPLIED.clear()
     ENHANCEMENT_DATA_PATCHES.clear()
     ENHANCEMENT_DATA_FILES.clear()
+    ENHANCEMENT_STORE_SITES.clear()
     if enhancement_pkg_path is not None:
         import hashlib
         from pathlib import Path
@@ -5142,6 +5309,7 @@ def _load_enhancement_package(elf, known, symbols, enhancement_pkg_path, enhance
                         f"site {site['id']}: only a jal call site can be rewritten among "
                         "control transfers (fail-closed refusal)"
                     )
+            _number_enhancement_store_sites()
             boundary = enhancement_package.verify_and_resolve_update_boundary(
                 pkg_validated,
                 symbol_to_addr=sym_map,
@@ -5281,6 +5449,7 @@ def _registration_lines(elf, ranges, known, base_name, num_files, emitted, resum
             "uint32_t nk_enhancement_updates;",
             "",
         ]
+        main_out += _enhancement_store_lines()
         main_out += _enhancement_data_lines()
     census_entries = sorted({a for a in emitted if a not in resume_owners})
     if stack_census:
@@ -5388,6 +5557,8 @@ def _registration_lines(elf, ranges, known, base_name, num_files, emitted, resum
     )
     if ENHANCEMENT_PKG_META is not None:
         main_out.append("    if (nk_enhancement_on()) nk_enhancement_apply_data();")
+        if ENHANCEMENT_STORE_SITES:
+            main_out.append("    nk_enh_sites_start();")
     main_out.append(f'    fprintf(stderr, "sr_register_all: starting {len(emitted)} registrations\\n");')
     for i in range(num_files):
         main_out.append(f"    sr_register_chunk_{i}();")

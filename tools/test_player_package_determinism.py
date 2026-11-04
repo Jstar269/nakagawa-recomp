@@ -195,11 +195,11 @@ TITLE_IDENTIFIED = MANIFEST_IDENTIFIED + ("THIRD_PARTY_NOTICES.txt", "SOURCE.txt
 # profile's entries name the artifact stem, the guest's base, the codegen options, the
 # profile argument and any extra modules. This fixture has no extra module and no
 # profile, so the file names no path and two routes must write it byte for byte. The
-# PSMF media selftest's response file is written only by that selftest's link, which no
-# package build runs. With the path echoes above, these are every such write, which
+# PSMF media selftests' response files are written only by those selftests' links, which
+# no package build runs. With the path echoes above, these are every such write, which
 # TestMakeWrittenFilesAreClassified checks on every host.
 MAKE_WRITTEN_IDENTICAL = (".codegen-profile-entries",)
-MAKE_WRITTEN_UNPACKAGED = ("psmf_media_selftest.rsp",)
+MAKE_WRITTEN_UNPACKAGED = ("psmf_media_selftest.rsp", "psmf_media_focused_selftest.rsp")
 
 
 def path_echo_content(rules: "PackageNormalizer", name: str, data: bytes) -> bytes:
