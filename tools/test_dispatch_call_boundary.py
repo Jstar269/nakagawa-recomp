@@ -633,6 +633,26 @@ def _inline_call_into_a_piece() -> tuple[int, ...]:
     return words
 
 
+def _frameless_inline_call() -> tuple[int, ...]:
+    """F calls H; H has no frame and calls K, which returns into H at H's entry $sp.
+
+    H keeps its return address in t0 and leaves by `jr $t0`. K's `jr $ra` lands at H's
+    entry $sp, as a return out of H would, but it returns from a call H made. v0 = 0x111.
+    """
+    h, k = 0x102C, 0x1040
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1010 F
+        _jal(h), _addiu(_V0, 0, 1),                          # 0x1018
+        _lw(_RA, 0x1C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _addu(_T0, _RA, 0),                                  # 0x102c H
+        _jal(k), _NOP,                                       # 0x1030
+        _jr(_T0), _addiu(_V0, _V0, 0x100),                   # 0x1038
+        _addiu(_V0, _V0, 0x10), _jr(_RA), _NOP,              # 0x1040 K
+    ])
+    assert len(words) == (k + 12 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
 def _alloca_switch_chain(*, reach: str) -> tuple[int, ...]:
     """A function that frees an alloca from memory, entered through a switch case.
 
@@ -1237,11 +1257,16 @@ def _build_depth_probe(
 
 
 def _run_depth_probe(exe: Path, iterations: int,
-                     *mode: str) -> tuple[int, str, dict[str, int]]:
-    run = subprocess.run(
-        [str(exe), str(iterations), *mode],
-        cwd=ROOT, capture_output=True, text=True, timeout=120,
-    )
+                     *mode: str, timeout: int = 120) -> tuple[int, str, dict[str, int]]:
+    """Run the probe. A run that does not stop within ``timeout`` seconds is a failed run
+    (rc -1, ``PROBE_NO_STOP``), so a hang fails its test instead of erroring it (#2016)."""
+    try:
+        run = subprocess.run(
+            [str(exe), str(iterations), *mode],
+            cwd=ROOT, capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return -1, f"PROBE_NO_STOP: the run did not stop within {timeout} s", {}
     fields: dict[str, int] = {}
     for line in run.stdout.splitlines():
         if line.startswith(("DEPTH_PROBE ", "INTERP_PROBE ")):
@@ -1561,14 +1586,14 @@ class StackCensusPipelineTests(unittest.TestCase):
 class GeneratedCallDepthTests(unittest.TestCase):
     """Generated code on a production-size guest fiber, measured at each guest entry."""
 
-    def _probe(self, words, iterations, *, codegen_args=(), vector=None):
+    def _probe(self, words, iterations, *, codegen_args=(), vector=None, timeout=120):
         with scratch_dir.TemporaryDirectory(prefix="depth_probe_") as tmp:
             work = Path(tmp)
             exe, output = _build_depth_probe(words, work, codegen_args=codegen_args,
                                              vector=vector)
             self.assertIsNotNone(exe, output)
             generated = (work / "probe_0.c").read_text(encoding="utf-8")
-            results = [_run_depth_probe(exe, n) for n in iterations]
+            results = [_run_depth_probe(exe, n, timeout=timeout) for n in iterations]
         return generated, results
 
     def test_linked_recursion_native_depth_tracks_guest_depth(self):
@@ -1725,13 +1750,13 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
 
     def _assert_mutant_fails(self, name, words, iterations, mutate, check, codegen_args=(),
-                             vector=None):
+                             vector=None, timeout=120):
         with scratch_dir.TemporaryDirectory(prefix="depth_mutant_") as tmp:
             work = Path(tmp)
             exe, output = _build_depth_probe(words, work, mutate=mutate, codegen_args=codegen_args,
                                              vector=vector)
             self.assertIsNotNone(exe, f"{name}: MUTANT_BUILD_FAILED (not a semantic kill)\n{output}")
-            results = [_run_depth_probe(exe, n) for n in iterations]
+            results = [_run_depth_probe(exe, n, timeout=timeout) for n in iterations]
         self.assertTrue(check(results), f"{name}: MUTANT_SURVIVED {results}")
         print(f"{name}: MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED")
 
@@ -1828,6 +1853,58 @@ class GeneratedCallDepthTests(unittest.TestCase):
             {"recomp.c": ("    if (returned->call_sp > sp) return 0;", "    return 0;")},
             lambda r: "AOT_RETURN_TARGET_MISMATCH" in r[0][1] and r[0][2].get("v0") != 0x107,
         )
+
+    def test_an_interpreted_longjmp_reaches_the_setjmp_frame(self):
+        # longjmp runs in the interpreter, called by G or tail-called by H. Its `jr $ra` into
+        # F's body is guest control flow the interpreter follows; F's own return then goes
+        # past the call the interpreter runs for, to the entry's resume, where the frames in
+        # between unwind as they do natively. Before (#2016): the interpreter ran on into the
+        # entry's continuation, whose `jr $ra` jumped to itself, and the run never stopped.
+        interpreted_longjmp = ("--omit-aot=0x00001070",)
+        for name, words in (
+                ("called", _longjmp_into_live_frame()),
+                ("tail-called", _longjmp_into_live_frame(tail_called_plainly=True)),
+                ("tail-called-from-alloca", _longjmp_into_live_frame(tail_called_from_alloca=True))):
+            with self.subTest(name):
+                _generated, results = self._probe(words, (0,), codegen_args=interpreted_longjmp,
+                                                  timeout=30)
+                rc, output, fields = results[0]
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v0"), 0x107, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+                self.assertGreater(fields.get("unwinds", 0), 0, output)
+        # L1: the interpreter runs on past its call, as before.
+        self._assert_mutant_fails(
+            "L1-interpreted-return-past-its-call-runs-on", _longjmp_into_live_frame(), (0,),
+            {"guest_interp.c": ("    return sr_aot_return_boundary_encloses_resume(s, target, sp);",
+                                "    return 0;")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v0") != 0x107,
+            codegen_args=interpreted_longjmp, timeout=30,
+        )
+        # L2: only the innermost live call counts. The entry's call to F lies below the site
+        # boundary G's call begins, so F's return is not seen.
+        self._assert_mutant_fails(
+            "L2-only-the-innermost-call-is-searched", _longjmp_into_live_frame(), (0,),
+            {"recomp.c": ("        if (enclosing->has_resume_pc && enclosing->resume_pc == target &&",
+                          "        if (index == sr_aot_return_boundary_depth && enclosing->has_resume_pc &&"
+                          " enclosing->resume_pc == target &&")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v0") != 0x107,
+            codegen_args=interpreted_longjmp, timeout=30,
+        )
+
+    def test_a_frameless_interpreted_body_returns_from_its_own_inline_call(self):
+        # Control: H and K both run in the interpreter, H with no frame. K's return lands at
+        # H's entry $sp, where a return out of H would leave it, but at no live call's resume
+        # PC: it is K's return to H, which the interpreter follows. A rule keyed on $sp alone
+        # would take it for a return past H's call.
+        frameless = ("--omit-aot=0x0000102c,0x00001040",)
+        _generated, results = self._probe(_frameless_inline_call(), (0,), codegen_args=frameless,
+                                          timeout=30)
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 0x111, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        self.assertEqual(fields.get("unwinds", 0), 0, output)
 
     def test_own_slot_mutant_fails_for_its_semantic(self):
         # S1: reloading the frame's own slot counts as a longjmp again: F records no restore.
