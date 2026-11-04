@@ -2158,7 +2158,9 @@ static int hle_run(void)
    pspautotests measured them (utility/dialog/status.expected), so they show whether the
    context answers like a game. Netconf, gamedata install and game sharing are the unmeasured
    types. Each row's words: GetStatus, Update(1), GetStatus, ShutdownStart, GetStatus,
-   ShutdownStart again, GetStatus. */
+   ShutdownStart again, GetStatus. The imports are named nkUtil* (hle_utility_imports.S):
+   PSPSDK's headers declare some of these calls as returning void, but each returns a status
+   word, which is what this case records. */
 
 typedef struct HleUtilNone {
     const char *case_id;
@@ -2167,33 +2169,33 @@ typedef struct HleUtilNone {
     int (*shutdown)(void);
 } HleUtilNone;
 
-int sceUtilitySavedataGetStatus(void);
-int sceUtilitySavedataUpdate(int);
-int sceUtilitySavedataShutdownStart(void);
-int sceUtilityMsgDialogGetStatus(void);
-int sceUtilityMsgDialogUpdate(int);
-int sceUtilityMsgDialogShutdownStart(void);
-int sceUtilityNetconfGetStatus(void);
-int sceUtilityNetconfUpdate(int);
-int sceUtilityNetconfShutdownStart(void);
-int sceUtilityGamedataInstallGetStatus(void);
-int sceUtilityGamedataInstallUpdate(int);
-int sceUtilityGamedataInstallShutdownStart(void);
-int sceUtilityGameSharingGetStatus(void);
-int sceUtilityGameSharingUpdate(int);
-int sceUtilityGameSharingShutdownStart(void);
+int nkUtilSavedataGetStatus(void);
+int nkUtilSavedataUpdate(int);
+int nkUtilSavedataShutdownStart(void);
+int nkUtilMsgDialogGetStatus(void);
+int nkUtilMsgDialogUpdate(int);
+int nkUtilMsgDialogShutdownStart(void);
+int nkUtilNetconfGetStatus(void);
+int nkUtilNetconfUpdate(int);
+int nkUtilNetconfShutdownStart(void);
+int nkUtilGamedataInstallGetStatus(void);
+int nkUtilGamedataInstallUpdate(int);
+int nkUtilGamedataInstallShutdownStart(void);
+int nkUtilGameSharingGetStatus(void);
+int nkUtilGameSharingUpdate(int);
+int nkUtilGameSharingShutdownStart(void);
 
 static const HleUtilNone k_hle_util_none[] = {
-    {"utility-none-savedata", sceUtilitySavedataGetStatus, sceUtilitySavedataUpdate,
-     sceUtilitySavedataShutdownStart},
-    {"utility-none-msgdialog", sceUtilityMsgDialogGetStatus, sceUtilityMsgDialogUpdate,
-     sceUtilityMsgDialogShutdownStart},
-    {"utility-none-netconf", sceUtilityNetconfGetStatus, sceUtilityNetconfUpdate,
-     sceUtilityNetconfShutdownStart},
-    {"utility-none-gamedata", sceUtilityGamedataInstallGetStatus,
-     sceUtilityGamedataInstallUpdate, sceUtilityGamedataInstallShutdownStart},
-    {"utility-none-sharing", sceUtilityGameSharingGetStatus, sceUtilityGameSharingUpdate,
-     sceUtilityGameSharingShutdownStart},
+    {"utility-none-savedata", nkUtilSavedataGetStatus, nkUtilSavedataUpdate,
+     nkUtilSavedataShutdownStart},
+    {"utility-none-msgdialog", nkUtilMsgDialogGetStatus, nkUtilMsgDialogUpdate,
+     nkUtilMsgDialogShutdownStart},
+    {"utility-none-netconf", nkUtilNetconfGetStatus, nkUtilNetconfUpdate,
+     nkUtilNetconfShutdownStart},
+    {"utility-none-gamedata", nkUtilGamedataInstallGetStatus,
+     nkUtilGamedataInstallUpdate, nkUtilGamedataInstallShutdownStart},
+    {"utility-none-sharing", nkUtilGameSharingGetStatus, nkUtilGameSharingUpdate,
+     nkUtilGameSharingShutdownStart},
 };
 
 static void hle_util_none(const HleUtilNone *d)
