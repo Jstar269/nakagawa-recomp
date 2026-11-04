@@ -248,6 +248,22 @@ class AppIdentityTests(unittest.TestCase):
         self.assertEqual(stage_install.APP_DESKTOP_ID, launcher["DESKTOP_ID"])
         self.assertEqual(stage_install.DESKTOP_ENTRY_NAME, launcher["DESKTOP_ID"] + ".desktop")
 
+    def test_launcher_sets_the_identity_before_anything_else_in_main(self):
+        # The launcher's process takes the shared ID (player_host.c) as main()'s first act after
+        # the UTF-8 setup, before any window or SDL message box can open under another ID.
+        host = (stage_install.ROOT / "src" / "player" / "player_host.c").read_text(encoding="utf-8")
+        body = host[host.index("void player_host_set_app_identity(void) {"):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn('SetCurrentProcessExplicitAppUserModelID(L"" NK_APP_USER_MODEL_ID)', body)
+        self.assertIn("SDL_SetAppMetadata(NK_APP_NAME, NULL, NK_APP_DESKTOP_ID)", body)
+        main = (stage_install.ROOT / "src" / "player" / "main.c").read_text(encoding="utf-8")
+        start = main[main.index("int main(int argc, char *argv[]) {"):]
+        calls = [line.strip() for line in start.splitlines()[1:]
+                 if line.strip() and not line.strip().startswith(("/*", "*", "//"))
+                 and not line.strip().endswith("*/")]
+        self.assertEqual(calls[:2], ["(void)nk_platform_init_utf8_main(&argc, &argv);",
+                                     "player_host_set_app_identity();"])
+
     def test_app_user_model_id_follows_the_windows_rules(self):
         # Windows: at most 128 characters, no spaces, dot-separated sections.
         value = stage_install.APP_USER_MODEL_ID
