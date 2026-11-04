@@ -227,7 +227,7 @@ replacement by an LLE path that makes the component unnecessary ·
   relocation application are public-format facts; NID/import-table
   resolution cites PSPSDK structures and the project's NID corpus
   (`tools/nid_corpus.json`, IND-1). The built-in game decryption
-  (`src/core/nk_psp_*`, #295) is a separate derived-translated family
+  (`src/core/nk_psp_*`, #1494) is a separate derived-translated family
   (`src/core/PROVENANCE.md`); this campaign tracks loader provenance and
   rewrite scope only.
 - **G4 PGF → (a) + (a).** Both the publishable reader (against `pgf_api.h`,
@@ -331,7 +331,11 @@ replacement by an LLE path that makes the component unnecessary ·
 
 ## 5. Clean-room protocol for AI-agent work
 
-Binding on every (a) item. It implements `INDEPENDENCE_MODEL.md` Phases
+No item is required to follow this protocol. Under the Re-scope note above and `AGENTS.md`
+section 4, inherited code is replaced only when evidence shows it is wrong or an LLE path makes it
+unnecessary, and a replacement may vendor or adapt compatible source. The protocol stays as a
+reference for work that wants a "clean-room" label, which still needs a trusted record that
+supports it (`AGENTS.md` section 4). It implements `INDEPENDENCE_MODEL.md` Phases
 A–E with the AI-specific controls the model demands (upstream source in
 the authoring context must be recorded; paraphrase is derivation whoever
 typed it).

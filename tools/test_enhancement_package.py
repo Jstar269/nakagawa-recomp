@@ -17,11 +17,11 @@ Tests fail-closed boundaries:
 from __future__ import annotations
 
 import copy
+import decimal
 import hashlib
 import itertools
 from io import StringIO
 import json
-import math
 import os
 from pathlib import Path
 import random
@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import enhancement_package
 from enhancement_package import (
     AOT_ENHANCEMENT_PACKAGE_EPOCH,
     HOOK_KEYS,
@@ -52,6 +53,7 @@ from enhancement_package import (
     VALID_CATEGORIES,
     EnhancementPackageError,
     _gpr_written,
+    _scale_value,
     _validate_site_extras,
     compute_stock_words_digest,
     draft_package_declaration,
@@ -70,6 +72,15 @@ from nk_core import package_cache
 
 SCHEMA_PATH = ROOT / "assets" / "enhancement_package.schema.json"
 GCC = shutil.which("gcc") or shutil.which("cc")
+
+
+def _f32_decay_reference(k: float) -> int:
+    """The f32 bits nearest 1 - sqrt(1 - k), evaluated to 60 decimal digits."""
+    with decimal.localcontext() as ctx:
+        ctx.prec = 60
+        exact = 1 - (1 - decimal.Decimal(k)).sqrt()
+    return _bits_of(float(exact))
+
 
 
 class TestEnhancementPackageSchema(unittest.TestCase):
@@ -1103,6 +1114,8 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         self.assertEqual(plan("step_x0.5", 0x24840001), {"kind": "gate"})  # addiu a0,a0,1
         self.assertEqual(plan("count_x2", 0x2484FFFF), {"kind": "gate"})  # addiu a0,a0,-1
         self.assertEqual(plan("retention_m_to_sqrt(m)", 0x3C023F40)["word"], 0x3C023F5E)
+        # k = 2^-126: 1 - sqrt(1 - k) cancels to 0 in double; the result is k / 2 = 2^-127
+        self.assertEqual(plan("decay_k_to_1-sqrt(1-k)", 0x3C020080)["word"], 0x3C020040)
         self.assertEqual(plan("decay_k_to_1-sqrt(1-k)", 0xC4430010),  # lwc1 f3: map the loaded factor
                          {"kind": "map_f_reg", "reg": 3, "map": "decay"})
         self.assertEqual(plan("retention_m_to_sqrt(m)", 0xC4430010),
@@ -1321,23 +1334,27 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         self.assertEqual(names, {"synth_vblank_wait": 0x1100})
 
     def test_mapped_factor_runs_only_when_enabled_and_inside_the_unit_interval(self) -> None:
-        """An lwc1 factor is mapped after the stock load, behind the toggle, and only inside (0, 1)."""
+        """An lwc1 factor is mapped after the stock load, behind the toggle, and only inside (0, 1);
+        outside it keeps its stock value and the site reports it."""
         lwc1 = 0xC4430010  # lwc1 $f3, 0x10($v0)
         saved = codegen.ENHANCEMENT_SITES
         try:
-            for kind, expr in (("decay", "(float)(1.0 - sqrt(1.0 - (double)s->f[3]))"),
+            for kind, expr in (("decay", "(float)((double)s->f[3] / (1.0 + sqrt(1.0 - (double)s->f[3])))"),
                                ("retention", "sqrtf(s->f[3])")):
                 with self.subTest(map=kind):
                     codegen.ENHANCEMENT_SITES = {
-                        0x1300: {"rewrite": {"kind": "map_f_reg", "reg": 3, "map": kind}}
+                        0x1300: {"id": "F3", "rewrite": {"kind": "map_f_reg", "reg": 3, "map": kind}}
                     }
                     codegen.ENHANCEMENT_APPLIED.clear()
                     line = codegen.normal_line(0x1300, lwc1, lle_cpu=False)
-                    enhanced, stock = line.split("else", 1)
+                    enhanced, stock = line.rsplit("else", 1)
                     self.assertIn("nk_enhancement_on()", enhanced)
-                    self.assertIn(f"if (s->f[3] > 0.0f && s->f[3] < 1.0f) {{ s->f[3] = {expr}; }}", enhanced)
+                    self.assertIn(f"if (s->f[3] > 0.0f && s->f[3] < 1.0f) {{ s->f[3] = {expr}; }} "
+                                  'else { static int nk_kept; nk_enhancement_factor_kept(&nk_kept, "F3", '
+                                  "0x00001300u, s->f[3]); }", enhanced)
                     self.assertLess(enhanced.index("s->fi[3]"), enhanced.index(expr))
-                    self.assertNotIn("sqrtf", stock)
+                    self.assertNotIn("sqrt", stock)
+                    self.assertNotIn("nk_enhancement_factor_kept", stock)
         finally:
             codegen.ENHANCEMENT_SITES = saved
             codegen.ENHANCEMENT_APPLIED.clear()
@@ -1351,11 +1368,12 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             for rewrite, expr in (({"kind": "scale_v_reg", "vreg": 39, "factor": 2.0}, f"s->v[{v}] *= 2.0f;"),
                                   ({"kind": "map_v_reg", "vreg": 39, "map": "decay"},
                                    f"if (s->v[{v}] > 0.0f && s->v[{v}] < 1.0f) "
-                                   f"{{ s->v[{v}] = (float)(1.0 - sqrt(1.0 - (double)s->v[{v}])); }}")):
+                                   f"{{ s->v[{v}] = (float)((double)s->v[{v}] / "
+                                   f"(1.0 + sqrt(1.0 - (double)s->v[{v}]))); }}")):
                 with self.subTest(kind=rewrite["kind"]):
-                    codegen.ENHANCEMENT_SITES = {0x1300: {"rewrite": rewrite}}
+                    codegen.ENHANCEMENT_SITES = {0x1300: {"id": "S131", "rewrite": rewrite}}
                     codegen.ENHANCEMENT_APPLIED.clear()
-                    enhanced, stock = codegen.normal_line(0x1300, lvs, lle_cpu=False).split("else", 1)
+                    enhanced, stock = codegen.normal_line(0x1300, lvs, lle_cpu=False).rsplit("else", 1)
                     self.assertIn(expr, enhanced)
                     self.assertLess(enhanced.index(f"s->vi[{v}] = MEM_R32("), enhanced.index(expr))
                     self.assertNotIn(f"s->v[{v}]", stock)
@@ -1365,13 +1383,19 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
 
     @unittest.skipUnless(GCC, "needs a host C compiler")
     def test_mapped_factor_values_match_the_lui_path(self) -> None:
-        """Compile the emitted map and run it: each result is the f32 that the lui path's double
-        formula rounds to, including factors so small that a float evaluation loses them."""
+        """Compile the emitted map and run it. Inside (0, 1) each result is bit for bit the f32 the
+        lui path's formula gives, and that is the f32 nearest the exact map down to the smallest
+        normal result; 1 - sqrt(1 - k) cancels to 0 there even in double. A subnormal result may
+        round once more, so it is within one step of the nearest. Outside (0, 1) the value keeps
+        its stock bits and the site reports once."""
         lwc1 = 0xC4430010  # lwc1 $f3, 0x10($v0)
         rng = random.Random(1932)
-        ks = [2.0 ** -25, 1e-7, 1e-4, 0.2, 0.5, 0.75, 0.999, struct.unpack("<f", bytes.fromhex("ffff7f3f"))[0]]
+        ks = [2.0 ** -25, 1e-7, 1e-4, 0.2, 0.5, 0.75, 0.999, _f32_of(0x3F7FFFFF),
+              1e-17, 1e-30, 2.0 ** -126, _f32_of(0x00000001), _f32_of(0x007FFFFF)]
         ks += [rng.random() for _ in range(2000)]
+        ks += [2.0 ** rng.uniform(-149, -20) for _ in range(500)]
         ks = [struct.unpack("<f", struct.pack("<f", k))[0] for k in ks]
+        outside = [0.0, 1.0, 1.5, -0.25, -0.0, _f32_of(0x7FC00000)]  # the last is a quiet NaN
         lvs = 0xC844C410  # lv.s S100.s, -0x3bf0($v0)
         v4 = codegen.vreg_indices(4, 1)[0]
         forms = (("map_f_reg", {"reg": 3}, lwc1, "s->f[3]"), ("map_v_reg", {"vreg": 4}, lvs, f"s->v[{v4}]"))
@@ -1380,22 +1404,29 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             for (rkind, operand, word, cell), kind in itertools.product(forms, ("decay", "retention")):
                 with self.subTest(rewrite=rkind, map=kind):
                     codegen.ENHANCEMENT_SITES = {
-                        0x1300: {"rewrite": {"kind": rkind, **operand, "map": kind}}
+                        0x1300: {"id": "K", "rewrite": {"kind": rkind, **operand, "map": kind}}
                     }
                     codegen.ENHANCEMENT_APPLIED.clear()
-                    enhanced = codegen.normal_line(0x1300, word, lle_cpu=False).split("else", 1)[0]
+                    enhanced = codegen.normal_line(0x1300, word, lle_cpu=False).rsplit("else", 1)[0]
                     mapped = enhanced[enhanced.index(f"if ({cell} >"):].rsplit("}", 1)[0]
+                    values = ks + outside
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         tmp = Path(tmp_dir)
-                        (tmp / "k.txt").write_text("\n".join(struct.pack("<f", k).hex() for k in ks),
+                        (tmp / "k.txt").write_text("\n".join(struct.pack("<f", k).hex() for k in values),
                                                    encoding="utf-8")
                         harness = tmp / "map.c"
                         harness.write_text(
                             "#include <math.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n"
                             "typedef struct { float f[32]; float v[128]; } S;\n"
+                            "static int reports;\n"
+                            "static void nk_enhancement_factor_kept(int *reported, const char *site, "
+                            "uint32_t pc, float value) {\n"
+                            "    (void)site; (void)pc; (void)value;\n"
+                            "    if (!*reported) { *reported = 1; reports++; }\n"
+                            "}\n"
                             "int main(int argc, char **argv) {\n"
                             "    FILE *in = fopen(argv[1], \"r\"); char hex[16]; S st, *s = &st;\n"
-                            "    if (!in) return 1;\n"
+                            "    if (argc < 2 || !in) return 1;\n"
                             "    while (fscanf(in, \"%15s\", hex) == 1) {\n"
                             "        uint8_t b[4]; uint32_t bits;\n"
                             "        for (int i = 0; i < 4; i++) sscanf(hex + 2 * i, \"%2hhx\", &b[i]);\n"
@@ -1403,6 +1434,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                             f"        {mapped}\n"
                             f"        memcpy(&bits, &{cell}, 4); printf(\"%08x\\n\", (unsigned)bits);\n"
                             "    }\n"
+                            "    printf(\"reports=%d\\n\", reports);\n"
                             "    fclose(in); return 0;\n"
                             "}\n",
                             encoding="utf-8",
@@ -1412,10 +1444,18 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                                         str(harness), "-lm"], check=True, capture_output=True, text=True)
                         out = subprocess.run([str(exe), str(tmp / "k.txt")], check=True, capture_output=True,
                                              text=True).stdout.split()
-                    for k, got in zip(ks, out, strict=True):
-                        exact = 1.0 - math.sqrt(1.0 - k) if kind == "decay" else math.sqrt(k)
-                        want = struct.unpack("<I", struct.pack("<f", exact))[0]
+                    self.assertEqual(out.pop(), "reports=1")
+                    transform = {"decay": "decay_k_to_1-sqrt(1-k)", "retention": "retention_m_to_sqrt(m)"}[kind]
+                    for k, got in zip(values, out, strict=True):
+                        if not 0.0 < k < 1.0:
+                            self.assertEqual(int(got, 16), struct.unpack("<I", struct.pack("<f", k))[0])
+                            continue
+                        want = struct.unpack("<I", struct.pack("<f", _scale_value(transform, k)))[0]
                         self.assertEqual(int(got, 16), want, f"k={k!r}")
+                        if kind == "decay":
+                            nearest = _f32_decay_reference(k)
+                            self.assertLessEqual(abs(want - nearest), 0 if nearest >= 0x00800000 else 1,
+                                                 f"k={k!r}")
         finally:
             codegen.ENHANCEMENT_SITES = saved
             codegen.ENHANCEMENT_APPLIED.clear()
@@ -1426,7 +1466,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         saved = (codegen.ENHANCEMENT_SITES, codegen.OPTIONS.lle_cpu)
         try:
             codegen.ENHANCEMENT_SITES = {
-                0x1300: {"rewrite": {"kind": "scale_f_store", "reg": 4, "factor": 0.5}}
+                0x1300: {"id": "F4", "rewrite": {"kind": "scale_f_store", "reg": 4, "factor": 0.5}}
             }
             codegen.ENHANCEMENT_APPLIED.clear()
             for lle in (False, True):
@@ -1452,6 +1492,9 @@ class TestEnhancementDataTransforms(unittest.TestCase):
         self.assertEqual(plan_data_value("step_x0.5", "u16", struct.pack("<H", 40)), struct.pack("<H", 20))
         self.assertEqual(plan_data_value("retention_m_to_sqrt(m)", "f32", struct.pack("<f", 0.25)),
                          struct.pack("<f", 0.5))
+        tiny = struct.unpack("<f", struct.pack("<f", 1e-30))[0]
+        self.assertEqual(plan_data_value("decay_k_to_1-sqrt(1-k)", "f32", struct.pack("<f", tiny)),
+                         struct.pack("<I", _f32_decay_reference(tiny)))
         for transform, dtype, raw in (
             ("step_x0.5", "s32", struct.pack("<i", 7)),          # odd count
             ("count_x2", "u8", struct.pack("<B", 200)),          # overflow
@@ -1975,6 +2018,252 @@ class TestEnhancementBuildPackageWiring(unittest.TestCase):
         path = self._write_pkg("pkg.json", sites=[])
         with self.assertRaises(package_cache.PackageCacheError):
             package_cache.enhancement_package_options({"ENHANCEMENT_PACKAGE": str(path)})
+
+
+def _sample_csv(path: Path, *, hz: int, seconds: int, columns: dict[str, Any]) -> None:
+    """Write a synthetic SR_SAMPLE_OUT file: one row per vblank, logic at `hz` updates a second.
+
+    `columns` maps a label to a function of (update count, vblank) giving the cell text.
+    """
+    lines = ["vblank,updates," + ",".join(columns)]
+    vblanks = round(seconds * 60000 / 1001)
+    for v in range(1, vblanks + 1):
+        n = (v * hz * 1001) // 60000
+        lines.append(f"{v},{n & 0xFFFFFFFF}," + ",".join(fn(n, v) for fn in columns.values()))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class TestEnhancementRateComparison(unittest.TestCase):
+    """Section 9.7: the side-by-side timing check of a stock and an enhanced run."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def _run(self, stock: dict[str, Any], enhanced: dict[str, Any], *extra: str,
+             enhanced_hz: int = 60, seconds: int = 60) -> tuple[int, str, dict[str, Any]]:
+        _sample_csv(self.tmp / "stock.csv", hz=30, seconds=seconds, columns=stock)
+        _sample_csv(self.tmp / "enh.csv", hz=enhanced_hz, seconds=seconds, columns=enhanced)
+        out = StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = enhancement_package.main(["--compare-rates", str(self.tmp / "stock.csv"), str(self.tmp / "enh.csv"),
+                                           "--json", str(self.tmp / "r.json"), *extra])
+        return rc, out.getvalue(), json.loads((self.tmp / "r.json").read_text(encoding="utf-8"))
+
+    def test_rescaled_events_match_and_pass(self) -> None:
+        # One serve every 45 stock updates; the package doubles the count, so every 90 enhanced updates.
+        rc, text, data = self._run({"serves": lambda n, v: str(n // 45)}, {"serves": lambda n, v: str(n // 90)},
+                                   "--event", "count:serves")
+        self.assertEqual(rc, 0, text)
+        self.assertIn("rates: PASS", text)
+        whole = data["report"]["phases"][0]
+        self.assertEqual(whole["logic"], "OK")
+        self.assertEqual(whole["events"][0]["verdict"], "PASS")
+        self.assertAlmostEqual(whole["events"][0]["ratio"], 1.0, delta=0.05)
+
+    def test_an_unrescaled_count_fails(self) -> None:
+        # A frame count the package missed: the event comes twice as often per second.
+        rc, text, data = self._run({"serves": lambda n, v: str(n // 45)}, {"serves": lambda n, v: str(n // 45)},
+                                   "--event", "count:serves")
+        self.assertEqual(rc, 1, text)
+        self.assertIn("rates: FAIL", text)
+        self.assertAlmostEqual(data["report"]["phases"][0]["events"][0]["ratio"], 2.0, delta=0.1)
+
+    def test_lcg_steps_are_counted_and_compared_with_the_declared_ratio(self) -> None:
+        a, c = 1103515245, 12345
+
+        def lcg(steps: int) -> str:
+            x = 7
+            for _ in range(steps):
+                x = (a * x + c) & 0xFFFFFFFF
+            return str(x)
+
+        cache: dict[int, str] = {}
+
+        def rolls(n: int, v: int) -> str:  # one roll per update
+            if n not in cache:
+                cache[n] = lcg(n)
+            return cache[n]
+
+        rc, text, data = self._run({"seed": rolls}, {"seed": rolls}, "--event", f"lcg:seed:{a}:{c}=2",
+                                   seconds=10)
+        self.assertEqual(rc, 0, text)
+        ev = data["report"]["phases"][0]["events"][0]
+        self.assertEqual((ev["stock"], ev["verdict"], ev["unresolved"]), (data["stock"]["phases"]["all"]["updates"],
+                                                                           "PASS", 0))
+        rc, text, _ = self._run({"seed": rolls}, {"seed": rolls}, "--event", f"lcg:seed:{a}:{c}", seconds=10)
+        self.assertEqual(rc, 1, text)
+
+    def test_an_lcg_jump_past_the_limit_is_unresolved_not_zero(self) -> None:
+        rc, text, data = self._run({"seed": lambda n, v: str(v * 977)}, {"seed": lambda n, v: str(v * 977)},
+                                   "--event", "lcg:seed:1103515245:12345", "--lcg-limit", "8", seconds=2)
+        self.assertEqual(rc, 1, text)
+        self.assertGreater(data["report"]["unresolved"], 0)
+
+    def test_slowed_logic_and_rare_events_are_incomplete_not_pass(self) -> None:
+        rc, text, data = self._run({"serves": lambda n, v: str(n // 45)}, {"serves": lambda n, v: str(n // 90)},
+                                   "--event", "count:serves", enhanced_hz=45)
+        self.assertEqual(rc, 2, text)
+        self.assertIn("rates: INCOMPLETE", text)
+        self.assertEqual(data["report"]["phases"][0]["logic"], "SLOWED")
+        rc, text, data = self._run({"rare": lambda n, v: str(n // 3000)}, {"rare": lambda n, v: str(n // 6000)},
+                                   "--event", "count:rare")
+        self.assertEqual(rc, 2, text)
+        self.assertEqual(data["report"]["phases"][0]["events"][0]["verdict"], "NOT_JUDGED")
+
+    def test_phases_split_by_column_and_the_counter_may_wrap(self) -> None:
+        base = 0xFFFFFFC0  # wraps after 64 of the 120 updates
+        _sample_csv(self.tmp / "s.csv", hz=30, seconds=4, columns={"mode": lambda n, v: "1" if v < 120 else "2"})
+        lines = (self.tmp / "s.csv").read_text(encoding="utf-8").splitlines()
+        wrapped = [lines[0]] + [",".join([c[0], str((int(c[1]) + base) & 0xFFFFFFFF), c[2]])
+                                for c in (row.split(",") for row in lines[1:])]
+        (self.tmp / "w.csv").write_text("\n".join(wrapped) + "\n", encoding="utf-8")
+        rows = enhancement_package.load_sample_rows(self.tmp / "w.csv", ["updates", "mode"])
+        m = enhancement_package.measure_rates(rows, updates="updates", nominal_hz=30, phase="mode")
+        self.assertEqual(set(m["phases"]), {"1", "2"})
+        total = sum(b["updates"] for b in m["phases"].values())
+        self.assertEqual(total, int(lines[-1].split(",")[1]) - int(lines[1].split(",")[1]))
+        self.assertAlmostEqual(m["phases"]["1"]["updates_per_second"], 30.0, delta=0.5)
+
+    def test_change_events_and_a_loading_phase(self) -> None:
+        # A flag that flips every 45 stock updates; the package doubles the period. The enhanced
+        # run opens with a phase where no logic runs, which must not mark the run as slowed.
+        flip = {"mode": lambda n, v: "1", "flag": lambda n, v: str((n // 45) % 2)}
+        _sample_csv(self.tmp / "stock.csv", hz=30, seconds=60, columns=flip)
+        _sample_csv(self.tmp / "enh.csv", hz=60, seconds=60,
+                    columns={"mode": lambda n, v: "1", "flag": lambda n, v: str((n // 90) % 2)})
+        lines = (self.tmp / "enh.csv").read_text(encoding="utf-8").splitlines()
+        first_updates = lines[1].split(",")[1]
+        loading = [f"{v},{first_updates},0,0" for v in range(1, 601)]
+        shifted = [",".join([str(int(c[0]) + 600), *c[1:]]) for c in (row.split(",") for row in lines[1:])]
+        (self.tmp / "enh.csv").write_text("\n".join([lines[0], *loading, *shifted]) + "\n", encoding="utf-8")
+        out = StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = enhancement_package.main(["--compare-rates", str(self.tmp / "stock.csv"), str(self.tmp / "enh.csv"),
+                                           "--phase", "mode", "--event", "change:flag",
+                                           "--json", str(self.tmp / "r.json")])
+        data = json.loads((self.tmp / "r.json").read_text(encoding="utf-8"))
+        self.assertEqual(rc, 0, out.getvalue())
+        whole, loading_phase = data["report"]["phases"][0], data["report"]["phases"][1]
+        self.assertEqual((loading_phase["phase"], loading_phase["logic"]), ("0", "ABSENT"))
+        self.assertLess(whole["enhanced"]["updates_per_second"], 57.0)
+        self.assertEqual(whole["events"][0]["verdict"], "PASS")
+        self.assertGreater(whole["events"][0]["stock"], 30)
+
+    def test_a_failing_phase_fails_a_run_whose_totals_pass(self) -> None:
+        # Phase 1 (120 s) is rescaled right; phase 2 (20 s) runs its event at the stock period, so
+        # twice as often per game second. The totals dilute it; the phase row must still fail.
+        boundary = round(120 * 60000 / 1001)
+        n_b = (boundary * 60 * 1001) // 60000
+
+        def mode(n: int, v: int) -> str:
+            return "1" if v < boundary else "2"
+
+        def enhanced_count(n: int, v: int) -> str:
+            return str(n // 18 if v < boundary else n_b // 18 + (n - n_b) // 9)
+
+        rc, text, data = self._run({"mode": mode, "hits": lambda n, v: str(n // 9)},
+                                   {"mode": mode, "hits": enhanced_count},
+                                   "--phase", "mode", "--event", "count:hits", seconds=140)
+        whole, first, second = data["report"]["phases"]
+        self.assertEqual(whole["events"][0]["verdict"], "PASS", text)
+        self.assertEqual(first["events"][0]["verdict"], "PASS", text)
+        self.assertEqual(second["events"][0]["verdict"], "FAIL", text)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("rates: FAIL (1 event(s): 1 result(s) differ [2 count:hits]", text)
+
+    def test_a_truncated_or_one_sided_run_is_incomplete(self) -> None:
+        serves = {"serves": lambda n, v: str(n // 45)}
+        rc, text, data = self._run(serves, {"serves": lambda n, v: str(n // 90)}, "--event", "count:serves")
+        self.assertEqual(rc, 0, text)
+        # The enhanced capture stops halfway: its rates still agree, but it covers half the route.
+        _sample_csv(self.tmp / "stock.csv", hz=30, seconds=60, columns=serves)
+        _sample_csv(self.tmp / "enh.csv", hz=60, seconds=30, columns={"serves": lambda n, v: str(n // 90)})
+        out = StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = enhancement_package.main(["--compare-rates", str(self.tmp / "stock.csv"),
+                                           str(self.tmp / "enh.csv"), "--event", "count:serves"])
+        self.assertEqual(rc, 2, out.getvalue())
+        self.assertIn("the shorter run covers 50% of the longer one's game time (below 90%)", out.getvalue())
+        # A phase that runs logic in one run only means the runs did not follow the same route.
+        rc, text, data = self._run({"mode": lambda n, v: "1", **serves},
+                                   {"mode": lambda n, v: "1" if v < 3000 else "2",
+                                    "serves": lambda n, v: str(n // 90)},
+                                   "--phase", "mode", "--event", "count:serves")
+        self.assertEqual(rc, 2, text)
+        self.assertEqual(data["report"]["one_sided_phases"], ["2"])
+
+    def test_repeated_rows_are_skipped_and_empty_cells_scope_the_event(self) -> None:
+        # The sampler can write one vblank twice: an exact repeat is skipped and counted. An empty
+        # event cell leaves that step out of the event's count and out of its game time.
+        (self.tmp / "s.csv").write_text("vblank,updates,flag\n1,0,0\n2,1,0\n2,1,0\n3,2,1\n4,3,\n5,4,1\n",
+                                        encoding="utf-8")
+        rows = enhancement_package.load_sample_rows(self.tmp / "s.csv", ["updates", "flag"])
+        m = enhancement_package.measure_rates(rows, updates="updates", nominal_hz=30,
+                                              events=[enhancement_package.parse_rate_event("change:flag")])
+        b = m["phases"]["all"]
+        self.assertEqual((m["duplicate_rows"], m["empty_steps"]["change:flag"]), (1, 2))
+        self.assertEqual((b["vblanks"], b["updates"], b["events"]["change:flag"]), (4, 4, 1))
+        self.assertEqual(b["event_updates"]["change:flag"], 2)
+
+    def test_a_capture_that_loses_time_refuses(self) -> None:
+        cases = (
+            ("vblank,updates\n1,0\nx,1\n", r"s.csv:3: column vblank: 'x' is not an integer"),
+            ("vblank,updates\n1,0\n1,1\n", r"s.csv:3: vblank 1 does not follow vblank 1 with new values"),
+            ("vblank,updates\n2,0\n1,1\n", r"s.csv:3: vblank 1 does not follow vblank 2"),
+            ("vblank,updates\n1,0\n2,\n", r"s.csv:3: no updates value"),
+            ("vblank,updates,serves\n1,0,0\n2,1,two\n", r"s.csv:3: column serves: 'two' is not an integer"),
+        )
+        for body, why in cases:
+            (self.tmp / "s.csv").write_text(body, encoding="utf-8")
+            columns = ["updates"] + (["serves"] if "serves" in body else [])
+            rows = enhancement_package.load_sample_rows(self.tmp / "s.csv", columns)
+            events = [enhancement_package.parse_rate_event("count:serves")] if "serves" in body else []
+            with self.subTest(why=why), self.assertRaisesRegex(EnhancementPackageError, why):
+                enhancement_package.measure_rates(rows, updates="updates", nominal_hz=30, events=events,
+                                                  source=str(self.tmp / "s.csv"))
+
+    def test_bad_inputs_and_options_give_a_rates_fail_line(self) -> None:
+        _sample_csv(self.tmp / "good.csv", hz=30, seconds=1, columns={"serves": lambda n, v: str(n // 9)})
+        (self.tmp / "latin1.csv").write_bytes(b"vblank,updates\n1,\xe9\n")
+        good, event = str(self.tmp / "good.csv"), ["--event", "count:serves"]
+        cases = (
+            ([str(self.tmp / "missing.csv"), good, *event], "cannot read the sample file"),
+            ([str(self.tmp / "latin1.csv"), good], "cannot read the sample file"),
+            ([good, good, *event, "--stock-hz", "0"], "the nominal rate must be a positive number"),
+            ([good, good, *event, "--enhanced-hz", "nan"], "the nominal rate must be a positive number"),
+            ([good, good, *event, "--lcg-limit", "0"], "--lcg-limit must be at least 1"),
+            ([good, good, *event, "--min-coverage", "2"], r"--min-coverage must lie in \[0, 1\]"),
+        )
+        for argv, why in cases:
+            err = StringIO()
+            with self.subTest(why=why), mock.patch("sys.stderr", err), mock.patch("sys.stdout", StringIO()):
+                rc = enhancement_package.main(["--compare-rates", *argv])
+                self.assertEqual(rc, 1)
+                self.assertRegex(err.getvalue(), "rates: FAIL: .*" + why)
+
+    def test_bad_sample_files_refuse(self) -> None:
+        for body, why in (("", "empty sample file"), ("frame,updates\n1,0\n", "first column must be vblank"),
+                          ("vblank,updates\n1,0\n2\n", r"s.csv:3: 1 cells, the header has 2")):
+            (self.tmp / "s.csv").write_text(body, encoding="utf-8")
+            with self.subTest(why=why), self.assertRaisesRegex(EnhancementPackageError, why):
+                enhancement_package.load_sample_rows(self.tmp / "s.csv", ["updates"])
+        _sample_csv(self.tmp / "s.csv", hz=30, seconds=1, columns={})
+        err = StringIO()
+        with mock.patch("sys.stderr", err):
+            rc = enhancement_package.main(["--compare-rates", str(self.tmp / "s.csv"), str(self.tmp / "s.csv"),
+                                           "--event", "count:serves"])
+        self.assertEqual(rc, 1)
+        self.assertIn("rates: FAIL:", err.getvalue())
+        self.assertIn("no column serves", err.getvalue())
+
+    def test_bad_event_specs_and_missing_columns_refuse(self) -> None:
+        for spec in ("count", "sum:x", "lcg:x:1", "count:x=0", "change:x:y", "lcg:x:1:1:65"):
+            with self.subTest(spec=spec), self.assertRaises(EnhancementPackageError):
+                enhancement_package.parse_rate_event(spec)
+        _sample_csv(self.tmp / "s.csv", hz=30, seconds=1, columns={})
+        with self.assertRaisesRegex(EnhancementPackageError, "no column serves"):
+            enhancement_package.load_sample_rows(self.tmp / "s.csv", ["updates", "serves"])
 
 
 def _f32_bits_of(value: float) -> int:

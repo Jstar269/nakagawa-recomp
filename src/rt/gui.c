@@ -11,7 +11,7 @@
  * gui_pause_* functions run the pause overlay.
  *
  * The default presenter is SDL3 + Vulkan (src/rt/gpu_sdl3vk), which owns the window and ALL input
- * devices — the comprehensive SDL3 gamepad subsystem plus an SDL keyboard fallback. gui.c simply
+ * devices: the SDL3 gamepad subsystem plus an SDL keyboard fallback. gui.c
  * forwards that state to the runtime. When SR_VIDEO=gdi selects the legacy Win32/GDI window
  * (a top-level window + a 32-bit DIB the PSP framebuffer is converted into each frame), input
  * falls back to a keyboard-only GetAsyncKeyState mapping; controllers on that debug path are not
@@ -226,11 +226,27 @@ static uint64_t present_period_for_cap(int cap) {
     return cap ? 1000000000ull / (uint64_t)cap : 0;
 }
 
-static uint64_t present_period_ns(void) {
+/* The output cap in force: SR_FPS_CAP until something changes it. */
+static int present_cap(void) {
     if (s_present_cap == PRESENT_CAP_ENV_UNRESOLVED)
         s_present_cap = present_cap_from_value(getenv("SR_FPS_CAP"));
-    return present_period_for_cap(s_present_cap);
+    return s_present_cap;
 }
+
+static uint64_t present_period_ns(void) {
+    return present_period_for_cap(present_cap());
+}
+
+/* Changes the output cap for the rest of the run (the pause overlay's Frame pacing row, #2002).
+ * The slot grid starts again, so the first present after the change is due at once under the
+ * new period instead of waiting out a slot the old one set. The guest never waits on either. */
+#if defined(SR_SDL3VK) || defined(SR_GUI_PRESENT_SELFTEST)
+static void present_set_cap(int cap) {
+    s_present_cap = cap == PRESENT_CAP_SCANOUT || (cap >= 0 && cap <= 240)
+        ? cap : PRESENT_CAP_SCANOUT;
+    s_present_next_ns = 0;
+}
+#endif
 
 /* Output slots sit on a host-time grid one period apart, its phase set by the first present.
  * A submission takes the slot nearest to it, so one that arrives up to half a period before
@@ -1441,6 +1457,18 @@ static void gui_pause_act(NkOverlayAction action) {
         ace_set_readout(action.value != 0);
         s_pause_dirty = 1;
         break;
+    case NK_OVERLAY_ACT_SET_FULLSCREEN:
+        /* The window changes size; the pause loop composes the frame again on the
+         * pixel-size event that follows. */
+        (void)sdl3vk_set_fullscreen(action.value != 0);
+        s_pause_dirty = 1;
+        break;
+    case NK_OVERLAY_ACT_SET_PACING:
+        present_set_cap(action.value == NK_OVERLAY_PACING_UNCAPPED ? 0 : PRESENT_CAP_SCANOUT);
+        fprintf(stderr, "SR_PAUSE: frame pacing %s\n",
+                action.value == NK_OVERLAY_PACING_UNCAPPED ? "no extra cap" : "PSP timing");
+        s_pause_dirty = 1;
+        break;
     case NK_OVERLAY_ACT_VRAM_VIEW:
         if (sdl3vk_developer_mode()) gui_pause_decode_vram();
         s_pause_dirty = 1;
@@ -1497,6 +1525,16 @@ static int gui_pause_compose(int w, int h, int rgba) {
         }
         model.ace_caption = ace_caption;
         model.ace_readout = s_ace_ui_ready ? (ace_effective()->readout ? 2 : 1) : 0;
+        {
+            /* The display rows (#2002): a window that can change mode, and the launcher's two
+             * Frame pacing choices. A numeric SR_FPS_CAP is neither, so it gets no row. */
+            int fullscreen = sdl3vk_fullscreen();
+            int cap = present_cap();
+            model.fullscreen = fullscreen < 0 ? 0 : fullscreen ? 2 : 1;
+            model.pacing = cap == PRESENT_CAP_SCANOUT ? 1 + NK_OVERLAY_PACING_PSP
+                         : cap == 0                   ? 1 + NK_OVERLAY_PACING_UNCAPPED
+                                                      : 0;
+        }
         model.saving = sr_savedata_pause_busy() != 0;
         model.controls = s_pause_controls.rows;
         model.control_count = s_pause_controls.count;
@@ -1745,6 +1783,30 @@ static void selftest_reset_slots(const char *cap) {
     s_present_next_ns = 0;
 }
 
+/* The pause overlay's Frame pacing row (#2002) changes the cap mid-run: No extra cap presents
+ * every flip at once, and PSP timing again drops a second flip inside one scanout. A value the
+ * row cannot send reads back as PSP timing, never as uncapped. */
+static void selftest_pacing_changes_while_running(void) {
+    uint64_t t = SELFTEST_T0_NS;
+    selftest_reset_slots(NULL);
+    assert(present_slot_due_at(t));
+    assert(!present_slot_due_at(t + 2u * SELFTEST_MS_NS));
+    present_set_cap(0);
+    assert(present_cap() == 0);
+    assert(present_slot_due_at(t + 3u * SELFTEST_MS_NS));
+    assert(present_slot_due_at(t + 4u * SELFTEST_MS_NS));
+    assert(present_slot_due_at(t + 5u * SELFTEST_MS_NS));
+    present_set_cap(PRESENT_CAP_SCANOUT);
+    assert(present_cap() == PRESENT_CAP_SCANOUT);
+    assert(present_slot_due_at(t + 6u * SELFTEST_MS_NS));
+    assert(!present_slot_due_at(t + 8u * SELFTEST_MS_NS));
+    assert(present_slot_due_at(t + 6u * SELFTEST_MS_NS + PSP_SCANOUT_PERIOD_NS));
+    present_set_cap(-7);
+    assert(present_cap() == PRESENT_CAP_SCANOUT);
+    present_set_cap(PRESENT_CAP_ENV_UNRESOLVED);
+    assert(present_cap() == PRESENT_CAP_SCANOUT);
+}
+
 /* Small deterministic generator (the PCG32 output step over an LCG state) for jitter
  * that is not a repeating pattern. */
 static uint32_t selftest_next_random(uint64_t *state) {
@@ -1959,6 +2021,8 @@ int main(void) {
 
     s_present_cap = present_cap_from_value("30");
     assert(present_period_ns() == 1000000000ull / 30u);
+
+    selftest_pacing_changes_while_running();
 
     selftest_jittered_scanout_flips_are_all_presented();
     selftest_two_flips_per_scanout_present_once_per_scanout();

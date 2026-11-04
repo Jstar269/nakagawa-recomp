@@ -2310,6 +2310,29 @@ int sdl3vk_window_minimized(void) {
     return s_win && (SDL_GetWindowFlags(s_win) & SDL_WINDOW_MINIMIZED) != 0;
 }
 
+int sdl3vk_fullscreen(void) {
+#ifdef SDL_PLATFORM_ANDROID
+    return -1;
+#else
+    if (!s_win || s_window_hidden) return -1;
+    return (SDL_GetWindowFlags(s_win) & SDL_WINDOW_FULLSCREEN) != 0;
+#endif
+}
+
+int sdl3vk_set_fullscreen(int on) {
+    if (sdl3vk_fullscreen() < 0) return 0;
+    if (!SDL_SetWindowFullscreen(s_win, on != 0)) {
+        fprintf(stderr, "sdl3vk: fullscreen %s could not be applied: %s\n",
+                on ? "on" : "off", SDL_GetError());
+        return 0;
+    }
+    /* SDL applies the mode asynchronously; wait for it so the next overlay frame reads the
+     * state the person chose. A window manager that never confirms only costs SDL's timeout. */
+    (void)SDL_SyncWindow(s_win);
+    fprintf(stderr, "sdl3vk: fullscreen %s\n", on ? "on" : "off");
+    return 1;
+}
+
 void sdl3vk_wait_events(uint32_t timeout_ms) {
     (void)SDL_WaitEventTimeout(NULL, timeout_ms > (uint32_t)INT32_MAX ? INT32_MAX : (Sint32)timeout_ms);
 }

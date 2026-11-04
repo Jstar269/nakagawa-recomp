@@ -2094,10 +2094,13 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         player_ui_open_save_folder(app, action->title_index);
     } else if (action->kind == PLAYER_UI_ACTION_REMOVE_CONFIRM) {
         /* Remove from library (#1304): what Nakagawa built goes with it, the
-           saves only when the dialog's box was ticked. */
+           saves and the disc copy (#2003) only when the dialog's box was ticked. */
         char reason[NK_MAX_PATH + 96];
-        if (!player_app_remove_game_and_data(app, index, action->primary == 1,
-                                             reason, sizeof(reason))) {
+        unsigned picked = (unsigned)action->primary;
+        unsigned also = ((picked & PLAYER_UI_REMOVE_ALSO_SAVES) ? PLAYER_REMOVE_ALSO_SAVES : 0u) |
+                        ((picked & PLAYER_UI_REMOVE_ALSO_DISC_COPY) ? PLAYER_REMOVE_ALSO_DISC_COPY
+                                                                    : 0u);
+        if (!player_app_remove_game_and_data(app, index, also, reason, sizeof(reason))) {
             player_app_set_error(app, "REMOVE_FAILED", "The game was not removed", reason,
                                  "Back to library", VIEW_LIBRARY);
         }
@@ -3655,10 +3658,9 @@ static void player_start_prerequisite_operation(PlayerApp *app) {
             "The packaged source/tools folder could not be located. Repair the release source folder, then retry.");
         return;
     }
+    /* The build tools' log goes to the one logs folder (#2003). */
     char log_dir[NK_MAX_PATH];
-    int n = snprintf(log_dir, sizeof(log_dir), "%s%clogs", data_root,
-                     nk_platform_path_separator());
-    if (n < 0 || (size_t)n >= sizeof(log_dir) || !nk_platform_mkdir_p(log_dir)) {
+    if (!player_app_logs_dir(log_dir, sizeof(log_dir))) {
         player_app_prereq_fail(app, "DISK_FULL",
             "The app-data log folder could not be created. Free disk space or check permissions, then retry.");
         return;

@@ -694,8 +694,29 @@ if(BUILD_PLAYER)
         set_target_properties(nakagawa_player PROPERTIES WIN32_EXECUTABLE TRUE)
         # The app icon; SDL gives every window the executable's first icon group (see the
         # Makefile PLAYER_ICON_OBJ note). Other systems set it at run time instead.
+        # The VERSIONINFO that names the player in Task Manager comes from the same generated
+        # script the Makefile compiles (tools/make_app_icon.py); without Python the
+        # player keeps the icon alone and Windows shows its file name.
         enable_language(RC)
-        target_sources(nakagawa_player PRIVATE assets/brand/nakagawa.rc)
+        find_package(Python3 COMPONENTS Interpreter)
+        if(Python3_FOUND)
+            set(NK_PLAYER_RC "${CMAKE_CURRENT_BINARY_DIR}/nakagawa_icon.rc")
+            add_custom_command(
+                OUTPUT "${NK_PLAYER_RC}"
+                COMMAND "${Python3_EXECUTABLE}" tools/make_app_icon.py
+                        --version-rc "${NK_PLAYER_RC}" --original-filename nakagawa_player.exe --player
+                DEPENDS tools/make_app_icon.py src/player/ui/player_ui_nk.h
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                VERBATIM
+            )
+            set_source_files_properties("${NK_PLAYER_RC}" PROPERTIES OBJECT_DEPENDS
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/brand/nakagawa.rc;${CMAKE_CURRENT_SOURCE_DIR}/assets/brand/nakagawa.ico")
+            # The generated script includes nakagawa.rc, which names the icon beside it.
+            target_include_directories(nakagawa_player PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/assets/brand")
+            target_sources(nakagawa_player PRIVATE "${NK_PLAYER_RC}")
+        else()
+            target_sources(nakagawa_player PRIVATE assets/brand/nakagawa.rc)
+        endif()
         if(DEFINED ENV{VULKAN_SDK})
             target_include_directories(nakagawa_player PRIVATE
                 "$ENV{VULKAN_SDK}/Include"
