@@ -14,7 +14,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, TypeIs
 
 
 SCHEMA = 1
@@ -333,10 +333,10 @@ def parse_output(text: str, *, require_metadata: bool = True) -> ParsedOutput:
             for key, value in fields.items()
             if key not in {"schema", "test_id", "case_id", "status"}
         }
-        for key, value in values.items():
-            if key.startswith("out") or key in {"result", "error", "detail"}:
-                if key != "error" and key != "detail" and not _HEX_RE.fullmatch(value):
-                    raise ProtocolError(f"line {line_number}: {key} must be hexadecimal")
+        for name, value in values.items():
+            if name.startswith("out") or name in {"result", "error", "detail"}:
+                if name != "error" and name != "detail" and not _HEX_RE.fullmatch(value):
+                    raise ProtocolError(f"line {line_number}: {name} must be hexadecimal")
         results.append(
             TestResult(
                 test_id=fields["test_id"],
@@ -807,8 +807,8 @@ def _json_schema_errors(
         return _json_schema_errors(value, target, root_schema, path)
 
     expected_type = schema.get("type")
-    expected_types = expected_type if isinstance(expected_type, list) else [expected_type]
-    expected_types = [item for item in expected_types if isinstance(item, str)]
+    declared_types = expected_type if isinstance(expected_type, list) else [expected_type]
+    expected_types: list[str] = [item for item in declared_types if isinstance(item, str)]
     if expected_types and not any(_schema_type_matches(value, item) for item in expected_types):
         actual = "null" if value is None else type(value).__name__
         return [(path, f"must have type {' or '.join(expected_types)} (got {actual})")]
@@ -880,6 +880,10 @@ def _json_schema_errors(
     return errors
 
 
+def _is_plain_int(value: object) -> TypeIs[int]:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _ge_case_semantic_errors(case: dict[str, Any], path: str) -> list[tuple[str, str]]:
     errors: list[tuple[str, str]] = []
     framebuffer = case.get("framebuffer")
@@ -888,8 +892,9 @@ def _ge_case_semantic_errors(case: dict[str, Any], path: str) -> list[tuple[str,
     relocations = case.get("relocations")
     if isinstance(framebuffer, dict):
         # A packed value must fit the declared pixel format: 16-bit formats cap at 0xFFFF.
+        pixel_format = framebuffer.get("format")
         limit = {"5650": 0xFFFF, "5551": 0xFFFF, "4444": 0xFFFF, "8888": 0xFFFFFFFF}.get(
-            framebuffer.get("format"))
+            pixel_format if isinstance(pixel_format, str) else "")
         if limit is not None:
             initial = framebuffer.get("initial_pixel")
             if isinstance(initial, int) and not isinstance(initial, bool) and initial > limit:
@@ -904,7 +909,7 @@ def _ge_case_semantic_errors(case: dict[str, Any], path: str) -> list[tuple[str,
         width = framebuffer.get("width")
         height = framebuffer.get("height")
         stride = framebuffer.get("stride_pixels")
-        if all(isinstance(item, int) and not isinstance(item, bool) for item in (width, height, stride)):
+        if _is_plain_int(width) and _is_plain_int(height) and _is_plain_int(stride):
             if stride < width:
                 errors.append((f"{path}.framebuffer.stride_pixels", "must be at least framebuffer.width"))
             if isinstance(pixels, list):
@@ -913,7 +918,7 @@ def _ge_case_semantic_errors(case: dict[str, Any], path: str) -> list[tuple[str,
                     if not isinstance(pixel, dict):
                         continue
                     x, y = pixel.get("x"), pixel.get("y")
-                    if not all(isinstance(item, int) and not isinstance(item, bool) for item in (x, y)):
+                    if not (_is_plain_int(x) and _is_plain_int(y)):
                         continue
                     pixel_path = f"{path}.selected_pixels[{index}]"
                     if x >= width or y >= height:
@@ -956,7 +961,8 @@ def _ge_case_semantic_errors(case: dict[str, Any], path: str) -> list[tuple[str,
                 errors.append((relocation_path + ".command_index", "is outside command_words"))
                 continue
             command = commands[command_index]
-            opcode = {"BASE": "10", "VADDR": "01"}.get(relocation.get("part"))
+            part = relocation.get("part")
+            opcode = {"BASE": "10", "VADDR": "01"}.get(part if isinstance(part, str) else "")
             if isinstance(command, str) and opcode and command[2:4] != opcode:
                 errors.append((relocation_path + ".part", f"does not point to GE command {opcode}"))
     return errors
@@ -1088,7 +1094,8 @@ def ge_corpus_report(corpus: Any, schema: Any, results_root: Path | None = None)
             "cases": [{"case_id": "<schema>", "status": "REFUSED", "reason": "schema document is not an object."}],
         }
     identity_errors: list[tuple[str, str]] = []
-    schema_properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    declared_properties = schema.get("properties")
+    schema_properties = declared_properties if isinstance(declared_properties, dict) else {}
     boundary_schema = schema_properties.get("semantic_boundary")
     issue_schema = schema_properties.get("tracking_issue")
     if (
