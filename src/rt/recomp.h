@@ -437,10 +437,10 @@ static inline int sr_guest_span_readable_current_at(uint32_t addr, uint32_t size
 
 /* Return the largest prefix of [addr, addr + size) that remains inside the
  * flat guest arena.  This is intentionally a prefix calculation, not a
- * validity predicate: the measured PSP DMAC path can complete a one-byte tail
- * request when the valid prefix ends at an allocation boundary.  Callers must
- * apply their own policy to larger or otherwise ambiguous overruns before
- * forming a host pointer. */
+ * validity predicate: a caller compares the prefix with the size it needs (the
+ * DMAC path refuses any span whose prefix is short) or bounds a scan with it.
+ * Callers must apply their own policy to an overrun before forming a host
+ * pointer. */
 static inline uint32_t sr_guest_span_prefix(uint32_t addr, uint32_t size) {
     if (size == 0u) return 0u;
     const uint32_t phys = (uint32_t)SR_PHYS(addr);
