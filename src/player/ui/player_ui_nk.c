@@ -178,6 +178,7 @@ struct PlayerUiNk {
     int remove_index;
     char remove_disc[NK_MAX_DISC_ID_LEN];
     bool remove_delete_saves;
+    bool remove_delete_disc_copy;
     bool remove_focus_pending;
     /* STOP GAME asks first: the title page the question was asked from. */
     int stop_index;
@@ -1500,6 +1501,7 @@ static bool player_ui_open_remove(PlayerUiNk *player, const PlayerApp *app, int 
     snprintf(player->remove_disc, sizeof(player->remove_disc), "%s",
              app->games[index].disc_id);
     player->remove_delete_saves = false;
+    player->remove_delete_disc_copy = false;
     player->remove_focus_pending = true;
     return true;
 }
@@ -2845,6 +2847,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             model.has_saves = player->remove_plan.has_saves;
             model.saves_bytes = player->remove_plan.saves_bytes;
             model.delete_saves = player->remove_delete_saves;
+            model.has_disc_copy = player->remove_plan.has_disc_copy;
+            model.disc_copy_bytes = player->remove_plan.disc_copy_bytes;
+            model.delete_disc_copy = player->remove_delete_disc_copy;
             model.files_shared = player->remove_plan.files_shared;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
@@ -2854,6 +2859,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES) {
                 player->remove_delete_saves = !player->remove_delete_saves;
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_DISC_COPY) {
+                player->remove_delete_disc_copy = !player->remove_delete_disc_copy;
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM) {
                 /* The removal runs after this frame; the library then
