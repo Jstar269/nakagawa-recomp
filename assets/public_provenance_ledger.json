@@ -14309,6 +14309,17 @@
       }
     },
     {
+      "path": "tools/picture_gate.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "picture-gate-1845",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/pngcmp.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -16519,6 +16530,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "pgf-writer-core-313",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_picture_gate.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "picture-gate-1845",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
