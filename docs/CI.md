@@ -701,7 +701,9 @@ upload or Codecov outage from failing the job.
 **The numbers are informational.** [`.github/codecov.yml`](../.github/codecov.yml) marks the
 project and patch status checks `informational: true`, so neither can block a
 merge, and sets `carryforward: true` for both flags, so a run that measures only
-one surface keeps the other flag's last report. The OpenSSF Best Practices
+one surface keeps the other flag's last report. It also sets `comment: false`: the
+two status checks carry the numbers and link to the full report, so Codecov posts
+no pull request comment. The OpenSSF Best Practices
 Silver criterion "statement coverage >= 80%" is the target these numbers are
 watched against; it is not a gate, and promoting either status to a required
 check is a separate maintainer decision. Python's `coverage` package is installed

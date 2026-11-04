@@ -199,12 +199,12 @@ notices, not derived code. None should be replaced by original code:
 | Dependency | Position | Verdict and why |
 | --- | --- | --- |
 | FFmpeg n4.4 ATRAC3+ subset (`src/rt/atrac3p/`, LGPL-2.1-or-later, byte-exact manifest) | Vendored decoder for ATRAC3plus audio | **Keep.** A working ATRAC3+ decoder is codec mathematics plus a maintained standard library; rewriting it gains no independence (the format is Sony's regardless) and loses a pinned, auditable, licence-clean implementation. The project wrapper (`atrac3p_bridge`) is already project-authored. A future move from vendoring to dynamic FFmpeg linkage is packaging hygiene, not an independence item. |
-| FFmpeg n4.4 H.264 decoder subset (`src/rt/h264_ffmpeg_sub/`, LGPL-2.1-or-later, byte-exact manifest) | Vendored portable H.264 decoder behind the `sr_h264` seam for Linux (later Android), decided by the maintainer on 2026-10-24 (#283) | **Keep.** H.264 decoding is standardized codec mathematics; a project rewrite would gain no independence and would lose a pinned, auditable, bit-exact implementation. Windows keeps the Media Foundation operating-system decoder; the backend glue `src/rt/h264_ffmpeg.c` and the API layer are project-authored. The inherited Media Foundation glue `src/rt/h264_mf.c` (G12) is a separate item and is not changed here. |
+| FFmpeg n4.4 H.264 decoder subset (`src/rt/h264_ffmpeg_sub/`, LGPL-2.1-or-later, byte-exact manifest) | Vendored portable H.264 decoder behind the `sr_h264` seam for Linux (later Android), decided by the maintainer on 2026-10-24 (#283) | **Keep.** H.264 decoding is standardized codec mathematics; a project rewrite would gain no independence and would lose a pinned, auditable, bit-exact implementation. Windows keeps the Media Foundation operating-system decoder; the backend glue `src/rt/h264_ffmpeg.c` and the API layer are project-authored. The inherited Media Foundation glue `src/rt/h264_mf.c` (G12) is a separate item with its own recorded disposition (§12). |
 | minimp3 (`src/rt/minimp3/`, CC0-1.0, byte-exact manifest) | Vendored MP3 frame decoder behind the project-authored `mp3_bridge` for the sceMp3 handlers, vendored under the maintainer rule of 2026-10-24 for public-domain code | **Keep.** MP3 decoding is standardized codec mathematics; a rewrite would gain no independence and lose a pinned, auditable implementation. The sceMp3 handlers in `hle.c` are derived-translated from PPSSPP and keep their own record. |
 | PSPSDK / PSPDEV headers and fixtures (BSD-family notices; `assets/upstream/`, `THIRD_PARTY_LICENSES/PSPSDK.txt`) | External ABI facts + local verification fixtures | **Keep.** Public ABI declarations are facts (names, numbers, layouts), not protectable expression; the tree already enforces identity by pin (`pspdev.lock.json`, `pspsdk_sync.py`). Replacing them would *remove* the independent anchor the clean-room specs cite. |
 | SDL3 (zlib) | Host window/input/audio abstraction | **Keep.** Host-platform abstraction is exactly what the portability rules require (`AGENTS.md`, `PLATFORM_PORTABILITY.md`); a project-owned OS layer per platform would be larger, worse-tested, and no more independent. The excluded `audio.c` SDL backend is still rewritten as original SDL3 API use (G2-adjacent audio item), which is not the same as replacing SDL. |
 | Vulkan loader/headers (Apache-2.0; SDK not redistributed) | Host GPU submission | **Keep**, same reason as SDL3. The independence-relevant code is what is *submitted* (GE semantics, G10/G11), not the submission API. |
-| Microsoft Media Foundation (OS component) | `h264_mf.c` decode path | **Keep** as the OS facility; the campaign item is only the thin glue file (G12), rewritten from Microsoft's public API documentation. |
+| Microsoft Media Foundation (OS component) | `h264_mf.c` decode path | **Keep** as the OS facility. The campaign item is only the thin glue file (G12), which is retained as inherited code under the re-scope rule (§12). |
 | System PGF tooling (`pgftool`, `ttf2pgfj.exe`) | Named in upstream font history | **Must not adopt.** `pgftool` has no licence file (terms UNKNOWN) and the converter binary is of unknown provenance (font-origins record §4). The project-owned converter (G4) is specified from the PGF format and metric targets, never from these tools. |
 
 ## 4. Target architecture per group
@@ -285,8 +285,9 @@ replacement by an LLE path that makes the component unnecessary ·
 - **G12 media → split.** `mpeg.c` → (b): guest PSMF middleware runs as
   guest code; the host keeps only packet handoff at the
   `sceMpeg`/`sceVideocodec` boundary plus host decode (FFmpeg/MF), per
-  fidelity §3.4. `h264_mf.c` → (a) micro-rewrite from Microsoft's public
-  Media Foundation documentation (thin glue, small blast radius).
+  fidelity §3.4. `h264_mf.c` → retained as inherited code (§12); the earlier
+  plan of a micro-rewrite from Microsoft's public Media Foundation
+  documentation is superseded because no re-scope trigger applies.
   `savedata.c` → (a) rewrite from PSPSDK utility declarations and the
   observable memstick layout (host mapping is inherently host code).
 - **G13 host shell + fuzz harness → (a), anytime/parallel.** No PSP
@@ -603,3 +604,47 @@ that authority.
   resolving these.
 - LLE PR 4–9 contents beyond PR 6/PR 8 as named in PR 3 header comments:
   undetermined; §7 rules are written to survive any content.
+
+## 12. Recorded dispositions
+
+### `src/rt/h264_mf.c` (G12, #283)
+
+Facts, from the file header, the provenance records and this repository's history:
+
+- The header carries `SPDX-License-Identifier: GPL-2.0-or-later`, the psp-recomp authors' and the
+  Nakagawa Recomp authors' copyright lines, `Derived from sal063/PSP-recompilation-project
+  (GPL-2.0-or-later)` and a Nakagawa modification line dated 2026-08-10.
+- The public ledger classifies it `upstream_derived` under the record `media-decode-mediafoundation`
+  (tier S, GPL-2.0-or-later, `modified_or_translated`). `src/rt/PROVENANCE.md` lists it as inherited
+  from sal063 `da17b0e`, with no PPSSPP text, and records it as modified against sal063 base blob
+  `d24342a2ee7d` (+308/-129 lines, 409 to 588 lines).
+- Its first commit in this repository is the initial sanitized export (`bf21bdec2`, 2026-08-11,
+  497 lines). Later commits changed it for the `sr_h264` seam (#446), the backend-neutral
+  producer (#868), VRAM coherence (#1054) and the PSMF player and measured YCbCr conversion (#1782),
+  among others. At `799751438` the file has 617 lines. `git blame -w` attributes 355 of them to the
+  initial export and 262 to later commits. That counts the last commit to touch a line. It does not
+  say which lines still follow sal063.
+- The program-stream demux that the original header describes now lives in the common producer
+  (`src/rt/psmf_producer.c`). The file today is the Windows backend of the `sr_h264` seam: it queues
+  complete access units and drives the Windows H.264 decoder MFT.
+
+Disposition: **retained as inherited code.** `AGENTS.md` section 4 and the re-scope paragraph at the top
+of this document replace inherited code only when evidence shows it is wrong or an LLE path makes it
+unnecessary. Neither applies: the file passes the unchanged real-decoder fixture (`psmf-media-selftest`
+runs on the Media Foundation backend in the Windows CI job), and the host decode at the
+`sceMpeg`/`sceVideocodec` boundary stays host code under LLE (§4, G12). The earlier plan of a small
+rewrite from Microsoft's public Media Foundation documentation is withdrawn. The file keeps its
+sal063 derivation header, its `upstream_derived` ledger classification and its GPL-2.0-or-later
+notice. It is not called project-authored, independent or clean-room, and no trusted record supports
+those labels. Use of Media Foundation itself is the use of an operating-system component and is not
+a claim about the glue's origin. Reopen the disposition if a hardware or fixture result shows the
+glue is wrong, or if the Windows decode path moves behind an LLE route that makes it unnecessary.
+
+Not established (left for the maintainer):
+
+- Which of the retained lines are verbatim sal063 expression. The sal063 pin tree is not vendored
+  here (§11), so this repository cannot show it.
+- Where sal063 itself took the Media Foundation call sequence from. The header and the provenance
+  table name only sal063, and the table records the deeper lineage as unknown.
+- Confirmation of this disposition for the independence umbrella #355, which the #283 independence
+  addendum names as the home for a bounded retained disposition.

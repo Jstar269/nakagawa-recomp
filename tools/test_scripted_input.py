@@ -24,6 +24,11 @@ A segment may also state its width in guest reads (SrInputSegment.reads, the rou
 WIDTHS READS / READS PRESS). Those cases hand-build the segment list, mix the two kinds of
 width, and check that a read-width press lasts exactly its reads on the same starved schedule
 that a vblank width does not survive.
+
+A segment may also hold the left stick (SrInputSegment.stick, the route grammar's STICK
+<lx> <ly> prefix). Those cases check that the stick is held exactly while its segment is
+current, that a stick-only segment is a press with a read budget rather than a release gap,
+and that a legacy table's segments never hold it.
 """
 
 from __future__ import annotations
@@ -80,10 +85,15 @@ static void batch(uint32_t periods) {
     for (uint32_t i = 0; i < periods; i++) tick();
 }
 
-/* sceCtrlReadBufferPositive(&pad, 1): the guest is handed the latest sample. */
+/* sceCtrlReadBufferPositive(&pad, 1): the guest is handed the latest sample. With
+ * show_stick, also the left stick that sample carries, centred unless a segment holds it. */
+static int show_stick;
 static void guest_read(void) {
+    uint8_t lx = 128u, ly = 128u;
+    int held = sr_input_stick(&P, &lx, &ly);
     sr_input_read(&P, latest_id);
     printf("READ %u %x\n", v, latest_mask);
+    if (show_stick) printf("STICK %u %d %u %u\n", v, held, lx, ly);
 }
 
 int main(int argc, char **argv) {
@@ -120,40 +130,40 @@ int main(int argc, char **argv) {
             printf("SEG %x %u %u %u\n", L[i].mask, L[i].samples, L[i].not_before, L[i].budget);
     } else if (strcmp(mode, "reads_starved") == 0) {  /* widths in guest reads, starved host */
         const SrInputSegment s[] = {
-            { 0x4000u, 1u, 0u, 1800u, 3u },           /* CROSS until three guest reads saw it */
-            { 0x0000u, 1u, 0u, 0u,    2u },           /* released until two guest reads saw it */
-            { 0x4000u, 1u, 0u, 1800u, 1u },           /* CROSS until one guest read saw it */
+            { 0x4000u, 1u, 0u, 1800u, 3u, 0u },       /* CROSS until three guest reads saw it */
+            { 0x0000u, 1u, 0u, 0u,    2u, 0u },       /* released until two guest reads saw it */
+            { 0x4000u, 1u, 0u, 1800u, 1u, 0u },       /* CROSS until one guest read saw it */
         };
         const uint32_t batches[] = { 1u, 30u, 30u, 30u, 30u, 30u };
         load_list(s, 3);
         for (size_t i = 0; i < sizeof batches / sizeof batches[0]; i++) { batch(batches[i]); guest_read(); }
     } else if (strcmp(mode, "vblank_starved") == 0) { /* the same schedule with vblank widths */
         const SrInputSegment s[] = {
-            { 0x4000u, 4u, 0u, 1800u, 0u },
-            { 0x0000u, 2u, 0u, 0u,    0u },
-            { 0x4000u, 4u, 0u, 1800u, 0u },
+            { 0x4000u, 4u, 0u, 1800u, 0u, 0u },
+            { 0x0000u, 2u, 0u, 0u,    0u, 0u },
+            { 0x4000u, 4u, 0u, 1800u, 0u, 0u },
         };
         const uint32_t batches[] = { 1u, 30u, 30u, 30u, 30u, 30u };
         load_list(s, 3);
         for (size_t i = 0; i < sizeof batches / sizeof batches[0]; i++) { batch(batches[i]); guest_read(); }
     } else if (strcmp(mode, "reads_mixed") == 0) {    /* vblank and read widths in one script */
         const SrInputSegment s[] = {
-            { 0x4000u, 2u, 0u, 1800u, 0u },           /* CROSS for two samples */
-            { 0x0000u, 1u, 0u, 0u,    1u },           /* released for one guest read */
-            { 0x4000u, 1u, 0u, 1800u, 2u },           /* CROSS for two guest reads */
-            { 0x0000u, 3u, 0u, 0u,    0u },           /* released for three samples */
+            { 0x4000u, 2u, 0u, 1800u, 0u, 0u },       /* CROSS for two samples */
+            { 0x0000u, 1u, 0u, 0u,    1u, 0u },       /* released for one guest read */
+            { 0x4000u, 1u, 0u, 1800u, 2u, 0u },       /* CROSS for two guest reads */
+            { 0x0000u, 3u, 0u, 0u,    0u, 0u },       /* released for three samples */
         };
         const uint32_t batches[] = { 1u, 30u, 30u, 30u, 30u, 30u };
         load_list(s, 4);
         for (size_t i = 0; i < sizeof batches / sizeof batches[0]; i++) { batch(batches[i]); guest_read(); }
     } else if (strcmp(mode, "reads_overdue") == 0) {  /* one read of three, then the guest stops */
-        const SrInputSegment s[] = { { 0x4000u, 1u, 0u, 30u, 3u } };
+        const SrInputSegment s[] = { { 0x4000u, 1u, 0u, 30u, 3u, 0u } };
         load_list(s, 1);
         batch(1); guest_read();
         for (int i = 0; i < 60; i++) batch(1);
         printf("READS_SEEN %u\n", P.reads);
     } else if (strcmp(mode, "reads_stale") == 0) {   /* which reads count toward a read width */
-        const SrInputSegment s[] = { { 0x4000u, 1u, 0u, 1800u, 1u } };
+        const SrInputSegment s[] = { { 0x4000u, 1u, 0u, 1800u, 1u, 0u } };
         load_list(s, 1);
         batch(1);
         uint32_t stale = latest_id;
@@ -166,6 +176,25 @@ int main(int argc, char **argv) {
         batch(3);                                    /* three samples of this segment ... */
         sr_input_read(&P, latest_id);                /* ... handed over by one read */
         printf("MULTI_READS %u DELIVERED %d\n", P.reads, sr_input_delivered(&P));
+    } else if (strcmp(mode, "stick") == 0) {         /* the stick rides its segment */
+        const SrInputSegment s[] = {
+            { 0x0000u, 3u, 0u, 1800u, 0u, SR_INPUT_STICK(255u, 0u) },   /* stick only */
+            { 0x0000u, 2u, 0u, 0u,    0u, 0u },                         /* released, centred */
+            { 0x4000u, 2u, 0u, 1800u, 0u, SR_INPUT_STICK(40u, 200u) },  /* CROSS with the stick */
+        };
+        show_stick = 1;
+        load_list(s, 3);
+        for (int i = 0; i < 10; i++) { batch(1); guest_read(); }
+    } else if (strcmp(mode, "stick_overdue") == 0) { /* a stick press nobody reads */
+        const SrInputSegment s[] = { { 0x0000u, 4u, 0u, 30u, 0u, SR_INPUT_STICK(128u, 0u) } };
+        load_list(s, 1);
+        batch(1);
+        for (int i = 0; i < 60; i++) batch(1);
+    } else if (strcmp(mode, "rows_stick") == 0) {    /* a legacy table holds no stick */
+        load(f, m, w, 3, 1800u);
+        int any = 0;
+        for (int i = 0; i < n; i++) any |= L[i].stick != 0u;
+        printf("ROWS_STICK %d\n", any);
     } else {
         return 2;
     }
@@ -327,6 +356,30 @@ class ScriptedInputDeliveryTests(unittest.TestCase):
         self.assertIn("NO_SAMPLE_READS 0 DELIVERED 0", output, "a read with no sample of its own")
         self.assertIn("STALE_READS 0 DELIVERED 0", output, "a sample from the previous segment")
         self.assertIn("MULTI_READS 1 DELIVERED 1", output, "three samples handed over by one read")
+
+    @staticmethod
+    def stick_reads(output: str) -> list[tuple[int, int, int]]:
+        return [(int(held), int(lx), int(ly))
+                for held, lx, ly in re.findall(r"^STICK \d+ (\d) (\d+) (\d+)$", output, re.M)]
+
+    def test_a_held_stick_lasts_exactly_its_segment_and_is_centred_between(self) -> None:
+        output = self.run_mode("stick")
+        reads = [pad for _, pad in self.records(output, "READ")]
+        sticks = self.stick_reads(output)
+        self.assertEqual(len(sticks), len(reads))
+        self.assertEqual(sticks, [(1, 255, 0)] * 3 + [(0, 128, 128)] * 2 + [(1, 40, 200)] * 2
+                         + [(0, 128, 128)] * 3, sticks)
+        self.assertEqual(reads, [0] * 5 + [0x4000] * 2 + [0] * 3, reads)
+        self.assertNotIn("OVERDUE", output)
+
+    def test_a_stick_only_press_nobody_reads_is_a_named_overdue_failure(self) -> None:
+        output = self.run_mode("stick_overdue")
+        overdue = re.findall(r"^OVERDUE (\d+) mask=([0-9a-f]+) since=(\d+)$", output, re.M)
+        self.assertEqual(len(overdue), 1, "a segment holding only the stick is a press: " + output)
+        self.assertEqual(int(overdue[0][0]) - int(overdue[0][2]), 30)
+
+    def test_a_legacy_table_never_holds_the_stick(self) -> None:
+        self.assertIn("ROWS_STICK 0", self.run_mode("rows_stick").splitlines())
 
 
 if __name__ == "__main__":

@@ -131,7 +131,7 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
   default: the title page's PLAY or BUILD PACKAGE, the new card after ADD TO LIBRARY. Top-bar tabs
   (`NK_UI_BUTTON_NOT_DEFAULT`) and danger buttons never are; a screen whose only control is a danger button (CANCEL
   BUILD while a build runs) starts with nothing focused, and a move reaches it. PLAY or BUILD PACKAGE gets focus back
-  when it comes back on after STARTING... or a package check, unless the user moved meanwhile.
+  when it comes back on after STARTING… or a package check, unless the user moved meanwhile.
 
 ### Scrolling
 
@@ -380,7 +380,7 @@ still needs them. Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`
 pill and tag (YOUR DISC, BETA / UNOFFICIAL or the disc check's word, as on the card), then for a checked disc
 one `BODY_S` `muted` sentence on what the check found (for UNKNOWN DUMP: not shown to be retail, not modified,
 since Redump's PSP list names no disc IDs), one action row on the column's left edge with every button 52 px (the primary action, PLAY when
-the package is ready, STARTING... while the launch starts, STOP GAME while a game runs, then OPEN SAVE FOLDER and
+the package is ready, STARTING… while the launch starts, STOP GAME while a game runs, then OPEN SAVE FOLDER and
 BACK), and the WHAT TO EXPECT card. Its eyebrow carries a player tier chip (PERFECT and PLAYABLE `ready`, IN-GAME
 and MENU `info`, TITLE SCREEN `warning`, WON'T BOOT `error`; no chip for a title no one has tried). Below it come
 one or two plain sentences on what to expect on this PC in `BODY_S` `paper`, then the known issues in `muted`
@@ -525,7 +525,7 @@ while a button is awaited, or which controller is connected. Two cards side by s
 - BUTTONS: the eyebrow names the mapping being edited (`BUTTONS · GLOBAL MAPPING`, or the game's own in `ready`),
   then the 14 PSP controls in two columns of name and binding. The binding is a small button with the host button's
   name; the control the status line names is in `accent` (`error` when it was left with nothing); the control waiting
-  for a press shows `Press a button...` as the primary button. Choosing it again, or Esc, cancels the wait. Between the name and the button a 20 px prompt glyph
+  for a press shows `Press a button…` as the primary button. Choosing it again, or Esc, cancels the wait. Between the name and the button a 20 px prompt glyph
   (`nk_ui_prompt_glyph_in`, #1299) shows the binding as the device shown prints it, whatever device drives the page:
   the controller in the set of the pad last used or connected (the neutral position dots with none), its face
   buttons by position, the shoulders, Start and the D-pad as the prompt bar draws them, and any other input as a pill
@@ -542,7 +542,7 @@ give) is named in `error` so it can be bound next. Nothing a player does here ca
 buttons, which are fixed: the arrows, Enter and Esc, and the pad's D-pad, south and east buttons.
 
 With KEYBOARD (#1299) the rows show each control's keys by their names on a US keyboard (`KEYS · GLOBAL MAPPING`),
-the waiting control shows `Press a key...`, and the next key pressed is its key; Esc or a controller press stops the
+the waiting control shows `Press a key…`, and the next key pressed is its key; Esc or a controller press stops the
 wait. A key another control uses moves as a controller input does; a key that cannot be bound (Esc and the function
 keys, which the runtime keeps) is refused and the status line says why in `error`. The stick card is ANALOG STICK:
 the stick's four keys (UP, DOWN, LEFT, RIGHT; I, K, J and L by default) as rows like the buttons', where a held key

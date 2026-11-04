@@ -1500,7 +1500,8 @@ def _elf32_psp_start_entry(read, image_size: int) -> tuple[int, str | None]:
     Python mirror of sr_prx_start_entry in src/rt/prx_loader.h (which documents the
     rule and its uofw reference); tools/test_iso_parity.py keeps the two in
     agreement. The module manager enters the syslib module_start export, else
-    module_bootstart, else e_entry. Returns ``(entry, None)``, or ``(e_entry, rule)``
+    module_bootstart, else e_entry; a NID listed twice resolves to its last entry.
+    Returns ``(entry, None)``, or ``(e_entry, rule)``
     naming the first rule the image breaks.
     """
     header = _image_read(read, 0, 52) if image_size >= 52 else None
@@ -1566,7 +1567,8 @@ def _elf32_psp_start_entry(read, image_size: int) -> tuple[int, str | None]:
             for index in range(functions):
                 nid = struct.unpack_from("<I", exports, 4 * index)[0]
                 if nid in (PSP_NID_MODULE_START, PSP_NID_MODULE_BOOTSTART):
-                    found.setdefault(nid, struct.unpack_from("<I", exports, 4 * (total + index))[0])
+                    # Every match overwrites the one before it: the last entry wins.
+                    found[nid] = struct.unpack_from("<I", exports, 4 * (total + index))[0]
             break
         if cursor + 4 * words > ent_end:
             return e_entry, "module-exports-range"
@@ -1751,8 +1753,8 @@ def walk_disc_module_entries(
         if visited > MAX_MODULE_DIRECTORIES:
             raise IsoInspectionError(
                 "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery exceeds "
-                f"{MAX_MODULE_DIRECTORIES} directories; broader discovery is "
-                "in the works."
+                f"{MAX_MODULE_DIRECTORIES} directories; more directories "
+                "aren't supported yet."
             )
         entries = read_module_directory(directory)
         if entries is None:
@@ -1770,7 +1772,7 @@ def walk_disc_module_entries(
                         raise IsoInspectionError(
                             "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery "
                             f"exceeds {MAX_MODULE_DIRECTORIES} directories; "
-                            "broader discovery is in the works."
+                            "more directories aren't supported yet."
                         )
                     directories.append((directory + (entry.name,), depth + 1))
                 continue
@@ -1922,7 +1924,7 @@ def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
                 raise IsoInspectionError(
                     "DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than "
                     f"{MAX_MODULE_CANDIDATES} guest-module candidates; larger "
-                    "module sets are in the works."
+                    "module sets aren't supported yet."
                 )
     return candidates
 
@@ -2471,7 +2473,7 @@ def inspect_compatibility_preflight(
     else:
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "Unknown/malformed executable boundary; broader title support is in the works.",
+            "message": "Unknown or malformed executable; this game isn't supported yet.",
             "issues": [308],
         }
 
@@ -2487,7 +2489,7 @@ def inspect_compatibility_preflight(
     experimental_check = {
         "code": "EXPERIMENTAL",
         "status": "IN_PROGRESS",
-        "message": "Experimental: this game has not been verified. Compatibility is unknown. Verification for additional titles and generic title intake are in the works.",
+        "message": "Experimental: this game has not been verified. Compatibility is unknown. Verifying other games and starting any disc image aren't supported yet.",
         "issues": [308],
     } if is_experimental else None
 
@@ -2500,7 +2502,7 @@ def inspect_compatibility_preflight(
     elif metadata.matched_profile is None:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "UNSUPPORTED",
-            "message": "Title profile missing; generic title support is in the works.",
+            "message": "This game isn't in Nakagawa's list of supported games yet.",
             "issues": [308],
         }
     elif package_present:

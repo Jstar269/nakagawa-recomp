@@ -212,6 +212,11 @@ void sdl3vk_set_logic_slowed_cb(int (*cb)(unsigned *rate)) {
 }
 
 static void (*s_ui_pass)(const Sdl3VkUiPass *frame);
+static Sdl3VkShowPass s_show_pass;
+
+void sdl3vk_set_show_pass(Sdl3VkShowPass pass) {
+    s_show_pass = pass;
+}
 
 void sdl3vk_set_ui_pass(void (*pass)(const Sdl3VkUiPass *frame)) {
     s_ui_pass = pass;
@@ -1938,6 +1943,16 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         }
 
+        /* Ace Mode's smooth motion may show another image; the capture below still reads src. */
+        VkImage show = src;
+        int showw = srcw, showh = srch;
+        if (s_show_pass) {
+            VkImage alt = (VkImage)s_show_pass((void *)cmd, (void *)src, &showw, &showh);
+            if (alt) show = alt;
+            else { showw = srcw; showh = srch; }
+        }
+        if (!show) { why = "nothing to show"; goto fail_acquired; }
+
         /* fb image -> swapchain, aspect-correct letterbox blit. */
         barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 0, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1953,24 +1968,24 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         int dw = (int)s_swap_ext.width, dh = (int)s_swap_ext.height;
-        Sdl3VkPresentPlan plan = sdl3vk_present_plan(s_scaling, srcw, srch, dw, dh,
+        Sdl3VkPresentPlan plan = sdl3vk_present_plan(s_scaling, showw, showh, dw, dh,
                                                      (int)s_max_image_dim);
-        VkImage blit_src = src;
-        int bw = srcw, bh = srch;
+        VkImage blit_src = show;
+        int bw = showw, bh = showh;
         VkImageBlit blt = {0};
         blt.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         blt.srcSubresource.layerCount = 1;
         blt.dstSubresource = blt.srcSubresource;
         blt.srcOffsets[1].z = 1;
         blt.dstOffsets[1].z = 1;
-        if (plan.prescale > 1 && prescale_ensure(plan.prescale * srcw, plan.prescale * srch)) {
+        if (plan.prescale > 1 && prescale_ensure(plan.prescale * showw, plan.prescale * showh)) {
             /* Sharp scaling, pass 1: nearest enlargement to the integer multiple. */
             barrier(cmd, s_prescale_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     0, VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-            blt.srcOffsets[1].x = srcw;          blt.srcOffsets[1].y = srch;
+            blt.srcOffsets[1].x = showw;         blt.srcOffsets[1].y = showh;
             blt.dstOffsets[1].x = s_prescale_w;  blt.dstOffsets[1].y = s_prescale_h;
-            vkCmdBlitImage(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            vkCmdBlitImage(cmd, show, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            s_prescale_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &blt, VK_FILTER_NEAREST);
             barrier(cmd, s_prescale_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -2219,6 +2234,14 @@ int sdl3vk_present_image_ex(void *vk_image, int srcw, int srch) {
     /* render-scaled GE target: the visible region scales with the internal resolution */
     uint64_t started = sr_perf_now_ns();
     int result = present_common((VkImage)vk_image, srcw, srch, NULL);
+    if (started) sr_perf_present_done(started, result);
+    return result;
+}
+
+int sdl3vk_present_held(void) {
+    if (!s_show_pass) return 0;
+    uint64_t started = sr_perf_now_ns();
+    int result = present_common(VK_NULL_HANDLE, PSP_W, PSP_H, NULL);
     if (started) sr_perf_present_done(started, result);
     return result;
 }
