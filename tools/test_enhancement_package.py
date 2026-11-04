@@ -25,6 +25,7 @@ import math
 import os
 from pathlib import Path
 import random
+import re
 import shutil
 import struct
 import subprocess
@@ -2173,6 +2174,7 @@ class TestEnhancementStoreSites(unittest.TestCase):
                 "static uint32_t mem[4];\n"
                 "#define sr_begin(s, pc, op) ((void)0)\n#define sr_end(s, a, n) ((void)0)\n"
                 "#define MEM_W32_PC(a, v, pc) (mem[((a) >> 2) & 3u] = (uint32_t)(v))\n"
+                "void sr_perf_shutdown(void);\n"
                 f"int nk_enhancement_on(void) {{ return NK_ON; }}\n{block}\n"
                 f"static void run_f(CpuState *s) {{\n{self._statement(chunk, 0x1100)}\n}}\n"
                 f"static void run_i(CpuState *s) {{\n{self._statement(chunk, 0x1200)}\n}}\n"
@@ -2181,13 +2183,15 @@ class TestEnhancementStoreSites(unittest.TestCase):
                 "    CpuState s; memset(&s, 0, sizeof s); s.r[4] = 4;\n"
                 "    nk_enh_sites_start();\n"
                 "    for (int i = 1; i < argc; i++) {\n"
-                "        char k = argv[i][0]; long v = k == 'G' ? 0 : strtol(argv[i] + 2, NULL, 0);\n"
+                "        char k = argv[i][0]; long v = k == 'G' || k == 'X' ? 0 : strtol(argv[i] + 2, NULL, 0);\n"
                 "        mem[1] = 0xdeadbeefu;\n"
                 "        if (k == 'F') { s.fi[2] = (uint32_t)v; run_f(&s); "
                 "printf(\"F %08x %08x\\n\", mem[1], s.fi[2]); }\n"
                 "        if (k == 'I') { s.r[5] = (uint32_t)v; run_i(&s); "
                 "printf(\"I %08x %08x\\n\", mem[1], s.r[5]); }\n"
                 "        if (k == 'G') { s.r[6] = 0; run_g(&s); printf(\"G %u\\n\", s.r[6]); }\n"
+                "        /* X ends as hle_display.c's headless end of run does: reports, then _Exit. */\n"
+                "        if (k == 'X') { fflush(stdout); sr_perf_shutdown(); _Exit(0); }\n"
                 "        fflush(stdout);\n"
                 "    }\n    return 0;\n}\n")
             src = tmp / "store_harness.c"
@@ -2196,7 +2200,8 @@ class TestEnhancementStoreSites(unittest.TestCase):
             for on in (0, 1):
                 exes[on] = tmp / f"store{on}.exe"
                 subprocess.run([str(GCC), "-std=gnu11", "-Wall", "-Werror", "-Wno-unused-function",
-                                f"-DNK_ON={on}", "-o", str(exes[on]), str(src)],
+                                f"-DNK_ON={on}", f"-I{ROOT / 'src' / 'rt'}", "-o", str(exes[on]), str(src),
+                                str(ROOT / "src" / "rt" / "perf.c"), "-lm"],
                                check=True, capture_output=True, text=True)
 
             def run(on: int, *args: str) -> subprocess.CompletedProcess[str]:
@@ -2266,6 +2271,38 @@ class TestEnhancementStoreSites(unittest.TestCase):
             res = run(1)
             self.assertEqual(res.stderr.splitlines(), [f_unreached, i_unreached])
             self.assertEqual(run(0).stderr, "")
+            # The headless end of run leaves through _Exit, which skips atexit: the runtime's
+            # end-of-process list prints the report, once, and the exit status is unchanged.
+            res = run(1, f"F:{f30}", "X")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stdout.splitlines(), [f"F {f60[2:]} {f30[2:]}"])
+            self.assertEqual(res.stderr.splitlines(), [
+                "ENHANCEMENT_DATA_APPLIED: site F_STORE at 0x00001100: 30 -> 60", i_unreached])
+            res = run(0, "X")
+            self.assertEqual((res.returncode, res.stderr), (0, ""))
+
+    def test_every_runtime_exit_path_reaches_the_end_of_process_reports(self) -> None:
+        """A store site's NOT_REACHED report runs from sr_perf_shutdown() or
+        sr_process_end_reports(); every _Exit/_exit in the runtime calls one of them first."""
+        exit_call = re.compile(r"\b_(?:Exit|exit)\(")
+        report = re.compile(r"\bsr_(?:perf_shutdown|process_end_reports)\(\);")
+        # verify_harness.c is its own program (#1843): it runs a synthetic module with no
+        # enhancement package and does not link perf.c, so it has no store sites to report.
+        not_the_runtime = {"verify_harness.c"}
+        paths = 0
+        for path in sorted((ROOT / "src" / "rt").glob("*.c")):
+            if path.name in not_the_runtime:
+                continue
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            for n, line in enumerate(lines):
+                code = line.split("//", 1)[0]
+                if not exit_call.search(code) or code.lstrip().startswith(("*", "/*")):
+                    continue
+                paths += 1
+                window = "\n".join(lines[max(0, n - 10):n + 1])
+                with self.subTest(path=f"{path.name}:{n + 1}"):
+                    self.assertRegex(window, report)
+        self.assertGreaterEqual(paths, 12)
 
     def test_package_without_store_keys_emits_no_store_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

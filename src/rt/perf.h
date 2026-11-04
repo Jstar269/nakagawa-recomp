@@ -165,6 +165,12 @@ void     sr_exec_idle(uint64_t started_ns);
 /* Only the game runtime (driver.c) arms the report, so native self-tests print nothing. */
 void     sr_exec_share_arm(void);
 void     sr_exec_share_report(void);
+/* Reports that must be printed however the process ends. sr_perf_shutdown() runs them, and
+ * it is reached at an ordinary exit and on every _Exit path; the one _exit path that skips it
+ * (the guest's libc death wish) calls sr_process_end_reports() itself. Each report runs once,
+ * in registration order. A full list is a visible error, never a dropped report. */
+void     sr_at_process_end(void (*report)(void));
+void     sr_process_end_reports(void);
 
 void     sr_perf_init(void);
 

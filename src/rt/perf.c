@@ -1232,6 +1232,29 @@ static void exec_write_miss_seeds(const char *path) {
 
 void sr_exec_share_arm(void) { s_exec.armed = 1; }
 
+#define SR_PROCESS_END_MAX 8
+static void (*s_process_end[SR_PROCESS_END_MAX])(void);
+static unsigned s_process_end_count;
+
+void sr_at_process_end(void (*report)(void)) {
+    if (s_process_end_count == SR_PROCESS_END_MAX) {
+        fprintf(stderr, "SR_PROCESS_END: more than %u end-of-process reports; the run stops here\n",
+                (unsigned)SR_PROCESS_END_MAX);
+        fflush(stderr);
+        exit(1);
+    }
+    s_process_end[s_process_end_count++] = report;
+}
+
+void sr_process_end_reports(void) {
+    for (unsigned i = 0; i < s_process_end_count; i++) {
+        void (*report)(void) = s_process_end[i];
+        s_process_end[i] = NULL;
+        if (report) report();
+    }
+    fflush(stderr);
+}
+
 void sr_exec_share_report(void) {
     if (!s_exec.armed || s_exec.reported) return;
     s_exec.reported = 1;
@@ -1309,6 +1332,7 @@ static void make_summary_path(const char *csv_path, char *out, size_t out_size) 
 }
 
 void sr_perf_shutdown(void) {
+    sr_process_end_reports();
     sr_exec_share_report();
     if (!s_perf.enabled || !s_perf.initialized || s_perf.shutdown) return;
     s_perf.shutdown = 1;
