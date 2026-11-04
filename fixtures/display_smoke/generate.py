@@ -1442,7 +1442,8 @@ def fsr1_smoke(build_dir: Path) -> int:
         str(executable), "--image", str(image_path), f"0x{BASE:08x}", f"0x{ENTRY:08x}",
         "none", "none", "--gui", f"--expect-u32=0x{FRAMEBUFFER:08x}:0x{expected:08x}",
     ]
-    vblanks = ",".join(str(v) for v in range(20, 400, 20))
+    # SR_VRAMDUMP takes at most 8 VBLANKs (SR_VRAMDUMP_MAX_VBLANKS); these span the fixture's run.
+    vblanks = ",".join(str(v) for v in range(4, 68, 8))
 
     def launch(work: Path, upscale: str | None) -> tuple[dict, str]:
         (work / "capture").mkdir(parents=True)
@@ -1470,6 +1471,8 @@ def fsr1_smoke(build_dir: Path) -> int:
             raise RuntimeError(f"fsr1 smoke ({upscale or 'off'}) exited {done.returncode}: {combined[-2000:]}")
         if "status=PASS" not in combined or "status=FAIL" in combined:
             raise RuntimeError(f"fsr1 smoke ({upscale or 'off'}) missed its guest check: {combined[-2000:]}")
+        if "VRAMDUMP enabled selections=8" not in combined:
+            raise RuntimeError(f"the {upscale or 'off'} run refused its VRAM dump selection: {combined[-2000:]}")
         bundle = json.loads((work / "flight.json").read_text(encoding="utf-8"))
         _require_vblank_progress(bundle, upscale or "off")
         return bundle, combined

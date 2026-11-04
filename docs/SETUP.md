@@ -748,6 +748,17 @@ flips once per VBLANK therefore keeps every frame when its flips reach the host 
 scheduling jitter, while a second submission inside the same slot is still dropped and the
 long-run present rate never exceeds the cap (`gui-present-selftest`).
 
+### Presentation upscaler (`SR_PRESENT_UPSCALE`)
+
+`SR_PRESENT_UPSCALE=fsr1` makes the Vulkan presenter enlarge the picture to its place in the
+window with AMD FidelityFX Super Resolution 1: EASU, an edge-adaptive upscaler, then RCAS
+sharpening. `off`, the default, keeps the `SR_PRESENT_SCALING` filter. It runs only when the
+picture is enlarged, on game frames and CPU-presented movie frames alike. It is presentation only:
+the guest's frame, guest VRAM and captures are byte for byte what they are with it off
+(`display_smoke/generate.py fsr1`). Its cost is small: from 1920x1088 to 3840x2160, EASU and RCAS
+took 0.40 ms per present on an RTX 3080 (`fsr1-selftest`). An unknown value, or a device without
+compute, leaves it off with a line in the log.
+
 Runtime logs are written under `logs/`. Use `SR_DEBUG=0xFF` for all categories or consult [DEBUGGING.md](DEBUGGING.md) for targeted logging.
 On Windows, runtime output redirected to a file or pipe is buffered: a line reaches the log within 50 ms,
 and everything is written when the game exits, aborts or writes a crash report. A process killed from
