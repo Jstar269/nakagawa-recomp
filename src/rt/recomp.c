@@ -771,6 +771,13 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {
             s_heap_internal_write--;
 
             uint32_t remainder = block_size - alloc;
+            /* A freed block keeps its last occupant's bytes (sr_newlib_free). Clear the
+             * part this allocation takes, so a reused block starts as clean as a fresh one;
+             * a split-off remainder is cleared when it is handed out in turn. */
+            {
+                uint32_t used = remainder >= 16u ? alloc : block_size;
+                for (uint32_t off = 8u; off < used; off += 4u) MEM_W32(cur + off, 0u);
+            }
             if (remainder >= 16u) {
                 MEM_W32(cur + 4u, alloc | 1u);
                 uint32_t new_block = cur + alloc;
@@ -863,16 +870,13 @@ void sr_newlib_free(uint32_t ptr, uint32_t guest_ra) {
             ptr, hdr, sizeflags & ~1u,
             guest_ra >= 8u ? guest_ra - 8u : 0u, guest_ra, sched_current_uid());
     }
-    /* Zero the payload so a later reuse starts clean instead of exposing this
-     * block's previous occupant's leftover bytes -- confirmed by A/B test to be
-     * the actual source of the corruption reuse otherwise exposes (something
-     * downstream reads a reused block's stale content before fully overwriting
-     * it). Real malloc doesn't guarantee zeroed memory, but that guarantee costs
-     * nothing meaningful here and eliminates the corruption outright. */
-    {
-        uint32_t size = sizeflags & ~1u;
-        for (uint32_t off = 8u; off < size; off += 4u) MEM_W32(hdr + off, 0u);
-    }
+    /* The payload keeps its bytes until the block is handed out again. newlib's free on
+     * the PSP overwrites only the first two payload words, with free-list links that are
+     * never null, so a guest that reads an object it has just freed reads its old fields.
+     * Hot Shots Tennis does so at the end of every match (a model's texture-animation
+     * channel still names a freed mesh group), and zeroed fields made that read a null
+     * pointer. A reused allocation still starts zeroed: sr_newlib_malloc and the
+     * in-place growth in sr_newlib_realloc clear the bytes they hand back. */
     sr_heap_free_block(hdr, sizeflags & ~1u);
 }
 
@@ -966,6 +970,12 @@ uint32_t sr_newlib_realloc(uint32_t ptr, uint32_t size, uint32_t guest_ra) {
                 s_heap_internal_write--;
 
                 uint32_t trailing = combined - wanted_total;
+                /* The absorbed successor still holds its last occupant's bytes; the
+                 * grown part of the allocation starts clean. */
+                {
+                    uint32_t grown_end = hdr + (trailing >= 16u ? wanted_total : combined);
+                    for (uint32_t a = next_hdr + 8u; a < grown_end; a += 4u) MEM_W32(a, 0u);
+                }
                 if (trailing >= 16u) {
                     MEM_W32(hdr + 4u, wanted_total | 1u);
                     sr_heap_link_free_block(hdr + wanted_total, trailing, 1);
