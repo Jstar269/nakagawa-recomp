@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import struct
 import subprocess
@@ -148,6 +149,134 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(arguments, "--ui=next")
         self.assertEqual(Path(workdir), (dest / "bin").resolve())
 
+    @unittest.skipUnless(os.name == "nt", "Windows shortcuts")
+    def test_shortcut_carries_the_player_app_id(self):
+        """#2006: the .lnk's System.AppUserModel.ID is the launcher's and the game window's, so a
+        pinned shortcut and both windows make one taskbar group."""
+        dest = self.root / "install"
+        stage_install.stage_install(dest, self.player, repo=self.repo, stage_dlls=_fake_stager)
+        link = self.root / "Nakagawa Recomp.lnk"
+        stage_install.write_shortcut(link, dest)
+        self.assertEqual(stage_install.read_shortcut_app_id(link), "Nakagawa.Recomp")
+
+
+class ShortcutFlagTests(unittest.TestCase):
+    """--desktop-shortcut and --start-menu-shortcut through main(), with the install and the
+    shortcut writer stubbed, so the routing is checked on any host."""
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name)
+        self.desktop = self.root / "Desktop"
+        self.programs = self.root / "Start Menu" / "Programs"
+        self.written: list[Path] = []
+        self.recorded: list[list[Path]] = []
+
+        def fake_write(shortcut, dest, arguments=stage_install.DEFAULT_ARGUMENTS):
+            self.written.append(Path(shortcut))
+
+        def fake_record(dest, paths):
+            self.recorded.append([Path(path) for path in paths])
+
+        for patcher in (
+            mock.patch.object(stage_install, "stage_install",
+                              return_value={"player": "bin/nakagawa_player.exe",
+                                            "source_commit": "0" * 40}),
+            mock.patch.object(stage_install, "desktop_folder", return_value=self.desktop),
+            mock.patch.object(stage_install, "start_menu_folder", return_value=self.programs),
+            mock.patch.object(stage_install, "write_shortcut", side_effect=fake_write),
+            mock.patch.object(stage_install, "record_integration", side_effect=fake_record),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _main(self, *flags: str) -> int:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return int(stage_install.main(["--dest", str(self.root / "install"), *flags]))
+
+    def test_start_menu_shortcut_goes_to_the_programs_folder(self):
+        with mock.patch.object(stage_install, "IS_WINDOWS", True):
+            self.assertEqual(self._main("--start-menu-shortcut"), 0)
+        self.assertEqual(self.written, [self.programs / "Nakagawa Recomp.lnk"])
+        self.assertEqual(self.recorded, [[self.programs / "Nakagawa Recomp.lnk"]])
+
+    def test_both_shortcuts_are_written_and_recorded_together(self):
+        with mock.patch.object(stage_install, "IS_WINDOWS", True):
+            self.assertEqual(self._main("--desktop-shortcut", "--start-menu-shortcut"), 0)
+        both = [self.desktop / "Nakagawa Recomp.lnk", self.programs / "Nakagawa Recomp.lnk"]
+        self.assertEqual(self.written, both)
+        self.assertEqual(self.recorded, [both], "one marker update lists both shortcuts")
+
+    def test_no_flag_writes_no_shortcut(self):
+        with mock.patch.object(stage_install, "IS_WINDOWS", True):
+            self.assertEqual(self._main(), 0)
+        self.assertEqual(self.written, [])
+        self.assertEqual(self.recorded, [])
+
+    def test_start_menu_flag_on_linux_writes_the_application_entry(self):
+        entry = self.root / "applications" / "nakagawa-recomp.desktop"
+        icon = self.root / "icons" / "nakagawa-recomp.png"
+        with mock.patch.object(stage_install, "IS_WINDOWS", False), \
+                mock.patch.object(stage_install, "write_desktop_entry",
+                                  return_value=[entry, icon]) as write_entry:
+            self.assertEqual(self._main("--start-menu-shortcut"), 0)
+        write_entry.assert_called_once()
+        self.assertEqual(self.written, [])
+        self.assertEqual(self.recorded, [[entry, icon]])
+
+
+class AppIdentityTests(unittest.TestCase):
+    """#2006: the launcher (src/core/nk_launch.h), the game window (sdl3vk.c, which does not
+    include that header) and the shortcuts this tool writes carry one identity."""
+
+    @staticmethod
+    def _defines(path: Path, prefix: str) -> dict[str, str]:
+        text = path.read_text(encoding="utf-8")
+        return {name: value for name, value in
+                re.findall(rf'#define {prefix}(\w+) "([^"]*)"', text)}
+
+    def test_launcher_game_and_shortcuts_share_one_identity(self):
+        launcher = self._defines(stage_install.ROOT / "src" / "core" / "nk_launch.h", "NK_APP_")
+        game = self._defines(stage_install.ROOT / "src" / "rt" / "gpu_sdl3vk" / "sdl3vk.c",
+                             "SDL3VK_APP_")
+        self.assertEqual(launcher, {"USER_MODEL_ID": "Nakagawa.Recomp",
+                                    "DESKTOP_ID": "nakagawa-recomp",
+                                    "NAME": "Nakagawa Recomp"})
+        self.assertEqual(game, launcher, "the game window's copies equal the launcher's")
+        self.assertEqual(stage_install.APP_USER_MODEL_ID, launcher["USER_MODEL_ID"])
+        self.assertEqual(stage_install.APP_DESKTOP_ID, launcher["DESKTOP_ID"])
+        self.assertEqual(stage_install.DESKTOP_ENTRY_NAME, launcher["DESKTOP_ID"] + ".desktop")
+
+    def test_launcher_sets_the_identity_before_anything_else_in_main(self):
+        # The launcher's process takes the shared ID (player_host.c) as main()'s first act after
+        # the UTF-8 setup, before any window or SDL message box can open under another ID.
+        host = (stage_install.ROOT / "src" / "player" / "player_host.c").read_text(encoding="utf-8")
+        body = host[host.index("void player_host_set_app_identity(void) {"):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn('SetCurrentProcessExplicitAppUserModelID(L"" NK_APP_USER_MODEL_ID)', body)
+        self.assertIn("SDL_SetAppMetadata(NK_APP_NAME, NULL, NK_APP_DESKTOP_ID)", body)
+        main = (stage_install.ROOT / "src" / "player" / "main.c").read_text(encoding="utf-8")
+        start = main[main.index("int main(int argc, char *argv[]) {"):]
+        calls = [line.strip() for line in start.splitlines()[1:]
+                 if line.strip() and not line.strip().startswith(("/*", "*", "//"))
+                 and not line.strip().endswith("*/")]
+        self.assertEqual(calls[:2], ["(void)nk_platform_init_utf8_main(&argc, &argv);",
+                                     "player_host_set_app_identity();"])
+
+    def test_shortcut_path_reaches_the_shell_with_backslashes(self):
+        # MSYS2's Python joins paths with '/', and the shell's property store refuses those.
+        from pathlib import PurePosixPath
+        self.assertEqual(stage_install._shell_path(PurePosixPath("D:/Games/My Apps/Nakagawa Recomp.lnk")),
+                         "D:\\Games\\My Apps\\Nakagawa Recomp.lnk")
+
+    def test_app_user_model_id_follows_the_windows_rules(self):
+        # Windows: at most 128 characters, no spaces, dot-separated sections.
+        value = stage_install.APP_USER_MODEL_ID
+        self.assertLessEqual(len(value), 128)
+        self.assertNotIn(" ", value)
+        self.assertGreaterEqual(value.count("."), 1)
+
 
 class LinuxInstallTests(unittest.TestCase):
     """The Linux branch, exercised on any host by patching the platform flag."""
@@ -178,6 +307,22 @@ class LinuxInstallTests(unittest.TestCase):
             stage_install.stage_install(self.root / "x", self.root / "absent",
                                         repo=self.repo)
 
+    def test_integration_list_keeps_earlier_shortcuts(self):
+        # #2006 review: a second run with only one shortcut flag, or staging again, must not
+        # forget a shortcut an earlier run wrote outside the install folder.
+        dest = self.root / "install"
+        stage_install.stage_install(dest, self.player, repo=self.repo)
+        first, second = self.root / "Desktop.lnk", self.root / "Programs.lnk"
+        stage_install.record_integration(dest, [first])
+        stage_install.record_integration(dest, [second, first])
+        marker = dest / stage_install.MARKER
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["integration"],
+                         [str(first), str(second)])
+        record = stage_install.stage_install(dest, self.player, repo=self.repo)
+        self.assertEqual(record["integration"], [str(first), str(second)])
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["integration"],
+                         [str(first), str(second)])
+
     def test_linux_stage_skips_the_pe_runtime(self):
         dest = self.root / "install"
         record = stage_install.stage_install(dest, self.player, repo=self.repo)
@@ -204,6 +349,9 @@ class LinuxInstallTests(unittest.TestCase):
         self.assertTrue(Path(section["TryExec"]).is_file())
         self.assertEqual(Path(section["Icon"]), icon)
         self.assertTrue(icon.is_file())
+        # #2006: the window class SDL gives the launcher and the game, so the desktop puts
+        # their windows under this entry.
+        self.assertEqual(section["StartupWMClass"], "nakagawa-recomp")
 
     def test_desktop_icon_is_a_256_pixel_png(self):
         _, icon = stage_install.write_desktop_entry(self.root / "install")
