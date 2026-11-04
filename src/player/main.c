@@ -5493,6 +5493,9 @@ static int player_shutdown(PlayerRun *run) {
 int main(int argc, char *argv[]) {
     /* Windows: UTF-8 console output and argv rebuilt from the UTF-16 command line. */
     (void)nk_platform_init_utf8_main(&argc, &argv);
+    /* One taskbar group for the launcher, its games and a pinned shortcut (#2006): set before
+       any window, SDL's message boxes included. */
+    player_host_set_app_identity();
 
     /* Android: system-log streams and the unpacked-files folder (no-op elsewhere). */
     (void)nk_platform_host_startup("nakagawa");
