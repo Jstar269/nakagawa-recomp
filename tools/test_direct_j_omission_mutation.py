@@ -79,6 +79,7 @@ void test_mem_w32(uint32_t addr, uint32_t value);
 #define SR_AOT_RETURN_CAPTURE(s, target) ((void)(s), (void)(target))
 void dispatch(CpuState *s, uint32_t target);
 void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
+int dispatch_call_checked(CpuState *s, uint32_t target, uint32_t resume_pc);
 void sr_register(uint32_t addr, void (*fn)(CpuState *));
 void sr_exec_span_reset(void);
 int sr_exec_span_register(uint32_t start, uint32_t end);
@@ -123,6 +124,11 @@ void dispatch(CpuState *s, uint32_t actual) {{ dispatch_target(s, actual); }}
 void dispatch_call(CpuState *s, uint32_t actual, uint32_t resume_pc) {{
     (void)resume_pc;
     dispatch_target(s, actual);
+}}
+/* A generated call site's checked form: these stand-ins never abandon a caller. */
+int dispatch_call_checked(CpuState *s, uint32_t target, uint32_t resume_pc) {{
+    dispatch_call(s, target, resume_pc);
+    return 0;
 }}
 /* Stand-in for the #855 TAIL protocol (src/rt/recomp.h, guest_interp.c). */
 static struct {{ TestBodyFn fn; CpuState *state; uint32_t target, restore_sp; int pending, owes; }} test_tail;

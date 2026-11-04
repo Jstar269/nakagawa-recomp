@@ -74,7 +74,7 @@ ABI_FUNCTIONS = {
     "sr_llvm_tail_drain": _FN(L.void, (L.ptr,)),
     "sr_aot_return_boundary_begin": _FN(L.i32, (L.ptr, L.i32, L.i32, L.i32)),
     "sr_aot_return_boundary_end": _FN(L.i32, (L.ptr,)),
-    "dispatch_call": _FN(L.void, (L.ptr, L.i32, L.i32)),
+    "dispatch_call_checked": _FN(L.i32, (L.ptr, L.i32, L.i32)),
     "sr_null_code_pointer": _FN(L.void, (L.ptr, L.i32)),
     "sr_lwl": _FN(L.i32, (L.i32, L.i32)),
     "sr_lwr": _FN(L.i32, (L.i32, L.i32)),
@@ -306,6 +306,13 @@ class FunctionLowering:
         self.direct_calls = True
         mismatch = self.call("sr_aot_return_boundary_end", self.s)
         _, join = self.split(b.icmp("ne", mismatch, self.c32(0)), "boundary.mismatch")
+        self.ret()
+        self.enter(join)
+
+    def checked_dispatch_call(self, target, link_value):
+        """codegen.emit_checked_dispatch_call: a CALL with no direct body, in its boundary."""
+        abandoned = self.call("dispatch_call_checked", self.s, target, link_value)
+        _, join = self.split(self.builder.icmp("ne", abandoned, self.c32(0)), "call.abandoned")
         self.ret()
         self.enter(join)
 
@@ -550,7 +557,7 @@ class FunctionLowering:
             if t.symbol is not None:
                 self.checked_body_call(t.symbol, t.addr)
             else:
-                self.call("dispatch_call", self.s, self.c32(t.target), link_value)
+                self.checked_dispatch_call(self.c32(t.target), link_value)
 
         if t.kind == "call" and t.cond is None:                # jal
             self.begin(t.addr, t.word)
@@ -568,7 +575,7 @@ class FunctionLowering:
             self.end()
             self.instruction(t.slot)
             if t.kind == "call-computed":
-                self.call("dispatch_call", self.s, latched, link_value)
+                self.checked_dispatch_call(latched, link_value)
                 then()
             else:
                 self.tail_transfer(latched, None)
