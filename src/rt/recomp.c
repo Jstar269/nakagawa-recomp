@@ -2064,6 +2064,29 @@ static int dispatch_run_interp(
         dispatch_report_null_code_pointer(s, fault.pc);
         return (int)interp_result;
     }
+    if (interp_result == SR_GUEST_INTERP_RETURN_TARGET_MISMATCH) {
+        /* An interpreted callee returned past its call (#2016), as a native callee of a
+         * dispatch-owned boundary does: the same named stop (sr_aot_return_boundary_end). */
+        const uint32_t resume_pc = call_boundary != NULL ? call_boundary->resume_pc : 0u;
+        if (resume_pc == SR_HOST_RETURN_PC) {
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: AOT_RETURN_TARGET_MISMATCH: a host-entered guest body "
+                    "returned to 0x%08" PRIx32 " instead of the host (interpreted jr $ra at "
+                    "0x%08" PRIx32 "); stopping\n",
+                    fault.address, fault.pc);
+        } else {
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: AOT_RETURN_TARGET_MISMATCH: linked call at 0x%08" PRIx32
+                    " resumed at 0x%08" PRIx32 " but its guest jr $ra target was 0x%08" PRIx32
+                    " (interpreted jr $ra at 0x%08" PRIx32 "); stopping before the AOT "
+                    "continuation\n",
+                    resume_pc - 8u, resume_pc, fault.address, fault.pc);
+        }
+        dispatch_record_semantic_stop_issue("aot-return-target-mismatch", 1034u);
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = fault.address;
+        return (int)interp_result;
+    }
     fprintf(stderr,
             "  INTERP_REJECT: target=0x%08" PRIx32 " result=%s fault_pc=0x%08" PRIx32 " "
             "opcode=%s0x%08" PRIx32 " address=0x%08" PRIx32 "\n",
@@ -2249,6 +2272,30 @@ int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target) {
     SrAotReturnBoundary *top = sr_aot_return_boundary_top;
     if (sr_aot_return_boundary_depth <= sr_aot_return_boundary_floor || top == NULL ||
         top->state != s || !top->has_resume_pc || top->resume_pc != target) {
+        return 0;
+    }
+    top->observed_target = UINT64_C(0x100000000) | target;
+    return 1;
+}
+
+int sr_aot_return_boundary_encloses_resume(CpuState *s, uint32_t target, uint32_t sp) {
+    for (size_t index = sr_aot_return_boundary_depth; index > sr_aot_return_boundary_floor;
+         index--) {
+        const SrAotReturnBoundary *enclosing = &sr_aot_return_boundaries[index - 1u];
+        if (enclosing->state != s) return 0;
+        if (enclosing->has_resume_pc && enclosing->resume_pc == target &&
+            enclosing->call_sp <= sp) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int sr_aot_return_boundary_capture_return(CpuState *s, uint32_t target, const uint32_t *resume_pc) {
+    SrAotReturnBoundary *top = sr_aot_return_boundary_top;
+    if (sr_aot_return_boundary_depth <= sr_aot_return_boundary_floor || top == NULL ||
+        top->state != s || !top->has_resume_pc ||
+        (resume_pc != NULL && top->resume_pc != *resume_pc)) {
         return 0;
     }
     top->observed_target = UINT64_C(0x100000000) | target;
