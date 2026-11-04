@@ -24,8 +24,7 @@
 //     buffer remains a valid NUL-terminated string and the cursor stops at
 //     the NUL (the last usable byte, cap - 1).
 //
-// The implementation is additionally robust to hostile inputs and never
-// depends on every caller forever passing honest state:
+// The implementation does not rely on callers passing honest state:
 //   - `n >= cap` (including `SIZE_MAX`, corrupted or adversarial cursors) is
 //     treated as the full state: no write, no pointer formed, returns `cap`.
 //   - `buf == NULL` or `cap == 0` is a documented no-op: no dereference, no

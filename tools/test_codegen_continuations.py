@@ -145,7 +145,7 @@ class ContinuationFlowTests(unittest.TestCase):
                 0x1000, [(0x1000, 0x1010)], {0x1000},
             )
         )
-        self.assertIn("dispatch_call(s, 0x00002000u, 0x00001008u);", linked_jal)
+        self.assertIn("if (dispatch_call_checked(s, 0x00002000u, 0x00001008u)) return;", linked_jal)
 
         linked_jalr = "\n".join(
             codegen.emit_function(
@@ -158,7 +158,7 @@ class ContinuationFlowTests(unittest.TestCase):
                 0x1100, [(0x1100, 0x1110)], {0x1100},
             )
         )
-        self.assertIn("dispatch_call(s, _t, 0x00001108u);", linked_jalr)
+        self.assertIn("if (dispatch_call_checked(s, _t, 0x00001108u)) return;", linked_jalr)
 
     # #968: bltzal/bgezal (bal is bgezal $zero) write $ra and CALL their target. Out of
     # the body the taken path used to be a TAIL (`s->pc = target; dispatch; return`), so
@@ -207,7 +207,7 @@ class ContinuationFlowTests(unittest.TestCase):
                         self.assertNotIn("s->pc = 0x00002000u", text)
                         self.assertNotIn("sr_tail_record", text)
         unknown = "\n".join(self._linked_site(regimm(0x11, 0, 0x1000, 0x2000), {0x1000}))
-        self.assertIn("if (_c) { dispatch_call(s, 0x00002000u, 0x00001008u); } }", unknown)
+        self.assertIn("if (_c) { if (dispatch_call_checked(s, 0x00002000u, 0x00001008u)) return; } }", unknown)
         known = "\n".join(self._linked_site(regimm(0x11, 0, 0x1000, 0x2000), {0x1000, 0x2000}))
         self.assertIn(
             "if (_c) { if (sr_aot_return_boundary_begin(s, 0x00001008u, "
@@ -220,7 +220,7 @@ class ContinuationFlowTests(unittest.TestCase):
         # MIPS writes the link on both paths, before the slot; the slot runs once on
         # both paths; the not-taken path is a plain fall-through into the continuation.
         text = "\n".join(self._linked_site(regimm(0x10, 4, 0x1000, 0x2000), {0x1000}))
-        call = "if (_c) { dispatch_call(s, 0x00002000u, 0x00001008u); } }"
+        call = "if (_c) { if (dispatch_call_checked(s, 0x00002000u, 0x00001008u)) return; } }"
         self.assertIn(call, text)
         link = text.index("s->r[31] = 0x00001008u;")
         slot = text.index("s->r[3] = ")
@@ -362,7 +362,7 @@ class ContinuationFlowTests(unittest.TestCase):
             )
         )
         self.assertIn("sr_tail_record(s, _t, NULL,", text)
-        self.assertNotIn("dispatch_call(s, _t, 0x00001208u);", text)
+        self.assertNotIn("if (dispatch_call_checked(s, _t, 0x00001208u)) return;", text)
 
     def test_omitted_direct_jump_remains_a_tail_dispatch_boundary(self):
         elf = FakeElf(
@@ -514,7 +514,7 @@ class ContinuationFlowTests(unittest.TestCase):
                 self.assertEqual(following.split()[0], "SR_TAIL_DRAIN(s);", following)
 
     def test_conditional_successors_stay_native_below_the_split_threshold(self):
-        # Changed deliberately with entry splitting (owner decision, 2026-10-29): a body
+        # Changed deliberately with entry splitting: a body
         # copies another entry's code over conditional edges only while its walk stays
         # within REGION_SPLIT_THRESHOLD, and never with the threshold off.
         # EntrySplitTests covers the same shape split.

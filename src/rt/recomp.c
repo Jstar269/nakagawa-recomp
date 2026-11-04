@@ -771,6 +771,13 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {
             s_heap_internal_write--;
 
             uint32_t remainder = block_size - alloc;
+            /* A freed block keeps its last occupant's bytes (sr_newlib_free). Clear the
+             * part this allocation takes, so a reused block starts as clean as a fresh one;
+             * a split-off remainder is cleared when it is handed out in turn. */
+            {
+                uint32_t used = remainder >= 16u ? alloc : block_size;
+                for (uint32_t off = 8u; off < used; off += 4u) MEM_W32(cur + off, 0u);
+            }
             if (remainder >= 16u) {
                 MEM_W32(cur + 4u, alloc | 1u);
                 uint32_t new_block = cur + alloc;
@@ -863,16 +870,13 @@ void sr_newlib_free(uint32_t ptr, uint32_t guest_ra) {
             ptr, hdr, sizeflags & ~1u,
             guest_ra >= 8u ? guest_ra - 8u : 0u, guest_ra, sched_current_uid());
     }
-    /* Zero the payload so a later reuse starts clean instead of exposing this
-     * block's previous occupant's leftover bytes -- confirmed by A/B test to be
-     * the actual source of the corruption reuse otherwise exposes (something
-     * downstream reads a reused block's stale content before fully overwriting
-     * it). Real malloc doesn't guarantee zeroed memory, but that guarantee costs
-     * nothing meaningful here and eliminates the corruption outright. */
-    {
-        uint32_t size = sizeflags & ~1u;
-        for (uint32_t off = 8u; off < size; off += 4u) MEM_W32(hdr + off, 0u);
-    }
+    /* The payload keeps its bytes until the block is handed out again. newlib's free on
+     * the PSP overwrites only the first two payload words, with free-list links that are
+     * never null, so a guest that reads an object it has just freed reads its old fields.
+     * Hot Shots Tennis does so at the end of every match (a model's texture-animation
+     * channel still names a freed mesh group), and zeroed fields made that read a null
+     * pointer. A reused allocation still starts zeroed: sr_newlib_malloc and the
+     * in-place growth in sr_newlib_realloc clear the bytes they hand back. */
     sr_heap_free_block(hdr, sizeflags & ~1u);
 }
 
@@ -966,6 +970,12 @@ uint32_t sr_newlib_realloc(uint32_t ptr, uint32_t size, uint32_t guest_ra) {
                 s_heap_internal_write--;
 
                 uint32_t trailing = combined - wanted_total;
+                /* The absorbed successor still holds its last occupant's bytes; the
+                 * grown part of the allocation starts clean. */
+                {
+                    uint32_t grown_end = hdr + (trailing >= 16u ? wanted_total : combined);
+                    for (uint32_t a = next_hdr + 8u; a < grown_end; a += 4u) MEM_W32(a, 0u);
+                }
                 if (trailing >= 16u) {
                     MEM_W32(hdr + 4u, wanted_total | 1u);
                     sr_heap_link_free_block(hdr + wanted_total, trailing, 1);
@@ -1953,6 +1963,78 @@ _Static_assert((SR_HOST_RETURN_PC & SR_DISPATCH_VFPU_MASK) != SR_DISPATCH_VFPU_T
 _Static_assert(SR_PHYS(SR_HOST_RETURN_PC) >= 0x0C000000u,
                "no dispatch normalization maps SR_HOST_RETURN_PC into the guest arena");
 
+/* SR_CODE_CAPTURE=<folder> (#1933): a game may copy code into its BSS or heap and call it, and
+ * no translation covers that code. When such a call stops as not-executable, write the bytes
+ * around the target to the folder (the title's private folder) for tools/code_capture.py, whose
+ * translation a later build binds only while memory holds the same code. The stop itself is
+ * unchanged: this adds one line naming the capture. The window reaches up to
+ * SR_CODE_CAPTURE_REACH bytes on each side of the target over main RAM that no executable span
+ * and no bound module owns. The file format is documented in tools/code_capture.py. */
+#define SR_CODE_CAPTURE_REACH 0x10000u
+#define SR_CODE_CAPTURE_HEADER 32u
+static char s_code_capture_last[64];   /* the last capture's file name (the self-test reads it) */
+
+static int code_capture_word_free(uint32_t address) {
+    return address >= SR_RAM_BASE && SR_PHYS(address) == address && sr_inrange_n(address, 4u) &&
+           !sr_exec_span_owns_fetch(address) && sr_module_code_fetch_authority(address) < 0;
+}
+
+static void code_capture_put32(unsigned char *out, uint32_t value) {
+    for (unsigned b = 0; b < 4u; b++) out[b] = (unsigned char)(value >> (8u * b));
+}
+
+static void code_capture_note(uint32_t target, uint32_t pc, uint32_t ra) {
+    const char *folder = getenv("SR_CODE_CAPTURE");
+    if (!folder || !folder[0]) return;
+    if ((target & 3u) != 0u || !code_capture_word_free(target)) {
+        fprintf(stderr, "  CODE_CAPTURE: none; 0x%08" PRIx32 " is not unowned main RAM\n", target);
+        return;
+    }
+    uint32_t lo = target, hi = target + 4u;
+    while (target - lo < SR_CODE_CAPTURE_REACH && code_capture_word_free(lo - 4u)) lo -= 4u;
+    while (hi - target < SR_CODE_CAPTURE_REACH && hi != 0u && code_capture_word_free(hi)) hi += 4u;
+    uint32_t size = hi - lo;
+    unsigned char *file = (unsigned char *)malloc(SR_CODE_CAPTURE_HEADER + (size_t)size);
+    if (!file || !sr_guest_copy_in(file + SR_CODE_CAPTURE_HEADER, lo, size)) {
+        free(file);
+        fprintf(stderr, "  CODE_CAPTURE: failed; cannot read [0x%08" PRIx32 ",0x%08" PRIx32 ")\n",
+                lo, hi);
+        return;
+    }
+    memcpy(file, "NKCODE01", 8u);
+    const uint32_t fields[6] = { lo, size, target, pc, ra, 0u };
+    for (unsigned i = 0; i < 6u; i++) code_capture_put32(file + 8u + 4u * i, fields[i]);
+    snprintf(s_code_capture_last, sizeof s_code_capture_last,
+             "code_capture_%08" PRIx32 "_%016" PRIx64 ".nkcap", target,
+             sr_module_code_fnv1a64(file + SR_CODE_CAPTURE_HEADER, size));
+    char path[4096], partial[4096 + 8];
+    int written = 0, exists = 0;
+    if ((size_t)snprintf(path, sizeof path, "%s/%s", folder, s_code_capture_last) < sizeof path) {
+        FILE *old = fopen(path, "rb");
+        if (old) {
+            exists = 1;
+            fclose(old);
+        } else {
+            snprintf(partial, sizeof partial, "%s.part", path);
+            FILE *out = fopen(partial, "wb");
+            if (out) {
+                written = fwrite(file, 1u, SR_CODE_CAPTURE_HEADER + (size_t)size, out) ==
+                          SR_CODE_CAPTURE_HEADER + (size_t)size;
+                written = (fclose(out) == 0) && written && rename(partial, path) == 0;
+                if (!written) remove(partial);
+            }
+        }
+    }
+    free(file);
+    if (exists || written)
+        fprintf(stderr, "  CODE_CAPTURE: %s %s [0x%08" PRIx32 ",0x%08" PRIx32 ") target=0x%08" PRIx32
+                "; translate it with tools/code_capture.py (#1933)\n",
+                exists ? "already holds" : "wrote", s_code_capture_last, lo, hi, target);
+    else
+        fprintf(stderr, "  CODE_CAPTURE: failed; cannot write %s to the SR_CODE_CAPTURE folder\n",
+                s_code_capture_last);
+}
+
 static int dispatch_run_interp(
     CpuState *s,
     uint32_t target,
@@ -1983,6 +2065,7 @@ static int dispatch_run_interp(
             fault.opcode_valid ? "" : "unavailable/", fault.opcode, fault.address);
     fprintf(stderr, "  SEMANTIC_BOUNDARY: %s; in the works: #308\n",
             dispatch_semantic_boundary_name(interp_result));
+    if (interp_result == SR_GUEST_INTERP_NOT_EXECUTABLE) code_capture_note(fault.pc, s->pc, s->r[31]);
     dispatch_record_semantic_stop(dispatch_semantic_boundary_name(interp_result));
     dump_dispatch_trace();
     return (int)interp_result;
@@ -2170,10 +2253,10 @@ int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target) {
  * this: a branch-and-link into a block that restores the enclosing frame's $ra and $sp
  * and returns straight to that frame's caller, so the linked call never resumes. When
  * the target is the resume PC of a live enclosing linked call, the frames in between are
- * abandoned and that call continues normally, as the PSP does. Only direct body calls may
- * lie in between: their generated callers return when the end check says so, where a
- * dispatch_call caller would run its own continuation. Never crosses a callback or
- * interrupt floor. */
+ * abandoned and that call continues normally, as the PSP does. Only checked calls may lie
+ * in between, a direct body call or a generated dispatch_call_checked site: their generated
+ * callers return when the end check says so, where any other dispatch_call caller would run
+ * its own continuation. Never crosses a callback or interrupt floor. */
 #if defined(SR_STACK_CENSUS_ENABLED)
 /* True while a body returns other than structurally to its caller: its guest jr $ra
  * targeted something other than the live linked call's resume, or a guest return past
@@ -2217,8 +2300,8 @@ static int sr_aot_return_boundary_unwind_to(CpuState *s, uint32_t target) {
  * are abandoned as sr_aot_return_boundary_unwind_to abandons them, and that call's own end
  * runs the target as its continuation (sr_aot_return_boundary_end). The callee that
  * returned must have left its own frame: a jump within it is not a return. Never crosses a
- * callback or interrupt floor or a dispatch_call frame. A frame no linked call encloses (a
- * thread's or callback's own entry function, which no resume PC follows) has no
+ * callback or interrupt floor or an unchecked dispatch_call frame. A frame no linked call
+ * encloses (a thread's or callback's own entry function, which no resume PC follows) has no
  * continuation to run in, so a longjmp into it stays the named mismatch stop. */
 static int sr_aot_return_boundary_resume_live_frame(CpuState *s,
                                                     const SrAotReturnBoundary *returned,
@@ -2360,9 +2443,12 @@ int sr_aot_return_boundary_end(CpuState *s) {
 static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
                              const SrGuestInterpCallBoundary *call_boundary,
                              int drain) {
-    const int owns_return_boundary = call_boundary != NULL ||
-        !(drain == SR_DRAIN_SEGMENT && sr_aot_return_boundary_top != NULL &&
-          sr_aot_return_boundary_top->state == s);
+    /* A call begun at a checked generated site returns into the site's own boundary
+     * (dispatch_call_checked), whose caller honours a return elsewhere. */
+    const int owns_return_boundary = call_boundary != NULL
+        ? !call_boundary->site_boundary
+        : !(drain == SR_DRAIN_SEGMENT && sr_aot_return_boundary_top != NULL &&
+            sr_aot_return_boundary_top->state == s);
     if (owns_return_boundary) {
         const uint32_t call_pc = call_boundary != NULL
             ? call_boundary->resume_pc - 8u : s->pc;
@@ -2380,10 +2466,12 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
             return;
         }
         sr_aot_return_boundary_top->dispatch_owned = 1u;
-#ifdef SR_VERIFY
-        if (call_boundary != NULL) sr_verify_begin(s, target, call_pc, call_boundary->resume_pc);
-#endif
     }
+#ifdef SR_VERIFY
+    /* A continuation is the rest of a call already under way, not a call to sample. */
+    if (call_boundary != NULL && !call_boundary->continuation)
+        sr_verify_begin(s, target, call_boundary->resume_pc - 8u, call_boundary->resume_pc);
+#endif
     if (sr_perf_enabled) sr_perf_aot_begin(target);
 #ifdef SR_VERIFY
     sr_verify_note_entry(target);
@@ -2706,13 +2794,19 @@ void dispatch_tail_step(CpuState *s, uint32_t target) {
     }
 }
 
-int dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc) {
+static int dispatch_call_try_at(CpuState *s, uint32_t target, uint32_t resume_pc,
+                                uint8_t site_boundary) {
     if ((resume_pc & 3u) != 0u) {
         return SR_GUEST_INTERP_MISALIGNED_PC;
     }
     SrGuestInterpCallBoundary boundary = {
-        .resume_pc = resume_pc, .entry_sp = s->r[29], .owes_entry_sp = 1u };
+        .resume_pc = resume_pc, .entry_sp = s->r[29], .owes_entry_sp = 1u,
+        .site_boundary = site_boundary };
     return dispatch_try_with_boundary(s, target, &boundary, SR_DRAIN_CHAIN);
+}
+
+int dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc) {
+    return dispatch_call_try_at(s, target, resume_pc, 0u);
 }
 
 void dispatch(CpuState *s, uint32_t target) {
@@ -2729,6 +2823,54 @@ void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {
         fflush(stderr);
         exit(1);
     }
+}
+
+/* A dispatch_call frame is otherwise a wall to a guest return past it: its caller runs its
+ * own continuation whatever the callee did. A generated call site honours the end check
+ * instead, as at a direct call, so the call gets the same boundary. Under it, native code
+ * run for the call -- a native callee, or the native body an interpreted callee hands its
+ * frame to -- returns into this boundary, and a return elsewhere (a longjmp) unwinds the
+ * frames between as it does natively (#1034, #1935). */
+int dispatch_call_checked(CpuState *s, uint32_t target, uint32_t resume_pc) {
+#ifdef SR_VERIFY
+    sr_verify_suppress_direct = 1;   /* sampled with its target where the callee is native */
+#endif
+    const int refused = sr_aot_return_boundary_begin(s, resume_pc, resume_pc - 8u, 1u);
+#ifdef SR_VERIFY
+    sr_verify_suppress_direct = 0;
+#endif
+    if (refused) return 1;
+    if (dispatch_call_try_at(s, target, resume_pc, 1u) < 0) {
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, target, resume_pc, 0u);
+        fflush(stderr);
+        exit(1);
+    }
+    return sr_aot_return_boundary_end(s);
+}
+
+/* An interpreted linked call hands its live frame to a native body (the interpreter's AOT
+ * handoff). That body's chain ends in the call's return, so it is checked against the
+ * call's resume PC: under a checked site it returns into the site's boundary, which
+ * unwinds a return elsewhere; any other caller runs its own continuation, so the body gets
+ * a boundary of its own and a return elsewhere is the named #1034 stop. */
+int dispatch_call_continue(CpuState *s, uint32_t target, const SrGuestInterpCallBoundary *call) {
+    const SrGuestInterpCallBoundary rest = {
+        .resume_pc = call->resume_pc, .site_boundary = call->site_boundary,
+        .continuation = 1u };
+    if (dispatch_try_with_boundary(s, target, &rest, SR_DRAIN_CHAIN) < 0) {
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, target, call->resume_pc, 0u);
+        fflush(stderr);
+        exit(1);
+    }
+    if (!call->site_boundary) return 0;
+    const SrAotReturnBoundary *site = sr_aot_return_boundary_top;
+    if (sr_aot_return_boundary_depth <= sr_aot_return_boundary_floor || site == NULL ||
+        site->state != s || !site->has_resume_pc || site->resume_pc != call->resume_pc) {
+        return 0;
+    }
+    return site->unwinding != 0u ||
+           ((site->observed_target >> 32) != 0u &&
+            (uint32_t)site->observed_target != call->resume_pc);
 }
 
 /* A host entry is a linked call that returns to the host (#1375, recomp.h). The AOT tier

@@ -167,6 +167,12 @@ typedef struct {
     int defaultFrameWidth, pixelMode;
     uint32_t streamWidth, streamHeight;
     int ycbcrWant;   /* pictures requested through sceMpegAvcDecodeYCbCr */
+    int ycbcrLag;    /* pictures the PSP decoder holds back on this path (MPEG_YCBCR_DECODE_LAG) */
+    int ycbcrStale;  /* host pictures of units taken before a stop or flush, dropped as they come */
+    /* The times of the access units sceMpegAvcDecodeYCbCr took whose pictures have not come out,
+     * oldest first: a picture carries the time of the unit it was decoded from (SR_MPEGAV). */
+    int64_t ycbcrAuPts[8];
+    uint32_t ycbcrAuHead, ycbcrAuCount;
     uint32_t auPacketsDone;   /* ring packets released by real access units */
     int64_t lastAuPts;        /* presentation time of the last real access unit (-1 before any) */
     int esBuffers[2];           /* MPEG_DATA_ES_BUFFERS: allocated-flag per ES buffer */
@@ -880,9 +886,11 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     /* Real end-of-stream: the game has fed the whole movie (fedPackets >= totalPackets) and the
      * ring has drained. This mirrors PPSSPP's mediaengine->IsVideoEnd() without ffmpeg -- the movie
      * runs for the full file then ends, instead of stopping at the (segment-only) header timestamp. */
-    /* A decoder gives a picture up one access unit late, so the stream's end finds it holding some.
-     * Their access units have left the ring: each is handed out again to be decoded out. */
-    int held = ctx->streamEnded && ctx->h264Frames < ctx->h264Units;
+    /* A host decoder can give a picture up access units late, so the stream's end finds it
+     * holding some. Their access units have left the ring: each is handed out again to be
+     * decoded out. The one picture the PSP's own YCbCr decoder holds back is not among them:
+     * sceMpegAvcDecodeStopYCbCr hands it over, as on the PSP. */
+    int held = ctx->streamEnded && ctx->h264Frames + ctx->ycbcrLag < ctx->h264Units;
     /* With no stream size known, the feed's end is the one mpeg_feed_stopped found (#286). */
     if (!held && (ctx->totalPackets ? ctx->fedPackets >= ctx->totalPackets : ctx->streamEnded) &&
         rb_get(ring, RB_packetsAvail) == 0) ctx->videoEnd = 1;
@@ -1171,6 +1179,11 @@ uint32_t mpeg_avc_decode_detail(uint32_t mpegAddr, uint32_t detailAddr) {
 #define YCBCR_MODE1_MAX_W 480u
 #define YCBCR_MODE1_MAX_H 272u
 #define YCBCR_SCRATCH_W 512u   /* wide enough to see a picture past the mode-1 limit */
+/* MEASURED (PSP-MPEG-001, PSP-3000 firmware 6.61): the PSP's decoder runs one access unit behind on
+ * the YCbCr path. The first sceMpegAvcDecodeYCbCr after the decoder starts returned 0 with init 0
+ * and wrote no picture; every later call returned the picture of the access unit before it, init
+ * 1; sceMpegAvcDecodeStopYCbCr after the last unit handed over the one still held, status 1. */
+#define MPEG_YCBCR_DECODE_LAG 1
 #define YCBCR_LUMA_PLANE_MAX ((YCBCR_MODE1_MAX_W / 32u) * 8u * YCBCR_MODE1_MAX_H)
 #define YCBCR_CHROMA_PLANE_MAX ((YCBCR_MODE1_MAX_W / 32u) * 4u * YCBCR_MODE1_MAX_H)
 /* MEASURED (PSP-MPEG-001): sceMpegAvcCsc's refusal of a zeroed header, of a range outside the
@@ -1215,6 +1228,41 @@ static void ycbcr_reset_mpeg(uint32_t mpegAddr) {
         if (s_ycbcr[i].mpeg == mpegAddr) ycbcr_clear_slot(&s_ycbcr[i]);
         if (s_ycbcr_pictures[i].mpeg == mpegAddr) memset(&s_ycbcr_pictures[i], 0, sizeof(s_ycbcr_pictures[i]));
     }
+}
+
+/* The time of each access unit sceMpegAvcDecodeYCbCr takes, kept until its picture comes out
+ * (one call later, MPEG_YCBCR_DECODE_LAG, or later still behind a host decoder's own delay). */
+static void ycbcr_au_push(Mpeg *ctx, int64_t pts) {
+    const uint32_t cap = (uint32_t)(sizeof(ctx->ycbcrAuPts) / sizeof(ctx->ycbcrAuPts[0]));
+    if (ctx->ycbcrAuCount == cap) {          /* a unit whose picture never came: its time goes */
+        ctx->ycbcrAuHead = (ctx->ycbcrAuHead + 1u) % cap;
+        ctx->ycbcrAuCount--;
+    }
+    ctx->ycbcrAuPts[(ctx->ycbcrAuHead + ctx->ycbcrAuCount) % cap] = pts;
+    ctx->ycbcrAuCount++;
+}
+
+/* UNMEASURED MODEL (#279, #286): after sceMpegAvcDecodeStopYCbCr or sceMpegAvcDecodeFlush the
+ * decoder holds no picture of an access unit taken before the call, so the next
+ * sceMpegAvcDecodeYCbCr is a first call after the decoder starts: 0 with init 0 (PSP-MPEG-001
+ * measured that for a fresh decoder), and the picture after it is the first unit taken after the
+ * call.  A host decoder can still hold pictures of earlier units (Media Foundation keeps one until
+ * more input arrives): those are counted here and dropped as they come, with their times.  The
+ * model uses only the guest's own calls.  What a PSP does after a stop or a flush in mid-stream is
+ * not measured: a probe needs a game-context AV load on the PSP. */
+static void ycbcr_drop_held(Mpeg *ctx) {
+    const int owed = ctx->ycbcrWant - ctx->h264Frames;
+    ctx->ycbcrStale = owed > 0 ? owed : 0;
+    ctx->ycbcrAuCount = 0u;
+}
+
+static int64_t ycbcr_au_pop(Mpeg *ctx) {
+    const uint32_t cap = (uint32_t)(sizeof(ctx->ycbcrAuPts) / sizeof(ctx->ycbcrAuPts[0]));
+    if (!ctx->ycbcrAuCount) return -1;
+    int64_t pts = ctx->ycbcrAuPts[ctx->ycbcrAuHead];
+    ctx->ycbcrAuHead = (ctx->ycbcrAuHead + 1u) % cap;
+    ctx->ycbcrAuCount--;
+    return pts;
 }
 
 /* Every decoded picture is an entry of its own; the oldest entry gives way to a new one. */
@@ -1476,11 +1524,16 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
     }
     ctx->videoPts += videoTimestampStep;
     ctx->ycbcrWant++;
+    ctx->ycbcrLag = MPEG_YCBCR_DECODE_LAG;
+    ycbcr_au_push(ctx, au_read_pts(auAddr));
+    /* The picture of the access unit before this one (MPEG_YCBCR_DECODE_LAG). */
+    const int want = ctx->ycbcrWant - ctx->ycbcrLag;
+    const int owed = ctx->h264Frames + ctx->ycbcrStale < want;
     int got = 0;
     SrH264FrameInfo info = {0};
     int eos = ctx->streamEnded;
 #ifdef SR_SDL3VK
-    while (ctx->h264Frames < ctx->ycbcrWant) {
+    while (ctx->h264Frames < want) {
         SrH264FrameTarget target;
         memset(&target, 0, sizeof(target));
         target.kind = SR_H264_TARGET_HOST_YUV;
@@ -1493,8 +1546,12 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
         target.host_c_stride = (int)(YCBCR_SCRATCH_W / 2u);
         int r = sr_h264_frame_ex(ctx->h264, eos, &target, &info);
         if (r > 0) {
-            got = r;
             ctx->h264Frames++;
+            if (ctx->ycbcrStale > 0) {   /* a unit taken before a stop or flush */
+                ctx->ycbcrStale--;
+                continue;
+            }
+            got = r;
         } else if (r < 0) {
             MEM_W32(initAddr, 0u);
             return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "H.264 backend rejected the access unit", SCE_MPEG_ERROR_NO_DATA);
@@ -1507,17 +1564,18 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
     ctx->avcFrameStatus = got > 0;
     if (got <= 0) {
         MEM_W32(initAddr, 0u);
-        if (eos)
+        if (eos && owed)
             return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "no decoded picture at end of stream", SCE_MPEG_ERROR_NO_DATA);
         return 0;
     }
+    const int64_t pts = ycbcr_au_pop(ctx);
     uint64_t bytes = 0;
     uint32_t stored = ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height, &bytes);
     if (stored) {
         MEM_W32(initAddr, 0u);
         return stored;
     }
-    ycbcr_picture_set(mpegAddr, bytes, au_read_pts(auAddr));
+    ycbcr_picture_set(mpegAddr, bytes, pts);
     MEM_W32(initAddr, 1u);
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
@@ -1538,7 +1596,8 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
  * header with status 1; otherwise the status is 0 and nothing is written.  As in
  * sceMpegAvcDecodeYCbCr the decoder is drained only once the whole stream has been fed: a
  * decoder that holds its last picture until it is drained (Media Foundation) gives none before
- * that, and what the PSP does after a stop in mid-stream is not measured. */
+ * that, and what the PSP does after a stop in mid-stream is not measured.  After the call the
+ * decoder holds nothing (ycbcr_drop_held). */
 uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t bufPtr, uint32_t statusAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
@@ -1563,13 +1622,19 @@ uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t bufPtr, uint32_t
         target.host_cb = s_ycbcr_cb;
         target.host_cr = s_ycbcr_cr;
         target.host_c_stride = (int)(YCBCR_SCRATCH_W / 2u);
-        if (sr_h264_frame_ex(ctx->h264, ctx->streamEnded, &target, &info) > 0) {
-            got = 1;
+        while (sr_h264_frame_ex(ctx->h264, ctx->streamEnded, &target, &info) > 0) {
             ctx->h264Frames++;
-            ctx->ycbcrWant = ctx->h264Frames;
+            if (ctx->ycbcrStale > 0) {   /* a unit taken before an earlier stop or flush */
+                ctx->ycbcrStale--;
+                continue;
+            }
+            got = 1;
+            break;
         }
     }
 #endif
+    const int64_t pts = got ? ycbcr_au_pop(ctx) : -1;
+    ycbcr_drop_held(ctx);
     if (got) {
         uint64_t bytes = 0;
         uint32_t stored = ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height, &bytes);
@@ -1577,7 +1642,7 @@ uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t bufPtr, uint32_t
             MEM_W32(statusAddr, 0u);
             return stored;
         }
-        ycbcr_picture_set(mpegAddr, bytes, -1);
+        ycbcr_picture_set(mpegAddr, bytes, pts);
     }
     MEM_W32(statusAddr, got ? 1u : 0u);
     return 0;
@@ -1890,13 +1955,15 @@ uint32_t mpeg_flush_stream(uint32_t mpegAddr, uint32_t sid) {
     return 0;
 }
 
-/* sceMpegAvcDecodeFlush(mpeg): clear queued video decoding state and reset
- * the video timestamp to stream start. Public behaviour reference: PSPSDK
- * pspmpeg.h and PPSSPP Core/HLE/sceMpeg.cpp. */
+/* sceMpegAvcDecodeFlush(mpeg): the video decoder drops the pictures it holds (ycbcr_drop_held, an
+ * unmeasured model) and the video timestamp goes back to the stream's start.  The ring is left
+ * alone.  A guest PSMF player calls this from its start and restart path, not once a frame.
+ * Public behaviour reference: PSPSDK pspmpeg.h and PPSSPP Core/HLE/sceMpeg.cpp. */
 uint32_t mpeg_avc_decode_flush(uint32_t mpegAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     ctx->videoPts = ctx->firstTimestamp;
     ctx->videoEnd = 0;
+    ycbcr_drop_held(ctx);
     return 0;
 }

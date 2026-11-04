@@ -1225,24 +1225,17 @@ static uint32_t h_MpegFlushStream(CpuState *s) {
 #endif
 }
 
-/* sceMpegAvcDecodeFlush(mpeg): flush queued AVC decoding frames/packets.
- * Public behaviour reference: PSPSDK pspmpeg.h and PPSSPP Core/HLE/sceMpeg.cpp.
- * Resets the ring packet counters and any pending AVC decode timestamps. */
+/* sceMpegAvcDecodeFlush(mpeg): flush the video decoder's pending state (the AVC timestamp).
+ * The ring is left alone: PPSSPP's handler (a2001917, Core/HLE/sceMpeg.cpp) does not touch it,
+ * only sceMpegFlushAllStream clears its counters, and a guest PSMF player calls this on entering
+ * its decode state with the whole movie already in the ring, then reads the ring's free space
+ * (#286). What a PSP's decoder discards here is unmeasured. */
 static uint32_t h_MpegAvcDecodeFlush(CpuState *s) {
     uint32_t mpegAddr = A0;
     if (!mpegAddr || !sr_guest_span_readable(mpegAddr, 4u)) return 0x80020003u;
 #ifndef SR_HLE_THREAD_SELFTEST
     mpeg_avc_decode_flush(mpegAddr);
 #endif
-    uint32_t h = MEM_R32(mpegAddr);
-    if (h && sr_guest_span_readable(h, 24u)) {
-        uint32_t ring = MEM_R32(h + 16u);
-        if (ring && sr_guest_span_writable(ring, MPEG_RB_BYTES)) {
-            MEM_W32(ring + MPEG_RB_PACKETS_READ, 0u);
-            MEM_W32(ring + MPEG_RB_PACKETS_WRITE_POS, 0u);
-            MEM_W32(ring + MPEG_RB_PACKETS_AVAIL, 0u);
-        }
-    }
     return 0;
 }
 void hle_register_mpeg_shared_handlers(void) {

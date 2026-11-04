@@ -2253,9 +2253,15 @@ static void test_mpeg_ycbcr_guest_decode(void) {
     MEM_W32(TD_PTR, TD_YCBCR);
     MEM_W32(TD_INIT, 0xdeadbeefu);
     memset(SR_HOST(TD_AU), 0, 24u);
+    /* PSP-MPEG-001: the decoder runs one access unit behind. */
+    CHECK(guest_mpeg_import(NID_DECODE_YCBCR, TD_DESC, TD_AU, TD_PTR, TD_INIT, 0u) == 0u &&
+              MEM_R32(TD_INIT) == 0u && MEM_R32(TD_YCBCR) == 0u && MEM_R32(TD_YCBCR + 4u) == 0u &&
+              guest_bytes_are(MEM_R32(TD_YCBCR + 16u), 1536u, 0xa5u),
+          "ycbcr-decode: the first DecodeYCbCr returns 0 with init 0 and writes no picture");
+    MEM_W32(TD_INIT, 0xdeadbeefu);
     CHECK(guest_mpeg_import(NID_DECODE_YCBCR, TD_DESC, TD_AU, TD_PTR, TD_INIT, 0u) == 0u &&
               MEM_R32(TD_INIT) == 1u,
-          "ycbcr-decode: DecodeYCbCr decodes a picture and sets init");
+          "ycbcr-decode: the next DecodeYCbCr hands over the first access unit's picture and sets init");
     CHECK(MEM_R32(TD_YCBCR) == 4u && MEM_R32(TD_YCBCR + 4u) == 4u,
           "ycbcr-decode: words 0 and 1 are the decoded height and width in 16-pixel units");
     int exact = 1;
@@ -2318,6 +2324,103 @@ static void test_mpeg_ycbcr_guest_decode(void) {
     CHECK(guest_mpeg_import(NID_STOP_YCBCR, TD_DESC, TD_PTR, TD_INIT, 0u, 0u) == 0u && MEM_R32(TD_INIT) == 0u,
           "ycbcr-decode: with no picture left DecodeStopYCbCr reports status 0");
     sr_h264_destroy(ref);
+    mpeg_finish();
+}
+
+/* After sceMpegAvcDecodeStopYCbCr (via_flush 0) or sceMpegAvcDecodeFlush (via_flush 1) in
+ * mid-stream, the next sceMpegAvcDecodeYCbCr is a first call after the decoder starts: 0 with init
+ * 0, as PSP-MPEG-001 measured for a fresh decoder, and the call after it hands over the first
+ * access unit taken after the stop.  The host decoder still holds the picture of the unit taken
+ * just before the stop (here its data reaches the host only after the stop, as a picture a
+ * holding decoder gives up late) and that picture is dropped.  The model is unmeasured on the
+ * PSP after a stop in mid-stream (#279, #286). */
+static void test_mpeg_ycbcr_restart_after_stop(int via_flush) {
+    enum {
+        RS_DESC = 0x08100000u, RS_DATA = 0x08110000u, RS_YCBCR = 0x08130000u, RS_PTR = 0x08160000u,
+        RS_INIT = 0x08170000u, RS_AU = 0x08180000u, RS_MODE = 0x08190000u,
+    };
+    static const char *const tag[2] = {"stop", "flush"};
+    const uint32_t avc_decode_flush_nid = 0x4571cc64u;
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES], es_len = 0;
+    static uint8_t es[65536];
+    char msg[160];
+#define RS_CHECK(x, text) do { snprintf(msg, sizeof msg, text, tag[via_flush]); CHECK((x), msg); } while (0)
+    s_fixture_textured = 1;
+    int built = build_stream(es, sizeof(es), au_off, au_len, &es_len);
+    s_fixture_textured = 0;
+    RS_CHECK(built, "ycbcr-restart (%s): the textured I_PCM stream builds");
+    if (!built) return;
+    MEM_W32(RS_DESC, 0u);
+    RS_CHECK(mpeg_create(RS_DESC, RS_DATA, 0x10000u, 0, 64u, 0, 0) == 0, "ycbcr-restart (%s): a context");
+    Mpeg *ctx = mpeg_find(RS_DESC);
+    if (!ctx) return;
+    ctx->streamWidth = 64u;
+    ctx->streamHeight = 64u;
+    ctx->h264 = sr_h264_create();
+    ctx->h264Init = 1;
+    if (ctx->h264 < 0) {
+        fprintf(stderr, "SKIP: the YCbCr restart contract needs a real H.264 backend\n");
+        mpeg_finish();
+        return;
+    }
+    MEM_W32(RS_MODE, 0u);
+    MEM_W32(RS_MODE + 4u, 3u);
+    RS_CHECK(guest_mpeg_import(NID_INIT_YCBCR, RS_DESC, 1u, 64u, 64u, RS_YCBCR) == 0u &&
+                 guest_mpeg_import(NID_DECODE_MODE, RS_DESC, RS_MODE, 0u, 0u, 0u) == 0u,
+             "ycbcr-restart (%s): a 64x64 buffer and RGBA8888 output");
+    MEM_W32(RS_PTR, RS_YCBCR);
+    memset(SR_HOST(RS_AU), 0, 24u);
+    uint32_t init[4] = {0xdeadbeefu, 0xdeadbeefu, 0xdeadbeefu, 0xdeadbeefu}, status = 0xdeadbeefu;
+
+    /* The movie runs: two units taken, the first unit's picture handed over. */
+    RS_CHECK(sr_h264_submit_au(ctx->h264, es + au_off[0], au_len[0]) == 0,
+             "ycbcr-restart (%s): the first unit reaches the decoder");
+    for (int i = 0; i < 2; i++) {
+        MEM_W32(RS_INIT, 0xdeadbeefu);
+        guest_mpeg_import(NID_DECODE_YCBCR, RS_DESC, RS_AU, RS_PTR, RS_INIT, 0u);
+        init[i] = MEM_R32(RS_INIT);
+    }
+    /* A low-delay host decoder has given the first unit's picture (init 1); Media Foundation
+     * holds it until more input arrives (init 0).  Either way the first call gave none. */
+    RS_CHECK(init[0] == 0u && (init[1] == 0u || init[1] == 1u) && ctx->h264Frames == (int)init[1],
+             "ycbcr-restart (%s): the first call gives no picture, the second at most the first unit's");
+
+    /* The guest stops in mid-stream; the decoder has given no picture for the second unit. */
+    if (via_flush) {
+        RS_CHECK(guest_mpeg_import(avc_decode_flush_nid, RS_DESC, 0u, 0u, 0u, 0u) == 0u,
+                 "ycbcr-restart (%s): AvcDecodeFlush takes the context");
+    } else {
+        MEM_W32(RS_INIT, 0xdeadbeefu);
+        RS_CHECK(guest_mpeg_import(NID_STOP_YCBCR, RS_DESC, RS_PTR, RS_INIT, 0u, 0u) == 0u,
+                 "ycbcr-restart (%s): DecodeStopYCbCr returns 0");
+        status = MEM_R32(RS_INIT);
+        RS_CHECK(status == 0u, "ycbcr-restart (%s): with no picture to give the stop reports status 0");
+    }
+
+    /* The held unit's picture reaches the host late, then the restarted movie's first unit. */
+    RS_CHECK(sr_h264_submit_au(ctx->h264, es + au_off[1], au_len[1]) == 0 &&
+                 sr_h264_submit_au(ctx->h264, es + au_off[2], au_len[2]) == 0,
+             "ycbcr-restart (%s): the late and the new unit reach the decoder");
+    MEM_W32(RS_INIT, 0xdeadbeefu);
+    RS_CHECK(guest_mpeg_import(NID_DECODE_YCBCR, RS_DESC, RS_AU, RS_PTR, RS_INIT, 0u) == 0u,
+             "ycbcr-restart (%s): the first DecodeYCbCr after the restart returns 0");
+    init[2] = MEM_R32(RS_INIT);
+    RS_CHECK(init[2] == 0u,
+             "ycbcr-restart (%s): the first DecodeYCbCr after the restart gives init 0, not the held picture");
+    /* The whole restarted movie is in the decoder: its first unit's picture comes next. */
+    ctx->streamEnded = 1;
+    MEM_W32(RS_INIT, 0xdeadbeefu);
+    guest_mpeg_import(NID_DECODE_YCBCR, RS_DESC, RS_AU, RS_PTR, RS_INIT, 0u);
+    init[3] = MEM_R32(RS_INIT);
+    RS_CHECK(init[3] == 1u && ctx->h264Frames == 3,
+             "ycbcr-restart (%s): the next call hands over the restarted movie's first picture");
+    RS_CHECK(ctx->ycbcrAuCount == 1u,
+             "ycbcr-restart (%s): only the last unit's time waits for its picture");
+    if (init[2] != 0u || init[3] != 1u)
+        fprintf(stderr, "ycbcr-restart (%s): init %u %u %u %u, status %u, frames %d, times %u\n",
+                tag[via_flush], init[0], init[1], init[2], init[3], status, ctx->h264Frames,
+                ctx->ycbcrAuCount);
+#undef RS_CHECK
     mpeg_finish();
 }
 
@@ -4566,6 +4669,28 @@ static void test_mpeg_atrac_au_decode(void) {
           "mpeg-atrac: FlushStream keeps the frame the game holds");
     CHECK(mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u,
           "mpeg-atrac: FlushStream keeps the frames still queued");
+    /* sceMpegAvcDecodeFlush (0x4571cc64) through the production handler flushes the video decoder
+     * and leaves the ring alone. A guest PSMF player fills the ring with the whole movie, then calls
+     * it on entering its decode state and reads sceMpegRingbufferAvailableSize next; a reset there
+     * read as an empty ring, and that player stopped its video without asking for an access unit
+     * (#286). PPSSPP's handler (a2001917, Core/HLE/sceMpeg.cpp) does not touch the ring either;
+     * only sceMpegFlushAllStream clears its counters. */
+    const uint32_t avc_decode_flush_nid = 0x4571cc64u;
+    avail_before = MEM_R32(AT_RING + 12u);
+    read_before = MEM_R32(AT_RING + 4u);
+    uint32_t write_before = MEM_R32(AT_RING + 8u);
+    uint32_t free_before = mpeg_ringbuffer_available_size(AT_RING);
+    CHECK(avail_before != 0u || read_before != 0u || write_before != 0u,
+          "mpeg-atrac: the ring holds fed packets before AvcDecodeFlush");
+    CHECK(guest_mpeg_import(avc_decode_flush_nid, AT_DESC, 0u, 0u, 0u, 0u) == 0u,
+          "mpeg-atrac: AvcDecodeFlush returns 0");
+    CHECK(MEM_R32(AT_RING + 12u) == avail_before && MEM_R32(AT_RING + 4u) == read_before &&
+              MEM_R32(AT_RING + 8u) == write_before,
+          "mpeg-atrac: AvcDecodeFlush leaves the ring counters alone");
+    CHECK(mpeg_ringbuffer_available_size(AT_RING) == free_before,
+          "mpeg-atrac: after AvcDecodeFlush the ring reports the same free space");
+    CHECK(guest_mpeg_import(avc_decode_flush_nid, 0u, 0u, 0u, 0u, 0u) == 0x80020003u,
+          "mpeg-atrac: AvcDecodeFlush refuses a null context pointer");
     CHECK(guest_mpeg_import(flush_stream_nid, AT_DESC, sid + 1000u, 0u, 0u, 0u) == SCE_MPEG_ERROR_INVALID_VALUE,
           "mpeg-atrac: FlushStream refuses a stream id the context never issued");
     CHECK(guest_mpeg_import(flush_stream_nid, 0u, sid, 0u, 0u, 0u) == 0x80020003u,
@@ -4661,9 +4786,13 @@ static void test_mpeg_csc_presentation_boundary(int copy_planes) {
     MEM_W32(PC_PTR, PC_YCBCR);
     MEM_W32(PC_RANGE, 0u); MEM_W32(PC_RANGE + 4u, 0u);
     MEM_W32(PC_RANGE + 8u, width); MEM_W32(PC_RANGE + 12u, height);
+    MEM_W32(PC_INIT, 0xdeadbeefu);
+    CHECK(guest_mpeg_import(0xf0eb1125u, PC_DESC, PC_AU, PC_PTR, PC_INIT, 0u) == 0 && MEM_R32(PC_INIT) == 0u,
+          "sceMpeg presentation: the first access unit gives no picture yet (the decoder runs one behind)");
+    MEM_W32(PC_AU + 4u, 93003u);              /* the next unit, one frame later */
     MEM_W32(PC_INIT, 0u);
     CHECK(guest_mpeg_import(0xf0eb1125u, PC_DESC, PC_AU, PC_PTR, PC_INIT, 0u) == 0 && MEM_R32(PC_INIT) == 1u,
-          "sceMpeg presentation picture decodes");
+          "sceMpeg presentation picture decodes with the next access unit");
     CHECK(sr_hle_test_psmf_av_counter(0, "delivered") == 0,
           "sceMpeg: a decoded YCbCr picture is not delivered to the guest until sceMpegAvcCsc");
     if (copy_planes) {
@@ -4694,7 +4823,8 @@ static void test_mpeg_csc_presentation_boundary(int copy_planes) {
     const char *w = sr_hle_test_psmf_av_last_window();
     long long vo = 0;
     CHECK(av_log_field(w, " voff_us=", &vo) && vo == 1000000,
-          "sceMpeg: the picture's presentation offset is present time minus its access unit time");
+          "sceMpeg: the picture's presentation offset is present time minus the time of the access "
+          "unit it was decoded from, not of the unit given with the call that handed it over");
     mpeg_finish();
     sr_hle_test_psmf_av_reset();
 }
@@ -5171,6 +5301,8 @@ int main(int argc, char **argv) {
     test_mpeg_ycbcr_measured_contract();
     test_mpeg_ycbcr_picture_time_by_bytes();
     test_mpeg_ycbcr_guest_decode();
+    test_mpeg_ycbcr_restart_after_stop(0);
+    test_mpeg_ycbcr_restart_after_stop(1);
     test_mpeg_pcm_and_au_mode();
     test_mpeg_userdata_imports();
     test_mpeg_csc_swizzled_vram_mirrors();
