@@ -116,6 +116,7 @@ FORBIDDEN_EXTENSIONS = {
     ".elf",
     ".gim",
     ".iso",
+    ".nkcap",
     ".pbp",
     ".pmf",
     ".prx",
