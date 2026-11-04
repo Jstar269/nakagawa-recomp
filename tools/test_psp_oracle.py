@@ -9383,7 +9383,9 @@ class HleUtilityNoneProbeTests(unittest.TestCase):
         self.assertTrue(all(n.endswith(("GetStatus", "Update", "ShutdownStart")) for n in names))
         start = self.makefile.index("ifeq ($(CASE),hle-utility-none)\nUSER_MODE_IMPORT_GATE_ARGS")
         gate = self.makefile[start:self.makefile.index("\nendif\n", start)]
-        pinned = {int(n, 16) for n in re.search(r"sceUtility=([0-9A-Fx,]+)", gate).group(1).split(",")}
+        match = re.search(r"sceUtility=([0-9A-Fx,]+)", gate)
+        self.assertIsNotNone(match)
+        pinned = {int(n, 16) for n in _matched(match).group(1).split(",")}
         declared = {int(n, 16) for n in re.findall(r"0x([0-9A-F]{8}), \w+", block)}
         self.assertEqual(pinned, declared | {0xA5DA2406, 0x34B78343})
         section = self.probe[self.probe.index("#if PSP_ORACLE_CASE == HLE_CASE_UTILITY_NONE\n\n"):
