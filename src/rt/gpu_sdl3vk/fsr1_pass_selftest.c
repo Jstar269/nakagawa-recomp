@@ -10,6 +10,8 @@
  *   flat-exact      a flat colour from a BGRA source stays that colour in every pixel at a
  *                   non-integer ratio (480x272 to 1355x768): no channel swap, no stray edge texels
  *   source-unread   the pass never writes the image it is given, and returns its own
+ *   cost            GPU time of EASU alone and of EASU + RCAS from 1920x1088 (4x render scale) to
+ *                   3840x2160, by timestamp queries, median of 15 (reported, not judged)
  *
  * --easu-spv FILE runs the edge cells with another EASU shader (a mutant); they must then fail.
  * Exit 77 (SKIP) without a Vulkan loader or device.
@@ -60,7 +62,9 @@ GPU_FN(CreateBuffer); GPU_FN(DestroyBuffer); GPU_FN(GetBufferMemoryRequirements)
 GPU_FN(AllocateMemory); GPU_FN(FreeMemory); GPU_FN(BindImageMemory); GPU_FN(BindBufferMemory);
 GPU_FN(MapMemory); GPU_FN(BeginCommandBuffer); GPU_FN(EndCommandBuffer); GPU_FN(ResetCommandBuffer);
 GPU_FN(CmdPipelineBarrier); GPU_FN(CmdCopyImageToBuffer); GPU_FN(CmdCopyBufferToImage);
-GPU_FN(CmdBlitImage);
+GPU_FN(CmdBlitImage); GPU_FN(GetPhysicalDeviceProperties);
+GPU_FN(CreateQueryPool); GPU_FN(DestroyQueryPool); GPU_FN(CmdResetQueryPool);
+GPU_FN(CmdWriteTimestamp); GPU_FN(GetQueryPoolResults);
 GPU_FN(QueueSubmit); GPU_FN(DeviceWaitIdle);
 #undef GPU_FN
 
@@ -72,7 +76,7 @@ static uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags want) {
     return UINT32_MAX;
 }
 
-#define XFER_BYTES (1360u * 768u * 4u)
+#define XFER_BYTES (2048u * 1088u * 4u)
 
 static int gpu_open(char *why, size_t cap) {
 #if defined(_WIN32)
@@ -97,6 +101,7 @@ static int gpu_open(char *why, size_t cap) {
 #define INST(name) name = (PFN_vk##name)g.gipa(g.instance, "vk" #name)
     INST(DestroyInstance); INST(EnumeratePhysicalDevices); INST(GetPhysicalDeviceQueueFamilyProperties);
     INST(GetPhysicalDeviceMemoryProperties); INST(CreateDevice); INST(GetDeviceProcAddr);
+    INST(GetPhysicalDeviceProperties);
 #undef INST
     VkPhysicalDevice devs[8];
     uint32_t nd = 8;
@@ -140,7 +145,8 @@ static int gpu_open(char *why, size_t cap) {
     DEV(FreeMemory); DEV(BindImageMemory); DEV(BindBufferMemory); DEV(MapMemory);
     DEV(BeginCommandBuffer); DEV(EndCommandBuffer); DEV(ResetCommandBuffer); DEV(CmdPipelineBarrier);
     DEV(CmdCopyImageToBuffer); DEV(CmdCopyBufferToImage); DEV(QueueSubmit); DEV(DeviceWaitIdle);
-    DEV(CmdBlitImage);
+    DEV(CmdBlitImage); DEV(CreateQueryPool); DEV(DestroyQueryPool); DEV(CmdResetQueryPool);
+    DEV(CmdWriteTimestamp); DEV(GetQueryPoolResults);
 #undef DEV
     GetDeviceQueue(g.device, g.family, 0, &g.queue);
     VkCommandPoolCreateInfo pci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL,
@@ -438,6 +444,58 @@ static void cell_source(Fsr1Pass *p) {
     image_free(&src);
 }
 
+static int cmp_double(const void *a, const void *b) {
+    double x = *(const double *)a, y = *(const double *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* cost: the GPU time of the pass at the showcase's size, 4x render scale to a 4K window. */
+static void cell_cost(Fsr1Pass *p) {
+    const int w = 1920, h = 1088, ow = 3840, oh = 2160;
+    VkPhysicalDeviceProperties props;
+    GetPhysicalDeviceProperties(g.physical, &props);
+    if (props.limits.timestampPeriod <= 0.0f) { printf("fsr1-selftest: cost not measured (no timestamps)\n"); return; }
+    Source src;
+    memset(&src, 0, sizeof(src));
+    if (!image_make(&src, w, h, VK_FORMAT_R8G8B8A8_UNORM)) { CHECK(0, "source image"); return; }
+    for (int i = 0; i < 1024 * 1024; i++) g.map[i] = (uint32_t)i * 2654435761u | 0xFF000000u;
+    source_fill(&src, 1024, 1024, 1);
+    VkQueryPoolCreateInfo qi;
+    memset(&qi, 0, sizeof(qi));
+    qi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    qi.queryCount = 2;
+    VkQueryPool pool = VK_NULL_HANDLE;
+    if (CreateQueryPool(g.device, &qi, NULL, &pool) != VK_SUCCESS) { CHECK(0, "query pool"); image_free(&src); return; }
+    const char *names[2] = { "EASU", "EASU + RCAS" };
+    const float sharp[2] = { FSR1_SHARPNESS_OFF, FSR1_SHARPNESS_DEFAULT };
+    for (int k = 0; k < 2; k++) {
+        double ms[15];
+        int n = 0;
+        for (int r = 0; r < 16; r++) {
+            cmd_begin();
+            CmdResetQueryPool(g.cb, pool, 0, 2);
+            CmdWriteTimestamp(g.cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, pool, 0);
+            VkImage out = fsr1_record(p, g.cb, src.image, w, h, ow, oh, sharp[k]);
+            CmdWriteTimestamp(g.cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool, 1);
+            cmd_end();
+            CHECK(out != VK_NULL_HANDLE, "the 4K pass recorded");
+            uint64_t t[2] = { 0, 0 };
+            if (GetQueryPoolResults(g.device, pool, 0, 2, sizeof t, t, sizeof t[0],
+                                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS) continue;
+            if (r == 0) continue;  /* the first run builds the images */
+            ms[n++] = (double)(t[1] - t[0]) * props.limits.timestampPeriod / 1e6;
+        }
+        if (n) {
+            qsort(ms, (size_t)n, sizeof ms[0], cmp_double);
+            printf("fsr1-selftest: cost of %s, 1920x1088 to 3840x2160 on %s: %.3f ms (median of %d)\n",
+                   names[k], props.deviceName, ms[n / 2], n);
+        }
+    }
+    DestroyQueryPool(g.device, pool, NULL);
+    image_free(&src);
+}
+
 static uint32_t *read_spirv(const char *path, size_t *bytes) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -486,6 +544,7 @@ int main(int argc, char **argv) {
         if (!s_mutant) {
             cell_flat(p);
             cell_source(p);
+            cell_cost(p);
         }
         fsr1_destroy(p);
     }

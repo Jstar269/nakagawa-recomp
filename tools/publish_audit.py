@@ -1280,6 +1280,9 @@ SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({
     "third_party/clay/clay.h",
     "src/rt/minimp3/minimp3.h",
     "third_party/dr_libs/dr_wav.h",
+    # AMD FidelityFX FSR 1 (MIT): the notice is in the header comment, without an SPDX line upstream.
+    "third_party/fidelityfx_fsr1/ffx_a.h",
+    "third_party/fidelityfx_fsr1/ffx_fsr1.h",
     "third_party/portable-snippets/safe-math/safe-math.h",
     "third_party/stb/stb_image.h",
     # Monocypher declares its SPDX line below the 8-line header window.
@@ -1340,6 +1343,8 @@ SPDX_GENERATED_EMBEDDING_SOURCES = {
     "src/rt/gpu_sdl3vk/psp_tnl_vert.inc": "src/rt/gpu_sdl3vk/shaders/psp_tnl.vert",
     "src/rt/gpu_sdl3vk/ace_match_comp.inc": "src/rt/gpu_sdl3vk/shaders/ace_match.comp",
     "src/rt/gpu_sdl3vk/ace_compose_comp.inc": "src/rt/gpu_sdl3vk/shaders/ace_compose.comp",
+    "src/rt/gpu_sdl3vk/fsr1_easu_comp.inc": "src/rt/gpu_sdl3vk/shaders/fsr1_easu.comp",
+    "src/rt/gpu_sdl3vk/fsr1_rcas_comp.inc": "src/rt/gpu_sdl3vk/shaders/fsr1_rcas.comp",
 }
 
 
