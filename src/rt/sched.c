@@ -2759,10 +2759,11 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
      * had become a text/code address before the loader thread dereferenced it.
      *
      * The copy sits directly under the k0 block, where a PSP puts it (start.expected:
-     * argv = stack + size - 0x100 - round16(len)), and the entry's sp is the copy's
-     * address, so an ordinary downward-growing prologue cannot overwrite it. Without
-     * an argument the sp is the thread's initial sp, 0x10 under k0 (unmeasured).
-     * Sixteen-byte rounding preserves the PSP ABI stack alignment. */
+     * argv = stack + size - 0x100 - round16(len)), and the entry's sp is 0x40 below the copy
+     * (docs/HARDWARE_ORACLE.md PSP-NULLCODE-001: argv 0x0b7eecf0, sp 0x0b7eecb0 for a four-byte
+     * block; the 0x40 is measured only at that one length), so an ordinary downward-growing
+     * prologue cannot overwrite the argument. Without an argument the sp is the thread's initial
+     * sp, 0x10 under k0 (unmeasured). Sixteen-byte rounding preserves the PSP ABI stack alignment. */
     t->arglen = arglen;
     t->argp = 0;
     t->exit_status = (int32_t)0x800201a4u; /* SCE_KERNEL_ERROR_NOT_DORMANT */
@@ -2787,11 +2788,15 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
             if (rounded > arglen)
                 memset(SR_HOST(dst + arglen), 0, rounded - arglen);
             t->argp = dst;
-            t->saved.r[29] = dst;
+            /* sp = argv - 0x40 (PSP-NULLCODE-001); a block that fills the stack to its base keeps sp = argv. */
+            t->saved.r[29] = dst - 0x40u >= stack_base ? dst - 0x40u : dst;
             if (getenv("SR_THLOG") || getenv("SR_ARGLOG"))
                 fprintf(stderr,
                         "THREAD_ARG_COPY: uid=0x%x len=%u src=0x%08x dst=0x%08x sp=0x%08x\n",
                         t->uid, arglen, argp, dst, t->saved.r[29]);
+        } else if (argp == 0u) {
+            /* A NULL block with a length starts the thread with no argument (start.expected "With NULL ptr"). */
+            t->arglen = 0;
         } else {
             fprintf(stderr,
                     "sched_start_thread: invalid argument block uid=0x%x len=%u "

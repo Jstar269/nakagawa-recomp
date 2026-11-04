@@ -19529,7 +19529,7 @@ static void test_start_thread_contract(void) {
 
     /* "Argument length": the block sits at stack + size - 0x100 - round16(len). */
     static const struct { uint32_t len, offset; } placed[] = {
-        {1u, 0x6f0u}, {2u, 0x6f0u}, {8u, 0x6f0u}, {80u, 0x6b0u}, {90u, 0x6a0u}, {0x600u, 0x100u},
+        {1u, 0x6f0u}, {2u, 0x6f0u}, {4u, 0x6f0u}, {8u, 0x6f0u}, {80u, 0x6b0u}, {90u, 0x6a0u}, {0x600u, 0x100u},
     };
     for (size_t i = 0; i < sizeof(placed) / sizeof(placed[0]); i++) {
         uint32_t uid = ctc_create(CTC_NAME, CTC_ENTRY, 0x30u, 0x800u, 0u);
@@ -19539,6 +19539,23 @@ static void test_start_thread_contract(void) {
         expect(pt && pt->argp == pt->stack_base + placed[i].offset && (pt->argp & 0xfu) == 0u &&
                memcmp(SR_HOST(pt->argp), SR_HOST(CTC_ARG), placed[i].len) == 0,
                "StartThread copies the block to the PSP-measured stack offset");
+        /* PSP-NULLCODE-001 (docs/HARDWARE_ORACLE.md): a four-byte block at argv 0x0b7eecf0 enters with
+         * sp 0x0b7eecb0, 0x40 under the block. */
+        expect(pt && pt->saved.r[29] == pt->argp - 0x40u,
+               "StartThread enters the thread with sp 0x40 below the copied block");
+        ctc_remove(uid);
+    }
+
+    /* A block in the scratchpad is memory a user thread can read: it is accepted and copied. Only the
+     * 0xdeadbeef and 0x80000000 blocks are measured as refused (above); kernel-segment blocks are
+     * unmeasured and not pinned here. */
+    {
+        uint32_t uid = ctc_create(CTC_NAME, CTC_ENTRY, 0x30u, 0x800u, 0u);
+        TCB *pt = tcb_by_uid(uid);
+        for (uint32_t i = 0; i < 4u; i++) MEM_W8(0x00010000u + i, (uint8_t)(0xa0u + i));
+        expect(pt && ctc_start(uid, 4u, 0x00010000u) == 0u && pt->argp != 0u &&
+                   memcmp(SR_HOST(pt->argp), SR_HOST(0x00010000u), 4u) == 0,
+               "StartThread accepts and copies a block in the scratchpad");
         ctc_remove(uid);
     }
 
@@ -19907,12 +19924,13 @@ static uint32_t sfs_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1, 
     cpu->r[6] = a2;
     cpu->r[7] = 0x1000u;   /* stack size, read only by CreateThread */
     cpu->r[8] = t0;        /* attribute, the fifth argument: read only by CreateThread */
-    if (nid == NID_SCE_KERNEL_CREATE_THREAD && a0 == 0u) {
-        /* A PSP refuses a NULL thread name (create.expected), so a create names its thread. */
-        title_hle_write_cstr(SFS_ARG_ADDR + 0x100u, "sfs-thread");
-        cpu->r[4] = SFS_ARG_ADDR + 0x100u;
-    }
     return sr_syscall(cpu, nid);
+}
+
+/* A PSP refuses a NULL thread name (create.expected), so the creates below pass a real one. */
+static uint32_t sfs_thread_name(void) {
+    title_hle_write_cstr(SFS_ARG_ADDR + 0x100u, "sfs-thread");
+    return SFS_ARG_ADDR + 0x100u;
 }
 
 static uint32_t sfs_free(CpuState *cpu, uint32_t uid) {
@@ -19963,7 +19981,7 @@ static void sfs_main_fn(CpuState *cpu) {
            "stack free: the caller's own UID sees the same used stack as UID 0");
 
     /* Created, never started: its own stack, filled at creation ("Created"). */
-    const uint32_t created = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+    const uint32_t created = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, sfs_thread_name(), SFS_IDLE_ENTRY,
                                       0x30u, 0u);
     TCB *ct = tcb_by_uid(created);
     expect(ct && ct->stack_size == 0x1000u && MEM_R32(ct->stack_base) == created &&
@@ -19977,7 +19995,7 @@ static void sfs_main_fn(CpuState *cpu) {
            "stack free: a created thread answers its own untouched stack, not the caller's");
 
     /* NO_FILLSTACK: nothing is filled and the free size is 0. */
-    const uint32_t nofill = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+    const uint32_t nofill = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, sfs_thread_name(), SFS_IDLE_ENTRY,
                                      0x30u, SFS_ATTR_NO_FILLSTACK);
     TCB *nt = tcb_by_uid(nofill);
     expect(nt && MEM_R8(nt->stack_base + SFS_SKIP) == 0u && MEM_R8(nt->k0_init - 1u) == 0u &&
@@ -19987,7 +20005,7 @@ static void sfs_main_fn(CpuState *cpu) {
            "stack free: a NO_FILLSTACK thread answers 0");
 
     /* Ready, started with a 4-byte argument block, then suspended ("Ready", "Suspended"). */
-    const uint32_t ready = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
+    const uint32_t ready = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, sfs_thread_name(), SFS_IDLE_ENTRY,
                                     0x30u, 0u);
     MEM_W32(SFS_ARG_ADDR, 0x01020304u);   /* no 0xFF byte in the copied argument */
     expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, ready, 4u, SFS_ARG_ADDR, 0u) == 0u,
@@ -20002,7 +20020,7 @@ static void sfs_main_fn(CpuState *cpu) {
            "stack free: a suspended thread answers its free size");
 
     /* A stronger thread runs at StartThread, measures itself and finishes ("Finished"). */
-    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_WORKER_ENTRY,
+    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, sfs_thread_name(), SFS_WORKER_ENTRY,
                                      0x10u, 0u);
     expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, worker, 0u, 0u, 0u) == 0u,
            "stack free: the stronger thread starts");
@@ -20101,7 +20119,7 @@ static void cts_main_fn(CpuState *cpu) {
     expect(main_check == sp - self->stack_base && main_check > 0x00030000u,
            "check stack: the main thread reads $sp minus its stack's low end, above 0x30000");
 
-    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, CTS_WORKER_ENTRY,
+    const uint32_t worker = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, sfs_thread_name(), CTS_WORKER_ENTRY,
                                      0x10u, 0u);
     expect(sfs_call(cpu, NID_SCE_KERNEL_START_THREAD, worker, 0u, 0u, 0u) == 0u,
            "check stack: the 0x1000-byte worker starts");
@@ -36548,15 +36566,14 @@ static uint32_t oracle_syscall4(CpuState *cpu, uint32_t nid,
     cpu->r[5] = a1;
     cpu->r[6] = a2;
     cpu->r[7] = a3;
-    if (nid == ORACLE_NID_CREATE_THREAD) {
-        /* A PSP refuses a NULL thread name (create.expected); the oracle creates are default-attribute. */
-        if (a0 == 0u) {
-            title_hle_write_cstr(0x08301800u, "oracle-thread");
-            cpu->r[4] = 0x08301800u;
-        }
-        cpu->r[8] = 0u;
-    }
+    if (nid == ORACLE_NID_CREATE_THREAD) cpu->r[8] = 0u;   /* the oracle creates are default-attribute */
     return sr_syscall(cpu, nid);
+}
+
+/* A PSP refuses a NULL thread name (create.expected), so the oracle creates pass a real one. */
+static uint32_t oracle_thread_name(void) {
+    title_hle_write_cstr(0x08301800u, "oracle-thread");
+    return 0x08301800u;
 }
 
 static int oracle_setup_owner(TCB **out_owner) {
@@ -36676,7 +36693,7 @@ static int oracle_thread_lifecycle_case(uint32_t *out0, uint32_t *out1,
     TCB *owner = NULL;
     if (!oracle_setup_owner(&owner)) return ORACLE_UNAVAILABLE;
     s_exit_argument = 0x42;
-    uint32_t thid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t thid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                     ORACLE_THREAD_ENTRY, 32, 0x4000u);
     if (thid & 0x80000000u) {
         fprintf(stderr, "psp-oracle thread-lifecycle unavailable: CreateThread returned 0x%08x\n", thid);
@@ -36722,7 +36739,7 @@ static int oracle_thread_delete_case(uint32_t *out0, uint32_t *out1,
     uint32_t current_delete = oracle_syscall4(s_cpu, ORACLE_NID_DELETE_THREAD,
                                               current_uid, 0, 0, 0);
 
-    uint32_t term_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t term_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *term_target = tcb_by_uid(term_target_uid);
     if (!term_target) return ORACLE_UNAVAILABLE;
@@ -36748,7 +36765,7 @@ static int oracle_thread_delete_case(uint32_t *out0, uint32_t *out1,
     uint32_t term_post_wake = oracle_syscall4(s_cpu, ORACLE_NID_WAKEUP_THREAD,
                                               term_target_uid, 0, 0, 0);
 
-    uint32_t exit_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t exit_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *exit_target = tcb_by_uid(exit_target_uid);
     if (!exit_target) return ORACLE_UNAVAILABLE;
@@ -36813,7 +36830,7 @@ static int oracle_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
     /* The host oracle uses the production scheduler's real target lifecycle,
        while the joiner body is represented by the same observable state that
        the guest entry has after returning from its inner WaitThreadEnd. */
-    uint32_t error_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t error_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                 ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *error_target = tcb_by_uid(error_target_uid);
     if (!error_target) return ORACLE_UNAVAILABLE;
@@ -36846,7 +36863,7 @@ static int oracle_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
     uint32_t error_outer = oracle_syscall4(s_cpu, ORACLE_NID_WAIT_THREAD_END,
                                            error_joiner->uid, 0, 0, 0);
 
-    uint32_t positive_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t positive_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                    ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *positive_target = tcb_by_uid(positive_target_uid);
     if (!positive_target) return ORACLE_UNAVAILABLE;
@@ -36951,7 +36968,7 @@ static int oracle_thread_delete_exit_pair_case(uint32_t *out0, uint32_t *out1,
     TCB *owner = NULL;
     if (!oracle_setup_owner(&owner)) return ORACLE_UNAVAILABLE;
 
-    uint32_t error_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t error_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                 ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *error_target = tcb_by_uid(error_target_uid);
     if (!error_target) return ORACLE_UNAVAILABLE;
@@ -36960,7 +36977,7 @@ static int oracle_thread_delete_exit_pair_case(uint32_t *out0, uint32_t *out1,
     s_oracle_thread_action = ORACLE_THREAD_ACTION_SLEEP;
     run_worker(error_target);
 
-    uint32_t error_joiner_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t error_joiner_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                 ORACLE_THREAD_ENTRY, 16, 0x4000u);
     TCB *error_joiner = tcb_by_uid(error_joiner_uid);
     if (!error_joiner) return ORACLE_UNAVAILABLE;
@@ -36992,7 +37009,7 @@ static int oracle_thread_delete_exit_pair_case(uint32_t *out0, uint32_t *out1,
     }
     (void)oracle_syscall4(s_cpu, ORACLE_NID_DELETE_THREAD, error_joiner_uid, 0, 0, 0);
 
-    uint32_t positive_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t positive_target_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                    ORACLE_THREAD_ENTRY, 48, 0x4000u);
     TCB *positive_target = tcb_by_uid(positive_target_uid);
     if (!positive_target) return ORACLE_UNAVAILABLE;
@@ -37001,7 +37018,7 @@ static int oracle_thread_delete_exit_pair_case(uint32_t *out0, uint32_t *out1,
     s_oracle_thread_action = ORACLE_THREAD_ACTION_SLEEP;
     run_worker(positive_target);
 
-    uint32_t positive_joiner_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, 0,
+    uint32_t positive_joiner_uid = oracle_syscall4(s_cpu, ORACLE_NID_CREATE_THREAD, oracle_thread_name(),
                                                    ORACLE_THREAD_ENTRY, 16, 0x4000u);
     TCB *positive_joiner = tcb_by_uid(positive_joiner_uid);
     if (!positive_joiner) return ORACLE_UNAVAILABLE;

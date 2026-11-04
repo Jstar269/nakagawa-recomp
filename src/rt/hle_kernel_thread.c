@@ -58,13 +58,17 @@ static uint32_t h_StartThread(CpuState *s) {
      * runs a higher-priority started thread immediately. */
     uint32_t thid = A0;
     /* PSPAutotests tests/threads/threads/start.expected (recorded on a PSP, 2ed7c9c5): an argument
-     * length that is negative as a signed int, or a non-NULL block that is not memory the guest can
-     * read (0xDEADBEEF, 0x80000000 -- physical page zero is no memory on a PSP), refuses with
-     * 0x800200d3 and leaves the thread dormant. A NULL block starts the thread with no argument.
-     * Only a dormant thread reaches this check, so the id and state errors keep their results. */
+     * length that is negative as a signed int, or a non-NULL block at 0xDEADBEEF or 0x80000000,
+     * refuses with 0x800200d3 and leaves the thread dormant. A NULL block starts the thread with no
+     * argument. Those are the only block addresses the cells measure. The runtime refuses a block
+     * that is not readable guest memory, plus any block whose physical address is under the
+     * scratchpad (0x00010000), which is what makes 0x80000000 (physical 0) refuse. Scratchpad and
+     * kernel-segment blocks (0x88800000) are unmeasured: the first is accepted, the second is accepted
+     * here too although a PSP's user-pointer check may refuse it. Only a dormant thread reaches this
+     * check, so the id and state errors keep their results. */
     if (sched_is_dormant(thid) &&
         ((int32_t)A1 < 0 ||
-         (A1 != 0u && A2 != 0u && (SR_PHYS(A2) < 0x04000000u || !sr_guest_span_readable(A2, A1)))))
+         (A1 != 0u && A2 != 0u && (SR_PHYS(A2) < 0x00010000u || !sr_guest_span_readable(A2, A1)))))
         return SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR;
     uint32_t result = sched_start_thread(thid, A1, A2);
     /* Historical "libc_main_thid" re-seed -- REMOVED. Statically and dynamically proven

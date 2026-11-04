@@ -402,8 +402,8 @@ Semantic handler census: **557** handlers across **27** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_umd_io_console_model
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0000..0005)
 - **`h_IoDread`** (`sceIo`): `sceIoDread` (0xe3eb004c)
-  - Limitation: the PSP lists '.' and '..' (with a 4096-byte '..'), upper-cases 8.3 names and fills times; the runtime's listing order, size of directory entries, names' case and timestamps are not compared, and only ms0: listings take the FAT mode/attr: disc0 and flash0 listings keep their 0x124 mode bits, which no cell measures (#341)
-  - Evidence: PSPAutotests tests/io/directory/directory.expected (recorded on a PSP): a bad descriptor returns 0x80020323; tests/io/stat/stat.expected: the listing reports the same mode and attr as sceIoGetstat
+  - Limitation: the PSP lists '.' and '..' (with a 4096-byte '..'), upper-cases 8.3 names and fills times; the runtime's listing order, size of directory entries, names' case and timestamps are not compared, d_private is zeroed where a PSP leaves the caller's pointer, st_private[0] carries the LBA, and only ms0:, fatms0: and device-less listings take the FAT mode/attr: disc0 and flash0 listings keep their 0x124 mode bits, which no cell measures (#341)
+  - Evidence: PSPAutotests tests/io/directory/directory.expected (2ed7c9c5, recorded on a PSP): a bad descriptor returns 0x80020323; tests/io/stat/stat.expected (1a9e6c31): the listing reports the same mode and attr as sceIoGetstat
   - Evidence: tests/native/hle_thread_selftest.c:test_fd_namespace
   - Evidence: tests/native/hle_thread_selftest.c:test_ms0_unified_namespace
 - **`h_IoGetAsyncStat`** (`sceIo`): `sceIoGetAsyncStat` (0xcb05f8d6)
@@ -411,7 +411,7 @@ Semantic handler census: **557** handlers across **27** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoGetstat`** (`sceIo`): `sceIoGetstat` (0xace946e8)
   - Limitation: only the Memory Stick host leg is held to the recorded shape; the PSP's ctime/atime/mtime are written as zero, the ms0 volume root (0x80010016 on a PSP) and the disc, data-archive and flash0 legs have no recorded stat cell, and the SceIoStat pointer is not validated (#341)
-  - Evidence: PSPAutotests tests/io/stat/stat.expected (recorded on a PSP): an ms0 file reports mode 0x21ff attr 0x0020 and its size, a directory mode 0x11ff attr 0x0010, bytes [0..63] are written and st_private is left untouched
+  - Evidence: PSPAutotests tests/io/stat/stat.expected (1a9e6c31, recorded on a PSP): an ms0 file reports mode 0x21ff attr 0x0020 and its size, a directory mode 0x11ff attr 0x0010, bytes [0..63] are written and st_private is left untouched
   - Evidence: tests/native/hle_thread_selftest.c:test_ms0_unified_namespace
 - **`h_IoIoctlAsync`** (`sceIo`): `sceIoIoctlAsync` (0xe95a012b)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP ioctl timing and callback ordering remain unmeasured
@@ -562,7 +562,7 @@ Semantic handler census: **557** handlers across **27** API families, covering *
   - Limitation: the argument checks above match the recorded cells one argument at a time; which error wins when several arguments are wrong is not measured, kernel-mode creates (priority under 8) are not modelled, the entry check is only 'readable guest memory', the SceKernelThreadOptParam in $t1 is ignored, and the 'Create 1024' cell (a PSP fails the 29th 1 MiB stack with 0x80020190) is not reproduced because the stack arena's capacity differs (#341)
   - Evidence: PSPAutotests tests/threads/threads/create.expected (2ed7c9c5, recorded on a PSP): NULL name 0x80020001, a 64-character name cut to 31, attribute bits outside 0xf8f060ff 0x80020191, stack under 0x200 0x80020194, 0x01000001 rounded to 0x01000100, priority outside 8..0x77 0x80020193, NULL entry creates, 0xDEADBEEF entry 0x800200D3, two threads with one name
   - Evidence: tests/native/hle_thread_selftest.c:test_create_thread_contract
-  - Evidence: docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: CreateThread(NULL) returned a UID)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: CreateThread with a NULL entry returned a UID)
   - Evidence: docs/research/PSP_THREADING_SEMANTICS.md (FIRMWARE_CREATE_THREAD_ARG5_T0: attribute arrives in $t0)
 - **`h_CreateVTimer`** (`sceKernel`): `sceKernelCreateVTimer` (0x20fff560)
   - Limitation: the option struct is ignored, as on a PSP (pspautotests vtimers/create.expected at 2ed7c9c5, recorded on a PSP: every declared size creates the same timer), and an unreadable one stops the run by name; 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64, while the same PSP-recorded output shows 1024 creates succeed; a NULL name is accepted here, where that output shows 0x80020001; the no-slot code 0x80020190 is unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)
@@ -782,8 +782,8 @@ Semantic handler census: **557** handlers across **27** API families, covering *
   - Limitation: the cited cell covers a helper sleeping and resuming after a wakeup; no-current-thread, disabled-dispatch precedence, callbacks during sleep, and other wake races are not established
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: SleepThread and wakeup sequence)
 - **`h_StartThread`** (`sceKernel`): `sceKernelStartThread` (0xf475845d)
-  - Limitation: the 'Priorities' resched/deferred cells (marked reorderable in start.expected), the 'Stack' cells (a thread started with the Low-stack, no-fill or clear-stack attributes) and an argument block larger than the stack (a PSP crashes; the runtime drops the block and logs) are not reproduced; the thread's initial $sp without an argument and the order of the not-dormant and argument errors are not measured (#341)
-  - Evidence: PSPAutotests tests/threads/threads/start.expected (2ed7c9c5, recorded on a PSP): ids (0 -> 0x80020197, unknown or deleted -> 0x80020198, twice or current -> 0x800201a4), a negative argument length or a block that is not memory -> 0x800200d3 with the thread left dormant, a NULL block starts with no argument, the copied block at stack + size - 0x100 - round16(len)
+  - Limitation: the 'Priorities' resched/deferred cells (marked reorderable in start.expected), the 'Stack' cells (a thread started with the Low-stack, no-fill or clear-stack attributes) and an argument block larger than the stack (a PSP crashes; the runtime drops the block and logs) are not reproduced; the entry $sp is argv - 0x40 for every length although only the four-byte record measures it, scratchpad and kernel-segment (0x88800000) argument blocks are unmeasured (the first is accepted; the second is accepted although a PSP may refuse it), the thread's initial $sp without an argument and the order of the not-dormant and argument errors are not measured (#341)
+  - Evidence: PSPAutotests tests/threads/threads/start.expected (2ed7c9c5, recorded on a PSP): ids (0 -> 0x80020197, unknown or deleted -> 0x80020198, twice or current -> 0x800201a4), a negative argument length or a block that is not memory -> 0x800200d3 with the thread left dormant, a NULL block starts with no argument, the copied block at stack + size - 0x100 - round16(len); docs/HARDWARE_ORACLE.md PSP-NULLCODE-001: entry sp 0x40 below a four-byte block
   - Evidence: tests/native/hle_thread_selftest.c:test_start_thread_contract
   - Evidence: tests/native/hle_thread_selftest.c:test_start_thread_error_semantics
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: StartThread of a NULL-entry thread returned 0)
