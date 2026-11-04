@@ -826,7 +826,7 @@ bool package_builder_download_verified(
         strlen(item->sha256) != 64 || !allowed_url(item->url, item->allowed_hosts)) {
         if (error_code && error_code_size) snprintf(error_code, error_code_size, "MANIFEST_INVALID");
         if (error_message && error_message_size) snprintf(error_message, error_message_size,
-            "The pinned download metadata is invalid. Restore the packaged prerequisite manifest.");
+            "The list of build tools to download is damaged. Reinstall Nakagawa to restore it.");
         return false;
     }
 #if defined(_WIN32) || defined(_WIN64)
@@ -835,7 +835,7 @@ bool package_builder_download_verified(
     if (!open_transport) {
         if (error_code && error_code_size) snprintf(error_code, error_code_size, "PLATFORM_UNSUPPORTED");
         if (error_message && error_message_size) snprintf(error_message, error_message_size,
-            "Automatic prerequisite downloads currently support Windows x64 only. Linux build-tool installation is in the works.");
+            "Downloading the build tools works on 64-bit Windows only. Linux isn't supported yet.");
         return false;
     }
 #endif
@@ -867,7 +867,7 @@ bool package_builder_download_verified(
     if (!partial_file) {
         if (error_code && error_code_size) snprintf(error_code, error_code_size, "DISK_FULL");
         if (error_message && error_message_size) snprintf(error_message, error_message_size,
-            "Cannot write prerequisite data under app data. Free disk space or choose a writable profile, then retry.");
+            "Nakagawa couldn't save the downloaded tools. Free some disk space and try again.");
         goto done;
     }
 #if defined(_WIN32) || defined(_WIN64)
@@ -890,7 +890,7 @@ bool package_builder_download_verified(
         if (received > item->size_bytes || count > item->size_bytes - received) {
             if (error_code && error_code_size) snprintf(error_code, error_code_size, "SIZE_MISMATCH");
             if (error_message && error_message_size) snprintf(error_message, error_message_size,
-                "The downloaded body for %s is larger than its pinned size.", item->name);
+                "The download for %s is larger than expected, so it was discarded.", item->name);
             goto done;
         }
         if (fwrite(buffer, 1, count, partial_file) != count) {
@@ -940,7 +940,7 @@ bool package_builder_download_verified(
         if (_stricmp(actual, item->sha256) != 0) {
             if (error_code && error_code_size) snprintf(error_code, error_code_size, "HASH_MISMATCH");
             if (error_message && error_message_size) snprintf(error_message, error_message_size,
-                "SHA-256 did not match the pinned value for %s. The file was discarded; retry from the official source.", item->name);
+                "The download for %s didn't match its checksum, so it was discarded. Try again.", item->name);
             goto done;
         }
     }
@@ -967,7 +967,7 @@ bool package_builder_download_verified(
     if (nk_rename_utf8(partial_path, destination) != 0) {
         if (error_code && error_code_size) snprintf(error_code, error_code_size, "DESTINATION_WRITE_FAILED");
         if (error_message && error_message_size) snprintf(error_message, error_message_size,
-            "Could not save the verified prerequisite in app data. Check permissions and free disk space.");
+            "Nakagawa couldn't save the downloaded tools. Free some disk space and try again.");
         goto done;
     }
     ok = true;
@@ -1096,13 +1096,13 @@ static DWORD WINAPI bootstrap_python_thread(void *context) {
     }
     if (!nk_platform_mkdir_p(session->prerequisites_root)) {
         snprintf(code, sizeof(code), "DISK_FULL");
-        snprintf(message, sizeof(message), "Cannot create the app-data prerequisite folder. Free disk space and retry.");
+        snprintf(message, sizeof(message), "Nakagawa couldn't create a folder for the build tools. Free some disk space and try again.");
         goto finished;
     }
     n = snprintf(download_dir, sizeof(download_dir), "%s\\downloads", session->prerequisites_root);
     if (n < 0 || (size_t)n >= sizeof(download_dir) || !nk_platform_mkdir_p(download_dir)) {
         snprintf(code, sizeof(code), "DISK_FULL");
-        snprintf(message, sizeof(message), "Cannot create the prerequisite download folder. Free disk space and retry.");
+        snprintf(message, sizeof(message), "Nakagawa couldn't create a folder for the download. Free some disk space and try again.");
         goto finished;
     }
     n = snprintf(item_dir, sizeof(item_dir), "%s\\%s", download_dir, session->item.id);
@@ -1158,14 +1158,14 @@ static DWORD WINAPI bootstrap_python_thread(void *context) {
             snprintf(message, sizeof(message), "The CPython extraction was cancelled and its staging folder was removed.");
         } else {
             snprintf(code, sizeof(code), "PYTHON_ARCHIVE_EXTRACT_FAILED");
-            snprintf(message, sizeof(message), "Windows could not extract the verified CPython archive. Check app-data permissions and retry.");
+            snprintf(message, sizeof(message), "Windows couldn't unpack the downloaded Python. Check that Nakagawa can write to its data folder, then try again.");
         }
         goto finished;
     }
     n = snprintf(staged_python, sizeof(staged_python), "%s\\python.exe", session->staging_path);
     if (n < 0 || (size_t)n >= sizeof(staged_python) || !nk_platform_file_exists(staged_python)) {
         snprintf(code, sizeof(code), "PYTHON_ARCHIVE_INVALID");
-        snprintf(message, sizeof(message), "The verified CPython archive did not contain python.exe. Restore the pinned manifest.");
+        snprintf(message, sizeof(message), "The downloaded Python is incomplete. Download the build tools again.");
         goto finished;
     }
     if (!bootstrap_remove_tree(final_python_dir) ||
@@ -1173,7 +1173,7 @@ static DWORD WINAPI bootstrap_python_thread(void *context) {
         !bootstrap_utf8_to_wide(final_python_dir, wfinal, NK_MAX_PATH) ||
         !MoveFileExW(wstaging, wfinal, MOVEFILE_WRITE_THROUGH)) {
         snprintf(code, sizeof(code), "DISK_WRITE_FAILED");
-        snprintf(message, sizeof(message), "The verified CPython files could not be promoted into app data. Check permissions and retry.");
+        snprintf(message, sizeof(message), "Nakagawa couldn't install the downloaded Python. Check that it can write to its data folder, then try again.");
         goto finished;
     }
     succeeded = true;
@@ -1328,7 +1328,7 @@ bool package_builder_bootstrap_python_poll(PackageBootstrapSession *session,
     if (succeeded) *succeeded = false;
     if (error_code && error_code_size) snprintf(error_code, error_code_size, "PLATFORM_UNSUPPORTED");
     if (error_message && error_message_size) snprintf(error_message, error_message_size,
-        "Native prerequisite bootstrap is supported on Windows only.");
+        "Downloading the build tools works on 64-bit Windows only.");
     return false;
 #endif
 }
@@ -1384,7 +1384,7 @@ NkResult package_builder_start_prerequisite_fetch(
         !package_builder_load_prerequisites(cli_path, &list, manifest_error, sizeof(manifest_error))) {
         safe_str_copy(session->failure_code, sizeof(session->failure_code), "PREREQUISITE_MANIFEST_INVALID");
         safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
-                      manifest_error[0] ? manifest_error : "The pinned prerequisite manifest is unavailable.");
+                      manifest_error[0] ? manifest_error : "The list of build tools to download is unavailable.");
         return NK_ERROR_IO;
     }
     int n = snprintf(manifest_path, sizeof(manifest_path), "%s%cassets%cprereq_manifest.json",
@@ -1395,7 +1395,7 @@ NkResult package_builder_start_prerequisite_fetch(
     if (n < 0 || (size_t)n >= sizeof(prereq_root) || !nk_platform_mkdir_p(prereq_root)) {
         safe_str_copy(session->failure_code, sizeof(session->failure_code), "DISK_FULL");
         safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
-                      "Cannot create the app-data prerequisite folder. Free disk space and retry.");
+                      "Nakagawa couldn't create a folder for the build tools. Free some disk space and try again.");
         return NK_ERROR_IO;
     }
     n = snprintf(session->progress_file_path, sizeof(session->progress_file_path),
@@ -1447,7 +1447,7 @@ NkResult package_builder_start_prerequisite_fetch(
                                    session->log_file_path, &session->process)) {
         NkSpawnBlockReport block;
         if (nk_launch_describe_spawn_block(session->process.spawn_error,
-                                           "the build tools' Python", "Build Tools",
+                                           "the build tools' Python", "build tools",
                                            python_path, &block)) {
             safe_str_copy(session->failure_code, sizeof(session->failure_code), block.code);
             safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
@@ -1457,12 +1457,12 @@ NkResult package_builder_start_prerequisite_fetch(
         }
         safe_str_copy(session->failure_code, sizeof(session->failure_code), "SPAWN_FAILED");
         safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
-                      "Could not start the verified Python prerequisite fetcher.");
+                      "Couldn't start the build tools download.");
         return NK_ERROR_PROCESS_SPAWN;
     }
     session->current_stage = PACKAGE_BUILD_STAGE_PREFLIGHT;
     safe_str_copy(session->current_stage_name, sizeof(session->current_stage_name), "preflight");
-    safe_str_copy(session->current_message, sizeof(session->current_message), "Preparing pinned build prerequisites...");
+    safe_str_copy(session->current_message, sizeof(session->current_message), "Preparing the build tools…");
     session->is_building = true;
     session->is_complete = false;
     session->is_failed = false;
@@ -1557,7 +1557,7 @@ bool package_builder_parse_progress_line(
     if (event_name && strcmp(event_name, "install-complete") == 0) {
         snprintf(out_event->stage, sizeof(out_event->stage), "package");
         snprintf(out_event->status, sizeof(out_event->status), "PASS");
-        snprintf(out_event->message, sizeof(out_event->message), "Build prerequisites installed.");
+        snprintf(out_event->message, sizeof(out_event->message), "Build tools installed.");
         out_event->stage_enum = PACKAGE_BUILD_STAGE_PACKAGE;
         out_event->status_enum = PACKAGE_PROGRESS_STATUS_PASS;
         out_event->install_complete = true;
@@ -2202,7 +2202,7 @@ bool package_builder_toolchain_missing(
         "Install the MSYS2 UCRT64 toolchain (mingw-w64-ucrt-x86_64-make) and put "
         "its bin directory on PATH.";
     const char *source =
-        "Use the player's pinned prerequisite consent card to install the Windows build tools.";
+        "Use the player's build tools download prompt to install the Windows build tools.";
 #else
     const char *python_fix =
         "Install CPython 3.15 or 3.14 (on Ubuntu 24.04, python3.15 from the deadsnakes PPA; "
@@ -2368,7 +2368,7 @@ NkResult package_builder_start(
         session->is_failed = true;
         session->current_stage = PACKAGE_BUILD_STAGE_FAILED;
         safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
-                      "Failed to spawn background build process.");
+                      "Couldn't start the build. Try again, and use Copy details if it keeps happening.");
         return NK_ERROR_PROCESS_SPAWN;
     }
 
@@ -2381,7 +2381,7 @@ NkResult package_builder_start(
     session->elapsed_ms = 0;
     session->current_stage = PACKAGE_BUILD_STAGE_PREFLIGHT;
     safe_str_copy(session->current_stage_name, sizeof(session->current_stage_name), "preflight");
-    safe_str_copy(session->current_message, sizeof(session->current_message), "Starting package build...");
+    safe_str_copy(session->current_message, sizeof(session->current_message), "Starting package build…");
 
     char spawn_msg[PACKAGE_BUILD_LINE_LEN];
     snprintf(spawn_msg, sizeof(spawn_msg), "[build] START: Building package for %s", session->disc_id);
@@ -2475,7 +2475,7 @@ void package_builder_poll(PackageBuildSession *session, uint64_t current_time_ms
                 }
                 if (!session->failure_boundary[0]) {
                     snprintf(session->failure_boundary, sizeof(session->failure_boundary),
-                             "Build child process failed with exit code %d.", session->exit_code);
+                             "The build stopped with exit code %d. Use Copy details to see why, then try again.", session->exit_code);
                 }
             }
         } else if (!session->is_complete && !session->is_failed) {

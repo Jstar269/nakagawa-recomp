@@ -142,6 +142,18 @@ def _write_title_runtime(
     return exe, img
 
 
+def _without_temp_root(text: str, root: Path) -> str:
+    """`text` with every spelling of the temporary directory `root` replaced by <TEMP>.
+
+    A temporary directory's name is random and can itself contain a word a test rules
+    out, such as "hst". A message shows the directory as written, inside a list's repr
+    (backslashes doubled on Windows), or with forward slashes.
+    """
+    for spelling in (repr(str(root))[1:-1], str(root), root.as_posix()):
+        text = text.replace(spelling, "<TEMP>")
+    return text
+
+
 def _write_stale_other_title_artifacts(root: Path) -> None:
     """Plant artifacts of a different (retail-shaped) title in the workspace.
 
@@ -807,7 +819,7 @@ class NkCoreTests(unittest.TestCase):
         launcher = RuntimeLauncher(repo_root=self.temp_dir)
         with self.assertRaises(RuntimeLaunchError) as cm:
             launcher.build_launch_plan(game_dir)
-        msg = str(cm.exception).replace(str(self.temp_dir), "<TEMP_DIR>")
+        msg = _without_temp_root(str(cm.exception), self.temp_dir)
         self.assertIn("Runtime image not found", msg)
         self.assertNotIn("hst", msg)
 
@@ -1195,7 +1207,7 @@ class GenericLauncherHostileTests(unittest.TestCase):
         message = self._error({}, name="EMPTY_ID")
         self.assertIn("identity", message.lower())
         self.assertNotIn("UCUS98701", message)
-        self.assertNotIn("hst", message)
+        self.assertNotIn("hst", _without_temp_root(message, self.temp_dir))
 
     # Hostile 2: an identity that does not resolve in the validated registry is
     # an actionable validation error, not a probe list containing retail paths.
@@ -1214,7 +1226,7 @@ class GenericLauncherHostileTests(unittest.TestCase):
         _write_stale_other_title_artifacts(self.temp_dir)
         message = self._error(self._title2_manifest())
         self.assertIn("Runtime binary not found", message)
-        self.assertNotIn("hst", message)
+        self.assertNotIn("hst", _without_temp_root(message, self.temp_dir))
 
     # Hostile 4: a retail-shaped binary in the repository root is not a
     # candidate for any other title.
@@ -1224,7 +1236,7 @@ class GenericLauncherHostileTests(unittest.TestCase):
         (self.temp_dir / "hst_image.bin").write_bytes(b"image")
         message = self._error(self._title2_manifest())
         self.assertIn("Runtime binary not found", message)
-        self.assertNotIn("hst", message)
+        self.assertNotIn("hst", _without_temp_root(message, self.temp_dir))
 
     # Hostile 5: retail-specific image candidates cannot satisfy another title.
     def test_other_title_image_cannot_satisfy_second_title(self) -> None:
@@ -1234,7 +1246,7 @@ class GenericLauncherHostileTests(unittest.TestCase):
         (exe_dir / "hst_image.bin").write_bytes(b"image")
         message = self._error(self._title2_manifest())
         self.assertIn("Runtime image not found", message)
-        self.assertNotIn("hst", message)
+        self.assertNotIn("hst", _without_temp_root(message, self.temp_dir))
 
     # Hostile 6: the correct title runtime succeeds, even while stale retail
     # artifacts exist elsewhere in the workspace.
@@ -1309,7 +1321,7 @@ class GenericLauncherHostileTests(unittest.TestCase):
             {"title_id": "synthetic-allegrex-v1", "disc_id": self.TITLE2_DISC}
         )
         self.assertIn("identity", message.lower())
-        self.assertNotIn("hst", message)
+        self.assertNotIn("hst", _without_temp_root(message, self.temp_dir))
 
     # Hostile 8: multiple valid candidates resolve in an explicit deterministic
     # contract order: manager game_name before title id, .exe before the
@@ -1348,7 +1360,7 @@ class GenericLauncherHostileTests(unittest.TestCase):
         with self.assertRaises(RuntimeLaunchError) as cm:
             RuntimeLauncher(repo_root=other_root).build_launch_plan(game_dir)
         self.assertIn("Runtime binary not found", str(cm.exception))
-        self.assertNotIn("hst", str(cm.exception))
+        self.assertNotIn("hst", _without_temp_root(str(cm.exception), self.temp_dir))
         self.assertEqual(Path(cmd_a[0]), exe)
 
         # The default root is this checkout, never the process cwd (#368).
@@ -1593,7 +1605,7 @@ int main(int argc, char **argv) {
         self.assertTrue(self._same_path(cmd[2], native["IMAGE"]))
         self.assertEqual(int(cmd[3], 16), int(native["BASE"], 16))
         self.assertEqual(int(cmd[4], 16), int(native["ENTRY"], 16))
-        self.assertNotIn("hst", native["EXE"].replace(str(root), ""))
+        self.assertNotIn("hst", _without_temp_root(native["EXE"], self.temp_dir))
         self.assertEqual(native.get("AVAILABLE"), "1")
 
     def test_native_and_python_fail_the_same_way_without_a_title_runtime(self) -> None:
@@ -1603,12 +1615,12 @@ int main(int argc, char **argv) {
         with self.assertRaises(RuntimeLaunchError) as cm:
             self._python_plan(root)
         self.assertIn("Runtime binary not found", str(cm.exception))
-        self.assertNotIn("hst", str(cm.exception))
+        self.assertNotIn("hst", _without_temp_root(str(cm.exception), self.temp_dir))
 
         native = self._native(root)
         self.assertNotEqual(native.get("RESULT"), "0")
         self.assertIn("Runtime binary not found", native.get("ERROR", ""))
-        self.assertNotIn("hst", native.get("ERROR", ""))
+        self.assertNotIn("hst", _without_temp_root(native.get("ERROR", ""), self.temp_dir))
         self.assertEqual(native.get("AVAILABLE"), "0")
 
     def test_missing_declared_data_root_fails_in_both_planners(self) -> None:

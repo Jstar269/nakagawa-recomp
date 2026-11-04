@@ -1861,6 +1861,32 @@ _VFPU9_INTERP_ROUTED = {
 }
 
 
+# vqmul.q and vcrsp.t lanes as (sign, S lane, T lane) terms, in source order. The emitted
+# lane is a left-to-right chain of sr_vf_* calls (src/rt/recomp.h), the same chain
+# sr_vfpu_interp evaluates, so both lanes return one NaN word (issue #326).
+_VQMUL_TERMS = (
+    ((1, 0, 3), (1, 1, 2), (-1, 2, 1), (1, 3, 0)),
+    ((-1, 0, 2), (1, 1, 3), (1, 2, 0), (1, 3, 1)),
+    ((1, 0, 1), (-1, 1, 0), (1, 2, 3), (1, 3, 2)),
+    ((-1, 0, 0), (-1, 1, 1), (-1, 2, 2), (1, 3, 3)),
+)
+_VCRSP_TERMS = (
+    ((1, 1, 2), (-1, 2, 1)),
+    ((1, 2, 0), (-1, 0, 2)),
+    ((1, 0, 1), (-1, 1, 0)),
+)
+
+
+def _vf_chain(terms):
+    sign, i, j = terms[0]
+    acc = f"sr_vf_mul({'-' if sign < 0 else ''}_s[{i}],_t[{j}])"
+    for sign, i, j in terms[1:]:
+        # Each helper is written as a call literal so tools/recomp_helper_inventory.py sees it.
+        call = "sr_vf_add(" if sign > 0 else "sr_vf_sub("
+        acc = f"{call}{acc},sr_vf_mul(_s[{i}],_t[{j}]))"
+    return acc
+
+
 def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
     # VFPU memory forms under --lle-cpu use the same sr_cpu_guard_access() call
     # as _lle_access_stmt() (spec 3.3, runs PSP-A3-08..15): lv.s/sv.s width 4,
@@ -2258,12 +2284,12 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             writes.append(f"float _sc = s->v[{scalar_vidx}];")
             for row in range(side - 1):
                 for col in range(side):
-                    writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * _sc;")
+                    writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = sr_vf_mul(s->v[{mreg_index(vs, side, col, row)}], _sc);")
             last_row_vs = [mreg_index(vs, side, col, side - 1) for col in range(side)]
             last_row_vd = [mreg_index(vd, side, col, side - 1) for col in range(side)]
             writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
             writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
-            writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
+            writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = sr_vf_mul(_s[_i], _t[_i]);")
             writes.append(_nanv(addr, "vmscl", vd, "_d", side, "_s", side, "_t", side))
             writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
             return "{ " + " ".join(writes) + _EAT + " }", None, 0
@@ -2273,17 +2299,14 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         if n == 4:
             body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},4,s->vfpuCtrl[0]); "
                     f"sr_vread(_t,s,{_arr(ti)},4,s->vfpuCtrl[1]); "
-                    f"_d[0]=_s[0]*_t[3]+_s[1]*_t[2]-_s[2]*_t[1]+_s[3]*_t[0]; "
-                    f"_d[1]=-_s[0]*_t[2]+_s[1]*_t[3]+_s[2]*_t[0]+_s[3]*_t[1]; "
-                    f"_d[2]=_s[0]*_t[1]-_s[1]*_t[0]+_s[2]*_t[3]+_s[3]*_t[2]; "
-                    f"_d[3]=-_s[0]*_t[0]-_s[1]*_t[1]-_s[2]*_t[2]+_s[3]*_t[3]; "
+                    + "".join(f"_d[{lane}]={_vf_chain(terms)}; " for lane, terms in enumerate(_VQMUL_TERMS))
                     + _nanv(addr, "vqmul.q", vd, "_d", 4, "_s", 4, "_t", 4)
                     + f"sr_vwrite(s,{_arr(di)},_d,4,s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         if n == 3:
             body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},3,s->vfpuCtrl[0]); "
                     f"sr_vread(_t,s,{_arr(ti)},3,s->vfpuCtrl[1]); "
-                    f"_d[0]=_s[1]*_t[2]-_s[2]*_t[1]; _d[1]=_s[2]*_t[0]-_s[0]*_t[2]; _d[2]=_s[0]*_t[1]-_s[1]*_t[0]; "
+                    + "".join(f"_d[{lane}]={_vf_chain(terms)}; " for lane, terms in enumerate(_VCRSP_TERMS))
                     + _nanv(addr, "vcrsp.t", vd, "_d", 3, "_s", 3, "_t", 3)
                     + f"sr_vwrite(s,{_arr(di)},_d,3,s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
@@ -2312,11 +2335,13 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         return "{ " + " ".join(lines) + " }", None, 0
     if (op == 0x18 and sub in (0, 1, 7)) or (op == 0x19 and sub == 0):
         ti = vreg_indices(vt, n)
-        oper = {(0x18, 0): "+", (0x18, 1): "-", (0x18, 7): "/", (0x19, 0): "*"}[(op, sub)]
+        # Call literals, so tools/recomp_helper_inventory.py sees every helper the emitter writes.
+        call = {(0x18, 0): "sr_vf_add(", (0x18, 1): "sr_vf_sub(", (0x18, 7): "sr_vf_div(",
+                (0x19, 0): "sr_vf_mul("}[(op, sub)]
         body = (f"float _s[4],_t[4],_d[4]; "
                 f"sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"for(int _i=0;_i<{n};_i++) _d[_i]=_s[_i]{oper}_t[_i]; "
+                f"for(int _i=0;_i<{n};_i++) _d[_i]={call}_s[_i],_t[_i]); "
                 + _nanv(addr, _BINOP_NAME[(op, sub)], vd, "_d", n, "_s", n, "_t", n)
                 + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
@@ -2325,7 +2350,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         dst = vreg_indices(vd, 1)[0]
         body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"float _d=0.0f; for(int _i=0;_i<{n};_i++) _d+=_s[_i]*_t[_i]; "
+                f"float _d=0.0f; for(int _i=0;_i<{n};_i++) _d=sr_vf_add(_d,sr_vf_mul(_s[_i],_t[_i])); "
                 f"float _dd[1]={{_d}};"
                 + _nanv(addr, "vdot.s", vd, "_dd", 1, "_s", n, "_t", n)
                 + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
@@ -2335,8 +2360,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         dst = vreg_indices(vd, 1)[0]
         body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"float _d=0.0f; for(int _i=0;_i<{n - 1};_i++) _d+=_s[_i]*_t[_i]; "
-                f"_d+=1.0f*_t[{n - 1}]; _d=isnan(_d)?fabsf(_d):_d; "
+                f"float _d=0.0f; for(int _i=0;_i<{n - 1};_i++) _d=sr_vf_add(_d,sr_vf_mul(_s[_i],_t[_i])); "
+                f"_d=sr_vf_add(_d,sr_vf_mul(1.0f,_t[{n - 1}])); _d=isnan(_d)?fabsf(_d):_d; "
                 f"float _dd[1]={{_d}};"
                 + _nanv(addr, "vhdp.s", vd, "_dd", 1, "_s", n, "_t", n)
                 + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
@@ -2347,7 +2372,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         ti = vreg_indices(vt, n)
         di = vreg_indices(vd, n)
         ss, ts = (1, 2, 0, 3), (2, 0, 1, 3)
-        muls = " ".join(f"_d[{i}]=_s[{ss[i]}]*_t[{ts[i]}];" for i in range(n))
+        muls = " ".join(f"_d[{i}]=sr_vf_mul(_s[{ss[i]}],_t[{ts[i]}]);" for i in range(n))
         body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); {muls} "
                 + _nanv(addr, "vcrs.t", vd, "_d", n, "_s", n, "_t", n)
@@ -2358,16 +2383,15 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         lines = []
         for a in range(side):
             for b in range(side):
-                # Accumulate into a local float with one += per term, exactly
-                # matching sr_vfpu_interp's vmmul loop shape. A single chained
-                # expression (0.0f+t0+t1+...) compiles to a different addss
-                # operand order at -O0, and x86-64 SSE selects the *first* NaN
-                # source on NaN+NaN, so the two paths can pick different NaN
-                # payloads for exotic inputs (issue #40). Same term order, so
-                # finite results are bit-identical.
+                # Accumulate into a local float one term at a time, in the same
+                # term order as sr_vfpu_interp's vmmul loop, through the sr_vf_*
+                # helpers: x86-64 SSE keeps the *first* NaN source on NaN+NaN and
+                # an optimiser may swap the operands of a plain + or *, so the two
+                # paths could keep different NaN payloads for exotic inputs (issue
+                # #40 at -O0, issue #326 at -O1/-O2). Finite results are unchanged.
                 lines.append(f"float _m{a}_{b}=0.0f;")
                 for c in range(side):
-                    lines.append(f"_m{a}_{b}+=s->v[{mreg_index(vs, side, b, c)}]*s->v[{mreg_index(vt, side, a, c)}];")
+                    lines.append(f"_m{a}_{b}=sr_vf_add(_m{a}_{b},sr_vf_mul(s->v[{mreg_index(vs, side, b, c)}],s->v[{mreg_index(vt, side, a, c)}]));")
         writes = " ".join(f"s->v[{mreg_index(vd, side, a, b)}]=_m{a}_{b};"
                           for a in range(side) for b in range(side))
         return "{ " + " ".join(lines) + " " + _nan_matrix(
@@ -2388,9 +2412,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             # vmmul comment above for the NaN payload rationale, issue #40).
             lines.append(f"float _v{i}=0.0f;")
             for k in range(tn):
-                lines.append(f"_v{i}+=s->v[{mreg_index(vs, side, i, k)}]*s->v[{ti[k]}];")
+                lines.append(f"_v{i}=sr_vf_add(_v{i},sr_vf_mul(s->v[{mreg_index(vs, side, i, k)}],s->v[{ti[k]}]));")
             if ins >= n:
-                lines.append(f"_v{i}+=s->v[{mreg_index(vs, side, i, ins)}];")
+                lines.append(f"_v{i}=sr_vf_add(_v{i},s->v[{mreg_index(vs, side, i, ins)}]);")
         writes = " ".join(f"s->v[{di[i]}]=_v{i};" for i in range(side))
         return "{ " + " ".join(lines) + " " + _nan_matrix(
             addr, "vtfm", vd,
@@ -2402,7 +2426,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         scalar = vreg_indices(vt, 1)[0]
         body = (f"float _s[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"float _sc=s->v[{scalar}]; "
-                f"for(int _i=0;_i<{n};_i++) _d[_i]=_s[_i]*_sc; "
+                f"for(int _i=0;_i<{n};_i++) _d[_i]=sr_vf_mul(_s[_i],_sc); "
                 + _nanv(addr, "vscl.s", vd, "_d", n, "_s", n, "(&_sc)", 1)
                 + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
@@ -2414,12 +2438,12 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         writes.append(f"float _sc = s->v[{scalar_vidx}];")
         for row in range(side - 1):
             for col in range(side):
-                writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = s->v[{mreg_index(vs, side, col, row)}] * _sc;")
+                writes.append(f"s->v[{mreg_index(vd, side, col, row)}] = sr_vf_mul(s->v[{mreg_index(vs, side, col, row)}], _sc);")
         last_row_vs = [mreg_index(vs, side, col, side - 1) for col in range(side)]
         last_row_vd = [mreg_index(vd, side, col, side - 1) for col in range(side)]
         writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
         writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
-        writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
+        writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = sr_vf_mul(_s[_i], _t[_i]);")
         writes.append(_nanv(addr, "vmscl", vd, "_d", side, "_s", side, "_t", side))
         writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
         return "{ " + " ".join(writes) + _EAT + " }", None, 0

@@ -418,6 +418,23 @@ class RepositoryInventoryTests(unittest.TestCase):
         self.assertEqual(by_name["SDL_GetTicksNS"]["defined_in"], [])
         self.assertEqual(by_name["SDL_GetTicksNS"]["home_class"], rhi.DECLARED_ONLY)
         self.assertEqual(by_name["sr_nan_trap_dump_context"]["reach"], "address-only")
+
+    def test_helpers_a_generated_vfpu_body_calls_are_emitter_reached(self) -> None:
+        # The inventory reads the emitter's string literals, so a helper whose name the
+        # emitter assembles at run time would be misfiled as runtime-only (issue #326).
+        import codegen
+
+        by_name = {r["name"]: r for r in self.inv["helpers"]}
+        # vadd.q, vsub.q, vdiv.q, vmul.q, vdot.q, vcrsp.t, vqmul.q
+        words = (0x60008080, 0x60808080, 0x63808080, 0x64008080, 0x64808080, 0xF2808000, 0xF2808080)
+        called: set[str] = set()
+        for word in words:
+            body, _, _ = codegen.vfpu_effect(0x08900000, word)
+            called.update(m.group(1) for m in rhi._CALL_RE.finditer(body) if m.group(1) in by_name)
+        self.assertTrue({"sr_vf_add", "sr_vf_sub", "sr_vf_mul", "sr_vf_div"} <= called, sorted(called))
+        for name in sorted(called):
+            with self.subTest(helper=name):
+                self.assertEqual(by_name[name]["reach"], "emitter-reached")
         self.assertEqual(by_name["sr_register_count"]["reach"], "none")
         self.assertEqual(sum(self.inv["summary"]["reach"].values()), self.inv["summary"]["total"])
 

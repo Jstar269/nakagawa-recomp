@@ -147,8 +147,8 @@ If your change adds, changes or removes a barrier, update the tables above in th
 
 Open an issue with the
 [**Accessibility barrier** form](https://github.com/Jstar269/nakagawa-recomp/issues/new?template=accessibility.yml).
-Its title starts with `[Accessibility]:`. Please keep accessibility reports separate from general bugs so they can be
-triaged for what they block.
+Start the title with the area, for example `Player: settings cannot be reached by keyboard`.
+Please keep accessibility reports separate from general bugs so they can be triaged for what they block.
 
 It helps if you tell us:
 

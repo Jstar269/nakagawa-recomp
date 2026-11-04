@@ -74,10 +74,10 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
        (#1297). */
     {"UCUS98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
      "Plays full matches and Story Mode.",
-     "Known issues: a few late sound wakes while loading, and some movies show black."},
+     "Known issues: some sound effects can drop out while loading."},
     {"UCUS-98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
      "Plays full matches and Story Mode.",
-     "Known issues: a few late sound wakes while loading, and some movies show black."},
+     "Known issues: some sound effects can drop out while loading."},
     {"PAC-MAN Championship Edition", "Partially works", PLAYER_UI_TIER_NONE,
      "Reaches the title screen and plays a stage. The rest of the game has not been tried yet.",
      ""}
@@ -832,6 +832,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.ace_text = app->settings.ace.text;
     model.ace_readout = app->settings.ace.readout;
     model.ace_notice = app->settings.ace.notice;
+    model.ace_smooth = app->settings.ace.smooth == 1;
     if (app->settings.interface_size_pct > 0) {
         snprintf(player->settings_interface_size, sizeof(player->settings_interface_size), "%d%%",
                  app->settings.interface_size_pct);
@@ -884,7 +885,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         if (!item->installed) continue;
         snprintf(line, sizeof(player->settings_tools[0]), "%.64s %.32s \xC2\xB7 %.80s", item->name,
                  item->version,
-                 strcmp(item->license, "NOASSERTION") == 0 ? "licence review in the works"
+                 strcmp(item->license, "NOASSERTION") == 0 ? "licence not yet reviewed"
                                                             : item->license);
         model.tools[model.tool_count++] = line;
     }
@@ -1279,10 +1280,10 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
         PlayerUiErrorModel model;
         memset(&model, 0, sizeof(model));
         model.badge = "Not available";
-        model.title = "Preparation Unavailable";
+        model.title = "Preparation unavailable";
         model.message = "No preparation pipeline is connected in this build, so no "
                         "preparation work is running.";
-        model.recovery_label = "Return to Library";
+        model.recovery_label = "Back to library";
         model.logical_width = scale.logical_w;
         model.logical_height = scale.logical_h;
         return player_ui_screen_error(player->ui, &model);
@@ -1836,6 +1837,26 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
         out->enhancement_enabled = false;
         out->enhancement_on = false;
     }
+    /* Smooth motion (#1272) is a feature of Ace being on for the title. While the title's 60 FPS
+       game logic is on (out->enhancement_on, Authentic already off), the two are refused
+       together: the button is disabled and says so. */
+    out->smooth_shown = out->ace_shown && ace.on;
+    out->smooth_on = false;
+    out->smooth_enabled = false;
+    out->smooth_label = "Smooth motion";
+    if (out->smooth_shown) {
+        int own = player_app_title_ace_smooth(app, index);
+        if (out->enhancement_on) {
+            out->smooth_label = "Smooth motion: Off (this game runs at 60 FPS)";
+        } else {
+            out->smooth_on = ace.smooth == 1;
+            out->smooth_enabled = out->ace_enabled;
+            out->smooth_label = own < 0
+                ? (ace.smooth == 1 ? "Smooth motion: On (library default)"
+                                   : "Smooth motion: Off (library default)")
+                : (own == 1 ? "Smooth motion: On" : "Smooth motion: Off");
+        }
+    }
     if (index != app->selected_game_index || !out->ace_shown) return;
     if (ace.mode == PLAYER_ACE_TITLE_AUTHENTIC) {
         out->ace_line = out->enhancement_shown
@@ -1847,7 +1868,7 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
     } else {
         char words[160] = "";
         size_t used = 0;
-        const char *parts[4];
+        const char *parts[5];
         size_t count = 0;
         char filtering[24];
         if (ace.af > 0) {
@@ -1857,6 +1878,7 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
         if (ace.text) parts[count++] = "crisp keyboard";
         if (ace.readout) parts[count++] = "speed readout";
         if (ace.notice) parts[count++] = "game badge";
+        if (ace.smooth == 1 && !out->enhancement_on) parts[count++] = "smooth motion";
         for (size_t i = 0; i < count; i++) {
             int n = snprintf(words + used, sizeof(words) - used, "%s%s", i ? ", " : "", parts[i]);
             if (n < 0 || used + (size_t)n >= sizeof(words)) break;
@@ -2060,14 +2082,14 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     out->primary_action = PLAYER_UI_PRIMARY_NONE;
     if (app->launch_pending) {
         /* The launch worker hands back STOP GAME or an error card. */
-        out->primary_action_label = "STARTING...";
+        out->primary_action_label = "STARTING…";
     } else if (app->is_game_running) {
         out->primary_action_label = "STOP GAME";
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_STOP_GAME;
     } else if (older && rebuild.rebuilding) {
         /* Its package is about to be replaced; the package card says so. */
-        out->primary_action_label = "REBUILDING...";
+        out->primary_action_label = "REBUILDING…";
     } else if (player_app_title_60hz_blocked(app, index)) {
         /* 60 FPS game logic is on but its package is gone: neither variant
            builds or plays until the user turns it off or brings it back. */
@@ -2750,6 +2772,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_CYCLE_ACE) {
                 if (player->titles[index].ace_enabled) player_app_cycle_title_ace_mode(app, index);
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_CYCLE_SMOOTH) {
+                if (player->titles[index].smooth_enabled) player_app_cycle_title_ace_smooth(app, index);
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TITLE) {
                 if (player_ui_open_remove(player, app, index)) {
