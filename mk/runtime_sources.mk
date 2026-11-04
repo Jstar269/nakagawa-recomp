@@ -154,6 +154,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/gpu_sdl3vk/sdl3vk.c \
               src/rt/gpu_sdl3vk/ge_gpu.c \
               src/rt/gpu_sdl3vk/ace_ui.c \
+              src/rt/gpu_sdl3vk/ace_smooth.c \
               src/core/nk_input_profile.c \
               src/core/nk_font.c \
               src/core/nk_json.c \

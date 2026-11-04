@@ -5714,7 +5714,10 @@ static void test_ace_mode_settings(void) {
         char *saved = read_text_file(path);
         assert(saved && strstr(saved, "\"ace\": {\"enabled\": true, \"af\": 16,") != NULL);
         assert(strstr(saved, "\"ace_titles\": {\"TEST90001\": {\"mode\": \"ace\"}}") != NULL);
-        assert(strstr(saved, "wide") == NULL && strstr(saved, "smooth") == NULL);
+        /* Smooth motion is saved beside its siblings (#1272); wide is not carried yet. */
+        assert(strstr(saved, "wide") == NULL);
+        assert(strstr(saved, "\"notice\": false, \"smooth\": \"off\"},") != NULL);
+        assert(strstr(saved, "\"TEST90001\": {\"mode\": \"ace\"}") != NULL);
         free(saved);
     }
     /* A file from before Ace Mode keeps the defaults; bad values keep them too, and a title
@@ -5763,6 +5766,118 @@ static void test_ace_mode_settings(void) {
         remove(report);
         (void)test_rmdir(dir);
     }
+    remove(path);
+    (void)test_rmdir(root);
+    free(back);
+    free(app);
+}
+
+/* Ace Mode's smooth motion (#1272, docs/ENHANCEMENT_CONTRACT.md section 10): off by default,
+ * a library value and a per-title override with the same precedence as the sibling features,
+ * saved by name and read back, an unknown value keeping the default, the launch line
+ * carrying smooth=x2 (never smooth=match), and the enhanced 60 FPS build refusing it. */
+static void test_ace_smooth_motion(void) {
+    char sep = nk_platform_path_separator();
+    char cache_root[512], root[700], path[800], line[160];
+    PlayerAceResolved r;
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(root, sizeof(root), "%s%cace_smooth_probe", cache_root, sep);
+    assert(nk_platform_mkdir_p(root));
+    snprintf(path, sizeof(path), "%s%csettings.json", root, sep);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    PlayerApp *back = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app && back);
+    player_app_settings_init_default(&app->settings);
+    assert(app->settings.ace.smooth == 0);
+    app->game_count = 1;
+    snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "TEST90001");
+    size_t path_len = strlen(path);
+    assert(path_len < sizeof(app->settings_path));
+    memcpy(app->settings_path, path, path_len + 1u);
+
+    /* Off by default: the line says so. */
+    player_app_toggle_ace(app);
+    player_ace_resolve(&app->settings, "TEST90001", &r);
+    assert(r.on && r.smooth == 0);
+    assert(player_ace_launch_line(&r, line, sizeof(line)) &&
+           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off") == 0);
+    assert(player_app_title_ace_smooth(app, 0) == -1);
+
+    /* The library value reaches the line as x2, and never as match. */
+    player_app_toggle_ace_smooth(app);
+    assert(app->settings.ace.smooth == 1);
+    player_ace_resolve(&app->settings, "TEST90001", &r);
+    assert(r.on && r.smooth == 1);
+    assert(player_ace_launch_line(&r, line, sizeof(line)) &&
+           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2") == 0);
+    assert(strstr(line, "match") == NULL);
+
+    /* A title's own choice wins over the library's; the cycle is library, on, off, library. */
+    player_app_cycle_title_ace_smooth(app, 0);                    /* library -> on */
+    assert(player_app_title_ace_smooth(app, 0) == 1 && app->settings.ace_title_count == 1);
+    player_app_cycle_title_ace_smooth(app, 0);                    /* on -> off */
+    assert(player_app_title_ace_smooth(app, 0) == 0);
+    player_ace_resolve(&app->settings, "TEST90001", &r);
+    assert(r.on && r.smooth == 0);                                /* library x2, title off */
+    assert(player_settings_ace_title(&app->settings, "TEST90001")->mode == PLAYER_ACE_TITLE_LIBRARY);
+    player_ace_resolve(&app->settings, "TEST90002", &r);
+    assert(r.smooth == 1);                                        /* another title follows */
+    player_app_toggle_ace_smooth(app);                            /* library off */
+    player_app_cycle_title_ace_smooth(app, 0);                    /* off -> library: sparse, dropped */
+    assert(player_app_title_ace_smooth(app, 0) == -1 && app->settings.ace_title_count == 0);
+    player_app_cycle_title_ace_smooth(app, 0);                    /* library off, title on */
+    player_ace_resolve(&app->settings, "TEST90001", &r);
+    assert(r.smooth == 1);
+
+    /* The true 60 FPS game logic build refuses it, whatever the settings say; the other
+       features keep their values and a title without that build keeps smooth motion. */
+    assert(r.on && r.af == 16 && r.text && r.notice);
+    player_ace_apply_logic_60(&r, false);
+    assert(r.smooth == 1);
+    player_ace_apply_logic_60(&r, true);
+    assert(r.smooth == 0 && r.on && r.af == 16 && r.text && r.notice);
+    assert(player_ace_launch_line(&r, line, sizeof(line)) &&
+           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off") == 0);
+
+    /* Saved by name beside the sibling keys, and read back. */
+    app->settings.ace.smooth = 1;
+    player_app_toggle_ace_text(app);
+    player_app_toggle_ace_text(app);                              /* saves */
+    {
+        char *saved = read_text_file(path);
+        assert(saved);
+        assert(strstr(saved, "\"notice\": true, \"smooth\": \"x2\"},") != NULL);
+        assert(strstr(saved, "\"ace_titles\": {\"TEST90001\": {\"smooth\": \"x2\"}}") != NULL);
+        assert(strstr(saved, "\"match\"") == NULL);
+        free(saved);
+    }
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.ace.smooth == 1);
+    assert(back->settings.ace_title_count == 1 && back->settings.ace_titles[0].smooth == 1);
+    assert(back->settings.ace_titles[0].mode == PLAYER_ACE_TITLE_LIBRARY &&
+           back->settings.ace_titles[0].af == -1);
+
+    /* A value this build does not know keeps the default, or follows the library; an entry
+       that differs nowhere else is dropped. smooth=match stays refused here too. */
+    write_text_file(path,
+        "{\"schema_version\": 2, \"ace\": {\"smooth\": \"match\"},"
+        " \"ace_titles\": {\"TEST90001\": {\"smooth\": \"fast\"},"
+        " \"TEST90002\": {\"mode\": \"ace\", \"smooth\": \"match\"},"
+        " \"TEST90003\": {\"smooth\": 2}, \"TEST90004\": {\"smooth\": \"off\"}}}");
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.ace.smooth == 0);
+    assert(back->settings.ace_title_count == 2);
+    assert(player_settings_ace_title(&back->settings, "TEST90001") == NULL);
+    assert(player_settings_ace_title(&back->settings, "TEST90003") == NULL);
+    assert(player_settings_ace_title(&back->settings, "TEST90002")->smooth == -1);
+    assert(player_settings_ace_title(&back->settings, "TEST90004")->smooth == 0);
+    write_text_file(path, "{\"schema_version\": 2, \"ace\": {\"smooth\": \"x2\"}}");
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.ace.smooth == 1);
+
     remove(path);
     (void)test_rmdir(root);
     free(back);
@@ -6032,6 +6147,7 @@ int main(int argc, char **argv) {
     test_library_card_status_text();
     test_enhanced_package_variants();
     test_ace_mode_settings();
+    test_ace_smooth_motion();
     /* Saves a library file under the cache root, so it runs only once that
      * root is the temporary one. */
     test_sample_entries_never_reach_library_json();

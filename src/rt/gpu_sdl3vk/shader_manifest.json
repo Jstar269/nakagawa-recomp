@@ -35,6 +35,24 @@
       "spirv_bytes": 74564,
       "spirv_sha256": "9172d49d108606477ce141ec28c43f6dcbf4f1455951d43ba86c937a5f7f2ceb",
       "stage": "vert"
+    },
+    {
+      "embedded": "ace_match_comp.inc",
+      "embedded_sha256": "20043b6d8e27dae4077ff4a28cd977a3271c32c3a0c67468579280ef32525352",
+      "source": "shaders/ace_match.comp",
+      "source_sha256": "bf632ab0cb5f6895e2e664c3222d56ef39c3bebd62d47334db2cd8b0d6626be7",
+      "spirv_bytes": 8828,
+      "spirv_sha256": "dc0619e2d4ded3025c9112f778389194b2f1ed105f621322dcc3bbbe84efe0a8",
+      "stage": "comp"
+    },
+    {
+      "embedded": "ace_compose_comp.inc",
+      "embedded_sha256": "8ed723fa973f35816b177c09f4acbbc066f0149cbb3167f591991b4fa3abfab9",
+      "source": "shaders/ace_compose.comp",
+      "source_sha256": "c94a7fdda009bc641ea8dfe710906bbb46bf2a8687275072b234b16be97cc270",
+      "spirv_bytes": 7532,
+      "spirv_sha256": "a80ccfb575bf908fa2f9763f1fe6b83c28255002a3492f212d066b4fd1f4456d",
+      "stage": "comp"
     }
   ]
 }
