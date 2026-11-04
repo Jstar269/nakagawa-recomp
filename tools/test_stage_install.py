@@ -268,7 +268,7 @@ class AppIdentityTests(unittest.TestCase):
         # MSYS2's Python joins paths with '/', and the shell's property store refuses those.
         from pathlib import PurePosixPath
         self.assertEqual(stage_install._shell_path(PurePosixPath("D:/Games/My Apps/Nakagawa Recomp.lnk")),
-                         "C:\\Users\\a b\\Nakagawa Recomp.lnk")
+                         "D:\\Games\\My Apps\\Nakagawa Recomp.lnk")
 
     def test_app_user_model_id_follows_the_windows_rules(self):
         # Windows: at most 128 characters, no spaces, dot-separated sections.
