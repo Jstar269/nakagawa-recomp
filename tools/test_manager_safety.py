@@ -23,6 +23,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MANAGER = ROOT / "nk_manager.ps1"
@@ -110,7 +113,7 @@ class GpuVerificationStatusTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.manager = MANAGER.read_text(encoding="utf-8-sig")
-        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.makefile = read_makefile(ROOT)
         self.helper = (ROOT / "tools" / "gpu_selftest_status.ps1").read_text(encoding="utf-8-sig")
 
     def test_glslc_is_not_a_prerequisite_for_the_gpu_gates(self) -> None:

@@ -726,6 +726,68 @@ HANDLER_METADATA = {
         ],
         "limitation": "the measured cells establish results and close outcomes for six fixed UMD/disc path calls only; directory contents/order, MS0 paths and general error precedence remain unmeasured (#341)",
     },
+    "h_CreateThread": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/threads/create.expected (2ed7c9c5, recorded on a PSP): NULL name 0x80020001, a 64-character name cut to 31, attribute bits outside 0xf8f060ff 0x80020191, stack under 0x200 0x80020194, 0x01000001 rounded to 0x01000100, priority outside 8..0x77 0x80020193, NULL entry creates, 0xDEADBEEF entry 0x800200D3, two threads with one name",
+            "tests/native/hle_thread_selftest.c:test_create_thread_contract",
+            "docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: CreateThread with a NULL entry returned a UID)",
+            "docs/research/PSP_THREADING_SEMANTICS.md (FIRMWARE_CREATE_THREAD_ARG5_T0: attribute arrives in $t0)",
+        ],
+        "limitation": "the argument checks above match the recorded cells one argument at a time; which error wins when several arguments are wrong is not measured, kernel-mode creates (priority under 8) are not modelled, the entry check is only 'readable guest memory', the SceKernelThreadOptParam in $t1 is ignored, and the 'Create 1024' cell (a PSP fails the 29th 1 MiB stack with 0x80020190) is not reproduced because the stack arena's capacity differs (#341)",
+    },
+    "h_StartThread": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/threads/start.expected (2ed7c9c5, recorded on a PSP): ids (0 -> 0x80020197, unknown or deleted -> 0x80020198, twice or current -> 0x800201a4), a negative argument length or a block that is not memory -> 0x800200d3 with the thread left dormant, a NULL block starts with no argument, the copied block at stack + size - 0x100 - round16(len); docs/HARDWARE_ORACLE.md PSP-NULLCODE-001: entry sp 0x40 below a four-byte block",
+            "tests/native/hle_thread_selftest.c:test_start_thread_contract",
+            "tests/native/hle_thread_selftest.c:test_start_thread_error_semantics",
+            "docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: StartThread of a NULL-entry thread returned 0)",
+        ],
+        "limitation": "the 'Priorities' resched/deferred cells (marked reorderable in start.expected), the 'Stack' cells (a thread started with the Low-stack, no-fill or clear-stack attributes) and an argument block larger than the stack (a PSP crashes; the runtime drops the block and logs) are not reproduced; the entry $sp is argv - 0x40 for every length although only the four-byte record measures it, scratchpad and kernel-segment (0x88800000) argument blocks are unmeasured (the first is accepted; the second is accepted although a PSP may refuse it), the thread's initial $sp without an argument and the order of the not-dormant and argument errors are not measured (#341)",
+    },
+    "h_DisplaySetMode": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/display/setmode.expected (1a9e6c31, recorded on a PSP): mode 0 at 480x272 returns 0, any other mode 0x80000107, mode 0 at another size 0x80000104, mode checked first",
+            "tests/native/hle_thread_selftest.c:test_title_config_hle_bindings",
+        ],
+        "limitation": "only the argument results are modelled: the PSP blocks until a vblank ('Vblank after set: 1'), the runtime returns at once, and sceDisplayGetMode reports the fixed mode 0 at 480x272 (#341)",
+    },
+    "h_GeListUpdateStallAddr": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/gpu/ge/queue.expected (2ed7c9c5, recorded on a PSP): an id naming no list (0, or a dequeued list) returns 0x80000100, updating an enqueued list returns 0",
+            "tests/native/hle_thread_selftest.c:test_ge_update_stall_unknown_id",
+            "tests/native/hle_thread_selftest.c:test_ge_guest_sentinel",
+        ],
+        "limitation": "a list the runtime already ran to its END returns 0 as a deliberate no-op (a GU ring buffer issues one update per chunk), where the 'Completed' cell returns 0x80000020; the 'Same stackAddr' cells that depend on the compiled SDK version are not compared (#341)",
+    },
+    "h_IoGetstat": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/io/stat/stat.expected (1a9e6c31, recorded on a PSP): an ms0 file reports mode 0x21ff attr 0x0020 and its size, a directory mode 0x11ff attr 0x0010, bytes [0..63] are written and st_private is left untouched",
+            "tests/native/hle_thread_selftest.c:test_ms0_unified_namespace",
+        ],
+        "limitation": "only the Memory Stick host leg is held to the recorded shape; the PSP's ctime/atime/mtime are written as zero, the ms0 volume root (0x80010016 on a PSP) and the disc, data-archive and flash0 legs have no recorded stat cell, and the SceIoStat pointer is not validated (#341)",
+    },
+    "h_IoDread": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/io/directory/directory.expected (2ed7c9c5, recorded on a PSP): a bad descriptor returns 0x80020323; tests/io/stat/stat.expected (1a9e6c31): the listing reports the same mode and attr as sceIoGetstat",
+            "tests/native/hle_thread_selftest.c:test_fd_namespace",
+            "tests/native/hle_thread_selftest.c:test_ms0_unified_namespace",
+        ],
+        "limitation": "the PSP lists '.' and '..' (with a 4096-byte '..'), upper-cases 8.3 names and fills times; the runtime's listing order, size of directory entries, names' case and timestamps are not compared, d_private is zeroed where a PSP leaves the caller's pointer, st_private[0] carries the LBA, and only ms0:, fatms0: and device-less listings take the FAT mode/attr: disc0 and flash0 listings keep their 0x124 mode bits, which no cell measures (#341)",
+    },
+    "h_GetThreadIdSched": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/threads/start.expected (2ed7c9c5, recorded on a PSP): StartThread(sceKernelGetThreadId()) from the running thread is 0x800201a4, and no 'stack should start with thread ID' line appears, so the stack-base and k0 UID words equal the id",
+            "tests/native/hle_thread_selftest.c:test_get_thread_id_names_calling_thread",
+        ],
+        "limitation": "the value is the runtime's UID for the calling thread, not the number a PSP would assign; the result with no guest thread current is not measured (#341)",
+    },
     "h_IoLseek": {
         "status": "partial",
         "evidence": [
@@ -2365,18 +2427,11 @@ WAIVERS = ()
 # Never add an entry to make that gate pass: review the handler instead.
 PROFILE_ZERO_ISSUE = "https://github.com/Jstar269/nakagawa-recomp/issues/341"
 PROFILE_ZERO_UNREVIEWED_IMPORTS = {
-    0x0E20F177: {"name": "sceDisplaySetMode", "issue": PROFILE_ZERO_ISSUE},  # h_DisplaySetMode
-    0x13F592BC: {"name": "sceAudioOutputPannedBlocking", "issue": PROFILE_ZERO_ISSUE},  # h_AudioOutputPannedBlocking
-    0x172D316E: {"name": "sceKernelStdin", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
-    0x293B45B8: {"name": "sceKernelGetThreadId", "issue": PROFILE_ZERO_ISSUE},  # h_GetThreadIdSched
-    0x446D8DE6: {"name": "sceKernelCreateThread", "issue": PROFILE_ZERO_ISSUE},  # h_CreateThread
-    0xA6BAB2E9: {"name": "sceKernelStdout", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
-    0xACE946E8: {"name": "sceIoGetstat", "issue": PROFILE_ZERO_ISSUE},  # h_IoGetstat
-    0xD675EBB8: {"name": "sceKernelSelfStopUnloadModule", "issue": PROFILE_ZERO_ISSUE},  # h_SelfStopUnloadModule
-    0xE0D68148: {"name": "sceGeListUpdateStallAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GeListUpdateStallAddr
-    0xE3EB004C: {"name": "sceIoDread", "issue": PROFILE_ZERO_ISSUE},  # h_IoDread
-    0xF475845D: {"name": "sceKernelStartThread", "issue": PROFILE_ZERO_ISSUE},  # h_StartThread
-    0xF78BA90A: {"name": "sceKernelStderr", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
+    0x13F592BC: {"name": "sceAudioOutputPannedBlocking", "issue": PROFILE_ZERO_ISSUE},  # h_AudioOutputPannedBlocking: output.expected records bad channel 0x80260003, unreserved 0x80260001 and volume over 0xFFFF 0x8026000b, which audio_output() does not check (shared with h_AudioOutputBlocking and the non-blocking Panned NID); needs its own fix
+    0x172D316E: {"name": "sceKernelStdin", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd: no PSP cell or public test measures the std handles; all three alias handle 1 by design
+    0xA6BAB2E9: {"name": "sceKernelStdout", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd: same reason as sceKernelStdin
+    0xD675EBB8: {"name": "sceKernelSelfStopUnloadModule", "issue": PROFILE_ZERO_ISSUE},  # h_SelfStopUnloadModule: synthetic homebrew path with no PSP cell or public test; refusals are named, success is unmeasured
+    0xF78BA90A: {"name": "sceKernelStderr", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd: same reason as sceKernelStdin
 }
 
 # Runtime subsystem that owns each registration (issue #307). The split of

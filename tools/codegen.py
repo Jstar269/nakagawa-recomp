@@ -173,6 +173,9 @@ ENHANCEMENT_UPDATE_BOUNDARY: int | None = None
 ENHANCEMENT_DATA_PATCHES: list[tuple[str, bytes, bytes, str]] = []
 # Verified disc data files: (disc path, stock sha256, rewritten bytes, id).
 ENHANCEMENT_DATA_FILES: list[tuple[str, str, bytes, str]] = []
+# Sites that keep run-time state (stock_values, requires), numbered by the index their
+# rewrites carry: {"id", "pc", "float", "pairs", "requires"}.
+ENHANCEMENT_STORE_SITES: list[dict] = []
 # Callable entries whose body loads $sp (guest_owns_entry_sp): no exit restores their entry
 # $sp, so the stack census leaves them unwrapped, as it leaves resume bodies.
 GUEST_SP_ENTRIES: set[int] = set()
@@ -215,14 +218,18 @@ def _enhancement_boundary(addr: int) -> bool:
 
 
 def _scaled_store_line(rw: dict, stock_line: str) -> str:
-    """A swc1 site that stores its FPR scaled: the store reads a scaled copy, and the
-    register is never written, so an access fault that leaves the statement early
-    (--lle-cpu) cannot leave it scaled."""
+    """A swc1 or sw site that stores its register scaled: the store reads a scaled copy, and
+    the register is never written, so an access fault that leaves the statement early
+    (--lle-cpu) cannot leave it scaled. With stock_values the copy comes from the site's
+    table, and a value outside it stops the run (nk_enh_store)."""
     r = rw["reg"]
-    stored = f"s->fi[{r}]"
+    stored = f"s->r[{r}]" if rw["kind"] == "scale_int_store" else f"s->fi[{r}]"
     stock = stock_line.strip()
     if stock.count(stored) != 1:
-        raise ValueError(f"scale_f_store: expected one read of {stored} in {stock!r}")
+        raise ValueError(f"{rw['kind']}: expected one read of {stored} in {stock!r}")
+    if "stock_values" in rw:
+        return (f"{{ uint32_t _nk_bits = nk_enh_store({rw['site_index']}u, {stored}); "
+                f"{stock.replace(stored, '_nk_bits')} }}")
     return (f"{{ float _nk_f = s->f[{r}] * {rw['factor']!r}f; uint32_t _nk_bits; "
             f"memcpy(&_nk_bits, &_nk_f, sizeof _nk_bits); "
             f"{stock.replace(stored, '_nk_bits')} }}")
@@ -233,6 +240,8 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
     experimental toggle is on at run time (nk_enhancement_on())."""
     kind = rw["kind"]
     if kind == "word":
+        if word_line is None:
+            raise ValueError("a word rewrite needs its emitted word line")
         enh = word_line
     elif kind == "gate":
         enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"
@@ -259,7 +268,7 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
                 "retention": f"sqrtf(s->v[{v}])"}[rw["map"]]
         enh = (f"{stock_line.strip()} if (s->v[{v}] > 0.0f && s->v[{v}] < 1.0f) "
                f"{{ s->v[{v}] = {expr}; }}")
-    elif kind == "scale_f_store":
+    elif kind in ("scale_f_store", "scale_int_store"):
         enh = _scaled_store_line(rw, stock_line)
     elif kind == "scale_f_addend":
         r = rw["reg"]
@@ -267,6 +276,10 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
                f"{stock_line.strip()} s->f[{r}] = _nk_keep; }}")
     else:
         raise ValueError(f"unknown enhancement rewrite kind {kind!r}")
+    if "requires" in rw:
+        # The rewrite waits until every required site has applied in this run.
+        enh = (f"if (nk_enh_ready({rw['site_index']}u)) {{ {enh.strip()} }} "
+               f"else {{ {stock_line.strip()} }}")
     return (f"    if (nk_enhancement_on()) {{ {enh.strip()} }}\n"
             f"    else {{ {stock_line.strip()} }}")
 
@@ -937,6 +950,132 @@ def _enhancement_data_lines() -> list[str]:
     return out
 
 
+def _enhancement_store_lines() -> list[str]:
+    """The run-time half of store sites and ``requires``: one table row per site that keeps
+    state, the stock-value check of a store, and the gate of a dependent site."""
+    if not ENHANCEMENT_STORE_SITES:
+        return []
+    index = {row["id"]: i for i, row in enumerate(ENHANCEMENT_STORE_SITES)}
+    out = [
+        "/* Enhancement store sites. */",
+        "typedef struct {",
+        "    const char *id; uint32_t pc; int is_float;",
+        "    unsigned nstock; const uint32_t *stock; const uint32_t *scaled;",
+        "    unsigned nreq; const unsigned *req;",
+        "    uint32_t applied; int gated;",
+        "} NkEnhSite;",
+    ]
+    rows = []
+    for i, row in enumerate(ENHANCEMENT_STORE_SITES):
+        stock, scaled, req = "0", "0", "0"
+        if row["pairs"]:
+            stock, scaled = f"nk_enh_stock_{i}", f"nk_enh_scaled_{i}"
+            out.append(f"static const uint32_t {stock}[] = "
+                       f"{{{', '.join(f'0x{a:08x}u' for a, _b in row['pairs'])}}};")
+            out.append(f"static const uint32_t {scaled}[] = "
+                       f"{{{', '.join(f'0x{b:08x}u' for _a, b in row['pairs'])}}};")
+        if row["requires"]:
+            req = f"nk_enh_req_{i}"
+            out.append(f"static const unsigned {req}[] = "
+                       f"{{{', '.join(f'{index[name]}u' for name in row['requires'])}}};")
+        rows.append(f'    {{"{row["id"]}", 0x{row["pc"]:08x}u, {int(row["float"])}, {len(row["pairs"])}u, '
+                    f'{stock}, {scaled}, {len(row["requires"])}u, {req}, 0u, 0}},')
+    out += ["static NkEnhSite nk_enh_sites[] = {", *rows, "};"]
+    out += [
+        "static int nk_enh_stopped;",
+        "static void nk_enh_text(const NkEnhSite *e, uint32_t bits, char *out, size_t n) {",
+        "    if (e->is_float) { float f; memcpy(&f, &bits, sizeof f); snprintf(out, n, \"%.9g\", (double)f); }",
+        "    else snprintf(out, n, \"%d\", (int)(int32_t)bits);",
+        "}",
+        "uint32_t nk_enh_store(unsigned site, uint32_t bits) {",
+        "    NkEnhSite *e = &nk_enh_sites[site];",
+        "    char a[40], b[40];",
+        "    unsigned k;",
+        "    for (k = 0; k < e->nstock; k++) if (e->stock[k] == bits) break;",
+        "    if (k == e->nstock) {",
+        "        nk_enh_text(e, bits, a, sizeof a);",
+        '        fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: site %s at 0x%08x stores %s (0x%08x), '
+        "not one of the package's stock values; the run stops here\\n\", "
+        "e->id, (unsigned)e->pc, a, (unsigned)bits);",
+        "        nk_enh_stopped = 1;",
+        "        exit(1);",
+        "    }",
+        "    if (e->applied < 16u) {",
+        "        nk_enh_text(e, bits, a, sizeof a);",
+        "        nk_enh_text(e, e->scaled[k], b, sizeof b);",
+        '        fprintf(stderr, "ENHANCEMENT_DATA_APPLIED: site %s at 0x%08x: %s -> %s\\n", '
+        "e->id, (unsigned)e->pc, a, b);",
+        "    } else if (e->applied == 16u) {",
+        '        fprintf(stderr, "ENHANCEMENT_DATA_APPLIED: site %s: later applications are not logged\\n", e->id);',
+        "    }",
+        "    if (e->applied != 0xffffffffu) e->applied++;",
+        "    return e->scaled[k];",
+        "}",
+        "int nk_enh_ready(unsigned site) {",
+        "    NkEnhSite *e = &nk_enh_sites[site];",
+        "    unsigned k;",
+        "    for (k = 0; k < e->nreq; k++) {",
+        "        const NkEnhSite *r = &nk_enh_sites[e->req[k]];",
+        "        if (r->applied == 0u) {",
+        "            if (!e->gated) {",
+        "                e->gated = 1;",
+        '                fprintf(stderr, "ENHANCEMENT_SITE_GATED: site %s at 0x%08x runs stock: %s has not applied\\n", '
+        "e->id, (unsigned)e->pc, r->id);",
+        "            }",
+        "            return 0;",
+        "        }",
+        "    }",
+        "    return 1;",
+        "}",
+        "static void nk_enh_report_unreached(void) {",
+        "    static int reported;",
+        "    unsigned i;",
+        "    if (nk_enh_stopped || reported) return;",
+        "    reported = 1;",
+        "    for (i = 0; i < sizeof nk_enh_sites / sizeof nk_enh_sites[0]; i++) {",
+        "        const NkEnhSite *e = &nk_enh_sites[i];",
+        "        if (e->nstock > 0u && e->applied == 0u)",
+        '            fprintf(stderr, "ENHANCEMENT_DATA_SITE_NOT_REACHED: site %s at 0x%08x stored no value '
+        'in this run; whatever it should have rescaled stayed stock\\n", e->id, (unsigned)e->pc);',
+        "    }",
+        "}",
+        "/* With the toggle on, a store site that never runs is reported when the process ends:",
+        " * at an ordinary exit (atexit) and on the runtime's _Exit paths (sr_at_process_end). */",
+        "void sr_at_process_end(void (*report)(void));",
+        "void nk_enh_sites_start(void) {",
+        "    static int registered;",
+        "    if (nk_enhancement_on() && !registered) {",
+        "        registered = 1;",
+        "        (void)atexit(nk_enh_report_unreached);",
+        "        sr_at_process_end(nk_enh_report_unreached);",
+        "    }",
+        "}",
+        "/* End of enhancement store sites. */",
+        "",
+    ]
+    return out
+
+
+def _number_enhancement_store_sites() -> None:
+    """Number the resolved sites that keep run-time state; their rewrites carry the index."""
+    ENHANCEMENT_STORE_SITES.clear()
+    index: dict[str, int] = {}
+    for addr, site in sorted(ENHANCEMENT_SITES.items()):
+        rw = site["rewrite"]
+        if "stock_values" not in rw and "requires" not in rw:
+            continue
+        if site["id"] not in index:
+            index[site["id"]] = len(ENHANCEMENT_STORE_SITES)
+            ENHANCEMENT_STORE_SITES.append({
+                "id": site["id"], "pc": addr, "float": rw["kind"] == "scale_f_store",
+                "pairs": [tuple(pair) for pair in rw.get("stock_values", ())],
+                "requires": list(rw.get("requires", ())),
+            })
+            for note in enhancement_package.store_value_overlaps(site["id"], rw):
+                sys.stderr.write(f"warning: enhancement {note}\n")
+        rw["site_index"] = index[site["id"]]
+
+
 def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), renames=None,
                        enhancement=False):
     """Write the shared generated declarations with the runtime ABI contract."""
@@ -972,6 +1111,9 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
             f.write("extern uint32_t nk_enhancement_updates;\n")
             f.write("static inline int nk_enhancement_gate_30hz(void) "
                     "{ return (nk_enhancement_updates & 1u) == 0u; }\n")
+            if ENHANCEMENT_STORE_SITES:
+                f.write("uint32_t nk_enh_store(unsigned site, uint32_t bits);\n")
+                f.write("int nk_enh_ready(unsigned site);\n")
         f.write("#endif\n")
 
 
@@ -5123,6 +5265,7 @@ def _load_enhancement_package(elf, known, symbols, enhancement_pkg_path, enhance
     ENHANCEMENT_APPLIED.clear()
     ENHANCEMENT_DATA_PATCHES.clear()
     ENHANCEMENT_DATA_FILES.clear()
+    ENHANCEMENT_STORE_SITES.clear()
     if enhancement_pkg_path is not None:
         import hashlib
         from pathlib import Path
@@ -5166,6 +5309,7 @@ def _load_enhancement_package(elf, known, symbols, enhancement_pkg_path, enhance
                         f"site {site['id']}: only a jal call site can be rewritten among "
                         "control transfers (fail-closed refusal)"
                     )
+            _number_enhancement_store_sites()
             boundary = enhancement_package.verify_and_resolve_update_boundary(
                 pkg_validated,
                 symbol_to_addr=sym_map,
@@ -5305,6 +5449,7 @@ def _registration_lines(elf, ranges, known, base_name, num_files, emitted, resum
             "uint32_t nk_enhancement_updates;",
             "",
         ]
+        main_out += _enhancement_store_lines()
         main_out += _enhancement_data_lines()
     census_entries = sorted({a for a in emitted if a not in resume_owners})
     if stack_census:
@@ -5412,6 +5557,8 @@ def _registration_lines(elf, ranges, known, base_name, num_files, emitted, resum
     )
     if ENHANCEMENT_PKG_META is not None:
         main_out.append("    if (nk_enhancement_on()) nk_enhancement_apply_data();")
+        if ENHANCEMENT_STORE_SITES:
+            main_out.append("    nk_enh_sites_start();")
     main_out.append(f'    fprintf(stderr, "sr_register_all: starting {len(emitted)} registrations\\n");')
     for i in range(num_files):
         main_out.append(f"    sr_register_chunk_{i}();")
