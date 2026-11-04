@@ -291,7 +291,7 @@ class VersionInfoCommandLineTests(unittest.TestCase):
 
 class VersionInfoMakefileTests(unittest.TestCase):
     def test_player_and_titles_get_their_own_generated_script(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("$(BUILD_ROOT)/nakagawa_icon.rc: $(NK_VERSION_RESOURCE_DEPS)", makefile)
         self.assertIn("$(BUILD_DIR)/nakagawa_icon.rc: $(NK_VERSION_RESOURCE_DEPS)", makefile)
         self.assertIn('--version-rc $@ --original-filename "$(notdir $(PLAYER_EXE))" --player', makefile)
