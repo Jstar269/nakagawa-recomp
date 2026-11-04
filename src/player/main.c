@@ -1712,6 +1712,7 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
         case PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT: player_app_toggle_ace_text(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT: player_app_toggle_ace_readout(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE: player_app_toggle_ace_notice(app); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_ACE_SMOOTH: player_app_toggle_ace_smooth(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST: player_app_cycle_high_contrast_focus(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION: player_app_cycle_reduce_motion(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN:

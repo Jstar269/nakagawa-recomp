@@ -832,6 +832,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.ace_text = app->settings.ace.text;
     model.ace_readout = app->settings.ace.readout;
     model.ace_notice = app->settings.ace.notice;
+    model.ace_smooth = app->settings.ace.smooth == 1;
     if (app->settings.interface_size_pct > 0) {
         snprintf(player->settings_interface_size, sizeof(player->settings_interface_size), "%d%%",
                  app->settings.interface_size_pct);
@@ -1836,6 +1837,26 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
         out->enhancement_enabled = false;
         out->enhancement_on = false;
     }
+    /* Smooth motion (#1272) is a feature of Ace being on for the title. While the title's 60 FPS
+       game logic is on (out->enhancement_on, Authentic already off), the two are refused
+       together: the button is disabled and says so. */
+    out->smooth_shown = out->ace_shown && ace.on;
+    out->smooth_on = false;
+    out->smooth_enabled = false;
+    out->smooth_label = "Smooth motion";
+    if (out->smooth_shown) {
+        int own = player_app_title_ace_smooth(app, index);
+        if (out->enhancement_on) {
+            out->smooth_label = "Smooth motion: Off (this game runs at 60 FPS)";
+        } else {
+            out->smooth_on = ace.smooth == 1;
+            out->smooth_enabled = out->ace_enabled;
+            out->smooth_label = own < 0
+                ? (ace.smooth == 1 ? "Smooth motion: On (library default)"
+                                   : "Smooth motion: Off (library default)")
+                : (own == 1 ? "Smooth motion: On" : "Smooth motion: Off");
+        }
+    }
     if (index != app->selected_game_index || !out->ace_shown) return;
     if (ace.mode == PLAYER_ACE_TITLE_AUTHENTIC) {
         out->ace_line = out->enhancement_shown
@@ -1847,7 +1868,7 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
     } else {
         char words[160] = "";
         size_t used = 0;
-        const char *parts[4];
+        const char *parts[5];
         size_t count = 0;
         char filtering[24];
         if (ace.af > 0) {
@@ -1857,6 +1878,7 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
         if (ace.text) parts[count++] = "crisp keyboard";
         if (ace.readout) parts[count++] = "speed readout";
         if (ace.notice) parts[count++] = "game badge";
+        if (ace.smooth == 1 && !out->enhancement_on) parts[count++] = "smooth motion";
         for (size_t i = 0; i < count; i++) {
             int n = snprintf(words + used, sizeof(words) - used, "%s%s", i ? ", " : "", parts[i]);
             if (n < 0 || used + (size_t)n >= sizeof(words)) break;
@@ -2750,6 +2772,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_CYCLE_ACE) {
                 if (player->titles[index].ace_enabled) player_app_cycle_title_ace_mode(app, index);
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_CYCLE_SMOOTH) {
+                if (player->titles[index].smooth_enabled) player_app_cycle_title_ace_smooth(app, index);
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TITLE) {
                 if (player_ui_open_remove(player, app, index)) {
