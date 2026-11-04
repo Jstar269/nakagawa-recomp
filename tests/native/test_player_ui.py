@@ -3529,9 +3529,22 @@ class NativePlayerUiTests(unittest.TestCase):
         )
 
     def test_worker_start_failure_automatically_retries_after_bounded_backoff(self) -> None:
+        """The first worker start fails; once the 5 s backoff expires the title is retried on
+        its own, and the retry's result replaces the failure.
+
+        Why the old fixed 6.2 s wait could miss: the backoff runs 5 s from the failure
+        (player_state.c), and only the periodic rescan (every 2 s with no check running,
+        main.c) starts a due retry. The retry therefore starts between 5 s and 7 s after the
+        failure, and its check then takes time of its own. A run that ended at 6.2 s saw
+        either no retry yet (hosted CI: attempts 1 at the last frame, 6.4 s) or a retry in
+        flight with its result not in (status 4, unknown, where 1 was expected). Both are
+        correct product behaviour inside the documented bound. The run now waits for the
+        event the contract is about, the retry's result (WAIT_PACKAGE_STATUS), with a
+        deadline well past the 7 s bound, and asserts on the frames: the failure was shown,
+        no retry started before the backoff, and the retry came."""
         run = self.run_player(
             "ready",
-            events=("WAIT_MS=6200",),
+            events=("WAIT_PACKAGE_STATUS=MISSING,20000",),
             wait_background=True,
             env_extra={
                 "NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_AT": "1"
@@ -3539,12 +3552,19 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         frames = run["frames"]
         assert isinstance(frames, list)
+        self.assertIn("[PLAYER_UI_TEST] wait_package_status result=PASS", run["stdout"])
+        first_attempt = [frame for frame in frames
+                         if frame["package_status_thread_attempts"] == "1"]
+        self.assertTrue(first_attempt, run["stdout"])
         self.assertTrue(
-            any(frame["package_status_thread_attempts"] == "1" and
-                int(frame["ticks_ms"]) < 5000
-                for frame in frames),
+            any(frame["selected_package_check_failed"] == "1" for frame in first_attempt),
             run["stdout"],
         )
+        retried = [frame for frame in frames
+                   if int(frame["package_status_thread_attempts"]) >= 2]
+        self.assertTrue(retried, run["stdout"])
+        # The backoff is 5 s from the failure, which is no earlier than start.
+        self.assertGreaterEqual(int(retried[0]["ticks_ms"]), 5000, run["stdout"])
         self.assertGreaterEqual(
             int(frames[-1]["package_status_thread_attempts"]), 2,
             run["stdout"],

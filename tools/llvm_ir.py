@@ -30,6 +30,7 @@ public Linux runners' system LLVM can check it too.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import re
 
 # ---------------------------------------------------------------------------
@@ -130,6 +131,8 @@ class Value:
 
 
 class ConstantInt(Value):
+    type: IntType
+
     def __init__(self, ty: IntType, value: int):
         if not isinstance(ty, IntType):
             raise TypeError(f"integer constant of non-integer type {ty}")
@@ -179,7 +182,7 @@ class Argument(Value):
 class Instruction(Value):
     """One instruction: an opcode, a result type and its printed operand text."""
 
-    def __init__(self, block: "BasicBlock", ty: Type, text, *, terminator=False,
+    def __init__(self, block: "BasicBlock", ty: Type, text: Callable[[], str], *, terminator=False,
                  successors=(), name: str | None = None):
         self.block = block
         self.type = ty
@@ -215,6 +218,8 @@ class Phi(Instruction):
     def render(self) -> str:
         if not self.incoming:
             raise ValueError(f"phi {self.name} has no incoming values")
+        if self.name is None:
+            raise TypeError("a phi must be named")
         pairs = ", ".join(f"[ {v.ref()}, {b.ref()} ]" for v, b in self.incoming)
         return f"  {_symbol('%', self.name)} = phi {self.type} {pairs}"
 
@@ -433,7 +438,7 @@ class Builder:
             raise ValueError("builder is not positioned")
         return self.block
 
-    def _append(self, ty: Type, text: str, *, terminator=False, successors=(),
+    def _append(self, ty: Type, text: Callable[[], str], *, terminator=False, successors=(),
                 hint: str = "v") -> Instruction:
         block = self._block()
         if self._index is None:
