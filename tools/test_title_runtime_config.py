@@ -36,6 +36,7 @@ import compat_overrides  # noqa: E402
 import title_manifest  # noqa: E402
 import hle_sources  # noqa: E402
 import title_runtime_config  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 FIXTURE_A = ROOT / "assets" / "titles" / "pspdev-phase5.json"
 FIXTURE_B = ROOT / "assets" / "titles" / "synthetic.json"
@@ -770,7 +771,7 @@ class DispatchAddressCensus(unittest.TestCase):
         )
 
     def test_the_selftest_matrix_covers_generic_and_two_distinct_fixtures(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("DISPATCH_ISO_CONFIGS := generic fixture-a fixture-b", makefile)
         self.assertRegex(makefile, r"(?m)^DISPATCH_ISO_MANIFEST_generic :=\s*$")
         fixtures = set(re.findall(
@@ -787,7 +788,7 @@ class DispatchAddressCensus(unittest.TestCase):
         """recomp.c now calls the accessors, so every target that compiles it must link
         title_config.c against a generated artifact -- otherwise the target fails to
         link, or worse, silently drops the isolation boundary."""
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         for target in ("heap-selftest:", "profiler-selftest:", "vfpu-interp-selftest:",
                        "dispatch-isolation-selftest-one:"):
             recipe = makefile.split(target, 1)[1].split("\n\n", 1)[0]
@@ -811,7 +812,7 @@ class DispatchAddressCensus(unittest.TestCase):
         Makefile targets, hosted-CI inline compile commands, and Python-driven
         harnesses (tools/codegen_gate.py builds its own gcc command).
         """
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         for target in ("heap-selftest:", "profiler-selftest:", "vfpu-interp-selftest:",
                        "dispatch-isolation-selftest-one:"):
             recipe = makefile.split(target, 1)[1].split("\n\n", 1)[0]
@@ -967,7 +968,7 @@ class GenericRuntimeCarriesNoTitleAddress(unittest.TestCase):
             )
 
     def test_makefile_binds_the_configuration_into_the_runtime_profile(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         # Normal build parses write the exported entries once and hash all profiles
         # in one helper process. Keep the individual profile_hash path for parses
         # where the build directory is not ready yet.
@@ -1013,7 +1014,7 @@ class GenericRuntimeCarriesNoTitleAddress(unittest.TestCase):
 
     def test_an_explicit_hst_build_without_a_manifest_fails_closed(self):
         """GAME_NAME=hst with no title configuration must refuse, not build generically."""
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("TITLE_CONFIG_HST_UNBOUND := 1", makefile)
         # The refusal is attached to the generated artifact, so it fires exactly when a
         # runtime object would be produced -- never for diagnostics or cleanup.
@@ -1237,7 +1238,7 @@ class TitleConfigIdentityWiring(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.makefile = read_makefile(ROOT)
 
     def test_the_identity_includes_the_configuration_digest_and_the_unbound_state(self):
         line = next(line for line in self.makefile.splitlines()

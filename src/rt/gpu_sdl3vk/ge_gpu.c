@@ -2560,15 +2560,36 @@ static const uint8_t *tex_source_ptr(uint32_t addr, uint32_t bytes) {
     return (const uint8_t *)SR_HOST(addr);
 }
 
+static uint32_t tex_level_bytes(const TexEnt *e, uint32_t l) {
+    return l ? e->mip_bytes[l - 1u] : e->bytes;
+}
+
+/* A shadow holds the source bytes of every level of an entry, level 0 first, so a notified
+ * write that left the bytes as they were (a whole-cache writeback, say) revalidates a mip
+ * chain as it does a single level. Fills `src` with each level's host pointer; returns the
+ * shadow's size, or 0 when a level has no direct host view (tex_source_ptr). */
+static uint32_t tex_shadow_sources(const TexEnt *e, const uint8_t **src) {
+    uint32_t total = 0;
+    for (uint32_t l = 0; l <= e->mip.max_level; l++) {
+        if (!(src[l] = tex_source_ptr(l ? e->mip.addr[l - 1u] : e->addr, tex_level_bytes(e, l))))
+            return 0;
+        total += tex_level_bytes(e, l);
+    }
+    return total;
+}
+
 static int tex_shadow_matches(TexEnt *e) {
-    if (!s_tex_shadow_enabled || !e->shadow || e->shadow_bytes != e->bytes) return 0;
-    const uint8_t *src = tex_source_ptr(e->addr, e->bytes);
-    if (!src) return 0;
+    const uint8_t *src[8];
+    if (!s_tex_shadow_enabled || !e->shadow) return 0;
+    uint32_t total = tex_shadow_sources(e, src);
+    if (!total || total != e->shadow_bytes) return 0;
     uint64_t started = cpu_profile_now();
     s_cnt_shadow_checks++;
     if (s_cpu_profile) s_cpu_profile_stats.texture_shadow_checks++;
-    int match = memcmp(e->shadow, src, e->bytes) == 0;
-    uint64_t compared = e->bytes;
+    int match = 1;
+    for (uint32_t l = 0, off = 0; match && l <= e->mip.max_level; off += tex_level_bytes(e, l++))
+        match = memcmp(e->shadow + off, src[l], tex_level_bytes(e, l)) == 0;
+    uint64_t compared = total;
     if (match && s_ge->tex_fmt >= 4 && s_ge->tex_fmt <= 7) {
         compared += sizeof(e->shadow_clut);
         match = e->shadow_clut_valid && e->shadow_clut_fmt == s_ge->clut_fmt &&
@@ -2577,45 +2598,11 @@ static int tex_shadow_matches(TexEnt *e) {
     s_cnt_shadow_bytes += compared;
     if (match) s_cnt_shadow_hits++; else s_cnt_shadow_misses++;
     if (s_cpu_profile) {
-        s_cpu_profile_stats.texture_shadow_bytes += e->bytes;
+        s_cpu_profile_stats.texture_shadow_bytes += total;
         if (match) s_cpu_profile_stats.texture_shadow_hits++;
         cpu_profile_add(GEGPU_CPU_TEXTURE_SHADOW, started);
     }
     return match;
-}
-
-static void tex_shadow_store(TexEnt *e) {
-    /* A shadow holds level 0's bytes only, so it cannot prove a mip chain unchanged: an
-     * invalidated chain is decoded again (tex_shadow_matches then finds no shadow). */
-    if (!s_tex_shadow_enabled || !e->bytes || e->mip.max_level) return;
-    const uint8_t *src = tex_source_ptr(e->addr, e->bytes);
-    if (!src) return;
-    if (!e->shadow || e->shadow_bytes != e->bytes) {
-        size_t retained = s_tex_shadow_bytes - e->shadow_bytes;
-        if (retained + e->bytes > TEX_SHADOW_MAX_BYTES) return;
-        uint64_t heap_started = cpu_profile_now();
-        uint8_t *replacement = (uint8_t *)malloc(e->bytes);
-        if (s_cpu_profile) cpu_profile_add(GEGPU_CPU_HEAP, heap_started);
-        if (!replacement) return;
-        free(e->shadow);
-        s_tex_shadow_bytes = retained + e->bytes;
-        e->shadow = replacement;
-        e->shadow_bytes = e->bytes;
-    }
-    uint64_t memcpy_started = cpu_profile_now();
-    memcpy(e->shadow, src, e->bytes);
-    if (s_ge->tex_fmt >= 4 && s_ge->tex_fmt <= 7) {
-        memcpy(e->shadow_clut, s_ge->clutram, sizeof(e->shadow_clut));
-        e->shadow_clut_fmt = s_ge->clut_fmt;
-        e->shadow_clut_valid = 1;
-    } else {
-        e->shadow_clut_valid = 0;
-    }
-    if (s_cpu_profile) {
-        cpu_profile_add(GEGPU_CPU_MEMCPY, memcpy_started);
-        s_cpu_profile_stats.memcpy_bytes += e->bytes +
-            (e->shadow_clut_valid ? sizeof(e->shadow_clut) : 0u);
-    }
 }
 
 static void tex_shadow_release(TexEnt *e) {
@@ -2627,6 +2614,43 @@ static void tex_shadow_release(TexEnt *e) {
     e->shadow = NULL;
     e->shadow_bytes = 0;
     e->shadow_clut_valid = 0;
+}
+
+static void tex_shadow_store(TexEnt *e) {
+    const uint8_t *src[8];
+    if (!s_tex_shadow_enabled || !e->bytes) return;
+    uint32_t total = tex_shadow_sources(e, src);
+    if (!total) {
+        tex_shadow_release(e);          /* it holds an older content's bytes */
+        return;
+    }
+    if (!e->shadow || e->shadow_bytes != total) {
+        size_t retained = s_tex_shadow_bytes - e->shadow_bytes;
+        if (retained + total > TEX_SHADOW_MAX_BYTES) return;
+        uint64_t heap_started = cpu_profile_now();
+        uint8_t *replacement = (uint8_t *)malloc(total);
+        if (s_cpu_profile) cpu_profile_add(GEGPU_CPU_HEAP, heap_started);
+        if (!replacement) return;
+        free(e->shadow);
+        s_tex_shadow_bytes = retained + total;
+        e->shadow = replacement;
+        e->shadow_bytes = total;
+    }
+    uint64_t memcpy_started = cpu_profile_now();
+    for (uint32_t l = 0, off = 0; l <= e->mip.max_level; off += tex_level_bytes(e, l++))
+        memcpy(e->shadow + off, src[l], tex_level_bytes(e, l));
+    if (s_ge->tex_fmt >= 4 && s_ge->tex_fmt <= 7) {
+        memcpy(e->shadow_clut, s_ge->clutram, sizeof(e->shadow_clut));
+        e->shadow_clut_fmt = s_ge->clut_fmt;
+        e->shadow_clut_valid = 1;
+    } else {
+        e->shadow_clut_valid = 0;
+    }
+    if (s_cpu_profile) {
+        cpu_profile_add(GEGPU_CPU_MEMCPY, memcpy_started);
+        s_cpu_profile_stats.memcpy_bytes += total +
+            (e->shadow_clut_valid ? sizeof(e->shadow_clut) : 0u);
+    }
 }
 
 static uint64_t fnv64(uint64_t h, const void *data, size_t n) {
@@ -2755,6 +2779,12 @@ static int tex_upload_level(VkImage img, VkImageLayout *lay, uint32_t level, int
     return upload_finish(&upload, SR_PERF_GE_TEXTURE_UPLOAD);
 }
 
+#ifdef SR_GPU_COHERENCE_SELFTEST
+/* The coherence selftest's texture-upload-failure cells: fail the upload once, right after
+ * this level has been copied. UINT32_MAX = never; reset to it when the failure is taken. */
+static uint32_t s_selftest_upload_fail_after = UINT32_MAX;
+#endif
+
 /* Decode the current texture's levels 0..levels-1 through ge.c's sampler and upload them.
  * Chain level L is max(1, w >> L) x max(1, h >> L), which tex_mip_chain_supported() checked
  * is the level's own TEXSIZE. */
@@ -2775,6 +2805,12 @@ static int tex_decode_upload(VkImage img, int w, int h, uint32_t levels) {
         cpu_profile_add(GEGPU_CPU_TEXTURE_DECODE, decode_started);
         if (!tex_upload_level(img, &lay, level, level + 1u == levels, s_texscratch, lw, lh))
             return 0;
+#ifdef SR_GPU_COHERENCE_SELFTEST
+        if (level == s_selftest_upload_fail_after) {
+            s_selftest_upload_fail_after = UINT32_MAX;
+            return 0;
+        }
+#endif
     }
     return 1;
 }
@@ -2990,7 +3026,13 @@ static VkDescriptorSet tex_get(void) {
         /* same texture state, new contents: update in place (cache stays bounded) */
         if (e->pending) submit_pending();
         if (!e->content_valid) s_cnt_shadow_required++;
-        if (!tex_decode_upload(e->img, e->w, e->h, levels)) return s_white_set;
+        if (!tex_decode_upload(e->img, e->w, e->h, levels)) {
+            /* The image may be partly undefined now: with no valid mark and no shadow, the next
+             * lookup decodes again, whatever the content hash says. */
+            e->content_valid = 0;
+            tex_shadow_release(e);
+            return s_white_set;
+        }
         e->hash = hash;
         e->content_valid = 1;
         tex_note_valid();

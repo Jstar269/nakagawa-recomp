@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_manifest  # noqa: E402
 import hle_sources  # noqa: E402
 from hle_sources import HleSourcesError  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 ROOT = hle_sources.ROOT
 
@@ -117,7 +118,7 @@ class LiveListTests(unittest.TestCase):
                 self.assertTrue((ROOT / path).is_file())
 
     def test_makefile_and_cmake_list_the_same_sources(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertEqual(hle_sources.makefile_hle_srcs(makefile), list(hle_sources.RUNTIME_HLE_SOURCES))
         headers = re.search(r"(?m)^HLE_HDRS\s*:=\s*(.*)$", makefile)
         assert headers is not None

@@ -836,13 +836,9 @@ class LiveManifestTests(unittest.TestCase):
                     self.assertIn("PSP-TEARDOWN-001", meta.HANDLER_LIMITATIONS[handler])
                 if handler == "h_TryAllocateVpl":
                     self.assertIn("unmeasured", meta.HANDLER_LIMITATIONS[handler])
-        for nid, handler in {
-            0x446D8DE6: "h_CreateThread",
-            0xF475845D: "h_StartThread",
-        }.items():
-            with self.subTest(nid=f"0x{nid:08x}", excluded_handler=handler):
-                self.assertEqual(self.regs[nid]["handler"], handler)
-                self.assertEqual(self.regs[nid]["status"], "unreviewed")
+        # CreateThread and StartThread left this exclusion in the profile-zero #341 batch: the
+        # PSPAutotests create/start cells measure their own contracts (see
+        # test_profile_zero_batch_graduates_with_cited_cells).
 
     def test_route_a_kernel_sync_batch_five_has_evidence_and_named_limits(self) -> None:
         expected = {
@@ -1061,14 +1057,42 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertTrue(meta.HANDLER_LIMITATIONS[handler].strip())
                 self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
 
+    def test_profile_zero_batch_graduates_with_cited_cells(self) -> None:
+        # #341: seven profile-zero imports leave PROFILE_ZERO_UNREVIEWED_IMPORTS. Each cites a
+        # PSPAutotests cell recorded on a PSP (or, for GetThreadId, the cell that observes it)
+        # and a production-dispatch self-test, and names what stays unmeasured.
+        batch = {
+            0x446D8DE6: "h_CreateThread",
+            0xF475845D: "h_StartThread",
+            0x0E20F177: "h_DisplaySetMode",
+            0xE0D68148: "h_GeListUpdateStallAddr",
+            0xACE946E8: "h_IoGetstat",
+            0xE3EB004C: "h_IoDread",
+            0x293B45B8: "h_GetThreadIdSched",
+        }
+        for nid, handler in batch.items():
+            with self.subTest(handler=handler):
+                self.assertEqual(self.regs[nid]["handler"], handler)
+                self.assertEqual(self.regs[nid]["status"], "partial")
+                evidence = meta.HANDLER_EVIDENCE[handler]
+                self.assertTrue(any(e.startswith("PSPAutotests tests/") for e in evidence))
+                self.assertTrue(any(e.startswith("tests/native/hle_thread_selftest.c:test_") for e in evidence))
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler].strip())
+                self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+        # What stays has a one-line reason on its own line in the source.
+        source = (hle_manifest.ROOT / "tools" / "hle_registry_meta.py").read_text(encoding="utf-8")
+        for nid, entry in meta.PROFILE_ZERO_UNREVIEWED_IMPORTS.items():
+            with self.subTest(remaining=entry["name"]):
+                line = next(l for l in source.splitlines() if f'0x{nid:08X}: {{"name"' in l)
+                self.assertRegex(line, r"# h_\w+: \S")
+
     def test_route_a_batches_eleven_and_twelve_leave_uncovered_contracts_unreviewed(self) -> None:
-        # The oracle cells use CreateThread/StartThread only as setup, the WritebackInvalidate
-        # range variant is not measured. None of them may ride along with the batches above.
+        # The WritebackInvalidate range variant is not measured. It may not ride along with the
+        # batches above.
         # AllocPartitionMemory left this list in the later #341 batch: its partition and type
         # refusals now follow partition.expected, and the NULL-name and placement divergences
         # are named in its partial limitation instead of keeping it unreviewed.
-        for nid, handler in ((0x446D8DE6, "h_CreateThread"), (0xF475845D, "h_StartThread"),
-                             (0x34B9FA9E, "h_DcacheWritebackInvalidateRange")):
+        for nid, handler in ((0x34B9FA9E, "h_DcacheWritebackInvalidateRange"),):
             with self.subTest(handler=handler):
                 self.assertEqual(self.regs[nid]["handler"], handler)
                 self.assertEqual(self.regs[nid]["status"], "unreviewed")

@@ -19,13 +19,37 @@ static int sr_thread_dispatch_callbacks_once(uint32_t thread_uid);
 /* AllocateVpl / AllocateVplCB blocking forms integrated with fiber wait queues (PR-G). */
 
 /* ThreadManForUser, backed by the fiber scheduler (src/rt/sched.c). */
+/* sceKernelCreateThread argument checks, each from a PSPAutotests
+ * tests/threads/threads/create.expected cell recorded on a PSP (2ed7c9c5): a NULL name returns
+ * 0x80020001; an attribute bit outside the user mask 0xf8f060ff returns ILLEGAL_ATTR; a priority
+ * outside 8..0x77 returns ILLEGAL_PRIORITY; a stack size under 0x200 (zero included) returns
+ * ILLEGAL_STACK_SIZE; an entry that is not guest memory returns 0x800200d3, while a NULL entry
+ * creates. Which error wins when several arguments are wrong is not measured. This HLE serves user
+ * code only, so the KERNEL attribute (0x1000) is refused, which PPSSPP allows for kernel callers. */
+#define HLE_KERNEL_ERROR_ERROR 0x80020001u          /* SCE_KERNEL_ERROR_ERROR */
+#define HLE_KERNEL_ERROR_ILLEGAL_STACK_SIZE 0x80020194u
+#define HLE_THREAD_USER_ATTR_MASK 0xf8f060ffu
+#define HLE_THREAD_USER_PRIORITY_MIN 8
+#define HLE_THREAD_USER_PRIORITY_MAX 0x77
 static uint32_t h_CreateThread(CpuState *s) {
-    /* a0=name, a1=entry, a2=priority, a3=stackSize. Returns a UID bound to the entry.
-     * sched_create_thread returns 0 when the TCB table or the stack arena is exhausted;
-     * real PSP fails such a create instead of granting a smaller stack. */
+    /* a0=name, a1=entry, a2=priority, a3=stackSize, t0=attr (stack_arg 0). Returns a UID bound
+     * to the entry. sched_create_thread returns 0 when the TCB table or the stack arena is
+     * exhausted; real PSP fails such a create instead of granting a smaller stack. */
     char name[32] = {0};
-    if (A0 && !guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    uint32_t uid = sched_create_thread_ex(A1, (int)A2, A3, stack_arg(s, 0), name);
+    if (!A0) return HLE_KERNEL_ERROR_ERROR;
+    /* A name longer than 31 characters is cut to 31, not refused (the "Long name" cell). */
+    for (uint32_t i = 0; i < sizeof(name) - 1u; i++) {
+        if (!sr_guest_span_readable(A0 + i, 1u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+        name[i] = (char)MEM_R8(A0 + i);
+        if (!name[i]) break;
+    }
+    if (A1 != 0u && !sr_guest_span_readable(A1, 4u)) return SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR;
+    const uint32_t attr = stack_arg(s, 0);
+    if (attr & ~HLE_THREAD_USER_ATTR_MASK) return SCE_KERNEL_ERROR_ILLEGAL_ATTR;
+    if ((int)A2 < HLE_THREAD_USER_PRIORITY_MIN || (int)A2 > HLE_THREAD_USER_PRIORITY_MAX)
+        return SCE_KERNEL_ERROR_ILLEGAL_PRIORITY;
+    if (A3 < 0x200u) return HLE_KERNEL_ERROR_ILLEGAL_STACK_SIZE;
+    uint32_t uid = sched_create_thread_ex(A1, (int)A2, A3, attr, name);
     if (uid) sched_mark_code_pointer_entry(uid);   /* the entry is a guest code pointer (#1375) */
     return uid ? uid : 0x80020190u;   /* SCE_KERNEL_ERROR_NO_MEMORY */
 }
@@ -33,6 +57,19 @@ static uint32_t h_StartThread(CpuState *s) {
     /* a0=thid, a1=arglen, a2=argp. Mark ready, then preempt if it is higher priority -- PSP
      * runs a higher-priority started thread immediately. */
     uint32_t thid = A0;
+    /* PSPAutotests tests/threads/threads/start.expected (recorded on a PSP, 2ed7c9c5): an argument
+     * length that is negative as a signed int, or a non-NULL block at 0xDEADBEEF or 0x80000000,
+     * refuses with 0x800200d3 and leaves the thread dormant. A NULL block starts the thread with no
+     * argument. Those are the only block addresses the cells measure. The runtime refuses a block
+     * that is not readable guest memory, plus any block whose physical address is under the
+     * scratchpad (0x00010000), which is what makes 0x80000000 (physical 0) refuse. Scratchpad and
+     * kernel-segment blocks (0x88800000) are unmeasured: the first is accepted, the second is accepted
+     * here too although a PSP's user-pointer check may refuse it. Only a dormant thread reaches this
+     * check, so the id and state errors keep their results. */
+    if (sched_is_dormant(thid) &&
+        ((int32_t)A1 < 0 ||
+         (A1 != 0u && A2 != 0u && (SR_PHYS(A2) < 0x00010000u || !sr_guest_span_readable(A2, A1)))))
+        return SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR;
     uint32_t result = sched_start_thread(thid, A1, A2);
     /* Historical "libc_main_thid" re-seed -- REMOVED. Statically and dynamically proven
      * to be part of the guest module/EH-metadata registry, not a thread ID scalar. */
@@ -96,6 +133,7 @@ static uint32_t h_ExitThread(CpuState *s) {
         fflush(stderr);
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, s->pc, uid, 1u);
         SR_VERIFY_REPORT_NOW();  /* _exit skips atexit, which would have written the report */
+        sr_perf_shutdown();      /* the end-of-process reports, as on the _Exit paths */
         _exit(1);
     }
     int delete_request = s_exit_delete_request;

@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import contrib_check  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 MAINTAINER_LINE = "PROVENANCE_CONTENT_MISMATCH: tools/thing.py: audited bytes differ"
 CONTRIBUTOR_LINE = "POLICY_UNCLASSIFIED: tools/new_thing.py: no explicit disposition"
@@ -176,7 +177,7 @@ class TestStrictCompileIncludePath(unittest.TestCase):
 
 def _makefile_text() -> str:
     """The Makefile and the fragments it includes, continuation lines joined."""
-    parts = [(ROOT / "Makefile").read_text(encoding="utf-8")]
+    parts = [read_makefile(ROOT)]
     parts.extend(path.read_text(encoding="utf-8") for path in sorted((ROOT / "mk").glob("*.mk")))
     return re.sub(r"\\\n[ \t]*", " ", "\n".join(parts))
 
@@ -500,7 +501,7 @@ class TestPublicationGateSplit(unittest.TestCase):
 
 class TestMakeTargetWiring(unittest.TestCase):
     def test_the_makefile_exposes_contrib_check_through_the_help_catalog(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertRegex(makefile, r"(?m)^contrib-check:")
         self.assertIn("tools/contrib_check.py", makefile)
         self.assertRegex(makefile, r"(?m)^\tcontrib-check \\$")
@@ -511,7 +512,7 @@ class TestMakeTargetWiring(unittest.TestCase):
 
     def test_the_target_runs_on_both_make_frontends(self) -> None:
         """mingw32-make and make share the recipe; nothing in it is host-specific."""
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         recipe = makefile.split("\ncontrib-check:\n", 1)[1].split("\n\n", 1)[0]
         self.assertIn("$(PYTHON)", recipe)
         for host_specific in ("mingw32", "cmd /c", "pwsh", "powershell"):

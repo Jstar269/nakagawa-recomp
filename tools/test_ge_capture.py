@@ -11,6 +11,10 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
 
 try:
     from tools.ge_replay_metrics import (
@@ -62,7 +66,7 @@ class TestGeCaptureC(unittest.TestCase):
 
 class TestGeCaptureWiring(unittest.TestCase):
     def test_runtime_build_contains_capture_but_not_fixture(self):
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("src/rt/ge_capture.c", makefile)
         self.assertIn("ge-replay", makefile)
         tracked = subprocess.run(
@@ -72,7 +76,7 @@ class TestGeCaptureWiring(unittest.TestCase):
         self.assertEqual(tracked, "", "private GE fixtures must never be tracked")
 
     def test_replay_links_production_optimized_ge_object(self):
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         replay_rule = makefile.split("ge-replay:", 1)[1].split("# selftest", 1)[0]
         self.assertIn("$(RT_GE_O)", replay_rule)
         self.assertNotIn("src/rt/ge.c", replay_rule)
@@ -154,7 +158,7 @@ class TestGeCaptureWiring(unittest.TestCase):
         self.assertIn("stats_emit(1)", gpu)
         self.assertIn('getenv("SR_GPU_TEX_SHADOW_DISABLE")', gpu)
         self.assertIn("TEX_SHADOW_MAX_BYTES", gpu)
-        self.assertIn("memcmp(e->shadow, src, e->bytes) == 0", gpu)
+        self.assertIn("memcmp(e->shadow + off, src[l], tex_level_bytes(e, l)) == 0", gpu)
         self.assertIn("memcmp(e->shadow_clut, s_ge->clutram", gpu)
         for phase in CPU_PHASES:
             self.assertIn(f'"{phase}"', replay)
@@ -168,7 +172,7 @@ class TestGeCaptureWiring(unittest.TestCase):
 
     def test_frontend_profile_is_build_gated_and_exports_sparse_stages(self):
         ge = (RT / "ge.c").read_text(encoding="utf-8")
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         perf = (RT / "perf.c").read_text(encoding="utf-8")
         self.assertIn("GE_FRONTEND_PROFILE ?= 0", makefile)
         self.assertIn("override GE_CFLAGS += -DSR_GE_FRONTEND_PROFILE", makefile)
@@ -372,7 +376,7 @@ class TestGeCaptureWiring(unittest.TestCase):
         self.assertEqual(tuple(name.lower() for name in names[:-1]), GE_PROFILE_CHECKS)
 
     def test_profile_validate_selftest_runs_the_production_object(self):
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         rule = makefile.split("\nge-cpu-profile-validate-selftest:", 1)[1].split("\n\n", 1)[0]
         self.assertIn("$(RT_GE_O)", rule)
         self.assertNotIn("src/rt/ge.c", rule)

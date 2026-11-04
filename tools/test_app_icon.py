@@ -16,6 +16,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import make_app_icon  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 WIDGETS_C = ROOT / "src" / "ui" / "nk_ui_widgets.c"
@@ -158,7 +159,7 @@ class BuildWiringTests(unittest.TestCase):
         self.assertEqual(Path(make_app_icon.OUTPUT).parent, Path("assets/brand"))
 
     def test_windows_player_and_titles_link_the_icon(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         windows = makefile.split("ifeq ($(OS),Windows_NT)\nPLAYER_PLATFORM_SRC", 1)[1].split("\nelse\n", 1)
         self.assertIn("PLAYER_ICON_OBJ     := $(BUILD_ROOT)/nakagawa_icon.o", windows[0])
         self.assertIn("TITLE_ICON_OBJ      = $(BUILD_DIR)/nakagawa_icon.o", windows[0])
