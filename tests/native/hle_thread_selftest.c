@@ -30480,6 +30480,89 @@ static void test_sas_end_flags_refresh_per_cycle(void) {
  * is still refused with the address error after an init. */
 #define NID_SAS_GET_GRAIN      0xbd11b7c2u
 #define NID_SAS_GET_OUTPUTMODE 0xe175ef66u
+/* SAS envelopes (#1296). __sceSasSetSimpleADSR packs rates, curves and the sustain level into
+ * two 16-bit words, and __sceSasSetADSRmode picks each phase's curve. The handler stored the
+ * low 16 bits of the words as raw per-sample steps and the envelope ignored every curve, so a
+ * SimpleADSR attack or release ran for the wrong length in every game that uses it.
+ *
+ * Expected heights come from the adapted envelope model (src/rt/sas_envelope.h, from PPSSPP's
+ * SasAudio.cpp), not from PSP measurements; PSP-measured cells replace them when they exist.
+ * One envelope step per output sample: a 256-sample grain is 256 steps. The voice is a looping
+ * PCM voice, so the source never ends and only the envelope decides the height. */
+#define NID_SAS_GET_ENV_HEIGHT 0x74ae582au
+static void sas_env_cell_voice(CpuState *cpu, uint32_t core, uint32_t pcm) {
+    cpu->r[4] = core; cpu->r[5] = 0; cpu->r[6] = pcm; cpu->r[7] = 256; cpu->r[8] = 0;
+    expect(sr_syscall(cpu, NID_SAS_SET_VOICE_PCM) == 0, "envelope cell: looping PCM voice set");
+    cpu->r[4] = core; cpu->r[5] = 0; cpu->r[6] = 0x1000; cpu->r[7] = 0x1000; cpu->r[8] = 0; cpu->r[9] = 0;
+    expect(sr_syscall(cpu, NID_SAS_SET_VOLUME) == 0, "envelope cell: volume set");
+}
+
+static uint32_t sas_env_cell_grain(CpuState *cpu, uint32_t core, uint32_t out) {
+    cpu->r[4] = core; cpu->r[5] = out;
+    (void)sr_syscall(cpu, NID_SAS_CORE);
+    cpu->r[4] = core; cpu->r[5] = 0;
+    return sr_syscall(cpu, NID_SAS_GET_ENV_HEIGHT);
+}
+
+static void test_sas_envelope_follows_its_rates_and_curves(void) {
+    CpuState cpu;
+    const uint32_t core = 0x08030000u, out = 0x08010000u, pcm = 0x08040000u;
+    const uint32_t grain = 256u;
+
+    for (int cell = 0; cell < 3; cell++) {
+        reset_fixture(); sr_hle_init(); sr_hle_test_sas_reset();
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[29] = 0x09012000u;
+        cpu.r[4] = core; cpu.r[5] = grain; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+        expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "envelope cell: __sceSasInit with a 256-sample grain");
+        for (uint32_t i = 0; i < 256u; i++) MEM_W16(pcm + i * 2u, 0x4000u);
+        sas_env_cell_voice(&cpu, core, pcm);
+
+        if (cell == 0) {
+            /* env1 0x1FFF: linear attack, rate code 0x1F (0x200000 per step); decay code 0xF
+             * (exponential); sustain level 0xF (full). env2 0x5FCA: linear-decrease sustain with
+             * rate code 0x7F (held); linear release, rate code 0x0A (0x40000 per step). */
+            cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0x1FFFu; cpu.r[7] = 0x5FCAu;
+            expect(sr_syscall(&cpu, NID_SAS_SET_SIMPLE) == 0, "SimpleADSR accepts 0x1FFF/0x5FCA");
+            cpu.r[4] = core; cpu.r[5] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "envelope cell: key on");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x20000000u,
+                   "SimpleADSR attack code 0x1F climbs 0x200000 per sample: half height after 256 samples");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x40000000u,
+                   "SimpleADSR attack code 0x1F reaches full height at sample 512");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x3FFFC000u,
+                   "SimpleADSR decay code 0xF steps once below a full sustain level, then the held sustain keeps it");
+            cpu.r[4] = core; cpu.r[5] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_KEY_OFF) == 0, "envelope cell: key off");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x3BFFC000u,
+                   "SimpleADSR linear release code 0x0A falls 0x40000 per sample");
+        } else if (cell == 1) {
+            /* env1 0x9FFF: as cell 0 with the bent attack curve (bit 15): full rate up to three
+             * quarters of the height, a quarter of it above. */
+            cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0x9FFFu; cpu.r[7] = 0x5FCAu;
+            expect(sr_syscall(&cpu, NID_SAS_SET_SIMPLE) == 0, "SimpleADSR accepts 0x9FFF/0x5FCA");
+            cpu.r[4] = core; cpu.r[5] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "envelope cell: key on");
+            (void)sas_env_cell_grain(&cpu, core, out);
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x34180000u,
+                   "SimpleADSR bent attack slows to a quarter rate above three quarters of the height");
+        } else {
+            /* __sceSasSetADSRmode DIRECT (5) for the attack sets the height to the attack rate
+             * on every step, so it stays at the rate and never reaches the top. */
+            cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 1; cpu.r[7] = 0x12345678u;
+            cpu.r[8] = 0; cpu.r[9] = 0; cpu.r[10] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_ADSR) == 0, "ADSR sets the attack rate");
+            cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 1; cpu.r[7] = 5;
+            cpu.r[8] = 0; cpu.r[9] = 0; cpu.r[10] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_ADSR_MODE) == 0, "ADSRmode sets the attack curve to DIRECT");
+            cpu.r[4] = core; cpu.r[5] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "envelope cell: key on");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x12345678u,
+                   "ADSRmode DIRECT attack holds the height at the attack rate");
+        }
+    }
+}
+
 static void test_sas_reinit_is_a_fresh_init(void) {
     CpuState cpu;
     const uint32_t CORE = 0x08030000u;
@@ -46604,6 +46687,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_state_contracts();
     test_sas_end_flags_refresh_per_cycle();
     test_sas_reinit_is_a_fresh_init();
+    test_sas_envelope_follows_its_rates_and_curves();
     test_msgpipe_rendezvous();
     test_msgpipe_safety();
     test_msgpipe_blocking();

@@ -11,6 +11,7 @@
  * (#307). */
 
 #include "hle_internal.h"
+#include "sas_envelope.h"
 
 /* SR_AUDIOSTAT aggregate counters (investigation telemetry). Declared here because
  * the ATRAC decode path and the vblank exit dump both precede the SAS definitions. */
@@ -654,13 +655,10 @@ typedef struct {
     uint32_t pcm;                 /* mono signed-16 PCM source */
     uint32_t pcm_samples, pcm_pos;
     int pcm_loop_start;
-    /* ADSR rates/modes and retained simple-envelope words. */
-    int adsr_a, adsr_d, adsr_s, adsr_r;
-    int mode_a, mode_d, mode_s, mode_r;
-    int sustain_level;            /* 0..0x40000000 */
-    uint32_t simple_adsr1, simple_adsr2;
-    int env_level;                /* 0..0x40000000 */
-    int env_phase;                /* 0=ATTACK, 1=DECAY, 2=SUSTAIN, 3=RELEASE, 4=OFF */
+    /* The ADSR envelope (sas_envelope.h) and its height after the last step, 0..0x40000000,
+     * which the mixer scales by and the height getters return. */
+    SasEnvelope envelope;
+    int env_level;
     int noise;                    /* 0..63 (noise clock) */
 } SasVoice;
 
@@ -828,29 +826,13 @@ static void sas_output_write(uint32_t out, uint32_t frame, int channel, int valu
     MEM_W16(out + off, (uint16_t)(int16_t)value);
 }
 
-static int sas_env_step(int configured, int fallback) {
-    return configured > 0 ? configured : fallback;
-}
-
+/* One sample's envelope step (sas_envelope.h). The configured rates and curves are used as
+ * the game set them: a rate of 0 holds the height, it is not replaced by a default. A voice
+ * whose envelope has ended (released to zero) stops. */
 static void sas_advance_envelope(SasVoice *v) {
-    if (v->env_phase == 0) {
-        int64_t level = (int64_t)v->env_level + sas_env_step(v->adsr_a, 0x1000000);
-        if (level >= SAS_ENVELOPE_MAX) { v->env_level = SAS_ENVELOPE_MAX; v->env_phase = 1; }
-        else v->env_level = (int)level;
-    } else if (v->env_phase == 1) {
-        int step = sas_env_step(v->adsr_d, 0x800000);
-        if (v->env_level > v->sustain_level) {
-            v->env_level -= step;
-            if (v->env_level <= v->sustain_level) {
-                v->env_level = v->sustain_level; v->env_phase = 2;
-            }
-        } else {
-            v->env_level = v->sustain_level; v->env_phase = 2;
-        }
-    } else if (v->env_phase == 3) {
-        v->env_level -= sas_env_step(v->adsr_r, 0x1000000);
-        if (v->env_level <= 0) { v->env_level = 0; v->env_phase = 4; v->on = 0; }
-    }
+    sas_envelope_step(&v->envelope);
+    v->env_level = sas_envelope_height(&v->envelope);
+    if (sas_envelope_ended(&v->envelope)) v->on = 0;
 }
 
 static int sas_next_sample(SasVoice *v, int *sample) {
@@ -1014,7 +996,7 @@ static uint32_t h_SasInit(CpuState *s) {
     memset(s_sasv, 0, sizeof(s_sasv));
     for (int i = 0; i < SAS_VOICES; i++) {
         s_sasv[i].pitch = 0x1000; s_sasv[i].loop_start = -1; s_sasv[i].pcm_loop_start = -1;
-        s_sasv[i].sustain_level = SAS_ENVELOPE_MAX; s_sasv[i].env_phase = 4;
+        sas_envelope_reset(&s_sasv[i].envelope);
     }
     s_sas_core.end_flags = sas_live_end_flags();
     return 0;
@@ -1077,10 +1059,7 @@ static uint32_t h_SasSetADSR(CpuState *s) {
     if ((mask & SAS_ADSR_ATTACK && a < 0) || (mask & SAS_ADSR_DECAY && d < 0) ||
         (mask & SAS_ADSR_SUSTAIN && sustain < 0) || (mask & SAS_ADSR_RELEASE && r < 0))
         return SAS_ERROR_ADSR_VAL;
-    if (mask & SAS_ADSR_ATTACK) v->adsr_a = a;
-    if (mask & SAS_ADSR_DECAY) v->adsr_d = d;
-    if (mask & SAS_ADSR_SUSTAIN) v->adsr_s = sustain;
-    if (mask & SAS_ADSR_RELEASE) v->adsr_r = r;
+    sas_envelope_set_rates(&v->envelope, mask, a, d, sustain, r);
     return 0;
 }
 
@@ -1095,10 +1074,7 @@ static uint32_t h_SasSetADSRmode(CpuState *s) {
         (mask & SAS_ADSR_DECAY && (d < 0 || d > 5)) ||
         (mask & SAS_ADSR_SUSTAIN && (sustain < 0 || sustain > 5)) ||
         (mask & SAS_ADSR_RELEASE && (r < 0 || r > 5))) return SAS_ERROR_ADSR_MODE;
-    if (mask & SAS_ADSR_ATTACK) v->mode_a = a;
-    if (mask & SAS_ADSR_DECAY) v->mode_d = d;
-    if (mask & SAS_ADSR_SUSTAIN) v->mode_s = sustain;
-    if (mask & SAS_ADSR_RELEASE) v->mode_r = r;
+    sas_envelope_set_curves(&v->envelope, mask, a, d, sustain, r);
     return 0;
 }
 
@@ -1106,9 +1082,10 @@ static uint32_t h_SasSetSimpleADSR(CpuState *s) {
     SasVoice *v; uint32_t e = sas_voice_for(A0, A1, &v);
     if (e) return e;
     if ((A3 >> 13) & 1u) return SAS_ERROR_ADSR_MODE;
-    v->simple_adsr1 = A2; v->simple_adsr2 = A3;
-    v->adsr_a = (int)(A2 & 0xffffu); v->adsr_r = (int)(A3 & 0xffffu);
-    v->adsr_d = 0; v->adsr_s = SAS_ENVELOPE_MAX;
+    /* Two packed 16-bit words: rates, curves and the sustain level (sas_envelope.h). They
+     * were stored here as raw per-sample steps, which made every SimpleADSR attack and
+     * release the wrong length. */
+    sas_envelope_set_simple(&v->envelope, A2, A3);
     return 0;
 }
 
@@ -1117,7 +1094,7 @@ static uint32_t h_SasSetSL(CpuState *s) {
     int32_t level = (int32_t)A2;
     if (e) return e;
     if (level < 0 || level > SAS_ENVELOPE_MAX) return SAS_ERROR_ADSR_VAL;
-    v->sustain_level = level; return 0;
+    sas_envelope_set_sustain_level(&v->envelope, level); return 0;
 }
 
 static uint32_t h_SasSetNoise(CpuState *s) {
@@ -1147,7 +1124,7 @@ static uint32_t h_SasSetKeyOn(CpuState *s) {
         (v->type == SAS_VOICE_PCM && (!v->pcm || !v->pcm_samples))) return SAS_ERROR_INVALID_STATE;
     v->pos = 0; v->pcm_pos = 0; v->hist1 = v->hist2 = 0; v->bufn = v->bufi = 0; v->frac = 0;
     if (!v->voll && !v->volr) { v->voll = SAS_VOLUME_MAX; v->volr = SAS_VOLUME_MAX; }
-    v->env_level = 0; v->env_phase = 0; v->on = 1;
+    sas_envelope_key_on(&v->envelope); v->env_level = 0; v->on = 1;
     if (sas_log_on()) {
         static uint32_t calls; calls++;
         fprintf(stderr, "SAS_KEYON: call=%u vbl=%u voice=%u type=%d vag=0x%08x size=%u voll=%d volr=%d on=%d\n",
@@ -1159,7 +1136,7 @@ static uint32_t h_SasSetKeyOn(CpuState *s) {
 static uint32_t h_SasSetKeyOff(CpuState *s) {
     SasVoice *v; uint32_t e = sas_voice_for(A0, A1, &v);
     if (e) return e;
-    if (v->on) v->env_phase = 3;
+    if (v->on) sas_envelope_key_off(&v->envelope);
     return 0;
 }
 
