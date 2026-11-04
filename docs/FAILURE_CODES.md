@@ -264,6 +264,7 @@ The **Where** column of each table names the places a code can appear:
 | `INSTALL_CANCELLED` | player | The prerequisite install was cancelled. |
 | `INTERNAL_ERROR` | decrypt, disc, player | A C engine returned a result it has no name for. This is a defect in Nakagawa. |
 | `LIBRARY_WRITE_FAILED` | player | The library could not be saved. |
+| `LINK_OPEN_FAILED` | player | A web link could not be opened in the browser. |
 | `MANIFEST_INVALID` | player | A prerequisite's pinned download entry (URL, size or SHA-256) is invalid. |
 | `OFFLINE_OR_NETWORK_ERROR` | player | A download failed because the network is unavailable. |
 | `PATH_TOO_LONG` | player | A path is longer than the system allows. |
