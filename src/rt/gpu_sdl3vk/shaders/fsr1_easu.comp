@@ -1,0 +1,35 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 the Nakagawa Recomp authors */
+/* fsr1_easu.comp - the presentation upscaler's first pass (gpu_sdl3vk/fsr1_pass.c): AMD FSR 1 EASU,
+ * edge-adaptive spatial upsampling, from the frame the presenter shows into a private image at the
+ * window's size. The algorithm is AMD's, in third_party/fidelityfx_fsr1 (MIT); this file only binds
+ * it to the pass's images. One invocation per output pixel. */
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D in_frame;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D out_frame;
+
+layout(push_constant) uniform Easu {
+    uvec4 con0, con1, con2, con3;  /* FsrEasuCon */
+    uvec4 size;                    /* x, y: the output size */
+} pc;
+
+#define A_GPU 1
+#define A_GLSL 1
+#include "../../../../third_party/fidelityfx_fsr1/ffx_a.h"
+
+#define FSR_EASU_F 1
+AF4 FsrEasuRF(AF2 p) { return textureGather(in_frame, p, 0); }
+AF4 FsrEasuGF(AF2 p) { return textureGather(in_frame, p, 1); }
+AF4 FsrEasuBF(AF2 p) { return textureGather(in_frame, p, 2); }
+#include "../../../../third_party/fidelityfx_fsr1/ffx_fsr1.h"
+
+void main() {
+    uvec2 p = gl_GlobalInvocationID.xy;
+    if (p.x >= pc.size.x || p.y >= pc.size.y) return;
+    AF3 c;
+    FsrEasuF(c, p, pc.con0, pc.con1, pc.con2, pc.con3);
+    imageStore(out_frame, ivec2(p), vec4(c, 1.0));
+}
