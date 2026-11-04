@@ -12,67 +12,6 @@
 
 #include "hle_internal.h"
 
-#define PSMF_AV_CONTENT_MAX 8192u            /* one sceMpegAtracDecode block */
-#ifdef SR_MPEG_MEDIA_SELFTEST
-int s_psmf_av_test_queue;
-#endif
-
-extern int sr_audio_queued(int ch);
-int psmf_av_queue_frames(int ch) {
-#ifdef SR_MPEG_MEDIA_SELFTEST
-    if (s_psmf_av_test_queue_set) return s_psmf_av_test_queue;
-#endif
-    return sr_audio_queued(ch);
-}
-
-/* FNV-1a of [addr, +bytes), 0 when the bytes are all zero or cannot be read: a silent block is
- * not told apart from any other. */
-uint64_t psmf_av_content(uint32_t addr, uint32_t bytes) {
-    static uint8_t block[PSMF_AV_CONTENT_MAX];
-    if (!bytes || bytes > PSMF_AV_CONTENT_MAX || !sr_guest_copy_in(block, addr, bytes)) return 0;
-    uint64_t h = 1469598103934665603ull;
-    unsigned any = 0;
-    for (uint32_t i = 0; i < bytes; i++) {
-        any |= block[i];
-        h = (h ^ block[i]) * 1099511628211ull;
-    }
-    return any ? (h ? h : 1u) : 0;
-}
-
-/* A submitted buffer that holds no pending block where it was written may hold one the guest
- * copied there: each block-sized piece of it meets the oldest pending block with the same
- * bytes. */
-void psmf_av_audio_by_content(PsmfAvStream *st, int ch, uint32_t buf, uint32_t bytes,
-                                     uint32_t bytes_per_frame, uint32_t rate_hz) {
-    uint32_t size = 0;
-    for (unsigned i = 0; i < PSMF_AV_PENDING && !size; i++)
-        if (st->pend[i].live && st->pend[i].content) size = st->pend[i].content_bytes;
-    if (!size || bytes < size) return;
-    int ticked = 0, queued = -1;
-    int64_t now = 0, lead_us = 0;
-    for (uint32_t off = 0; bytes - off >= size; off += size) {
-        uint64_t h = psmf_av_content(buf + off, size);
-        if (!h) continue;
-        PsmfAvEntry *best = NULL;
-        for (unsigned i = 0; i < PSMF_AV_PENDING; i++) {
-            PsmfAvEntry *e = &st->pend[i];
-            if (e->live && e->content == h && e->content_bytes == size && (!best || e->seq < best->seq))
-                best = e;
-        }
-        if (!best) continue;
-        if (!ticked) {
-            queued = psmf_av_queue_frames(ch);      /* lead ahead of this buffer, read before the push */
-            now = psmf_av_now_us();
-            lead_us = queued >= 0 ? (int64_t)queued * 1000000 / 44100 : 0;
-            psmf_av_window_tick(now);
-            ticked = 1;
-        }
-        int64_t play = now + lead_us + (int64_t)(off / bytes_per_frame) * 1000000 / (int64_t)rate_hz;
-        st->content_matched++;
-        psmf_av_match(st, best, play, queued >= 0);
-    }
-    if (ticked) st->boundary_hits++;
-}
 /* SR_AUDIOSTAT aggregate counters (investigation telemetry). Declared here because
  * the ATRAC decode path and the vblank exit dump both precede the SAS definitions. */
 unsigned long g_sas_calls, g_sas_calls_add, g_sas_pre_nonzero, g_sas_post_nonzero;
@@ -124,6 +63,15 @@ static SrAudioResampler s_audio_src_resampler;
 #define SCE_AUDIO_ERROR_INVALID_FORMAT  0x80260007u
 #define SCE_AUDIO_ERROR_NOT_RESERVED    0x80260008u
 #define SCE_AUDIO_ERROR_INVALID_VOL     0x8026000bu
+/* The largest volume the Output2/SRC channel's blocking output accepts. PPSSPP-derived and
+ * UNMEASURED on a PSP (#1986): hrydgard/ppsspp caa91b54b535, Core/HLE/sceAudio.cpp,
+ * sceAudioOutput2OutputBlocking and sceAudioSRCOutputBlocking refuse only above 0xFFFFF
+ * ("0xFFFFF, not 0xFFFF!"). The PSP probes PSP-AUDIO-001 and PSP-HLE-AUDIO-SRC-001 used
+ * only volume 0x8000, the unity gain (PSPSDK PSP_AUDIO_VOLUME_MAX), which the runtime had
+ * taken as the bound. A larger value amplifies, and the mixer clamps the result.
+ * sceVaudioOutputBlocking shares the bound through audio_src_output by analogy only: PPSSPP's
+ * Core/HLE/sceVaudio.cpp checks no Vaudio volume. */
+#define SCE_AUDIO_OUTPUT2_VOLUME_MAX    0x000fffffu
 /* Output2 release while samples are still queued. Measured on PSP-3001, firmware 6.6.1
  * (2026-10-01, issue #311); the raw records stay private. */
 #define SCE_AUDIO_ERROR_OUTPUT2_BUSY    0x80268002u
@@ -173,8 +121,8 @@ static uint32_t h_AudioSetChannelDataLen(CpuState *s) {
  * output levels for a reserved regular channel. Public behaviour reference:
  * PSPSDK src/audio/pspaudio.h (sceAudioChangeChannelVolume) and PPSSPP
  * Core/HLE/sceAudio.cpp, which keep per-channel volumes as channel state.
- * Errors reuse the neighbouring regular-audio codes, and the 0x8000 volume
- * ceiling is the same bound h_AudioOutput2Blocking already enforces. Whether
+ * Errors reuse the neighbouring regular-audio codes. The 0x8000 volume ceiling is
+ * unmeasured: PPSSPP's docs/sceAudio.md records 0xFFFF for this call. Whether
  * the retained levels multiply the per-call volumes handed to the
  * OutputBlocking family, and the power-on default level, are UNMEASURED here:
  * mixing still consumes the per-call volumes only. */
@@ -469,7 +417,7 @@ static uint32_t h_AudioOutput2ChangeLength(CpuState *s) {
 }
 static uint32_t h_AudioOutput2Blocking(CpuState *s) {
     if (!audio_output2_reserved()) return SCE_AUDIO_ERROR_NOT_RESERVED;
-    if (A0 > 0x8000u) return SCE_AUDIO_ERROR_INVALID_VOL;
+    if (A0 > SCE_AUDIO_OUTPUT2_VOLUME_MAX) return SCE_AUDIO_ERROR_INVALID_VOL;
     (void)audio_output(s, AUDIO_OUTPUT2_CHANNEL, A1, (int)A0, (int)A0);
     return 0;
 }
@@ -493,8 +441,8 @@ static uint32_t h_AudioOutput2Rest(CpuState *s) {
  *
  * Not measured, so held to what is already modelled or refused in the open: the upper
  * sample-count bound (the Output2 range 17..4111 is reused), channel counts other than 1, 2
- * and 4 (refused with the code measured for 4), the volume bound (the Output2 bound 0x8000 is
- * reused), and rates other than 44100 and 48000 (refused with the code measured for an
+ * and 4 (refused with the code measured for 4), the volume bound (SCE_AUDIO_OUTPUT2_VOLUME_MAX,
+ * shared with Output2), and rates other than 44100 and 48000 (refused with the code measured for an
  * unsupported channel count, and a message). The host mixer runs at 44100 Hz; 48000 Hz SRC
  * blocks pass through a streaming band-limited converter while retaining source-rate pacing. */
 static uint32_t audio_src_reserve(int owner, uint32_t samples, uint32_t freq, uint32_t channels) {
@@ -532,7 +480,7 @@ static uint32_t audio_src_release(int owner) {
 /* (vol, buf) blocking output: returns the reserved sample count. */
 static uint32_t audio_src_output(CpuState *s, int owner, uint32_t vol, uint32_t buf) {
     if (s_audio_src_owned != owner) return SCE_AUDIO_ERROR_NOT_RESERVED;
-    if (vol > 0x8000u) return SCE_AUDIO_ERROR_INVALID_VOL;
+    if (vol > SCE_AUDIO_OUTPUT2_VOLUME_MAX) return SCE_AUDIO_ERROR_INVALID_VOL;
     if (s_audio_src_freq == 44100u)
         return audio_output(s, AUDIO_OUTPUT2_CHANNEL, buf, (int)vol, (int)vol);
 
@@ -594,7 +542,9 @@ static uint32_t h_AudioSRCOutputBlocking(CpuState *s) {
  * taken from that reference: the sample counts 256, 576, 1024, 1152 and 2048 (others return
  * 0x80000104), stereo format 2 only (others 0x80000108) and a second reserve returning
  * 0x80000021. A rate of 0, which that reference leaves at the converter's current rate, is taken
- * as 44100 Hz here (an assumption, also unmeasured). That reference marks a reservation
+ * as 44100 Hz here (an assumption, also unmeasured). That reference checks no output volume;
+ * this model refuses one above SCE_AUDIO_OUTPUT2_VOLUME_MAX, by analogy with the SRC output it
+ * shares (also unmeasured). That reference marks a reservation
  * before its later checks and releases any SRC reservation; here a refused reserve marks
  * nothing and each API releases only its own (audio_src_release). */
 #define SCE_KERNEL_ERROR_INVALID_FORMAT 0x80000108u

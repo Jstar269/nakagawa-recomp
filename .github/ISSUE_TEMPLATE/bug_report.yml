@@ -1,6 +1,5 @@
 name: Bug report
 description: Report a reproducible defect without sharing proprietary game data
-title: "[Bug]: "
 labels:
   - bug
 body:
@@ -11,6 +10,7 @@ body:
         Do not attach game files, decrypted modules, extracted assets, full traces, raw
         memory or framebuffer dumps, credentials, or logs that contain private paths.
         Not sure about a field? Say so; a maintainer can help.
+        Start the title with the area, then a short summary, for example `Player: settings page closes on Back`.
 
   - type: checkboxes
     id: prerequisites
@@ -44,7 +44,7 @@ body:
         - Reference interpreter
         - Build system
         - Documentation
-        - Unsure
+        - Multiple or unsure
     validations:
       required: true
 

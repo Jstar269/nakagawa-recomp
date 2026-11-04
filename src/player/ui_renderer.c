@@ -2550,7 +2550,7 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
                          app->inspecting_game.title_name[0] ? app->inspecting_game.title_name : "PlayStation Portable Title",
                          2.2f, card_w - 64.0f, COLOR_TEXT_WHITE);
     draw_text_wrapped(ren, card_x + 32.0f, card_y + 116.0f, card_w - 64.0f,
-                      "We found this game in Nakagawa's title list. Game preparation is still in the works.",
+                      "We found this game in Nakagawa's title list. Game preparation isn't available yet.",
                       1.1f, COLOR_TEXT_MUTED, 2);
     float note_y = card_y + 180.0f;
     if (has_profile_refusal) {
@@ -2585,10 +2585,10 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
             /* The add was rejected or never persisted. Saying nothing would
                show the title in the library until the next restart dropped
                it. */
-            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
                                  "The title could not be stored. The library may be full, or the "
                                  "user data directory is not writable.",
-                                 "Return to Library", VIEW_LIBRARY);
+                                 "Back to library", VIEW_LIBRARY);
         }
     }
     bool back_focused = (app->focus_index == 1);
@@ -2673,9 +2673,9 @@ static void render_experimental_title(SDL_Renderer *ren, PlayerApp *app,
         if (player_app_add_game(app, &app->inspecting_game)) {
             player_app_set_view(app, VIEW_LIBRARY);
         } else {
-            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
                                  "The experimental title could not be stored. The library may be full, or the user data directory is not writable.",
-                                 "Return to Library", VIEW_LIBRARY);
+                                 "Back to library", VIEW_LIBRARY);
         }
     }
     bool back_focused = app->focus_index == 1;
@@ -2748,7 +2748,7 @@ static void render_preparing(SDL_Renderer *ren, PlayerApp *app, const UiInput *i
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
 
     draw_badge(ren, card_x + 32.0f, card_y + 32.0f, "PREPARATION UNAVAILABLE", COLOR_AMBER);
-    draw_text(ren, card_x + 32.0f, card_y + 76.0f, "Preparation Unavailable", 2.2f, COLOR_TEXT_WHITE);
+    draw_text(ren, card_x + 32.0f, card_y + 76.0f, "Preparation unavailable", 2.2f, COLOR_TEXT_WHITE);
     /* This is intentionally an explanation screen, not a fake progress
      * surface. No native preparation pipeline is connected in this build. */
     draw_text_wrapped(ren, card_x + 32.0f, card_y + 120.0f, card_w - 64.0f,
@@ -3978,7 +3978,7 @@ static void render_prerequisite_consent(SDL_Renderer *ren, PlayerApp *app,
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
     draw_badge(ren, card_x + 28.0f, card_y + 20.0f, "ONE-TIME BUILD TOOL DOWNLOAD", COLOR_BLUE);
     draw_text_ellipsized(ren, card_x + 28.0f, card_y + 50.0f,
-                         "Download the pinned tools needed to build this package?",
+                         "Download the build tools needed to build this package?",
                          1.65f, card_w - 56.0f, COLOR_TEXT_WHITE);
     draw_text_ellipsized(ren, card_x + 28.0f, card_y + 80.0f,
                          "Nothing is downloaded until you choose DOWNLOAD. Your answer applies to this build only.",
@@ -3994,7 +3994,7 @@ static void render_prerequisite_consent(SDL_Renderer *ren, PlayerApp *app,
     for (size_t i = 0; i < count; i++) {
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
         const char *license = strcmp(item->license, "NOASSERTION") == 0
-            ? "NOASSERTION (license review in the works)" : item->license;
+            ? "NOASSERTION (licence not yet reviewed)" : item->license;
         char row[640];
         snprintf(row, sizeof(row), "%s %s | %s | %llu bytes | %s",
                  item->name, item->version, item->host,
@@ -4043,7 +4043,7 @@ static void render_prerequisite_progress(SDL_Renderer *ren, PlayerApp *app,
     const char *item = app->prerequisites.current_item[0]
         ? app->prerequisites.current_item
         : (app->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP
-            ? "cpython-embed-amd64" : "Starting the verified fetcher");
+            ? "cpython-embed-amd64" : "Starting the download");
     char item_line[256];
     snprintf(item_line, sizeof(item_line), "CURRENT ITEM: %s", item);
     draw_text_ellipsized(ren, card_x + 32.0f, card_y + 122.0f,
@@ -4097,7 +4097,7 @@ static void render_prerequisite_about(SDL_Renderer *ren, PlayerApp *app,
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
         if (!item->installed) continue;
         const char *license = strcmp(item->license, "NOASSERTION") == 0
-            ? "NOASSERTION (license review in the works)" : item->license;
+            ? "NOASSERTION (licence not yet reviewed)" : item->license;
         char row[384];
         snprintf(row, sizeof(row), "%s %s | %s", item->name,
                  item->version, license);
@@ -4227,7 +4227,7 @@ static void render_build_cache(SDL_Renderer *ren, PlayerApp *app, const UiInput 
 /* The one sentence each switch carries (docs/ONLINE_FEATURES.md), and the plain
    fact that this build has no online feature yet. */
 static const char k_online_sentence[] =
-    "Check nakagawa.jaycast.net for news and let you send reports. Nothing is sent "
+    "When on, Nakagawa checks nakagawa.jaycast.net for news and lets you send reports. Nothing is sent "
     "without you.";
 static const char k_developer_sentence[] =
     "Show a developer log on screen to help track down problems. Stays on this PC.";
@@ -4725,11 +4725,11 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                           0.95f, COLOR_AMBER);
             } else if (supported) {
                 draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
-                          "Disc identity is listed in the native title catalog.",
+                          "Nakagawa recognises this disc.",
                           0.95f, COLOR_TEXT_MUTED);
             } else {
                 draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
-                          "Disc identity is not listed in the native title catalog.",
+                          "Nakagawa doesn't recognise this disc.",
                           0.95f, COLOR_AMBER);
             }
 
@@ -4807,9 +4807,9 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                     if (player_app_add_game(app, &app->inspecting_game)) {
                         player_app_set_view(app, VIEW_LIBRARY);
                     } else {
-                        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
                                              "The experimental title could not be stored. The library may be full, or the user data directory is not writable.",
-                                             "Return to Library", VIEW_LIBRARY);
+                                             "Back to library", VIEW_LIBRARY);
                     }
                 }
                 bool diff_foc = (app->focus_index == focus++);

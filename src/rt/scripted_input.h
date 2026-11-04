@@ -38,6 +38,12 @@
  * cannot promise. The budget of a pressed segment bounds the whole wait for its reads, so a
  * guest that reads once and then stops is an overdue press, not a hang.
  *
+ * A segment may also hold the left analog stick (`stick`, see SR_INPUT_STICK). The stick is
+ * part of the pad state the segment holds, so it is latched, read and delivered with the
+ * buttons and by the same rule; a segment that holds the stick and no button is still a
+ * press, with a budget, and not a release gap. Zero means the stick is not held: such a
+ * segment, every segment a legacy table row or the auto pulse makes, leaves it centred.
+ *
  * This header is pure logic with no runtime dependencies, so the exact state machine the
  * runtime uses (src/rt/hle.c) is also compiled by tools/test_scripted_input.py. It is
  * included by that one runtime translation unit; the functions are static for that
@@ -58,7 +64,12 @@ typedef struct {
     uint32_t not_before;  /* earliest VCOUNT at which the segment may become current */
     uint32_t budget;      /* vblanks it may wait for a guest read; 0 = wait without limit */
     uint32_t reads;       /* guest-read width: reads that must observe it; 0 = vblank width */
+    uint32_t stick;       /* left stick held while current: SR_INPUT_STICK(lx, ly); 0 = not held */
 } SrInputSegment;
+
+/* A held left-stick position, 0-255 on each axis with 128 centred. Bit 16 marks the stick as
+ * held, so a held centre (128, 128) is still distinct from "not held". */
+#define SR_INPUT_STICK(lx, ly)     (0x10000u | (((uint32_t)(lx) & 0xffu) << 8) | ((uint32_t)(ly) & 0xffu))
 
 typedef struct {
     SrInputSegment seg;
@@ -76,7 +87,7 @@ typedef struct {
  * must never vouch for a segment started after it. */
 static inline void sr_input_reset(SrInputPlayer *p) {
     uint32_t handed_out = p->last_id;
-    SrInputPlayer zero = { { 0u, 0u, 0u, 0u, 0u }, 0, 0u, 0u, 0u, 0u, 0u, 0u };
+    SrInputPlayer zero = { { 0u, 0u, 0u, 0u, 0u, 0u }, 0, 0u, 0u, 0u, 0u, 0u, 0u };
     *p = zero;
     p->last_id = handed_out;
     p->read_id = handed_out;
@@ -101,6 +112,15 @@ static inline uint32_t sr_input_mask(const SrInputPlayer *p) {
     return p->current ? p->seg.mask : 0u;
 }
 
+/* Whether the current segment holds the left stick, and where: *lx and *ly are written
+ * only when it does, so a caller's own stick position stands otherwise. */
+static inline int sr_input_stick(const SrInputPlayer *p, uint8_t *lx, uint8_t *ly) {
+    if (!p->current || p->seg.stick == 0u) return 0;
+    *lx = (uint8_t)((p->seg.stick >> 8) & 0xffu);
+    *ly = (uint8_t)(p->seg.stick & 0xffu);
+    return 1;
+}
+
 static inline int sr_input_was_read(const SrInputPlayer *p) {
     return p->current && p->read_id >= p->id;
 }
@@ -114,9 +134,10 @@ static inline int sr_input_delivered(const SrInputPlayer *p) {
 }
 
 /* A pressed segment that the guest has still not read after its budget. A guest-read width
- * is overdue while fewer reads than it asked for have observed it, however many did. */
+ * is overdue while fewer reads than it asked for have observed it, however many did. A
+ * segment that holds the stick is pressed whether or not it holds a button. */
 static inline int sr_input_overdue(const SrInputPlayer *p, uint32_t v) {
-    if (!p->current || p->seg.mask == 0u || p->seg.budget == 0u) return 0;
+    if (!p->current || (p->seg.mask == 0u && p->seg.stick == 0u) || p->seg.budget == 0u) return 0;
     if (p->seg.reads != 0u) return p->reads < p->seg.reads && v - p->since >= p->seg.budget;
     return p->read_id < p->id && v - p->since >= p->seg.budget;
 }
@@ -200,6 +221,7 @@ static inline int sr_input_from_rows(const uint32_t *f, const uint32_t *mask, co
             out[count].not_before = at;
             out[count].budget = held ? budget : 0u;
             out[count].reads = 0u;          /* a table row is a vblank width */
+            out[count].stick = 0u;          /* and leaves the stick centred */
             count++;
         }
         at = next;
