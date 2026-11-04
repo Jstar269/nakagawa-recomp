@@ -31,7 +31,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence, cast
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -131,7 +131,7 @@ def _is_security_publication(path: str) -> bool:
 
 
 @lru_cache(maxsize=1)
-def _public_policy() -> object | None:
+def _public_policy() -> Any:
     """Load the publication policy once, or ``None`` when it is unreadable.
 
     Imported lazily so that importing this module never depends on the policy
@@ -142,7 +142,7 @@ def _public_policy() -> object | None:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import publication_policy
 
-        returned: object | None = publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
+        returned: Any = publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
         return returned
     except Exception:
         return None
@@ -449,7 +449,7 @@ def makefile_recipe_only_targets(old_text: str, new_text: str) -> tuple[str, ...
             return True
         if kind[0] != "recipe" or not kind[2]:
             return False
-        return all(target in phony for target in kind[1])  # type: ignore[union-attr]
+        return all(target in phony for target in cast(Iterable[str], kind[1]))
 
     old_lines = old_text.split("\n")
     new_lines = new_text.split("\n")
@@ -1342,7 +1342,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     event = _read_event(args.event_path)
-    pool = {
+    pool: dict[str, Any] = {
         "repository": os.environ.get("GITHUB_REPOSITORY", ""),
         "ref": os.environ.get("GITHUB_REF", ""),
         "switch": os.environ.get("NK_SELF_HOSTED_LINUX", ""),

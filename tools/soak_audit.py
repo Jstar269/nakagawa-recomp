@@ -227,8 +227,8 @@ def check_cadence(report: Report, rows: list[dict[str, str]], min_hz: float,
 
 def check_growth(report: Report, rows: list[dict[str, str]], key: str, name: str,
                  max_growth_pct: float, warmup_s: int) -> None:
-    series = [(i, _number(r, key)) for i, r in enumerate(rows)]
-    series = [(i, v) for i, v in series if v is not None and v > 0]
+    samples = [(i, _number(r, key)) for i, r in enumerate(rows)]
+    series = [(i, v) for i, v in samples if v is not None and v > 0]
     if len(series) < 2:
         report.add(name, None, f"no {key} samples")
         return
