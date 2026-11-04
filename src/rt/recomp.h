@@ -1837,6 +1837,7 @@ extern uint32_t g_frame_prims;
 extern unsigned long g_ge_list_sig, g_ge_prim_count;
 extern unsigned long g_list_writes, g_list_nonblack, g_list_clearpx;
 extern unsigned long g_ge_list_through_cmds, g_ge_list_transform_cmds;
+extern unsigned long g_ge_mip_draws;   /* draws that sample mip levels, whole run (#1373) */
 extern unsigned long g_ge_list_through_vertices, g_ge_list_transform_vertices;
 extern unsigned long g_ge_list_through_sprites, g_ge_list_transform_sprites;
 extern unsigned long g_ge_pixels;

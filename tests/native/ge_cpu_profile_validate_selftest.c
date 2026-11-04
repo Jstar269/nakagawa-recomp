@@ -593,12 +593,19 @@ static void test_ge_texture_mip_levels(void) {
     mip_fill_texture();
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         uint32_t want = (cases[i].level >= 0 ? k_mip_color[cases[i].level] : 0x007F7Fu) & 0x00FFFFFFu;
+        unsigned long mip_before = g_ge_mip_draws;
         uint32_t got = mip_draw(cases[i].max_level, cases[i].level_word, cases[i].min_filter,
                                 cases[i].size);
         char detail[128];
         snprintf(detail, sizeof detail, "sprite colour 0x%08" PRIx32 ", expected 0x%08" PRIx32,
                  got, want);
         expect(got == want, cases[i].name, detail);
+        /* The run's mip-use trace counts exactly the draws that sample levels: a mip filter and a
+         * highest level above 0. It is the evidence that a title enables mipmapping (#1373). */
+        unsigned long mip_expected = ((cases[i].min_filter & 4u) && cases[i].max_level > 0u) ? 1ul : 0ul;
+        snprintf(detail, sizeof detail, "g_ge_mip_draws rose by %lu, expected %lu",
+                 g_ge_mip_draws - mip_before, mip_expected);
+        expect(g_ge_mip_draws - mip_before == mip_expected, "mip_use_trace", detail);
     }
     printf("MIP cases=%u (software rasterizer)\n", (unsigned)(sizeof cases / sizeof cases[0]));
 }

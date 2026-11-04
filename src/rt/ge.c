@@ -33,8 +33,8 @@
  * the object when it cannot (ge_bounding_box_visible); the exact PSP visibility test is
  * unmeasured, so only a box wholly beyond one scissor edge is skipped.
  *
- * Not emulated: mip levels in the TEXLEVEL slope mode and per-level CLUTs (the TEXMODE
- * multi-CLUT bit), in this sampler and in the Vulkan backend alike (#1373).
+ * Not emulated: per-level CLUTs (the TEXMODE multi-CLUT bit), in this sampler and in the
+ * Vulkan backend alike (#1373). The TEXLEVEL slope mode is emulated (tex_detail16).
  */
 
 /*
@@ -5065,6 +5065,24 @@ uint32_t g_frame_prims = 0;
  * provenance traces.  Count at the command frontend before either the Vulkan
  * hook or software rasterizer can accept/drop the draw. */
 unsigned long g_ge_list_through_cmds = 0, g_ge_list_transform_cmds = 0;
+
+/* Draws that sample mip levels (#1373): a textured, non-clear draw with ge_tex_mip_active().
+ * Counted at the command frontend for both backends and not reset per list, so a run's total
+ * says whether the title enables mipmapping at all. The first such draw prints one line. */
+unsigned long g_ge_mip_draws = 0;
+
+static void ge_note_mip_draw(void) {
+    static int noted;
+    if (!ge.tex_enable || ge.clear || !ge_tex_mip_active(&ge)) return;
+    g_ge_mip_draws++;
+    if (noted) return;
+    noted = 1;
+    fprintf(stderr, "GE mip: first draw that samples mip levels at frame %" PRIu32
+            ", highest level %" PRIu32 ", filter 0x%" PRIx32 ", level mode %" PRIu32
+            ", bias %d/16 (#1373)\n",
+            s_ge_frame, ge.tex_max_level, ge.tex_filter, ge.tex_level_mode,
+            (int)(ge.tex_lod_bias * 16.0f));
+}
 unsigned long g_ge_list_through_vertices = 0, g_ge_list_transform_vertices = 0;
 unsigned long g_ge_list_through_sprites = 0, g_ge_list_transform_sprites = 0;
 static int s_strip_cache = -1;
@@ -5762,6 +5780,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
     /* Observe both the through and transform frontends.  The optional frame gate
      * preserves the fixed distinct-texture budget for late deterministic scenes. */
     texdump_maybe();
+    ge_note_mip_draw();
 
     DrawPrimCtx c = { type, count, idxfmt, vf, vbase, ibase, prim_index, watch_now };
     /* ---- THROUGH-MODE (2D, screen coords) ---- */
