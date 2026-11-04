@@ -79,7 +79,7 @@ class Transfer:
 
     Kinds:
       call            jal, or a linked branch to a callable (``cond`` set): a checked
-                      native CALL of ``symbol``, or ``dispatch_call`` when it is None
+                      native CALL of ``symbol``, or ``dispatch_call_checked`` when it is None
       call-computed   jalr rd != 0: dispatch the latched ``target_reg``
       tail-computed   jr rs != 31, jalr $zero: TAIL-record the latched ``target_reg``
       return          jr $ra: capture the latched target, host return

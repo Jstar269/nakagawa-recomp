@@ -106,7 +106,7 @@ the C body. What the C path leaves to a C compiler is explicit here:
 - **Escapes to the runtime** are calls that take `s`: the trace hooks around every
   instruction, the preemption point at entry and on backward branches, memory helpers, the
   checked CALL protocol (`sr_aot_return_boundary_begin`, the callee, the tail drain,
-  `sr_aot_return_boundary_end`), `dispatch_call` for a computed or unknown target,
+  `sr_aot_return_boundary_end`), `dispatch_call_checked` for a computed or unknown target,
   `sr_tail_record` for every TAIL transfer (#855), the return capture of `jr $ra`, the HLE
   syscall boundary and `break`.
 - **Delay slots** are emitted at their owning transfer. A branch condition and a computed
@@ -116,11 +116,12 @@ the C body. What the C path leaves to a C compiler is explicit here:
 - **Memory** goes through the existing access helpers: bounds, VRAM coherence, watchpoints
   and store context all stay in one place.
 - **Calls, tail calls and dispatch** follow the C emitter's transfer rules exactly: a known
-  entry is a checked native CALL; an unknown or computed target is `dispatch_call` with an
-  explicit resume PC; `j` to a known entry, `jr rs`, `jalr $zero` and a continuation exit
-  are recorded TAIL transfers. In a body split at other entries (`--region-split-threshold`),
-  a conditional branch into another entry is a TAIL transfer to that entry's body, and a
-  not-taken one continues into the next entry, as in C.
+  entry is a checked native CALL; an unknown or computed target is `dispatch_call_checked`
+  with an explicit resume PC, inside the call's own return boundary; `j` to a known entry,
+  `jr rs`, `jalr $zero` and a continuation exit are recorded TAIL transfers. In a body split
+  at other entries (`--region-split-threshold`), a conditional branch into another entry is
+  a TAIL transfer to that entry's body, and a not-taken one continues into the next entry,
+  as in C.
 - **Undefined behavior** in LLVM terms never reaches the IR: variable shifts are masked to
   31 as the C does, rotates are shifts, `div`/`divu` select a safe divisor and then the
   PSP's defined results for division by zero and `INT_MIN / -1`, and `clz`/`clo` use
