@@ -154,6 +154,8 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_AT3_DELAY_SWEEP 150
 /* #302: the sceMpeg YCbCr, CSC and decode-detail path on a real AVC stream; see run_mpeg_ycbcr. */
 #define PSP_ORACLE_CASE_MPEG_YCBCR 151
+/* #1296: the SimpleADSR envelope, its height read once per grain; see run_sas_adsr. */
+#define PSP_ORACLE_CASE_SAS_ADSR 152
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -395,6 +397,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/mpeg_ycbcr_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
 #define PROBE_HOST0_LOG "host0:/sas_init_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_ADSR
+#define PROBE_HOST0_LOG "host0:/sas_adsr_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -11625,6 +11629,376 @@ static void run_sas_init(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_ADSR
+#include <pspsascore.h>
+#include <psputility_avmodules.h>
+/* #1296: the envelope __sceSasSetSimpleADSR builds, read back with __sceSasGetEnvelopeHeight
+   once per grain. One core (grain 256, 32 voices, output mode 0), one looping synthetic VAG
+   voice. For each bitfield pair below: re-init the core, SetVoice, SetVolume, SetSimpleADSR,
+   KeyOn, then SAS_ADSR_ON_GRAINS calls of __sceSasCore with the height read after each; KeyOff;
+   then SAS_ADSR_OFF_GRAINS more calls, height after each. The pairs cover the attack curves
+   (bit 15: linear and bent), decay rates (bits 4-7) and sustain levels (bits 0-3) of the first
+   word, and the sustain curves (bits 14-15), sustain rates (bits 6-13), release curves (bit 5)
+   and release rates (bits 0-4) of the second, each at a slow and a fast rate, plus the rate
+   values the field layout makes special (attack 0x7f, decay 0, sustain 0x7f, release 30 and
+   31). The field layout is PPSSPP's (Core/HW/SasAudio.cpp, a behaviour reference); the PSP's
+   answer is what this case records.
+
+   Records (test_id PSP-SAS-002, status RC, or SKIP with the same shape when SASCORE does not
+   load). Every status is RC ("the calls ran; here are their answers"), never a verdict:
+   - sas-adsr-load (4 words: AVCODEC load, SASCORE load, init, grain).
+   - Per SimpleADSR pair N: sas-adsr-pN-calls (11 words: env1, env2, init, SetVoice, SetVolume,
+     SetSimpleADSR, KeyOn, the height before the first __sceSasCore, KeyOff, the end flag after
+     the last, the height read before KeyOn), then sas-adsr-pN-hKK, KK = 00..3f, 16 heights
+     each: grain 16*KK+i, where grains 0..639 follow KeyOn and 640..1023 follow KeyOff.
+   - The __sceSasSetADSRmode table (k_sas_adsr_mode_rows), row NN: sas-adsr-mNN-calls (16 words:
+     mask, attack, decay, sustain and release curves as passed, init, SetVoice, SetVolume, the
+     baseline SetADSRmode, SetADSR, SetSL, the row's SetADSRmode, KeyOn, the height after KeyOn,
+     KeyOff, the height before KeyOn), then sas-adsr-mNN-h (16 heights: 8 grains after KeyOn, 8
+     after KeyOff). The baseline curves and rates are set first, so an invalid call that changes
+     nothing leaves the baseline's heights.
+   - The explicit-curve runs (k_sas_adsr_runs: an exponent attack, a sustain level on and off a
+     step boundary, and the SimpleADSR pairs p1 and p2 again at grain 64): sas-adsr-<name>-calls
+     (16 words: grain, init, SetVoice, SetVolume, SetSimpleADSR or SetADSRmode, SetADSR, SetSL,
+     KeyOn, the height after KeyOn, KeyOff, the end flag, the height before KeyOn, the grains on
+     and off, 0, 0), then sas-adsr-<name>-hKK, 16 heights each.
+   - sas-adsr-done (out0: the record count before it), status RC: the run completed.
+   Heights are buffered and written after each run's last grain, so the host0 writes never fall
+   between two grains. Synthetic VAG data only. Ends in the normal teardown. */
+#define SAS_ADSR_GRAIN 256
+#define SAS_ADSR_VAG_BLOCKS 64u
+#define SAS_ADSR_ON_GRAINS 640u
+#define SAS_ADSR_OFF_GRAINS 384u
+#define SAS_ADSR_GRAINS (SAS_ADSR_ON_GRAINS + SAS_ADSR_OFF_GRAINS)
+#define SAS_ADSR_ROW_WORDS 16u
+#define SAS_ADSR_ROWS (SAS_ADSR_GRAINS / SAS_ADSR_ROW_WORDS)
+#define SAS_ADSR_CALL_WORDS 11u
+#define SAS_ADSR_WIDE_WORDS 16u
+#define SAS_ADSR_TEST_ID "PSP-SAS-002"
+#define SAS_ADSR_LINE_MAX 640
+_Static_assert(SAS_ADSR_GRAINS % SAS_ADSR_ROW_WORDS == 0u, "whole height rows");
+/* The longest record (16 words, the longest case_id below 40 bytes, status SKIP) fits the line
+   buffer, so sas_adsr_record never drops one. */
+_Static_assert(sizeof("NAKAGAWA_PSP_TEST schema=1 test_id=" SAS_ADSR_TEST_ID " case_id= status=SKIP "
+                      "result=0x00000000") + 40u + SAS_ADSR_WIDE_WORDS * sizeof(" out15=0x00000000") + 2u
+                   <= SAS_ADSR_LINE_MAX, "a sas-adsr record fits its line buffer");
+
+/* {env1, env2}. Comments give PPSSPP's decoding: attack curve/rate, decay rate, sustain level;
+   sustain curve/rate, release curve/rate. */
+static const uint32_t k_sas_adsr_pairs[][2] = {
+    /* p0: linear 0x10 (fast), decay 0xc, level 7; linear decrease 0x40; linear 0x0a (fast) */
+    {0x10c7u, 0x500au},
+    /* p1: linear 0x30, decay 0xf (slow), level 0xb; linear increase 0x40; exponential 0x0c */
+    {0x30fbu, 0x102cu},
+    /* p2: bent 0x30, decay 8, level 3; bent 0x40; linear 0x0e (slow) */
+    {0xb083u, 0x900eu},
+    /* p3: linear 0x40 (slow), decay 0xc, level 0xf; exponential decrease 0x20; exponential 0x10 (slow) */
+    {0x40cfu, 0xc830u},
+    /* p4: bent 0x38 (slow), decay 0, level 0; linear decrease 0x7f; linear 31 */
+    {0xb800u, 0x5fdfu},
+    /* p5: linear 0x00 (fastest), decay 4 (fast), level 9; linear decrease 0x20 (fast); linear 30 */
+    {0x0049u, 0x481eu},
+    /* p6: linear 0x7f, decay 0, level 0xf; linear increase 0; exponential 0x0c */
+    {0x7f0fu, 0x002cu},
+    /* p7: linear 0x20, decay 0xa, level 5; bent 0x30; exponential 4 (fast) */
+    {0x20a5u, 0x8c24u},
+    /* p8: sustain to zero before KeyOff: linear 0x10, decay 0, level 0xf; linear decrease 0x44
+       (measured 2026-11-05: the height reaches 0 at grain 585 of 640, and KeyOff then returns
+       0x80420016); linear 0x0a, released from zero */
+    {0x100fu, 0x510au},
+};
+#define SAS_ADSR_PAIRS (sizeof(k_sas_adsr_pairs) / sizeof(k_sas_adsr_pairs[0]))
+
+static SceSasCore s_sas_adsr_core __attribute__((aligned(64)));
+static unsigned char s_sas_adsr_vag[SAS_ADSR_VAG_BLOCKS * 16u] __attribute__((aligned(64)));
+static short s_sas_adsr_out[SAS_ADSR_GRAIN * 2] __attribute__((aligned(64)));
+static uint32_t s_sas_adsr_heights[SAS_ADSR_GRAINS];
+static uint32_t s_sas_adsr_records;
+
+/* The __sceSasSetADSRmode table (#2059 review, B1/F1): every valid curve of each phase under the
+   full mask, each phase alone, every invalid curve (attack 1, 3, 5; decay and release 0, 2, 4;
+   sustain 6; all 5), an invalid curve in a phase the mask leaves out, and the top bit set on each
+   phase. The curve numbers are PSPSDK's PspSasADSRCurveModes; which ones a phase accepts is what
+   this records. Measured 2026-11-05 (fixtures/psp_oracle/README.md, sas-adsr): the refusals
+   return PSP_SAS_ERROR_ADSR_MODE, 0x80420013, and leave every curve unchanged. */
+typedef struct {
+    uint32_t mask, attack, decay, sustain, release;
+} SasAdsrModeRow;
+#define SAS_ADSR_TOP 0x80000000u
+static const SasAdsrModeRow k_sas_adsr_mode_rows[] = {
+    {0xfu, 0u, 1u, 0u, 1u}, {0xfu, 2u, 1u, 0u, 1u}, {0xfu, 4u, 1u, 0u, 1u},
+    {0xfu, 0u, 3u, 0u, 1u}, {0xfu, 0u, 5u, 0u, 1u}, {0xfu, 0u, 1u, 0u, 3u}, {0xfu, 0u, 1u, 0u, 5u},
+    {0xfu, 0u, 1u, 1u, 1u}, {0xfu, 0u, 1u, 2u, 1u}, {0xfu, 0u, 1u, 3u, 1u}, {0xfu, 0u, 1u, 4u, 1u},
+    {0xfu, 0u, 1u, 5u, 1u},
+    {0x1u, 4u, 5u, 3u, 5u}, {0x2u, 4u, 5u, 3u, 5u}, {0x4u, 4u, 5u, 3u, 5u}, {0x8u, 4u, 5u, 3u, 5u},
+    {0xfu, 1u, 1u, 0u, 1u}, {0xfu, 3u, 1u, 0u, 1u}, {0xfu, 5u, 1u, 0u, 1u},
+    {0xfu, 0u, 0u, 0u, 1u}, {0xfu, 0u, 2u, 0u, 1u}, {0xfu, 0u, 4u, 0u, 1u},
+    {0xfu, 0u, 1u, 0u, 0u}, {0xfu, 0u, 1u, 0u, 2u}, {0xfu, 0u, 1u, 0u, 4u},
+    {0xfu, 0u, 1u, 6u, 1u}, {0xfu, 5u, 5u, 5u, 5u},
+    {0x1u, 0u, 0u, 6u, 0u},
+    {0xfu, SAS_ADSR_TOP | 2u, 1u, 0u, 1u}, {0xfu, 0u, SAS_ADSR_TOP | 3u, 0u, 1u},
+    {0xfu, 0u, 1u, SAS_ADSR_TOP | 1u, 1u}, {0xfu, 0u, 1u, 0u, SAS_ADSR_TOP | 3u},
+};
+#define SAS_ADSR_MODE_ROWS (sizeof(k_sas_adsr_mode_rows) / sizeof(k_sas_adsr_mode_rows[0]))
+/* The table's baseline: linear attack, decay, sustain and release, rates chosen so each phase spans
+   whole grains at grain 256 under a linear model (attack 0x00400000 per sample reaches the top in
+   one grain; decay 0x00100000 reaches the level 0x20000000 in two; sustain falls 0x00400000 per
+   grain; release 0x00040000 per sample), and the level set with __sceSasSetSL. */
+#define SAS_ADSR_BASE_ATTACK 0x00400000
+#define SAS_ADSR_BASE_DECAY 0x00100000
+#define SAS_ADSR_BASE_SUSTAIN 0x00004000
+#define SAS_ADSR_BASE_RELEASE 0x00040000
+#define SAS_ADSR_BASE_LEVEL 0x20000000
+#define SAS_ADSR_MODE_ON 8u
+#define SAS_ADSR_MODE_OFF 8u
+_Static_assert(SAS_ADSR_MODE_ON + SAS_ADSR_MODE_OFF == SAS_ADSR_ROW_WORDS, "one height row per mode row");
+
+/* Explicit-curve runs (#2059 review F2-F4). simple != 0 sets env1/env2 with SetSimpleADSR;
+   otherwise the curves go through SetADSRmode and the rates and level through SetADSR and SetSL.
+   on + off grains must be whole rows of 16 and at most SAS_ADSR_GRAINS. */
+typedef struct {
+    const char *name;
+    uint32_t grain, simple, env1, env2;
+    uint32_t attack, decay, sustain, release;
+    int rate_a, rate_d, rate_s, rate_r, level;
+    uint32_t on, off;
+} SasAdsrRun;
+static const SasAdsrRun k_sas_adsr_runs[] = {
+    /* The exponent attack (curve 4), unreachable through SetSimpleADSR, at a slow rate. */
+    {"expatk", 256u, 0u, 0u, 0u, 4u, 1u, 1u, 1u, 0x00020000, 0x00100000, 0, 0x00040000, 0x20000000,
+     64u, 16u},
+    {"expatk-g64", 64u, 0u, 0u, 0u, 4u, 1u, 1u, 1u, 0x00020000, 0x00100000, 0, 0x00040000, 0x20000000,
+     128u, 32u},
+    /* The sustain level on a step boundary: linear attack to the top in exactly one grain, linear
+       decay from the top to 0x30000000 in exactly one more (256 steps of 0x00100000), sustain rate
+       0; then the same with the level half a step lower, so "stop at or below" and "stop below"
+       differ. */
+    {"bound", 256u, 0u, 0u, 0u, 0u, 1u, 1u, 1u, 0x00400000, 0x00100000, 0, 0x00100000, 0x30000000,
+     16u, 16u},
+    {"bound-half", 256u, 0u, 0u, 0u, 0u, 1u, 1u, 1u, 0x00400000, 0x00100000, 0, 0x00100000,
+     0x30080000, 16u, 16u},
+    /* Pairs p1 and p2 again at grain 64, a smaller grain than 256 (the only other size run; no
+       smaller grain was tried): with grain 256 a 32- or 33-sample key-on delay looks the same as
+       a height read before or after the step; a second divisor tells them apart. */
+    {"g64-p1", 64u, 1u, 0x30fbu, 0x102cu, 0u, 0u, 0u, 0u, 0, 0, 0, 0, 0, 128u, 32u},
+    {"g64-p2", 64u, 1u, 0xb083u, 0x900eu, 0u, 0u, 0u, 0u, 0, 0, 0, 0, 0, 128u, 32u},
+};
+#define SAS_ADSR_RUNS (sizeof(k_sas_adsr_runs) / sizeof(k_sas_adsr_runs[0]))
+
+static void sas_adsr_record(int emulated, const char *case_id, const char *status,
+                            const uint32_t *out, uint32_t count) {
+    char line[SAS_ADSR_LINE_MAX];
+    int used = snprintf(line, sizeof(line),
+                        "NAKAGAWA_PSP_TEST schema=1 test_id=" SAS_ADSR_TEST_ID " case_id=%s "
+                        "status=%s result=0x00000000",
+                        case_id, status);
+    for (uint32_t i = 0; i < count && used > 0 && used < (int)sizeof(line) - 24; i++) {
+        used += snprintf(line + used, sizeof(line) - (size_t)used, " out%u=0x%08x",
+                         (unsigned int)i, (unsigned int)out[i]);
+    }
+    if (used <= 0 || used >= (int)sizeof(line) - 2) return;
+    line[used++] = '\n';
+    line[used] = '\0';
+    s_sas_adsr_records++;
+    probe_emit_durable(emulated, line, (size_t)used);
+}
+
+static int sas_adsr_init_grain(int grain) {
+    return __sceSasInit(&s_sas_adsr_core, grain, 32, PSP_SAS_OUTPUTMODE_STEREO, PSP_SAS_SAMPLE_RATE);
+}
+
+static int sas_adsr_init(void) {
+    return sas_adsr_init_grain(SAS_ADSR_GRAIN);
+}
+
+static void sas_adsr_pair(int emulated, uint32_t pair, int sascore_ok) {
+    char case_id[40];
+    uint32_t calls[SAS_ADSR_CALL_WORDS];
+    const uint32_t env1 = k_sas_adsr_pairs[pair][0];
+    const uint32_t env2 = k_sas_adsr_pairs[pair][1];
+    for (uint32_t i = 0; i < SAS_ADSR_CALL_WORDS; i++) calls[i] = 0u;
+    for (uint32_t g = 0; g < SAS_ADSR_GRAINS; g++) s_sas_adsr_heights[g] = 0u;
+    calls[0] = env1;
+    calls[1] = env2;
+    if (sascore_ok) {
+        (void)snprintf(case_id, sizeof(case_id), "pair-%u", (unsigned int)pair);
+        probe_step(emulated, "sas-adsr", case_id);
+        calls[2] = (uint32_t)sas_adsr_init();
+        calls[3] = (uint32_t)__sceSasSetVoice(&s_sas_adsr_core, 0, s_sas_adsr_vag,
+                                              (int)sizeof(s_sas_adsr_vag), 1);
+        calls[4] = (uint32_t)__sceSasSetVolume(&s_sas_adsr_core, 0, 0x1000, 0x1000, 0, 0);
+        calls[5] = (uint32_t)__sceSasSetSimpleADSR(&s_sas_adsr_core, 0, env1, env2);
+        calls[10] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_adsr_core, 0);
+        calls[6] = (uint32_t)__sceSasSetKeyOn(&s_sas_adsr_core, 0);
+        calls[7] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_adsr_core, 0);
+        for (uint32_t g = 0; g < SAS_ADSR_GRAINS; g++) {
+            if (g == SAS_ADSR_ON_GRAINS) {
+                calls[8] = (uint32_t)__sceSasSetKeyOff(&s_sas_adsr_core, 0);
+            }
+            (void)__sceSasCore(&s_sas_adsr_core, s_sas_adsr_out);
+            s_sas_adsr_heights[g] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_adsr_core, 0);
+        }
+        calls[9] = (uint32_t)__sceSasGetEndFlag(&s_sas_adsr_core);
+    }
+    const char *status = sascore_ok ? "RC" : "SKIP";
+    (void)snprintf(case_id, sizeof(case_id), "sas-adsr-p%u-calls", (unsigned int)pair);
+    sas_adsr_record(emulated, case_id, status, calls, SAS_ADSR_CALL_WORDS);
+    for (uint32_t row = 0; row < SAS_ADSR_ROWS; row++) {
+        (void)snprintf(case_id, sizeof(case_id), "sas-adsr-p%u-h%02x", (unsigned int)pair,
+                       (unsigned int)row);
+        sas_adsr_record(emulated, case_id, status, s_sas_adsr_heights + row * SAS_ADSR_ROW_WORDS,
+                        SAS_ADSR_ROW_WORDS);
+    }
+}
+
+static void sas_adsr_mode_row(int emulated, uint32_t idx, int sascore_ok) {
+    const SasAdsrModeRow *row = &k_sas_adsr_mode_rows[idx];
+    char case_id[40];
+    uint32_t calls[SAS_ADSR_WIDE_WORDS];
+    uint32_t heights[SAS_ADSR_ROW_WORDS];
+    for (uint32_t i = 0; i < SAS_ADSR_WIDE_WORDS; i++) calls[i] = 0u;
+    for (uint32_t i = 0; i < SAS_ADSR_ROW_WORDS; i++) heights[i] = 0u;
+    calls[0] = row->mask;
+    calls[1] = row->attack;
+    calls[2] = row->decay;
+    calls[3] = row->sustain;
+    calls[4] = row->release;
+    if (sascore_ok) {
+        (void)snprintf(case_id, sizeof(case_id), "mode-%02u", (unsigned int)idx);
+        probe_step(emulated, "sas-adsr", case_id);
+        calls[5] = (uint32_t)sas_adsr_init();
+        calls[6] = (uint32_t)__sceSasSetVoice(&s_sas_adsr_core, 0, s_sas_adsr_vag,
+                                              (int)sizeof(s_sas_adsr_vag), 1);
+        calls[7] = (uint32_t)__sceSasSetVolume(&s_sas_adsr_core, 0, 0x1000, 0x1000, 0, 0);
+        calls[8] = (uint32_t)__sceSasSetADSRmode(&s_sas_adsr_core, 0, PSP_SAS_ADSR_EVERYTHING,
+                                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_INCREASE,
+                                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_DECREASE,
+                                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_DECREASE,
+                                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_DECREASE);
+        calls[9] = (uint32_t)__sceSasSetADSR(&s_sas_adsr_core, 0, PSP_SAS_ADSR_EVERYTHING,
+                                             SAS_ADSR_BASE_ATTACK, SAS_ADSR_BASE_DECAY,
+                                             SAS_ADSR_BASE_SUSTAIN, SAS_ADSR_BASE_RELEASE);
+        calls[10] = (uint32_t)__sceSasSetSL(&s_sas_adsr_core, 0, SAS_ADSR_BASE_LEVEL);
+        calls[11] = (uint32_t)__sceSasSetADSRmode(&s_sas_adsr_core, 0, row->mask,
+                                                  (PspSasADSRCurveModes)(int)row->attack,
+                                                  (PspSasADSRCurveModes)(int)row->decay,
+                                                  (PspSasADSRCurveModes)(int)row->sustain,
+                                                  (PspSasADSRCurveModes)(int)row->release);
+        calls[15] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_adsr_core, 0);
+        calls[12] = (uint32_t)__sceSasSetKeyOn(&s_sas_adsr_core, 0);
+        calls[13] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_adsr_core, 0);
+        for (uint32_t g = 0; g < SAS_ADSR_MODE_ON + SAS_ADSR_MODE_OFF; g++) {
+            if (g == SAS_ADSR_MODE_ON) {
+                calls[14] = (uint32_t)__sceSasSetKeyOff(&s_sas_adsr_core, 0);
+            }
+            (void)__sceSasCore(&s_sas_adsr_core, s_sas_adsr_out);
+            heights[g] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_adsr_core, 0);
+        }
+    }
+    const char *status = sascore_ok ? "RC" : "SKIP";
+    (void)snprintf(case_id, sizeof(case_id), "sas-adsr-m%02u-calls", (unsigned int)idx);
+    sas_adsr_record(emulated, case_id, status, calls, SAS_ADSR_WIDE_WORDS);
+    (void)snprintf(case_id, sizeof(case_id), "sas-adsr-m%02u-h", (unsigned int)idx);
+    sas_adsr_record(emulated, case_id, status, heights, SAS_ADSR_ROW_WORDS);
+}
+
+static void sas_adsr_curve_run(int emulated, uint32_t idx, int sascore_ok) {
+    const SasAdsrRun *run = &k_sas_adsr_runs[idx];
+    char case_id[40];
+    uint32_t calls[SAS_ADSR_WIDE_WORDS];
+    const uint32_t grains = run->on + run->off;
+    if (grains > SAS_ADSR_GRAINS || grains % SAS_ADSR_ROW_WORDS != 0u) {
+        /* A table entry outside the height buffer: say so instead of skipping it silently. */
+        const uint32_t bad[2] = {run->on, run->off};
+        (void)snprintf(case_id, sizeof(case_id), "sas-adsr-%s-calls", run->name);
+        sas_adsr_record(emulated, case_id, "BAD", bad, 2u);
+        return;
+    }
+    for (uint32_t i = 0; i < SAS_ADSR_WIDE_WORDS; i++) calls[i] = 0u;
+    for (uint32_t g = 0; g < grains; g++) s_sas_adsr_heights[g] = 0u;
+    calls[0] = run->grain;
+    calls[12] = run->on;
+    calls[13] = run->off;
+    if (sascore_ok) {
+        probe_step(emulated, "sas-adsr", run->name);
+        calls[1] = (uint32_t)sas_adsr_init_grain((int)run->grain);
+        calls[2] = (uint32_t)__sceSasSetVoice(&s_sas_adsr_core, 0, s_sas_adsr_vag,
+                                              (int)sizeof(s_sas_adsr_vag), 1);
+        calls[3] = (uint32_t)__sceSasSetVolume(&s_sas_adsr_core, 0, 0x1000, 0x1000, 0, 0);
+        if (run->simple) {
+            calls[4] = (uint32_t)__sceSasSetSimpleADSR(&s_sas_adsr_core, 0, run->env1, run->env2);
+        } else {
+            calls[4] = (uint32_t)__sceSasSetADSRmode(&s_sas_adsr_core, 0, PSP_SAS_ADSR_EVERYTHING,
+                                                     (PspSasADSRCurveModes)(int)run->attack,
+                                                     (PspSasADSRCurveModes)(int)run->decay,
+                                                     (PspSasADSRCurveModes)(int)run->sustain,
+                                                     (PspSasADSRCurveModes)(int)run->release);
+            calls[5] = (uint32_t)__sceSasSetADSR(&s_sas_adsr_core, 0, PSP_SAS_ADSR_EVERYTHING,
+                                                 run->rate_a, run->rate_d, run->rate_s, run->rate_r);
+            calls[6] = (uint32_t)__sceSasSetSL(&s_sas_adsr_core, 0, run->level);
+        }
+        calls[11] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_adsr_core, 0);
+        calls[7] = (uint32_t)__sceSasSetKeyOn(&s_sas_adsr_core, 0);
+        calls[8] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_adsr_core, 0);
+        for (uint32_t g = 0; g < grains; g++) {
+            if (g == run->on) {
+                calls[9] = (uint32_t)__sceSasSetKeyOff(&s_sas_adsr_core, 0);
+            }
+            (void)__sceSasCore(&s_sas_adsr_core, s_sas_adsr_out);
+            s_sas_adsr_heights[g] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_adsr_core, 0);
+        }
+        calls[10] = (uint32_t)__sceSasGetEndFlag(&s_sas_adsr_core);
+    }
+    const char *status = sascore_ok ? "RC" : "SKIP";
+    (void)snprintf(case_id, sizeof(case_id), "sas-adsr-%s-calls", run->name);
+    sas_adsr_record(emulated, case_id, status, calls, SAS_ADSR_WIDE_WORDS);
+    for (uint32_t row = 0; row < grains / SAS_ADSR_ROW_WORDS; row++) {
+        (void)snprintf(case_id, sizeof(case_id), "sas-adsr-%s-h%02x", run->name, (unsigned int)row);
+        sas_adsr_record(emulated, case_id, status, s_sas_adsr_heights + row * SAS_ADSR_ROW_WORDS,
+                        SAS_ADSR_ROW_WORDS);
+    }
+}
+
+static void run_sas_adsr(int emulated) {
+    /* Non-silent ADPCM: filter 0, shift 0, alternating nibbles. The first block starts the loop
+       (flag 0x06) and the last ends it and repeats (0x03), so the voice never runs out of data
+       and the envelope alone decides its course. */
+    for (uint32_t b = 0; b < SAS_ADSR_VAG_BLOCKS; b++) {
+        unsigned char *blk = s_sas_adsr_vag + b * 16u;
+        blk[0] = 0x00;
+        blk[1] = b == 0u ? 0x06 : (b + 1u == SAS_ADSR_VAG_BLOCKS ? 0x03 : 0x00);
+        for (int i = 2; i < 16; i++) blk[i] = 0x71;
+    }
+    uint32_t load[4] = {0u, 0u, 0u, 0u};
+    probe_step(emulated, "sas-adsr", "load-avcodec");
+    load[0] = (uint32_t)sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+    probe_step(emulated, "sas-adsr", "load-sascore");
+    load[1] = (uint32_t)sceUtilityLoadAvModule(PSP_AV_MODULE_SASCORE);
+    const int sascore_ok = load[1] == 0u;
+    if (sascore_ok) {
+        probe_step(emulated, "sas-adsr", "init");
+        load[2] = (uint32_t)sas_adsr_init();
+        load[3] = (uint32_t)__sceSasGetGrain(&s_sas_adsr_core);
+    }
+    sas_adsr_record(emulated, "sas-adsr-load", "RC", load, 4u);
+    for (uint32_t pair = 0; pair < SAS_ADSR_PAIRS; pair++) {
+        sas_adsr_pair(emulated, pair, sascore_ok);
+    }
+    for (uint32_t row = 0; row < SAS_ADSR_MODE_ROWS; row++) {
+        sas_adsr_mode_row(emulated, row, sascore_ok);
+    }
+    for (uint32_t run = 0; run < SAS_ADSR_RUNS; run++) {
+        sas_adsr_curve_run(emulated, run, sascore_ok);
+    }
+    const uint32_t done[1] = {s_sas_adsr_records};
+    /* RC: the run completed. It is not a correctness verdict; nothing here is compared. */
+    sas_adsr_record(emulated, "sas-adsr-done", sascore_ok ? "RC" : "SKIP", done, 1u);
+    probe_step(emulated, "sas-adsr", "park");
+    /* Normal teardown: parks until PSPLink modstop. The AV modules stay loaded, as in sas-init. */
+    probe_teardown(emulated);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
 #include <pspsuspend.h>
 #include <psputility.h>
@@ -12840,6 +13214,8 @@ int main(int argc, char *argv[]) {
     run_at3_delay_sweep(emulated); /* ends in probe_teardown, which parks until modstop */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MPEG_YCBCR
     run_mpeg_ycbcr(emulated); /* ends in probe_teardown, which parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_ADSR
+    run_sas_adsr(emulated); /* ends in probe_teardown, which parks until modstop */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
