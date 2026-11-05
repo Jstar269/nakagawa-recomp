@@ -11777,9 +11777,9 @@ static const SasAdsrRun k_sas_adsr_runs[] = {
      16u, 16u},
     {"bound-half", 256u, 0u, 0u, 0u, 0u, 1u, 1u, 1u, 0x00400000, 0x00100000, 0, 0x00100000,
      0x30080000, 16u, 16u},
-    /* Pairs p1 and p2 at grain 64, the smallest the PSP accepts: with grain 256 a 32- or 33-sample
-       key-on delay looks the same as a height read before or after the step; a second divisor
-       tells them apart. */
+    /* Pairs p1 and p2 again at grain 64, a smaller grain than 256 (the only other size run; no
+       smaller grain was tried): with grain 256 a 32- or 33-sample key-on delay looks the same as
+       a height read before or after the step; a second divisor tells them apart. */
     {"g64-p1", 64u, 1u, 0x30fbu, 0x102cu, 0u, 0u, 0u, 0u, 0, 0, 0, 0, 0, 128u, 32u},
     {"g64-p2", 64u, 1u, 0xb083u, 0x900eu, 0u, 0u, 0u, 0u, 0, 0, 0, 0, 0, 128u, 32u},
 };
