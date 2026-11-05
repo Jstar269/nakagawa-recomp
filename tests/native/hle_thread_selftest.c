@@ -19419,7 +19419,7 @@ static TCB *fixture_thread(uint32_t uid, int state, int priority) {
  * measured it on a PSP: from a VBLANK sub-interrupt handler it returns
  * 0x80618008 (delays.expected:24), while the same call on a thread returns 0
  * and sceMpegDelete then returns 0 (lines 12-13), and after a Finish/Init reset
- * the library creates again (lines 4-6). PPSSPP took the same check in
+ * the library creates again (lines 28-30). PPSSPP took the same check in
  * 177244863. The check lives in the production handler (hle_mpeg.c); the
  * library behind it is the spies above. The thread calls run with a fixture
  * thread current; the interrupt call is reached through the production
@@ -19497,7 +19497,7 @@ static void test_mpeg_create_refused_in_interrupt(void) {
     mpi_create_args(&c);
     expect(mpi_on_thread(NID_MPI_CREATE, &c) == 0u &&
                mpi_on_thread_a0(NID_MPI_DELETE, MPI_DESC) == 0u,
-           "mpeg-intr: after the reset a thread creates and deletes again (delays.expected:5-6)");
+           "mpeg-intr: after the reset a thread creates and deletes again (delays.expected:29-30)");
     (void)mpi_on_thread_a0(NID_MPI_FINISH, 0u);
     reset_fixture();
 }

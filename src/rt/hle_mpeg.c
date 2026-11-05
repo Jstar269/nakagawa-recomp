@@ -1300,8 +1300,8 @@ void hle_register_psmf_player_handlers(void) {
  * registrations, in their order, and is called from the helper where the run stood. */
 
 #ifndef SR_HLE_THREAD_SELFTEST
-/* Two runs of hle_register_init_mpeg() the media fixture also registers, so its end-of-feed
- * tests reach the production handlers through sr_syscall (#286). */
+/* Registration groups shared by hle_register_init_mpeg() and the media fixture, so its
+ * end-of-feed tests reach the production handlers through sr_syscall (#286). */
 static void hle_register_mpeg_stream_offset_handler(void) {
     sr_hle_register(0x21ff80e4, "sceMpegQueryStreamOffset", h_MpegQueryStreamOffset);
 }
@@ -1312,7 +1312,7 @@ static void hle_register_mpeg_ring_handlers(void) {
 }
 #endif
 #ifndef SR_MPEG_MEDIA_SELFTEST
-/* Two runs of hle_register_init_mpeg() the thread fixture also registers, for its
+/* Registration groups shared by hle_register_init_mpeg() and the thread fixture, for its
  * interrupt-context check of sceMpegCreate (hle_thread_selftest.c). */
 static void hle_register_mpeg_init_finish_handlers(void) {
     sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
