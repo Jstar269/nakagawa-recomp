@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // ****************************************************************************
 // * This file is part of the xBRZ project. It is distributed under           *
 // * GNU General Public License: https://www.gnu.org/licenses/gpl-3.0         *

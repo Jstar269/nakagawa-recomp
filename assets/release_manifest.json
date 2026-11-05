@@ -167,6 +167,16 @@
       "notice_path": "third_party/kenney/input-prompts/License.txt",
       "evidence_path": "third_party/kenney/PROVENANCE.md",
       "disposition": "vendored_assets; embedded in the player by tools/gen_ui_assets.py"
+    },
+    {
+      "id": "xbrz",
+      "name": "xBRZ pixel-art scaler",
+      "license": "GPL-3.0-only",
+      "origin": "https://sourceforge.net/projects/xbrz/",
+      "revision": "1.9 / xBRZ_1.9.zip b2dff73b3abd24a18a7cde78d5ff5ed8f0922296dce6ed734dce2264cd0a0fc9",
+      "notice_path": "third_party/xbrz/License.txt",
+      "evidence_path": "third_party/xbrz/PROVENANCE.md",
+      "disposition": "vendored_source; translated from C++ to C (LOCAL DELTA); linked into the runtime via src/rt/gpu_sdl3vk/tex_scale.c"
     }
   ],
   "excluded_paths": [
@@ -1719,6 +1729,20 @@
         "sha256": "5bb62847f130ced4299d758cee7d21bef49bff53c906e44e1ebc19d3d8f3a91a"
       },
       "comment": "Kenney Interface Sounds 1.0 clip, decoded once from the archive's Ogg Vorbis to 16-bit PCM WAV (LOCAL DELTA); embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "xbrz-golden-generator",
+      "name": "xBRZ golden generator (third_party/xbrz/xbrz_golden.cpp)",
+      "type": "source",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/xbrz/xbrz_golden.cpp",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "included",
+      "public_scope_included": true,
+      "optional": false,
+      "comment": "Project-authored C++ test helper, built by hand against the unmodified xBRZ 1.9 release to print the goldens tex-scale-selftest checks; not part of any build (third_party/xbrz/PROVENANCE.md)."
     }
   ]
 }

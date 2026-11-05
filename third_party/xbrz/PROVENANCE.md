@@ -27,8 +27,8 @@ no C++ runtime.
 | File | Kind | Upstream file | Upstream blob | SHA-256 in this tree |
 | --- | --- | --- | --- | --- |
 | `License.txt` | LOCAL DELTA: CRLF line endings normalised to LF | `License.txt` | `ea09e3734b6a49a0c0c4f123d0451db78522408c` | `c61f12da7cdad526bdcbed47a4c0a603e60dbbfdaf8b66933cd088e9132c303f` |
-| `xbrz.c` | imported + LOCAL DELTA: translated from C++ to C | `xbrz.cpp`, `xbrz_config.h`, `xbrz_tools.h` | `a027586a3043c723fef8c4ae54eb876953ec18df` (`xbrz.cpp`) | `2d9c4c06d3a10f85b8dcfa888ebae09f88f6d27c4b2ed9520e51944e54806cc3` |
-| `xbrz.h` | imported + LOCAL DELTA: translated from C++ to C | `xbrz.h`, `xbrz_config.h` | `f92b65cf1daf314db2af0025f46000bdc0a0bacc` (`xbrz.h`) | `c469a502146cad9dcbf4384073da988367c5757631bf5b04d42a3d2b698d095d` |
+| `xbrz.c` | imported + LOCAL DELTA: translated from C++ to C | `xbrz.cpp`, `xbrz_config.h`, `xbrz_tools.h` | `a027586a3043c723fef8c4ae54eb876953ec18df` (`xbrz.cpp`) | `40a1875b1816dc8c8670738fe4232a901edce7170802677538e7a4761f4f78b2` |
+| `xbrz.h` | imported + LOCAL DELTA: translated from C++ to C | `xbrz.h`, `xbrz_config.h` | `f92b65cf1daf314db2af0025f46000bdc0a0bacc` (`xbrz.h`) | `0bc611b221191c100a9f2d5dfa95aabac92e68e2f30e014828fc84a9d78f7592` |
 
 The other upstream inputs to the translation: `xbrz_config.h` (blob
 `238045e625842dca4cce01d36681407782ac07f8`) and `xbrz_tools.h` (blob
@@ -64,6 +64,9 @@ The translation keeps upstream's algorithm and constants and changes only what C
 - **API.** `nk_xbrz_scale(factor, src, trg, w, h, cfg, yFirst, yLast)` and `NkXbrzCfg` with
   upstream's defaults (`nk_xbrz_default_cfg`), in place of `xbrz::scale` and `xbrz::ScalerCfg`.
   A bad factor returns 0 instead of asserting.
+- **SPDX line.** Each translated file starts with `SPDX-License-Identifier: GPL-3.0-only`, the
+  identifier of the licence the upstream header names; the header and its exception follow
+  unchanged.
 
 ## Verification
 
