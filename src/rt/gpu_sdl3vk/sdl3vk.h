@@ -171,6 +171,10 @@ int  sdl3vk_renderer_terminal(void);
  * stays vulkan.h-free (pass VkResult value). */
 void     sdl3vk_present_fault_inject(int vk_result);
 void     sdl3vk_present_fault_clear(void);
+/* SR_GPU_TIMESTAMPS: 1 when the presenter's timestamp query pool exists (the switch was set at init
+ * and the queue has timestamps). *timed and *ns, when given, receive how many presentation command
+ * buffers have been read back since init and their GPU time in ns. */
+int      sdl3vk_present_timestamps(uint64_t *timed, uint64_t *ns);
 uint64_t sdl3vk_swapchain_generation(void);
 uint64_t sdl3vk_frame_semaphore_generation(void);
 

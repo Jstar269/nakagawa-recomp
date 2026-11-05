@@ -773,6 +773,7 @@ static uint64_t s_ts_ns[SR_PERF_GE_REASON_COUNT];
 static uint64_t s_ts_total_ns[SR_PERF_GE_REASON_COUNT];
 static uint64_t s_ts_buffers = 0;   /* recordings whose times were collected (selftest) */
 static uint64_t s_ts_presents = 0, s_ts_total_presents = 0;
+static int s_ts_unavailable = 0;    /* the switch was set but the queue has no timestamps */
 
 static const char *const s_ts_reason_name[SR_PERF_GE_REASON_COUNT] = {
     "render", "snapshot", "tex_upload", "target_upload", "depth_upload", "depth_readback",
@@ -796,6 +797,7 @@ static int ts_setup(uint32_t queue_family) {
     if (!bits || !(props.limits.timestampPeriod > 0.0f) ||
         vkCreateQueryPool(s_dev, &qpc, NULL, &s_ts_pool) != VK_SUCCESS) {
         s_ts_pool = VK_NULL_HANDLE;
+        s_ts_unavailable = 1;
         fprintf(stderr, "gegpu: SR_GPU_TIMESTAMPS: this queue has no timestamps\n");
         return 0;
     }
@@ -4588,10 +4590,6 @@ int gegpu_init(void) {
     vkGetPhysicalDeviceProperties(s_pdev, &props);
     s_xfer_align = props.limits.optimalBufferCopyOffsetAlignment;
     if (s_xfer_align < 4) s_xfer_align = 4;
-    {
-        const char *ts = getenv("SR_GPU_TIMESTAMPS");
-        if (ts && ts[0] && strcmp(ts, "0") != 0) (void)ts_setup(vi.queue_family);
-    }
 
     VkCommandPoolCreateInfo cpi = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -4761,6 +4759,8 @@ int gegpu_init(void) {
         if (!s_white_set) return 0;
     }
 
+    /* Last, so a failed init leaves no query pool and the switch off. */
+    if (sr_perf_gpu_timestamps_requested()) (void)ts_setup(vi.queue_family);
     s_readback_commit_failures = 0;
     s_ready = 1;
     ge_set_gpu_hooks(&k_hooks);
@@ -4794,12 +4794,20 @@ void gegpu_shutdown(void) {
     (void)vkDeviceWaitIdle(s_dev);
     stats_emit(1);
     if (s_ts_on) {
+        /* The device is idle: the recordings still marked in flight have their times too. */
+        for (uint32_t i = 0; i < SUBMIT_FRAMES; i++)
+            if (s_submit[i].in_flight) ts_collect(&s_submit[i]);
         for (int i = 0; i < SR_PERF_GE_REASON_COUNT; i++) s_ts_total_ns[i] += s_ts_ns[i];
         ts_report(1);
         vkDestroyQueryPool(s_dev, s_ts_pool, NULL);
         s_ts_pool = VK_NULL_HANDLE;
         s_ts_on = 0;
     }
+    /* A later gegpu_init starts its totals from zero. */
+    memset(s_ts_ns, 0, sizeof s_ts_ns);
+    memset(s_ts_total_ns, 0, sizeof s_ts_total_ns);
+    s_ts_buffers = s_ts_presents = s_ts_total_presents = 0;
+    s_ts_unavailable = 0;
     ge_set_gpu_hooks(NULL);
     s_ready = 0;
 

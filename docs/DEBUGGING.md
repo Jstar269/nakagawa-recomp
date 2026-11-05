@@ -95,10 +95,11 @@ the frame spent in one area, from the same counters as the one-second rows: `gue
 Vulkan `vk_submit_ms`, `vk_wait_ms`, `vk_readback_ms`, `vk_pipeline_ms` and
 `vk_pipeline_creations`, `texture_decode_ms` with `texture_decodes`, `storage_ms` (disc image and
 file reads), `atrac_ms`, `h264_ms`, `audio_mix_ms`, `present_ms` and `sched_switches`. With
-`SR_GPU_TIMESTAMPS=1` the last seven columns hold the GPU time that finished during the frame:
-`gpu_ms` (all GE work), then `gpu_render_ms`, `gpu_snapshot_ms`, `gpu_upload_ms`, `gpu_readback_ms`
-and `gpu_other_ms`, which add up to it, and `gpu_present_ms` (the presentation blit); without it they
-are empty. The first
+`SR_GPU_TIMESTAMPS=1` the file has seven more columns, holding the GPU time that finished during the
+frame: `gpu_ms` (all GE work), then `gpu_render_ms`, `gpu_snapshot_ms`, `gpu_upload_ms`,
+`gpu_readback_ms` and `gpu_other_ms`, which add up to it, and `gpu_present_ms` (the presentation
+blit). They are empty when the GPU has no timestamp queries. Without the switch the file has no
+`gpu_*` columns at all. The first
 new frame starts the clock and writes no row, and a re-present of the same buffer adds its work to
 the next new frame. Join the rows with an `SR_SAMPLE_SPEC` file of the same run by VBlank to see
 which game phase the slow frames come from.

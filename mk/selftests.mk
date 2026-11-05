@@ -724,7 +724,9 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 2 --case undrawn-rows
 	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows
 	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows --readback-full 1
-	@rc=0; $(GPU_COHERENCE_BIN) --case gpu-timestamps || rc=$$?; \
+	$(GPU_COHERENCE_BIN) --gpu-timestamps unset --case gpu-timestamps-off
+	$(GPU_COHERENCE_BIN) --gpu-timestamps 0 --case gpu-timestamps-off
+	@rc=0; $(GPU_COHERENCE_BIN) --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; \
 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest gpu-timestamps (exit 77; the reason is printed above)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest gpu-timestamps (exit $$rc)"; exit $$rc; fi
 

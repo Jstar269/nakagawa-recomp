@@ -94,21 +94,24 @@ static int host_mem_type_selection_ok(void) {
     return ok;
 }
 
+/* `value` "unset" removes the variable. */
 static int set_env(const char *name, const char *value) {
+    const int unset = strcmp(value, "unset") == 0;
 #ifdef _WIN32
-    return _putenv_s(name, value) == 0;
+    return _putenv_s(name, unset ? "" : value) == 0;
 #else
-    return setenv(name, value, 1) == 0;
+    return (unset ? unsetenv(name) : setenv(name, value, 1)) == 0;
 #endif
 }
 
-/* `--scale N`, `--case NAME` and `--readback-full 1` set SR_GPU_SCALE, SR_GPU_COHERENCE_CASE and
- * SR_GPU_READBACK_FULL before the backend starts. Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does not accept. */
+/* `--scale N`, `--case NAME`, `--readback-full 1` and `--gpu-timestamps VALUE|unset` set SR_GPU_SCALE,
+ * SR_GPU_COHERENCE_CASE, SR_GPU_READBACK_FULL and SR_GPU_TIMESTAMPS before the backend starts. Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does not accept. */
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *name = strcmp(argv[i], "--scale") == 0 ? "SR_GPU_SCALE"
                          : strcmp(argv[i], "--case") == 0  ? "SR_GPU_COHERENCE_CASE"
-                         : strcmp(argv[i], "--readback-full") == 0 ? "SR_GPU_READBACK_FULL" : NULL;
+                         : strcmp(argv[i], "--readback-full") == 0 ? "SR_GPU_READBACK_FULL"
+                         : strcmp(argv[i], "--gpu-timestamps") == 0 ? "SR_GPU_TIMESTAMPS" : NULL;
         if (!name || i + 1 >= argc || !set_env(name, argv[++i])) {
             fprintf(stderr, "usage: gpu_coherence_selftest [--scale N] [--case scaled-upload|mip-lod]\n");
             return 2;

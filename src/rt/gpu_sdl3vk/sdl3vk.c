@@ -96,6 +96,7 @@ static PresentFrame     s_frame[PRESENT_FRAMES];
 static VkQueryPool      s_pts_pool;
 static double           s_pts_period_ns = 1.0;
 static uint64_t         s_pts_mask = ~0ull;
+static uint64_t         s_pts_timed, s_pts_ns;   /* since init: buffers read back, their GPU ns */
 static uint32_t         s_frame_cursor;
 static int              s_scaling = SDL3VK_SCALING_SHARP;  /* SR_PRESENT_SCALING (issue #1129) */
 static uint32_t         s_max_image_dim = 4096;  /* Vulkan's guaranteed minimum until init reads it */
@@ -160,6 +161,12 @@ void sdl3vk_present_fault_inject(int vk_result) {
 void sdl3vk_present_fault_clear(void) {
     s_present_fault_armed = 0;
     s_present_fault_result = VK_SUCCESS;
+}
+
+int sdl3vk_present_timestamps(uint64_t *timed, uint64_t *ns) {
+    if (timed) *timed = s_pts_timed;
+    if (ns) *ns = s_pts_ns;
+    return s_pts_pool != VK_NULL_HANDLE;
 }
 
 uint64_t sdl3vk_swapchain_generation(void) {
@@ -292,9 +299,13 @@ static int wait_present_frame(PresentFrame *f) {
         uint32_t q = (uint32_t)(f - s_frame) * 2u;
         f->ts_written = 0;
         if (vkGetQueryPoolResults(s_dev, s_pts_pool, q, 2u, sizeof v, v, sizeof v[0],
-                                  VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
-            sr_perf_gpu_present_time((uint64_t)((double)(((v[1] & s_pts_mask) - (v[0] & s_pts_mask)) &
-                                                         s_pts_mask) * s_pts_period_ns));
+                                  VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+            const uint64_t ns = (uint64_t)((double)(((v[1] & s_pts_mask) - (v[0] & s_pts_mask)) &
+                                                    s_pts_mask) * s_pts_period_ns);
+            s_pts_timed++;
+            s_pts_ns += ns;
+            sr_perf_gpu_present_time(ns);
+        }
     }
     return 1;
 }
@@ -810,8 +821,7 @@ int sdl3vk_init(const char *title) {
     VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
     INIT_VK(vkCreateFence(s_dev, &fci, NULL, &s_fence));
     {
-        const char *ts = getenv("SR_GPU_TIMESTAMPS");
-        if (ts && ts[0] && strcmp(ts, "0") != 0) {
+        if (sr_perf_gpu_timestamps_requested()) {
             uint32_t nq = 0;
             vkGetPhysicalDeviceQueueFamilyProperties(s_pdev, &nq, NULL);
             VkQueueFamilyProperties qf[16];
@@ -2699,6 +2709,7 @@ void sdl3vk_shutdown(void) {
     s_frame_cursor = 0;
     if (s_pts_pool)    vkDestroyQueryPool(s_dev, s_pts_pool, NULL);
     s_pts_pool = VK_NULL_HANDLE;
+    s_pts_timed = s_pts_ns = 0;
     if (s_fence)       vkDestroyFence(s_dev, s_fence, NULL);
     if (s_pool)        vkDestroyCommandPool(s_dev, s_pool, NULL);
     if (s_dev)         vkDestroyDevice(s_dev, NULL);
