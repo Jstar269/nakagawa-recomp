@@ -69,7 +69,7 @@ static uint32_t h_NetEtherNtostr(CpuState *s) {
 static struct {
     int inited;
     uint32_t pool_uid;  /* the user-partition block holding the pool */
-} s_net;
+} s_netlib;
 
 #define NET_POOL_NONE 0xffffffffu
 
@@ -79,20 +79,20 @@ static uint32_t h_NetInit(CpuState *s) {
     if (pool_size == 0u) return 0x800201b7u;               /* SCE_KERNEL_ERROR_ILLEGAL_MEMSIZE */
     if (callout_pri < 0x08u || callout_pri > 0x77u || netintr_pri < 0x08u || netintr_pri > 0x77u)
         return SCE_KERNEL_ERROR_ILLEGAL_PRIORITY;
-    if (s_net.inited && s_net.pool_uid != NET_POOL_NONE) free_block(s_net.pool_uid);
-    s_net.inited = 0;
-    s_net.pool_uid = alloc_block(pool_size);
-    if (s_net.pool_uid == NET_POOL_NONE) return SCE_KERNEL_ERROR_NO_MEMORY;
-    s_net.inited = 1;
+    if (s_netlib.inited && s_netlib.pool_uid != NET_POOL_NONE) free_block(s_netlib.pool_uid);
+    s_netlib.inited = 0;
+    s_netlib.pool_uid = alloc_block(pool_size);
+    if (s_netlib.pool_uid == NET_POOL_NONE) return SCE_KERNEL_ERROR_NO_MEMORY;
+    s_netlib.inited = 1;
     return 0u;
 }
 
 /* sceNetTerm(void): frees the pool; 0 (measured after sceNetInit). */
 static uint32_t h_NetTerm(CpuState *s) {
     (void)s;
-    if (s_net.inited && s_net.pool_uid != NET_POOL_NONE) free_block(s_net.pool_uid);
-    s_net.inited = 0;
-    s_net.pool_uid = NET_POOL_NONE;
+    if (s_netlib.inited && s_netlib.pool_uid != NET_POOL_NONE) free_block(s_netlib.pool_uid);
+    s_netlib.inited = 0;
+    s_netlib.pool_uid = NET_POOL_NONE;
     return 0u;
 }
 
@@ -119,11 +119,11 @@ static uint32_t h_NetAdhocctlGetParameter(CpuState *s) {
 }
 
 void sr_hle_test_net_reset(void) {
-    s_net.inited = 0;
-    s_net.pool_uid = NET_POOL_NONE;
+    s_netlib.inited = 0;
+    s_netlib.pool_uid = NET_POOL_NONE;
 }
-int sr_hle_test_net_inited(void) { return s_net.inited; }
-uint32_t sr_hle_test_net_pool_uid(void) { return s_net.pool_uid; }
+int sr_hle_test_net_inited(void) { return s_netlib.inited; }
+uint32_t sr_hle_test_net_pool_uid(void) { return s_netlib.pool_uid; }
 
 /* Registration runs of the shared helpers in hle.c (#307). Each holds one run of this file's
  * registrations, in their order, and is called from the helper where the run stood. */

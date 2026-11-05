@@ -7354,6 +7354,10 @@ static void test_net_core_without_network(void) {
         POOL = 0x20000u,
     };
     extern void sr_hle_test_partition_reset(void);
+    extern void sr_hle_test_net_reset(void);
+    extern int sr_hle_test_net_inited(void);
+    extern uint32_t sr_hle_test_net_pool_uid(void);
+    extern uint32_t block_addr(uint32_t uid);
     const uint32_t loaded_end = s_fixture_loaded_end;
     reset_fixture();
     s_fixture_loaded_end = 0x08a00000u;   /* a main image in user RAM, as a game's is */
@@ -7520,7 +7524,8 @@ static void test_adhoc_named_refusals(void) {
         {0x32b156b3u, "sceNetAdhocMatchingStop"},
         {0x7945ecdau, "sceNetAdhocMatchingTerm"},
     };
-    expect(sizeof(adhoc) / sizeof(adhoc[0]) == 59u, "the public ad hoc surface has 59 prototypes");
+    expect(sizeof(adhoc) / sizeof(adhoc[0]) == 58u,
+           "the public ad hoc surface less sceNetAdhocctlGetParameter (test_net_core_without_network) has 58 prototypes");
     reset_fixture();
     sr_hle_init();
     for (size_t i = 0; i < sizeof(adhoc) / sizeof(adhoc[0]); i++) {
