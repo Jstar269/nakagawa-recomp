@@ -11703,7 +11703,8 @@ static const uint32_t k_sas_adsr_pairs[][2] = {
     /* p7: linear 0x20, decay 0xa, level 5; bent 0x30; exponential 4 (fast) */
     {0x20a5u, 0x8c24u},
     /* p8: sustain to zero before KeyOff: linear 0x10, decay 0, level 0xf; linear decrease 0x44
-       (PPSSPP's rate reaches 0 near grain 256 of 640); linear 0x0a, released from zero */
+       (measured 2026-11-05: the height reaches 0 at grain 585 of 640, and KeyOff then returns
+       0x80420016); linear 0x0a, released from zero */
     {0x100fu, 0x510au},
 };
 #define SAS_ADSR_PAIRS (sizeof(k_sas_adsr_pairs) / sizeof(k_sas_adsr_pairs[0]))
@@ -11718,7 +11719,8 @@ static uint32_t s_sas_adsr_records;
    full mask, each phase alone, every invalid curve (attack 1, 3, 5; decay and release 0, 2, 4;
    sustain 6; all 5), an invalid curve in a phase the mask leaves out, and the top bit set on each
    phase. The curve numbers are PSPSDK's PspSasADSRCurveModes; which ones a phase accepts is what
-   this records (the expected refusal is PSP_SAS_ERROR_ADSR_MODE, 0x80420013, not assumed). */
+   this records. Measured 2026-11-05 (fixtures/psp_oracle/README.md, sas-adsr): the refusals
+   return PSP_SAS_ERROR_ADSR_MODE, 0x80420013, and leave every curve unchanged. */
 typedef struct {
     uint32_t mask, attack, decay, sustain, release;
 } SasAdsrModeRow;
