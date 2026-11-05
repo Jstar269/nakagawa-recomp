@@ -855,7 +855,8 @@ static void test_guard_catches_unvisited_damage_within_the_budget(void) {
 
 /* Failing before (the old walk spins): free() merging a free successor unlinks it from the
  * list. With the list damaged into a cycle that skips that successor, the old unlink walked
- * the cycle forever. It must quarantine instead, and the merge must still complete. */
+ * the cycle forever. It must quarantine instead. The walk never reached w, so w's size was
+ * never validated and the merge is refused: b is freed on its own. */
 static void test_guard_unlink_quarantines_a_damaged_list(void) {
     heap_reset();
     uint32_t a0 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
@@ -876,8 +877,117 @@ static void test_guard_unlink_quarantines_a_damaged_list(void) {
     sr_newlib_free(b, 0u);       /* merges w, whose unlink meets the cycle */
     uint32_t b_hdr = b - 8u;
     CHECK(s_heap_free_list == b_hdr, "a damaged list met by unlink was not quarantined");
-    CHECK(MEM_R32(b_hdr + 0u) == 0u && MEM_R32(b_hdr + 4u) == 2u * GUARD_BLOCK,
-          "the merge did not complete after the quarantine (size 0x%x)", MEM_R32(b_hdr + 4u));
+    CHECK(MEM_R32(b_hdr + 0u) == 0u && MEM_R32(b_hdr + 4u) == GUARD_BLOCK,
+          "free absorbed a neighbour the quarantined walk never validated (size 0x%x)",
+          MEM_R32(b_hdr + 4u));
+    CHECK(sr_heap_is_header(w - 8u), "the refused neighbour lost its header");
+}
+
+/* Layout for the merge-target cells: b, then a free w whose size word has been raised to
+ * three blocks (over the live s2 and s3) without a matching footer, then a live s4. */
+static int guard_damaged_merge_target(uint32_t *b, uint32_t *w, uint32_t *s2) {
+    heap_reset();
+    *b = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    *w = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    *s2 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t s3 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t s4 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    if (!(*b && *w && *s2 && s3 && s4)) return 0;
+    sr_newlib_free(*w, 0u);   /* list: w */
+    if (s_heap_free_list != *w - 8u) return 0;
+    MEM_W32(*w - 8u + 4u, 3u * GUARD_BLOCK);   /* size over s2 and s3; footer still says 80 */
+    return 1;
+}
+
+/* Failing before: free() merging a free successor whose own size word is damaged. unlink
+ * reaches the successor and its node check fails (footer mismatch), so free must not absorb
+ * the damaged size: the merged block would cover the live s2 and s3. */
+static void test_guard_free_refuses_a_damaged_merge_target(void) {
+    uint32_t b, w, s2;
+    CHECK(guard_damaged_merge_target(&b, &w, &s2), "merge-target setup failed");
+    sr_newlib_free(b, 0u);
+    uint32_t b_hdr = b - 8u;
+    CHECK(MEM_R32(b_hdr + 4u) == GUARD_BLOCK,
+          "free absorbed a damaged merge target (size 0x%x, over live blocks)", MEM_R32(b_hdr + 4u));
+    CHECK(s_heap_free_list == b_hdr && MEM_R32(b_hdr + 0u) == 0u,
+          "a damaged merge target did not quarantine the list (head 0x%08x)", s_heap_free_list);
+    CHECK(MEM_R32(s2 - 8u + 4u) == (GUARD_BLOCK | 1u), "the live block after the target was disturbed");
+    uint32_t bump = s_heap_bump_ptr;
+    uint32_t got = sr_newlib_malloc(2u * GUARD_BLOCK, 0u);
+    CHECK(got == bump + 8u, "an allocation reused memory over the live blocks (got 0x%08x)", got);
+}
+
+/* Failing before: realloc's in-place growth into a damaged successor. The growth must be
+ * refused and the allocation moved, and freeing the old block must not absorb the damaged
+ * successor either (it is no longer on any list). */
+static void test_guard_realloc_refuses_a_damaged_merge_target(void) {
+    uint32_t b, w, s2;
+    CHECK(guard_damaged_merge_target(&b, &w, &s2), "merge-target setup failed");
+    MEM_W32(b, 0x5a5a5a5au);
+    uint32_t bump = s_heap_bump_ptr;
+    uint32_t r = sr_newlib_realloc(b, 2u * GUARD_BLOCK - 8u, 0u);
+    CHECK(r != b, "realloc grew in place into a damaged successor (size 0x%x)", MEM_R32(b - 8u + 4u));
+    CHECK(r == bump + 8u && MEM_R32(r) == 0x5a5a5a5au,
+          "realloc did not move the allocation to fresh memory (got 0x%08x)", r);
+    CHECK(MEM_R32(s2 - 8u + 4u) == (GUARD_BLOCK | 1u), "the live block after the target was disturbed");
+    CHECK(s_heap_free_list == b - 8u && MEM_R32(b - 8u + 4u) == GUARD_BLOCK,
+          "the moved-from block absorbed the damaged successor (size 0x%x)", MEM_R32(b - 8u + 4u));
+}
+
+/* After a quarantine, the free list rebuilt by later frees must get a full walk on the very
+ * next allocation, not one deferred by the budget the quarantined list had earned. Builds the
+ * rebuilt list f3 -> f2 -> f1 with f1 damaged: a malloc that fits f3 visits f3 and its
+ * successor f2 but never f1, so only the full walk can catch it. */
+static void guard_rebuilt_list_is_walked_next(const char *which) {
+    uint32_t f[3], live[3];
+    for (unsigned i = 0; i < 3u; i++) {
+        f[i] = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+        live[i] = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+        CHECK(f[i] && live[i], "%s: rebuild mallocs failed", which);
+    }
+    for (unsigned i = 0; i < 3u; i++) sr_newlib_free(f[i], 0u);   /* list: f3 -> f2 -> f1 -> ... */
+    MEM_W32(f[0] - 8u + 4u, GUARD_BLOCK | 1u);                      /* f1: allocated bit set */
+    uint32_t bump = s_heap_bump_ptr;
+    uint32_t got = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    CHECK(got == bump + 8u && s_heap_free_list == 0u,
+          "%s: the list rebuilt after a quarantine was not walked on the next allocation (got 0x%08x)",
+          which, got);
+}
+
+/* The first-fit quarantine resets the measured length, so the next allocation walks. */
+static void test_guard_first_fit_quarantine_rewalks_next(void) {
+    heap_reset();
+    uint32_t a = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t s = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    CHECK(a && s, "first-fit reset setup failed");
+    sr_newlib_free(a, 0u);
+    MEM_W32(a - 8u + 4u, GUARD_BLOCK | 1u);   /* the head the search visits: allocated bit */
+    s_heap_full_check_credit = 0u;
+    s_heap_full_check_len = 0xffffffffu;      /* full walk held off */
+    uint32_t bump = s_heap_bump_ptr;
+    CHECK(sr_newlib_malloc(GUARD_NODE_BYTES, 0u) == bump + 8u && s_heap_free_list == 0u,
+          "first-fit reset setup: the visited damage was not quarantined");
+    guard_rebuilt_list_is_walked_next("after a first-fit quarantine");
+}
+
+/* The unlink quarantine resets the measured length, so the next allocation walks. */
+static void test_guard_unlink_quarantine_rewalks_next(void) {
+    heap_reset();
+    uint32_t a0 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t s0 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t b = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t w = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t s1 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    CHECK(a0 && s0 && b && w && s1, "unlink reset setup failed");
+    sr_newlib_free(w, 0u);
+    sr_newlib_free(a0, 0u);                   /* list: a0 -> w */
+    MEM_W32(a0 - 8u, a0 - 8u + 16u);          /* a0's link into its own payload */
+    s_heap_full_check_credit = 0u;
+    s_heap_full_check_len = 0xffffffffu;      /* full walk held off */
+    sr_newlib_free(b, 0u);                    /* merging w: unlink meets a0 and quarantines */
+    CHECK(s_heap_free_list == b - 8u && MEM_R32(b - 8u) == 0u,
+          "unlink reset setup: the damaged list was not quarantined");
+    guard_rebuilt_list_is_walked_next("after an unlink quarantine");
 }
 
 int main(void) {
@@ -908,6 +1018,10 @@ int main(void) {
     test_guard_catches_visited_damage_on_the_same_call();
     test_guard_catches_unvisited_damage_within_the_budget();
     test_guard_unlink_quarantines_a_damaged_list();
+    test_guard_free_refuses_a_damaged_merge_target();
+    test_guard_realloc_refuses_a_damaged_merge_target();
+    test_guard_first_fit_quarantine_rewalks_next();
+    test_guard_unlink_quarantine_rewalks_next();
 
     if (g_failures) {
         fprintf(stderr, "heap selftest: %d FAILURE(S)\n", g_failures);

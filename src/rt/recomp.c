@@ -422,7 +422,7 @@ static int sr_heap_free_nodes_overlap(uint32_t a, uint32_t a_size, uint32_t b, u
  * every node first-fit visits, and runs this full walk on an amortized budget
  * (see SR_HEAP_FULL_CHECK_BUDGET). Running it on every call made one HST match
  * load validate ~88 million nodes for ~122,000 allocations, about 5.5 s of a
- * 9.5 s load. */
+ * load measured at about 9 s. */
 static int sr_heap_free_list_walk(uint32_t *len_out) {
     uint32_t cur = s_heap_free_list, prev = 0u, prev_size = 0u, len = 0u;
     uint32_t tortoise = cur, power = 1u, steps = 0u;
@@ -456,8 +456,9 @@ static int sr_heap_free_list_valid(void) {
 /* Amortized full check. Each allocation that finds a non-empty free list earns
  * this many node credits; once the credits reach the length the last full walk
  * found, the next allocation walks the whole list again and the credits restart.
- * The full walk therefore costs at most this many node validations per
- * allocation on average, and damage anywhere in the list -- including nodes no
+ * The full walk therefore costs about this many node validations per allocator
+ * call (frees included, since each free can lengthen the list the next walk
+ * covers) on average, and damage anywhere in the list -- including nodes no
  * first-fit search reaches -- is still quarantined within ceil(length / budget)
  * + 1 allocations. Nodes an allocation actually uses are validated before use,
  * on every call, independent of the budget. */
@@ -650,9 +651,15 @@ static void sr_heap_unmark_header(uint32_t hdr) {
  * against the node before it, and Brent's cycle walk -- and quarantines the list
  * on damage instead of following a stray link: a cycle that skips the target
  * would otherwise spin free() forever, and a damaged node's link would be
- * written through. A target that is not on a valid list is left alone, as
- * before. */
-static void sr_heap_freelist_unlink(uint32_t target) {
+ * written through.
+ *
+ * Returns 1 only when the target was reached on a list validated up to it, so
+ * its own size, allocated bit and footer passed the node check, and it is now
+ * unlinked. Returns 0 when the target is not on the list (an earlier quarantine
+ * orphaned it) or the walk quarantined the list, including on damage to the
+ * target itself. The caller absorbs the target's size only on 1: a size word it
+ * has not validated could otherwise merge a free block over live ones. */
+static int sr_heap_freelist_unlink(uint32_t target) {
     uint32_t prev = 0u, prev_size = 0u, cur = s_heap_free_list;
     uint32_t tortoise = cur, power = 1u, steps = 0u;
     while (cur != 0u) {
@@ -667,7 +674,7 @@ static void sr_heap_freelist_unlink(uint32_t target) {
                     target, cur);
             s_heap_free_list = 0u;
             s_heap_full_check_len = 0u;
-            return;
+            return 0;
         }
         if (cur == target) {
             if (prev == 0u) s_heap_free_list = next;
@@ -676,7 +683,7 @@ static void sr_heap_freelist_unlink(uint32_t target) {
                 MEM_W32(prev + 0u, next);
                 s_heap_internal_write--;
             }
-            return;
+            return 1;
         }
         if (++steps == power) {
             tortoise = next;
@@ -687,6 +694,7 @@ static void sr_heap_freelist_unlink(uint32_t target) {
         prev_size = size;
         cur = next;
     }
+    return 0;
 }
 
 /* Publish [hdr, hdr+size) as free, coalescing with the physically adjacent free
@@ -708,14 +716,22 @@ static void sr_heap_free_block(uint32_t hdr, uint32_t size) {
         uint32_t nsize = nsf & ~1u;
         if ((nsf & 1u) == 0u && nsize >= 16u && (nsize & 15u) == 0u &&
             next_hdr + nsize > next_hdr && next_hdr + nsize <= s_heap_bump_ptr) {
-            sr_heap_freelist_unlink(next_hdr);
-            sr_heap_set_free_state(next_hdr, 0);
-            sr_heap_unmark_header(next_hdr);
-            s_heap_internal_write++;
-            MEM_W32(next_hdr + 0u, 0u);   /* old header words become interior payload */
-            MEM_W32(next_hdr + 4u, 0u);
-            s_heap_internal_write--;
-            size += nsize;
+            if (sr_heap_freelist_unlink(next_hdr)) {
+                sr_heap_set_free_state(next_hdr, 0);
+                sr_heap_unmark_header(next_hdr);
+                s_heap_internal_write++;
+                MEM_W32(next_hdr + 0u, 0u);   /* old header words become interior payload */
+                MEM_W32(next_hdr + 4u, 0u);
+                s_heap_internal_write--;
+                size += nsize;
+            } else {
+                /* The neighbour was not validated: free this block on its own. */
+                static int refused_free_n = 0;
+                if (refused_free_n++ < 8)
+                    fprintf(stderr,
+                        "HEAP_FREE_MERGE_REFUSED: free of 0x%08" PRIx32 " did not absorb 0x%08" PRIx32 " size=0x%" PRIx32 ": not on a validated free list\n",
+                        hdr, next_hdr, nsize);
+            }
         }
     }
     /* Backward: fold into the previous physical block if it is a valid free block,
@@ -1040,8 +1056,14 @@ uint32_t sr_newlib_realloc(uint32_t ptr, uint32_t size, uint32_t guest_ra) {
         if ((nsf & 1u) == 0u && nsize >= 16u && (nsize & 15u) == 0u &&
             next_hdr + nsize > next_hdr && next_hdr + nsize <= s_heap_bump_ptr) {
             uint32_t combined = old_total + nsize;
-            if (combined >= wanted_total) {
-                sr_heap_freelist_unlink(next_hdr);
+            if (combined >= wanted_total && !sr_heap_freelist_unlink(next_hdr)) {
+                /* The successor was not validated: move the allocation instead. */
+                static int refused_realloc_n = 0;
+                if (refused_realloc_n++ < 8)
+                    fprintf(stderr,
+                        "HEAP_FREE_MERGE_REFUSED: realloc of 0x%08" PRIx32 " did not absorb 0x%08" PRIx32 " size=0x%" PRIx32 ": not on a validated free list\n",
+                        hdr, next_hdr, nsize);
+            } else if (combined >= wanted_total) {
                 sr_heap_set_free_state(next_hdr, 0);
                 sr_heap_unmark_header(next_hdr);
                 s_heap_internal_write++;
