@@ -1355,6 +1355,11 @@ the ungated run. **Do not** reach for `SR_NOVBPACE=1` to speed a route up: that 
 jumps over idle delay waits, and it demonstrably changes game speed (it is the behaviour vblank
 pacing was added to fix). A faster route is worthless if it is not the same route.
 
+A run that must give the same frames every time (the picture gate, a capture retake) sets
+`SR_DETERMINISTIC_CLOCK=1` (#2037): guest time then charges the work the guest does instead of the
+time the host took. It is not turbo: it does not run a title ahead of its own work. A pad script or
+a capture window alone does not turn it on, so existing routes keep their paced timing.
+
 `tools/nk_safety.ps1` holds the helpers whose failure modes are silent (bounded wait,
 archive reset, completeness verdict); `tools/test_visual_oracle.py` exercises them against real
 processes and directories.
@@ -1468,6 +1473,8 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | `SR_DEVELOPER_MODE=0\|1` | Developer mode (the launcher exports its setting): `F3`'s profile HUD and the pause menu's VRAM viewer and Profile page |
 | `SR_REDUCE_MOTION=on\|off\|system` | The launcher's Reduce motion choice (it always exports one): `on` makes the pause overlay's transitions cuts, `off` lets them ease, and `system` (the launcher's Automatic), unset or anything else follows Windows' Animation effects as the overlay draws |
 | `SR_NOVBPACE=0\|1` | Vblank pacing mode: unset, empty, or "0" = paced (default); "1" = turbo. Any other value fails closed at startup |
+| `SR_DETERMINISTIC_CLOCK=0\|1` | Guest time as a function of the guest's work, never the host clock (#2037). `1` = on; unset, empty or `0` = off. `1` with `SR_NOVBPACE=0`, or any other value, fails closed at startup |
+| `SR_DETERMINISTIC_SLICE_US=N` | Guest microseconds the deterministic clock charges per scheduler boundary: 1..100000, default 100 |
 
 For a replayable GE fixture, set `SR_GE_CAPTURE_FRAME=<vblank>` or
 `SR_GE_CAPTURE_FRAME=<first>-<last>`. The range form captures the first submitted frame in that
@@ -1504,7 +1511,7 @@ committed.
 
 | Variable | Description |
 | ---------- | ------------- |
-| `SR_VBLANK_Q_US=N` | Host-clock vblank quantum in microseconds. In the default paced profile it does **not** produce vblanks -- the scheduler's rational 60000/1001 source is the only producer -- and only sets the threshold at which a yield is counted as late vblank *service* (reported as `vbl_late_service_yields` by the spin watchdog). It is an out-of-band vblank source only under `SR_NOVBPACE=1` |
+| `SR_VBLANK_Q_US=N` | Host-clock vblank quantum in microseconds. In the default paced profile it does **not** produce vblanks -- the scheduler's rational 60000/1001 source is the only producer -- and only sets the threshold at which a yield is counted as late vblank *service* (reported as `vbl_late_service_yields` by the spin watchdog). It is not a vblank source in any mode: turbo and the deterministic clock take theirs from guest time (#2037) |
 | `SR_WATCHDOG_EXIT=N` | Abort after N vblanks with no new frame; a firing is a NO-NEW-FLIP observation, not a hang verdict -- classify it with the display counters, thread dump, and MPEG/PSMF activity the watchdog prints |
 | `SR_GE_TIMING=1` | Opt-in GE completion timing (issue #1296), off by default. A display list that reached its END completes -- finish callback, `sceGeDrawSync`, `sceGeListSync` -- only once guest time passes its cost on one serial GE timeline; the callback is delivered as an interrupt, and the peeks read 2 until it is handled. The cost model in `src/rt/ge.c` is in GE clocks (the bus clock, converted at the emulated bus clock) and every coefficient was measured on a PSP-3000 with `CASE=ge-timing` (PR #1321): per list, command word and PRIM, per vertex by format, per span by width and fill state, texel fetch, CLUT loads and block transfers. Classes the measurement did not cover are charged as the nearest measured class and tagged `UNMEASURED_NEAREST` in the source. Startup prints `GE_TIMING: on, GE time model measured on PSP-3000 ...` |
 | `SR_AUDIO_DISABLED=1` | Disable audio output (null backend). `SR_AUDIO_BACKEND=null` (or `none`, `0`, `off`) does the same; `SR_AUDIO_BACKEND=dummy` keeps the device open on SDL's dummy driver. `SR_HEADLESS=1` also selects the null backend unless `SR_AUDIO_BACKEND` is set |
