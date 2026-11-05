@@ -1,0 +1,30 @@
+{
+  "schema": "font-pin/v1",
+  "family": "Liberation Serif",
+  "file": "LiberationSerif-Regular.ttf",
+  "sha256": "058ea80864aef09a23f45cbec2bb5400bc3dfbdea01c3f10538a21fcb497fb74",
+  "size_bytes": 393576,
+  "license": {
+    "spdx": "OFL-1.1",
+    "copyright": "Digitized data copyright (c) 2010 Google Corporation with Reserved Font Arimo, Tinos and Cousine. Copyright (c) 2012 Red Hat, Inc. with Reserved Font Name Liberation.",
+    "license_text": "OFL.txt",
+    "license_text_sha256": "a0c060f758d33ee59a674cd7b45914a560d0a5935968af5e87b0c6981fd89ddc",
+    "upstream_license_text_sha256": "93fed46019c38bbe566b479d22148e2e8a1e85ada614accb0211c37b2c61c19b",
+    "upstream_license_text_url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz#liberation-fonts-ttf-2.1.5/LICENSE",
+    "reserved_font_names": [
+      "Arimo",
+      "Tinos",
+      "Cousine",
+      "Liberation"
+    ]
+  },
+  "source": {
+    "url": "https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz",
+    "repository": "https://github.com/liberationfonts/liberation-fonts",
+    "path": "liberation-fonts-ttf-2.1.5/LiberationSerif-Regular.ttf",
+    "retrieved": "2026-11-04",
+    "release": "https://github.com/liberationfonts/liberation-fonts/releases/tag/2.1.5",
+    "release_commit": "4b0192046158094654e865245832c66d2104219e",
+    "archive_sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0"
+  }
+}
