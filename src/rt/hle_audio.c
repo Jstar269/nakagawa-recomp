@@ -144,6 +144,48 @@ static uint32_t h_AudioChangeChannelVolume(CpuState *s) {
  * slightly slower than the device every iteration (sleep + decode time), so streams drifted
  * behind (voice lagging subtitles) and underran (crackle). */
 extern int sr_audio_queued(int ch);
+
+/* ---- the audio device under the deterministic clock (#2037) --------------------------------
+ *
+ * The host mixer drains its queue in host time. A guest that paces itself against the queue
+ * (sceAudioOutput*Blocking waits out the lead beyond two periods, sceAudioGetChannelRestLength
+ * and the PSMF player's audio lead report it) then sees guest time depend on how fast the host
+ * ran: a run that is faster than real time never sees the queue drain, so each blocking output
+ * waits out the same lead again, guest time races ahead of the work, and the title sits in its
+ * music while its clock runs. Under the deterministic clock the queue the guest sees is the
+ * device the PSP has: it plays 44100 frames a second of GUEST time from the first push. The
+ * host mixer still plays what it is given, and its own depth is only consulted for "is there an
+ * output at all" (-1 stays -1, so a run without audio keeps its open-loop pacing). */
+static uint32_t s_vq_frames[9];
+static uint64_t s_vq_last_us[9];
+static uint64_t s_vq_carry[9];   /* microsecond-frames not yet a whole frame, denominator 1e6 */
+
+static void audio_vq_drain(uint32_t slot) {
+    uint64_t now = now_usec();
+    uint64_t dt = now > s_vq_last_us[slot] ? now - s_vq_last_us[slot] : 0u;
+    s_vq_last_us[slot] = now;
+    if (!s_vq_frames[slot]) { s_vq_carry[slot] = 0u; return; }
+    uint64_t scaled = dt * 44100u + s_vq_carry[slot];
+    uint64_t drained = scaled / 1000000u;
+    s_vq_carry[slot] = scaled % 1000000u;
+    if (drained >= s_vq_frames[slot]) { s_vq_frames[slot] = 0u; s_vq_carry[slot] = 0u; }
+    else s_vq_frames[slot] -= (uint32_t)drained;
+}
+
+/* The queue depth in frames the guest sees on `ch`, or -1 when the host has no output for it. */
+int hle_audio_queued(int ch) {
+    int host = sr_audio_queued(ch);
+    if (host < 0 || ch < 0 || ch > 8 || !sched_clock_deterministic()) return host;
+    audio_vq_drain((uint32_t)ch);
+    return s_vq_frames[ch] > (uint32_t)INT_MAX ? INT_MAX : (int)s_vq_frames[ch];
+}
+
+static void audio_vq_pushed(int ch, int nframes) {
+    if (ch < 0 || ch > 8 || nframes <= 0 || !sched_clock_deterministic()) return;
+    audio_vq_drain((uint32_t)ch);
+    uint64_t sum = (uint64_t)s_vq_frames[ch] + (uint32_t)nframes;
+    s_vq_frames[ch] = sum > UINT32_MAX ? UINT32_MAX : (uint32_t)sum;
+}
 static uint32_t s_audio_delay_carry[9];
 
 /* Convert a frame delta to microseconds without discarding the 44.1 kHz fractional carry.
@@ -252,6 +294,9 @@ void hle_audio_guest_reset(void) {
     s_audio_src_freq = 0;
     sr_audio_resampler_destroy(&s_audio_src_resampler);
     memset(s_audio_delay_carry, 0, sizeof(s_audio_delay_carry));
+    memset(s_vq_frames, 0, sizeof(s_vq_frames));
+    memset(s_vq_last_us, 0, sizeof(s_vq_last_us));
+    memset(s_vq_carry, 0, sizeof(s_vq_carry));
     memset(g_audio_bufs, 0, sizeof(g_audio_bufs));
     memset(g_audio_nbufs, 0, sizeof(g_audio_nbufs));
     s_lead_last_vbl = 0u;
@@ -312,9 +357,10 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
         psmf_av_audio_submit((int)ch, buf, bytes, mono ? 2u : 4u, 44100u);   /* queue lead read before the push */
         uint64_t out_started = sr_perf_now_ns();
         sr_audio_push((int)ch, lr, (int)n, voll, volr);
+        audio_vq_pushed((int)ch, (int)n);
         if (out_started) sr_perf_audio_output(out_started, n);
     }
-    int q = sr_audio_queued((int)ch);
+    int q = hle_audio_queued((int)ch);
     if (q < 0 || n == 0) {                 /* no host audio: open-loop pacing as before */
         sched_delay_current(n ? audio_frames_to_us(ch, n) : 1000u);
         return n;
@@ -334,7 +380,7 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
      * boundary latency a whole period of headroom while still pacing against the
      * device's real drain; n is bounded by the reserve/SetChannelDataLen
      * contracts (<= 65536 frames), so 2u * n cannot wrap. */
-    while ((q = sr_audio_queued((int)ch)) >= 0 && (uint32_t)q > 2u * n)
+    while ((q = hle_audio_queued((int)ch)) >= 0 && (uint32_t)q > 2u * n)
         sched_delay_current(audio_frames_to_us(ch, (uint32_t)q - 2u * n));
     audio_note_lead((int)ch, q);
     return n;
@@ -359,7 +405,7 @@ static uint32_t h_AudioChangeChannelConfig(CpuState *s) {
 static uint32_t h_AudioRestLen(CpuState *s) {
     (void)s;
     if (A0 >= 8u) return SCE_AUDIO_ERROR_INVALID_CH;
-    int q = sr_audio_queued((int)A0);
+    int q = hle_audio_queued((int)A0);
     return q > 0 ? (uint32_t)q : 0u;
 }
 
@@ -406,7 +452,7 @@ static uint32_t h_AudioOutput2Reserve(CpuState *s) {
 static uint32_t h_AudioOutput2Release(CpuState *s) {
     (void)s;
     if (!audio_output2_reserved()) return SCE_AUDIO_ERROR_NOT_RESERVED;
-    if (sr_audio_queued(AUDIO_OUTPUT2_CHANNEL) > 0) return SCE_AUDIO_ERROR_OUTPUT2_BUSY;
+    if (hle_audio_queued(AUDIO_OUTPUT2_CHANNEL) > 0) return SCE_AUDIO_ERROR_OUTPUT2_BUSY;
     s_audio_ch[AUDIO_OUTPUT2_CHANNEL] = 0;
     s_audio_len[AUDIO_OUTPUT2_CHANNEL] = 0;
     return 0;
@@ -426,7 +472,7 @@ static uint32_t h_AudioOutput2Blocking(CpuState *s) {
 static uint32_t h_AudioOutput2Rest(CpuState *s) {
     (void)s;
     if (!audio_output2_reserved()) return SCE_AUDIO_ERROR_NOT_RESERVED;
-    int queued = sr_audio_queued(AUDIO_OUTPUT2_CHANNEL);
+    int queued = hle_audio_queued(AUDIO_OUTPUT2_CHANNEL);
     return queued > 0 ? (uint32_t)queued : 0u;
 }
 
@@ -515,6 +561,7 @@ static uint32_t audio_src_output(CpuState *s, int owner, uint32_t vol, uint32_t 
             uint64_t out_started = sr_perf_now_ns();
             sr_audio_push(AUDIO_OUTPUT2_CHANNEL, converted, (int)converted_frames,
                           (int)vol, (int)vol);
+            audio_vq_pushed(AUDIO_OUTPUT2_CHANNEL, (int)converted_frames);
             if (out_started)
                 sr_perf_audio_output(out_started, (uint32_t)converted_frames);
         }

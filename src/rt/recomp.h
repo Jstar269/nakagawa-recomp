@@ -2209,6 +2209,9 @@ void sr_yield(CpuState *s);
  * force a premature slice expiry when the recomp-emitted yield cadence is too sparse to
  * keep the engine vblank callback chain alive (e.g. during a busy-wait on a guest latch). */
 int sr_vblank_quantum_due(void);
+/* True when guest time is deterministic (SR_DETERMINISTIC_CLOCK, #2037): a function of the guest's
+ * own work, never of the host clock. The RTC then starts at a fixed date. */
+int sched_clock_deterministic(void);
 /* f_00065c60 field-writer intercept: the container walker reads count from
  * r18+0x04 but f_0005a500's control block init puts count at r18+0x00 and
  * cursor at r18+0x04.  Since both functions are called directly (not via
