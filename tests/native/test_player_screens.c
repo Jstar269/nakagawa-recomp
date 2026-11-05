@@ -380,7 +380,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         settings.enhanced_mode = title ? "Library (Enhanced)"
                                : settings.enhanced_on ? "Enhanced" : "Authentic";
         settings.enhanced_mode_sentence =
-            title ? "Ace is Enhanced plus this game's own 60 FPS game logic."
+            title ? "Enhanced adds the parts below. Ace needs a package made for this game."
                   : "The default for every game; each game's page can choose its own.";
         settings.enhanced_row_count = 5;
         for (int i = 0; i < 5; i++) {
@@ -2791,8 +2791,8 @@ static void test_settings_pages(void) {
               strstr(dump, "For Test Game alone.") != NULL &&
               strstr(dump, "\"PLAY MODE: LIBRARY (ENHANCED)\"") != NULL &&
               strstr(dump, "\"TEXTURE FILTERING: LIBRARY (16X)\"") != NULL &&
-              strstr(dump, "Ace is Enhanced plus this game's own") != NULL &&
-              strstr(dump, "60 FPS game logic.\"") != NULL &&
+              strstr(dump, "Enhanced adds the parts below.") != NULL &&
+              strstr(dump, "made for this game.\"") != NULL &&
               strstr(dump, "\xE2\x80\xA6\"") == NULL,
           "a game's Enhanced page says whose it is and what each part follows");
     /* #2007: "Online mode" has nothing to switch yet, so the options step and the Online and

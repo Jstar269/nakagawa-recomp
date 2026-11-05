@@ -25,6 +25,7 @@
 #endif
 
 #include "player_state.h"
+#include "ace.h"
 #include "iso_reader.h"
 #include "nk_font.h"
 #include "nk_title_manifest.h"
@@ -6166,6 +6167,43 @@ static void test_play_mode_settings(void) {
         own->part[PLAYER_PART_FILTERING] = 8;
     }
 
+    /* A title that follows a library default of Authentic is Authentic: the session flag does
+       not select its 60 FPS build either (section 10.5). */
+    assert(player_app_title_play_mode(app, 2) == PLAYER_PLAY_LIBRARY);
+    app->settings.enhanced.library = PLAYER_PLAY_AUTHENTIC;
+    player_app_set_experimental_60hz_session(app, true);
+    assert(!player_app_title_60hz_on(app, 2));
+    assert(app->games[2].enhancement_package_id[0] == '\0');
+    player_play_resolve(&app->settings, "TEST90003", &r);
+    player_play_apply_logic_60(&r, app->games[2].enhancement_package_id[0] != '\0');
+    assert(!r.on && r.mode == PLAYER_PLAY_AUTHENTIC && !r.logic_60);
+    assert(player_play_launch_line(&r, line, sizeof(line)) && strcmp(line, "off") == 0);
+    player_app_set_experimental_60hz_session(app, false);
+    /* With the library on Enhanced, the session flag runs the title as Ace: its 60 FPS build,
+       and tier=ace on its line. A title with no package is not changed by it. */
+    app->settings.enhanced.library = PLAYER_PLAY_ENHANCED;
+    player_app_set_experimental_60hz_session(app, true);
+    assert(player_app_title_60hz_on(app, 2));
+    assert(strcmp(app->games[2].enhancement_package_id, "fixture-60hz") == 0);
+    player_play_resolve(&app->settings, "TEST90003", &r);
+    assert(r.mode == PLAYER_PLAY_ENHANCED && !r.logic_60);
+    player_play_apply_logic_60(&r, app->games[2].enhancement_package_id[0] != '\0');
+    assert(r.on && r.mode == PLAYER_PLAY_ACE && r.logic_60 && r.part[PLAYER_PART_SMOOTH] == 0);
+    assert(player_play_launch_line(&r, line, sizeof(line)) &&
+           strcmp(line, "v1;tier=ace;af=16;text=off;readout=on;notice=on;wide=off;"
+                        "smooth=off") == 0);
+    assert(!player_app_title_60hz_on(app, 1) && app->games[1].enhancement_package_id[0] == '\0');
+    player_app_set_experimental_60hz_session(app, false);
+    assert(app->games[2].enhancement_package_id[0] == '\0');
+    /* Ace's own off switch on a title that follows the library is an entry of its own: it is
+       kept and saved (section 10.7), and holds once the title chooses Ace. */
+    player_app_set_title_60hz(app, 1, false);
+    {
+        const PlayerTitlePlay *own = player_settings_title_play(&app->settings, "TEST90002");
+        assert(own != NULL && own->mode == PLAYER_PLAY_LIBRARY && own->logic_60 == 0);
+        for (int p = 0; p < PLAYER_PART_COUNT; p++) assert(own->part[p] == -1);
+    }
+
     /* Authentic takes the title's 60 FPS game logic off while it is chosen, not even the
        session flag turns it on. */
     player_app_cycle_title_play_mode(app, 2);                     /* library -> Authentic */
@@ -6187,6 +6225,9 @@ static void test_play_mode_settings(void) {
         assert(t0 && t0->mode == PLAYER_PLAY_LIBRARY && t0->part[PLAYER_PART_FILTERING] == 8 &&
                t0->part[PLAYER_PART_NOTICE] == 0 && t0->part[PLAYER_PART_TEXT] == -1);
         assert(t2 && t2->mode == PLAYER_PLAY_AUTHENTIC);
+        const PlayerTitlePlay *t1 = player_settings_title_play(&back->settings, "TEST90002");
+        assert(t1 && t1->mode == PLAYER_PLAY_LIBRARY && t1->logic_60 == 0 &&
+               t1->part[PLAYER_PART_FILTERING] == -1);
     }
     {
         char *saved = read_text_file(path);
@@ -6195,6 +6236,8 @@ static void test_play_mode_settings(void) {
                                       "\"notice\": \"on\", \"smooth\": \"off\"},") != NULL);
         assert(strstr(saved, "\"TEST90001\": {\"mode\": \"library\", \"af\": \"8\", "
                              "\"notice\": \"off\"}") != NULL);
+        assert(strstr(saved, "\"TEST90002\": {\"mode\": \"library\", \"logic_60\": \"off\"}")
+               != NULL);
         assert(strstr(saved, "wide") == NULL);
         /* The development builds' keys are not written again. */
         assert(strstr(saved, "\"ace\"") == NULL && strstr(saved, "ace_titles") == NULL &&
@@ -6376,6 +6419,79 @@ static void test_play_mode_smooth_motion(void) {
     /* The line fits the runtime's buffer (src/rt/ace.h ACE_SPEC_MAX 192) with room to spare. */
     assert(strlen(line) < 96u);
     assert(!player_play_launch_line(&r, line, 20u) && line[0] == '\0');
+    /* An Authentic resolution stays off, whatever the 60 FPS game logic says. */
+    settings.enhanced.library = PLAYER_PLAY_AUTHENTIC;
+    player_play_resolve(&settings, "TEST90001", &r);
+    player_play_apply_logic_60(&r, true);
+    assert(!r.on && r.mode == PLAYER_PLAY_AUTHENTIC && !r.logic_60);
+    assert(player_play_launch_line(&r, line, sizeof(line)) && strcmp(line, "off") == 0);
+}
+
+/* Checks one resolution's launch line with the runtime's own parser (src/rt/ace.c): accepted,
+ * with the tier and every part's value the player resolved, and written in the runtime's own
+ * canonical form. */
+static void expect_line_parses_in_runtime(const PlayerPlayResolved *r) {
+    char line[ACE_SPEC_MAX], canonical[ACE_SPEC_MAX], why[64];
+    AceConfig c;
+    assert(player_play_launch_line(r, line, sizeof(line)));
+    if (ace_parse(line, &c, why, sizeof(why)) != 1) {
+        fprintf(stderr, "the runtime refuses the player's line '%s' (%s)\n", line, why);
+        assert(!"the player's launch line is the runtime's");
+    }
+    assert(c.on == (r->on ? 1 : 0));
+    if (!r->on) return;
+    assert(c.tier == (r->mode == PLAYER_PLAY_ACE ? ACE_TIER_ACE : ACE_TIER_ENHANCED));
+    assert(c.af == r->part[PLAYER_PART_FILTERING]);
+    assert(c.text == r->part[PLAYER_PART_TEXT]);
+    assert(c.readout == r->part[PLAYER_PART_READOUT]);
+    assert(c.notice == r->part[PLAYER_PART_NOTICE]);
+    assert(c.wide == ACE_WIDE_OFF);
+    assert(c.smooth == (r->part[PLAYER_PART_SMOOTH] ? ACE_SMOOTH_X2 : ACE_SMOOTH_OFF));
+    assert(ace_format(&c, canonical, sizeof(canonical)) && strcmp(canonical, line) == 0);
+}
+
+/* The player and the runtime agree on the launch line (#2055, section 10.1): for Authentic,
+ * Enhanced and Ace, with each part at each of its values, every part off, and Ace with and
+ * without its 60 FPS game logic, the line the player writes is the line the runtime accepts. */
+static void test_play_mode_line_parses_in_runtime(void) {
+    PlayerSettings settings;
+    PlayerPlayResolved r;
+    player_app_settings_init_default(&settings);
+    player_play_resolve(&settings, "TEST93001", &r);
+    assert(!r.on);
+    expect_line_parses_in_runtime(&r);
+    static const PlayerPlayMode modes[] = {PLAYER_PLAY_ENHANCED, PLAYER_PLAY_ACE};
+    for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+        PlayerTitlePlay *own = &settings.title_play[0];
+        memset(own, 0, sizeof(*own));
+        memcpy(own->key, "TEST93001", sizeof("TEST93001"));       /* the normalised key */
+        own->mode = modes[m];
+        for (int p = 0; p < PLAYER_PART_COUNT; p++) own->part[p] = -1;
+        own->logic_60 = -1;
+        settings.title_play_count = 1;
+        assert(player_settings_title_play(&settings, "test93001") == own);
+        for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+            const PlayerEnhancedPartInfo *info = player_enhanced_part(p);
+            for (int i = 0; i < info->value_count; i++) {
+                own->part[p] = info->values[i];
+                for (int logic = 0; logic < 2; logic++) {
+                    player_play_resolve(&settings, "TEST93001", &r);
+                    assert(r.on && r.mode == modes[m]);
+                    player_play_apply_logic_60(&r, logic != 0);
+                    expect_line_parses_in_runtime(&r);
+                }
+            }
+            own->part[p] = -1;
+        }
+        for (int p = 0; p < PLAYER_PART_COUNT; p++) own->part[p] = 0;  /* every part off */
+        player_play_resolve(&settings, "TEST93001", &r);
+        expect_line_parses_in_runtime(&r);
+        own->mode = PLAYER_PLAY_AUTHENTIC;                            /* the title's Authentic */
+        player_play_resolve(&settings, "TEST93001", &r);
+        assert(!r.on);
+        expect_line_parses_in_runtime(&r);
+    }
+    printf("[PLAYER_STATE_TEST] play mode lines parse in the runtime PASSED\n");
 }
 
 /* Settings > Enhanced opened from a title (#2055): the page's rows act on that title, Back
@@ -6412,6 +6528,62 @@ static void test_play_mode_title_page(void) {
     assert(player_app_enhanced_page_title(app) == -1);
     player_app_open_title_enhanced(app, 5);                       /* no such title */
     assert(player_app_enhanced_page_title(app) == -1);
+
+    /* The page holds its game by disc. The list in another order: the page follows its game.
+       Its game gone: a press closes the page, back to the library, and changes neither another
+       game nor the library's defaults; a re-sync that no longer lists it closes the page too. */
+    {
+        PlayerSettings *before = (PlayerSettings *)malloc(sizeof(PlayerSettings));
+        assert(before);
+        app->game_count = 3;
+        snprintf(app->games[2].disc_id, sizeof(app->games[2].disc_id), "TEST92003");
+        player_app_open_title_enhanced(app, 1);                   /* TEST92002 */
+        GameRecord moved = app->games[0];
+        app->games[0] = app->games[1];
+        app->games[1] = moved;                                    /* TEST92002 is first now */
+        assert(player_app_enhanced_page_title(app) == 0);
+        player_app_enhanced_page_cycle_part(app, PLAYER_PART_READOUT);
+        assert(player_app_title_part(app, 0, PLAYER_PART_READOUT) == 1);
+        assert(player_settings_title_play(&app->settings, "TEST92001") == NULL);
+        app->games[0] = app->games[2];                            /* TEST92002 gone */
+        app->game_count = 2;                                      /* TEST92003, TEST92001 */
+        assert(app->active_view == VIEW_ACE_SETTINGS && player_app_enhanced_page_title(app) == -1);
+        memcpy(before, &app->settings, sizeof(*before));
+        player_app_enhanced_page_cycle_part(app, PLAYER_PART_TEXT);
+        assert(memcmp(before, &app->settings, sizeof(*before)) == 0);
+        assert(app->active_view == VIEW_LIBRARY);
+        player_app_set_view(app, VIEW_ACE_SETTINGS);              /* the gone game's page again */
+        memcpy(app->enhanced_page_disc, "TEST92002", sizeof("TEST92002"));
+        player_app_enhanced_page_cycle_mode(app);
+        assert(memcmp(before, &app->settings, sizeof(*before)) == 0);
+        assert(app->active_view == VIEW_LIBRARY);
+
+        NkGameEntry entry;
+        nk_library_init(&app->library);
+        seed_entry(&entry, "TEST92001", "First");
+        assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
+        seed_entry(&entry, "TEST92002", "Second");
+        assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
+        player_app_sync_library(app);
+        int second = -1;
+        for (int i = 0; i < app->game_count; i++) {
+            if (strcmp(app->games[i].disc_id, "TEST92002") == 0) second = i;
+        }
+        assert(second >= 0);
+        player_app_open_title_enhanced(app, second);
+        player_app_sync_library(app);                             /* still listed: stays open */
+        assert(app->active_view == VIEW_ACE_SETTINGS && player_app_enhanced_page_title(app) >= 0);
+        for (int i = 0; i < app->library.count; i++) {            /* TEST92002 removed */
+            if (strcmp(app->library.entries[i].disc_id, "TEST92002") == 0) {
+                app->library.entries[i] = app->library.entries[--app->library.count];
+                break;
+            }
+        }
+        player_app_sync_library(app);
+        assert(app->active_view == VIEW_LIBRARY && player_app_enhanced_page_title(app) == -1);
+        assert(app->enhanced_page_disc[0] == '\0');
+        free(before);
+    }
     free(app);
 }
 
@@ -6685,6 +6857,7 @@ int main(int argc, char **argv) {
     test_play_mode_settings();
     test_play_mode_settings_mapping();
     test_play_mode_smooth_motion();
+    test_play_mode_line_parses_in_runtime();
     test_play_mode_title_page();
     /* Saves a library file under the cache root, so it runs only once that
      * root is the temporary one. */
@@ -9325,7 +9498,12 @@ int main(int argc, char **argv) {
                 (void)test_rmdir(packages_dir);
             }
 
-            /* The session flag: every title with a package, and never saved. */
+            /* The session flag: every title with a package that does not resolve to
+               Authentic, and never saved. With the library's default Authentic it selects
+               nothing (docs/ENHANCEMENT_CONTRACT.md section 10.5); on Enhanced, it does. */
+            player_app_set_experimental_60hz_session(x_app, true);
+            assert(x_app->games[0].enhancement_package_id[0] == '\0');
+            x_app->settings.enhanced.library = PLAYER_PLAY_ENHANCED;
             player_app_set_experimental_60hz_session(x_app, true);
             assert(strcmp(x_app->games[0].enhancement_package_id, "fixture-60hz") == 0);
             assert(x_app->games[1].enhancement_package_id[0] == '\0');
@@ -9338,6 +9516,7 @@ int main(int argc, char **argv) {
             assert(x_reload->settings.title_play_count == 0);
             player_app_set_experimental_60hz_session(x_app, false);
             assert(x_app->games[0].enhancement_package_id[0] == '\0');
+            x_app->settings.enhanced.library = PLAYER_PLAY_AUTHENTIC;
 
             /* The per-title switch: Ace with its 60 FPS game logic, saved,
                round-tripped, and it selects the enhanced build for that title only. */

@@ -207,6 +207,8 @@ struct PlayerUiNk {
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     bool icon_reported[PLAYER_UI_TITLE_CAP];
     char status_reported[PLAYER_UI_TITLE_CAP][32]; /* the status word last printed */
+    char play_reported[PLAYER_UI_TITLE_CAP][16];   /* the play mode badge last printed */
+    char enhanced_reported[512];                    /* Settings > Enhanced as last printed */
     int disc_reported_view;  /* the game-found card whose rows were printed, or -1 */
 #endif
     bool ready;
@@ -778,6 +780,9 @@ static double player_ui_display_refresh_hz(SDL_Window *window) {
 
 typedef char player_ui_enhanced_rows_fit[PLAYER_PART_COUNT <= PLAYER_UI_ENHANCED_ROWS ? 1 : -1];
 
+/* Why a title offers no Ace: it has no usable package of its own (#2055). */
+#define PLAYER_UI_ACE_NEEDS_PACKAGE "Ace needs a package made for this game."
+
 /* Settings > Enhanced (#2055): the library's page, or one title's
    (player_app_open_title_enhanced). One row per part from player_enhanced_part(), so a new
    part needs no change here. */
@@ -810,7 +815,7 @@ static void player_ui_fill_enhanced(PlayerUiNk *player, const PlayerApp *app,
         }
         model->enhanced_mode_sentence = app->title_enhancements[title].available
             ? "Ace is Enhanced plus this game's own 60 FPS game logic."
-            : "Authentic is the game as released; Enhanced adds the parts below.";
+            : "Enhanced adds the parts below. " PLAYER_UI_ACE_NEEDS_PACKAGE;
     }
     model->enhanced_row_count = 0;
     for (int p = 0; p < PLAYER_PART_COUNT; p++) {
@@ -833,6 +838,24 @@ static void player_ui_fill_enhanced(PlayerUiNk *player, const PlayerApp *app,
             }
         }
     }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    {
+        /* Whose page it is, its play mode and each row's value, as drawn; printed on change. */
+        char line[sizeof(player->enhanced_reported)];
+        int used = snprintf(line, sizeof(line), "title=%s|mode=%s|sentence=%s",
+                            title >= 0 ? app->games[title].disc_id : "library",
+                            model->enhanced_mode, model->enhanced_mode_sentence);
+        for (int p = 0; p < (int)model->enhanced_row_count && used > 0 &&
+                        (size_t)used < sizeof(line); p++) {
+            used += snprintf(line + used, sizeof(line) - (size_t)used, "|%s=%s",
+                             player_enhanced_part(p)->key, model->enhanced_rows[p].value);
+        }
+        if (strcmp(line, player->enhanced_reported) != 0) {
+            snprintf(player->enhanced_reported, sizeof(player->enhanced_reported), "%s", line);
+            printf("[PLAYER_UI_TEST] next_ui_enhanced_page %s\n", line);
+        }
+    }
+#endif
 }
 
 /* The Settings pages' model, from the settings the existing renderer shows. */
@@ -1871,6 +1894,20 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
     out->play_badge = out->is_demo ? NULL
                     : play.mode == PLAYER_PLAY_ACE ? "Ace"
                     : play.mode == PLAYER_PLAY_ENHANCED ? "Enhanced" : NULL;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (index >= 0 && index < PLAYER_UI_TITLE_CAP) {
+        /* The library card's badge and the title's own choice, printed when either changes. */
+        char reported[sizeof(player->play_reported[0])];
+        const char *badge = out->play_badge != NULL ? out->play_badge : "none";
+        snprintf(reported, sizeof(reported), "%s|%d", badge, (int)play.chosen);
+        if (strcmp(player->play_reported[index], reported) != 0) {
+            snprintf(player->play_reported[index], sizeof(player->play_reported[index]), "%s",
+                     reported);
+            printf("[PLAYER_UI_TEST] next_ui_play_badge index=%d disc=%s badge=%s chosen=%s\n",
+                   index, game->disc_id, badge, player_play_mode_name(play.chosen));
+        }
+    }
+#endif
     switch (play.chosen) {
         case PLAYER_PLAY_AUTHENTIC: out->ace_label = "Play mode: Authentic"; break;
         case PLAYER_PLAY_ENHANCED: out->ace_label = "Play mode: Enhanced"; break;
@@ -1887,9 +1924,9 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
     out->options_enabled = out->ace_enabled;
     out->ace_line = "";
     out->ace_last_session = "";
-    /* The 60 FPS switch is Ace's own part: it shows while Ace is in effect (or the session flag
-       turns it on outside Authentic). Authentic is the game as released, with no 60 FPS game
-       logic. */
+    /* The 60 FPS switch is Ace's own part: it shows while Ace is in effect (the session flag
+       makes a title on Enhanced with a usable package run as Ace). Authentic is the game as
+       released, with no 60 FPS game logic. */
     if (play.mode == PLAYER_PLAY_AUTHENTIC) {
         out->enhancement_shown = false;
         out->enhancement_enabled = false;

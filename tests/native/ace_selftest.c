@@ -44,6 +44,29 @@ static void cell_parse(void) {
     CHECK(ace_parse("v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;tier=ace", &c,
                     why, sizeof(why)) == 1 && c.on && c.tier == ACE_TIER_ACE,
           "tier=ace names an Ace run");
+    /* Every key but tier is required, whatever its place: leaving out any one of them refuses
+       the line, leaving out tier does not (src/rt/ace.c names the required keys one by one). */
+    {
+        static const char *const fields[] = { "tier=ace", "af=16", "text=on", "readout=off",
+                                              "notice=on", "wide=off", "smooth=off" };
+        enum { FIELDS = (int)(sizeof(fields) / sizeof(fields[0])) };
+        for (int skip = 0; skip < FIELDS; skip++) {
+            char spec[ACE_SPEC_MAX] = "v1";
+            for (int i = 0; i < FIELDS; i++) {
+                if (i == skip) continue;
+                strncat(spec, ";", sizeof(spec) - strlen(spec) - 1u);
+                strncat(spec, fields[i], sizeof(spec) - strlen(spec) - 1u);
+            }
+            int ok = ace_parse(spec, &c, why, sizeof(why));
+            if (skip == 0) {
+                CHECK(ok == 1 && c.on && c.tier == ACE_TIER_ENHANCED,
+                      "a line without tier parses as Enhanced (%s)", why);
+            } else {
+                CHECK(ok == 0 && strcmp(why, "missing key") == 0,
+                      "a line without %s is refused as a missing key ('%s')", fields[skip], why);
+            }
+        }
+    }
 
     static const struct { const char *spec; const char *why; } refused[] = {
         { NULL, "unset" },

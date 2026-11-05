@@ -684,6 +684,8 @@ void player_app_sync_library(PlayerApp *app) {
        older Nakagawa built is read again (package.json only; the player's own
        identity is kept for the session). */
     app->outdated.scan_requested = true;
+    /* A title's Settings > Enhanced holds its game by disc: the game gone, the page closes. */
+    player_app_close_enhanced_page_if_title_gone(app);
 }
 
 bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming) {
@@ -2918,9 +2920,11 @@ bool player_app_title_60hz_saved(const PlayerApp *app, const char *disc_id) {
 
 bool player_app_title_60hz_on(const PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
-    /* Authentic is the game as released: no 60 FPS game logic while it is chosen, not even
-       from the session flag. */
-    if (player_app_title_play_mode(app, game_index) == PLAYER_PLAY_AUTHENTIC) return false;
+    /* Authentic is the game as released: no 60 FPS game logic while the title resolves to it,
+       by its own choice or the library's, not even from the session flag. */
+    PlayerPlayResolved play;
+    player_play_resolve(&app->settings, app->games[game_index].disc_id, &play);
+    if (play.mode == PLAYER_PLAY_AUTHENTIC) return false;
     return player_app_title_60hz_saved(app, app->games[game_index].disc_id) ||
            (app->experimental_60hz_session &&
             app->title_enhancements[game_index].available);
@@ -3029,7 +3033,12 @@ void player_play_resolve(const PlayerSettings *settings, const char *disc_id,
 }
 
 void player_play_apply_logic_60(PlayerPlayResolved *play, bool logic_60) {
-    if (play && logic_60) play->part[PLAYER_PART_SMOOTH] = 0;
+    if (!play || !logic_60 || !play->on) return;
+    /* A run with its 60 FPS game logic is Ace, also when the session flag turned it on for a
+       title on Enhanced; interpolation is refused with it (#1272). */
+    play->mode = PLAYER_PLAY_ACE;
+    play->logic_60 = true;
+    play->part[PLAYER_PART_SMOOTH] = 0;
 }
 
 bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t cap) {
@@ -3198,35 +3207,57 @@ void player_app_cycle_title_part(PlayerApp *app, int game_index, int part) {
 
 void player_app_open_title_enhanced(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return;
+    /* The page holds the game by its disc, not by its place in the list. */
+    char key[PLAYER_DISC_ID_KEY_LEN];
+    if (!player_disc_id_key(app->games[game_index].disc_id, key)) return;
     player_app_set_view(app, VIEW_ACE_SETTINGS);
-    app->enhanced_page_title = game_index + 1;
+    memcpy(app->enhanced_page_disc, key, sizeof(key));
+}
+
+/* The page is a title's (whether or not its game is still listed). */
+static bool player_app_enhanced_page_is_title(const PlayerApp *app) {
+    return app && app->active_view == VIEW_ACE_SETTINGS && app->enhanced_page_disc[0] != '\0';
 }
 
 int player_app_enhanced_page_title(const PlayerApp *app) {
-    if (!app || app->active_view != VIEW_ACE_SETTINGS || app->enhanced_page_title <= 0 ||
-        app->enhanced_page_title > app->game_count) {
-        return -1;
+    if (!player_app_enhanced_page_is_title(app)) return -1;
+    for (int i = 0; i < app->game_count; i++) {
+        char key[PLAYER_DISC_ID_KEY_LEN];
+        if (player_disc_id_key(app->games[i].disc_id, key) &&
+            strcmp(key, app->enhanced_page_disc) == 0) {
+            return i;
+        }
     }
-    return app->enhanced_page_title - 1;
+    return -1;
 }
 
 void player_app_close_enhanced_page(PlayerApp *app) {
     if (!app) return;
     /* The title page is still the library's screen under Settings: the library view shows it
        again, with the Enhanced options button focused. */
-    player_app_set_view(app, player_app_enhanced_page_title(app) >= 0 ? VIEW_LIBRARY
-                                                                      : VIEW_SETTINGS);
+    player_app_set_view(app, player_app_enhanced_page_is_title(app) ? VIEW_LIBRARY
+                                                                    : VIEW_SETTINGS);
 }
 
+void player_app_close_enhanced_page_if_title_gone(PlayerApp *app) {
+    if (player_app_enhanced_page_is_title(app) && player_app_enhanced_page_title(app) < 0) {
+        player_app_close_enhanced_page(app);
+    }
+}
+
+/* A title's page whose game is gone changes nothing: it closes, back to the library, and the
+   press reaches neither another game nor the library's defaults. */
 void player_app_enhanced_page_cycle_mode(PlayerApp *app) {
     int title = player_app_enhanced_page_title(app);
     if (title >= 0) player_app_cycle_title_play_mode(app, title);
+    else if (player_app_enhanced_page_is_title(app)) player_app_close_enhanced_page(app);
     else player_app_toggle_library_play_mode(app);
 }
 
 void player_app_enhanced_page_cycle_part(PlayerApp *app, int part) {
     int title = player_app_enhanced_page_title(app);
     if (title >= 0) player_app_cycle_title_part(app, title, part);
+    else if (player_app_enhanced_page_is_title(app)) player_app_close_enhanced_page(app);
     else player_app_cycle_enhanced_part(app, part);
 }
 
@@ -3794,7 +3825,7 @@ void player_app_set_view(PlayerApp *app, PlayerView view) {
     if (view == VIEW_LIBRARY && app->drop_notice[0] && app->drop_next >= app->drop_count) {
         app->drop_notice_visible = true;
     }
-    if (view != VIEW_ACE_SETTINGS) app->enhanced_page_title = 0;
+    if (view != VIEW_ACE_SETTINGS) app->enhanced_page_disc[0] = '\0';
     app->active_view = view;
     app->focus_index = 0;
 }

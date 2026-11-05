@@ -306,7 +306,7 @@ typedef struct {
     /* The play modes (#2055): "enhanced" and the sparse "title_play" in settings.json,
        additions to schema version 2 as text_size is. A file without them is read from the
        development builds' "ace", "ace_titles" and "enhancement_60hz_discs"
-       (docs/ENHANCEMENT_CONTRACT.md section 10.6). A title in Ace launches its enhanced
+       (docs/ENHANCEMENT_CONTRACT.md section 10.7). A title in Ace launches its enhanced
        build, packages/<disc_id>-enhanced-<id> (section 9), unless its 60 FPS game logic is
        turned off. */
     PlayerEnhancedSettings enhanced;
@@ -892,12 +892,14 @@ struct PlayerApp {
     /* Settings persistence */
     char settings_path[MAX_PATH_LEN];
     /* --experimental-60hz on the command line: for this session every title that
-       has an enhancement package launches its enhanced build. Never saved with
-       the settings. */
+       has an enhancement package and does not resolve to Authentic launches its
+       enhanced build, as Ace. Never saved with the settings. */
     bool experimental_60hz_session;
     /* Settings > Enhanced opened from a title's page (player_app_open_title_enhanced): that
-       game's index + 1; 0 for the library's page. Any other view clears it. */
-    int enhanced_page_title;
+       game's normalised disc key, so a re-sync that reorders the games cannot point the page at
+       another game; empty for the library's page. Any other view clears it, and a re-sync that
+       no longer lists the game closes the page. */
+    char enhanced_page_disc[PLAYER_DISC_ID_KEY_LEN];
     char settings_notice[128];
     /* The operating system's display preferences, as player_app_read_system_preferences
        last read them: what an AUTO accessibility choice follows. */
@@ -1477,8 +1479,8 @@ bool player_read_title_enhancement(const char *user_root, const GameRecord *game
 void player_app_refresh_title_enhancements(PlayerApp *app);
 /* The disc's saved choice asks for its 60 FPS game logic: Ace, with that part on. */
 bool player_app_title_60hz_saved(const PlayerApp *app, const char *disc_id);
-/* The title's 60 FPS game logic is on: saved, or the session flag (never while Authentic is
- * chosen for it). */
+/* The title's 60 FPS game logic is on: saved, or the session flag for a title with a usable
+ * package. Never while the title resolves to Authentic, by its own choice or the library's. */
 bool player_app_title_60hz_on(const PlayerApp *app, int game_index);
 /* Saved on, but the title has no usable enhancement package: nothing launches
  * or builds until the package is back, or Ace or its 60 FPS game logic is turned off. */
@@ -1508,10 +1510,11 @@ const PlayerTitlePlay *player_settings_title_play(const PlayerSettings *settings
  * off for it. A part value the build does not know reads as off. */
 void player_play_resolve(const PlayerSettings *settings, const char *disc_id,
                          PlayerPlayResolved *out);
-/* True 60 Hz game logic and smooth motion are refused together, not stacked (#1272): a title
- * that launches its enhanced 60 FPS build (GameRecord.enhancement_package_id set) calls this
- * with logic_60 true, and smooth motion is off for that launch whatever the settings say.
- * The other parts are untouched. */
+/* A title that launches its enhanced 60 FPS build (GameRecord.enhancement_package_id set) calls
+ * this with logic_60 true. An Enhanced or Ace launch then runs as Ace with its 60 FPS game logic
+ * (the session flag on a title on Enhanced included), and smooth motion is off for it whatever
+ * the settings say: true 60 Hz game logic and interpolation are refused together, not stacked
+ * (#1272). The other parts are untouched, and an Authentic resolution stays off. */
 void player_play_apply_logic_60(PlayerPlayResolved *play, bool logic_60);
 /* The SR_ACE line for a resolution: "off", or "v1;tier=enhanced;af=16;text=on;readout=off;
  * notice=on;wide=off;smooth=off" (tier=ace for Ace; wide is always off, and smooth=match is
@@ -1540,17 +1543,21 @@ int player_app_title_part(const PlayerApp *app, int game_index, int part);
  * out empty, when there is none. */
 bool player_app_ace_last_session(const PlayerApp *app, int game_index, char *out, size_t cap);
 /* Settings > Enhanced for one title (its page's Enhanced options): the same page, with the
- * title's play mode and its own value for each part. */
+ * title's play mode and its own value for each part. The page holds the game by its disc. */
 void player_app_open_title_enhanced(PlayerApp *app, int game_index);
-/* The title Settings > Enhanced shows, or -1 for the library's page (or another view). */
+/* The index of the game whose Settings > Enhanced is shown, found again by its disc; -1 for the
+ * library's page, another view, or a title's page whose game is no longer listed. */
 int player_app_enhanced_page_title(const PlayerApp *app);
-/* Leaves Settings > Enhanced: back to the title it was opened for, else to Settings. */
+/* Leaves Settings > Enhanced: back to the library's title page when it is a title's page,
+ * else to Settings. */
 void player_app_close_enhanced_page(PlayerApp *app);
+/* After the library is read again: a title's page whose game is no longer listed closes. */
+void player_app_close_enhanced_page_if_title_gone(PlayerApp *app);
 /* Settings > Enhanced's play mode row: the title's choice on a title's page, else the
- * library's default. */
+ * library's default. On a title's page whose game is gone, it closes the page instead. */
 void player_app_enhanced_page_cycle_mode(PlayerApp *app);
 /* Settings > Enhanced's row for `part`: the title's value on a title's page, else the
- * library's. */
+ * library's. On a title's page whose game is gone, it closes the page instead. */
 void player_app_enhanced_page_cycle_part(PlayerApp *app, int part);
 void player_app_toggle_share_system_libraries(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);

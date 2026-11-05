@@ -234,6 +234,8 @@ class NativeHostBackendTests(unittest.TestCase):
         cls._objects["src/player/setup_staging.c"] = _compile_object(
             cls, "src/player/setup_staging.c", "setup_staging.o", ("-Isrc/player",)
         )
+        # The player's launch line is checked against the runtime's own parser (#2055).
+        cls._objects["src/rt/ace.c"] = _compile_object(cls, "src/rt/ace.c", "ace.o")
         harnesses = {
             "tests/native/test_launch_resolution.c": (),
             "tests/native/test_player_state.c": ("-Isrc/player",),
@@ -275,6 +277,7 @@ class NativeHostBackendTests(unittest.TestCase):
                 "src/player/iso_reader.c",
                 "src/player/package_builder.c",
                 "src/player/setup_staging.c",
+                "src/rt/ace.c",
             ),
             extra_runs=(
                 ("--validate-package", runtime_root, "ULUS99998", "SYNTH00001", "1",
