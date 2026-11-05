@@ -33,13 +33,14 @@ name: Trusted CI verdict
 # purpose: the required context is the commit status alone, and the verifier
 # refuses any check run that uses the status's name.
 #
-# Re-triggers: a new head, a change of the ci-change-approved label, and the
-# completion of each workflow that produces an intended context. Other label
-# changes and the draft/ready transition start no verdict job: the verifier
-# reads only that label and never the draft state. The provenance attestation
-# workflow is not listed by name here (its verifier reserves that name in every
-# other workflow), so when it is the last to finish, dispatch this workflow by
-# hand (docs/CI.md, "Trusted CI verdict").
+# Re-triggers: a new head, a label change, and the completion of each workflow
+# that produces an intended context. The draft/ready transition is not one: the
+# verifier never reads the draft state. Every label event re-judges, whatever
+# the label: a newer run in this head's concurrency group replaces a pending
+# one, so a run that judged nothing could leave an older verdict standing. The
+# provenance attestation workflow is not listed by name here (its verifier
+# reserves that name in every other workflow), so when it is the last to
+# finish, dispatch this workflow by hand (docs/CI.md, "Trusted CI verdict").
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -190,17 +191,12 @@ jobs:
     # Only heads proposed for the default branch, which is the only branch the
     # ruleset protects. workflow_run runs of push or schedule events have no
     # pull request to judge; the verifier also finds none and posts nothing.
-    # A label event re-judges only when it is the ci-change-approved label.
     if: >-
       ${{ always() &&
           (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
           (needs.approval_record.result == 'success' || needs.approval_record.result == 'skipped') &&
           ((github.event_name == 'pull_request_target' &&
-            github.event.pull_request.base.ref == github.event.repository.default_branch &&
-            (github.event.action == 'opened' || github.event.action == 'synchronize' ||
-             github.event.action == 'reopened' ||
-             ((github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
-              github.event.label.name == 'ci-change-approved'))) ||
+            github.event.pull_request.base.ref == github.event.repository.default_branch) ||
            (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request') ||
            github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-26.04

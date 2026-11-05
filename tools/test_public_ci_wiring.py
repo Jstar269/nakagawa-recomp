@@ -1863,8 +1863,9 @@ def _actions_eval(expression: str, context: dict[str, object]) -> bool:
 
     Supported: ``||``, ``&&``, ``!``, ``==``, ``!=``, parentheses, single-quoted strings,
     context paths (a missing or null step reads as null), ``startsWith`` and ``always``.
-    As in Actions, string comparison ignores case, null equals only null, and
-    ``startsWith`` reads null as the empty string.
+    As in Actions, ``!`` binds tighter than ``==`` and ``!=``, two strings compare without
+    case, operands of different types compare as numbers (null and '' are 0, a non-numeric
+    string is NaN), and ``startsWith`` reads null as the empty string.
     """
     tokens: list[str] = []
     position = 0
@@ -1896,12 +1897,27 @@ def _actions_eval(expression: str, context: dict[str, object]) -> bool:
             value = value.get(part) if isinstance(value, dict) else None
         return value
 
+    def number(value: object) -> float:
+        if value is None:
+            return 0.0
+        if isinstance(value, bool):
+            return float(value)
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).strip()
+        if not text:
+            return 0.0
+        try:
+            return float(text)
+        except ValueError:
+            return float("nan")
+
     def equal(left: object, right: object) -> bool:
         if isinstance(left, str) and isinstance(right, str):
             return left.casefold() == right.casefold()
-        if left is None or right is None:
-            return left is None and right is None
-        return left == right
+        if type(left) is type(right):
+            return left == right
+        return number(left) == number(right)
 
     def primary() -> object:
         token = take()
@@ -1927,25 +1943,25 @@ def _actions_eval(expression: str, context: dict[str, object]) -> bool:
             raise AssertionError(f"unsupported function {token}")
         return lookup(token)
 
-    def comparison() -> object:
-        left = primary()
-        if peek() in ("==", "!="):
-            operator = take()
-            right = primary()
-            return equal(left, right) == (operator == "==")
-        return left
-
     def negation() -> object:
         if peek() == "!":
             take("!")
             return not truthy(negation())
-        return comparison()
+        return primary()
+
+    def comparison() -> object:
+        left = negation()
+        if peek() in ("==", "!="):
+            operator = take()
+            right = negation()
+            return equal(left, right) == (operator == "==")
+        return left
 
     def conjunction() -> object:
-        value = negation()
+        value = comparison()
         while peek() == "&&":
             take("&&")
-            right = negation()
+            right = comparison()
             value = right if truthy(value) else value
         return value
 
@@ -1965,6 +1981,27 @@ def _actions_eval(expression: str, context: dict[str, object]) -> bool:
 
 #: This repository, as ``github.repository`` names it.
 THIS_REPOSITORY = "Jstar269/nakagawa-recomp"
+
+
+class ActionsExpressionEvaluatorTests(unittest.TestCase):
+    """The guard tests below are only as good as the evaluator's Actions semantics."""
+
+    def test_not_binds_tighter_than_equality(self) -> None:
+        context = {"github": {"value": "y"}}
+        # Actions reads (!'y') == 'x', that is false == 'x', which is false.
+        self.assertFalse(_actions_eval("!github.value == 'x'", context))
+        self.assertTrue(_actions_eval("!(github.value == 'x')", context))
+
+    def test_null_equals_the_empty_string_as_in_actions(self) -> None:
+        context = {"github": {"empty": ""}}
+        self.assertTrue(_actions_eval("github.missing == ''", context))
+        self.assertTrue(_actions_eval("github.missing == github.empty", context))
+        self.assertFalse(_actions_eval("github.missing == 'batch/'", context))
+        self.assertFalse(_actions_eval("github.missing != ''", context))
+
+    def test_strings_compare_without_case(self) -> None:
+        self.assertTrue(_actions_eval("github.repository == 'jstar269/NAKAGAWA-recomp'",
+                                      {"github": {"repository": THIS_REPOSITORY}}))
 
 
 class BatchOnlyCodeqlGuardTests(unittest.TestCase):
@@ -1996,6 +2033,18 @@ class BatchOnlyCodeqlGuardTests(unittest.TestCase):
             "event": {"workflow_run": {"event": event, "head_branch": branch,
                                        "head_repository": head_repository}},
         }}
+
+    def test_a_dispatched_run_is_titled_with_its_pull_request(self) -> None:
+        text = _workflow_text("codeql.yml")
+        header = text[:text.index("\non:\n")]
+        self.assertEqual(header.splitlines()[0], "name: Trusted CodeQL")
+        self.assertEqual(
+            [line for line in header.splitlines() if line.startswith("run-name:")],
+            ["run-name: \"${{ github.event_name == 'workflow_dispatch' && "
+             "format('Trusted CodeQL (PR #{0})', inputs.pull_request_number) || 'Trusted CodeQL' }}\""],
+        )
+        # The input the title names is the dispatch input prepare resolves.
+        self.assertIn("      pull_request_number:\n", text)
 
     def test_prepare_guard_text_is_pinned(self) -> None:
         self.assertEqual("\n".join(self.blocks["prepare"]).count("\n".join(self.PREPARE_IF)), 1)
@@ -2076,10 +2125,12 @@ class BatchOnlyCodeqlWakeTests(unittest.TestCase):
 
 
 class TrustedVerdictTriggerTests(unittest.TestCase):
-    """The verdict re-judges on a new head and on the approval label only.
+    """The verdict re-judges on a new head and on every label event, but not on ready_for_review.
 
-    tools/ci_trust_verdict.py reads that one label and never the draft state, so a
-    ready_for_review or any other label event could only repeat the same verdict.
+    tools/ci_trust_verdict.py never reads the draft state, so ready_for_review could only
+    repeat the same verdict. Every label event still re-judges, whatever the label: a newer
+    run in the head's concurrency group replaces a pending one, so a run that skipped the
+    verdict could leave a stale one standing.
     """
 
     NEEDS = {"approval": {"result": "skipped"}, "approval_record": {"result": "skipped"}}
@@ -2107,16 +2158,17 @@ class TrustedVerdictTriggerTests(unittest.TestCase):
         verifier = (ROOT / "tools" / "ci_trust_verdict.py").read_text(encoding="utf-8")
         self.assertNotIn("draft", verifier.lower())
 
-    def test_new_heads_and_approval_label_changes_run_the_verdict(self) -> None:
-        for action, label in (("opened", None), ("synchronize", None), ("reopened", None),
-                              ("labeled", "ci-change-approved"), ("unlabeled", "ci-change-approved")):
-            with self.subTest(action=action, label=label):
-                self.assertTrue(_actions_eval(self.guard, self._target(action, label)))
-
-    def test_other_label_changes_do_not_run_the_verdict(self) -> None:
-        for action in ("labeled", "unlabeled"):
+    def test_new_heads_run_the_verdict(self) -> None:
+        for action in ("opened", "synchronize", "reopened"):
             with self.subTest(action=action):
-                self.assertFalse(_actions_eval(self.guard, self._target(action, "documentation")))
+                self.assertTrue(_actions_eval(self.guard, self._target(action)))
+
+    def test_a_labeled_or_unlabeled_event_with_any_label_name_runs_the_verdict(self) -> None:
+        self.assertNotIn("github.event.label.name", "\n".join(_workflow_job_blocks("ci-trust-verdict.yml")["verdict"]))
+        for action in ("labeled", "unlabeled"):
+            for label in ("ci-change-approved", "documentation", "batch"):
+                with self.subTest(action=action, label=label):
+                    self.assertTrue(_actions_eval(self.guard, self._target(action, label)))
 
     def test_a_head_for_another_base_branch_is_not_judged(self) -> None:
         context = self._target("synchronize")

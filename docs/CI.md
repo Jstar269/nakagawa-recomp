@@ -47,7 +47,7 @@ of 2026-11-02, whole history, hosted runners):
 | `CodeQL wake` then `Trusted CodeQL` | 1 wake + prepare + 3 analyses + upload (6 jobs) | none on a pull request head that is not a `batch/` branch of this repository; on a batch head, 6 jobs when the diff touches C/C++, Python or workflow files, otherwise 3 (wake, prepare, upload) | `codeql.yml` is 38.5k hosted minutes over 2,732 runs, about 14 minutes a run |
 | `ClusterFuzzLite` | 1 job, every pull request | 1 job only when the fuzz target's inputs change; none otherwise | 6.8k minutes over 1,767 runs, about 3.8 minutes a run |
 | `OSV-Scanner`, `Dependency Review`, `Provenance attestation` | 1 job each | unchanged | cheap per run (4.5-5.6k runs) but supply-chain controls |
-| `Trusted CI verdict` | about 4 runs, 1 job each | no job on `ready_for_review` or on a label other than `ci-change-approved` | 16 s average run |
+| `Trusted CI verdict` | about 4 runs, 1 job each | no run on `ready_for_review` | 16 s average run |
 
 #### Tests-only changes
 
@@ -90,7 +90,9 @@ merged directly. That rests on the `main-minimal` ruleset requiring `CodeQL` and
 [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md#maintainer-configuration)).
 
 For an early scan of any open pull request, or before landing one outside a batch, run
-`gh workflow run codeql.yml -f pull_request_number=<n>`. A merge-queue group, a push to
+`gh workflow run codeql.yml -f pull_request_number=<n>`. That run is titled
+`Trusted CodeQL (PR #<n>)`, so a dispatch can be matched to its pull request; every other
+run is titled `Trusted CodeQL`. A merge-queue group, a push to
 `main`, the weekly schedule and a dispatch always run `prepare`.
 
 On a batch head or a dispatched pull request, `prepare` and `upload` always run, and
@@ -136,9 +138,10 @@ a property of the workflow: the verdict job is created when a producer finishes,
 when the repository's own matrix has most jobs queued, and it waits in the same queue as
 the Windows and Python legs. The way to shorten it is to start fewer jobs per push, which
 is what the path gates above do. The queue time needed no change to `ci-trust-verdict.yml`.
-Its verdict job no longer runs on `ready_for_review` or on a label other than
-`ci-change-approved`: the verifier reads only that label and never the draft state, so
-those events could only repeat the same verdict.
+It no longer runs on `ready_for_review`: the verifier never reads the draft state, so that
+event could only repeat the same verdict. Every label event still re-judges, whatever the
+label. A newer run for a head replaces that head's pending run, so a run that judged
+nothing could leave a verdict standing that a withdrawn approval should have changed.
 
 ### Draft pull requests
 
@@ -975,8 +978,7 @@ integration, and every Actions job is integration 15368. A name alone cannot tel
 intended job from a candidate's.
 
 **The gate.** The workflow runs only the default branch's copy: `pull_request_target`
-(opened, synchronize, reopened, labeled, unlabeled; a label event runs the verdict job only
-for the `ci-change-approved` label), a `workflow_run` when
+(opened, synchronize, reopened, labeled, unlabeled), a `workflow_run` when
 `CI`, `OSV-Scanner` or `Dependency Review` completes, and a manual `workflow_dispatch`
 naming a pull request. It checks out the default branch, fetches `refs/pull/<n>/head` as
 objects only, and never checks out or runs candidate files. The verdict job has `actions`,
