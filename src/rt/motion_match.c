@@ -134,7 +134,7 @@ typedef struct {
     int32_t (*stack)[4];        /* gaps waiting: a0, a1, b0, b1 (half-open) */
     uint32_t nstack, cap_stack;
     uint16_t *lcs;              /* (LEAF_LCS_MAX + 1)^2 */
-    float d2;                   /* d_max squared */
+    float dl2;                  /* d_leaf squared */
 } Fill;
 
 static float centre_dist2(const MotionPrim *x, const MotionPrim *y) {
@@ -144,10 +144,10 @@ static float centre_dist2(const MotionPrim *x, const MotionPrim *y) {
 }
 
 /* In a leaf, a run of equal signatures carries no order information of its own (particles,
- * glyphs, a buffer rebuilt at a new address), so a pair there must also be plausible: one spawn
- * in the run then does not shift every later pair by one. */
+ * glyphs, a buffer rebuilt at a new address), so a pair there must also be within d_leaf: one
+ * spawn in the run then does not shift every later pair by one. */
 static int leaf_pairs(const Fill *f, int32_t ia, int32_t jb) {
-    return sig_eq(&f->a[ia], &f->b[jb]) && centre_dist2(&f->a[ia], &f->b[jb]) <= f->d2;
+    return sig_eq(&f->a[ia], &f->b[jb]) && centre_dist2(&f->a[ia], &f->b[jb]) <= f->dl2;
 }
 
 static void pair_up(Fill *f, int32_t ia, int32_t jb, uint8_t why) {
@@ -184,7 +184,8 @@ static void fill_leaf(Fill *f, uint32_t la, uint32_t lb) {
     const int32_t *ga = f->ga + s, *gb = f->gb + s;
     if (ma == 0 || mb == 0) return;
     if (ma <= LEAF_LCS_MAX && mb <= LEAF_LCS_MAX) {
-        /* exact longest common subsequence; ties take the earliest A */
+        /* exact longest common subsequence; on a tie the backtrack skips the A member, so the
+         * earlier B keeps its partner */
         uint32_t w = mb + 1u;
         uint16_t *t = f->lcs;
         for (uint32_t i = 0; i <= ma; i++) t[i * w + mb] = 0;
@@ -307,10 +308,11 @@ static int invert3(const float m[9], float inv[9]) {
     return 1;
 }
 
-/* Camera position (-R^-1 t) and the row-normalized rotation of a 3x4 view matrix. */
+/* Camera position (-R^-1 t) and the row-normalized rotation of a view matrix in the GE's order:
+ * eye[a] = v[a] x + v[3 + a] y + v[6 + a] z + v[9 + a], so R[a][c] = v[3 c + a] and t[a] = v[9 + a]. */
 static int camera_pose(const float v[12], float pos[3], float rot[9]) {
-    float r[9] = { v[0], v[1], v[2], v[4], v[5], v[6], v[8], v[9], v[10] };
-    float t[3] = { v[3], v[7], v[11] }, inv[9];
+    float r[9] = { v[0], v[3], v[6], v[1], v[4], v[7], v[2], v[5], v[8] };
+    float t[3] = { v[9], v[10], v[11] }, inv[9];
     if (!invert3(r, inv)) return 0;
     for (int k = 0; k < 3; k++)
         pos[k] = -(inv[k * 3 + 0] * t[0] + inv[k * 3 + 1] * t[1] + inv[k * 3 + 2] * t[2]);
@@ -335,11 +337,22 @@ static float median_of(const float *v, uint32_t n) {
     return (n & 1u) ? s[n / 2u] : 0.5f * (s[n / 2u - 1u] + s[n / 2u]);
 }
 
+static int all_finite(const float *v, int n) {
+    for (int k = 0; k < n; k++)
+        if (!isfinite(v[k])) return 0;
+    return 1;
+}
+
 static void camera_rules(const MotionCamera *ca, const MotionCamera *cb, const MotionMatchParams *p,
                          MotionCutHistory *hist, MotionMatchResult *out) {
     if (!ca->valid && !cb->valid) return;
     if (ca->valid != cb->valid) {
         out->flags |= MOTION_MATCH_CUT_CAMERA;
+        return;
+    }
+    if (!all_finite(ca->view, 12) || !all_finite(cb->view, 12) || !all_finite(ca->proj, 16) ||
+        !all_finite(cb->proj, 16)) {
+        out->flags |= MOTION_MATCH_CUT_CAMERA;   /* a non-finite camera: nothing to follow */
         return;
     }
     float pa[3], pb[3], ra[9], rb[9];
@@ -385,10 +398,26 @@ static void camera_rules(const MotionCamera *ca, const MotionCamera *cb, const M
 
 void motion_match_default_params(MotionMatchParams *p) {
     p->d_max = 68.96f;           /* sqrt(480^2 + 272^2) / 8 */
+    p->d_leaf = 32.0f;
     p->cut_rotate_deg = 30.0f;
     p->cut_translate_k = 8.0f;
     p->cut_proj_rel = 0.1f;
     p->cut_min_coverage = 0.5f;
+}
+
+static int params_ok(const MotionMatchParams *p) {
+    return isfinite(p->d_max) && p->d_max > 0.0f && isfinite(p->d_leaf) && p->d_leaf > 0.0f &&
+           isfinite(p->cut_rotate_deg) && p->cut_rotate_deg > 0.0f && isfinite(p->cut_translate_k) &&
+           p->cut_translate_k > 0.0f && isfinite(p->cut_proj_rel) && p->cut_proj_rel > 0.0f &&
+           p->cut_min_coverage >= 0.0f && p->cut_min_coverage <= 1.0f;   /* also false for NaN */
+}
+
+/* A caller-owned history: its counters in range and every recorded step finite and not negative. */
+static int hist_ok(const MotionCutHistory *h) {
+    if (h->n > MOTION_CUT_HISTORY || h->next >= MOTION_CUT_HISTORY) return 0;
+    for (uint32_t k = 0; k < h->n; k++)
+        if (!(h->step[k] >= 0.0f) || !isfinite(h->step[k])) return 0;
+    return 1;
 }
 
 static void fail(int32_t *pair_a, uint8_t *why, uint32_t nb, MotionMatchResult *out) {
@@ -406,8 +435,10 @@ int motion_match(const MotionMatchFrame *fa, const MotionMatchFrame *fb, const M
                  MotionCutHistory *hist, int32_t *pair_a, uint8_t *why, MotionMatchResult *out) {
     uint32_t nb = fb ? fb->nprims : 0u;
     if (!fa || !fb || !p || !pair_a || !out || (fa->nprims && !fa->prims) || (nb && !fb->prims) ||
-        fa->nprims > 0x7FFFFFFFu || nb > 0x7FFFFFFFu) {
-        fail(pair_a, why, (fb && pair_a) ? nb : 0u, out);
+        fa->nprims > MOTION_MATCH_MAX_PRIMS || nb > MOTION_MATCH_MAX_PRIMS || !params_ok(p) ||
+        (hist && !hist_ok(hist))) {
+        /* The output buffers are sized by B's count; past the cap that count is not trusted. */
+        fail(pair_a, why, nb <= MOTION_MATCH_MAX_PRIMS ? nb : 0u, out);
         return -1;
     }
     uint32_t na = fa->nprims;
@@ -433,7 +464,7 @@ int motion_match(const MotionMatchFrame *fa, const MotionMatchFrame *fb, const M
     f.pair_a = pair_a;
     f.why = malloc(nb + 1u);            /* reasons are always kept; copied out when asked for */
     f.used_a = calloc(na, 1);
-    f.d2 = p->d_max * p->d_max;
+    f.dl2 = p->d_leaf * p->d_leaf;
     f.ga = malloc(n * sizeof(int32_t));
     f.gb = malloc(n * sizeof(int32_t));
     f.ha = malloc(n * sizeof(HashIdx));
@@ -462,6 +493,7 @@ int motion_match(const MotionMatchFrame *fa, const MotionMatchFrame *fb, const M
             uint64_t h = key_hash(&B[j]);
             if (count_exact(kb, nb, h, B, &B[j], key_eq, &first_b) != 1u) continue;
             if (count_exact(ka, na, h, A, &B[j], key_eq, &first_a) != 1u) continue;
+            if ((B[j].flags | A[first_a].flags) & MOTION_PRIM_INLINE) continue;   /* F13: never anchors */
             uniq[j] = first_a;
             f.cand[nc++] = (Pair){ first_a, (int32_t)j };
         }
@@ -523,7 +555,8 @@ int motion_match(const MotionMatchFrame *fa, const MotionMatchFrame *fb, const M
         if (out->xform_verts &&
             (double)out->xform_verts_matched < (double)p->cut_min_coverage * (double)out->xform_verts)
             out->flags |= MOTION_MATCH_CUT_COVERAGE;
-        if (hist && fa->camera.valid && fb->camera.valid && !(out->flags & MOTION_MATCH_CUT)) {
+        if (hist && fa->camera.valid && fb->camera.valid && !(out->flags & MOTION_MATCH_CUT) &&
+            isfinite(out->translate)) {
             hist->step[hist->next] = out->translate;
             hist->next = (hist->next + 1u) % MOTION_CUT_HISTORY;
             if (hist->n < MOTION_CUT_HISTORY) hist->n++;

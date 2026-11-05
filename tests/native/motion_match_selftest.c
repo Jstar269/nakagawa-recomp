@@ -3,9 +3,11 @@
 /*
  * motion_match_selftest.c - the draw matcher of render-state motion (motion_match.h, #2081) on
  * synthetic PRIM lists: anchors and their ordered run, reorder, spawn and despawn, a rebuild at a
- * new address, ties, a spawn inside a run of equal signatures, teleports, a vertex-count change,
- * every frame cut, the camera history, no previous frame, invalid arguments, the large-leaf path,
- * and a randomized pass over the invariants and determinism.
+ * new address, ties, a spawn inside a run of equal signatures, inline keys that never anchor,
+ * teleports and both distance bounds exactly, a vertex-count change, the camera in the GE's own
+ * matrix order, every frame cut, the camera history and its median, non-finite cameras, no
+ * previous frame, invalid arguments, the LCS and large-leaf paths, and a randomized pass over the
+ * invariants and determinism.
  *
  * Built from motion_match.c and this file alone, with nothing else of the runtime.
  */
@@ -206,12 +208,12 @@ static void cell_lcs_leaf(void) {
     expect("LCS leaf", nb, pa, why);
 }
 
-/* A small leaf takes the longest common subsequence, not the nearest partner: B[1] at x 140 is
- * nearer A's 150, but pairing it with 100 lets B[2] at 200 pair with 150, two pairs instead of one. */
+/* A small leaf takes the longest common subsequence, not the nearest partner: B[1] at x 115 is
+ * nearer A's 120, but pairing it with 100 lets B[2] at 140 pair with 120, two pairs instead of one. */
 static void cell_lcs_not_nearest(void) {
     MotionPrim a[5] = { prim(0, 0x08800000u, -900, 0), prim(6, 0x09200000u, 0, 0), prim(6, 0x09200040u, 100, 0),
-                        prim(6, 0x09200080u, 150, 0), prim(2, 0x08800100u, 900, 0) };
-    MotionPrim b[5] = { a[0], prim(6, 0x09300000u, 140, 0), prim(6, 0x09300040u, 200, 0), prim(6, 0x09300080u, 400, 0),
+                        prim(6, 0x09200080u, 120, 0), prim(2, 0x08800100u, 900, 0) };
+    MotionPrim b[5] = { a[0], prim(6, 0x09300000u, 115, 0), prim(6, 0x09300040u, 140, 0), prim(6, 0x09300080u, 400, 0),
                         a[4] };
     CHECK(match(a, 5, b, 5) == 0, "lcs not nearest: returns 0");
     static const int32_t pa[5] = { 0, 2, 3, N_, 4 };
@@ -229,6 +231,105 @@ static void cell_key_unique_in_a(void) {
     static const int32_t pa[3] = { 0, 2, 3 };
     static const uint8_t why[3] = { AN, FI, AN };
     expect("key twice in A", 3, pa, why);
+}
+
+/* F13: a vertex ring reused at the same offsets puts another object at the same address with the
+ * same signature. Marked inline, that key never anchors: the real object, rebuilt elsewhere, pairs
+ * by the fill, and the stranger stays unmatched instead of a false anchor that teleports. */
+static void cell_inline_never_anchors(void) {
+    MotionPrim a[3] = { prim(0, 0x08800000u, -900, 0), prim(6, 0x09200000u, 0, 0), prim(2, 0x08800100u, 900, 0) };
+    MotionPrim b[4] = { a[0], prim(6, 0x09200000u, 300, 0), prim(6, 0x09300000u, 2, 0), a[2] };
+    a[1].flags = b[1].flags = MOTION_PRIM_INLINE;
+    CHECK(match(a, 3, b, 4) == 0, "inline: returns 0");
+    static const int32_t pa[4] = { 0, N_, 1, 2 };
+    static const uint8_t why[4] = { AN, NO, FI, AN };
+    expect("inline never anchors", 4, pa, why);
+    /* marked in one frame only is enough */
+    b[1].flags = 0;
+    CHECK(match(a, 3, b, 4) == 0 && g_pa[2] == 1 && g_why[1] == NO, "inline in A only never anchors");
+    a[1].flags = 0;
+    b[1].flags = MOTION_PRIM_INLINE;
+    CHECK(match(a, 3, b, 4) == 0 && g_pa[2] == 1 && g_why[1] == NO, "inline in B only never anchors");
+}
+
+static int match_p(const MotionPrim *a, uint32_t na, const MotionPrim *b, uint32_t nb, const MotionMatchParams *p) {
+    MotionMatchFrame fa = frame(a, na), fb = frame(b, nb);
+    return motion_match(&fa, &fb, p, NULL, g_pa, g_why, &g_r);
+}
+
+/* Both distance bounds are inclusive, tested exactly at the bound (a 30-40-50 step is exact in float). */
+static void cell_exact_bounds(void) {
+    MotionMatchParams p;
+    motion_match_default_params(&p);
+    p.d_max = 50.0f;
+    MotionPrim a[2] = { prim(0, 0x08800000u, 0, 0), prim(1, 0x09000000u, 100, 100) };
+    MotionPrim b[2] = { a[0], moved(a[1], 30, 40) };
+    CHECK(match_p(a, 2, b, 2, &p) == 0 && g_pa[1] == 1 && g_why[1] == AN, "d_max: exactly 50 pairs (%d %u)", g_pa[1],
+          g_why[1]);
+    b[1] = moved(a[1], 30, 40.01f);
+    CHECK(match_p(a, 2, b, 2, &p) == 0 && g_pa[1] == N_ && g_why[1] == TP, "d_max: just over 50 is a teleport");
+
+    p.d_leaf = 50.0f;
+    MotionPrim c[4] = { prim(0, 0x08800000u, -900, 0), prim(6, 0x09200000u, 0, 0), prim(6, 0x09200040u, 300, 0),
+                        prim(2, 0x08800100u, 900, 0) };
+    MotionPrim d[4] = { c[0], moved(c[1], 30, 40), moved(c[2], 1, 0), c[3] };
+    d[1].vaddr = 0x09300000u;
+    d[2].vaddr = 0x09300040u;
+    CHECK(match_p(c, 4, d, 4, &p) == 0 && g_pa[1] == 1 && g_why[1] == FI, "d_leaf: exactly 50 pairs in a leaf (%d %u)",
+          g_pa[1], g_why[1]);
+    d[1] = moved(c[1], 30, 40.01f);
+    d[1].vaddr = 0x09300000u;
+    CHECK(match_p(c, 4, d, 4, &p) == 0 && g_pa[1] == N_ && g_pa[2] == 2, "d_leaf: just over 50 does not pair in a leaf");
+}
+
+/* A gap signature unique in B but repeated in A does not anchor the gap: the leaf pairs it with
+ * the plausible member, here the first, instead of whichever the hash order offered. */
+static void cell_gap_sig_repeated_in_a(void) {
+    MotionPrim a[4] = { prim(0, 0x08800000u, -900, 0), prim(6, 0x09200000u, 0, 0), prim(6, 0x09200040u, 200, 0),
+                        prim(2, 0x08800100u, 900, 0) };
+    MotionPrim b[3] = { a[0], prim(6, 0x09300000u, 1, 0), a[3] };
+    CHECK(match(a, 4, b, 3) == 0, "repeated in A: returns 0");
+    static const int32_t pa[3] = { 0, 1, 3 };
+    static const uint8_t why[3] = { AN, FI, AN };
+    expect("gap signature repeated in A", 3, pa, why);
+}
+
+/* LCS ties: A0 and A1 cross B1 and B0. Only one pair can keep the order; the earlier B keeps its
+ * partner (B0 with A1), and B1 is unmatched. */
+static void cell_lcs_tie(void) {
+    MotionPrim a[4] = { prim(0, 0x08800000u, -900, 0), prim(6, 0x09200000u, 0, 0), prim(6, 0x09200040u, 50, 0),
+                        prim(2, 0x08800100u, 900, 0) };
+    MotionPrim b[4] = { a[0], prim(6, 0x09300000u, 50, 20), prim(6, 0x09300040u, 0, 20), a[3] };
+    CHECK(match(a, 4, b, 4) == 0, "lcs tie: returns 0");
+    static const int32_t pa[4] = { 0, 2, N_, 3 };
+    static const uint8_t why[4] = { AN, FI, NO, AN };
+    expect("LCS tie", 4, pa, why);
+}
+
+/* The large leaf takes the nearest candidate, not the first: A's 11th particle sits 15 px from the
+ * 10th, and B dropped the 10th. */
+static void cell_large_leaf_nearest(void) {
+    static MotionPrim a[82], b[83];
+    static int32_t pa[83];
+    static uint8_t why[83];
+    uint32_t nb = 0;
+    a[0] = prim(0, 0x08800000u, -500, -500);
+    for (uint32_t k = 0; k < 80; k++) a[1 + k] = prim(6, 0x09200000u + k * 0x60u, 100.0f * (float)k, 0.0f);
+    a[1 + 11] = prim(6, 0x09200000u + 11u * 0x60u, 1015.0f, 0.0f);
+    a[81] = prim(2, 0x08800100u, -500, 2000);
+    b[nb] = a[0]; pa[nb] = 0; why[nb++] = AN;
+    b[nb] = prim(6, 0x09400000u, 5000, 5000); pa[nb] = N_; why[nb++] = NO;   /* keeps the prefix strip off */
+    for (uint32_t k = 0; k < 80; k++) {
+        if (k == 10) continue;
+        b[nb] = a[1 + k];
+        b[nb].vaddr += 0x10000u;
+        pa[nb] = (int32_t)(1 + k);
+        why[nb++] = FI;
+    }
+    b[nb] = prim(6, 0x09400040u, 6000, 5000); pa[nb] = N_; why[nb++] = NO;   /* and the suffix strip */
+    b[nb] = a[81]; pa[nb] = 81; why[nb++] = AN;
+    CHECK(match(a, 82, b, nb) == 0, "large leaf nearest: returns 0");
+    expect("large leaf, nearest", nb, pa, why);
 }
 
 /* The same with a hundred particles: the middle is larger than the LCS bound, so the bounded
@@ -325,29 +426,85 @@ static void cell_failed(void) {
     CHECK(motion_match(&fa, &fb, &p, NULL, NULL, g_why, &g_r) == -1 && g_r.flags == MOTION_MATCH_FAILED,
           "no pair_a: FAILED");
     CHECK(motion_match(&fa, &fb, &p, NULL, g_pa, g_why, NULL) == -1, "no result: -1");
+    memset(g_why, AN, sizeof(g_why));
+    CHECK(motion_match(&fa, &fb, &p, NULL, NULL, g_why, &g_r) == -1 && g_why[0] == NO && g_why[1] == NO,
+          "no pair_a: the reasons are still cleared");
+    MotionMatchFrame big = frame(a, MOTION_MATCH_MAX_PRIMS + 1u);
+    CHECK(motion_match(&big, &fb, &p, NULL, g_pa, g_why, &g_r) == -1 && g_r.flags == MOTION_MATCH_FAILED,
+          "more PRIMs than the cap: FAILED");
+
+    /* a caller-owned history out of range, or holding a non-finite step */
+    MotionCutHistory h;
+    memset(&h, 0, sizeof(h));
+    h.next = MOTION_CUT_HISTORY;
+    CHECK(motion_match(&fa, &fb, &p, &h, g_pa, g_why, &g_r) == -1 && g_r.flags == MOTION_MATCH_FAILED, "history next 8");
+    h.next = 40;
+    CHECK(motion_match(&fa, &fb, &p, &h, g_pa, g_why, &g_r) == -1, "history next 40");
+    h.next = 0;
+    h.n = MOTION_CUT_HISTORY + 1u;
+    CHECK(motion_match(&fa, &fb, &p, &h, g_pa, g_why, &g_r) == -1, "history n 9");
+    h.n = 2;
+    h.step[1] = NAN;
+    CHECK(motion_match(&fa, &fb, &p, &h, g_pa, g_why, &g_r) == -1, "history with a NaN step");
+    h.step[1] = -1.0f;
+    CHECK(motion_match(&fa, &fb, &p, &h, g_pa, g_why, &g_r) == -1, "history with a negative step");
+    h.step[1] = 1.0f;
+    CHECK(motion_match(&fa, &fb, &p, &h, g_pa, g_why, &g_r) == 0, "a valid history passes");
+
+    /* params: each field non-finite, zero or out of range */
+    static const struct { int field; float v; } bad_p[] = {
+        { 0, NAN }, { 0, -5.0f }, { 0, 0.0f }, { 0, INFINITY }, { 1, NAN }, { 1, 0.0f }, { 2, NAN }, { 2, -1.0f },
+        { 3, NAN }, { 3, 0.0f }, { 4, NAN }, { 4, -0.1f }, { 5, NAN }, { 5, 1.5f }, { 5, -0.1f },
+    };
+    for (size_t k = 0; k < sizeof(bad_p) / sizeof(bad_p[0]); k++) {
+        MotionMatchParams q = p;
+        float *f = bad_p[k].field == 0 ? &q.d_max : bad_p[k].field == 1 ? &q.d_leaf : bad_p[k].field == 2 ? &q.cut_rotate_deg :
+                   bad_p[k].field == 3 ? &q.cut_translate_k : bad_p[k].field == 4 ? &q.cut_proj_rel : &q.cut_min_coverage;
+        *f = bad_p[k].v;
+        CHECK(motion_match(&fa, &fb, &q, NULL, g_pa, g_why, &g_r) == -1 && g_r.flags == MOTION_MATCH_FAILED &&
+              g_pa[0] == N_, "params field %d = %g: FAILED", bad_p[k].field, (double)bad_p[k].v);
+    }
+    MotionMatchParams q = p;
+    q.cut_min_coverage = 0.0f;
+    CHECK(motion_match(&fa, &fb, &q, NULL, g_pa, g_why, &g_r) == 0, "coverage 0 is valid");
+    q.cut_min_coverage = 1.0f;
+    CHECK(motion_match(&fa, &fb, &q, NULL, g_pa, g_why, &g_r) == 0, "coverage 1 is valid");
+}
+
+/* The GE's view transform, exactly as ge.c applies ge.view (column-major, translation at 9..11). */
+static void ge_eye(const float view[12], const float w[3], float e[3]) {
+    for (int a = 0; a < 3; a++)
+        e[a] = view[a] * w[0] + view[3 + a] * w[1] + view[6 + a] * w[2] + view[9 + a];
+}
+
+/* A camera at world (px, 0, 0) yawed by deg about y, built in the GE's order: eye = R (w - c), so
+ * view[3 c + a] = R[a][c] and view[9 + a] = -(R c)[a]. */
+static void cam_set(MotionCamera *c, float px, float deg) {
+    float r = deg * 3.14159265f / 180.0f, cs = cosf(r), sn = sinf(r);
+    float R[3][3] = { { cs, 0, sn }, { 0, 1, 0 }, { -sn, 0, cs } }, pos[3] = { px, 0, 0 };
+    for (int a = 0; a < 3; a++) {
+        for (int k = 0; k < 3; k++) c->view[3 * k + a] = R[a][k];
+        c->view[9 + a] = -(R[a][0] * pos[0] + R[a][1] * pos[1] + R[a][2] * pos[2]);
+    }
 }
 
 static void cam_identity(MotionCamera *c) {
     memset(c, 0, sizeof(*c));
     c->valid = 1;
-    c->view[0] = c->view[5] = c->view[10] = 1.0f;
-    c->proj[0] = 1.5f;
+    cam_set(c, 0.0f, 0.0f);
+    c->proj[0] = 1.5f;     /* GE order: column 0 */
     c->proj[5] = 2.6f;
     c->proj[10] = -1.0f;
-    c->proj[11] = -1.0f;
+    c->proj[11] = -1.0f;   /* clip w = -ez */
     c->proj[14] = -0.2f;
 }
 
 static void cam_yaw(MotionCamera *c, float deg) {
-    float r = deg * 3.14159265f / 180.0f, cs = cosf(r), sn = sinf(r);
-    c->view[0] = cs; c->view[1] = 0; c->view[2] = sn;
-    c->view[4] = 0; c->view[5] = 1; c->view[6] = 0;
-    c->view[8] = -sn; c->view[9] = 0; c->view[10] = cs;
+    cam_set(c, -c->view[9], deg);   /* yaw 0 keeps the position readable from view[9] */
 }
 
-/* The camera at world x = pos (identity rotation: the view translation is -pos). */
 static void cam_at(MotionCamera *c, float pos) {
-    c->view[3] = -pos;
+    cam_set(c, pos, 0.0f);
 }
 
 static MotionPrim s_one[2];
@@ -363,6 +520,33 @@ static int match_cam(const MotionCamera *ca, const MotionCamera *cb, MotionCutHi
     return motion_match(&fa, &fb, &p, h, g_pa, g_why, &g_r);
 }
 
+/* The record takes ge.view as loaded. A literal GE-order identity view with the camera moved by 5
+ * along x, and the fixture builder checked against ge.c's own transform. */
+static void cell_ge_order(void) {
+    MotionCamera ca, cb;
+    cam_identity(&ca);
+    cb = ca;
+    static const float moved_x5[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, -5, 0, 0 };
+    memcpy(cb.view, moved_x5, sizeof(moved_x5));
+    CHECK(match_cam(&ca, &cb, NULL) == 0 && g_r.flags == 0 && fabsf(g_r.translate - 5.0f) < 1e-5f &&
+          g_r.rotate_deg < 0.01f, "GE-order identity moved by 5: no cut, step 5 (%#x, %.3f, %.3f)", g_r.flags,
+          (double)g_r.translate, (double)g_r.rotate_deg);
+
+    /* The builder: the camera's own position maps to the eye origin, and a point one unit ahead
+     * of a 20-degree yaw (forward is -z in eye space) maps to (0, 0, -1). */
+    cam_set(&cb, 3.0f, 20.0f);
+    float r = 20.0f * 3.14159265f / 180.0f, e[3];
+    const float c[3] = { 3, 0, 0 }, ahead[3] = { 3.0f + sinf(r), 0.0f, -cosf(r) };
+    ge_eye(cb.view, c, e);
+    CHECK(fabsf(e[0]) < 1e-5f && fabsf(e[1]) < 1e-5f && fabsf(e[2]) < 1e-5f, "fixture: the camera is the eye origin");
+    ge_eye(cb.view, ahead, e);
+    CHECK(fabsf(e[0]) < 1e-5f && fabsf(e[1]) < 1e-5f && fabsf(e[2] + 1.0f) < 1e-5f, "fixture: ahead is -z (%f %f %f)",
+          (double)e[0], (double)e[1], (double)e[2]);
+    CHECK(match_cam(&ca, &cb, NULL) == 0 && g_r.flags == 0 && fabsf(g_r.rotate_deg - 20.0f) < 0.05f &&
+          fabsf(g_r.translate - 3.0f) < 1e-4f, "GE-order 20-degree yaw at x 3 (%#x, %.3f, %.3f)", g_r.flags,
+          (double)g_r.rotate_deg, (double)g_r.translate);
+}
+
 static void cell_cut_rotate(void) {
     MotionCamera ca, cb;
     cam_identity(&ca);
@@ -375,7 +559,7 @@ static void cell_cut_rotate(void) {
           "45 degrees cuts (%#x, %.3f)", g_r.flags, (double)g_r.rotate_deg);
     CHECK(g_pa[0] == 0 && g_pa[1] == 1, "a cut frame still reports its pairs");
     /* a uniformly scaled view is the same rotation */
-    for (int k = 0; k < 11; k++) cb.view[k] *= 3.0f;
+    for (int k = 0; k < 12; k++) cb.view[k] *= 3.0f;
     CHECK(match_cam(&ca, &cb, NULL) == 0 && fabsf(g_r.rotate_deg - 45.0f) < 0.05f, "scale is not rotation (%.3f)",
           (double)g_r.rotate_deg);
 }
@@ -402,9 +586,36 @@ static void cell_cut_translate(void) {
     CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == 0 && fabsf(g_r.translate_median - 1.0f) < 1e-5f,
           "7 times the median is no cut (%#x, %.3f)", g_r.flags, (double)g_r.translate_median);
     cam_at(&ca, 11.0f);
-    cam_at(&cb, 21.0f);   /* 10 > 8 x median(1,1,1,1,7) = 8 */
+    cam_at(&cb, 21.0f);   /* 10 > 8 x median(1, 1, 1, 1, 7), which is 1 */
     CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == MOTION_MATCH_CUT_TRANSLATE, "10 times cuts (%#x)", g_r.flags);
     CHECK(h.n == 5, "a cut step is not recorded (%u)", h.n);
+
+    /* The median, not the minimum or the mean: steps 1, 2, 3, 10 have median 2.5 (min 1, mean 4). */
+    memset(&h, 0, sizeof(h));
+    static const float steps[4] = { 1, 2, 3, 10 };
+    float at = 0.0f;
+    for (int k = 0; k < 4; k++) {
+        cam_at(&ca, at);
+        cam_at(&cb, at + steps[k]);
+        CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == 0, "uneven step %d", k);
+        at += steps[k];
+    }
+    cam_at(&ca, at);
+    cam_at(&cb, at + 19.0f);   /* 19 <= 8 x 2.5 = 20, but above 8 x the minimum */
+    CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == 0 && fabsf(g_r.translate_median - 2.5f) < 1e-4f,
+          "19 against median 2.5 is no cut (%#x, %.3f)", g_r.flags, (double)g_r.translate_median);
+    memset(&h, 0, sizeof(h));
+    at = 0.0f;
+    for (int k = 0; k < 4; k++) {
+        cam_at(&ca, at);
+        cam_at(&cb, at + steps[k]);
+        (void)match_cam(&ca, &cb, &h);
+        at += steps[k];
+    }
+    cam_at(&ca, at);
+    cam_at(&cb, at + 21.0f);   /* 21 > 20, but under 8 x the mean (32) */
+    CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == MOTION_MATCH_CUT_TRANSLATE, "21 against median 2.5 cuts (%#x)",
+          g_r.flags);
 
     /* a static camera that starts to move is not a cut */
     memset(&h, 0, sizeof(h));
@@ -441,6 +652,36 @@ static void cell_cut_camera(void) {
     cb = ca;
     memset(cb.view, 0, sizeof(cb.view));
     CHECK(match_cam(&ca, &cb, NULL) == 0 && g_r.flags == MOTION_MATCH_CUT_CAMERA, "a singular view cuts (%#x)", g_r.flags);
+}
+
+/* A non-finite camera fails closed: a cut, and nothing enters the history. */
+static void cell_camera_non_finite(void) {
+    MotionCamera ca, cb;
+    MotionCutHistory h;
+    memset(&h, 0, sizeof(h));
+    cam_identity(&ca);
+    for (int k = 0; k < 4; k++) {
+        cam_at(&ca, (float)k);
+        cb = ca;
+        cam_at(&cb, (float)(k + 1));
+        (void)match_cam(&ca, &cb, &h);
+    }
+    CHECK(h.n == 4, "non-finite: four steps first (%u)", h.n);
+    cb = ca;
+    cb.view[9] = NAN;
+    CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == MOTION_MATCH_CUT_CAMERA && h.n == 4,
+          "a NaN translation cuts and is not recorded (%#x, n %u)", g_r.flags, h.n);
+    cb.view[9] = INFINITY;
+    CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == MOTION_MATCH_CUT_CAMERA && h.n == 4,
+          "an infinite translation cuts (%#x, n %u)", g_r.flags, h.n);
+    cb = ca;
+    cb.proj[5] = NAN;
+    CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == MOTION_MATCH_CUT_CAMERA && h.n == 4,
+          "a NaN projection entry cuts (%#x)", g_r.flags);
+    cb = ca;
+    ca.proj[14] = -INFINITY;
+    CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == MOTION_MATCH_CUT_CAMERA, "an infinite projection in A cuts (%#x)",
+          g_r.flags);
 }
 
 static void cell_cut_coverage(void) {
@@ -598,17 +839,24 @@ int main(void) {
     cell_spawn_in_run();
     cell_lcs_leaf();
     cell_lcs_not_nearest();
+    cell_lcs_tie();
     cell_key_unique_in_a();
+    cell_gap_sig_repeated_in_a();
+    cell_inline_never_anchors();
+    cell_exact_bounds();
     cell_large_leaf();
+    cell_large_leaf_nearest();
     cell_nested_gap();
     cell_count_change();
     cell_teleport();
     cell_no_previous();
     cell_failed();
+    cell_ge_order();
     cell_cut_rotate();
     cell_cut_translate();
     cell_cut_proj();
     cell_cut_camera();
+    cell_camera_non_finite();
     cell_cut_coverage();
     cell_random_permutation();
     cell_random_invariants();
