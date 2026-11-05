@@ -62,6 +62,18 @@ int main(void) {
         char tiny[16];
         n = sdl3vk_present_mode_line(0, all_modes, 5, 1, 0, tiny, sizeof(tiny));
         assert(n == 15 && strlen(tiny) == 15);
+        /* The line prints for the first swapchain and when a recreation changes the mode or
+         * the VSync setting, never for a resize that keeps both. */
+        int last_mode = -1, last_vsync = -1;
+        assert(sdl3vk_present_mode_log_due(&last_mode, &last_vsync, 2, 1) == 1);
+        assert(last_mode == 2 && last_vsync == 1);
+        assert(sdl3vk_present_mode_log_due(&last_mode, &last_vsync, 2, 1) == 0);
+        assert(sdl3vk_present_mode_log_due(&last_mode, &last_vsync, 2, 7) == 0);
+        assert(sdl3vk_present_mode_log_due(&last_mode, &last_vsync, 1, 0) == 1);
+        assert(sdl3vk_present_mode_log_due(&last_mode, &last_vsync, 1, 0) == 0);
+        assert(sdl3vk_present_mode_log_due(&last_mode, &last_vsync, 2, 0) == 1);
+        assert(sdl3vk_present_mode_log_due(&last_mode, &last_vsync, 2, 1) == 1);
+        assert(last_mode == 2 && last_vsync == 1);
     }
     /* Surface-format pick (issue #884): VK_INCOMPLETE (5) is a success code, so the first 32
      * formats of a 40-format surface still count; BGRA8 UNORM (44) wins when present, else

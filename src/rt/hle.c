@@ -3119,7 +3119,8 @@ static void io_cwd_release_thread(uint32_t thread_uid) {
 
 /* PSP relative file-manager paths resolve against the calling thread's CWD.
  * Device-qualified paths keep their explicit device and never pass through the
- * host filesystem before the existing contained VFS validates them. */
+ * host filesystem before the existing contained VFS validates them. A resolved path
+ * on a device the game unassigned is NO_SUCH_DEVICE (hle_io_assign_path_check). */
 uint32_t io_guest_path(uint32_t guest_addr, char *out, size_t capacity) {
     char input[512];
     if (!out || capacity == 0u || !guest_cstr(guest_addr, input, (int)sizeof(input)))
@@ -3128,7 +3129,7 @@ uint32_t io_guest_path(uint32_t guest_addr, char *out, size_t capacity) {
         size_t len = strlen(input);
         if (len >= capacity) return 0x80010024u;
         memcpy(out, input, len + 1u);
-        return 0u;
+        return hle_io_assign_path_check(out);
     }
     IoCwd *cwd = io_cwd_find(sched_current_uid(), 1);
     if (!cwd) return 0x8001000cu;
@@ -3141,7 +3142,7 @@ uint32_t io_guest_path(uint32_t guest_addr, char *out, size_t capacity) {
     size_t at = cwd_len;
     if (separator) out[at++] = '/';
     memcpy(out + at, input, input_len + 1u);
-    return 0u;
+    return hle_io_assign_path_check(out);
 }
 
 void hle_fd_init(void) {

@@ -3900,6 +3900,32 @@ static uint32_t io_unassign_call(uint32_t dev) {
     return sr_syscall(&cpu, 0x6d08a871u);
 }
 
+/* One sceIo call on a guest path through sr_syscall: open (with flags), getstat, mkdir or
+ * remove. Returns the syscall's result; an open that succeeds is closed again. */
+static uint32_t io_assign_path_call(uint32_t nid, uint32_t path_addr, const char *guest,
+                                    uint32_t flags) {
+    enum { STAT_ADDR = 0x09015200u };
+    CpuState cpu;
+    fd_guest_copy(path_addr, guest, strlen(guest) + 1u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = path_addr;
+    if (nid == 0x109f50bcu) {          /* sceIoOpen */
+        cpu.r[5] = flags;
+        cpu.r[6] = 0777u;
+    } else if (nid == 0xace946e8u) {   /* sceIoGetstat */
+        cpu.r[5] = STAT_ADDR;
+    } else if (nid == 0x06a70004u) {   /* sceIoMkdir */
+        cpu.r[5] = 0777u;
+    }
+    uint32_t rc = sr_syscall(&cpu, nid);
+    if (nid == 0x109f50bcu && rc >= 3u && rc < 64u) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = rc;
+        (void)sr_syscall(&cpu, 0x810c4bc3u);   /* sceIoClose */
+    }
+    return rc;
+}
+
 static void test_io_assign_through_syscall(void) {
     enum {
         ALIAS_ADDR = 0x09015000u,
@@ -3994,6 +4020,37 @@ static void test_io_assign_through_syscall(void) {
     expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == UNSUPPORTED,
            "a new alias name the VFS does not serve is refused at the boundary");
     expect(io_unassign_call(ALIAS_ADDR) == 0u, "sceIoUnassign removes the game-made fatms0 alias");
+
+    /* The unassign unmounts fatms0: (uofw sceIoUnassign calls the driver's df_umount), so a
+     * path on it no longer reaches the Memory Stick: NO_SUCH_DEVICE, also through the
+     * handlers that answer one fixed code for other unusable paths. */
+    enum { OPEN = 0x109f50bcu, GETSTAT = 0xace946e8u, MKDIR = 0x06a70004u, REMOVE = 0xf27a9c51u,
+           CREATE = 0x00000602u /* PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC */ };
+    static const char probe_dir[] = "fatms0:/NAKAGAWA_IO_ASSIGN_DIR";
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_guest, CREATE) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoOpen on fatms0: is NO_SUCH_DEVICE");
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_guest, 0u) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoGetstat on fatms0: is NO_SUCH_DEVICE");
+    expect(io_assign_path_call(MKDIR, PATH_ADDR, probe_dir, 0u) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoMkdir on fatms0: is NO_SUCH_DEVICE");
+    {
+        CpuState dev_cpu;
+        fd_guest_copy(OTHER_ADDR, "fatms0:", sizeof("fatms0:"));
+        memset(&dev_cpu, 0, sizeof(dev_cpu));
+        dev_cpu.r[4] = OTHER_ADDR;
+        dev_cpu.r[5] = 0x02425818u;   /* a Memory Stick devctl command */
+        expect(sr_syscall(&dev_cpu, 0x54f5fb11u) == NO_SUCH_DEVICE,   /* sceIoDevctl */
+               "after the unassign, sceIoDevctl on fatms0: is NO_SUCH_DEVICE");
+    }
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_ms0, 0u) != 0u,
+           "the refused open created nothing on the Memory Stick");
+    /* ms0 keeps serving the Memory Stick: the runtime's choice, since whether the PSP's
+     * unmount takes the unit ms0 shares with it is not measured. */
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_ms0, CREATE) < 64u,
+           "ms0: still opens after fatms0 is unassigned");
+    expect(io_assign_path_call(REMOVE, PATH_ADDR, probe_ms0, 0u) == 0u,
+           "and the ms0: probe is removed");
+    fd_guest_copy(OTHER_ADDR, "msnew0:", sizeof("msnew0:"));
     expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, ARG_ADDR, 4u) == UNSUPPORTED,
            "a mount argument buffer in t0 is refused at the boundary (not modelled)");
     expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDONLY, 0u, 0u) == UNSUPPORTED,
@@ -4010,7 +4067,16 @@ static void test_io_assign_through_syscall(void) {
            "unassigning ms0, which the VFS keeps serving, is refused at the boundary");
     expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == 0u,
            "fatms0 assigns again after its unassign (the insert-eject-insert sequence)");
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_guest, CREATE) < 64u,
+           "fatms0: opens again once it is assigned again");
+    expect(io_assign_path_call(REMOVE, PATH_ADDR, probe_guest, 0u) == 0u,
+           "and the fatms0: probe is removed");
     expect(io_unassign_call(ALIAS_ADDR) == 0u, "and unassigns again");
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_guest, 0u) == NO_SUCH_DEVICE,
+           "the second unassign unmounts fatms0: again");
+    /* Leave fatms0: usable for the tests that follow, as it is from boot. */
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == 0u,
+           "fatms0 assigns a third time");
 }
 
 static void test_fd_namespace(void) {

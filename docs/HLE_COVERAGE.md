@@ -26,8 +26,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 26 |
 | `ppsspp-derived` | 119 | 89 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 353 | 226 |
-| `unverified` | 151 | 22 |
+| `synthetic` | 354 | 226 |
+| `unverified` | 150 | 22 |
 | total | 687 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -71,7 +71,7 @@ belongs to without the census's own grouping.
 | `0x05572a5f` | `sceKernelExitGame` | kernel_module | `hardware-measured` | PSP oracle PSP-SMOKE-001 |
 | `0x0558b075` | `sceMpegAvcCopyYCbCr` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x05db22ce` | `sceGeUnsetCallback` | ge | `synthetic` | HLE selftest dispatch; note |
-| `0x06a70004` | `sceIoMkdir` | io | `unverified` | no recorded evidence |
+| `0x06a70004` | `sceIoMkdir` | io | `synthetic` | HLE selftest dispatch |
 | `0x07ec321a` | `sceMp3ReserveMp3Handle` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x07f58c24` | `__sceSasGetAllEnvelopeHeights` | audio | `synthetic` | HLE selftest dispatch |
 | `0x0840e808` | `sceMp3ResetPlayPositionByFrame` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |

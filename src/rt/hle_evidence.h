@@ -8,13 +8,12 @@
 #define SR_HLE_EVIDENCE_H
 #include <stdint.h>
 
-#define SR_HLE_UNVERIFIED_NID_COUNT 151u
+#define SR_HLE_UNVERIFIED_NID_COUNT 150u
 /* Sorted ascending for binary search. */
-static const uint32_t sr_hle_unverified_nids[151] = {
+static const uint32_t sr_hle_unverified_nids[150] = {
     0x00061e74u,
     0x0282a3bdu,
     0x03d9526fu,
-    0x06a70004u,
     0x08d98894u,
     0x08fff7a0u,
     0x0ad043edu,

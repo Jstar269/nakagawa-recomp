@@ -41,14 +41,22 @@ bool sdl3vk_raise_window(void);
  * count == 0. */
 int sdl3vk_pick_present_mode(int vsync, const int *available, int count);
 
-/* The one stderr line the presenter prints each time it creates or recreates the swapchain
- * (pure, Vulkan-free like the picker): the present mode in use, why it was chosen (the
- * SR_VSYNC setting and what the surface offers) and the surface's full mode list, so a
- * tearing report can be classified from the log. `chosen` is the mode the swapchain was
- * created with, `recreated` is nonzero when an earlier swapchain was replaced. Writes a
- * NUL-terminated line without a newline and returns its length, truncated to cap - 1. */
+/* The stderr line the presenter prints when it creates the first swapchain and when a
+ * recreation changes the mode (sdl3vk_present_mode_log_due); pure and Vulkan-free like the
+ * picker. It names the present mode in use, why it was chosen (the SR_VSYNC setting and
+ * what the surface offers) and the surface's full mode list, so a tearing report can be
+ * classified from the log. `chosen` is the mode the swapchain was created with, `recreated`
+ * is nonzero when an earlier swapchain was replaced. Writes a NUL-terminated line without a
+ * newline and returns its length, truncated to cap - 1. */
 int sdl3vk_present_mode_line(int vsync, const int *available, int count, int chosen,
                              int recreated, char *out, size_t cap);
+
+/* Whether the presenter prints the present-mode line for a new swapchain: always for the
+ * first, and for a recreation only when the mode or the SR_VSYNC setting differs from the
+ * last line printed, so a window resize that keeps the mode prints nothing. `last_mode` and
+ * `last_vsync` hold the last printed values (-1 before the first line); when the function
+ * returns nonzero it stores `mode` and `vsync` in them. */
+int sdl3vk_present_mode_log_due(int *last_mode, int *last_vsync, int mode, int vsync);
 
 /* Surface-format choice for the swapchain (pure, no device needed), Vulkan-free like the
  * present-mode picker. `query` is the VkResult of vkGetPhysicalDeviceSurfaceFormatsKHR as an
