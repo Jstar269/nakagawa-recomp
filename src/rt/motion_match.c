@@ -371,6 +371,11 @@ static void camera_rules(const MotionCamera *ca, const MotionCamera *cb, const M
 
     double dx = (double)pb[0] - pa[0], dy = (double)pb[1] - pa[1], dz = (double)pb[2] - pa[2];
     out->translate = (float)sqrt(dx * dx + dy * dy + dz * dz);
+    if (!isfinite(out->translate)) {
+        out->flags |= MOTION_MATCH_CUT_CAMERA;   /* a pose or a step too large for a float */
+        out->translate = 0.0f;
+        return;
+    }
     if (hist) {
         /* With a static camera the median is 0 and the rule stays off: starting to move is not a cut. */
         if (hist->n >= MOTION_CUT_HISTORY / 2u) {
@@ -415,6 +420,7 @@ static int params_ok(const MotionMatchParams *p) {
 /* A caller-owned history: its counters in range and every recorded step finite and not negative. */
 static int hist_ok(const MotionCutHistory *h) {
     if (h->n > MOTION_CUT_HISTORY || h->next >= MOTION_CUT_HISTORY) return 0;
+    if (h->n < MOTION_CUT_HISTORY && h->next != h->n) return 0;   /* the ring fills in order before it wraps */
     for (uint32_t k = 0; k < h->n; k++)
         if (!(h->step[k] >= 0.0f) || !isfinite(h->step[k])) return 0;
     return 1;

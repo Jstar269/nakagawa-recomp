@@ -270,6 +270,7 @@ static void cell_exact_bounds(void) {
     CHECK(match_p(a, 2, b, 2, &p) == 0 && g_pa[1] == N_ && g_why[1] == TP, "d_max: just over 50 is a teleport");
 
     p.d_leaf = 50.0f;
+    p.d_max = 1000.0f;   /* so a leaf miss cannot be a teleport */
     MotionPrim c[4] = { prim(0, 0x08800000u, -900, 0), prim(6, 0x09200000u, 0, 0), prim(6, 0x09200040u, 300, 0),
                         prim(2, 0x08800100u, 900, 0) };
     MotionPrim d[4] = { c[0], moved(c[1], 30, 40), moved(c[2], 1, 0), c[3] };
@@ -279,7 +280,8 @@ static void cell_exact_bounds(void) {
           g_pa[1], g_why[1]);
     d[1] = moved(c[1], 30, 40.01f);
     d[1].vaddr = 0x09300000u;
-    CHECK(match_p(c, 4, d, 4, &p) == 0 && g_pa[1] == N_ && g_pa[2] == 2, "d_leaf: just over 50 does not pair in a leaf");
+    CHECK(match_p(c, 4, d, 4, &p) == 0 && g_pa[1] == N_ && g_why[1] == NO && g_pa[2] == 2 && g_r.teleports == 0,
+          "d_leaf: just over 50 does not pair in a leaf (%d %u)", g_pa[1], g_why[1]);
 }
 
 /* A gap signature unique in B but repeated in A does not anchor the gap: the leaf pairs it with
@@ -444,11 +446,15 @@ static void cell_failed(void) {
     h.n = MOTION_CUT_HISTORY + 1u;
     CHECK(motion_match(&fa, &fb, &p, &h, g_pa, g_why, &g_r) == -1, "history n 9");
     h.n = 2;
+    h.next = 2;
     h.step[1] = NAN;
     CHECK(motion_match(&fa, &fb, &p, &h, g_pa, g_why, &g_r) == -1, "history with a NaN step");
     h.step[1] = -1.0f;
     CHECK(motion_match(&fa, &fb, &p, &h, g_pa, g_why, &g_r) == -1, "history with a negative step");
     h.step[1] = 1.0f;
+    h.next = 0;
+    CHECK(motion_match(&fa, &fb, &p, &h, g_pa, g_why, &g_r) == -1, "history n 2 with next 0: the ring is not in order");
+    h.next = 2;
     CHECK(motion_match(&fa, &fb, &p, &h, g_pa, g_why, &g_r) == 0, "a valid history passes");
 
     /* params: each field non-finite, zero or out of range */
@@ -544,6 +550,14 @@ static void cell_ge_order(void) {
           (double)e[0], (double)e[1], (double)e[2]);
     CHECK(match_cam(&ca, &cb, NULL) == 0 && g_r.flags == 0 && fabsf(g_r.rotate_deg - 20.0f) < 0.05f &&
           fabsf(g_r.translate - 3.0f) < 1e-4f, "GE-order 20-degree yaw at x 3 (%#x, %.3f, %.3f)", g_r.flags,
+          (double)g_r.rotate_deg, (double)g_r.translate);
+
+    /* Turning in place away from the origin: the position is -R^-1 t with R as the GE stores it, so
+     * a transposed rotation would report a step (6.84 here) where there is none. */
+    cam_set(&ca, 10.0f, 0.0f);
+    cam_set(&cb, 10.0f, 20.0f);
+    CHECK(match_cam(&ca, &cb, NULL) == 0 && g_r.flags == 0 && fabsf(g_r.rotate_deg - 20.0f) < 0.05f &&
+          g_r.translate < 1e-4f, "a 20-degree turn in place at x 10 is no step (%#x, %.3f, %.4f)", g_r.flags,
           (double)g_r.rotate_deg, (double)g_r.translate);
 }
 
@@ -682,6 +696,22 @@ static void cell_camera_non_finite(void) {
     ca.proj[14] = -INFINITY;
     CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == MOTION_MATCH_CUT_CAMERA, "an infinite projection in A cuts (%#x)",
           g_r.flags);
+
+    /* Finite entries whose pose overflows: scale 1e-6 and a translation of 1e33 put the camera at
+     * 1e39, beyond a float. A cut, with nothing recorded. */
+    cam_identity(&ca);
+    cb = ca;
+    memset(cb.view, 0, sizeof(cb.view));
+    cb.view[0] = cb.view[4] = cb.view[8] = 1e-6f;
+    cb.view[9] = 1e33f;
+    uint32_t n0 = h.n;
+    CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == MOTION_MATCH_CUT_CAMERA && h.n == n0 && isfinite(g_r.translate),
+          "an overflowing pose cuts (%#x, %f, n %u)", g_r.flags, (double)g_r.translate, h.n);
+    /* and a finite pose whose step overflows */
+    cam_set(&ca, -3e38f, 0.0f);
+    cam_set(&cb, 3e38f, 0.0f);
+    CHECK(match_cam(&ca, &cb, &h) == 0 && g_r.flags == MOTION_MATCH_CUT_CAMERA && h.n == n0,
+          "an overflowing step cuts (%#x, n %u)", g_r.flags, h.n);
 }
 
 static void cell_cut_coverage(void) {

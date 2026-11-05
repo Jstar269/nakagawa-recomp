@@ -35,7 +35,7 @@
  *        - a projection entry changed by more than cut_proj_rel of its magnitude;
  *        - under cut_min_coverage of B's transform-mode vertices are matched;
  *        - one frame has a camera and the other has none, or a view is singular or non-finite, or a
- *          projection is non-finite.
+ *          projection is non-finite, or the camera position or its step does not fit a float.
  *      A cut step, or one without both cameras, is not recorded in the history.
  *
  * Interim gate: the PRIM-level d_max and d_leaf stand in for the per-vertex rules of the motion
@@ -94,7 +94,8 @@ typedef struct {
  * in [0, 1]. Anything else fails the call. */
 typedef struct {
     float d_max;               /* teleport bound, guest pixels per frame; default 1/8 of 480x272's diagonal */
-    float d_leaf;              /* leaf pairing bound, guest pixels per frame; default 32 (16 px per 16.7 ms at 30 Hz) */
+    float d_leaf;              /* leaf pairing bound, guest pixels between A and B; the default 32 is the 30 Hz value
+                                * (16 px per 16.7 ms): the caller scales it with the frame interval */
     float cut_rotate_deg;      /* default 30 */
     float cut_translate_k;     /* default 8: a step above k times the recent median step is a cut */
     float cut_proj_rel;        /* default 0.1: a projection entry changing by more than this share */
@@ -105,7 +106,8 @@ typedef struct {
 #define MOTION_MATCH_MAX_PRIMS (1u << 24)   /* per frame; more fails the call */
 
 /* Recent camera steps of one display target, kept by the caller across frames. Zero it to start.
- * n above MOTION_CUT_HISTORY, or next at or above it, fails the call. */
+ * n above MOTION_CUT_HISTORY, next at or above it, or next other than n while the ring is not yet
+ * full, fails the call. */
 typedef struct {
     float    step[MOTION_CUT_HISTORY];
     uint32_t n;                /* steps recorded, at most MOTION_CUT_HISTORY */
