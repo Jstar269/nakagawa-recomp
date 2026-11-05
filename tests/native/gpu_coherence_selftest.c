@@ -131,7 +131,7 @@ int main(int argc, char **argv) {
 #ifdef SR_GPU_TEXSCALE_SELFTEST
     /* Texture scaling and the smart 2D filter take effect only in Ace Mode (tex_scale.h). The
      * factor defaults to 2; `--tex-scale N` picks another. */
-    if (!ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=off;smooth=off", NULL) ||
+    if (!ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=off;smooth=off;sas=off", NULL) ||
         (!getenv("SR_TEX_SCALE") && !set_env("SR_TEX_SCALE", "2")) || !set_env("SR_SMART_2D", "on")) {
         fprintf(stderr, "gpu texscale selftest: FAIL the Ace line or the settings were refused\n");
         free(arena);
