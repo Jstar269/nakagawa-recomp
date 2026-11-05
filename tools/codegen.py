@@ -5851,7 +5851,6 @@ def _print_summary(out_c, base_name, num_files, funcs_per_chunk, chunk_target_by
 
 
 def _translate(argv):
-    reset_unverified_vfpu_uses()
     """Run one translation: the options, the images, the emitted functions, then the files.
 
     In order: validate and apply the options, resolve the extra images, analyse the primary
@@ -5860,6 +5859,7 @@ def _translate(argv):
     registration source, the chunks and the reports. A refusal is raised as ``_Refusal``;
     ``main`` turns it into the message and exit status.
     """
+    reset_unverified_vfpu_uses()
     args = [a for a in argv[1:] if not a.startswith("--")]
     try:
         cli = _command_line_parser().parse_args([a for a in argv[1:] if a.startswith("--")])

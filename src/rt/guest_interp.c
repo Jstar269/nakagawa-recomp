@@ -13,15 +13,25 @@
 #include "hle_evidence.h"  /* generated: VFPU forms with no recorded evidence (docs/HLE_COVERAGE.md) */
 
 /* ---- Unverified VFPU forms (#1877) -------------------------------------------------
- * A form with no recorded evidence is named once in the run log. The interpreter floor
- * reports the first word it executes in each pattern of the generated table; translated
- * code reports from the build (codegen lists the first word it translated per pattern, and
- * the generated start-up code passes the list to sr_vfpu_report_unverified_uses), so no
- * check runs on the hot path. Output goes to stderr only: no result or state changes. */
+ * A form with no recorded evidence is named once in the run log. Two sources report it:
+ *  - The interpreter floor reports the first word it executes in a pattern of the generated
+ *    table, but only for the VFPU loads and stores it runs under --lle-cpu (primary opcodes
+ *    0x32, 0x35, 0x36, 0x3a, 0x3d, 0x3e). The table's patterns for opcodes 0x34 and 0x3f are
+ *    not memory operations and are never reached here.
+ *  - Translated code reports from the build, for every pattern (codegen lists the first word
+ *    it translated per pattern, and the generated start-up code passes the list to
+ *    sr_vfpu_report_unverified_uses), so no check runs on the hot path.
+ * Output goes to stderr only: no result or state changes. */
 static _Atomic(uint32_t) s_vfpu_floor_noted[SR_VFPU_UNVERIFIED_FORM_COUNT + 1u];
 static _Atomic(uint32_t) s_vfpu_built_noted[SR_VFPU_UNVERIFIED_FORM_COUNT + 1u];
 
 FILE *sr_vfpu_evidence_log; /* a test seam: NULL logs to stderr */
+void sr_vfpu_evidence_reset(void) { /* a test seam: forget which patterns were already named */
+    for (unsigned i = 0u; i <= SR_VFPU_UNVERIFIED_FORM_COUNT; i++) {
+        atomic_store_explicit(&s_vfpu_floor_noted[i], 0u, memory_order_relaxed);
+        atomic_store_explicit(&s_vfpu_built_noted[i], 0u, memory_order_relaxed);
+    }
+}
 static FILE *vfpu_evidence_stream(void) {
     return sr_vfpu_evidence_log ? sr_vfpu_evidence_log : stderr;
 }
@@ -38,7 +48,10 @@ static int vfpu_unverified_pattern(uint32_t word) {
 int sr_vfpu_note_unverified(uint32_t word, uint32_t pc) {
     int i = vfpu_unverified_pattern(word);
     if (i < 0) return 0;
-    if (atomic_exchange_explicit(&s_vfpu_floor_noted[i], 1u, memory_order_acq_rel)) return 1;
+    if (atomic_load_explicit(&s_vfpu_floor_noted[i], memory_order_relaxed) ||
+        atomic_exchange_explicit(&s_vfpu_floor_noted[i], 1u, memory_order_acq_rel)) {
+        return 1;
+    }
     fprintf(vfpu_evidence_stream(),
             "VFPU: unverified: first use of %s (word 0x%08" PRIx32 ") at 0x%08" PRIx32
             ": no recorded evidence (docs/HLE_COVERAGE.md)\n",

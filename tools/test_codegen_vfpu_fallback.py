@@ -426,7 +426,7 @@ class UnverifiedVfpuFormReportTests(unittest.TestCase):
         self.assertEqual(len(patterns), count)
         for mask, match, forms in patterns:
             self.assertEqual(match & ~mask, 0)
-            self.assertTrue(forms.startswith("vfpu-"), forms)
+            self.assertRegex(forms, r"^[A-Za-z0-9./ ]+ \[vfpu-[0-9a-f]{2}-[^\]]+\]$")
 
     def test_a_translated_unverified_form_is_listed_once_at_its_lowest_address(self):
         codegen.normal_line(0x08804020, self.LV_S_ZERO)

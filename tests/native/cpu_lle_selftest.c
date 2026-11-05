@@ -748,6 +748,7 @@ static void test_unverified_vfpu_forms_are_logged_once(void) {
     CHECK(log != NULL, "tmpfile for the evidence log");
     if (!log) return;
     sr_vfpu_evidence_log = log;
+    sr_vfpu_evidence_reset(); /* independent of any earlier test that ran a base-zero VFPU access */
     /* lv.s with base $zero (0xc8000000) is in an unverified pattern; with base t5 it is not.
      * The access faults (address 0 or 0x08856580 + 2); the log is written before that. */
     for (int run = 0; run < 2; run++) {
@@ -761,7 +762,8 @@ static void test_unverified_vfpu_forms_are_logged_once(void) {
     CHECK(count_log_lines(log, "VFPU: unverified: first use of ") == 1u,
           "two lv.s base-zero runs must log one line (got %u)",
           count_log_lines(log, "VFPU: unverified: first use of "));
-    CHECK(count_log_lines(log, "vfpu-32-c8000000-") == 1u, "the line must name the lv.s form");
+    CHECK(count_log_lines(log, "first use of lv.s [vfpu-32-c8000000-") == 1u,
+          "the line must name the mnemonic and the lv.s form");
     for (int run = 0; run < 2; run++) {
         fresh_state(&s);
         sr_cpu_lle_set_enabled(1);

@@ -217,7 +217,10 @@ class RuntimeLogTests(unittest.TestCase):
             header.write_text(ledger_mod.render_header(fake), encoding="utf-8")
             self.assertEqual(
                 codegen.unverified_vfpu_patterns(str(header)),
-                [(0xFFE0FE6F, 0xC8000000, "vfpu-32-a vfpu-32-b"), (0xFFFFFFFF, 0xFC000000, "vfpu-3f-c")],
+                [
+                    (0xFFE0FE6F, 0xC8000000, "lv.s [vfpu-32-a vfpu-32-b]"),
+                    (0xFFFFFFFF, 0xFC000000, "VFPU opcode 0x3f [vfpu-3f-c]"),
+                ],
             )
 
     def test_the_floor_and_the_build_log_unverified_vfpu_forms_from_the_generated_table(self) -> None:
