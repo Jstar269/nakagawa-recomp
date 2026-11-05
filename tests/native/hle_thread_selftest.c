@@ -26230,6 +26230,112 @@ static void test_ge_sync_ids_match_psp(void) {
     sr_hle_test_ge_lists_reset();
 }
 
+/* A SIGNAL whose behaviour is JUMP (0x10), CALL (0x11), RET (0x12) or their relative (0x13,
+ * 0x14) and origin (0x15, 0x16) forms, with the END after it, moves the list: the GE driver's
+ * interrupt handler jumps, or saves the caller on the list's stack and calls, or returns
+ * (uofw src/kd/ge/ge.c _sceGeListInterrupt). A title that hangs each frame's drawing off one
+ * SIGNAL CALL drew nothing while the pair was only logged. The fog registers are plain state
+ * that sceGeGetCmd reads back, so each says which list words ran. */
+static void ge_signal_pair(uint32_t at, unsigned behavior, uint32_t off) {
+    MEM_W32(at, 0x0e000000u | (behavior << 16) | (off >> 16));
+    MEM_W32(at + 4u, 0x0c000000u | (off & 0xffffu));
+}
+
+static void test_ge_signal_jump_call_ret(void) {
+    const uint32_t ml = 0x08923000u, sub = 0x08924000u, sub2 = 0x08924100u;
+    const uint32_t args = 0x08925000u, ml2 = 0x08926000u, rsub = 0x08926200u;
+    const uint32_t hw = 0x08926400u;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_lists_reset();
+    sr_hle_test_set_compiled_sdk_version(0u);   /* before SDK 2.00: 32 stack entries */
+
+    /* Main list: CALL sub, then FOGCOLOR. sub: FOG1, JUMP sub2. sub2: FOG2, RET. */
+    MEM_W32(ml, 0x10080000u);                   /* BASE 0x08 */
+    ge_signal_pair(ml + 4u, 0x11u, sub);        /* SIGNAL CALL sub */
+    MEM_W32(ml + 12u, 0xcf000011u);             /* FOGCOLOR, after the return */
+    MEM_W32(ml + 16u, 0x0f000000u);             /* FINISH */
+    MEM_W32(ml + 20u, 0x0c000000u);             /* END */
+    MEM_W32(sub, 0xcd000022u);                  /* FOG1 */
+    MEM_W32(sub + 4u, 0x10090000u);             /* BASE 0x09: the RET restores 0x08 */
+    ge_signal_pair(sub + 8u, 0x10u, sub2);      /* SIGNAL JUMP sub2 */
+    MEM_W32(sub + 16u, 0xcd0000eeu);            /* skipped by the JUMP */
+    MEM_W32(sub2, 0xce000033u);                 /* FOG2 */
+    ge_signal_pair(sub2 + 4u, 0x12u, 0u);       /* SIGNAL RET */
+    MEM_W32(sub2 + 12u, 0xce0000eeu);           /* skipped by the RET */
+
+    const uint32_t a = gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml, 0u, 0xffffffffu, 0u);
+    expect((a & 0xff000000u) == 0x35000000u && gsw_call(NID_SCE_GE_LIST_SYNC, a, 1u, 0u, 0u) == 0u,
+           "a list that SIGNAL-CALLs a sub-list runs to its own END");
+    expect(gsw_call(NID_SCE_GE_GET_CMD, 0xcdu, 0u, 0u, 0u) == 0x22u,
+           "SIGNAL CALL runs the called list (uofw _sceGeListInterrupt)");
+    expect(gsw_call(NID_SCE_GE_GET_CMD, 0xceu, 0u, 0u, 0u) == 0x33u,
+           "SIGNAL JUMP continues at its target, not after its END");
+    expect(gsw_call(NID_SCE_GE_GET_CMD, 0xcfu, 0u, 0u, 0u) == 0x11u,
+           "SIGNAL RET returns to the word after the caller's END");
+    expect(gsw_call(NID_SCE_GE_GET_CMD, 0x10u, 0u, 0u, 0u) == 0x080000u,
+           "SIGNAL RET restores the caller's BASE");
+
+    /* Relative CALL (from the SIGNAL word), and a hardware CALL/RET inside the callee: the
+     * callee starts with an empty hardware stack, so its RET returns to it, not to the caller. */
+    MEM_W32(ml2, 0x13000000u);                  /* OFFSETADDR 0 */
+    ge_signal_pair(ml2 + 4u, 0x14u, rsub - (ml2 + 4u));   /* SIGNAL RCALL rsub */
+    MEM_W32(ml2 + 12u, 0xcf000044u);
+    MEM_W32(ml2 + 16u, 0x0f000000u);
+    MEM_W32(ml2 + 20u, 0x0c000000u);
+    MEM_W32(rsub, 0x10080000u);                 /* BASE 0x08 */
+    MEM_W32(rsub + 4u, 0x0a000000u | (hw & 0x00ffffffu));  /* hardware CALL hw */
+    MEM_W32(rsub + 8u, 0xcd000055u);
+    ge_signal_pair(rsub + 12u, 0x12u, 0u);      /* SIGNAL RET */
+    MEM_W32(hw, 0xce000066u);
+    MEM_W32(hw + 4u, 0x0b000000u);              /* hardware RET */
+    const uint32_t b = gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml2, 0u, 0xffffffffu, 0u);
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, b, 1u, 0u, 0u) == 0u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xceu, 0u, 0u, 0u) == 0x66u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xcdu, 0u, 0u, 0u) == 0x55u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xcfu, 0u, 0u, 0u) == 0x44u,
+           "SIGNAL RCALL is relative to the SIGNAL, and a hardware CALL/RET nests inside it");
+
+    /* The stack holds SceGeListArgs.numStacks entries. With none, a CALL is the driver's
+     * stack-overflow error: the run stops by name and the list stays at the SIGNAL. */
+    MEM_W32(args, 16u);                         /* size */
+    MEM_W32(args + 4u, 0u);                     /* context */
+    MEM_W32(args + 8u, 0u);                     /* numStacks */
+    MEM_W32(args + 12u, 0u);                    /* stacks */
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    const uint32_t c = gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml, 0u, 0xffffffffu, args);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, c, 1u, 0u, 0u) != 0u,
+           "a SIGNAL CALL with numStacks 0 stops the run by name, the list unfinished");
+    sr_hle_test_ge_lists_reset();
+
+    /* After SDK 2.00 a list with no arguments has no stack either (uofw _sceGeListEnQueue). */
+    sr_hle_test_set_compiled_sdk_version(0x02000010u);
+    stops = sr_hle_test_unmodelled_stops();
+    (void)gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml, 0u, 0xffffffffu, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "an SDK 2.00 list enqueued without arguments has no SIGNAL CALL stack");
+    sr_hle_test_ge_lists_reset();
+    MEM_W32(args + 8u, 1u);
+    stops = sr_hle_test_unmodelled_stops();
+    const uint32_t d = gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml, 0u, 0xffffffffu, args);
+    expect(sr_hle_test_unmodelled_stops() == stops &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, d, 1u, 0u, 0u) == 0u,
+           "numStacks 1 holds the one SIGNAL CALL");
+    MEM_W32(args + 8u, 256u);
+    expect(gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml, 0u, 0xffffffffu, args) == 0x80000104u,
+           "numStacks 256 is SCE_ERROR_INVALID_SIZE (uofw _sceGeListEnQueue)");
+
+    /* A RET with nothing called is the driver's stack-underflow error. */
+    sr_hle_test_ge_lists_reset();
+    stops = sr_hle_test_unmodelled_stops();
+    (void)gsw_call(NID_SCE_GE_LIST_ENQUEUE, sub2, 0u, 0xffffffffu, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "a SIGNAL RET with an empty stack stops the run by name");
+    sr_hle_test_set_compiled_sdk_version(0u);
+    sr_hle_test_ge_lists_reset();
+}
+
 
 static void test_kernel_import_sweep_ge_head(void) {
     const uint32_t list = 0x08918000u;
@@ -46473,6 +46579,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_blocking_sync_waits_for_stalled_list();
     test_ge_list_stops_for_a_stronger_thread();
     test_ge_sync_ids_match_psp();
+    test_ge_signal_jump_call_ret();
     test_ge_break_continue();
     test_ge_completion_timing();
     test_ge_finish_callback_reports();
