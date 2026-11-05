@@ -286,7 +286,7 @@ With `SR_ACE=off` (the default: players opt in) every Ace branch sits behind one
 device is created with no features, every sampler and the texture descriptor pool are as before, the presenter
 registers no UI pass, and the observation counters do not run. Nothing is printed, except one `TEX_SCALE: off`
 line when the environment asks for texture scaling or the smart 2D filter, which names the request and does not obey
-it (section 10.8). `gpu-coherence-selftest` checks the samplers and the pool; `display-smoke` keeps its image hash.
+it (section 10.10). `gpu-coherence-selftest` checks the samplers and the pool; `display-smoke` keeps its image hash.
 
 ### 10.3. What Ace Changes, and What It Never Changes
 
@@ -366,10 +366,10 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
 `sas=sinc` (#2054) resamples SAS VAG voices through a band-limited filter on the host. The mixed values land in guest
 memory, so it is a guest-visible item, and its entry is section 11.3.1.
 
-### 10.8. Texture Scaling and the Smart 2D Filter
+### 10.10. Texture Scaling and the Smart 2D Filter
 
 Two features in the Vulkan GE renderer (#1273). Both are guest-visible (section 11.1) and are not admitted under
-section 11.2: section 11.3.2 is their entry and says what the guest can observe, and this section says how they draw.
+section 11.2: section 11.3.3 is their entry and says what the guest can observe, and this section says how they draw.
 The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture cache; the scaler is xBRZ 1.9
 (`third_party/xbrz/`, GPL-3.0).
 
@@ -379,7 +379,7 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
   prints one `TEX_SCALE: off (texture scaling and the smart 2D filter need Ace Mode)` line. A value outside the list
   prints `TEX_SCALE: refused (<reason>)` and leaves both off. There is no launch-line key, library setting or
   per-title setting yet: they come in the launch-line pull request that follows the Ace settings work (#2074), and
-  only that pull request admits the features (section 11.3.2).
+  only that pull request admits the features (section 11.3.3).
 - **What is scaled.** A texture the texture cache decodes, with one level (no mipmaps), after its palette lookup.
   The factor drops for a texture whose scaled side would pass 2048 texels, and a texture that would pass 2048 at 2x
   is not scaled. The image is padded by two texels, repeated or clamped by the texture's wrap mode, so a repeating
@@ -423,12 +423,12 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
   Every other draw, a 3D one included, keeps the game's filter.
 - **Guest memory.** Neither feature writes guest memory, the CLUT or a texture source; texture readbacks and
   render-to-texture results are unchanged. What a present commits to guest VRAM does change, which makes both
-  features guest-visible: section 11.3.2 is their entry, and this section covers only their presentation.
+  features guest-visible: section 11.3.3 is their entry, and this section covers only their presentation.
 - **Stamps.** `TEX_SCALE: on (xbrz=<factor>, smart2d=on|off, budget_mb=<n>)` at start; at exit,
   `TEX_SCALE: draws (scaled_binds=, onetoone_unscaled=, scaled_uploads=, stale=, smart2d=, reclaimed=,
   budget_short=, upload_capped=)` and
   `TEX_SCALE: exit (scaled=, queue_full=, discarded=, budget_peak_mb=, worker_ms=)`.
-  A run with either feature on also prints, at start, the line section 11.3.2 describes.
+  A run with either feature on also prints, at start, the line section 11.3.3 describes.
   Section 10.4 applies: the run is an Ace run.
 - **A title it breaks.** A title whose fonts or pixel art suffer gets its off switch in its own package, never as
   per-title code in a generic file.
@@ -436,7 +436,7 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
   texel to one pixel. Nearest sampling turns each glyph texel into a hard block at a render scale above 1x, so the
   filter makes their text worse, not crisper. The evidence is the before-and-after runs at render scale 4 recorded in
   #2092. `SR_SMART_2D` is off by default for every title, so nothing in the runtime names them. Their per-title
-  setting comes with the launch-line pull request that follows #2074 (section 11.3.2).
+  setting comes with the launch-line pull request that follows #2074 (section 11.3.3).
 - **Tests.** `tex-scale-selftest` checks the C port against goldens from the upstream release, the borders, the job
   queue, the settings (an authentic start with both variables set keeps both off) and the classifier, with refused
   draws at the edge of its tolerance. `tex-scale-gate-mutant` builds the selftest without the Ace gate and passes only
@@ -578,9 +578,9 @@ No guest-visible item is admitted by this section alone. Each lands in its own p
 - **Evidence tools (section 11.2, item 6).** `ACE_MODE: on (...)` and the flight recorder's `runtime.enhancements`
   carry `sas=` with the rest of the launch line, and section 10.4's refusals apply to the run unchanged.
 
-#### 11.3.2. Texture Scaling and the Smart 2D Filter (Not Yet Admitted)
+#### 11.3.3. Texture Scaling and the Smart 2D Filter (Not Yet Admitted)
 
-The two features of section 10.8 (#1273). Their presentation is described there; this entry is what the guest can
+The two features of section 10.10 (#1273). Their presentation is described there; this entry is what the guest can
 observe.
 
 - **Status: guest-visible, not admitted under section 11.2.** Each present commits the frame it shows to guest VRAM,
@@ -598,9 +598,9 @@ observe.
   above 1x.
 - **VRAM bytes:** differ in those frames, at those draws' pixels.
 - **Readbacks:** differ the same way, for a GE or display readback, save picture or screenshot that covers them.
-  Texture readbacks and render-to-texture results are unchanged (section 10.8).
+  Texture readbacks and render-to-texture results are unchanged (section 10.10).
 - **Timing:** differs. Scaling runs on worker threads, but storing a finished copy is an upload on the renderer
-  thread, the thread the guest runs on, and a budget reclaim drains the GE once (section 10.8), so a guest frame can
+  thread, the thread the guest runs on, and a budget reclaim drains the GE once (section 10.10), so a guest frame can
   take longer. Measured at render scale 4 with `SR_TEX_SCALE=4 SR_SMART_2D=on` against the same build with both
   off, in 200-second attract runs before the per-present store bound: *Hot Shots Tennis* presented 94.1% of its
   frame intervals at one VBLANK against 98.9% (625 two-VBLANK intervals against 99); *LittleBigPlanet* 98.7%
@@ -610,4 +610,4 @@ observe.
 - **I/O speed:** unchanged.
 - **Tier:** Enhanced. **Default:** off, and Ace-only: in an authentic run both stay off whatever the environment says.
 - **Nothing worse (section 11.2, item 4):** not shown. *Hot Shots Tennis* and *LittleBigPlanet* keep smart 2D off
-  (section 10.8), and neither feature may be on by default before the runs item 4 lists exist.
+  (section 10.10), and neither feature may be on by default before the runs item 4 lists exist.
