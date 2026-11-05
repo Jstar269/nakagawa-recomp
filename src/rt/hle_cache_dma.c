@@ -174,8 +174,6 @@ void sr_stale_note_cache_op(uint32_t addr) {
  *     (PSP-DMAC-002 b2, 8/8 per cell);
  *   - fully valid RAM/VRAM spans copy their complete requested sizes through
  *     0x100000 bytes in the sequential size matrix;
- *   - a one-byte tail past an allocator-proven valid prefix returns success
- *     after copying exactly that prefix, for both APIs and both directions;
  *   - same-pointer and forward/backward overlapping copies are memmove-correct;
  *   - both APIs block their caller for the whole transfer; a Try made while
  *     another thread's transfer is pending returns BUSY (0x80000021) and a
@@ -203,8 +201,7 @@ void sr_stale_note_cache_op(uint32_t addr) {
  * RUNTIME_IMPLEMENTED:
  *   - fully valid spans are copied at their requested size (there is no
  *     API-wide 0xC000 ceiling);
- *   - the measured one-byte arena-end tail is copied only through its valid
- *     prefix, while larger or ambiguous overruns remain fail-closed;
+ *   - a span that runs past the guest arena is refused whole (see UNMEASURED);
  *   - both registered NIDs share one copy path;
  *   - the head/body/tail split and the 0x100-byte channel bypass above;
  *   - a channel transfer opens the scheduler's channel window for the
@@ -228,7 +225,15 @@ void sr_stale_note_cache_op(uint32_t addr) {
  *     modulo 16 uses the channel (only 0x108 bytes was measured, refused);
  *   - callers that cannot block (interrupt context, suspended interrupts or
  *     dispatch, no guest thread) keep the synchronous copy and open no window;
- *   - span validation runs before BUSY and the wait.
+ *   - span validation runs before BUSY and the wait;
+ *   - a source or destination span that runs past the end of the guest arena
+ *     (guest physical 0x0c000000) is refused whole with 0x80000103 and nothing
+ *     is copied.  This is a runtime safety boundary: what the PSP does for a span
+ *     past the end of RAM is unmeasured.  The earlier "one-byte tail copies its
+ *     valid prefix" rule came from a probe whose partition-end premise was false,
+ *     and every later run of those cells was SKIP, so it is not a PSP fact (#303).
+ *     Inside the arena the PSP copies past the top of user RAM (PSP-MEMEDGE-001),
+ *     and so does the runtime.
  *
  * The size-before-address ordering below follows the S0 cells above.
  * Guest RAM/VRAM share the runtime's unified host allocation, and this target
@@ -353,21 +358,18 @@ static uint32_t dmac_transfer(CpuState *s, int try_only) {
     if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;
     if (dst == 0u || src == 0u) return SCE_DMAC_ERROR_ILLEGAL_ADDR;
 
-    /* The physical PSP completed the one-byte invalid-tail case through the
-     * valid prefix.  Compute both prefixes with overflow-safe arena arithmetic
-     * and only admit that measured one-byte shape.  Larger tails, wrapped
-     * requests, and zero-length prefixes fail atomically until a broader
-     * hardware control establishes their semantics. */
+    /* Both spans must lie wholly inside the guest arena, computed with
+     * overflow-safe arithmetic before a host pointer is formed.  A span that runs
+     * past it, or wraps, is refused whole and nothing moves: a runtime safety
+     * boundary, not a PSP measurement (UNMEASURED above). */
     const uint32_t src_prefix = sr_guest_span_prefix(src, n);
     const uint32_t dst_prefix = sr_guest_span_prefix(dst, n);
-    uint32_t effective = src_prefix < dst_prefix ? src_prefix : dst_prefix;
-    if (effective == 0u ||
-        (src_prefix != n && n - src_prefix != 1u) ||
-        (dst_prefix != n && n - dst_prefix != 1u)) {
+    if (src_prefix != n || dst_prefix != n) {
         if (dst_prefix != n) sr_oor(dst, 0u, 1);
         if (src_prefix != n) sr_oor(src, 0u, 0);
         return SCE_DMAC_ERROR_ILLEGAL_ADDR;
     }
+    const uint32_t effective = n;
     if (!(dmac_src_crosses_vram_mirror(dst, src, effective) ||
           sr_guest_span_readable_current(src, effective)) ||
         !sr_guest_span_writable(dst, effective)) {

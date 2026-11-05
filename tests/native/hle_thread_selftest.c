@@ -27939,10 +27939,10 @@ static void test_bulk_guest_span_atomicity(void) {
     expect(MEM_R8(0x0bfffff0u) == 0x3cu && MEM_R8(0x0bfffff0u + 15u) == 0x3cu,
            "rejected memset performs no partial guest mutation");
     for (uint32_t i = 0; i < 16u; i++) MEM_W8(0x0bfffff0u + i, 0x2au);
-    expect(bulk_call(NID_SCE_DMAC_MEMCPY, 0x0bfffff0u, src, 17u) == 0u,
-           "production DMA reports success for a measured one-byte tail");
-    expect(MEM_R8(0x0bfffff0u) == 0x30u && MEM_R8(0x0bfffff0u + 15u) == 0x3fu,
-           "measured one-byte DMA tail copies the valid prefix");
+    expect(bulk_call(NID_SCE_DMAC_MEMCPY, 0x0bfffff0u, src, 17u) == 0x80000103u,
+           "production DMA refuses a one-byte tail past the arena");
+    expect(MEM_R8(0x0bfffff0u) == 0x2au && MEM_R8(0x0bfffff0u + 15u) == 0x2au,
+           "a refused DMA tail performs no partial guest mutation");
 }
 
 /* ---- sceDmacMemcpy / sceDmacTryMemcpy hardware regressions ------------------
@@ -27954,8 +27954,9 @@ static void test_bulk_guest_span_atomicity(void) {
  * The expected values come from the source-owned PSP-3000 / 6.61-ARK
  * measurements; private capture details are intentionally not part of this
  * public-safe tree. Fully valid spans are complete copies through 1 MiB. A
- * one-byte tail past a proven prefix is copied through that prefix; larger
- * or wrapped overruns remain fail-closed until separately measured. */
+ * span past the end of the guest arena, of any length, or a wrapped one is
+ * refused whole: a runtime safety boundary, since the PSP's answer there is
+ * unmeasured (#303). */
 
 /* The probe's source pattern: byte i of the source buffer is 0x10 + (i & 0x3F).
  * Reusing the exact fill makes the expected bytes below the same literals the
@@ -28026,37 +28027,28 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
     expect(dmac_span_is(dst, 256u, 0xa5u),
            "PSP: a NULL-pointer request modifies no destination byte");
 
-    /* Checked span arithmetic. The arena ends at guest physical 0x0c000000.
-     * The one-byte boundary shape is the newly measured partial-tail control;
-     * the complete prefix is copied and the byte past it is untouched. */
+    /* Checked span arithmetic. The arena ends at guest physical 0x0c000000. A
+     * span one byte past it is refused whole, from either side: nothing is copied
+     * and the GPU is not told. Runtime safety boundary, not a PSP measurement. */
     dmac_fill(src, 17u);
     dmac_clear(0x0bfffff0u, 16u, 0x3bu);
     gpu_dirty_reset();
-    expect(bulk_call(nid, 0x0bfffff0u, src, 17u) == 0u,
-           "PSP: a one-byte invalid destination tail returns success");
-    expect(dmac_span_matches(0x0bfffff0u, 16u, 0u),
-           "PSP: a one-byte invalid destination tail copies only the prefix");
-    expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == 0x0bfffff0u &&
-               s_gpu_dirty_bytes == 16u,
-           "PSP: a partial destination tail dirties only the valid prefix");
+    expect(bulk_call(nid, 0x0bfffff0u, src, 17u) == SCE_DMAC_ILLEGAL_ADDR,
+           "a destination span one byte past the arena is refused");
+    expect(dmac_span_is(0x0bfffff0u, 16u, 0x3bu),
+           "a refused one-byte destination tail copies nothing");
 
     dmac_fill(0x0bfffff0u, 16u);
     dmac_clear(dst, 17u, 0x4bu);
-    gpu_dirty_reset();
-    expect(bulk_call(nid, dst, 0x0bfffff0u, 17u) == 0u,
-           "PSP: a one-byte invalid source tail returns success");
-    expect(dmac_span_matches(dst, 16u, 0u),
-           "PSP: a one-byte invalid source tail copies only the prefix");
-    expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == dst &&
-               s_gpu_dirty_bytes == 16u,
-           "PSP: a partial source tail dirties only the valid prefix");
+    expect(bulk_call(nid, dst, 0x0bfffff0u, 17u) == SCE_DMAC_ILLEGAL_ADDR,
+           "a source span one byte past the arena is refused");
+    expect(dmac_span_is(dst, 17u, 0x4bu),
+           "a refused one-byte source tail copies nothing");
 
-    /* Larger tails and uint32 wrap are still deliberately conservative: no
-     * partial host pointer is formed for an unmeasured shape. */
+    /* Larger tails and uint32 wrap: no partial host pointer is formed. */
     dmac_clear(0x0bff1000u, 0xc000u, 0x3bu);
-    gpu_dirty_reset();
     expect(bulk_call(nid, 0x0bff1000u, src, 0x10000u) == SCE_DMAC_ILLEGAL_ADDR,
-           "unmeasured multi-byte invalid tail remains fail-closed");
+           "a multi-byte tail past the arena is refused");
     expect(bulk_call(nid, 0x0bffff00u, src, 0xFFFFFF00u) == SCE_DMAC_ILLEGAL_ADDR,
            "PSP class: a destination span that wraps uint32_t is rejected");
     expect(bulk_call(nid, dst, 0x0bffff00u, 0xFFFFFF00u) == SCE_DMAC_ILLEGAL_ADDR,
