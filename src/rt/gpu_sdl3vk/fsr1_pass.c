@@ -209,7 +209,7 @@ static void img_barrier(Fsr1Pass *p, VkCommandBuffer cmd, Img *im, VkImageLayout
     im->layout = to;
 }
 
-static void dispatch(Fsr1Pass *p, VkCommandBuffer cmd, VkPipeline pipe, VkDescriptorSet set,
+static void run_pass(Fsr1Pass *p, VkCommandBuffer cmd, VkPipeline pipe, VkDescriptorSet set,
                      const void *push, uint32_t push_bytes) {
     p->CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
     p->CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p->layout, 0, 1, &set, 0, NULL);
@@ -250,7 +250,7 @@ VkImage fsr1_record(Fsr1Pass *p, VkCommandBuffer cmd, VkImage src, int w, int h,
                (AF1)out_w, (AF1)out_h);
     ep.size[0] = (uint32_t)out_w;
     ep.size[1] = (uint32_t)out_h;
-    dispatch(p, cmd, p->easu, p->easu_set, &ep, (uint32_t)sizeof(ep));
+    run_pass(p, cmd, p->easu, p->easu_set, &ep, (uint32_t)sizeof(ep));
 
     if (sharpness <= FSR1_SHARPNESS_OFF) {
         img_barrier(p, cmd, &p->mid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
@@ -268,7 +268,7 @@ VkImage fsr1_record(Fsr1Pass *p, VkCommandBuffer cmd, VkImage src, int w, int h,
     FsrRcasCon(rp.con, (AF1)sharpness);
     rp.size[0] = (uint32_t)out_w;
     rp.size[1] = (uint32_t)out_h;
-    dispatch(p, cmd, p->rcas, p->rcas_set, &rp, (uint32_t)sizeof(rp));
+    run_pass(p, cmd, p->rcas, p->rcas_set, &rp, (uint32_t)sizeof(rp));
     img_barrier(p, cmd, &p->out, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0);
     return p->out.image;
