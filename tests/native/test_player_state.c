@@ -36,6 +36,9 @@
 #include "psp_seal_fixture.h"
 #include "pgf_golden_vectors.h"
 #include "../../src/rt/recomp.h"
+/* The runtime's SR_ACE parser, built into this test by source (it uses the C library only),
+ * so every line the player writes is checked against the parser that reads it (#2054). */
+#include "../../src/rt/ace.c"
 
 /* The per-run root setup and its recursive cleanup run inside assert(); keep
  * them even in a build that defines NDEBUG (#735). */
@@ -6027,7 +6030,8 @@ static void test_play_mode_settings(void) {
            app->settings.enhanced.part[PLAYER_PART_TEXT] == 1 &&
            app->settings.enhanced.part[PLAYER_PART_READOUT] == 0 &&
            app->settings.enhanced.part[PLAYER_PART_NOTICE] == 1 &&
-           app->settings.enhanced.part[PLAYER_PART_SMOOTH] == 0);
+           app->settings.enhanced.part[PLAYER_PART_SMOOTH] == 0 &&
+           app->settings.enhanced.part[PLAYER_PART_SAS] == 0);
     assert(app->settings.title_play_count == 0);
     player_play_resolve(&app->settings, "TEST90001", &r);
     assert(!r.on && r.mode == PLAYER_PLAY_AUTHENTIC && r.chosen == PLAYER_PLAY_LIBRARY);
@@ -6076,7 +6080,7 @@ static void test_play_mode_settings(void) {
            r.part[PLAYER_PART_READOUT] == 0 && r.part[PLAYER_PART_NOTICE] == 1);
     assert(player_play_launch_line(&r, line, sizeof(line)) &&
            strcmp(line, "v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=off;"
-                        "smooth=off") == 0);
+                        "smooth=off;sas=off") == 0);
     /* Ace is offered only for a title with a usable package: library, Authentic, Enhanced,
        then back to library for title 1; Ace before library for title 2. */
     player_app_cycle_title_play_mode(app, 1);
@@ -6098,7 +6102,7 @@ static void test_play_mode_settings(void) {
            r.part[PLAYER_PART_NOTICE] == 1);
     assert(player_play_launch_line(&r, line, sizeof(line)) &&
            strcmp(line, "v1;tier=ace;af=16;text=on;readout=off;notice=on;wide=off;"
-                        "smooth=off") == 0);
+                        "smooth=off;sas=off") == 0);
     assert(player_app_title_60hz_saved(app, "TEST90003") && player_app_title_60hz_on(app, 2));
     /* Ace's own part has its off switch: Ace stays, without the 60 FPS game logic. */
     player_app_set_title_60hz(app, 2, false);
@@ -6191,12 +6195,12 @@ static void test_play_mode_settings(void) {
     assert(r.on && r.mode == PLAYER_PLAY_ACE && r.logic_60 && r.part[PLAYER_PART_SMOOTH] == 0);
     assert(player_play_launch_line(&r, line, sizeof(line)) &&
            strcmp(line, "v1;tier=ace;af=16;text=off;readout=on;notice=on;wide=off;"
-                        "smooth=off") == 0);
+                        "smooth=off;sas=off") == 0);
     assert(!player_app_title_60hz_on(app, 1) && app->games[1].enhancement_package_id[0] == '\0');
     player_app_set_experimental_60hz_session(app, false);
     assert(app->games[2].enhancement_package_id[0] == '\0');
     /* Ace's own off switch on a title that follows the library is an entry of its own: it is
-       kept and saved (section 10.7), and holds once the title chooses Ace. */
+       kept and saved (section 10.8), and holds once the title chooses Ace. */
     player_app_set_title_60hz(app, 1, false);
     {
         const PlayerTitlePlay *own = player_settings_title_play(&app->settings, "TEST90002");
@@ -6233,7 +6237,8 @@ static void test_play_mode_settings(void) {
         char *saved = read_text_file(path);
         assert(saved && strstr(saved, "\"enhanced\": {\"default\": \"enhanced\", \"af\": \"16\", "
                                       "\"text\": \"off\", \"readout\": \"off\", "
-                                      "\"notice\": \"on\", \"smooth\": \"off\"},") != NULL);
+                                      "\"notice\": \"on\", \"smooth\": \"off\", "
+                                      "\"sas\": \"off\"},") != NULL);
         assert(strstr(saved, "\"TEST90001\": {\"mode\": \"library\", \"af\": \"8\", "
                              "\"notice\": \"off\"}") != NULL);
         assert(strstr(saved, "\"TEST90002\": {\"mode\": \"library\", \"logic_60\": \"off\"}")
@@ -6287,7 +6292,7 @@ static void test_play_mode_settings(void) {
         assert(nk_platform_mkdir_p(dir));
         assert(player_ace_report_path(root, "TEST90001", report, sizeof(report)));
         write_text_file(report,
-            "{\n  \"schema\": 1,\n  \"spec\": \"v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=off;smooth=off\",\n"
+            "{\n  \"schema\": 1,\n  \"spec\": \"v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off\",\n"
             "  \"effective\": {\"af\": 16, \"text\": true, \"readout\": false, \"notice\": true, "
             "\"wide\": \"off\", \"smooth\": \"off\"},\n  \"unavailable\": {},\n"
             "  \"rate\": {\"dominant\": \"30 Hz\", \"seconds\": {\"30 Hz\": 50.0}},\n"
@@ -6315,7 +6320,7 @@ static void test_play_mode_settings(void) {
 }
 
 /* The settings mapping from the development builds' keys (docs/ENHANCEMENT_CONTRACT.md
- * section 10.7): "ace" becomes the library's default and parts, "ace_titles" the titles'
+ * section 10.8): "ace" becomes the library's default and parts, "ace_titles" the titles'
  * choices and parts, and a disc in "enhancement_60hz_discs" plain Ace: Enhanced plus its 60 FPS
  * game logic (owner, 2026-11-04). The keys are read only when "enhanced" is absent. */
 static void test_play_mode_settings_mapping(void) {
@@ -6374,7 +6379,7 @@ static void test_play_mode_settings_mapping(void) {
         char line[192];
         assert(player_play_launch_line(&r, line, sizeof(line)) &&
                strcmp(line, "v1;tier=ace;af=16;text=on;readout=off;notice=on;wide=off;"
-                            "smooth=off") == 0);
+                            "smooth=off;sas=off") == 0);
     }
     player_play_resolve(&back->settings, "TEST91001", &r);
     assert(r.chosen == PLAYER_PLAY_ACE && r.logic_60 && r.part[PLAYER_PART_FILTERING] == 16 &&
@@ -6408,7 +6413,7 @@ static void test_play_mode_smooth_motion(void) {
     player_play_resolve(&settings, "TEST90001", &r);
     assert(player_play_launch_line(&r, line, sizeof(line)) &&
            strcmp(line, "v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=off;"
-                        "smooth=x2") == 0);
+                        "smooth=x2;sas=off") == 0);
     assert(strstr(line, "match") == NULL);
     player_play_apply_logic_60(&r, false);
     assert(r.part[PLAYER_PART_SMOOTH] == 1);
@@ -6419,6 +6424,19 @@ static void test_play_mode_smooth_motion(void) {
     /* The line fits the runtime's buffer (src/rt/ace.h ACE_SPEC_MAX 192) with room to spare. */
     assert(strlen(line) < 96u);
     assert(!player_play_launch_line(&r, line, 20u) && line[0] == '\0');
+    /* Clean pitched sound (contract 11.3.1) is off by default, reaches the line as sinc when
+       the library turns it on, and the 60 FPS game logic leaves it alone. */
+    settings.enhanced.part[PLAYER_PART_SMOOTH] = 0;
+    settings.enhanced.part[PLAYER_PART_SAS] = 1;
+    player_play_resolve(&settings, "TEST90001", &r);
+    assert(r.on && r.part[PLAYER_PART_SAS] == 1);
+    assert(player_play_launch_line(&r, line, sizeof(line)) &&
+           strcmp(line, "v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=off;"
+                        "smooth=off;sas=sinc") == 0);
+    player_play_apply_logic_60(&r, true);
+    assert(r.part[PLAYER_PART_SAS] == 1 && player_play_launch_line(&r, line, sizeof(line)) &&
+           strstr(line, "tier=ace;") != NULL && strstr(line, "sas=sinc") != NULL);
+    settings.enhanced.part[PLAYER_PART_SAS] = 0;
     /* An Authentic resolution stays off, whatever the 60 FPS game logic says. */
     settings.enhanced.library = PLAYER_PLAY_AUTHENTIC;
     player_play_resolve(&settings, "TEST90001", &r);
@@ -6447,6 +6465,7 @@ static void expect_line_parses_in_runtime(const PlayerPlayResolved *r) {
     assert(c.notice == r->part[PLAYER_PART_NOTICE]);
     assert(c.wide == ACE_WIDE_OFF);
     assert(c.smooth == (r->part[PLAYER_PART_SMOOTH] ? ACE_SMOOTH_X2 : ACE_SMOOTH_OFF));
+    assert(c.sas == (r->part[PLAYER_PART_SAS] ? ACE_SAS_SINC : ACE_SAS_OFF));
     assert(ace_format(&c, canonical, sizeof(canonical)) && strcmp(canonical, line) == 0);
 }
 

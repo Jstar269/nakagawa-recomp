@@ -8,7 +8,7 @@
  * value can never opt a launch in:
  *
  *     SR_ACE=off
- *     SR_ACE=v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=off;smooth=off
+ *     SR_ACE=v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off
  *
  * tier (enhanced or ace) only names the run, in the badge, the pause menu and the stamps; a
  * line without it is an Enhanced run. Every other key is required in v1, in any order, each
@@ -20,8 +20,9 @@
  * Off is authentic: every Ace branch in the runtime sits behind g_ace_on, which stays 0, so the
  * Vulkan device, every sampler, the guest shaders, the presents and the observation counters
  * are today's, and nothing is printed. With Ace on, guest logic and the guest timing model are
- * unchanged; host presentation changes, and the run says so ("ACE_MODE: on (...)" at start, an
- * exit line, and the flight recorder's runtime.enhancements block).
+ * unchanged; host presentation changes (and, with sas=sinc, the mixed SAS sample values), and
+ * the run says so ("ACE_MODE: on (...)" at start, an exit line, and the flight recorder's
+ * runtime.enhancements block).
  *
  * This unit uses the C library only, and on Windows MoveFileEx for the report's atomic replace.
  * ace-selftest links it with nothing else, so no code path here can reach a guest-visible
@@ -39,11 +40,13 @@
 #define ACE_HAS_WIDE 0
 #define ACE_HAS_SMOOTH 1        /* smooth=x2: one in-between per 30 Hz frame */
 #define ACE_HAS_SMOOTH_MATCH 0  /* smooth=match: the monitor's rate */
+#define ACE_HAS_SAS 1           /* sas=sinc: band-limited SAS voice resampling (#2054) */
 
 typedef enum { ACE_WIDE_OFF = 0, ACE_WIDE_FILL = 1 } AceWide;
 typedef enum { ACE_SMOOTH_OFF = 0, ACE_SMOOTH_MATCH = 1, ACE_SMOOTH_X2 = 2 } AceSmooth;
 /* The play mode a run is: Enhanced, or Ace (Enhanced plus the game's own package). */
 typedef enum { ACE_TIER_ENHANCED = 0, ACE_TIER_ACE = 1 } AceTier;
+typedef enum { ACE_SAS_OFF = 0, ACE_SAS_SINC = 1 } AceSas;
 
 typedef struct {
     int on;          /* 0: authentic (off, unset or refused); every field below is then 0 */
@@ -54,6 +57,7 @@ typedef struct {
     int wide;        /* AceWide */
     int smooth;      /* AceSmooth */
     int tier;        /* AceTier */
+    int sas;         /* AceSas: SAS voices mix through a band-limited resampler (host-only) */
 } AceConfig;
 
 typedef enum {
@@ -63,6 +67,7 @@ typedef enum {
     ACE_FEATURE_NOTICE,
     ACE_FEATURE_WIDE,
     ACE_FEATURE_SMOOTH,
+    ACE_FEATURE_SAS,
     ACE_FEATURE_COUNT
 } AceFeature;
 

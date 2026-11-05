@@ -231,6 +231,7 @@ typedef enum {
     PLAYER_PART_READOUT,       /* the speed readout: 0 or 1 */
     PLAYER_PART_NOTICE,        /* the in-game badge at start: 0 or 1 */
     PLAYER_PART_SMOOTH,        /* smooth motion (#1272): 0 off, 1 x2 */
+    PLAYER_PART_SAS,           /* band-limited SAS resampling (#2054, section 11.3.1): 0 off, 1 sinc */
     PLAYER_PART_COUNT
 } PlayerEnhancedPart;
 
@@ -306,7 +307,7 @@ typedef struct {
     /* The play modes (#2055): "enhanced" and the sparse "title_play" in settings.json,
        additions to schema version 2 as text_size is. A file without them is read from the
        development builds' "ace", "ace_titles" and "enhancement_60hz_discs"
-       (docs/ENHANCEMENT_CONTRACT.md section 10.7). A title in Ace launches its enhanced
+       (docs/ENHANCEMENT_CONTRACT.md section 10.8). A title in Ace launches its enhanced
        build, packages/<disc_id>-enhanced-<id> (section 9), unless its 60 FPS game logic is
        turned off. */
     PlayerEnhancedSettings enhanced;
@@ -1519,8 +1520,8 @@ void player_play_resolve(const PlayerSettings *settings, const char *disc_id,
  * Authentic resolution stays off. */
 void player_play_apply_logic_60(PlayerPlayResolved *play, bool logic_60);
 /* The SR_ACE line for a resolution: "off", or "v1;tier=enhanced;af=16;text=on;readout=off;
- * notice=on;wide=off;smooth=off" (tier=ace for Ace; wide is always off, and smooth=match is
- * never written). Returns false when it does not fit. */
+ * notice=on;wide=off;smooth=off;sas=off" (tier=ace for Ace; wide is always off, and smooth=match
+ * is never written). Returns false when it does not fit. */
 bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t cap);
 /* <user_root>/ace/<disc ID>.json: the runtime's per-run report for that disc. */
 bool player_ace_report_path(const char *user_root, const char *disc_id, char *out, size_t cap);

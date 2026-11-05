@@ -29,7 +29,7 @@ static int value_on_off(const char *v, int *out) {
    nothing: tier is the one key a line may leave out (an Enhanced run). */
 typedef enum {
     ACE_KEY_AF, ACE_KEY_TEXT, ACE_KEY_READOUT, ACE_KEY_NOTICE, ACE_KEY_WIDE, ACE_KEY_SMOOTH,
-    ACE_KEY_TIER
+    ACE_KEY_SAS, ACE_KEY_TIER
 } AceKey;
 
 static const struct {
@@ -43,6 +43,7 @@ static const struct {
     {"notice", ACE_KEY_NOTICE, 1},
     {"wide", ACE_KEY_WIDE, 1},
     {"smooth", ACE_KEY_SMOOTH, 1},
+    {"sas", ACE_KEY_SAS, 1},
     {"tier", ACE_KEY_TIER, 0},
 };
 
@@ -108,6 +109,13 @@ int ace_parse(const char *spec, AceConfig *out, char *why, size_t why_cap) {
                     why_set(why, why_cap, "this smooth mode is not part of this build"); return 0;
                 }
                 break;
+            case ACE_KEY_SAS:
+                if (strcmp(v, "off") == 0) { c.sas = ACE_SAS_OFF; ok = 1; }
+                else if (strcmp(v, "sinc") == 0) { c.sas = ACE_SAS_SINC; ok = 1; }
+                if (ok && c.sas && !ACE_HAS_SAS) {
+                    why_set(why, why_cap, "sas is not part of this build"); return 0;
+                }
+                break;
             }
             if (!ok) { why_set(why, why_cap, "bad value"); return 0; }
         }
@@ -128,14 +136,17 @@ static const char *smooth_word(int v) {
     return v == ACE_SMOOTH_MATCH ? "match" : v == ACE_SMOOTH_X2 ? "x2" : "off";
 }
 static const char *tier_word(int v) { return v == ACE_TIER_ACE ? "ace" : "enhanced"; }
+static const char *sas_word(int v) { return v == ACE_SAS_SINC ? "sinc" : "off"; }
 
 int ace_format(const AceConfig *c, char *out, size_t cap) {
     int n;
     if (!out || !cap) return 0;
     if (!c || !c->on) n = snprintf(out, cap, "off");
-    else n = snprintf(out, cap, "v1;tier=%s;af=%d;text=%s;readout=%s;notice=%s;wide=%s;smooth=%s",
+    else n = snprintf(out, cap, "v1;tier=%s;af=%d;text=%s;readout=%s;notice=%s;wide=%s;smooth=%s;"
+                                "sas=%s",
                       tier_word(c->tier), c->af, on_off(c->text), on_off(c->readout),
-                      on_off(c->notice), wide_word(c->wide), smooth_word(c->smooth));
+                      on_off(c->notice), wide_word(c->wide), smooth_word(c->smooth),
+                      sas_word(c->sas));
     if (n < 0 || (size_t)n >= cap) { out[0] = '\0'; return 0; }
     return 1;
 }
@@ -153,7 +164,7 @@ static int s_confirmed[ACE_FEATURE_COUNT];
 static uint64_t s_af_failures;
 
 static const char *const k_feature_key[ACE_FEATURE_COUNT] = {
-    "af", "text", "readout", "notice", "wide", "smooth"
+    "af", "text", "readout", "notice", "wide", "smooth", "sas"
 };
 
 /* The run's observation state. */
@@ -221,9 +232,9 @@ int ace_init_spec(const char *spec, const char *report_path) {
         snprintf(s_report_path, sizeof(s_report_path), "%s", report_path);
     g_ace_on = 1;
     fprintf(stderr, "ACE_MODE: on (tier=%s, af=%d, text=%s, readout=%s, notice=%s, wide=%s, "
-            "smooth=%s)\n", tier_word(s_req.tier), s_req.af, on_off(s_req.text),
+            "smooth=%s, sas=%s)\n", tier_word(s_req.tier), s_req.af, on_off(s_req.text),
             on_off(s_req.readout), on_off(s_req.notice), wide_word(s_req.wide),
-            smooth_word(s_req.smooth));
+            smooth_word(s_req.smooth), sas_word(s_req.sas));
     return 1;
 }
 
@@ -247,7 +258,8 @@ void ace_feature_unavailable(AceFeature feature, const char *reason) {
     case ACE_FEATURE_READOUT: s_eff.readout = 0; break;
     case ACE_FEATURE_NOTICE: s_eff.notice = 0; break;
     case ACE_FEATURE_WIDE: s_eff.wide = 0; break;
-    default: s_eff.smooth = 0; break;
+    case ACE_FEATURE_SMOOTH: s_eff.smooth = 0; break;
+    default: s_eff.sas = 0; break;
     }
     fprintf(stderr, "ACE_MODE: %s unavailable (%s)\n", k_feature_key[feature], s_unavailable[feature]);
 }
@@ -295,6 +307,7 @@ size_t ace_feature_words(char *out, size_t cap) {
     if (s_eff.text) used = words_add(out, cap, used, "crisp keyboard");
     if (s_eff.wide) used = words_add(out, cap, used, "ultrawide");
     if (s_eff.smooth) used = words_add(out, cap, used, "smooth motion");
+    if (s_eff.sas) used = words_add(out, cap, used, "clean pitched sound");
     if (s_eff.readout) used = words_add(out, cap, used, "speed readout");
     return used;
 }
@@ -673,9 +686,10 @@ size_t ace_report_json(char *out, size_t cap) {
     if (!out || !cap) return 0;
     ACE_PUT("{\n  \"schema\": 1,\n  \"spec\": \"%s\",\n", s_spec);
     ACE_PUT("  \"effective\": {\"af\": %d, \"text\": %s, \"readout\": %s, \"notice\": %s, "
-            "\"wide\": \"%s\", \"smooth\": \"%s\"},\n",
+            "\"wide\": \"%s\", \"smooth\": \"%s\", \"sas\": \"%s\"},\n",
             s_eff.af, s_eff.text ? "true" : "false", s_eff.readout ? "true" : "false",
-            s_eff.notice ? "true" : "false", wide_word(s_eff.wide), smooth_word(s_eff.smooth));
+            s_eff.notice ? "true" : "false", wide_word(s_eff.wide), smooth_word(s_eff.smooth),
+            sas_word(s_eff.sas));
     ACE_PUT("  \"unavailable\": {");
     int first = 1;
     for (int f = 0; f < ACE_FEATURE_COUNT; f++) {
@@ -735,9 +749,9 @@ void ace_finish(void) {
     char json[ACE_REPORT_MAX];
     if (!g_ace_on) return;
     /* A feature that is on but never ran: its renderer or presenter did not start. */
-    static const int has[ACE_FEATURE_COUNT] = { 1, 1, 1, 1, ACE_HAS_WIDE, ACE_HAS_SMOOTH };
+    static const int has[ACE_FEATURE_COUNT] = { 1, 1, 1, 1, ACE_HAS_WIDE, ACE_HAS_SMOOTH, ACE_HAS_SAS };
     const int on[ACE_FEATURE_COUNT] = { s_eff.af > 0, s_eff.text, s_eff.readout, s_eff.notice,
-                                        s_eff.wide, s_eff.smooth };
+                                        s_eff.wide, s_eff.smooth, s_eff.sas };
     for (int f = 0; f < ACE_FEATURE_COUNT; f++) {
         if (has[f] && on[f] && !s_confirmed[f])
             ace_feature_unavailable((AceFeature)f, "did not run: its renderer or presenter did not start");

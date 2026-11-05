@@ -2494,7 +2494,18 @@ void package_builder_poll(PackageBuildSession *session, uint64_t current_time_ms
 void package_builder_cancel(PackageBuildSession *session) {
     if (!session) return;
     if (session->is_building) {
+        /* Terminate waits a bounded time for the build to end (nk_platform.h), so a
+           cancelled build is not still writing once its caller goes on or the player
+           exits. The wait runs on the caller's thread, the UI thread for Cancel; a
+           killed process normally ends in milliseconds. A build still running after
+           it is reported, never hidden. */
         nk_platform_terminate_process(&session->process);
+        if (session->process.is_active) {
+            fprintf(stderr, "[BUILD] Cancel: the build process had not ended after it was "
+                            "stopped; it may still be writing\n");
+            package_builder_add_output_line(
+                session, "[build] CANCEL: the build process had not ended after it was stopped");
+        }
         nk_platform_close_process(&session->process);
         session->is_building = false;
         session->is_cancelled = true;

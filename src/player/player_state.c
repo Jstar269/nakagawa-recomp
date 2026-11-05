@@ -1425,6 +1425,7 @@ static const int k_part_switch_values[] = {1, 0};
 static const char *const k_part_switch_labels[] = {"On", "Off"};
 static const char *const k_part_switch_words[] = {"on", "off"};
 static const char *const k_part_smooth_words[] = {"x2", "off"};
+static const char *const k_part_sas_words[] = {"sinc", "off"};
 
 static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
     {"af", "Texture filtering",
@@ -1442,6 +1443,11 @@ static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
     {"smooth", "Smooth motion",
      "Shows 30 FPS games at 60. Adds about 17 ms of delay.",
      2, k_part_switch_values, k_part_switch_labels, k_part_smooth_words, 0},
+    /* A guest-visible item (contract 11.3.1): off by default until its "nothing worse" runs
+       exist (11.2 item 4), with its own off switch in the library and each title (item 2). */
+    {"sas", "Clean pitched sound",
+     "Resamples pitched sound effects without aliasing. Changes the samples the game mixes.",
+     2, k_part_switch_values, k_part_switch_labels, k_part_sas_words, 0},
 };
 
 const PlayerEnhancedPartInfo *player_enhanced_part(int part) {
@@ -1670,7 +1676,7 @@ static void play_settings_read(PlayerSettings *settings, const NkJsonNode *enhan
 }
 
 /* The development builds' "Ace Mode" settings (before #2055), mapped onto the play modes as
-   docs/ENHANCEMENT_CONTRACT.md section 10.7 says:
+   docs/ENHANCEMENT_CONTRACT.md section 10.8 says:
    - "ace" {"enabled": true} is an Enhanced library default, false Authentic; its feature
      values carry over (a value this build does not know keeps the fresh default, as those
      builds did);
