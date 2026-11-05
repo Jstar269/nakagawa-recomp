@@ -2001,7 +2001,7 @@ class NanTrapCacheKeyTests(unittest.TestCase):
         # Ace Mode (src/rt/ace.h) is a runtime launch line only: no codegen option, native
         # flag or package cache key may read it (invariant A6).
         ace = {
-            "SR_ACE": "v1;af=16;text=on;readout=on;notice=on;wide=off;smooth=off",
+            "SR_ACE": "v1;af=16;text=on;readout=on;notice=on;wide=off;smooth=off;sas=off",
             "SR_ACE_REPORT": "ace-report.json",
         }
         def planner(environment):

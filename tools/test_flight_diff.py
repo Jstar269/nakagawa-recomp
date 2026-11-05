@@ -319,7 +319,7 @@ class ComparabilityContractTests(unittest.TestCase):
         reasons = flight_diff._comparability_reasons(left, right)
         self.assertTrue(any("runtime" in reason for reason in reasons))
 
-    ACE_LINE = "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off"
+    ACE_LINE = "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off"
 
     def test_ace_mode_bundle_is_never_comparable(self):
         # An Ace Mode run (src/rt/ace.h) carries runtime.enhancements. It is refused
