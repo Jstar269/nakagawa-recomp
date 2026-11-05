@@ -197,7 +197,6 @@ add_executable(test_player_state
     src/player/iso_reader.c
     src/player/package_builder.c
     src/player/setup_staging.c
-    src/rt/ace.c
 )
 target_include_directories(test_player_state PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
