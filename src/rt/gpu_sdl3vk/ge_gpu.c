@@ -86,11 +86,11 @@
  *    replicates), and the ordered-dither pattern stays keyed to GUEST pixels.
  *    Bit-exact VRAM round-trips hold at scale 1 (readback(upload(x)) == x by
  *    construction); higher scales trade that for resolution, like any upscaler.
- *  - Host twin (Enhanced 32-bit colour, #2050; SR_GPU_TWIN_COLOR=1 until the Enhanced
+ *  - Host twin (32-bit colour, #2050; Ace Mode only, SR_GPU_TWIN_COLOR=1 until the Ace
  *    line carries its key, after #2074): every target and depth surface gets a second,
- *    host-only image at the twin's own scale. With the twin on, the authentic chain (the
- *    images guest VRAM is read from and committed from) runs at scale 1, where VRAM is
- *    PSP-exact, and the twin runs at the user's render scale. Each render op is recorded a
+ *    host-only image. The authentic chain (the images guest VRAM is read from and committed
+ *    from) keeps the user's render scale, so guest VRAM is the twin-off run's, and the twin
+ *    runs at that scale beside it (ENHANCEMENT_CONTRACT.md 10.8). Each render op is recorded a
  *    second time into the twin; uploads, VRAM patches, depth uploads and block transfers
  *    reach it as nearest-filtered blits of the authentic image; destination snapshots have
  *    twin snapshots. The twin's pass sets F_FULLC and clears the dither: the shader keeps
@@ -127,8 +127,8 @@
 static int s_scale = 1;     /* integer render scale (SR_GPU_SCALE), 1..MAX_SCALE */
 #define SCL_W ((uint32_t)(FB_W * s_scale))   /* device-pixel canvas */
 #define SCL_H ((uint32_t)(FB_H * s_scale))
-/* The host twin's scale (#2050): the user's render scale while the twin is on, when s_scale,
- * the authentic chain's, is 1. */
+/* The host twin's scale (#2050): the user's render scale, which the authentic chain keeps too
+ * (s_tscale == s_scale). The twin code is written for any whole ratio between the two. */
 static int s_tscale = 1;
 #define TSCL_W ((uint32_t)(FB_W * s_tscale))
 #define TSCL_H ((uint32_t)(FB_H * s_tscale))
@@ -540,8 +540,9 @@ static VkDescriptorSetLayout s_dst_dlayout;
 static VkDescriptorSet s_dst_set, s_tdst_set;
 
 /* ---- the host twin (Enhanced: 32-bit colour, #2050) ----------------------------------------
- * With the twin on, each render target and depth buffer has a host-only twin at s_tscale (the
- * authentic images are at s_scale == 1), and every write to the authentic image also reaches
+ * With the twin on (Ace Mode only), each render target and depth buffer has a host-only twin at
+ * s_tscale (the user's render scale, which the authentic images keep too, so s_tscale ==
+ * s_scale), and every write to the authentic image also reaches
  * its twin: each render op is recorded a second time into the twin at the twin's scale; each
  * upload from guest VRAM, CPU-write patch and depth upload reaches it as a nearest-filtered blit
  * of the rectangle the authentic image took (exact pixel replication); a block transfer is
@@ -551,9 +552,11 @@ static VkDescriptorSet s_dst_set, s_tdst_set;
  * a render target or the snapshot samples that target's twin or the twin snapshot. The
  * presenter shows the twin when it is in step (wgen == tgen). Nothing reads a twin back: guest
  * VRAM, readbacks, block transfers into RAM, captures of guest memory and every GE decision come
- * from the authentic image exactly as in a twin-off run at scale 1. With the twin off nothing
- * here is allocated or recorded. */
-static int s_twin = 0;                     /* the run has twins (read once at init) */
+ * from the authentic image exactly as in a twin-off run at the same scale. If any twin cannot be
+ * allocated, the twin goes off for the rest of the run (twin_off_for_run): every twin is freed
+ * and the run continues exactly as a twin-off run. With the twin off nothing here is allocated or
+ * recorded. */
+static int s_twin = 0;                     /* the run has twins (decided at init) */
 static int s_twin_color = 0;               /* the twin's pass: no dither, no 16-bit colour snap */
 static VkImage s_tsnapimg; static VkDeviceMemory s_tsnapimg_mem;
 static VkImageView s_tsnap_view; static VkImageLayout s_tsnap_layout;
@@ -569,6 +572,20 @@ static unsigned long s_cnt_twin_copies = 0; /* uploads, patches and copies repea
 static unsigned long s_cnt_twin_reseed = 0;
 static unsigned long s_cnt_twin_present_auth = 0;
 static const char *s_twin_lag_cause = NULL;  /* the write that last left a twin behind */
+static unsigned long s_cnt_twin_alloc_fail = 0;  /* twin allocations that failed (each turns it off) */
+static int s_twin_unavailable = 0;         /* asked for and allowed, but this GPU refused it at init */
+#ifdef SR_GPU_COHERENCE_SELFTEST
+static int s_twin_inject_fail = 0;         /* the selftest: fail the Nth twin allocation from now */
+#endif
+
+/* SR_GPU_TWIN_COLOR: unset, empty, "0" or "off" is 0 (off); "1" is 1 (full colour); "native" is 2
+ * (the twin with native colour). Any other value is -1: refused, and the twin stays off. */
+static int twin_mode_parse(const char *v) {
+    if (!v || !v[0] || strcmp(v, "0") == 0 || strcmp(v, "off") == 0) return 0;
+    if (strcmp(v, "1") == 0) return 1;
+    if (strcmp(v, "native") == 0) return 2;
+    return -1;
+}
 static int twin_target_make(struct Target *t);
 static int twin_depth_make(DepthEnt *d);
 static void twin_note_write(uint64_t *wgen, uint64_t *tgen, int mirrored, const char *site);
@@ -2451,10 +2468,32 @@ static void twin_depth_free(DepthEnt *d) {
     d->tlayout = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
+/* A twin allocation failed (`what`): the twin goes off for the rest of the run. Every twin is
+ * freed after the GPU is idle and the twin's resources are released, so each target shows its
+ * authentic image at the user's scale, exactly as with the twin off. Reported once. */
+static void twin_off_for_run(const char *what) {
+    s_cnt_twin_alloc_fail++;
+    if (!s_twin) return;
+    fprintf(stderr, "TWIN: off for the rest of the run (%s could not be allocated): the authentic image "
+            "is shown at %dx, as with the twin off\n", what, s_scale);
+    (void)cmd_drain(GEGPU_BOUNDARY_LIFETIME);
+    for (int i = 0; i < MAX_TGT; i++) { twin_target_free(&s_tgts[i]); s_tgts[i].tshow = 0; }
+    for (int i = 0; i < MAX_DEP; i++) twin_depth_free(&s_deps[i]);
+    s_tsnap_src = NULL;
+    twin_release();
+}
+
+#ifdef SR_GPU_COHERENCE_SELFTEST
+#define TWIN_INJECTED_FAIL() (s_twin_inject_fail > 0 && --s_twin_inject_fail == 0)
+#else
+#define TWIN_INJECTED_FAIL() 0
+#endif
+
 /* The twin of a new target: the same format at the twin's scale. Its first content comes with
  * the target's (target_upload seeds it), and until then it is behind (wgen > tgen). */
 static int twin_target_make(Target *t) {
     t->wgen = 1; t->tgen = 0;
+    if (TWIN_INJECTED_FAIL()) return 0;
     if (!make_image(TSCL_W, TSCL_H, VK_FORMAT_R8G8B8A8_UNORM,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -2470,6 +2509,7 @@ static int twin_target_make(Target *t) {
 
 static int twin_depth_make(DepthEnt *d) {
     d->wgen = 1; d->tgen = 0;
+    if (TWIN_INJECTED_FAIL()) return 0;
     if (!make_image(TSCL_W, TSCL_H, VK_FORMAT_D16_UNORM,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     &d->timg, &d->tmem)) return 0;
@@ -2653,8 +2693,8 @@ static Target *target_color_acquire(uint32_t fba, uint32_t stride, uint32_t fmt,
             t->set[i] = make_descriptor(t->view, s_smp[i], s_dpool_fix);
             if (!t->set[i]) { target_destroy(t); return NULL; }
         }
-        /* a twin that cannot be made stays absent: the target shows its authentic image */
-        if (s_twin && !twin_target_make(t)) twin_target_free(t);
+        /* a twin that cannot be made turns the twin off for the run */
+        if (s_twin && !twin_target_make(t)) { twin_target_free(t); twin_off_for_run("a target's twin"); }
     }
 
     if (seed_from_vram && !t->gpu_valid) {
@@ -2808,7 +2848,7 @@ static DepthEnt *depth_acquire(uint32_t zba, uint32_t zstride) {
                     &d->img, &d->mem)) return NULL;
     if (!make_view(d->img, VK_FORMAT_D16_UNORM, VK_IMAGE_ASPECT_DEPTH_BIT, &d->view)) return NULL;
     d->layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (s_twin && !twin_depth_make(d)) twin_depth_free(d);   /* absent: no twin pass */
+    if (s_twin && !twin_depth_make(d)) { twin_depth_free(d); twin_off_for_run("a depth buffer's twin"); }
     d->zba = zba; d->zstride = zstride; d->used = 1;
     if (__builtin_expect(g_sr_vram_read_pending, 0)) {
         uint32_t first, end;
@@ -2854,14 +2894,16 @@ static Target *target_acquire(void) {
         fbc.width = SCL_W; fbc.height = SCL_H; fbc.layers = 1;
         if (vkCreateFramebuffer(s_dev, &fbc, NULL, &t->fb) != VK_SUCCESS) return NULL;
         t->dep = d;
-        /* The twin's (colour, depth) pair, for the twin's pass. Without it the pass is skipped,
-         * the twin falls behind, and sync shows the authentic image: the authentic chain never
-         * depends on the twin. */
+        /* The twin's (colour, depth) pair, for the twin's pass. Without it the twin goes off for
+         * the run: the authentic chain never depends on the twin. */
         if (s_twin && t->timg && d->timg) {
             VkImageView tviews[2] = { t->tview, d->tview };
             fbc.pAttachments = tviews;
             fbc.width = TSCL_W; fbc.height = TSCL_H;
-            if (vkCreateFramebuffer(s_dev, &fbc, NULL, &t->tfb) != VK_SUCCESS) t->tfb = VK_NULL_HANDLE;
+            if (TWIN_INJECTED_FAIL() || vkCreateFramebuffer(s_dev, &fbc, NULL, &t->tfb) != VK_SUCCESS) {
+                t->tfb = VK_NULL_HANDLE;
+                twin_off_for_run("a twin framebuffer");
+            }
         }
     }
     t->lru = s_lru++;
@@ -4876,9 +4918,8 @@ static int twin_init(int color) {
     if (!s_tdst_set) return 0;
     s_twin = 1;
     s_twin_color = color ? 1 : 0;
-    fprintf(stderr, "gegpu: host twin on (colour %s, twin %dx, authentic %dx): the presenter shows "
-            "the twin; guest VRAM keeps the authentic image\n",
-            s_twin_color ? "full 32-bit, no dither" : "native", s_tscale, s_scale);
+    fprintf(stderr, "TWIN: on (colour=%s, scale=%dx): the presenter shows the twin; guest VRAM keeps "
+            "the authentic image\n", s_twin_color ? "full" : "native", s_tscale);
     return 1;
 }
 
@@ -4941,16 +4982,25 @@ int gegpu_init(void) {
 
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(s_pdev, &props);
-    /* The host twin (#2050), from the internal switch until the Enhanced line carries its key
-     * (after #2074): SR_GPU_TWIN_COLOR=1 full colour, =native the twin with native colour (the
-     * identity selftests). It moves the user's render scale to the twin and runs the authentic
-     * chain at 1x, so it is decided before any image is made. It needs nearest blits of the
-     * colour and depth formats (seeding) and an image dimension that holds the twin's scale. */
+    /* The host twin (#2050), from the internal switch until the Ace line carries its key (after
+     * #2074): SR_GPU_TWIN_COLOR=1 full colour, =native the twin with native colour (the identity
+     * selftests). It is an Ace Mode feature: in an authentic run it stays off whatever the
+     * environment says. The twin runs at the user's render scale beside the authentic chain,
+     * which keeps that scale too, so guest VRAM and every readback are the twin-off run's
+     * (ENHANCEMENT_CONTRACT.md 10.8). It needs nearest blits of the colour and depth formats
+     * (seeding). */
     int twin_req = 0;
-    s_tscale = 1;
+    s_tscale = s_scale;                    /* set after the render scale is read */
     {
         const char *tc = getenv("SR_GPU_TWIN_COLOR");
-        if (tc && tc[0] && strcmp(tc, "0") != 0) twin_req = strcmp(tc, "native") == 0 ? 2 : 1;
+        twin_req = twin_mode_parse(tc);
+        if (twin_req < 0) {
+            fprintf(stderr, "TWIN: refused (SR_GPU_TWIN_COLOR=%s: the values are 1, native, off and 0)\n", tc);
+            twin_req = 0;
+        } else if (twin_req && !g_ace_on) {
+            fprintf(stderr, "TWIN: off (the host twin needs Ace Mode)\n");
+            twin_req = 0;
+        }
         const char *cap = getenv("SR_GPU_TWIN_CAPTURE");
         s_twin_authentic_shown = cap && strcmp(cap, "authentic") == 0;
     }
@@ -4960,16 +5010,10 @@ int gegpu_init(void) {
         vkGetPhysicalDeviceFormatProperties(s_pdev, VK_FORMAT_R8G8B8A8_UNORM, &cf);
         vkGetPhysicalDeviceFormatProperties(s_pdev, VK_FORMAT_D16_UNORM, &df);
         if ((cf.optimalTilingFeatures & blit) != blit || (df.optimalTilingFeatures & blit) != blit) {
-            fprintf(stderr, "gegpu: host twin unavailable (no nearest blit of RGBA8 and D16 on this "
-                    "GPU): native colour at render scale %dx\n", s_scale);
+            fprintf(stderr, "TWIN: unavailable (no nearest blit of RGBA8 and D16 on this GPU): native "
+                    "colour at render scale %dx\n", s_scale);
             twin_req = 0;
-        } else if ((uint32_t)FB_W * (uint32_t)s_scale > props.limits.maxImageDimension2D) {
-            fprintf(stderr, "gegpu: host twin unavailable (render scale %dx exceeds this GPU's image "
-                    "size %u): native colour\n", s_scale, props.limits.maxImageDimension2D);
-            twin_req = 0;
-        } else {
-            s_tscale = s_scale;
-            s_scale = 1;
+            s_twin_unavailable = 1;
         }
     }
     s_xfer_align = props.limits.optimalBufferCopyOffsetAlignment;
@@ -5132,11 +5176,12 @@ int gegpu_init(void) {
     }
     s_dst_set = make_dst_descriptor(s_snap_view, s_dpool_fix);
     if (!s_dst_set) return 0;
-    /* The host twin (Enhanced 32-bit colour, #2050): the scales were split above. */
+    /* The host twin (32-bit colour, #2050), decided above. */
     if (twin_req && !twin_init(twin_req == 1)) {
-        fprintf(stderr, "gegpu: host twin unavailable (the GPU could not make it): native colour at "
-                "render scale %dx\n", s_scale);
+        fprintf(stderr, "TWIN: unavailable (the GPU could not make it): native colour at render "
+                "scale %dx\n", s_scale);
         twin_release();
+        s_twin_unavailable = 1;
     }
 
     /* 1x1 white texture for untextured draws */
@@ -5223,6 +5268,10 @@ void gegpu_shutdown(void) {
     s_dst_set = VK_NULL_HANDLE;
     if (s_dpool_tex) vkDestroyDescriptorPool(s_dev, s_dpool_tex, NULL);
     if (s_dpool_fix) vkDestroyDescriptorPool(s_dev, s_dpool_fix, NULL);
+    if (s_twin || s_cnt_twin_alloc_fail)
+        fprintf(stderr, "TWIN: exit (ops=%lu, copies=%lu, reseeds=%lu, authentic_presents=%lu, "
+                "alloc_failures=%lu%s)\n", s_cnt_twin_ops, s_cnt_twin_copies, s_cnt_twin_reseed,
+                s_cnt_twin_present_auth, s_cnt_twin_alloc_fail, s_twin ? "" : ", off since the failure");
     twin_release();
 
     if (s_white_smp) vkDestroySampler(s_dev, s_white_smp, NULL);

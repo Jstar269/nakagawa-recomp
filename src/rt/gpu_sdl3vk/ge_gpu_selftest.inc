@@ -4956,9 +4956,10 @@ static void coherence_reset_depths(void) {
 
 /* ---- the host twin: Enhanced 32-bit colour (#2050) -------------------------------------------
  *
- * The twin is decided at init (`--twin 1|native`), and with it on the authentic chain runs at 1x
- * and the twin at the requested scale. So the twin cases compare runs: a twin-off run writes a
- * reference file (`--twin-ref`) and a twin-on run checks against it.
+ * The twin is decided at init (`--twin 1|native`, which also turns Ace Mode on: the twin is an
+ * Ace feature), and the authentic chain and the twin both run at the requested scale. The twin
+ * cases compare runs: a twin-off run writes a reference file (`--twin-ref`) and a twin-on run at
+ * the same scale checks against it.
  *
  * twin-scene, one scene through ge.c's list interpreter and the production hooks: a dithered
  * horizontal gradient on a 5551 target (T1), a gradient under a shader-blended translucent
@@ -4967,10 +4968,9 @@ static void coherence_reset_depths(void) {
  * target (T3) that takes a GPU block transfer of T1's gradient.
  *   - Twin off: the shown image is the authentic one, and T1's gradient is dithered on the 5551
  *     lattice. The run writes its scale and the hashes of guest VRAM and the shown images.
- *   - Twin on, any colour: guest VRAM equals the twin-off run at 1x (a reference made at scale 1),
- *     no twin was ever behind its image (no re-seed), and twin passes ran.
- *   - Twin on, native colour: the shown images equal a twin-off run's at the twin's scale (a
- *     reference made at that scale): the twin is today's render scale, moved off the guest chain.
+ *   - Twin on, any colour: guest VRAM equals the twin-off run at the same scale (the twin is not
+ *     guest-visible), no twin was ever behind its image (no re-seed), and twin passes ran.
+ *   - Twin on, native colour: the shown images equal the twin-off run's at the same scale too.
  *   - Twin on, full colour: the shown gradients are smooth (every row rises and takes far more
  *     than the lattice's 32 levels), T2's twin holds T1's twin (the twin's pass samples twins),
  *     and T3's twin holds T1's twin rows (the transfer reached the twins).
@@ -5346,10 +5346,9 @@ static int coherence_run_twin_scene(void) {
     const char *ref_path = getenv("SR_GPU_TWIN_REF");
     /* A device that refuses the twin (gegpu_init says why) runs twin-off: report that as a SKIP,
      * and never let such a run write or check a reference meant for the twin. */
-    const char *req = getenv("SR_GPU_TWIN_COLOR");
-    if (req && req[0] && strcmp(req, "0") != 0 && !s_twin) {
+    if (s_twin_unavailable) {
         printf("gpu coherence selftest: SKIP %s: the host twin was requested (SR_GPU_TWIN_COLOR=%s) but this "
-               "device refused it\n", name, req);
+               "device refused it\n", name, getenv("SR_GPU_TWIN_COLOR"));
         return 1;
     }
     const unsigned long ops0 = s_cnt_twin_ops, reseed0 = s_cnt_twin_reseed;
@@ -5388,32 +5387,33 @@ static int coherence_run_twin_scene(void) {
             ok = 0;
         }
         const char *checked = "no reference";
-        if (have_ref && ref.scale == 1) {
-            checked = "guest VRAM equals the twin-off 1x run";
+        if (have_ref && ref.scale != s_scale) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL the reference was made at scale %d, this run "
+                    "is at %d: the twin-on run is checked against the twin-off run at its own scale\n",
+                    name, ref.scale, s_scale);
+            ok = 0;
+        } else if (have_ref) {
+            checked = "guest VRAM equals the twin-off run at this scale";
             for (int i = 0; i < 3; i++) if (run.ref.vram[i] != ref.vram[i]) {
                 fprintf(stderr, "gpu coherence selftest [%s]: FAIL guest VRAM of target %d differs from "
-                        "the twin-off 1x run\n", name, i + 1);
+                        "the twin-off run at scale %d\n", name, i + 1, s_scale);
                 ok = 0;
             }
-        }
-        if (have_ref && !s_twin_color && ref.scale == s_tscale) {
-            checked = ref.scale == 1 ? "guest VRAM and the shown images equal the twin-off 1x run"
-                                     : "the shown images equal the twin-off run at the twin's scale";
-            /* Not T2 above 1x: a scaled authentic chain shifts sprite UVs so that the device sample
-             * readback keeps sees the pixel centre (hook_sprite's centre_shift), and the twin, never
-             * read back, samples every texel at its own position. T2 is checked below instead. */
-            for (int i = 0; i < 3; i++) if ((i != 1 || ref.scale == 1) && run.ref.shown[i] != ref.shown[i]) {
-                fprintf(stderr, "gpu coherence selftest [%s]: FAIL the native twin of target %d differs from "
-                        "the twin-off image at scale %d\n", name, i + 1, ref.scale);
-                ok = 0;
+            if (!s_twin_color) {
+                checked = "guest VRAM and the shown images equal the twin-off run at this scale";
+                for (int i = 0; i < 3; i++) if (run.ref.shown[i] != ref.shown[i]) {
+                    fprintf(stderr, "gpu coherence selftest [%s]: FAIL the native twin of target %d differs "
+                            "from the twin-off image at scale %d\n", name, i + 1, s_scale);
+                    ok = 0;
+                }
             }
-        } else if (have_ref && ref.scale != 1) {
-            fprintf(stderr, "gpu coherence selftest [%s]: FAIL a reference at scale %d checks nothing for "
-                    "this run (twin %dx, colour %s)\n", name, ref.scale, s_tscale, s_twin_color ? "full" : "native");
-            ok = 0;
         }
-        /* T2's twin samples T1's twin (the direct bind), nearest, at each guest texel's centre. */
-        if (!twin_sampled_equal(run.shown[1], run.shown[0], run.shown_scale[0])) {
+        /* T2's twin samples T1's twin (the direct bind), nearest, at each guest texel's centre.
+         * Exact at scale 1 only: above it, main's hook_sprite shifts sprite UVs by 0.5 - 0.5 /
+         * scale of a texel (centre_shift), in both passes, so a device pixel can take the next
+         * texel. #2104 removes that shift; whichever of the two lands second runs this at every
+         * scale. Above 1x the full-colour check below shows that the pass sampled the twin. */
+        if (s_scale == 1 && !twin_sampled_equal(run.shown[1], run.shown[0], run.shown_scale[0])) {
             fprintf(stderr, "gpu coherence selftest [%s]: FAIL T2's twin is not T1's twin sampled at its "
                     "texel centres (the twin's pass did not sample the twin)\n", name);
             ok = 0;
@@ -5438,6 +5438,14 @@ static int coherence_run_twin_scene(void) {
                         "block transfer did not reach the twins)\n", name);
                 ok = 0;
             }
+            /* T2's twin took T1's full-colour twin, not T1's dithered 5551 image. */
+            int smono = 0, sdistinct = 0, slattice = 0;
+            twin_gradient_stats(run.shown[1], sc, 0, 136, &smono, &sdistinct, &slattice);
+            if (slattice || sdistinct <= 32) {
+                fprintf(stderr, "gpu coherence selftest [%s]: FAIL T2's twin is on the 5551 lattice (red levels=%d): "
+                        "the twin's pass sampled the authentic T1\n", name, sdistinct);
+                ok = 0;
+            }
         }
         if (ok)
             printf("gpu coherence selftest: PASS %s twin %dx colour %s: %s; twin ops=%lu, no re-seed%s\n",
@@ -5450,6 +5458,106 @@ static int coherence_run_twin_scene(void) {
     twin_run_free(&run);
     coherence_reset_targets();
     coherence_reset_depths();
+    return ok;
+}
+
+/* twin-gate: the switch's values and the Ace gate (ENHANCEMENT_CONTRACT.md 10.8). Only "1" and
+ * "native" ask for the twin; unset, empty, "0" and "off" are off; anything else is refused and off,
+ * never more permissive. With Ace Mode off (`--authentic`) the twin stays off whatever the value.
+ * The run's own value must have decided s_twin exactly so, unless the device refused the twin. */
+static int coherence_run_twin_gate(void) {
+    const char *name = "twin-gate";
+    static const struct { const char *v; int want; } k_vals[] = {
+        { NULL, 0 }, { "", 0 }, { "0", 0 }, { "off", 0 }, { "1", 1 }, { "native", 2 },
+        { "on", -1 }, { "yes", -1 }, { "true", -1 }, { "2", -1 }, { "Native", -1 }, { "1 ", -1 },
+        { "OFF", -1 }, { "full", -1 },
+    };
+    int ok = 1;
+    for (size_t i = 0; i < sizeof(k_vals) / sizeof(k_vals[0]); i++) {
+        const int got = twin_mode_parse(k_vals[i].v);
+        if (got != k_vals[i].want) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL SR_GPU_TWIN_COLOR=%s%s%s reads as %d, want %d\n",
+                    name, k_vals[i].v ? "\"" : "", k_vals[i].v ? k_vals[i].v : "(unset)",
+                    k_vals[i].v ? "\"" : "", got, k_vals[i].want);
+            ok = 0;
+        }
+    }
+    const char *v = getenv("SR_GPU_TWIN_COLOR");
+    const int mode = twin_mode_parse(v);
+    const int want_on = g_ace_on && mode > 0;
+    if (s_twin_unavailable) {
+        printf("gpu coherence selftest: SKIP %s run check: this device refused the twin\n", name);
+    } else if (s_twin != want_on || (want_on && s_twin_color != (mode == 1))) {
+        fprintf(stderr, "gpu coherence selftest [%s]: FAIL SR_GPU_TWIN_COLOR=%s with Ace Mode %s: twin %s, "
+                "want %s\n", name, v ? v : "(unset)", g_ace_on ? "on" : "off", s_twin ? "on" : "off",
+                want_on ? "on" : "off");
+        ok = 0;
+    }
+    if (ok)
+        printf("gpu coherence selftest: PASS %s value=%s ace=%s twin=%s\n", name, v ? v : "(unset)",
+               g_ace_on ? "on" : "off", s_twin ? "on" : "off");
+    return ok;
+}
+
+/* twin-alloc-fail (`--twin 1|native`, a twin-off reference at the same scale): the Nth twin
+ * allocation of the scene fails (N = 1: T1's twin; 2: its depth twin; 3: their framebuffer; 4 and
+ * 5: T2's twin and framebuffer, after T1's twin has drawn). Each time the twin must go off for the
+ * run, once, and the scene must then equal the twin-off run exactly: guest VRAM and the shown
+ * images, at the user's scale, never a lower one. The twin is made again between steps. */
+static int coherence_run_twin_alloc_fail(void) {
+    const char *name = "twin-alloc-fail";
+    if (s_twin_unavailable) {
+        printf("gpu coherence selftest: SKIP %s: this device refused the twin\n", name);
+        return 1;
+    }
+    TwinRef ref;
+    const char *ref_path = getenv("SR_GPU_TWIN_REF");
+    if (!s_twin || !ref_path || !twin_ref_read(ref_path, &ref) || ref.scale != s_scale) {
+        fprintf(stderr, "gpu coherence selftest [%s]: needs --twin 1|native and a twin-off reference at "
+                "scale %d\n", name, s_scale);
+        return 0;
+    }
+    const int color = s_twin_color;
+    int ok = 1;
+    for (int n = 1; ok && n <= 5; n++) {
+        coherence_reset_targets();
+        coherence_reset_depths();
+        if (!s_twin && !twin_init(color)) {
+            fprintf(stderr, "gpu coherence selftest [%s]: the twin could not be made again\n", name);
+            return 0;
+        }
+        const unsigned long fail0 = s_cnt_twin_alloc_fail;
+        s_twin_inject_fail = n;
+        TwinRun run = {0};
+        int ran = twin_run_scene(&run);
+        const int reached = s_twin_inject_fail == 0;
+        s_twin_inject_fail = 0;
+        if (!ran || !reached) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL step %d: %s\n", name, n,
+                    !ran ? "the scene did not run" : "the scene never made that many twin allocations");
+            ok = 0;
+        } else if (s_twin || s_cnt_twin_alloc_fail != fail0 + 1) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL step %d: twin %s, failures counted %lu (want "
+                    "off, 1)\n", name, n, s_twin ? "still on" : "off", s_cnt_twin_alloc_fail - fail0);
+            ok = 0;
+        } else {
+            for (int i = 0; i < 3; i++) {
+                if (run.shown_scale[i] != s_scale || run.ref.vram[i] != ref.vram[i] ||
+                    run.ref.shown[i] != ref.shown[i]) {
+                    fprintf(stderr, "gpu coherence selftest [%s]: FAIL step %d: target %d (shown at %dx) differs "
+                            "from the twin-off run at %dx (%s)\n", name, n, i + 1, run.shown_scale[i], s_scale,
+                            run.ref.vram[i] != ref.vram[i] ? "guest VRAM" : "the shown image");
+                    ok = 0;
+                }
+            }
+        }
+        twin_run_free(&run);
+    }
+    coherence_reset_targets();
+    coherence_reset_depths();
+    if (ok)
+        printf("gpu coherence selftest: PASS %s 5 steps colour %s scale=%d: the twin went off once each time and "
+               "the scene equals the twin-off run\n", name, color ? "full" : "native", s_scale);
     return ok;
 }
 
@@ -5514,6 +5622,8 @@ static int coherence_selftest_cases(void) {
         if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
         if (strcmp(only, "twin-scene") == 0) return coherence_run_twin_scene();
         if (strcmp(only, "twin-sync") == 0) return coherence_run_twin_sync();
+        if (strcmp(only, "twin-gate") == 0) return coherence_run_twin_gate();
+        if (strcmp(only, "twin-alloc-fail") == 0) return coherence_run_twin_alloc_fail();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }
@@ -5577,6 +5687,7 @@ static int coherence_selftest_cases(void) {
     if (!coherence_run_readback_rows()) ok = 0;
     if (!coherence_run_stacked_targets()) ok = 0;
     /* Last: they release the depth surfaces the cases above share. */
+    if (!coherence_run_twin_gate()) ok = 0;
     if (!coherence_run_twin_scene()) ok = 0;
     if (s_twin && s_tscale == s_scale && !coherence_run_twin_sync()) ok = 0;
     coherence_reset_targets();

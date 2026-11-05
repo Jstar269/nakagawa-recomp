@@ -358,6 +358,35 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
 - **Stamps.** The report adds `presents` (real, between, held, superseded) and `present_interval_ms`. Section 10.4
   applies: the run is refused as evidence.
 
+### 10.8. Full 32-Bit Colour (the Host Twin)
+
+The game's 16-bit render targets are presented in full 32-bit colour without dither (#2050), in the Vulkan GE renderer.
+It is a presentation feature, in the class of a render scale above 1x (section 10.3). The code is the host twin in
+`src/rt/gpu_sdl3vk/ge_gpu.c` (its header and the comment at `s_twin`). This entry follows #2092's section 10.7.
+
+- **How.** Every render target and depth buffer gets a host-only twin at the user's render scale. Every write to the
+  authentic image reaches its twin, in order: each render op is drawn a second time into the twin without dither or
+  the 16-bit colour snap, and uploads, CPU-write patches, depth uploads, block transfers and destination snapshots
+  are repeated on it. Twin passes sample twins, so a render-to-texture chain stays full colour. The presenter shows
+  a twin only while it holds every write its image took; otherwise it shows the authentic image and re-seeds the twin.
+- **Guest memory.** The authentic chain keeps the user's render scale, and nothing reads a twin back. Guest VRAM,
+  every readback, every block transfer into RAM and the frame each present commits to guest VRAM are the twin-off
+  run's at the same scale, byte for byte (`gpu-coherence-selftest` twin-scene, at scales 1, 2 and 4). The feature is
+  not guest-visible, so section 11 does not apply. Present-source captures follow the shown image, so they hold the
+  twin's picture; `SR_GPU_TWIN_CAPTURE=authentic` shows and captures the authentic image instead.
+- **Setting.** `SR_GPU_TWIN_COLOR=1` (full colour) or `native` (the twin with the authentic colour, which the identity
+  self-tests use), read when the renderer starts. Unset, empty, `0` and `off` are off. Any other value prints
+  `TWIN: refused (...)` and leaves it off. It takes effect only in Ace Mode: in an authentic run it stays off whatever
+  the environment says, and a request prints one `TWIN: off (the host twin needs Ace Mode)` line. Until the Ace
+  launch line carries its key (`twin`, beside `tex`, `s2d` and `glyphs`, with the per-title switches of section
+  10.5, after #2074), the variable is the only way to turn it on, and it is off by default.
+- **Cost.** Each render op is drawn twice at the render scale, and the twins use as much GPU memory as the targets.
+- **Fail-closed.** A GPU without nearest blits of RGBA8 and D16 prints `TWIN: unavailable (...)` and runs without it.
+  If any twin allocation fails during the run, one `TWIN: off for the rest of the run (...)` line is printed, every
+  twin is freed, and the run continues exactly as a twin-off run at the user's scale (`twin-alloc-fail`).
+- **Stamps.** `TWIN: on (colour=full|native, scale=<n>x)` at start, and `TWIN: exit (ops=, copies=, reseeds=,
+  authentic_presents=, alloc_failures=)` at exit. Section 10.4 applies: the run is an Ace run, refused as evidence.
+
 ## 11. Guest-Visible Items
 
 Sections 10.3 and 10.6 describe host-only features: what the guest reads, in its registers, memory and timing, is the

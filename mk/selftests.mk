@@ -704,9 +704,10 @@ asset-index-selftest:
 # case (#323, also on its SR_GPU_READBACK_FULL reference path) run again alone
 # at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
 # cmd.exe does not take one. The host twin (#2050) runs last: twin-off runs of twin-scene write
-# reference files that the twin-on runs check (guest VRAM against 1x, the native twin against
-# the same scale), and `--twin native` runs the whole suite with every twin checked against its
-# image after each case.
+# reference files that the twin-on runs at the same scale check (guest VRAM always, the shown
+# images for the native twin), `--twin native` runs the whole suite with every twin checked
+# against its image after each case, twin-gate checks the switch's values and its Ace gate
+# (`--authentic`), and twin-alloc-fail injects a failed twin allocation.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
@@ -732,12 +733,17 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
 	$(GPU_COHERENCE_BIN) --twin native
 	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
-	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s1.txt
 	$(GPU_COHERENCE_BIN) --twin native --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
-	$(GPU_COHERENCE_BIN) --twin native --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s1.txt
 	$(GPU_COHERENCE_BIN) --twin 1 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s1.txt
-	$(GPU_COHERENCE_BIN) --twin 1 --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s1.txt
-	$(GPU_COHERENCE_BIN) --twin 1 --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s1.txt
+	$(GPU_COHERENCE_BIN) --twin 1 --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
+	$(GPU_COHERENCE_BIN) --twin 1 --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
+	$(GPU_COHERENCE_BIN) --twin 1 --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin native --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin 1 --authentic --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin off --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin yes --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin 1 --scale 4 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
+	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
