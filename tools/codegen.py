@@ -3022,7 +3022,7 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
 # hot path. Nothing here changes the translation of any instruction.
 EVIDENCE_HEADER = os.path.join(os.path.dirname(_TOOLS_DIRECTORY), "src", "rt", "hle_evidence.h")
 _VFPU_FORM_ROW_RE = re.compile(r'\{\s*0x([0-9a-fA-F]{8})u,\s*0x([0-9a-fA-F]{8})u,\s*"([^"]*)"\s*\}')
-_UNVERIFIED_VFPU_USES = {}
+_UNVERIFIED_VFPU_USES: dict[int, tuple[int, int]] = {}
 _UNVERIFIED_VFPU_COLLECTING = [False]
 # Opcodes that can hold an unverified form; the pattern scan runs only for these.
 _UNVERIFIED_VFPU_OPCODES = frozenset((0x32, 0x34, 0x36, 0x3a, 0x3e, 0x3f))
@@ -3062,7 +3062,7 @@ def note_unverified_vfpu(addr, w, patterns=None):
             return
 
 
-_PATTERNS_CACHE = []
+_PATTERNS_CACHE: list[list[tuple[int, int, str]]] = []
 
 
 def _unverified_patterns_cached():

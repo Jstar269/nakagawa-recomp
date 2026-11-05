@@ -36,6 +36,7 @@ import json
 from pathlib import Path
 import re
 import sys
+from typing import Any
 
 TOOLS = Path(__file__).resolve().parent
 if str(TOOLS) not in sys.path:
@@ -500,7 +501,7 @@ def vfpu_unverified_masks(vfpu_rows: list[dict]) -> list[dict]:
                 f"unverified forms, for example 0x{stray[0]:08x}"
             )
         patterns.setdefault((mask, match), set()).add(form_of_key[key])
-    result = [
+    result: list[dict[str, Any]] = [
         {"mask": mask, "match": match, "forms": sorted(forms)} for (mask, match), forms in sorted(patterns.items())
     ]
     for word, key in visited.items():
