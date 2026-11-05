@@ -29,6 +29,7 @@
 #include "nk_font.h"
 #include "nk_title_manifest.h"
 #include "nk_platform.h"
+#include "nk_zip.h"
 #include "native_test_isolation.h"
 #include "nk_psp_builtin_keys.h"
 #include "nk_psp_keystore.h"
@@ -5081,6 +5082,322 @@ static void test_single_instance_per_data_folder(void) {
    files Nakagawa copied, keeps the saves and (#2003) the decrypted files and
    disc copy unless asked, and never touches the disc image or another title's
    data. */
+/* ---- Saves: back up, restore, add a save (#1883) ---- */
+
+static void saves_test_le16(unsigned char *p, unsigned v) {
+    p[0] = (unsigned char)(v & 0xFFu);
+    p[1] = (unsigned char)((v >> 8) & 0xFFu);
+}
+
+static void saves_test_le32(unsigned char *p, uint32_t v) {
+    saves_test_le16(p, (unsigned)(v & 0xFFFFu));
+    saves_test_le16(p + 2, (unsigned)(v >> 16));
+}
+
+/* A one-file store-only archive written byte by byte, so it can carry what
+   nk_zip's writer refuses to make: a name that climbs out of its folder, or a
+   CRC that does not match its data. */
+static void saves_test_raw_zip(const char *path, const char *name, const char *data,
+                               bool bad_crc) {
+    unsigned char zip[1024];
+    size_t nlen = strlen(name);
+    size_t dlen = strlen(data);
+    size_t at = 0;
+    size_t cd;
+    uint32_t crc = nk_zip_crc32(0u, data, dlen) ^ (bad_crc ? 1u : 0u);
+    assert(30u + nlen + dlen + 46u + nlen + 22u <= sizeof(zip));
+    memset(zip, 0, sizeof(zip));
+    saves_test_le32(zip + at, 0x04034b50u);
+    saves_test_le16(zip + at + 4, 10u);
+    saves_test_le16(zip + at + 12, 0x21u);
+    saves_test_le32(zip + at + 14, crc);
+    saves_test_le32(zip + at + 18, (uint32_t)dlen);
+    saves_test_le32(zip + at + 22, (uint32_t)dlen);
+    saves_test_le16(zip + at + 26, (unsigned)nlen);
+    at += 30u;
+    memcpy(zip + at, name, nlen);
+    at += nlen;
+    memcpy(zip + at, data, dlen);
+    at += dlen;
+    cd = at;
+    saves_test_le32(zip + at, 0x02014b50u);
+    saves_test_le16(zip + at + 4, 20u);
+    saves_test_le16(zip + at + 6, 10u);
+    saves_test_le16(zip + at + 14, 0x21u);
+    saves_test_le32(zip + at + 16, crc);
+    saves_test_le32(zip + at + 20, (uint32_t)dlen);
+    saves_test_le32(zip + at + 24, (uint32_t)dlen);
+    saves_test_le16(zip + at + 28, (unsigned)nlen);
+    at += 46u;
+    memcpy(zip + at, name, nlen);
+    at += nlen;
+    saves_test_le32(zip + at, 0x06054b50u);
+    saves_test_le16(zip + at + 8, 1u);
+    saves_test_le16(zip + at + 10, 1u);
+    saves_test_le32(zip + at + 12, (uint32_t)(at - cd));
+    saves_test_le32(zip + at + 16, (uint32_t)cd);
+    at += 22u;
+    write_binary_file(path, zip, at);
+}
+
+static bool saves_test_has_text(const char *path, const char *text) {
+    char *got;
+    bool same;
+    if (!nk_platform_file_exists(path)) return false;
+    got = read_text_file(path);
+    same = strcmp(got, text) == 0;
+    free(got);
+    return same;
+}
+
+typedef struct {
+    const char *prefix;
+    size_t found;
+} SavesTestPrefix;
+
+static bool saves_test_count_prefix(const char *name, bool is_dir, void *ctx) {
+    SavesTestPrefix *count = (SavesTestPrefix *)ctx;
+    (void)is_dir;
+    if (strncmp(name, count->prefix, strlen(count->prefix)) == 0) count->found++;
+    return true;
+}
+
+static size_t saves_test_entries_named(const char *folder, const char *prefix) {
+    SavesTestPrefix count = {prefix, 0u};
+    if (nk_platform_dir_exists(folder)) {
+        assert(nk_platform_list_dir(folder, saves_test_count_prefix, &count));
+    }
+    return count.found;
+}
+
+static bool saves_test_count_containing(const char *name, bool is_dir, void *ctx) {
+    SavesTestPrefix *count = (SavesTestPrefix *)ctx;
+    (void)is_dir;
+    if (strstr(name, count->prefix) != NULL) count->found++;
+    return true;
+}
+
+static size_t saves_test_entries_containing(const char *folder, const char *text) {
+    SavesTestPrefix count = {text, 0u};
+    if (nk_platform_dir_exists(folder)) {
+        assert(nk_platform_list_dir(folder, saves_test_count_containing, &count));
+    }
+    return count.found;
+}
+
+/* Every name in the archive is a relative path that exists under `root`. */
+static size_t saves_test_zip_names_under(const char *zip_path, const char *root) {
+    NkZipReader *reader = NULL;
+    NkZipError err;
+    size_t count;
+    assert(nk_zip_reader_open_file(&reader, zip_path, &err) == NK_ZIP_OK);
+    assert(nk_zip_reader_verify(reader, &err) == NK_ZIP_OK);
+    count = nk_zip_reader_count(reader);
+    for (size_t i = 0; i < count; ++i) {
+        NkZipEntryInfo info;
+        char path[NK_MAX_PATH * 2];
+        size_t used;
+        assert(nk_zip_reader_entry(reader, i, &info));
+        assert(info.name[0] != '/' && info.name[0] != '\\' && strchr(info.name, ':') == NULL);
+        assert(strstr(info.name, "..") == NULL && strchr(info.name, '\\') == NULL);
+        used = (size_t)snprintf(path, sizeof(path), "%s%c", root, nk_platform_path_separator());
+        assert(used + strlen(info.name) < sizeof(path));
+        for (const char *c = info.name; *c; ++c) {
+            path[used++] = *c == '/' ? nk_platform_path_separator() : *c;
+        }
+        path[used] = '\0';
+        if (info.is_folder) {
+            path[used - 1u] = '\0';
+            assert(nk_platform_dir_exists(path));
+        } else {
+            assert(nk_platform_file_exists(path));
+        }
+    }
+    nk_zip_reader_close(reader);
+    return count;
+}
+
+/* A synthetic Memory Stick: the save root with one save and a loose file. */
+static void saves_test_make_save(const char *saves, const char *data) {
+    char savedata[NK_MAX_PATH * 2];
+    char file[NK_MAX_PATH * 3];
+    removal_test_path(savedata, sizeof(savedata), saves, "PSP", "SAVEDATA", "SVB01883DATA00");
+    assert(nk_platform_mkdir_p(savedata));
+    removal_test_path(file, sizeof(file), savedata, "PARAM.SFO", NULL, NULL);
+    write_text_file(file, "PSF synthetic save");
+    removal_test_path(file, sizeof(file), savedata, "DATA.BIN", NULL, NULL);
+    write_text_file(file, data);
+}
+
+static void test_saves_back_up_restore_and_add(void) {
+    RemovalFixture f;
+    PlayerApp *app;
+    PlayerSaveBackup list[8];
+    size_t total = 0;
+    char error[NK_MAX_PATH + 256];
+    char backup[NK_MAX_PATH];
+    char backups[NK_MAX_PATH];
+    char kept[NK_MAX_PATH];
+    char added[72];
+    char data_bin[NK_MAX_PATH * 3];
+    char new_bin[NK_MAX_PATH * 2];
+    char kept_data[NK_MAX_PATH * 3];
+    char hostile[NK_MAX_PATH * 2];
+    char escape[NK_MAX_PATH * 2];
+    char pick[NK_MAX_PATH * 2];
+    char pick_file[NK_MAX_PATH * 3];
+    char savedata[NK_MAX_PATH * 2];
+    char restore_prefix[64];
+    removal_fixture_make(&f, "SVB01883");
+    app = removal_test_app(&f, "SVB01883");
+    saves_test_make_save(f.saves, "original bytes");
+    removal_test_path(data_bin, sizeof(data_bin), f.saves, "PSP", "SAVEDATA",
+                      "SVB01883DATA00");
+    {
+        char folder[NK_MAX_PATH * 3];
+        snprintf(folder, sizeof(folder), "%s", data_bin);
+        removal_test_path(data_bin, sizeof(data_bin), folder, "DATA.BIN", NULL, NULL);
+    }
+    removal_test_path(new_bin, sizeof(new_bin), f.saves, "NEW.BIN", NULL, NULL);
+    snprintf(restore_prefix, sizeof(restore_prefix), ".%s-restore-", "SVB01883");
+    assert(player_app_save_backup_folder(&app->games[0], backups, sizeof(backups)));
+    assert(native_test_path_within(backups, native_test_get_root()));
+    {
+        char folder[NK_MAX_PATH];
+        assert(player_app_save_folder(&app->games[0], folder, sizeof(folder)));
+        assert(strcmp(folder, f.saves) == 0);
+    }
+
+    /* A backup is a store-only ZIP of the save root, named for the title and the time,
+       whose every name is a path under the save root. */
+    assert(player_app_list_save_backups(app, 0, list, 8, &total) == 0u && total == 0u);
+    assert(player_app_back_up_saves(app, 0, "20261104-100000", PLAYER_SAVE_BACKUP_MANUAL,
+                                    backup, sizeof(backup), error, sizeof(error)) ==
+           PLAYER_SAVES_DONE);
+    assert(native_test_path_within(backup, backups));
+    assert(strstr(backup, "SVB01883-saves-20261104-100000.zip") != NULL);
+    /* SAVE.BIN, PSP/, PSP/SAVEDATA/, the save's folder, PARAM.SFO and DATA.BIN */
+    assert(saves_test_zip_names_under(backup, f.saves) == 6u);
+    assert(saves_test_entries_named(backups, "SVB01883-saves-20261104-100000.zip.part") == 0u);
+
+    /* Change the saves, then restore: the original bytes come back, the changed
+       folder is kept as <folder>-backup-<stamp>, and a pre-restore ZIP is written. */
+    write_text_file(data_bin, "modified bytes");
+    write_text_file(new_bin, "a new file");
+    assert(player_app_list_save_backups(app, 0, list, 8, &total) == 1u && total == 1u);
+    assert(strcmp(list[0].path, backup) == 0 && list[0].kind == PLAYER_SAVE_BACKUP_MANUAL);
+    assert(player_app_restore_saves(app, 0, list[0].path, "20261104-100100", kept, sizeof(kept),
+                                    error, sizeof(error)) == PLAYER_SAVES_DONE);
+    assert(saves_test_has_text(data_bin, "original bytes"));
+    assert(!nk_platform_file_exists(new_bin));
+    {
+        char expect[NK_MAX_PATH + 32];
+        snprintf(expect, sizeof(expect), "%s-backup-20261104-100100", f.saves);
+        assert(strcmp(kept, expect) == 0);
+    }
+    removal_test_path(kept_data, sizeof(kept_data), kept, "PSP", "SAVEDATA", "SVB01883DATA00");
+    {
+        char folder[NK_MAX_PATH * 3];
+        snprintf(folder, sizeof(folder), "%s", kept_data);
+        removal_test_path(kept_data, sizeof(kept_data), folder, "DATA.BIN", NULL, NULL);
+    }
+    assert(saves_test_has_text(kept_data, "modified bytes"));
+    assert(player_app_list_save_backups(app, 0, list, 8, &total) == 2u && total == 2u);
+    assert(list[0].kind == PLAYER_SAVE_BACKUP_BEFORE_RESTORE &&
+           strcmp(list[0].stamp, "20261104-100100") == 0);
+    assert(strstr(list[0].name, "-before-restore") != NULL);
+    assert(strcmp(list[1].path, backup) == 0);
+    assert(saves_test_entries_named(f.saves_root, restore_prefix) == 0u);
+
+    /* Hostile backups, named as this title's: one climbs out of its folder, one
+       fails its CRC. Each is refused whole; the saves stay byte for byte, no
+       temporary folder is left, and nothing lands outside. */
+    removal_test_path(escape, sizeof(escape), f.saves_root, "escape.txt", NULL, NULL);
+    removal_test_path(hostile, sizeof(hostile), backups, "SVB01883-saves-20261104-100200.zip",
+                      NULL, NULL);
+    saves_test_raw_zip(hostile, "../escape.txt", "outside", false);
+    removal_test_path(pick, sizeof(pick), backups, "SVB01883-saves-20261104-100300.zip", NULL,
+                      NULL);
+    saves_test_raw_zip(pick, "PSP/SAVEDATA/SVB01883DATA00/DATA.BIN", "hostile", true);
+    assert(player_app_list_save_backups(app, 0, list, 8, &total) == 4u);
+    assert(strcmp(list[0].path, pick) == 0 && strcmp(list[1].path, hostile) == 0);
+    for (int i = 0; i < 2; ++i) {
+        error[0] = '\0';
+        assert(player_app_restore_saves(app, 0, list[i].path, "20261104-100400", kept,
+                                        sizeof(kept), error, sizeof(error)) ==
+               PLAYER_SAVES_FAILED);
+        assert(error[0] != '\0' && strstr(error, "Nothing was restored") != NULL);
+        assert(kept[0] == '\0');
+        assert(saves_test_has_text(data_bin, "original bytes"));
+        assert(!nk_platform_file_exists(new_bin));
+        assert(!nk_platform_file_exists(escape));
+        assert(saves_test_entries_named(f.saves_root, restore_prefix) == 0u);
+        assert(saves_test_entries_named(f.saves_root, "SVB01883-backup-20261104-100400") == 0u);
+    }
+    /* Neither wrote a pre-restore backup: the archive is checked before anything moves. */
+    assert(player_app_list_save_backups(app, 0, list, 8, &total) == 4u && total == 4u);
+    /* A file outside the title's backup folder is not a backup to restore. */
+    assert(player_app_restore_saves(app, 0, f.iso, "20261104-100400", kept, sizeof(kept), error,
+                                    sizeof(error)) == PLAYER_SAVES_FAILED);
+    assert(saves_test_has_text(data_bin, "original bytes"));
+    assert(remove(hostile) == 0 && remove(pick) == 0);
+
+    /* Add a save: a save of the same name is replaced only when asked, after a backup. */
+    removal_test_path(pick, sizeof(pick), native_test_get_root(), "pick1883", "SAVEDATA",
+                      "SVB01883DATA00");
+    assert(nk_platform_mkdir_p(pick));
+    removal_test_path(pick_file, sizeof(pick_file), pick, "PARAM.SFO", NULL, NULL);
+    write_text_file(pick_file, "PSF added save");
+    removal_test_path(pick_file, sizeof(pick_file), pick, "DATA.BIN", NULL, NULL);
+    write_text_file(pick_file, "added bytes");
+    assert(player_app_add_save(app, 0, pick, false, "20261104-100500", added, sizeof(added),
+                               error, sizeof(error)) == PLAYER_SAVES_EXISTS);
+    assert(strcmp(added, "SVB01883DATA00") == 0);
+    assert(saves_test_has_text(data_bin, "original bytes"));
+    assert(player_app_list_save_backups(app, 0, list, 8, &total) == 2u);
+    assert(player_app_add_save(app, 0, pick, true, "20261104-100500", added, sizeof(added),
+                               error, sizeof(error)) == PLAYER_SAVES_DONE);
+    assert(saves_test_has_text(data_bin, "added bytes"));
+    assert(player_app_list_save_backups(app, 0, list, 8, &total) == 3u);
+    assert(list[0].kind == PLAYER_SAVE_BACKUP_BEFORE_ADD);
+    removal_test_path(savedata, sizeof(savedata), f.saves, "PSP", "SAVEDATA", NULL);
+    assert(saves_test_entries_named(savedata, ".") == 0u);
+    /* A folder with no PARAM.SFO is not a save. */
+    assert(remove(pick_file) == 0);
+    removal_test_path(pick_file, sizeof(pick_file), pick, "PARAM.SFO", NULL, NULL);
+    assert(remove(pick_file) == 0);
+    assert(player_app_add_save(app, 0, pick, true, "20261104-100600", added, sizeof(added),
+                               error, sizeof(error)) == PLAYER_SAVES_FAILED);
+    assert(strstr(error, "PARAM.SFO") != NULL);
+    assert(saves_test_has_text(data_bin, "added bytes"));
+
+    /* Nothing changes while the game runs. */
+    app->is_game_running = true;
+    assert(player_app_saves_blocker(app, 0) != NULL);
+    assert(player_app_back_up_saves(app, 0, "20261104-100700", PLAYER_SAVE_BACKUP_MANUAL,
+                                    backup, sizeof(backup), error, sizeof(error)) ==
+           PLAYER_SAVES_FAILED);
+    assert(player_app_list_save_backups(app, 0, list, 8, &total) == 3u);
+    assert(player_app_restore_saves(app, 0, list[2].path, "20261104-100700", kept, sizeof(kept),
+                                    error, sizeof(error)) == PLAYER_SAVES_FAILED);
+    assert(saves_test_has_text(data_bin, "added bytes"));
+    app->is_game_running = false;
+
+    /* Remove from library with the saves box ticked backs them up first, into the
+       folder the removal leaves alone. */
+    assert(player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error,
+                                           sizeof(error)));
+    assert(!nk_platform_dir_exists(f.saves));
+    assert(nk_platform_dir_exists(backups));
+    /* The two before the removal, the manual one, the before-restore and before-add ones,
+       and one each for the save folder and the copied disc's Memory Stick folder. */
+    assert(saves_test_entries_named(backups, "SVB01883-saves-") == 5u);
+    assert(saves_test_entries_containing(backups, "-before-remove") == 2u);
+    remove(app->library.library_path);
+    free(app);
+    printf("PASS: saves back up, restore (and refuse a hostile backup), add and survive removal\n");
+}
+
 static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     RemovalFixture f;
     PlayerRemovalPlan plan;
@@ -6514,6 +6831,7 @@ int main(int argc, char **argv) {
     test_remove_tree_deeper_than_max_path();
 #endif
     test_remove_from_library_deletes_what_nakagawa_built();
+    test_saves_back_up_restore_and_add();
     test_single_instance_per_data_folder();
     test_build_identity_matches_the_python_digest();
     test_package_build_lifecycle(self_executable);

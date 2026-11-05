@@ -330,6 +330,53 @@ static void trigger_font_folder_picker(SDL_Window *window, PlayerApp *app) {
                             on_font_files_dialog_callback, app);
 }
 
+/* Saves > Add a save (#1883). SDL may call the folder picker's callback on another
+   thread, so the folder waits here and player_frame_requests hands it to the
+   Saves dialog on the main thread: 1 a folder was picked, 2 cancelled, 3 the
+   picker failed. */
+static char s_save_pick[NK_MAX_PATH];
+static char s_save_pick_error[256];
+static SDL_AtomicInt s_save_pick_state;
+
+static void on_save_folder_dialog_callback(void *userdata, const char *const *filelist,
+                                           int filter) {
+    (void)userdata;
+    (void)filter;
+    if (!filelist) {
+        (void)snprintf(s_save_pick_error, sizeof(s_save_pick_error), "%s", SDL_GetError());
+        SDL_SetAtomicInt(&s_save_pick_state, 3);
+    } else if (!filelist[0] || strlen(filelist[0]) >= sizeof(s_save_pick)) {
+        SDL_SetAtomicInt(&s_save_pick_state, 2);
+    } else {
+        (void)snprintf(s_save_pick, sizeof(s_save_pick), "%s", filelist[0]);
+        SDL_SetAtomicInt(&s_save_pick_state, 1);
+    }
+}
+
+static void trigger_save_folder_picker(SDL_Window *window, PlayerApp *app) {
+    SDL_SetAtomicInt(&s_save_pick_state, 0);
+    player_host_show_picker(PLAYER_HOST_PICK_SAVE, window, player_picker_start(app),
+                            on_save_folder_dialog_callback, app);
+}
+
+static void player_take_save_folder_pick(PlayerApp *app) {
+    int state = SDL_GetAtomicInt(&s_save_pick_state);
+    if (state == 0) return;
+    SDL_SetAtomicInt(&s_save_pick_state, 0);
+    if (state == 1) {
+        (void)snprintf(app->saves_picked, sizeof(app->saves_picked), "%s", s_save_pick);
+        app->saves_pick_ready = true;
+    } else if (state == 3) {
+        fprintf(stderr, "[PLAYER] The folder picker could not open: %s\n", s_save_pick_error);
+        player_app_set_error_with_details(
+            app, "SAVES_PICKER_FAILED", "The folder picker didn't open",
+            "Nakagawa couldn't show a folder picker, so no save was added. Copy the save's "
+            "folder into PSP/SAVEDATA in the save folder yourself: Open save folder shows it.",
+            s_save_pick_error, "Back", app->active_view == VIEW_ERROR ? VIEW_LIBRARY
+                                                                     : app->active_view);
+    }
+}
+
 #define PLAYER_WINDOW_MIN_LOGICAL_WIDTH 960
 #define PLAYER_WINDOW_MIN_LOGICAL_HEIGHT 540
 
@@ -941,19 +988,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
 
 static bool player_ui_save_folder_path(const GameRecord *game,
                                       char *out, size_t out_size) {
-    char saves_root[NK_MAX_PATH];
-    const char *slot;
-    int written;
-    if (game == NULL || out == NULL || out_size == 0u ||
-        !nk_platform_get_path(NK_PATH_SAVES, saves_root, sizeof(saves_root))) {
-        return false;
-    }
-    slot = game->disc_id[0] != '\0' ? game->disc_id
-         : (game->title_id[0] != '\0' ? game->title_id : "unidentified");
-    written = snprintf(out, out_size, "%s%c%s", saves_root,
-                       nk_platform_path_separator(), slot);
-    if (written <= 0 || (size_t)written >= out_size) return false;
-    return nk_platform_mkdir_p(out);
+    /* The folder nk_launch.c gives the game as its Memory Stick (#1883). */
+    return player_app_save_folder(game, out, out_size) && nk_platform_mkdir_p(out);
 }
 
 static void player_ui_open_save_folder(PlayerApp *app, size_t title_index) {
@@ -5132,6 +5168,13 @@ static void player_frame_requests(PlayerRun *run) {
             trigger_font_folder_picker(run->window, app);
         }
     }
+    if (app->request_save_folder_picker) {
+        if (!player_ui_test_active(&run->ui_test)) {
+            app->request_save_folder_picker = false;
+            trigger_save_folder_picker(run->window, app);
+        }
+    }
+    player_take_save_folder_pick(app);
     if (app->request_open_folder) {
         app->request_open_folder = false;
         if (app->requested_open_path[0] &&

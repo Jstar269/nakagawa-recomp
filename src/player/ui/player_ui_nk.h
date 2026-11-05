@@ -37,7 +37,8 @@ typedef enum {
     PLAYER_UI_ROUTE_STOP = 6,      /* confirm STOP GAME */
     /* An older Nakagawa built some games: the once-per-update prompt, or the
        reminder a launch of one shows. Pushed while player_state says so. */
-    PLAYER_UI_ROUTE_REBUILD = 7
+    PLAYER_UI_ROUTE_REBUILD = 7,
+    PLAYER_UI_ROUTE_SAVES = 8      /* a title's saves: back up, restore, add (#1883) */
 } PlayerUiRoute;
 
 /* The player's version: the one place it is written. The About page shows
@@ -136,9 +137,26 @@ typedef enum {
     PLAYER_UI_ACTION_FIND_OPEN,         /* open the library's find box */
     PLAYER_UI_ACTION_FIND_KEY,          /* an on-screen key: title_index is a codepoint, or
                                            PLAYER_UI_FIND_DELETE or PLAYER_UI_FIND_DONE */
-    PLAYER_UI_ACTION_DISC_VERIFY        /* the library's disc check line; .primary carries
+    PLAYER_UI_ACTION_DISC_VERIFY,       /* the library's disc check line; .primary carries
                                            the op (PlayerUiDiscVerifyOp) */
+    PLAYER_UI_ACTION_OPEN_SAVES,        /* the title page's Saves (#1883) */
+    PLAYER_UI_ACTION_SAVES              /* a Saves dialog control; .primary carries the
+                                           op (PlayerUiSavesOp) */
 } PlayerUiActionKind;
+
+/* What a Saves dialog control asks for (PLAYER_UI_ACTION_SAVES). Back is
+   PLAYER_UI_ACTION_BACK. */
+typedef enum {
+    PLAYER_UI_SAVES_NONE = 0,
+    PLAYER_UI_SAVES_BACK_UP,         /* Back up saves */
+    PLAYER_UI_SAVES_ADD,             /* Add a save: the host folder picker */
+    PLAYER_UI_SAVES_OPEN_FOLDER,     /* Open save folder */
+    PLAYER_UI_SAVES_CONFIRM,         /* the question's Restore or Replace */
+    PLAYER_UI_SAVES_CANCEL,          /* the question's Cancel */
+    PLAYER_UI_SAVES_OLDER,           /* the list's next, older backups */
+    PLAYER_UI_SAVES_NEWER,           /* the list's newer backups */
+    PLAYER_UI_SAVES_RESTORE_BASE = 0x100 /* + the backup's row: Restore asks first */
+} PlayerUiSavesOp;
 
 /* What the library's disc check line asks for (PLAYER_UI_ACTION_DISC_VERIFY). */
 typedef enum {
@@ -902,7 +920,7 @@ enum {
     PLAYER_UI_ID_LIBRARY_ITEM_BASE = 0x10000u,       /* + the title's index, up to NK_MAX_GAMES */
     PLAYER_UI_ID_TITLE_BACK = 0x2001u,
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,
-    PLAYER_UI_ID_TITLE_SAVE_FOLDER = 0x2003u,
+    PLAYER_UI_ID_TITLE_SAVES = 0x2003u,              /* Saves (#1883) */
     PLAYER_UI_ID_TITLE_REMOVE = 0x2004u,
     PLAYER_UI_ID_TITLE_STALL_KEEP_WAITING = 0x2005u,
     PLAYER_UI_ID_TITLE_STALL_STOP_GAME = 0x2006u,
@@ -918,6 +936,15 @@ enum {
     PLAYER_UI_ID_REMOVE_DISC_COPY = 0x4404u,
     PLAYER_UI_ID_STOP_KEEP = 0x4411u,
     PLAYER_UI_ID_STOP_CONFIRM = 0x4412u,
+    PLAYER_UI_ID_SAVES_BACK_UP = 0x4421u,
+    PLAYER_UI_ID_SAVES_ADD = 0x4422u,
+    PLAYER_UI_ID_SAVES_OPEN_FOLDER = 0x4423u,
+    PLAYER_UI_ID_SAVES_BACK = 0x4424u,
+    PLAYER_UI_ID_SAVES_CONFIRM = 0x4425u,
+    PLAYER_UI_ID_SAVES_CANCEL = 0x4426u,
+    PLAYER_UI_ID_SAVES_OLDER = 0x4427u,
+    PLAYER_UI_ID_SAVES_NEWER = 0x4428u,
+    PLAYER_UI_ID_SAVES_RESTORE_BASE = 0x4430u,      /* + the backup's row */
     PLAYER_UI_ID_TAB_LIBRARY = 0x0F01u,
     PLAYER_UI_ID_TAB_ABOUT = 0x0F02u,
     PLAYER_UI_ID_TAB_SETTINGS = 0x0F03u,
@@ -1118,6 +1145,42 @@ typedef struct {
 } PlayerUiStopModel;
 
 PlayerUiAction player_ui_screen_stop(NkUi *ui, const PlayerUiStopModel *model);
+
+/* Saves (#1883): back up the title's saves, restore one of its backups (newest
+   first, a page at a time; Restore asks first), add a save from a folder, and
+   open the save folder. Every change backs the saves up first. */
+#define PLAYER_UI_SAVES_ROW_CAP 4u
+typedef struct {
+    const char *when;           /* "2026-11-04 14:05" */
+    const char *detail;         /* "Before a restore · 120 KB" */
+} PlayerUiSavesRow;
+
+typedef enum {
+    PLAYER_UI_SAVES_ASK_NONE = 0,
+    PLAYER_UI_SAVES_ASK_RESTORE,    /* Restore the backup in row ask_row? */
+    PLAYER_UI_SAVES_ASK_REPLACE     /* Replace the save named ask_name? */
+} PlayerUiSavesAsk;
+
+typedef struct {
+    const char *title;
+    size_t title_index;
+    bool has_saves;             /* false: Back up saves is off */
+    uint64_t saves_bytes;
+    const PlayerUiSavesRow *rows;   /* this page of backups, newest first */
+    size_t row_count;           /* up to PLAYER_UI_SAVES_ROW_CAP */
+    size_t first_row;           /* the page's first backup, from 0 (the newest) */
+    size_t total;               /* backups found */
+    PlayerUiSavesAsk ask;
+    size_t ask_row;             /* the row Restore asks about, on this page */
+    const char *ask_name;       /* the save Add a save would replace */
+    const char *status;         /* what the last action did, or NULL */
+    PlayerUiNoteKind status_kind;
+    const char *blocked;        /* why the saves can't change now, or NULL */
+    float logical_width;
+    float logical_height;
+} PlayerUiSavesModel;
+
+PlayerUiAction player_ui_screen_saves(NkUi *ui, const PlayerUiSavesModel *model);
 /* The older-build prompt (model->title NULL: Rebuild all, Later) and the launch
    reminder (Rebuild now, Play anyway). Back is the second choice. */
 PlayerUiAction player_ui_screen_rebuild(NkUi *ui, const PlayerUiRebuildModel *model);
