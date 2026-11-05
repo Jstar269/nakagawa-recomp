@@ -133,7 +133,7 @@ def _has_private_operational_vocabulary(text: str, lowered: str) -> bool:
 
 FORBIDDEN_EXTENSIONS = {
     ".at3", ".bin", ".chd", ".cso", ".dax", ".dmp", ".edat", ".elf", ".gim",
-    ".iso", ".pbp", ".pmf", ".prx", ".psar", ".psess", ".sfo", ".sqlite", ".trace", ".vag"
+    ".iso", ".nkcap", ".pbp", ".pmf", ".prx", ".psar", ".psess", ".sfo", ".sqlite", ".trace", ".vag"
 }
 
 FORBIDDEN_NAMES = {
