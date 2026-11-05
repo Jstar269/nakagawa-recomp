@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **457** (declared in `recomp.h`: 387)
-- reach class: emitter-reached 80, production-runtime-only 342, selftest-only 0, address-only 8, none 27
-- provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 422
+- helpers: **458** (declared in `recomp.h`: 388)
+- reach class: emitter-reached 80, production-runtime-only 343, selftest-only 0, address-only 8, none 27
+- provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 423
 
 ## Helpers
 
@@ -81,6 +81,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `ge_last_finish_id` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_run_list` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_run_list_until` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
+| `ge_take_signal_fault` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_timing_list_clk` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_timing_run_clk` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_timing_set_enabled` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
