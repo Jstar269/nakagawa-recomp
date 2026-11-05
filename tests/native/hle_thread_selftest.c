@@ -43686,13 +43686,24 @@ static void test_flash0_latin_index_resolution(void) {
     expect(sr_flash0_font_registry_info(&project_sources, 14u, &project_style) ==
                    SR_FONT_REGISTRY_PRESENT &&
                strcmp(project_style.font_name, "Nakagawa Project Latin Serif Bold") == 0 &&
-               project_style.style == 5u && !project_style.served_as_regular,
+               project_style.style == 5u && !project_style.served_as_regular &&
+               !project_style.served_as_other_family,
            "a project face of its own style reports that style, not a regular substitute");
     expect(sr_flash0_font_registry_info(&project_sources, 13u, &project_group) ==
                    SR_FONT_REGISTRY_PRESENT &&
                strcmp(project_group.font_name, "Nakagawa Project Latin Second") == 0 &&
-               project_group.style == 1u && project_group.served_as_regular,
+               project_group.style == 1u && project_group.served_as_regular &&
+               !project_group.served_as_other_family,
            "a Latin index with no project face of its own is served by its size group's regular face");
+    /* Index 10 (serif regular, small) has no face here either: the sans-serif regular face of its
+     * group serves it. The style matches, so only the family says it is a substitute. */
+    SrFontRegistryInfo project_family;
+    expect(sr_flash0_font_registry_info(&project_sources, 10u, &project_family) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               strcmp(project_family.font_name, "Nakagawa Project Latin Second") == 0 &&
+               project_family.style == 1u && !project_family.served_as_regular &&
+               project_family.served_as_other_family && project_family.family_code == 2u,
+           "a serif index served by the sans-serif face of its group is reported as a substitute");
 
     /* #1300: resolving a font for the font list says nothing of what the game draws with; only
      * an open does, and the open is what the log has to name. */

@@ -1513,7 +1513,8 @@ class ProjectLatinStrikeTests(unittest.TestCase):
                 self.assertLessEqual(abs(self._stem(glyphs[ord("l")]) - stem), 0.2)
 
     def test_the_ellipsis_sits_on_the_line_of_the_full_stop(self) -> None:
-        for index in (0, 8):
+        # No strike passes --baseline-ellipsis: every Liberation face already draws U+2026 there.
+        for index in range(16):
             with self.subTest(index=index):
                 glyphs = _glyph_map(self._convert(index).glyphs)
                 self.assertEqual(glyphs[0x2026].adjust_y, glyphs[ord(".")].adjust_y)
@@ -1556,6 +1557,26 @@ class SpacingOptionTests(CliRefusalMixin):
             # The outline moves by half the change, so the ink stays centred.
             self.assertLessEqual(abs(glyphs[code].adjust_x - plain[code].adjust_x - (640 - natural) // 128), 1)
         self.assertEqual(glyphs[0x48].advance_x, plain[0x48].advance_x, "letters keep their own advance")
+
+    def test_digit_advance_is_centred_when_metric_targets_choose_the_ppem(self) -> None:
+        # The ppem search rasterizes the digits before their shift is known; the shift must still apply.
+        targets = ttf2pgf._MetricTargets(
+            ascender_px=9, descender_px=-2, tolerance_px=1, ppem_min=6, ppem_max=24,
+        )
+        searched = self._convert(ppem=None, metric_targets=targets, digit_advance_26_6=640)
+        ppem = searched.manifest["parameters"]["ppem"]
+        direct = _glyph_map(self._convert(ppem=ppem, digit_advance_26_6=640).glyphs)
+        plain = _glyph_map(self._convert(ppem=ppem).glyphs)
+        glyphs = _glyph_map(searched.glyphs)
+        self.assertTrue(
+            any(direct[code].adjust_x != plain[code].adjust_x for code in range(0x30, 0x3A)),
+            "the chosen ppem must move at least one digit, or this test proves nothing",
+        )
+        for code in range(0x30, 0x3A):
+            with self.subTest(code=hex(code)):
+                self.assertEqual(glyphs[code].advance_x, 640)
+                self.assertEqual(glyphs[code].adjust_x, direct[code].adjust_x)
+                self.assertEqual(glyphs[code].samples, direct[code].samples)
 
     def test_spacing_options_out_of_range_are_refused(self) -> None:
         for kwargs, reason in (

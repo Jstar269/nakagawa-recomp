@@ -1547,6 +1547,16 @@ class _Planner:
             return contours
         return [[(x, y + shift, on) for x, y, on in contour] for contour in contours]
 
+    def set_shift_x(self, code: int, shift_26_6: int) -> None:
+        """Move ``code``'s outline right by ``shift_26_6`` and drop any raster planned before the move.
+
+        A ppem search (``--metric-targets``) rasterizes every code before the shift is known, so a
+        raster cached then would otherwise be served unshifted at the chosen ppem.
+        """
+        self.shift_x_26_6[code] = shift_26_6
+        for per_size in self._rasters.values():
+            per_size.pop(code, None)
+
     def raster_at(self, code: int, ppem: int) -> _Raster:
         per_size = self._rasters.setdefault(ppem, {})
         cached = per_size.get(code)
@@ -1734,7 +1744,7 @@ def convert(
         for code in DIGIT_CODES:
             natural = _to26_6(font.advance_units(planner.gids[code]), ppem, font.units_per_em)
             # Half the change on each side, rounded down to whole 26.6 units: deterministic and exact.
-            planner.shift_x_26_6[code] = (digit_advance_26_6 - natural) // 2
+            planner.set_shift_x(code, (digit_advance_26_6 - natural) // 2)
 
     glyphs: list[pgf_writer.Glyph] = []
     zero_area: list[int] = []

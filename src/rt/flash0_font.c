@@ -787,6 +787,10 @@ SrFontRegistryStatus sr_flash0_font_registry_info(const Flash0Sources *sources, 
         info->style = served_row ? served_row->style : FLASH0_STYLE_REGULAR;
         info->served_as_regular = resolution.served_index == row->latin_index ? 0 :
                                   info->style != row->style;
+        /* The family follows the served face the same way; the old unindexed file is sans-serif.
+         * family_code stays the requested one, so the guest still finds the index it asked for. */
+        uint32_t served_family = served_row ? served_row->family : 1u;
+        info->served_as_other_family = served_family != row->family;
     } else {
         info->served_as_regular = 0;
         info->style = row->style;
