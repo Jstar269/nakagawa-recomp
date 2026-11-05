@@ -1311,15 +1311,25 @@ static void hle_register_mpeg_ring_handlers(void) {
     sr_hle_register(0xfe246728, "sceMpegGetAvcAu", h_MpegGetAvcAu);
 }
 #endif
-#ifdef SR_HLE_THREAD_SELFTEST
-/* sr_hle_init() leaves sceMpeg out of the thread selftest. Its interrupt-context check of
- * sceMpegCreate (hle_thread_selftest.c) registers these production handlers itself, so the call
- * goes through sr_syscall and the real sub-interrupt delivery path. */
-void sr_hle_test_register_mpeg_create_handlers(void) {
+#ifndef SR_MPEG_MEDIA_SELFTEST
+/* Two runs of hle_register_init_mpeg() the thread fixture also registers, for its
+ * interrupt-context check of sceMpegCreate (hle_thread_selftest.c). */
+static void hle_register_mpeg_init_finish_handlers(void) {
     sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
     sr_hle_register(0x874624d6, "sceMpegFinish", h_MpegFinish);
+}
+static void hle_register_mpeg_create_delete_handlers(void) {
     sr_hle_register(0xd8c5f121, "sceMpegCreate", h_MpegCreate);
     sr_hle_register(0x606a4649, "sceMpegDelete", h_MpegDelete);
+}
+#endif
+#ifdef SR_HLE_THREAD_SELFTEST
+/* sr_hle_init() leaves sceMpeg out of the thread selftest. Its interrupt-context check of
+ * sceMpegCreate registers these production handlers itself, so the call goes through sr_syscall
+ * and the real sub-interrupt delivery path. */
+void sr_hle_test_register_mpeg_create_handlers(void) {
+    hle_register_mpeg_init_finish_handlers();
+    hle_register_mpeg_create_delete_handlers();
 }
 #endif
 #ifdef SR_MPEG_MEDIA_SELFTEST
@@ -1333,11 +1343,9 @@ void sr_hle_test_register_mpeg_ring_handlers(void) {
 #ifndef SR_HLE_THREAD_SELFTEST
 /* From sr_hle_init(). */
 void hle_register_init_mpeg(void) {
-    sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
-    sr_hle_register(0x874624d6, "sceMpegFinish", h_MpegFinish);
+    hle_register_mpeg_init_finish_handlers();
     sr_hle_register(0xc132e22f, "sceMpegQueryMemSize", h_MpegQueryMemSize);
-    sr_hle_register(0xd8c5f121, "sceMpegCreate", h_MpegCreate);
-    sr_hle_register(0x606a4649, "sceMpegDelete", h_MpegDelete);
+    hle_register_mpeg_create_delete_handlers();
     sr_hle_register(0x42560f23, "sceMpegRegistStream", h_MpegRegistStream);
     sr_hle_register(0x591a4aa2, "sceMpegUnRegistStream", h_MpegUnRegistStream);
     hle_register_mpeg_stream_offset_handler();
