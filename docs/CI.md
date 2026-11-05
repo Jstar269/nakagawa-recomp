@@ -47,7 +47,7 @@ of 2026-11-02, whole history, hosted runners):
 | `CodeQL wake` then `Trusted CodeQL` | 1 wake + prepare + 3 analyses + upload (6 jobs) | 6 jobs when the diff touches C/C++, Python or workflow files; otherwise 3 (wake, prepare, upload) | `codeql.yml` is 38.5k hosted minutes over 2,732 runs, about 14 minutes a run |
 | `ClusterFuzzLite` | 1 job, every pull request | 1 job only when the fuzz target's inputs change; none otherwise | 6.8k minutes over 1,767 runs, about 3.8 minutes a run |
 | `OSV-Scanner`, `Dependency Review`, `Provenance attestation` | 1 job each | unchanged | cheap per run (4.5-5.6k runs) but supply-chain controls |
-| `Trusted CI verdict` | about 4 runs, 1 job each | unchanged | 16 s average run |
+| `Trusted CI verdict` | about 4 runs, 1 job each | 2 runs (a new head, CI's completion); none for a superseded head's cancelled CI | 16 s average run |
 
 #### Tests-only changes
 
@@ -113,7 +113,33 @@ historical 531 s average is therefore the runner limit (about 20 concurrent jobs
 a property of the workflow: the verdict job is created when a producer finishes, which is
 when the repository's own matrix has most jobs queued, and it waits in the same queue as
 the Windows and Python legs. The way to shorten it is to start fewer jobs per push, which
-is what the path gates above do. No change to `ci-trust-verdict.yml` is made or needed.
+is what the path gates above do.
+
+#### Why the verdict waited over an hour (2026-11-05)
+
+On 2026-11-05 the account ran at its ceiling of 20 hosted jobs for 196 of the 320 minutes
+from 14:30 to 19:50 UTC, on every label at once (`ubuntu-24.04`, `ubuntu-26.04`,
+`windows-2022`). CI used about 7,600 of the 8,350 runner-minutes and the verdict jobs 74,
+yet 206 verdict jobs waited a median of 43 minutes for a runner (90th percentile 91). The
+verdict is a victim of that queue, not its cause, but it added to it in two ways:
+
+- **Pending-only runs.** CI finished last on all 181 heads whose three `pull_request`
+  producers passed on 2026-11-04 and 2026-11-05. A run started when `OSV-Scanner` or
+  `Dependency Review` finished could only re-post `pending`, which the `pull_request_target`
+  run had already posted, and it held the head's concurrency group, so the run CI's
+  completion started waited for it to get a runner first. Of 31 `workflow_run` verdicts
+  queued at 19:35 UTC, 14 were of that kind.
+- **Superseded heads.** `CI` cancels a pull request's run when a newer head arrives. The
+  cancelled run's completion started a verdict for a head no pull request still had, which
+  the verifier answers by posting nothing. Seven of the 31 were of that kind.
+
+The workflow therefore re-triggers on `CI` alone, and its verdict job skips (no runner) when
+the triggering run is a cancelled first attempt. Both are fail-closed: a skipped run leaves
+the head at `pending`, never `success`. If the current head's CI is cancelled, a re-run
+(attempt 2 or later) is judged as usual; if `OSV-Scanner`, `Dependency Review` or the
+provenance attestation finishes after `CI`, dispatch the verdict (see "Re-running" under
+[Trusted CI verdict](#trusted-ci-verdict)). Together they would have removed 21 of those 31 queued runs.
+They do not change the ceiling: verdict latency still follows the CI queue.
 
 ### Draft pull requests
 
@@ -949,8 +975,8 @@ intended job from a candidate's.
 
 **The gate.** The workflow runs only the default branch's copy: `pull_request_target`
 (opened, synchronize, reopened, ready for review, labeled, unlabeled), a `workflow_run` when
-`CI`, `OSV-Scanner` or `Dependency Review` completes, and a manual `workflow_dispatch`
-naming a pull request. It checks out the default branch, fetches `refs/pull/<n>/head` as
+`CI` completes (CI finishes last; a cancelled first attempt, a superseded head, starts no
+verdict job), and a manual `workflow_dispatch` naming a pull request. It checks out the default branch, fetches `refs/pull/<n>/head` as
 objects only, and never checks out or runs candidate files. The verdict job has `actions`,
 `checks`, `contents`, `issues` and `pull-requests` read, and `statuses: write`; a separate
 job, with `pull-requests: write` and no way to post a status, records, carries or withdraws
@@ -1056,10 +1082,13 @@ so can a labeling run that a newer pending run replaced (the workflow's concurre
 keeps one pending run per head). Both fail closed: re-apply the label after reviewing the
 head. A merge of `main` that changes a protected file also changes the digest; re-review it.
 
-**Re-running.** Every run reads GitHub's state afresh. The provenance workflow is not a
-`workflow_run` trigger, because its verifier refuses any other workflow that names its
-context. When the provenance attestation finishes after the other three workflows (for
-example a re-run after an admission), run:
+**Re-running.** Every run reads GitHub's state afresh. Only `CI` is a `workflow_run`
+trigger. The provenance workflow cannot be one, because its verifier refuses any other
+workflow that names its context, and `OSV-Scanner` and `Dependency Review` are not, because
+they finish before `CI` (see
+[Why the verdict waited over an hour](#why-the-verdict-waited-over-an-hour-2026-11-05)).
+When one of them finishes after `CI` (for example a re-run, or the provenance attestation
+after an admission), the verdict stays `pending`; run:
 
 ```bash
 gh workflow run ci-trust-verdict.yml -f pull_request_number=<n>
