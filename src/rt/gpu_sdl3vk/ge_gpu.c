@@ -737,6 +737,79 @@ static void to_layout(VkCommandBuffer cmd, VkImage img, VkImageAspectFlags aspec
     *cur = want;
 }
 
+/* SR_GPU_SNAPBAR_MUTANT (gpu-coherence-selftest-snapbar-mutants only; never in a product build)
+ * breaks one property of the snapshot-copy barriers that the submit-batch case checks:
+ * 1 records one barrier command per image (the stream before the pair), 2 leaves the target
+ * SHADER_READ_ONLY after a copy op instead of as the next pass's attachment, 3 drops the write
+ * from the barriers' destination access. */
+#ifndef SR_GPU_SNAPBAR_MUTANT
+#define SR_GPU_SNAPBAR_MUTANT 0
+#endif
+
+#ifdef SR_GPU_COHERENCE_SELFTEST
+/* What snapshot copies left behind, read by the coherence selftest's submit-batch case: image
+ * barriers weaker than to_layout's (source access, destination access, stages, mip range), and
+ * copy ops that did not leave the target as the next render op's colour attachment and the
+ * snapshot samplable. */
+typedef struct {
+    unsigned long long image_barriers, weak_barriers;
+    unsigned long long op_copies, op_target_not_attachment, op_snapshot_not_sampled;
+} SnapbarProbe;
+static SnapbarProbe s_snapbar_probe;
+#endif
+
+/* to_layout for two colour images in one barrier command: each image whose tracked layout differs
+ * from its target gets the barrier to_layout would record, with the same masks and stages, so the
+ * pair orders exactly as two to_layout calls do. */
+static int to_layout_pair(VkCommandBuffer cmd, VkImage a, VkImageLayout *acur, VkImageLayout awant,
+                          VkImage b, VkImageLayout *bcur, VkImageLayout bwant) {
+    const VkPipelineStageFlags src_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    const VkPipelineStageFlags dst_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkImageMemoryBarrier mb[2];
+    uint32_t n = 0;
+    VkImage img[2] = { a, b };
+    VkImageLayout *cur[2] = { acur, bcur };
+    const VkImageLayout want[2] = { awant, bwant };
+    for (int i = 0; i < 2; i++) {
+        if (*cur[i] == want[i]) continue;
+        VkImageMemoryBarrier m = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        m.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+#if SR_GPU_SNAPBAR_MUTANT == 3
+        m.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+#else
+        m.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+#endif
+        m.oldLayout = *cur[i]; m.newLayout = want[i];
+        m.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        m.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        m.image = img[i];
+        m.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        m.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
+        m.subresourceRange.layerCount = 1;
+        mb[n++] = m;
+        *cur[i] = want[i];
+    }
+    if (!n) return 0;
+#ifdef SR_GPU_COHERENCE_SELFTEST
+    const VkAccessFlags rw = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    for (uint32_t i = 0; i < n; i++) {
+        s_snapbar_probe.image_barriers++;
+        if (!(mb[i].srcAccessMask & VK_ACCESS_MEMORY_WRITE_BIT) || (mb[i].dstAccessMask & rw) != rw ||
+            src_stage != VK_PIPELINE_STAGE_ALL_COMMANDS_BIT || dst_stage != VK_PIPELINE_STAGE_ALL_COMMANDS_BIT ||
+            mb[i].subresourceRange.levelCount != VK_REMAINING_MIP_LEVELS)
+            s_snapbar_probe.weak_barriers++;
+    }
+#endif
+#if SR_GPU_SNAPBAR_MUTANT == 1
+    for (uint32_t i = 0; i < n; i++)
+        vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &mb[i]);
+    return (int)n;
+#else
+    vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, NULL, 0, NULL, n, mb);
+    return 1;                       /* barrier commands recorded */
+#endif
+}
+
 static int cmd_batch_flush(void);
 static int cmd_submit_wait(SrPerfGeReason reason);
 
@@ -1516,8 +1589,15 @@ static int batch_reads_dst(const Batch *b) {
  * snapshot already equals the target, so the result is the same image a full copy gives. Any
  * other state copies the whole target. A full copy moves scale^2 times the guest frame; a
  * title that blends against the destination a hundred times a frame spent its frame time on
- * those copies at 3x and 4x. */
-static void snapshot_copy_record(Target *t) {
+ * those copies at 3x and 4x.
+ *
+ * The copy records two barrier commands: one moves the target and the snapshot to their transfer
+ * layouts, one moves them on. The snapshot goes back to SHADER_READ_ONLY. The target goes to
+ * `t_after`: SHADER_READ_ONLY where it may be sampled next, or COLOR_ATTACHMENT_OPTIMAL when
+ * submit_pending records the target's next render pass right after the copy, which saves that
+ * pass a transition of its own. A shader-blend title records one copy for most of its blended
+ * batches, so these barriers were most of the copy's cost. */
+static void snapshot_copy_record(Target *t, VkImageLayout t_after) {
     SnapRect r = { 0, 0, FB_W, FB_H };
     if (s_snap_src == t && s_snap_tracked && s_snap_dirty_gen == t->render_gen &&
         !snap_rect_empty(&s_snap_dirty)) {
@@ -1528,10 +1608,9 @@ static void snapshot_copy_record(Target *t) {
         if (r.y1 > FB_H) r.y1 = FB_H;
         if (snap_rect_empty(&r)) r = (SnapRect){ 0, 0, FB_W, FB_H };
     }
-    to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
-              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout,
-              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    s_replay_stats.snapshot_barriers +=
+        to_layout_pair(s_cmd, t->img, &t->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       s_snapimg, &s_snap_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkImageCopy ic = {0};
     ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     ic.srcSubresource.layerCount = 1;
@@ -1544,10 +1623,9 @@ static void snapshot_copy_record(Target *t) {
     vkCmdCopyImage(s_cmd, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    s_snapimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
     s_replay_stats.snapshot_copy_px += (unsigned long long)ic.extent.width * ic.extent.height;
-    to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout,
-              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
-              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    s_replay_stats.snapshot_barriers +=
+        to_layout_pair(s_cmd, s_snapimg, &s_snap_layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       t->img, &t->layout, t_after);
 }
 
 /* The snapshot now holds exactly `t`. */
@@ -1568,11 +1646,22 @@ static int snapshot_stale_for(const Target *t, const SnapRect *box, const SnapRe
     return snap_rect_overlap(box, &dirty);
 }
 
-/* One destination-snapshot copy op, recorded on the GE chain like snapshot_refresh's. */
+/* One destination-snapshot copy op, recorded on the GE chain like snapshot_refresh's. Only
+ * submit_pending calls it, and it records `t`'s next render pass straight after, so the target is
+ * left as that pass's colour attachment. */
 static int snapshot_copy_op(Target *t) {
     if (!cmd_batch_begin(0)) return 0;
     uint64_t region_started = cpu_profile_now();
-    snapshot_copy_record(t);
+#if SR_GPU_SNAPBAR_MUTANT == 2
+    snapshot_copy_record(t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+#else
+    snapshot_copy_record(t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+#endif
+#ifdef SR_GPU_COHERENCE_SELFTEST
+    s_snapbar_probe.op_copies++;
+    if (t->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) s_snapbar_probe.op_target_not_attachment++;
+    if (s_snap_layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) s_snapbar_probe.op_snapshot_not_sampled++;
+#endif
     cpu_profile_add(GEGPU_CPU_SNAPSHOT_REGION, region_started);
     if (!cmd_batch_record(SR_PERF_GE_SNAPSHOT_COPY)) return 0;
     s_replay_stats.snapshot_copies++;
@@ -3166,7 +3255,7 @@ static int snapshot_refresh(Target *src) {
         /* Slot recycling/fence retirement happens inside cmd_batch_begin(). Start the
          * CPU-only region timer afterwards so GPU waits stay in boundary telemetry. */
         uint64_t region_started = cpu_profile_now();
-        snapshot_copy_record(src);
+        snapshot_copy_record(src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         cpu_profile_add(GEGPU_CPU_SNAPSHOT_REGION, region_started);
         if (!cmd_batch_record(SR_PERF_GE_SNAPSHOT_COPY)) return 0;
         s_replay_stats.snapshot_copies++;

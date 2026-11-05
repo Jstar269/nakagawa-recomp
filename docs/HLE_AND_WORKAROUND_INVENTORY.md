@@ -46,13 +46,13 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **685** (dedicated **579**, fake_success **4**, controlled_unsupported **102**).
-Semantic handler census: **557** handlers across **27** API families, covering **586** handler-associated NID registrations.
+Registered NIDs: **685** (dedicated **583**, fake_success **4**, controlled_unsupported **98**).
+Semantic handler census: **561** handlers across **27** API families, covering **590** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 263 | 271 |
+| `partial` | 267 | 275 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 3 | 7 |
 | `unreviewed` | 276 | 284 |
@@ -74,7 +74,7 @@ Semantic handler census: **557** handlers across **27** API families, covering *
 | `sceKernel` | 3 | 107 | 0 | 0 | 80 | 190 | 208 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 12 | 0 | 2 | 26 | 40 | 40 |
-| `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
+| `sceNet` | 0 | 5 | 0 | 0 | 0 | 5 | 5 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 11 | 0 | 0 | 7 | 18 | 22 |
@@ -86,7 +86,7 @@ Semantic handler census: **557** handlers across **27** API families, covering *
 | `sceUtility` | 0 | 10 | 0 | 0 | 27 | 37 | 37 |
 | `sceVaudio` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **263** | **1** | **3** | **276** | **557** | **586** |
+| **Total** | **14** | **267** | **1** | **3** | **276** | **561** | **590** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -887,9 +887,25 @@ Semantic handler census: **557** handlers across **27** API families, covering *
 - **`h_MpegQueryUserdataEsSize`** (`sceMpeg`): `sceMpegQueryUserdataEsSize` (0xc45c99cc)
   - Limitation: writes the 0xA0000 ES and output sizes PPSSPP c9e2afb6 uses and refuses a bad handle or pointer with -1; neither is measured on a PSP (#302)
   - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_userdata_imports
+- **`h_NetAdhocctlGetParameter`** (`sceNet`): `sceNetAdhocctlGetParameter` (0xded9d28e)
+  - Limitation: always NOT_INITIALIZED (0x80410b08), writing nothing, because sceNetAdhocctlInit stays refused with no network; GetParameter's own pre-init code is UNMEASURED and follows the measured calls; with the WLAN switch off PPSSPP answers DISCONNECTED (0x80410b09) instead (UNMEASURED)
+  - Evidence: tests/native/hle_thread_selftest.c:test_net_core_without_network
+  - Evidence: PSPAutotests tests/net (70e72391, recorded on a PSP): before sceNetAdhocctlInit, GetState, AddHandler and Create return NOT_INITIALIZED 0x80410b08 (net/adhoc/adhocctl "Before init")
 - **`h_NetEtherNtostr`** (`sceNet`): `sceNetEtherNtostr` (0x89360950)
   - Limitation: formats a readable six-byte MAC address into the bounded 18-byte lowercase text form without a network stack and returns the text address; the return value (PPSSPP treats the call as void), invalid pointer precedence and the complete text domain are not hardware measured
   - Evidence: tests/native/hle_thread_selftest.c:test_named_refusals
+- **`h_NetGetLocalEtherAddr`** (`sceNet`): `sceNetGetLocalEtherAddr` (0x0bf0a3ae)
+  - Limitation: always 0x80410180, because no ad hoc group and no access point connection ever starts with no network; the address a PSP returns once one has started is not modelled; the answer before sceNetInit is UNMEASURED
+  - Evidence: tests/native/hle_thread_selftest.c:test_net_core_without_network
+  - Evidence: PSPAutotests tests/net (70e72391, recorded on a PSP): 0x80410180 with the buffer untouched before, during and after sceNetApctlInit (net/adhoc/apctlinit) and before an ad hoc group (net/adhoc/adhocctl, net/adhoc/pdp)
+- **`h_NetInit`** (`sceNet`): `sceNetInit` (0x39af39a6)
+  - Limitation: the library's state and its pool (from the user partition) only: no network stack, no socket and no host network API; the SceNetCallout and SceNetNetintr threads are not created; the PSP results were recorded with the WLAN switch on, and with the console profile's switch off sceNetInit still returns 0 (UNMEASURED; PPSSPP does not consult the switch either); the pool-size and priority codes, the pool's placement and the Init failure codes follow PPSSPP (a behaviour reference, UNMEASURED); a second Init without Term starts over with one pool, but checks its arguments before releasing the first pool, unlike PPSSPP (the PSP's order is UNMEASURED); a pool size whose 256-byte rounding passes 4 GB is refused with NO_MEMORY
+  - Evidence: tests/native/hle_thread_selftest.c:test_net_core_without_network
+  - Evidence: PSPAutotests tests/net (70e72391, recorded on a PSP): sceNetInit(0x20000, 0x20, 0x1000, 0x20, 0x1000) returns 0 in every net test with no access point connected, and again after sceNetTerm (net/adhoc/socketids)
+- **`h_NetTerm`** (`sceNet`): `sceNetTerm` (0x281928a9)
+  - Limitation: frees the pool and clears the library state; sceNetTerm before sceNetInit returns 0 as PPSSPP does (UNMEASURED)
+  - Evidence: tests/native/hle_thread_selftest.c:test_net_core_without_network
+  - Evidence: PSPAutotests tests/net (70e72391, recorded on a PSP): sceNetTerm returns 0 after sceNetInit (net/adhoc/apctl, apctlinit, loopback)
 - **`h_NpDrmClearLicenseeKey`** (`sceNp`): `sceNpDrmClearLicenseeKey` (0x9b745542)
   - Limitation: forgets the recorded key and returns 0; not hardware measured
 - **`h_NpDrmSetLicenseeKey`** (`sceNp`): `sceNpDrmSetLicenseeKey` (0xa1336091)

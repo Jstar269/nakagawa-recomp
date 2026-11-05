@@ -708,6 +708,28 @@ uint32_t ge_cpu_profile_validate(const GeCpuProfileStats *s, char *detail, size_
 uint32_t g_ge_stall_addr = 0;
 static uint32_t s_stack_pc[32], s_stack_offset[32];
 static int s_sp = 0;
+/* SIGNAL list control. A SIGNAL whose behaviour is JUMP, CALL or RET (0x10..0x16) and the END
+ * after it are a jump, call or return the GE driver makes in software: its interrupt handler
+ * saves the caller on the list's own stack, which holds as many entries as the numStacks the
+ * list was enqueued with (uofw src/kd/ge/ge.c _sceGeListInterrupt and _sceGeListEnQueue;
+ * behaviour only, no code copied). The callee starts with an empty hardware CALL stack, so
+ * s_hw_floor is the depth its RET cannot pop below; a SIGNAL RET restores the caller's list
+ * address, offset, base and hardware CALL depth. */
+#define GE_SIGNAL_STACK_CAPACITY 256u   /* sceGeListEnQueue refuses numStacks >= 256 */
+typedef struct {
+    uint32_t pc, offset, base;
+    int hw_sp, hw_floor;
+} GeSignalFrame;
+static GeSignalFrame s_sig_stack[GE_SIGNAL_STACK_CAPACITY];
+static uint32_t s_sig_sp = 0;
+static int s_hw_floor = 0;
+/* A SIGNAL whose END lies at or past the stall address waits for the resumed run: the driver's
+ * interrupt reads the SIGNAL and END words together once the END has run, so the pair holds
+ * across a stall (uofw _sceGeListInterrupt). */
+static int s_stalled_signal = 0;
+static uint32_t s_stalled_signal_op = 0;
+uint32_t g_ge_signal_stack_limit = 32u;
+static char s_ge_signal_fault[160];
 /* Result of the last BOUNDINGBOX, read by BJUMP (ge_bounding_box_visible). A list starts
  * with "visible", so a BJUMP before any BOUNDINGBOX falls through; the PSP's value there is
  * unmeasured. */
@@ -1066,6 +1088,10 @@ void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     if (s_tr_enabled > 0) ge_transition_trace_sync_written();
     s_ge_inited = 1;
     s_sp = 0;
+    s_sig_sp = 0;
+    s_hw_floor = 0;
+    s_stalled_signal = 0;
+    s_stalled_signal_op = 0;
     s_bbox_visible = 1;
     g_ge_stall_addr = 0;
 }
@@ -6939,6 +6965,75 @@ static void ge_log_signal_end(uint32_t list_addr, uint32_t addr, uint32_t pendin
     }
 }
 
+int ge_take_signal_fault(char *detail, size_t size) {
+    if (!s_ge_signal_fault[0]) return 0;
+    if (detail && size) snprintf(detail, size, "%s", s_ge_signal_fault);
+    s_ge_signal_fault[0] = '\0';
+    return 1;
+}
+
+static int ge_signal_fail(const char *name, uint32_t signal_pc, const char *why) {
+    snprintf(s_ge_signal_fault, sizeof(s_ge_signal_fault),
+             "GE SIGNAL %s at 0x%08" PRIx32 ": %s", name, signal_pc, why);
+    return -1;
+}
+
+/* A SIGNAL and its END (`addr` is the word after the END). For JUMP, CALL and RET this
+ * sets *next to where the list goes on, saving or restoring the caller, and returns 1;
+ * for any other behaviour it returns 0 and the list runs on after the END. A JUMP or CALL
+ * to an address that is not word-aligned or not readable, a CALL with the list's stack full
+ * and a RET with it empty return -1 with the fault recorded: the GE driver reports each,
+ * and stops the game on an SDK 2.00 or later title, so the list stops at the SIGNAL. */
+static int ge_signal_end(uint32_t signal_op, uint32_t end_data, uint32_t addr, uint32_t *next) {
+    static const char *const names[] = {"JUMP", "CALL", "RET", "RJUMP", "RCALL", "OJUMP", "OCALL"};
+    const unsigned behavior = (signal_op >> 16) & 0xFFu;
+    if (behavior < 0x10u || behavior > 0x16u) {
+        static unsigned char reported[256];
+        if (!reported[behavior]) {
+            reported[behavior] = 1;
+            fprintf(stderr, "GE: SIGNAL behaviour 0x%02x is not modelled; the list runs on "
+                    "after its END [reported once]\n", behavior);
+        }
+        return 0;
+    }
+    const char *name = names[behavior - 0x10u];
+    const uint32_t signal_pc = addr - 8u;
+    if (behavior == 0x12u) {
+        if (s_sig_sp == 0) return ge_signal_fail(name, signal_pc, "stack underflow");
+        const GeSignalFrame *f = &s_sig_stack[--s_sig_sp];
+        ge.offset = f->offset;
+        ge.base = f->base;
+        s_ge_command[GE_BASE] = f->base;
+        s_sp = f->hw_sp;
+        s_hw_floor = f->hw_floor;
+        *next = f->pc;
+        return 1;
+    }
+    const uint32_t off = ((signal_op & 0xFFFFu) << 16) | (end_data & 0xFFFFu);
+    uint32_t target = off;                                      /* JUMP, CALL */
+    if (behavior == 0x13u || behavior == 0x14u) target = signal_pc + off;   /* from the SIGNAL */
+    else if (behavior == 0x15u || behavior == 0x16u) target = ge.offset + off;  /* from ORIGIN */
+    target &= 0x0FFFFFFFu;
+    /* uofw forms RJUMP/RCALL targets from off/4 words, so they can't misalign there; a
+     * relative offset that isn't a multiple of 4 is unmeasured on a PSP and fails closed. */
+    if ((target & 3u) != 0u || !sr_guest_span_readable_current(target, 4u))
+        return ge_signal_fail(name, signal_pc, "address error");
+    if (behavior == 0x11u || behavior == 0x14u || behavior == 0x16u) {
+        uint32_t limit = g_ge_signal_stack_limit < GE_SIGNAL_STACK_CAPACITY
+                             ? g_ge_signal_stack_limit : GE_SIGNAL_STACK_CAPACITY;
+        if (s_sig_sp >= limit) return ge_signal_fail(name, signal_pc, "stack overflow");
+        GeSignalFrame *f = &s_sig_stack[s_sig_sp++];
+        f->pc = addr & 0x0FFFFFFFu;
+        f->offset = ge.offset;
+        f->base = ge.base;
+        f->hw_sp = s_sp;
+        f->hw_floor = s_hw_floor;
+        s_hw_floor = s_sp;
+    }
+    *next = target;
+    return 1;
+}
+
 /* The list's END (no pending SIGNAL): flush the backend, finish the capture and publish the
  * list's signature and primitive count. */
 static void ge_list_end(uint32_t list_addr, unsigned long sig, unsigned long prims, int snap,
@@ -6989,6 +7084,10 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     if (!s_ge_inited) ge_state_init();
     if (!resume) {
         s_sp = 0;
+        s_sig_sp = 0;
+        s_hw_floor = 0;
+        s_stalled_signal = 0;
+        s_ge_signal_fault[0] = '\0';
         s_bbox_visible = 1;
     }
     static int snap=-1; if(snap<0) snap=(getenv("SR_FBDUMP")||getenv("SR_GEDUMP"))?1:0;
@@ -6997,8 +7096,9 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     ge_list_begin(list_addr, resume);
     extern unsigned long g_tex_nonzero; unsigned long start_nz=g_tex_nonzero;
     unsigned long sig=0; unsigned long prims=0;
-    int pending_signal=0;
-    uint32_t pending_signal_op=0;
+    int pending_signal=s_stalled_signal;
+    uint32_t pending_signal_op=s_stalled_signal ? s_stalled_signal_op : 0u;
+    s_stalled_signal=0;
     for (int guard=0; guard<(1<<20); guard++) {
         /* Compare 28-bit addresses. The list pointer and sceGeListUpdateStallAddr value may use
          * the uncached mirror (0x4xxxxxxx), while CALL/JUMP/RET targets are masked to 28 bits,
@@ -7013,6 +7113,8 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             /* A list streamed through stall updates reaches its END in a later run, which
              * counts only its own primitives: count these toward the capture now. */
             if (ge_capture_active()) s_capture_total_prims += prims;
+            s_stalled_signal = pending_signal;
+            s_stalled_signal_op = pending_signal_op;
             return addr;
         }
         /* An early stop is a stall the guest did not ask for, so nothing holds it apart from one:
@@ -7063,7 +7165,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 }
                 break;
             case GE_RET:
-                if (s_sp>0) { s_sp--; addr=s_stack_pc[s_sp]&0x0FFFFFFFu; ge.offset=s_stack_offset[s_sp]; }
+                if (s_sp>s_hw_floor) { s_sp--; addr=s_stack_pc[s_sp]&0x0FFFFFFFu; ge.offset=s_stack_offset[s_sp]; }
                 break;
             case GE_SIGNAL:
                 /* SIGNAL semantics are selected by bits 16..23 and completed by the following
@@ -7082,7 +7184,12 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             case GE_END:
                 if (pending_signal) {
                     ge_log_signal_end(list_addr, addr, pending_signal_op, data);
-                    pending_signal=0; pending_signal_op=0; break;
+                    uint32_t signal_next = 0;
+                    int flow = ge_signal_end(pending_signal_op, data, addr, &signal_next);
+                    pending_signal=0; pending_signal_op=0;
+                    if (flow < 0) return addr - 8u;   /* stop at the SIGNAL: a named fault */
+                    if (flow > 0) addr = signal_next;
+                    break;
                 }
                 ge_list_end(list_addr, sig, prims, snap, start_nz);
                 return 0;
@@ -7091,6 +7198,8 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 break;
         }
     }
+    s_stalled_signal = pending_signal;
+    s_stalled_signal_op = pending_signal_op;
     return addr;
 }
 

@@ -176,7 +176,7 @@ UNDEFINED-layout image and published a PPM under a `.png` name. It is gone. In i
 
 ## Widescreen Fill wings (#1881)
 
-Off by default; the contract is `docs/ENHANCEMENT_CONTRACT.md` section 10.7. ge.c decides which
+Off by default; the contract is `docs/ENHANCEMENT_CONTRACT.md` section 10.8. ge.c decides which
 primitives reach a display framebuffer's wing canvas and moves their vertices there; this backend
 draws them through `hook_wing_tri` / `hook_wing_sprite`, which run the ordinary `hook_tri` /
 `hook_sprite` with `s_wing_dst` set. That records into `s_wbatch` instead of `s_batch`, with the
