@@ -2404,12 +2404,16 @@ static DepthEnt *depth_acquire(uint32_t zba, uint32_t zstride) {
         }
     DepthEnt *d = NULL;
     for (int i = 0; i < MAX_DEP; i++) if (!s_deps[i].used) { d = &s_deps[i]; break; }
-    if (!d) {   /* evict slot 0 arbitrarily (depth contents are transient frame data) */
+    if (!d) {   /* evict slot 0 */
         /* Render submissions are fenced by cmd_submit_wait; flush only batches that
          * can still reference this depth attachment. */
         if (!submit_pending()) return NULL;
-        if (!cmd_drain(GEGPU_BOUNDARY_LIFETIME)) return NULL;
         d = &s_deps[0];
+        /* Depth a draw wrote since the surface was loaded is newer than guest VRAM (#1967):
+         * commit it before the image goes, or a CPU read and the surface's next use (seeded
+         * from VRAM) would see the older values. */
+        if (!depth_readback_to_guest(d)) return NULL;
+        if (!cmd_drain(GEGPU_BOUNDARY_LIFETIME)) return NULL;
         vkDestroyImageView(s_dev, d->view, NULL);
         vkDestroyImage(s_dev, d->img, NULL);
         vkFreeMemory(s_dev, d->mem, NULL);
@@ -2481,8 +2485,13 @@ static int begin_target(void) {
     if (!is_vram(s_ge->fbp)) return 0;       /* render-to-RAM: software path owns it */
     uint32_t fba = vram_off(s_ge->fbp);
     uint32_t stride = s_ge->fbw ? s_ge->fbw : 512;
+    /* The depth surface is part of the key: a title may move zbp (or zbw) and keep the colour
+     * target, and its next draws then test and write the other depth buffer. */
+    uint32_t zba = vram_off(s_ge->zbp);
+    uint32_t zstride = s_ge->zbw ? s_ge->zbw : stride;
     if (s_cur && s_cur->used && s_cur->fba == fba &&
-        s_cur->fmt == (s_ge->fbfmt & 3) && s_cur->stride == stride && s_cur->gpu_valid) {
+        s_cur->fmt == (s_ge->fbfmt & 3) && s_cur->stride == stride && s_cur->gpu_valid &&
+        s_cur->dep && s_cur->dep->zba == zba && s_cur->dep->zstride == zstride) {
         if (!target_sync_cpu_writes(s_cur)) return 0;
         if (!ge_zbuf_prepare_current()) return 0;
         s_zbuf = ge_zbuf_ptr();
