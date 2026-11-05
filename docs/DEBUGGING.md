@@ -2203,8 +2203,10 @@ starts the FFmpeg it finds in an absolute `PATH` entry, or the one `SR_VIDEOREC_
 a shell, and only when `SR_VIDEOREC_DIR` is set.
 
 Guest time still follows the host clock in the default paced mode, so a host that cannot keep up
-with the encoder (FFV1 at 4K is CPU-heavy; `nvenc` or `x264rgb` is faster) makes the guest skip
-VBLANKs. The recorder writes those as `gap` frames in their place, counts them with `late_vblanks`
+with the encoder makes the guest skip VBLANKs. At 3840x2160 none of the three encoders keeps up with
+60 frames a second on its own: on one desktop (RTX 3080), offline, FFV1 encoded 49.6, `nvenc` 48.2
+and `x264rgb` 43.3 frames a second. `nvenc` takes its load off the CPU, which the game needs; all
+three are RGB-lossless (`nvenc` encodes 4:4:4 RGB, `-pix_fmt gbrp`). The recorder writes those as `gap` frames in their place, counts them with `late_vblanks`
 in `record.json` and prints `VIDEOREC: the host fell behind`, so such a recording is never mistaken
 for a clean one. Pair it with `SR_PADSCRIPT` to record the same route in Authentic and Enhanced or
 Ace Mode, with `SR_VIDEOREC_START` to skip the boot, and with `SR_EXIT_AT_VBLANK`, which finishes the

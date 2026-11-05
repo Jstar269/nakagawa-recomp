@@ -320,14 +320,16 @@ static int vr_proc_finish(VrProc *p) {
 }
 #endif
 
-/* The encoder settings for SR_VIDEOREC_CODEC. Every one is lossless for the 8-bit BGR input. */
+/* The encoder settings for SR_VIDEOREC_CODEC. Every one is lossless for the 8-bit BGR input: NVENC
+ * needs -pix_fmt gbrp for that, since from BGR it otherwise converts to 4:2:0 YUV first (measured:
+ * decoded RGB differs without it and matches with it, as it does for ffv1 and x264rgb). */
 static int vr_codec_args(const char *codec, const char **out, int max) {
     static const char *ffv1[] = { "-c:v", "ffv1", "-level", "3", "-g", "1", "-slices", "24",
                                   "-slicecrc", "1", "-threads", "0", NULL };
     static const char *x264rgb[] = { "-c:v", "libx264rgb", "-preset", "ultrafast", "-qp", "0",
                                      NULL };
     static const char *nvenc[] = { "-c:v", "hevc_nvenc", "-preset", "p1", "-tune", "lossless",
-                                   NULL };
+                                   "-pix_fmt", "gbrp", NULL };
     const char **src = NULL;
     if (strcmp(codec, "ffv1") == 0) src = ffv1;
     else if (strcmp(codec, "x264rgb") == 0) src = x264rgb;
