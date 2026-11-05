@@ -2521,7 +2521,8 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         # The case's own LIBS block links the SAS and utility stubs; without them the PRX
         # fails to link (#1296).
         block = re.search(r"(?ms)^ifeq \(\$\(CASE\),sas-adsr\)\n(.*?)^endif$", self.makefile)
-        self.assertIsNotNone(block)
+        if block is None:
+            self.fail("fixtures/psp_oracle/Makefile has no sas-adsr LIBS block")
         self.assertIn("-lpspsascore", block.group(1))
         self.assertIn("-lpsputility", block.group(1))
         probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
