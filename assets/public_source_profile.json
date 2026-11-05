@@ -1048,6 +1048,7 @@
     "src/rt/psmf_producer.h",
     "src/rt/recomp.c",
     "src/rt/recomp.h",
+    "src/rt/sas_envelope.h",
     "src/rt/savedata.c",
     "src/rt/sce_kernel_errors.h",
     "src/rt/sched.c",
