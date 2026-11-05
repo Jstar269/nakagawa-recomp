@@ -43263,6 +43263,21 @@ static void test_flash0_latin_index_resolution(void) {
                project_large.h_size != project_small.h_size,
            "the project's Latin font serves each size group its own strike");
 
+    /* #2005: the project has a face per Latin index. Index 13 (serif bold, small) has its own file
+     * and reports its own style; index 12 (sans bold, small) has none here, so the regular face of
+     * its size group serves it and says it is regular. */
+    SrFontRegistryInfo project_style, project_group;
+    expect(sr_flash0_font_registry_info(&project_sources, 14u, &project_style) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               strcmp(project_style.font_name, "Nakagawa Project Latin Serif Bold") == 0 &&
+               project_style.style == 5u && !project_style.served_as_regular,
+           "a project face of its own style reports that style, not a regular substitute");
+    expect(sr_flash0_font_registry_info(&project_sources, 13u, &project_group) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               strcmp(project_group.font_name, "Nakagawa Project Latin Second") == 0 &&
+               project_group.style == 1u && project_group.served_as_regular,
+           "a Latin index with no project face of its own is served by its size group's regular face");
+
     /* #1300: resolving a font for the font list says nothing of what the game draws with; only
      * an open does, and the open is what the log has to name. */
     const uint32_t opened_bit = 1u << 14;

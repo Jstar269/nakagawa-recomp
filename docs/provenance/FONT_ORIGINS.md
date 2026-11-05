@@ -173,8 +173,11 @@ and Korean slots from pinned OFL sources with the project-owned converter
 (`src/rt/pgf_public.c`). Each generated file is a project conversion, not a
 claim that it is an authentic firmware font.
 
-The project builds two open Latin fallbacks, `nkltn.pgf` for the console's
-larger Latin size and `nkltns.pgf` for its smaller one. It does not bundle
+The project builds sixteen open Latin fallbacks, one for each console Latin
+index: `nkltn.pgf` and `nkltn1.pgf`-`nkltn7.pgf` for the larger size, and
+`nkltns.pgf` and `nkltn9.pgf`-`nkltn15.pgf` for the smaller one (section 6.5).
+Sections 6.1-6.4 record the first selections; section 6.5 the current Latin
+inputs (#2005). It does not bundle
 firmware Latin files: `ltn0.pgf` through `ltn15.pgf` stay in the user's local
 font cache when imported. The runtime's per-index source and fallback order is
 documented in [`SETUP.md`](../SETUP.md#system-fonts).
@@ -324,6 +327,81 @@ pointers.
 RULE (licence-text hygiene): the OFL text stays alongside the generated build
 payload. It is not added under `THIRD_PARTY_LICENSES/` unless a corresponding
 payload is admitted to the public source tree.
+
+### 6.5 Per-style Latin faces (#2005)
+
+Issue #2005 measured five gaps between the first stand-ins and the console
+fonts they serve (`font/README.md`, "Measured differences"): one face for all
+eight Latin styles, capitals and digits narrower than the console's, 111 of
+the console Latin fonts' 322 non-ASCII characters missing, Japanese coverage
+limited to JIS level 1, and Japanese and Korean fonts set at 12 px where the
+console uses 10.125 points. This section records the Latin inputs, which
+close the first three; the Japanese and Korean gaps are still open.
+No console font file is read by the build or the tests: the targets are the
+aggregate line widths, class averages and ink edges already recorded, and they
+are written into `tools/test_ttf2pgf.py`.
+
+**Latin: Liberation Sans and Liberation Serif 2.1.5.** Release
+[`2.1.5`](https://github.com/liberationfonts/liberation-fonts/releases/tag/2.1.5)
+(tag commit `4b0192046158094654e865245832c66d2104219e`), from its TTF tarball
+<https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz>,
+SHA-256 `7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0`.
+The eight files in `fixtures/fonts/liberation/` are byte-identical to the
+tarball's members of the same name; each has its own `<Font>.pin.json`:
+
+| Input | Size (bytes) | SHA-256 |
+| --- | ---: | --- |
+| `LiberationSans-Regular.ttf` | 410,712 | `76d04c18ea243f426b7de1f3ad208e927008f961dc5945e5aad352d0dfde8ee8` |
+| `LiberationSans-Italic.ttf` | 415,816 | `e5bae5c4cde31f22142753855f4f8fb86da6ff39955ed3c0a11248b0d16948b0` |
+| `LiberationSans-Bold.ttf` | 414,456 | `788abee4c806d660e8aee46689dd8540cd4bb98da03dcc9d171ce3efd99a9173` |
+| `LiberationSans-BoldItalic.ttf` | 408,996 | `698da70fc191cc5f33ad4d6d3fe830fe4624b898ea2e3169955928b7c491f1ee` |
+| `LiberationSerif-Regular.ttf` | 393,576 | `058ea80864aef09a23f45cbec2bb5400bc3dfbdea01c3f10538a21fcb497fb74` |
+| `LiberationSerif-Italic.ttf` | 375,632 | `0e3dea9f8d613e006ccfa62201f33e265d19167bd0907725c3e145368b04fc2e` |
+| `LiberationSerif-Bold.ttf` | 370,096 | `d754ba427cfe0bca54ae052384baa8f842da5bd6550ad4da024ac441e7a7d5ce` |
+| `LiberationSerif-BoldItalic.ttf` | 376,772 | `f17db8af71e24d2066b587546021d4f0b296be389512b658dec3c09affeb11a7` |
+
+The licence is SIL OFL 1.1 (Liberation 2.x; the 1.x releases were GPL with a
+font exception). Its copyright notice is `Digitized data copyright (c) 2010
+Google Corporation with Reserved Font Arimo, Tinos and Cousine. Copyright (c)
+2012 Red Hat, Inc. with Reserved Font Name Liberation.` The pins record the
+Reserved Font Names `Arimo`, `Tinos`, `Cousine` and `Liberation`; the PGFs are
+named `Nakagawa Open Latin`, and the converter refuses any output name that
+uses a recorded Reserved Font Name. The tarball's `LICENSE` has SHA-256
+`93fed46019c38bbe566b479d22148e2e8a1e85ada614accb0211c37b2c61c19b`; the local
+`OFL.txt` (`a0c060f758d33ee59a674cd7b45914a560d0a5935968af5e87b0c6981fd89ddc`)
+removes trailing spaces on lines 29, 86 and 90 and one extra final newline,
+without changing any wording.
+
+Selection. M PLUS 1p, Noto Sans, PT Sans, Fira Sans, Carlito, Lato, Istok,
+Play and FreeSans were compared with Liberation by the console's recorded line
+widths of each Latin index. Liberation came closest on both the sentence and
+the menu line, carries all four styles in a sans-serif and a serif family, and
+covers the whole Latin repertoire below. No candidate has the console's
+capital-to-lowercase width ratio (1.28; Liberation Sans 1.38), so the per-face
+spacing balances the two lines.
+
+Repertoire. The built-in `--latin-cyrillic-text` set is the first set (section
+6.3) without U+2011, U+2023, U+2024, U+2025 and U+2027, which no console Latin
+font carries, plus the 111 characters the console fonts carry that it lacked:
+95 WGL4 Cyrillic letters and U+04C0, `ƒ ˆ ˜`, the combining accents U+0301,
+U+0306, U+0308 and U+0338, and `№ ∆ ∙ √ ∞ ≈ ≠ ≤ ≥`. It has 454 points with
+canonical SHA-256
+`6b8511988b7ce6199c99a45ab3a00ee498986067343117205c22031e2b8b330d`, and each of
+the eight faces covers every point.
+
+Build. `mk/housekeeping.mk` maps Latin index `i` to face `i mod 8` in the
+console order (sans-serif regular, serif regular, sans-serif italic, serif
+italic, sans-serif bold, serif bold, sans-serif bold italic, serif bold
+italic), with the PGF style `Regular`, `Italic`, `Bold` or `Bold Italic`. The
+larger size is 20 ppem (nominal 648, 10.125 points at 128 dpi) and the smaller
+13 ppem (nominal 448), each with synthetic emboldening. Each index has its own
+`--tracking`, and the sans-serif faces `--digit-advance` (tabular figures at
+the console's digit width). Every index's sentence and menu line then comes
+within 3 % of the console's.
+
+**Converter.** Version 0.4.0 of `tools/ttf2pgf.py` adds `--tracking`,
+`--digit-advance` and the Latin repertoire above
+(`docs/cleanroom/PGF_CONVERTER_SPEC.md`).
 
 ## 7. Residual unknowns (all marked; none block the chosen route)
 

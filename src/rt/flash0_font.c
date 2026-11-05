@@ -771,17 +771,19 @@ SrFontRegistryStatus sr_flash0_font_registry_info(const Flash0Sources *sources, 
     info->family_code = row->family;
     if (row->latin_index >= 0) {
         const Flash0RegistryRow *served_row = NULL;
-        if (resolution.served_index >= 0) {
+        int style_index = resolution.served_index >= 0 ? resolution.served_index
+                          : resolution.source == NK_FONT_SOURCE_PROJECT ? resolution.project_style_index : -1;
+        if (style_index >= 0) {
             for (uint32_t i = 0; i < SR_FONT_REGISTRY_COUNT; i++) {
-                if (s_flash0_registry_rows[i].latin_index == resolution.served_index) {
+                if (s_flash0_registry_rows[i].latin_index == style_index) {
                     served_row = &s_flash0_registry_rows[i];
                     break;
                 }
             }
         }
-        /* Indexed files carry the style of their own registry row. Project and old unindexed
-         * Latin files are the regular face. Mark a substitution only when its style differs
-         * from the requested row. */
+        /* Indexed files carry the style of their own registry row, and so does each project face
+         * (project_style_index). Old unindexed Latin files are the regular face. Mark a
+         * substitution only when the served style differs from the requested row. */
         info->style = served_row ? served_row->style : FLASH0_STYLE_REGULAR;
         info->served_as_regular = resolution.served_index == row->latin_index ? 0 :
                                   info->style != row->style;

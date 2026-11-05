@@ -169,8 +169,9 @@ PUBLIC_TARGETS := \
 	form-sweep-selftest \
 	form-sweep-deep
 
-PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-latin-small-font project-korean-font
-INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-latin-small-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+PROJECT_LATIN_STYLE_TARGETS := $(foreach i,1 2 3 4 5 6 7 9 10 11 12 13 14 15,project-latin-$(i)-font)
+PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-latin-small-font project-korean-font $(PROJECT_LATIN_STYLE_TARGETS)
+INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-latin-small-font project-korean-font $(PROJECT_LATIN_STYLE_TARGETS) project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose

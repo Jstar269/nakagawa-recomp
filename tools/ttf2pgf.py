@@ -55,7 +55,7 @@ except ImportError:  # direct script execution
     import pgf_writer  # type: ignore[no-redef]
 
 CONVERTER_NAME = "ttf2pgf"
-CONVERTER_VERSION = "0.3.0"
+CONVERTER_VERSION = "0.4.0"
 SPEC_PATH = "docs/cleanroom/PGF_CONVERTER_SPEC.md"
 PIN_SCHEMA = "font-pin/v1"
 
@@ -80,6 +80,11 @@ MAX_PPEM = 128
 #: Synthetic emboldening strengths are whole sub-samples (eighths of a pixel), at most
 #: one pixel per axis; the advance allowance uses the same unit.
 MAX_EMBOLDEN = SUPERSAMPLE
+#: Letter-spacing (tracking) is also in sub-samples: up to one pixel tighter, two pixels looser.
+MIN_TRACKING = -SUPERSAMPLE
+MAX_TRACKING = 2 * SUPERSAMPLE
+#: The code points ``--digit-advance`` sets to one advance (tabular figures).
+DIGIT_CODES = tuple(range(0x30, 0x3A))
 DEFAULT_PPEM = 12
 DEFAULT_CODES = "0x20-0x7E"
 ELLIPSIS_CODE = 0x2026
@@ -88,6 +93,7 @@ DEFAULT_FONT_NAME = "Nakagawa Open Latin"
 DEFAULT_FONT_TYPE = "Regular"
 JAPANESE_CODE_POINTS_SHA256 = "abc5302681a3c700179f29ac22a7c8082ed087a07b4cf8c3de4de5f73e7e0889"
 LATIN_CODE_POINTS_SHA256 = "7fbcaac92248acdb1c2704c3fef2181e7bc49f2b0e9d0f970cd029fb58057340"
+LATIN_CYRILLIC_CODE_POINTS_SHA256 = "6b8511988b7ce6199c99a45ab3a00ee498986067343117205c22031e2b8b330d"
 KOREAN_CODE_POINTS_SHA256 = "50596a7f6e0e5158561147eae40a38edc12c28b1a4be3efff6d717c74b638bc4"
 
 SCALER_TRUE = 0x00010000
@@ -1336,6 +1342,53 @@ def latin_1_text_code_points() -> CodePointSet:
     return CodePointSet(codes=codes, sha256=digest, source="builtin:latin-1-text")
 
 
+#: The Latin text set's additions over ``latin_1_text_code_points``: the characters the console's
+#: Latin fonts carry that the first set lacked (font/README.md, "Measured differences", #2005).
+#: Cyrillic as in the Windows Glyph List 4 set (U+0401-040C, U+040E-044F, U+0451-045C, U+045E-045F,
+#: U+0490-0491) and U+04C0; Latin and modifier letters; four combining accents; and nine symbols.
+_LATIN_CYRILLIC_ADDITIONS = (
+    tuple(range(0x0401, 0x040D)) + tuple(range(0x040E, 0x0450)) + tuple(range(0x0451, 0x045D))
+    + (0x045E, 0x045F, 0x0490, 0x0491, 0x04C0)
+    + (0x0192, 0x02C6, 0x02DC, 0x0301, 0x0306, 0x0308, 0x0338)
+    + (0x2116, 0x2206, 0x2219, 0x221A, 0x221E, 0x2248, 0x2260, 0x2264, 0x2265)
+)
+#: Punctuation in the first set that no console Latin font carries (its symbol block holds the 17 of
+#: Windows-1252 and the nine above) and that the Latin source fonts do not all draw.
+_LATIN_CYRILLIC_REMOVED = (0x2011, 0x2023, 0x2024, 0x2025, 0x2027)
+
+
+def latin_cyrillic_text_code_points() -> CodePointSet:
+    """Return the project Latin repertoire that matches the console's Latin fonts (#2005).
+
+    It is :func:`latin_1_text_code_points` (ASCII, Latin-1 Supplement, Latin Extended-A and common
+    punctuation) without five punctuation marks the console fonts lack, plus the 111 characters
+    they carry that the first set lacked: 95 Cyrillic letters, ``ƒ ˆ ˜``, four combining accents and
+    nine symbols. That is 454 code points; a canonical digest makes mapping drift a named refusal.
+    """
+    first = set(latin_1_text_code_points().codes)
+    additions = set(_LATIN_CYRILLIC_ADDITIONS)
+    removed = set(_LATIN_CYRILLIC_REMOVED)
+    if len(additions) != 111 or additions & first or not removed <= first:
+        raise _refuse(
+            "latin-mapping-invalid",
+            f"the Latin text additions hold {len(additions)} new code points; expected 111 outside the first set",
+        )
+    codes = tuple(sorted((first - removed) | additions))
+    if len(codes) != 454:
+        raise _refuse(
+            "latin-mapping-invalid",
+            f"the built-in tables produced {len(codes)} unique code points; expected 454",
+        )
+    canonical = "".join(f"U+{code:04X}\n" for code in codes).encode("ascii")
+    digest = hashlib.sha256(canonical).hexdigest()
+    if digest != LATIN_CYRILLIC_CODE_POINTS_SHA256:
+        raise _refuse(
+            "latin-mapping-invalid",
+            f"the built-in code-point mapping SHA-256 is {digest}, expected {LATIN_CYRILLIC_CODE_POINTS_SHA256}",
+        )
+    return CodePointSet(codes=codes, sha256=digest, source="builtin:latin-cyrillic-text")
+
+
 def _ks_x_1001_rows(rows: tuple[int, ...] | list[int] | range) -> tuple[int, ...]:
     """Decode assigned KS X 1001 cells through Python's standard EUC-KR table."""
     codes: list[int] = []
@@ -1455,6 +1508,8 @@ class _Planner:
         self.font = font
         self.codes = tuple(codes)
         self.outline_shift: dict[int, int] = {}
+        #: Horizontal outline shifts in 26.6 at the conversion's ppem (``--digit-advance`` centring).
+        self.shift_x_26_6: dict[int, int] = {}
         gids: dict[int, int] = {}
         for code in self.codes:
             gid = font.glyph_id(code)
@@ -1496,7 +1551,13 @@ class _Planner:
         per_size = self._rasters.setdefault(ppem, {})
         cached = per_size.get(code)
         if cached is None:
-            cached = _plan_raster(self.outline(code), ppem, self.font.units_per_em)
+            contours = self.outline(code)
+            shift = self.shift_x_26_6.get(code, 0)
+            if shift:
+                # A 26.6 shift is exact in font units as a rational: x26 = x * ppem * 64 / upem.
+                offset = Fraction(shift * self.font.units_per_em, ppem * 64)
+                contours = [[(x + offset, y, on) for x, y, on in contour] for contour in contours]
+            cached = _plan_raster(contours, ppem, self.font.units_per_em)
             per_size[code] = cached
         return cached
 
@@ -1591,11 +1652,16 @@ def convert(
     header_ascender_26_6: int | None = None,
     header_descender_26_6: int | None = None,
     baseline_ellipsis: bool = False,
+    tracking: int = 0,
+    digit_advance_26_6: int | None = None,
 ) -> Conversion:
     """Convert one pinned TrueType font into a PGF image plus its manifest.
 
     The code points come either from an inclusive ``codes`` range or from an explicit
-    ``code_points`` set (a sparse set is written as a sparse character map). Every stage
+    ``code_points`` set (a sparse set is written as a sparse character map). ``tracking`` adds that
+    many sub-samples (eighths of a pixel, negative for tighter) to every advance.
+    ``digit_advance_26_6`` gives the digits 0-9 one advance (tabular figures) and centres each
+    digit's outline in the change. Every stage
     validates before the next runs; the returned bytes are final. Raises
     :class:`TtfConvertError` naming the refusal on any malformed, unsupported, or
     policy-violating input.
@@ -1629,6 +1695,20 @@ def convert(
                 f"{label} {strength!r} is outside 0..{MAX_EMBOLDEN} sub-samples",
             )
 
+    if isinstance(tracking, bool) or not isinstance(tracking, int) or not MIN_TRACKING <= tracking <= MAX_TRACKING:
+        raise _refuse(
+            "tracking-out-of-range",
+            f"--tracking {tracking!r} is outside {MIN_TRACKING}..{MAX_TRACKING} sub-samples",
+        )
+    if digit_advance_26_6 is not None and (
+        isinstance(digit_advance_26_6, bool) or not isinstance(digit_advance_26_6, int)
+        or not 64 <= digit_advance_26_6 <= pgf_writer.MAX_EDGE * 64
+    ):
+        raise _refuse(
+            "digit-advance-out-of-range",
+            f"--digit-advance {digit_advance_26_6!r} is outside 64..{pgf_writer.MAX_EDGE * 64} (26.6 px)",
+        )
+
     validate_output_name(font_name, pin)
 
     font = _Ttf(data)
@@ -1647,6 +1727,14 @@ def convert(
             "achieved_descender_26_6": extents[1],
         }
     assert ppem is not None
+
+    if digit_advance_26_6 is not None:
+        if any(code not in planner.gids for code in DIGIT_CODES):
+            raise _refuse("digit-advance-unavailable", "--digit-advance needs the digits 0-9 in the code set")
+        for code in DIGIT_CODES:
+            natural = _to26_6(font.advance_units(planner.gids[code]), ppem, font.units_per_em)
+            # Half the change on each side, rounded down to whole 26.6 units: deterministic and exact.
+            planner.shift_x_26_6[code] = (digit_advance_26_6 - natural) // 2
 
     glyphs: list[pgf_writer.Glyph] = []
     zero_area: list[int] = []
@@ -1669,8 +1757,11 @@ def convert(
                 f"U+{code:04X} rasterizes to {raster.width}x{raster.height} at ppem {ppem}; "
                 f"the record field holds at most {pgf_writer.MAX_EDGE}",
             )
-        advance_x = _to26_6(font.advance_units(planner.gids[code]), ppem, font.units_per_em)
-        advance_x += embolden_advance * SUB_PIXEL
+        if digit_advance_26_6 is not None and code in DIGIT_CODES:
+            advance_x = digit_advance_26_6
+        else:
+            advance_x = _to26_6(font.advance_units(planner.gids[code]), ppem, font.units_per_em)
+        advance_x += (embolden_advance + tracking) * SUB_PIXEL
         if raster.width <= 0 or raster.height <= 0:
             zero_area.append(code)
             glyphs.append(pgf_writer.Glyph(code=code, width=0, height=0, samples=(), advance_x=advance_x))
@@ -1733,6 +1824,8 @@ def convert(
         resolution_26_6=resolution_26_6,
         header_extents=(header_ascender_26_6, header_descender_26_6),
         baseline_ellipsis=baseline_ellipsis,
+        tracking=tracking,
+        digit_advance_26_6=digit_advance_26_6,
     )
     return Conversion(
         image=image,
@@ -1783,6 +1876,8 @@ def _build_manifest(
     embolden: tuple[int, int, int] = (0, 0, 0),
     header_extents: tuple[int | None, int | None] = (None, None),
     baseline_ellipsis: bool = False,
+    tracking: int = 0,
+    digit_advance_26_6: int | None = None,
 ) -> dict:
     first, last = codes
     header = _read_header_fields(image)
@@ -1798,7 +1893,7 @@ def _build_manifest(
             "source": dict(pin.source),
             "family": pin.family,
         }
-    return {
+    manifest = {
         "converter": {
             "name": CONVERTER_NAME,
             "version": CONVERTER_VERSION,
@@ -1863,6 +1958,13 @@ def _build_manifest(
             },
         },
     }
+    # Keys added in converter 0.4.0 appear only when used, so a conversion that uses none of them
+    # has the keys it had before.
+    if tracking:
+        manifest["parameters"]["tracking_sub_samples"] = tracking
+    if digit_advance_26_6 is not None:
+        manifest["parameters"]["digit_advance_26_6"] = digit_advance_26_6
+    return manifest
 
 
 def _leaf_name(path: str) -> str:
@@ -1910,6 +2012,11 @@ def _main(argv: list[str]) -> int:
         help="use Latin-1 text set (ASCII, Latin-1 Supplement, Latin Extended-A, common symbols; sparse output)",
     )
     source.add_argument(
+        "--latin-cyrillic-text",
+        action="store_true",
+        help="use the Latin text set widened to the console Latin fonts' characters (Cyrillic, symbols; sparse)",
+    )
+    source.add_argument(
         "--ks-x-1001-korean",
         action="store_true",
         help="use ASCII, KS X 1001 Korean text rows 1-4/6-9, and modern Hangul syllables (sparse output)",
@@ -1936,6 +2043,17 @@ def _main(argv: list[str]) -> int:
         type=int,
         default=0,
         help=f"add N/8 px to every advance to make room for bolder strokes (0..{MAX_EMBOLDEN}, default 0)",
+    )
+    parser.add_argument(
+        "--tracking",
+        type=int,
+        default=0,
+        help=f"add N/8 px to every advance ({MIN_TRACKING}..{MAX_TRACKING}, default 0)",
+    )
+    parser.add_argument(
+        "--digit-advance",
+        type=int,
+        help="give the digits 0-9 this advance in 26.6 px, each centred in it (tabular figures)",
     )
     parser.add_argument(
         "--nominal-size",
@@ -1967,6 +2085,8 @@ def _main(argv: list[str]) -> int:
             code_points = jis_x_0208_japanese_code_points()
         elif args.latin_1_text:
             code_points = latin_1_text_code_points()
+        elif args.latin_cyrillic_text:
+            code_points = latin_cyrillic_text_code_points()
         elif args.ks_x_1001_korean:
             code_points = ks_x_1001_korean_code_points()
         else:
@@ -1994,6 +2114,8 @@ def _main(argv: list[str]) -> int:
             header_ascender_26_6=args.header_ascender,
             header_descender_26_6=args.header_descender,
             baseline_ellipsis=args.baseline_ellipsis,
+            tracking=args.tracking,
+            digit_advance_26_6=args.digit_advance,
         )
         manifest = manifest_bytes(conversion.manifest)
     except TtfConvertError as exc:
