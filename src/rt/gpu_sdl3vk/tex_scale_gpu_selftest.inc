@@ -93,7 +93,7 @@ static int xst_draw(float x, float y) {
  * the copy's texel f*i + f/2 (f = 0: the texture itself). */
 static void xst_expect(const uint32_t *t, int f, int clamp, uint32_t *want) {
     if (f < 2) { memcpy(want, t, sizeof(uint32_t) * XST_W * XST_H); return; }
-    uint32_t *big = (uint32_t *)malloc(sizeof(uint32_t) * XST_W * XST_H * (size_t)(f * f));
+    uint32_t *big = (uint32_t *)malloc(sizeof(uint32_t) * XST_W * XST_H * (size_t)f * (size_t)f);
     if (!big || !nk_tex_scale_image(t, XST_W, XST_H, f, clamp, clamp, big)) {
         memset(want, 0, sizeof(uint32_t) * XST_W * XST_H);
         free(big);
@@ -101,7 +101,8 @@ static void xst_expect(const uint32_t *t, int f, int clamp, uint32_t *want) {
     }
     for (int y = 0; y < XST_H; y++)
         for (int x = 0; x < XST_W; x++)
-            want[y * XST_W + x] = big[(size_t)(f * y + f / 2) * XST_W * f + (size_t)(f * x + f / 2)];
+            want[y * XST_W + x] = big[((size_t)f * (size_t)y + (size_t)(f / 2)) * XST_W * (size_t)f +
+                                     (size_t)f * (size_t)x + (size_t)(f / 2)];
     free(big);
 }
 
@@ -200,7 +201,7 @@ static int xst_device_blends(const uint32_t *dev, int x0, int y0, const uint32_t
             int tv = (int)floorf((float)f * (0.5f + (float)ky / (float)s));
             if (tu > tw - 1) tu = tw - 1;
             if (tv > th - 1) tv = th - 1;
-            uint32_t got = dev[(size_t)(y0 * s + ky) * SCL_W + (size_t)(x0 * s + kx)] & XST_RGB;
+            uint32_t got = dev[((size_t)y0 * (size_t)s + (size_t)ky) * SCL_W + (size_t)x0 * (size_t)s + (size_t)kx] & XST_RGB;
             if (got != (t[(size_t)tv * tw + tu] & XST_RGB)) blends++;
         }
     return blends;
@@ -241,7 +242,7 @@ static int xst_cell_scaled_draw(int f) {
     int device_diff = -1;
     if (s_scale > 1) {
         uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
-        uint32_t *big = (uint32_t *)malloc(sizeof(uint32_t) * XST_W * XST_H * (size_t)(f * f));
+        uint32_t *big = (uint32_t *)malloc(sizeof(uint32_t) * XST_W * XST_H * (size_t)f * (size_t)f);
         ok = dev && big && s_cur && xst_read_device(s_cur, dev) && nk_tex_scale_image(tex, XST_W, XST_H, f, 1, 1, big);
         const int first_plain = ok ? xst_device_blends(dev, 20, 20, tex, 1) : -1;
         const int second_copy = ok ? xst_device_blends(dev, 60, 20, big, f) : -1;
@@ -276,7 +277,7 @@ static int xst_cell_large(int f) {
             if (x == y || x + y == XST_BIG - 1) c = 0xFFFFFFFFu;
             tex[y * XST_BIG + x] = c;
         }
-    uint32_t *big = (uint32_t *)malloc(sizeof(uint32_t) * XST_BIG * XST_BIG * (size_t)(factor * factor));
+    uint32_t *big = (uint32_t *)malloc(sizeof(uint32_t) * XST_BIG * XST_BIG * (size_t)factor * (size_t)factor);
     if (!big || !nk_tex_scale_image(tex, XST_BIG, XST_BIG, factor, 1, 1, big)) {
         free(big);
         fprintf(stderr, "gpu texscale selftest: FAIL large: reference scale failed\n");
@@ -307,8 +308,9 @@ static int xst_cell_large(int f) {
         uint32_t want[XST_W * XST_H];
         for (int y = 0; y < XST_H; y++)
             for (int x = 0; x < XST_W; x++)
-                want[y * XST_W + x] = big[(size_t)(factor * ((int)v0 + y) + factor / 2) * XST_BIG * factor +
-                                          (size_t)(factor * ((int)u0 + x) + factor / 2)];
+                want[y * XST_W + x] = big[((size_t)factor * ((size_t)v0 + (size_t)y) + (size_t)(factor / 2)) * XST_BIG *
+                                          (size_t)factor +
+                                          (size_t)factor * ((size_t)u0 + (size_t)x) + (size_t)(factor / 2)];
         ok = xst_report("large", 20, 160, want, pass ? "the last band of the 16 MiB copy is wrong"
                                                      : "the first band of the 16 MiB copy is wrong");
     }
@@ -354,7 +356,7 @@ static int xst_up_ready(uint32_t addr) {
 static int xst_cell_upload_cap(int f) {
     (void)f;
     const int factor = 2, saved = s_xs_factor;
-    const uint64_t copy = (uint64_t)XST_BIG * XST_BIG * (uint64_t)(factor * factor) * 4u;
+    const uint64_t copy = (uint64_t)XST_BIG * XST_BIG * (uint64_t)factor * (uint64_t)factor * 4u;
     xst_reset();
     s_xs_factor = factor;
     nk_tex_scale_set_sync(1);
@@ -546,7 +548,7 @@ static int xst_cell_budget(int f) {
     nk_tex_scale_set_sync(1);
     const NkTexScaleConfig saved = *nk_tex_scale_config();
     NkTexScaleConfig two = saved;
-    const uint64_t copy = (uint64_t)XST_W * XST_H * (uint64_t)(f * f) * 4u;
+    const uint64_t copy = (uint64_t)XST_W * XST_H * (uint64_t)f * (uint64_t)f * 4u;
     two.budget_bytes = 2u * copy;
     nk_tex_scale_configure(&two);
     xst_pattern(ta, 61u);
@@ -666,8 +668,8 @@ static int xst_device_diff(const uint32_t *dev, int ax, int ay, int bx, int by, 
     int n = 0;
     for (int ky = 0; ky < h * s; ky++)
         for (int kx = 0; kx < w * s; kx++)
-            if ((dev[(size_t)(ay * s + ky) * SCL_W + (size_t)(ax * s + kx)] & XST_RGB) !=
-                (dev[(size_t)(by * s + ky) * SCL_W + (size_t)(bx * s + kx)] & XST_RGB))
+            if ((dev[((size_t)ay * (size_t)s + (size_t)ky) * SCL_W + (size_t)ax * (size_t)s + (size_t)kx] & XST_RGB) !=
+                (dev[((size_t)by * (size_t)s + (size_t)ky) * SCL_W + (size_t)bx * (size_t)s + (size_t)kx] & XST_RGB))
                 n++;
     return n;
 }

@@ -169,7 +169,7 @@ int nk_tex_scale_image(const uint32_t *rgba, int w, int h, int factor, int clamp
     if (factor < 2 || factor > NK_TEX_SCALE_MAX || w <= 0 || h <= 0) return 0;
     const int pw = w + 2 * PAD, ph = h + 2 * PAD;
     uint32_t *src = (uint32_t *)malloc((size_t)pw * (size_t)ph * sizeof(uint32_t));
-    uint32_t *big = (uint32_t *)malloc((size_t)pw * (size_t)ph * (size_t)(factor * factor) *
+    uint32_t *big = (uint32_t *)malloc((size_t)pw * (size_t)ph * (size_t)factor * (size_t)factor *
                                        sizeof(uint32_t));
     if (!src || !big) {
         free(src);
@@ -227,7 +227,7 @@ static uint64_t job_host_bytes(int w, int h, int factor) {
 
 static void run_job(Job *j) {
     uint64_t t0 = SDL_GetTicksNS();
-    size_t n = (size_t)j->w * (size_t)j->h * (size_t)(j->factor * j->factor);
+    size_t n = (size_t)j->w * (size_t)j->h * (size_t)j->factor * (size_t)j->factor;
     j->dst = (uint32_t *)malloc(n * sizeof(uint32_t));
     j->failed = !j->dst ||
         !nk_tex_scale_image(j->src, j->w, j->h, j->factor, j->clamp_u, j->clamp_v, j->dst);
@@ -257,7 +257,7 @@ static int worker(void *arg) {
         j->state = JOB_RUNNING;
         SDL_UnlockMutex(s_mx);
         uint64_t t0 = SDL_GetTicksNS();
-        size_t n = (size_t)j->w * (size_t)j->h * (size_t)(j->factor * j->factor);
+        size_t n = (size_t)j->w * (size_t)j->h * (size_t)j->factor * (size_t)j->factor;
         uint32_t *dst = (uint32_t *)malloc(n * sizeof(uint32_t));
         int ok = dst && nk_tex_scale_image(j->src, j->w, j->h, j->factor, j->clamp_u, j->clamp_v, dst);
         uint64_t spent = SDL_GetTicksNS() - t0;
