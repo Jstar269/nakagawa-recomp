@@ -16,20 +16,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* AMD's CPU-side constant setup (FsrEasuCon, FsrRcasCon), from the byte-identical headers. They
- * define helpers this file does not call, and return const-qualified values. */
-#define A_CPU 1
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wignored-qualifiers"
-#pragma GCC diagnostic ignored "-Wunused-function"
-#endif
-#include "../../../third_party/fidelityfx_fsr1/ffx_a.h"
-#include "../../../third_party/fidelityfx_fsr1/ffx_fsr1.h"
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
-
+/* The algorithm is AMD's FidelityFX SDK v2.4.0 FSR 1 (third_party/fidelityfx_sdk), compiled into the
+ * two shaders below. The SDK's CPU layer is C++, so this C file includes none of it: EASU computes
+ * its constants in the shader from the sizes pushed here (ffxFsrPopulateEasuConstants), and RCAS
+ * takes one value, set by rcas_con. */
 static const uint32_t k_easu_spv[] =
 #include "fsr1_easu_comp.inc"
 ;
@@ -40,14 +30,27 @@ static const uint32_t k_rcas_spv[] =
 #define FRAME_FORMAT VK_FORMAT_R8G8B8A8_UNORM
 
 typedef struct {
-    uint32_t con[4][4];
-    uint32_t size[4];
+    uint32_t size[4];  /* the input width and height, then the output width and height */
 } EasuPush;
 
 typedef struct {
     uint32_t con[4];
     uint32_t size[4];
 } RcasPush;
+
+/* The one pipeline layout's push range covers both passes' constants. */
+#define PUSH_BYTES (sizeof(RcasPush) > sizeof(EasuPush) ? sizeof(RcasPush) : sizeof(EasuPush))
+
+/* RCAS's constant, as the SDK's FsrRcasCon computes it: con[0] is the bits of
+ * exp2(-sharpness), the linear sharpness from stops. FsrRcasF reads only con[0]; con[1] is the
+ * packed half the 16-bit variants read, unused by the 32-bit shader, and left 0. The SDK's
+ * FsrRcasCon cannot be called from here (its CPU layer is C++) nor on the GPU (it takes con by
+ * value there, so its writes are lost). */
+static void rcas_con(uint32_t con[4], float sharpness) {
+    float linear = exp2f(-sharpness);
+    memcpy(&con[0], &linear, sizeof(con[0]));
+    con[1] = con[2] = con[3] = 0u;
+}
 
 typedef struct {
     VkImage image;
@@ -264,10 +267,10 @@ VkImage fsr1_record(Fsr1Pass *p, VkCommandBuffer cmd, VkImage src, int w, int h,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 1);
     EasuPush ep;
     memset(&ep, 0, sizeof(ep));
-    FsrEasuCon(ep.con[0], ep.con[1], ep.con[2], ep.con[3], (AF1)w, (AF1)h, (AF1)w, (AF1)h,
-               (AF1)out_w, (AF1)out_h);
-    ep.size[0] = (uint32_t)out_w;
-    ep.size[1] = (uint32_t)out_h;
+    ep.size[0] = (uint32_t)w;
+    ep.size[1] = (uint32_t)h;
+    ep.size[2] = (uint32_t)out_w;
+    ep.size[3] = (uint32_t)out_h;
     run_pass(p, cmd, p->easu, p->easu_set, &ep, (uint32_t)sizeof(ep));
 
     if (sharpness <= FSR1_SHARPNESS_OFF) {
@@ -283,7 +286,7 @@ VkImage fsr1_record(Fsr1Pass *p, VkCommandBuffer cmd, VkImage src, int w, int h,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 1);
     RcasPush rp;
     memset(&rp, 0, sizeof(rp));
-    FsrRcasCon(rp.con, (AF1)sharpness);
+    rcas_con(rp.con, sharpness);
     rp.size[0] = (uint32_t)out_w;
     rp.size[1] = (uint32_t)out_h;
     run_pass(p, cmd, p->rcas, p->rcas_set, &rp, (uint32_t)sizeof(rp));
@@ -366,7 +369,7 @@ static int fixed_make(Fsr1Pass *p) {
     p->easu_set = sets[0];
     p->rcas_set = sets[1];
 
-    VkPushConstantRange range = { VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)sizeof(EasuPush) };
+    VkPushConstantRange range = { VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)PUSH_BYTES };
     VkPipelineLayoutCreateInfo pl;
     memset(&pl, 0, sizeof(pl));
     pl.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;

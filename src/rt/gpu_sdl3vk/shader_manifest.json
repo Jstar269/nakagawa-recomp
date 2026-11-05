@@ -56,20 +56,20 @@
     },
     {
       "embedded": "fsr1_easu_comp.inc",
-      "embedded_sha256": "36f7c3720a4e9084a99734baa5ea2e6cad3413090822d398cb2fdb1a1227fcef",
+      "embedded_sha256": "23fda4c8a7dce5b0cc2af48fe6cd10faa272963f844b36d0dd395678beacbe8f",
       "source": "shaders/fsr1_easu.comp",
-      "source_sha256": "c73bc6df79e928c096289ab4737ae5685e03041fa116aa3ada4eae3889b2b5a8",
-      "spirv_bytes": 32724,
-      "spirv_sha256": "a77ea6ccd17c08709e4cda3e8910d9ad637caa7f2a763f9358f872780de51ee9",
+      "source_sha256": "6097066e6cfa3657e35877557349eeabbb7bafe620344d91df90899cd34ddc4d",
+      "spirv_bytes": 36868,
+      "spirv_sha256": "57a467ff2a7189227ebb5b487b88b77813ab2ca35b9852514d83a9bc84d3e162",
       "stage": "comp"
     },
     {
       "embedded": "fsr1_rcas_comp.inc",
-      "embedded_sha256": "69ba929d8edaf17681da6a13d0fad8b260ab80c4420d0093385e233745217000",
+      "embedded_sha256": "dd213f53692cf6f812cb081a9b0e61df4c3e90316b5b9c7c2c56ce309e38b172",
       "source": "shaders/fsr1_rcas.comp",
-      "source_sha256": "040b735640cfae7c331d7246035a307e4b5a32fe06e014cdf70db6e69a6558bd",
-      "spirv_bytes": 17768,
-      "spirv_sha256": "24ac4230ef39deb07d270de17a741489ee690d0ab2cf5d83a812843264ccd455",
+      "source_sha256": "4bbd5513d9acfb4fb73e0db36bc034e1150c087b6514ff31374ba9d62ecbc2fa",
+      "spirv_bytes": 16976,
+      "spirv_sha256": "492a9dd7802bc46ab219022f044cf3c619dbaf769fde542fdcc8b9417f0656cd",
       "stage": "comp"
     }
   ]

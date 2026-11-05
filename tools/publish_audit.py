@@ -1274,15 +1274,15 @@ SPDX_BYTE_EXACT_IMPORT_TREES = (
     # libchdr and the codecs it carries, kept as upstream wrote them (CRLF normalised to LF only;
     # third_party/libchdr/PROVENANCE.md records every upstream blob).
     "third_party/libchdr/",
+    # AMD FidelityFX SDK headers (MIT): the notice is in each header comment, without an SPDX
+    # line upstream; CRLF normalised to LF only (third_party/fidelityfx_sdk/PROVENANCE.md).
+    "third_party/fidelityfx_sdk/",
 )
 
 SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({
     "third_party/clay/clay.h",
     "src/rt/minimp3/minimp3.h",
     "third_party/dr_libs/dr_wav.h",
-    # AMD FidelityFX FSR 1 (MIT): the notice is in the header comment, without an SPDX line upstream.
-    "third_party/fidelityfx_fsr1/ffx_a.h",
-    "third_party/fidelityfx_fsr1/ffx_fsr1.h",
     "third_party/portable-snippets/safe-math/safe-math.h",
     "third_party/stb/stb_image.h",
     # Monocypher declares its SPDX line below the 8-line header window.

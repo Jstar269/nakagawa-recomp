@@ -410,7 +410,7 @@ static int s_mutant;
 /* RCAS's gain in the steepest step of the soft edge (cell_rcas), whose EASU step is 34 levels.
  * Measured: x1.265 (43) at the default sharpness on an RTX 3080 and on llvmpipe; x1.324 (45) at the
  * sharpest on the RTX 3080, x1.353 (46) on llvmpipe. Mutants outside the bars: an RCAS that copies
- * its input x1.000; FsrRcasCon one stop softer x1.088 at the default; the default made the
+ * its input x1.000; the RCAS constant one stop softer x1.088 at the default; the default made the
  * sharpest (no gain over it); every setting a tenth of a stop sharper x1.412 (48) at the sharpest,
  * one stop sharper x3.794 at the default. The sharpest cap allows 47, a level above llvmpipe. RCAS
  * limits its gain to the neighbourhood, so it overshoots the edge's range by a few levels at most
@@ -454,7 +454,7 @@ static void cell_edge(Fsr1Pass *p, int slant) {
 /* rcas-contrast: on a soft edge at 2x, RCAS at AMD's default sharpness raises the edge's contrast
  * over EASU alone by a measured factor, the sharpest setting (0 stops) raises it further, and
  * neither overshoots the edge's range by more than RCAS_OVERSHOOT_MAX levels (no ringing).
- * An RCAS that copies its input, or FsrRcasCon constants softer or sharper than AMD's, fails here. */
+ * An RCAS that copies its input, or an RCAS constant softer or sharper than AMD's, fails here. */
 static void cell_rcas(Fsr1Pass *p) {
     const int w = 96, h = 96, ow = 192, oh = 192;
     Source src;
@@ -488,6 +488,65 @@ static void cell_rcas(Fsr1Pass *p) {
           mlo + RCAS_OVERSHOOT_MAX >= LO && mhi <= HI + RCAS_OVERSHOOT_MAX,
           "RCAS rang past the edge's range %u..%u by more than %u (default %u..%u, sharpest %u..%u)",
           LO, HI, RCAS_OVERSHOOT_MAX, dlo, dhi, mlo, mhi);
+    image_free(&src);
+}
+
+/* rcas-limiter: the RCAS limiter is the FidelityFX SDK v2.4.0 one. At 1:1 on a grey 128 field, a
+ * dark pixel (40) beside a bright one (216) is sharpened apart: the SDK leaves the centre out of its
+ * upper limit, so the bright pixel reaches LIMITER_BRIGHT_MIN, and scales its lower limit by the
+ * centre's luma over the darkest neighbour's, which keeps the dark pixel above LIMITER_DARK_MIN.
+ * Measured at the default sharpness on an RTX 3080: dark 19, bright 255. Mutants: v1.0.2's limiter
+ * (FidelityFX-FSR a21ffb8f, the centre in both limits) gives bright 236; the SDK limiter without the
+ * luma multiplier gives dark 1; an RCAS that copies its input, 40 and 216. A black field with a
+ * white square stays exactly black away from the square and white inside it: the limiter's
+ * luma ratio is 0/0 in black, and that must not reach a pixel. */
+#define LIMITER_BRIGHT_MIN 250u
+#define LIMITER_DARK_MIN 10u
+#define LIMITER_DARK_MAX 30u
+
+static uint32_t at(int ow, int x, int y) { return g.map[y * ow + x] & 0xFFu; }
+
+static void cell_limiter(Fsr1Pass *p) {
+    const int w = 64, h = 64;
+    Source src;
+    memset(&src, 0, sizeof(src));
+    if (!image_make(&src, w, h, VK_FORMAT_R8G8B8A8_UNORM)) { CHECK(0, "source image"); return; }
+    for (int i = 0; i < w * h; i++) g.map[i] = grey(128u);
+    g.map[20 * w + 44] = grey(40u);
+    g.map[20 * w + 45] = grey(216u);
+    source_fill(&src, w, h, 1);
+    upscale(p, &src, w, h, w, h, FSR1_SHARPNESS_DEFAULT);
+    uint32_t dark = at(w, 44, 20), bright = at(w, 45, 20);
+    printf("fsr1-selftest: limiter at 1:1, default sharpness: a dark pixel (40) beside a bright one "
+           "(216) on grey 128 became %u and %u\n", dark, bright);
+    CHECK(bright >= LIMITER_BRIGHT_MIN,
+          "RCAS sharpened the bright pixel to %u, under %u: not the SDK v2.4.0 limiter%s", bright,
+          LIMITER_BRIGHT_MIN, s_mutant ? " [the mutant is caught]" : "");
+    CHECK(dark >= LIMITER_DARK_MIN && dark <= LIMITER_DARK_MAX,
+          "RCAS took the dark pixel to %u, outside %u..%u: not the SDK v2.4.0 limiter%s", dark,
+          LIMITER_DARK_MIN, LIMITER_DARK_MAX, s_mutant ? " [the mutant is caught]" : "");
+
+    for (int i = 0; i < w * h; i++) {
+        int x = i % w, y = i / w;
+        g.map[i] = grey(x >= 24 && x < 40 && y >= 24 && y < 40 ? 255u : 0u);
+    }
+    source_fill(&src, w, h, 1);
+    const int ow = 128, oh = 128;
+    const float sharp[2] = { FSR1_SHARPNESS_DEFAULT, 0.0f };
+    for (int k = 0; k < 2; k++) {
+        upscale(p, &src, w, h, ow, oh, sharp[k]);
+        unsigned black_off = 0, white_off = 0;
+        for (int y = 0; y < oh; y++)
+            for (int x = 0; x < ow; x++) {
+                uint32_t v = at(ow, x, y);
+                /* The square is 48..80 at 2x; EASU's and RCAS's reach is a few pixels. */
+                if ((x < 40 || x >= 88 || y < 40 || y >= 88) && v != 0u) black_off++;
+                if (x >= 52 && x < 76 && y >= 52 && y < 76 && v < 254u) white_off++;
+            }
+        CHECK(black_off == 0 && white_off == 0,
+              "black field, %s sharpness: %u black pixels left 0 and %u white pixels left 255",
+              k ? "sharpest" : "default", black_off, white_off);
+    }
     image_free(&src);
 }
 
@@ -660,6 +719,7 @@ int main(int argc, char **argv) {
         cell_edge(p, 0);
         cell_edge(p, 1);
         cell_rcas(p);
+        cell_limiter(p);
         if (!s_mutant) {
             cell_size_fail(p);
             cell_flat(p);

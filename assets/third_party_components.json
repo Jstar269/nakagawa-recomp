@@ -383,22 +383,23 @@
         ]
       },
       {
-        "id": "fidelityfx-fsr1",
-        "name": "AMD FidelityFX Super Resolution 1",
+        "id": "fidelityfx-sdk",
+        "name": "AMD FidelityFX SDK (FSR 1)",
         "spdx_id": "MIT",
-        "upstream_origin": "https://github.com/GPUOpen-Effects/FidelityFX-FSR",
-        "upstream_revision": "a21ffb8f6c13233ba336352bdff293894c706575",
+        "upstream_origin": "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK",
+        "upstream_revision": "7539ae8b6568ad29ed78a753404351daf3b5cca7",
         "disposition": "statically_linked_subset",
-        "notice_file": "fidelityfx-fsr1.txt",
+        "notice_file": "fidelityfx-sdk.txt",
         "copyright_notices": [
-          "Copyright (c) 2021 Advanced Micro Devices, Inc."
+          "Copyright (C) 2026 Advanced Micro Devices, Inc.",
+          "Copyright (C) 2024 Advanced Micro Devices, Inc."
         ],
-        "note": "The byte-identical headers third_party/fidelityfx_fsr1/ffx_a.h and ffx_fsr1.h (third_party/fidelityfx_fsr1/PROVENANCE.md), compiled into the native player's presentation upscaler: into the SPIR-V of src/rt/gpu_sdl3vk/shaders/fsr1_easu.comp and fsr1_rcas.comp, and into src/rt/gpu_sdl3vk/fsr1_pass.c for the constant setup.",
+        "note": "FSR 1 (ffx_fsr1.h) and the ffx_core headers from FidelityFX SDK v2.4.0, and ffx_core_glsl.h from FidelityFX SDK 1.1 (commit 1bbe66e7ea0d358e84af4471a90aa9c35b583de0), with line endings normalised to LF (third_party/fidelityfx_sdk/PROVENANCE.md). They are compiled into the SPIR-V of the native player's presentation upscaler, src/rt/gpu_sdl3vk/shaders/fsr1_easu.comp and fsr1_rcas.comp. The SDK's docs/license.md lists each v2.4.0 file under MIT; each header carries the MIT notice.",
         "license_texts": [
           {
-            "file": "third_party/fidelityfx_fsr1/LICENSE.txt",
-            "copied_from": "FidelityFX-FSR license.txt at commit a21ffb8f6c13233ba336352bdff293894c706575, imported byte-identical",
-            "sha256": "db089274ce766da70f5b7d791029c3486f9f9e27c8c79c652689603d3192e802"
+            "file": "third_party/fidelityfx_sdk/LICENSE.txt",
+            "copied_from": "FidelityFX SDK LICENSE.txt at commit 1bbe66e7ea0d358e84af4471a90aa9c35b583de0 (SDK 1.1), imported byte-identical; the same MIT text as the notice in every v2.4.0 header",
+            "sha256": "82cf74fc23885107c7f69249ac3f1dac55898ff68320eb2c753984cae6b2d78a"
           }
         ]
       },

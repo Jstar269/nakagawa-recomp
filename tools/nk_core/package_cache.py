@@ -868,7 +868,7 @@ def prune_cache(
 # The source a title's runtime package is compiled from: the runtime, the shared core
 # it links, the pause overlay's UI library (RT_NK_UI_SRCS) and the third-party headers
 # those include (RT_NK_UI_FLAGS names clay; nk_ui_image.c includes stb_image.h and
-# nk_xb.c safe-math.h; fsr1_pass.c the FidelityFX FSR 1 header). The player (src/player) is not part of a package, so a change
+# nk_xb.c safe-math.h; fsr1_pass.c's shaders the FidelityFX SDK headers). The player (src/player) is not part of a package, so a change
 # there leaves every package as it is. tools/test_package_cache.py checks that every
 # third_party directory these sources include, or the runtime flags name, is listed.
 RUNTIME_SOURCE_DIRECTORIES: tuple[str, ...] = (
@@ -876,7 +876,7 @@ RUNTIME_SOURCE_DIRECTORIES: tuple[str, ...] = (
     "src/core",
     "src/ui",
     "third_party/clay",
-    "third_party/fidelityfx_fsr1",
+    "third_party/fidelityfx_sdk",
     "third_party/portable-snippets",
     "third_party/stb",
 )

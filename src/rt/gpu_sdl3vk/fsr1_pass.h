@@ -4,7 +4,8 @@
  * fsr1_pass.h - the presentation upscaler (#1273): AMD FidelityFX Super Resolution 1, EASU
  * (edge-adaptive spatial upsampling) then RCAS (robust contrast-adaptive sharpening), from the
  * frame the presenter shows to the size it is shown at. The algorithm is AMD's, in
- * third_party/fidelityfx_fsr1 (MIT); this module records it into the present's command buffer.
+ * third_party/fidelityfx_sdk (FidelityFX SDK v2.4.0, MIT); this module records it into the
+ * present's command buffer.
  *
  * Presentation only. The pass reads the shown image and writes private images; the window shows
  * the result. The image the guest drew, guest VRAM, a capture of the guest frame and everything a
