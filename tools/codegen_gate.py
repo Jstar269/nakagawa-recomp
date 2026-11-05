@@ -189,8 +189,9 @@ def build_traced_driver(elf, workdir, env, mutate=None):
     # (vfpu_tables.c, which owns the table globals recomp.c references) +
     # driver + ace.c (the Ace Mode switch driver.c reads once at start; off
     # unless SR_ACE says otherwise) + videorec.c (the run recorder driver.c
-    # tells how the run ended; it records only when SR_VIDEOREC_DIR is set, and
-    # refuses here, where the gate stub's clock is the paced one) +
+    # tells how the run ended; it records only when SR_VIDEOREC_DIR is set;
+    # driver.c's main() hands it gate_stub.c's clock, which is the paced one,
+    # so a recording here is refused for needing SR_DETERMINISTIC_CLOCK=1) +
     # title_config.c + tools/gate_stub.c.
     # sched.c / sr_coro.c are intentionally omitted because the microtest never enters the scheduler
     # (no --sched / --gui flags), and those TUs would require SDL3 headers on a

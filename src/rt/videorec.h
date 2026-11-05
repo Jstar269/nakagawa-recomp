@@ -43,6 +43,10 @@
 #define SR_VIDEOREC_FPS_DEN 1001u
 #define SR_VIDEOREC_CHANNELS 16
 
+/* The runtime's main() passes the scheduler's sched_clock_deterministic. A program that sets
+ * none (one that links the presenter without a scheduler) never records: the start refuses. */
+void sr_videorec_set_clock(int (*deterministic)(void));
+
 /* 1 when recording was requested and the recorder is (or will be) writing. */
 int sr_videorec_active(void);
 
@@ -91,9 +95,6 @@ void sr_videorec_audio(int ch, const int16_t *lr, int nframes, int volL, int vol
  * "exit_status": null and says that an exit() named no end, so a run that left through one of
  * the runtime's exit(1) paths never reads as a clean exit. */
 int sr_videorec_finish(void);
-/* The runtime's main() passes the scheduler's sched_clock_deterministic. A program that sets
- * none (one that links the presenter without a scheduler) never records: the start refuses. */
-void sr_videorec_set_clock(int (*deterministic)(void));
 int sr_videorec_finish_at(const char *run_end);
 int sr_videorec_finish_status(const char *run_end, int exit_status);
 
