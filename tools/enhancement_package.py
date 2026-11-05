@@ -72,6 +72,8 @@ SITE_TRANSFORMS = frozenset({
     "offset_x2",
     "window_start_x2",
     "argument_x2",
+    "count_x2_even",
+    "gate_30hz_hold",
 })
 
 # What a site's instruction builds, when its encoding alone cannot say: the upper
@@ -629,10 +631,10 @@ def validate_package(data: Any) -> dict[str, Any]:
             _check_instruction_location(boundary, "update_boundary", "update_boundary")
             if (boundary["function"], boundary["insn_offset"]) in seen_positions:
                 fail("update_boundary", "update_boundary must not be a rewritten site")
-        elif any(site["transform"] == "gate_30hz" for site in sites):
+        elif any(site["transform"] in ("gate_30hz", "gate_30hz_hold") for site in sites):
             fail(
                 "update_boundary",
-                "A package with gate_30hz sites must declare update_boundary: gated sites run on "
+                "A package with gate_30hz or gate_30hz_hold sites must declare update_boundary: gated sites run on "
                 "alternate logic updates, counted where each update begins",
             )
 
@@ -1500,7 +1502,9 @@ def _plan_word_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
 
     Returned kinds:
       ``word``            execute ``word`` instead of the stock word;
-      ``gate``            execute the stock instruction on alternate 60 Hz updates only;
+      ``gate``            execute the stock instruction on alternate 60 Hz updates only; a gated
+                          call with ``hold_f`` sets FPR 0 to FPR ``hold_f`` on the updates it skips;
+      ``word_even``       execute ``word``, then clear GPR ``rt`` when GPR ``reg`` was odd;
       ``scale_int_reg``   after the stock load, multiply GPR ``reg`` by 2;
       ``scale_int_args``  after the stock entry instruction, multiply the GPRs ``regs`` by 2;
       ``scale_f_reg``   after the stock instruction, multiply FPR ``reg`` by ``factor``;
@@ -1575,6 +1579,22 @@ def _plan_word_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
 
     if tf == "launch_velocity_x0.5":
         _refuse(site, w, "launch_velocity_x0.5 rewrites a lui/ori float pair")
+
+    if tf == "gate_30hz_hold":
+        # A call that advances its first float argument (f12) by one update and returns
+        # the result in f0: on a skipped update the call holds that value instead.
+        if is_jal:
+            return {"kind": "gate", "hold_f": 12}
+        _refuse(site, w, "gate_30hz_hold takes a jal")
+
+    if tf == "count_x2_even":
+        # slti/sltiu rt, rs, n where rs counts logic updates: true while rs < 2n and rs is
+        # even, so n events still happen, one every second update, at the stock instants.
+        if op not in (0x0A, 0x0B) or simm16 <= 0 or 2 * simm16 > 0x7FFF:
+            _refuse(site, w, "count_x2_even takes a slti/sltiu with a positive immediate")
+        if rt == 0 or rt == rs:
+            _refuse(site, w, "count_x2_even needs a destination other than $zero and the counter")
+        return {"kind": "word_even", "word": _with_imm(w, 2 * simm16), "reg": rs, "rt": rt}
 
     if tf == "gate_30hz":
         if is_jal or is_jalr:

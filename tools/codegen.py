@@ -256,6 +256,12 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None, site_id: st
         if word_line is None:
             raise ValueError("a word rewrite needs its emitted word line")
         enh = word_line
+    elif kind == "word_even":
+        # The doubled bound, then the counter's parity: an odd count reads as false.
+        if word_line is None:
+            raise ValueError("a word_even rewrite needs its emitted word line")
+        enh = (f"{{ uint32_t _nk_count = s->r[{rw['reg']}]; {word_line.strip()} "
+               f"if (_nk_count & 1u) {{ s->r[{rw['rt']}] = 0u; }} }}")
     elif kind == "gate":
         enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"
     elif kind == "scale_int_reg":
@@ -3040,7 +3046,7 @@ def normal_line(addr, w, lle_cpu=False, delay_branch_pc=None):
     if rw is None:
         return line
     word_line = None
-    if rw["kind"] == "word":
+    if rw["kind"] in ("word", "word_even"):
         # The trace hook keeps the stock word: guest memory still holds it.
         word_line = _plain_line(addr, rw["word"], w, lle_cpu=lle_cpu,
                                 delay_branch_pc=delay_branch_pc)
@@ -3785,11 +3791,15 @@ def _emit_jal(ctx, out, addr, w, ds, dsw):
             G(target), G((addr + 8) & 0xFFFFFFFF))
     if _jal_rw is not None:
         # gate_30hz on a call (the only rewrite a call site plans): the delay
-        # slot above always runs; the call is gated while the toggle is on.
+        # slot above always runs; the call is gated while the toggle is on. A
+        # gate_30hz_hold call returns its float argument unchanged when skipped.
+        _held = ""
+        if "hold_f" in _jal_rw:
+            _held = f" else {{ s->fi[0] = s->fi[{_jal_rw['hold_f']}]; }}"
         out.append(
             f"    if (!nk_enhancement_on() || nk_enhancement_gate_30hz()) {{\n"
             f"{_call_stmt}\n"
-            f"    }}"
+            f"    }}{_held}"
         )
     else:
         out.extend(_call_stmt.split("\n"))

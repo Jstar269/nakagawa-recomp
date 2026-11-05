@@ -1150,6 +1150,141 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                 with self.assertRaises(EnhancementPackageError):
                     plan(transform, word)
 
+    def test_count_x2_even_and_gate_30hz_hold_plans(self) -> None:
+        """count_x2_even doubles a slti/sltiu bound and keeps even counts; gate_30hz_hold holds f12."""
+        from enhancement_package import EnhancementPackageError, plan_site_rewrite
+
+        def plan(transform: str, word: int) -> dict:
+            return plan_site_rewrite({"id": "S", "transform": transform}, word)
+
+        self.assertEqual(plan("count_x2_even", 0x28410008),  # slti at, v0, 8
+                         {"kind": "word_even", "word": 0x28410010, "reg": 2, "rt": 1})
+        self.assertEqual(plan("count_x2_even", 0x2C410008),  # sltiu at, v0, 8
+                         {"kind": "word_even", "word": 0x2C410010, "reg": 2, "rt": 1})
+        self.assertEqual(plan("gate_30hz_hold", 0x0C000480), {"kind": "gate", "hold_f": 12})  # jal
+        for transform, word in (
+            ("count_x2_even", 0x28420008),  # slti v0, v0, 8: the counter is overwritten
+            ("count_x2_even", 0x28400008),  # slti zero, v0, 8
+            ("count_x2_even", 0x2841FFFF),  # negative bound
+            ("count_x2_even", 0x28414000),  # 2 * 0x4000 does not fit
+            ("count_x2_even", 0x24410008),  # addiu: not a compare
+            ("gate_30hz_hold", 0x24840001),  # an accumulating update is not a call
+            ("gate_30hz_hold", 0x0320F809),  # jalr: codegen gates only a jal
+        ):
+            with self.subTest(transform=transform, word=f"{word:08x}"):
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    plan(transform, word)
+                self.assertIn("has no defined rewrite", str(ctx.exception))
+
+        pkg, _ = self._make_package_and_symbols(b"synthetic_elf_bytes")
+        pkg["sites"] = [dict(pkg["sites"][-1], transform="gate_30hz_hold")]
+        del pkg["update_boundary"]
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            validate_package(pkg)
+        self.assertIn("gate_30hz_hold sites must declare update_boundary", str(ctx.exception))
+
+    def _even_and_hold_build(self, tmp: Path) -> str:
+        elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", self.words, self.entry)
+        pkg, symbols = self._make_package_and_symbols(elf_bytes)
+        for site in pkg["sites"]:
+            if site["id"] == "SYNTH_PROB":  # slti v1, a0, 100
+                site["transform"] = "count_x2_even"
+            elif site["id"] == "SYNTH_GATE":  # jal synth_timer_duration
+                site["transform"] = "gate_30hz_hold"
+        rc, output, files = self._codegen_with(tmp, "even-hold", pkg, symbols)
+        self.assertEqual(rc, 0, output)
+        return b"\n".join(files.values()).decode("utf-8")
+
+    def test_count_x2_even_and_gate_30hz_hold_emit_both_forms(self) -> None:
+        """The enhanced slti doubles its bound and drops odd counts; the held call copies f12 to f0."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            combined = self._even_and_hold_build(Path(tmp_dir))
+            self.assertIn("(int32_t)0x000000c8u ? 1u : 0u", combined)  # 100 -> 200
+            self.assertIn("(int32_t)0x00000064u ? 1u : 0u", combined)  # the stock form is kept
+            self.assertIn("uint32_t _nk_count = s->r[4];", combined)
+            self.assertIn("if (_nk_count & 1u) { s->r[3] = 0u; }", combined)
+            self.assertIn("if (!nk_enhancement_on() || nk_enhancement_gate_30hz())", combined)
+            self.assertIn("} else { s->fi[0] = s->fi[12]; }", combined)
+
+    @unittest.skipUnless(GCC, "needs a host C compiler")
+    def test_count_x2_even_and_gate_30hz_hold_match_30hz_when_run(self) -> None:
+        """Compile the generated statements and run 30 Hz against 60 Hz updates.
+
+        count_x2_even: a counter of updates since an event meets the bound at the stock
+        instants only (60 Hz count 2k where the stock count is k), the same number of times.
+        gate_30hz_hold: three values advanced by an ease call each update, as a menu pane
+        does, take the 30 Hz values, each held for two updates; none takes another's result.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            combined = self._even_and_hold_build(tmp)
+            lines = combined.splitlines()
+            at = next(i for i, line in enumerate(lines) if "uint32_t _nk_count" in line)
+            compare = "\n".join(lines[at:at + 2])
+            # The call statement: from the jal's trace hook to the line that closes its gate,
+            # whatever that gate's skipped branch holds.
+            at = next(i for i, line in enumerate(lines) if "sr_begin(s, 0x00001600u" in line)
+            gate = next(i for i in range(at, len(lines)) if "nk_enhancement_gate_30hz()) {" in lines[i])
+            end = next(i for i in range(gate + 1, len(lines)) if lines[i].lstrip().startswith("}"))
+            call = "\n".join(lines[at:end + 1])
+            harness = tmp / "even_hold.c"
+            harness.write_text(
+                "#include <stdint.h>\n#include <stdio.h>\n"
+                "typedef struct { uint32_t r[32]; union { float f[32]; uint32_t fi[32]; }; } CpuState;\n"
+                "#define sr_begin(s, pc, w) ((void)0)\n#define sr_end(s, a, n) ((void)0)\n"
+                "#define sr_aot_return_boundary_begin(s, r, c, k) 0\n"
+                "#define sr_aot_return_boundary_end(s) 0\n#define SR_TAIL_DRAIN(s) ((void)0)\n"
+                "static int on;\nint nk_enhancement_on(void) { return on; }\n"
+                "uint32_t nk_enhancement_updates;\n"
+                "static inline int nk_enhancement_gate_30hz(void) "
+                "{ return (nk_enhancement_updates & 1u) == 0u; }\n"
+                "/* The ease: f0 = f12 + f14 * (f13 - f12), as the consumer's helper computes. */\n"
+                "static void f_00001200(CpuState *s) { s->f[0] = s->f[12] + s->f[14] * (s->f[13] - s->f[12]); }\n"
+                f"static void compare(CpuState *s) {{\n{compare}\n}}\n"
+                f"static void call(CpuState *s) {{\n{call}\n}}\n"
+                "static float ease(CpuState *s, float cur, float target) {\n"
+                "    s->f[12] = cur; s->f[13] = target; s->f[14] = 0.25f; call(s); return s->f[0];\n"
+                "}\n"
+                "int main(void) {\n"
+                "    CpuState st = {0}; CpuState *s = &st;\n"
+                "    for (on = 0; on < 2; on++) {\n"
+                "        for (uint32_t n = 0; n < 300; n++) {\n"
+                "            s->r[4] = n; compare(s); if (s->r[3]) printf(\"%s %u\\n\", on ? \"hit60\" : \"hit30\", n);\n"
+                "        }\n"
+                "    }\n"
+                "    for (on = 0; on < 2; on++) {\n"
+                "        float x = 0.0f, y = 100.0f, a = 1.0f;\n"
+                "        nk_enhancement_updates = 0;\n"
+                "        for (int u = 0; u < (on ? 40 : 20); u++) {\n"
+                "            nk_enhancement_updates++;\n"
+                "            x = ease(s, x, 64.0f); y = ease(s, y, 0.0f); a = ease(s, a, 0.0f);\n"
+                "            printf(\"%s %d %.6f %.6f %.6f\\n\", on ? \"ease60\" : \"ease30\", u, x, y, a);\n"
+                "        }\n"
+                "    }\n"
+                "    return 0;\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            exe = tmp / "even_hold.exe"
+            # The generated call statement keeps its guards on one line, as codegen emits it.
+            subprocess.run([GCC, "-std=c11", "-Wall", "-Werror", "-Wno-unused-function",
+                            "-Wno-misleading-indentation", "-Wno-unused-variable",
+                            "-o", str(exe), str(harness)],
+                           check=True, capture_output=True)
+            out = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout.split("\n")
+            hit30 = [int(line.split()[1]) for line in out if line.startswith("hit30 ")]
+            hit60 = [int(line.split()[1]) for line in out if line.startswith("hit60 ")]
+            self.assertEqual(hit30, list(range(100)))
+            self.assertEqual(hit60, [2 * k for k in range(100)])
+            ease30 = [tuple(line.split()[2:]) for line in out if line.startswith("ease30 ")]
+            ease60 = [tuple(line.split()[2:]) for line in out if line.startswith("ease60 ")]
+            # Update 1 of 60 is odd and holds the start; then each 30 Hz value shows for two updates.
+            self.assertEqual(ease60[0], ("0.000000", "100.000000", "1.000000"))
+            for k, values in enumerate(ease30[:19]):
+                with self.subTest(update=k):
+                    self.assertEqual(ease60[2 * k + 1], values)
+                    self.assertEqual(ease60[2 * k + 2], values)
+
     def test_aot_cache_epoch_separation_and_authentic_invariance(self) -> None:
         """With package off, AOT cache digest is untouched; with package on, it keys a distinct epoch."""
         base_opts = {
