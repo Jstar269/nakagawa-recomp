@@ -46,9 +46,23 @@ the log has them, otherwise the two framebuffers that receive the most PRIMs.
 
 The trace logs no per-draw target, no command address and only large or indexed
 through-mode sprites, so this is a lower bound on what the matcher sees, not a model
-of it. When the trace hits ``SR_GEWATCH_LIMIT`` the transform lines stop while the
-list lines go on; the tool reports that and drops the frames after the last
-transform line rather than counting them as empty.
+of it.
+
+A frame is counted only when the trace shows all of it. When the trace hits
+``SR_GEWATCH_LIMIT`` the transform lines stop while the list lines go on. The frames
+after the last transform line are then reported and dropped, not counted as empty.
+The frame holding the last transform line is dropped, with a warning, when the trace
+shows that it was cut. That is the case when PRIMs were logged that no ``GELIST``
+line closes, or when a later list in the same frame drew PRIMs (``prims=`` above 0)
+but logged no transform line. With ``fbp`` grouping, the first guest frame is
+dropped too, because its start comes before the trace: the trace starts at a
+vblank, and a 30 Hz guest frame can span two. A trace line that is cut or garbled
+is counted and reported.
+
+``prims=`` is no bound on a list's transform lines: it counts the PRIMs of the
+list's last run only, and a list the guest streams through stall updates reaches
+its end in a later run than most of its PRIMs. Above 0 it still shows that the
+list drew something.
 """
 
 from __future__ import annotations
@@ -57,6 +71,7 @@ import argparse
 import bisect
 import difflib
 import json
+import os
 import re
 import statistics
 import sys
@@ -68,6 +83,8 @@ _XFORM = re.compile(
     r"vaddr=0x([0-9a-fA-F]+) iaddr=0x([0-9a-fA-F]+)")
 _LIST = re.compile(r"GELIST f=(\d+) list=0x([0-9a-fA-F]+) fbp=0x([0-9a-fA-F]+) prims=(\d+)")
 _PRESENT = re.compile(r"PRESENT f=(\d+) buf=0x([0-9a-fA-F]+)")
+# The runtime's sprite-mode GEWATCH line (ge.c) is another kind, not a malformed transform line.
+_SPRITE = re.compile(r"GEWATCH frame=\d+ prim=\d+ spr ")
 
 METRICS = ("exact", "exact2", "ordinal", "matched", "vmass")
 
@@ -101,6 +118,7 @@ class DrawList:
     addr: int
     fbp: int
     prims: list[Prim] = field(default_factory=list)
+    prim_count: int = 0  # GELIST prims=: the PRIMs of the list's last run, transform or not
 
 
 @dataclass
@@ -110,6 +128,13 @@ class Trace:
     trailing: list[Prim]
     last_xform_vblank: int | None
     last_list_vblank: int | None
+    recognised: int = 0   # trace lines read
+    malformed: int = 0    # lines that start a trace line but do not parse (cut or garbled)
+
+    def after_last_xform(self) -> list[DrawList]:
+        """The lists closed after the last list that logged a transform PRIM."""
+        last = max((i for i, dl in enumerate(self.lists) if dl.prims), default=-1)
+        return self.lists[last + 1:]
 
 
 def parse(lines) -> Trace:
@@ -118,24 +143,36 @@ def parse(lines) -> Trace:
     presents: list[tuple[int, int]] = []
     pending: list[Prim] = []
     last_x = last_l = None
+    recognised = malformed = 0
     for line in lines:
         m = _XFORM.search(line)
         if m:
             f, t, c, vt, ix, va, ia = m.groups()
             pending.append(Prim(int(f), int(t), int(c), int(vt, 16), int(ix), int(va, 16), int(ia, 16)))
             last_x = int(f)
+            recognised += 1
             continue
         m = _LIST.search(line)
         if m:
-            f, addr, fbp, _ = m.groups()
-            lists.append(DrawList(int(f), int(addr, 16), int(fbp, 16), pending))
+            f, addr, fbp, n = m.groups()
+            lists.append(DrawList(int(f), int(addr, 16), int(fbp, 16), pending, int(n)))
             pending = []
             last_l = int(f)
+            recognised += 1
             continue
         m = _PRESENT.search(line)
         if m:
             presents.append((int(m.group(1)), int(m.group(2), 16)))
-    return Trace(lists, presents, pending, last_x, last_l)
+            recognised += 1
+            continue
+        if "GEWATCH frame=" in line:
+            if _SPRITE.search(line):
+                recognised += 1
+            else:
+                malformed += 1
+        elif "GELIST f=" in line or "PRESENT f=" in line:
+            malformed += 1
+    return Trace(lists, presents, pending, last_x, last_l, recognised, malformed)
 
 
 def display_buffers(trace: Trace) -> set[int]:
@@ -147,40 +184,73 @@ def display_buffers(trace: Trace) -> set[int]:
     return {fbp for fbp, _ in weight.most_common(2)}
 
 
-def group_frames(trace: Trace, mode: str) -> list[list[Prim]]:
-    """Return the transform PRIMs of each frame, in draw order; frames without any are dropped."""
-    lists = trace.lists
-    if trace.last_xform_vblank is not None:
-        lists = [dl for dl in lists if dl.vblank <= trace.last_xform_vblank]
-    frames: list[list[Prim]] = []
+def frame_groups(trace: Trace, mode: str) -> tuple[list[list[Prim]], dict[str, str]]:
+    """Return the transform PRIMs of each whole frame, in draw order, and why any was dropped.
+
+    Frames without transform PRIMs are left out. The notes name a first or last frame
+    that the trace does not show whole (see the module docstring).
+    """
+    notes: dict[str, str] = {}
+    post = trace.after_last_xform()
     if mode == "vblank":
         by: dict[int, list[Prim]] = {}
-        for dl in lists:
+        for dl in trace.lists:
             for p in dl.prims:
                 by.setdefault(p.vblank, []).append(p)
-        frames = [by[k] for k in sorted(by)]
-    elif mode == "fbp":
-        shown = display_buffers(trace)
-        cur: list[Prim] = []
-        offscreen: list[Prim] = []  # lists into other targets wait for the next display list
-        cur_fbp = None
-        for dl in lists:
-            if dl.fbp not in shown:
-                offscreen.extend(dl.prims)
-                continue
-            if cur_fbp is not None and dl.fbp != cur_fbp:
-                frames.append(cur)
-                cur = []
-            cur_fbp = dl.fbp
-            cur.extend(offscreen)
-            offscreen = []
-            cur.extend(dl.prims)
-        cur.extend(offscreen)
-        if cur:
-            frames.append(cur)
-    else:
+        keys = sorted(by)
+        if keys:
+            last = keys[-1]
+            if any(p.vblank == last for p in trace.trailing):
+                notes["last"] = f"vblank {last} has PRIMs that no GELIST line closes"
+            elif any(dl.vblank == last and dl.prim_count for dl in post):
+                notes["last"] = (f"a later list in vblank {last} drew PRIMs but logged no transform line "
+                                 f"(SR_GEWATCH_LIMIT reached, or a 2D-only list)")
+            if "last" in notes:
+                keys = keys[:-1]
+        return [by[k] for k in keys], notes
+    if mode != "fbp":
         raise ValueError(f"unknown grouping {mode!r}")
-    return [f for f in frames if f]
+    shown = display_buffers(trace)
+    post_start = len(trace.lists) - len(post)
+    frames: list[list[Prim]] = []
+    cut_reason: list[str | None] = []
+    cur: list[Prim] = []
+    offscreen: list[Prim] = []  # lists into other targets wait for the next display list
+    cur_fbp = None
+    cut: str | None = None
+    for i, dl in enumerate(trace.lists):
+        if dl.fbp not in shown:
+            offscreen.extend(dl.prims)
+            continue
+        if cur_fbp is not None and dl.fbp != cur_fbp:
+            frames.append(cur)   # a display list into the other buffer: this frame is closed
+            cut_reason.append(cut)
+            cur, cut = [], None
+        elif i >= post_start and dl.prim_count and cur:
+            cut = ("a later list in that frame drew PRIMs but logged no transform line "
+                   "(SR_GEWATCH_LIMIT reached, or a 2D-only list)")
+        cur_fbp = dl.fbp
+        cur.extend(offscreen)
+        offscreen = []
+        cur.extend(dl.prims)
+    cur.extend(offscreen)
+    if cur and trace.trailing and cut is None:
+        cut = "PRIMs were logged that no GELIST line closes"
+    frames.append(cur)   # the open frame at the end: never closed, whole only if nothing shows a cut
+    cut_reason.append(cut)
+    for k, reason in enumerate(cut_reason):
+        if frames[k] and reason:
+            notes["last"] = reason
+            frames[k] = []
+    if frames[0]:
+        notes["first"] = "its start comes before the trace"
+        frames[0] = []
+    return [f for f in frames if f], notes
+
+
+def group_frames(trace: Trace, mode: str) -> list[list[Prim]]:
+    """Return the transform PRIMs of each whole frame, in draw order (see frame_groups)."""
+    return frame_groups(trace, mode)[0]
 
 
 def _longest_increasing(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -278,8 +348,14 @@ def _quantile(values: list[float], q: float) -> float:
 
 
 def summarize(trace: Trace, mode: str) -> dict:
-    frames = group_frames(trace, mode)
+    frames, notes = frame_groups(trace, mode)
     out: dict = {"grouping": mode, "frames": len(frames), "pairs": 0}
+    if "first" in notes:
+        out["dropped_first_frame"] = notes["first"]
+    if "last" in notes:
+        out["dropped_last_frame"] = notes["last"]
+    if trace.malformed:
+        out["malformed_lines"] = trace.malformed
     if trace.trailing:
         out["unclosed_prims"] = len(trace.trailing)
     if (trace.last_xform_vblank is not None and trace.last_list_vblank is not None
@@ -312,6 +388,12 @@ def _print(label: str, s: dict) -> None:
     if "truncated_after_vblank" in s:
         print(f"WARNING: transform lines stop at vblank {s['truncated_after_vblank']} while lists go on "
               f"(SR_GEWATCH_LIMIT reached?); later frames dropped")
+    if "dropped_last_frame" in s:
+        print(f"WARNING: the last frame may be cut and is not counted: {s['dropped_last_frame']}")
+    if "dropped_first_frame" in s:
+        print(f"note: the first frame is not counted: {s['dropped_first_frame']}")
+    if "malformed_lines" in s:
+        print(f"WARNING: {s['malformed_lines']} trace lines are cut or garbled and were not read")
     if "unclosed_prims" in s:
         print(f"note: {s['unclosed_prims']} PRIMs after the last GELIST line were not counted")
     if not s["pairs"]:
@@ -335,20 +417,30 @@ def _print(label: str, s: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("log", help="runtime stderr log from a run with SR_GEWATCH=1")
-    ap.add_argument("--label", help="name printed in the report (default: the log path)")
+    ap.add_argument("--label", help="name printed in the report (default: the log's file name, "
+                                    "so a report carries no local path)")
     ap.add_argument("--group", choices=("fbp", "vblank", "both"), default="both",
                     help="how lines are grouped into frames (default: both)")
     ap.add_argument("--json", action="store_true", help="print the summaries as JSON")
     args = ap.parse_args(argv)
-    with open(args.log, encoding="utf-8", errors="replace") as fh:
-        trace = parse(fh)
+    try:
+        with open(args.log, encoding="utf-8", errors="replace") as fh:
+            trace = parse(fh)
+    except OSError as error:
+        print(f"ge_draw_identity: cannot read the log: {error.strerror or error}", file=sys.stderr)
+        return 2
+    label = args.label or os.path.basename(args.log)
+    if not trace.recognised:
+        print(f"ge_draw_identity: {label} has no GEWATCH, GELIST or PRESENT lines "
+              f"(was the run started with SR_GEWATCH=1?)", file=sys.stderr)
+        return 1
     modes = ("fbp", "vblank") if args.group == "both" else (args.group,)
     sums = [summarize(trace, m) for m in modes]
     if args.json:
-        print(json.dumps({"label": args.label or args.log, "summaries": sums}, indent=2, sort_keys=True))
+        print(json.dumps({"label": label, "summaries": sums}, indent=2, sort_keys=True))
     else:
         for s in sums:
-            _print(args.label or args.log, s)
+            _print(label, s)
     return 0 if any(s["pairs"] for s in sums) else 1
 
 
