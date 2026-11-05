@@ -171,9 +171,12 @@ static void reference_crop(const uint32_t *ext, int ew, int eh, int f, int ox, i
     if (!argb || !big) { free(argb); free(big); return; }
     for (int i = 0; i < ew * eh; i++) argb[i] = swap_rb(ext[i]);
     nk_xbrz_scale(f, argb, big, ew, eh, NULL, 0, eh);
-    for (int y = 0; y < h * f; y++)
-        for (int x = 0; x < w * f; x++)
-            out[(size_t)y * w * f + x] = swap_rb(big[(size_t)(y + oy * f) * ew * f + x + ox * f]);
+    /* Every index in size_t, so no product is formed in int first. */
+    const size_t sf = (size_t)f, out_row = (size_t)w * sf, big_row = (size_t)ew * sf;
+    const size_t x0 = (size_t)ox * sf, y0 = (size_t)oy * sf;
+    for (size_t y = 0; y < (size_t)h * sf; y++)
+        for (size_t x = 0; x < out_row; x++)
+            out[y * out_row + x] = swap_rb(big[(y + y0) * big_row + x0 + x]);
     free(argb);
     free(big);
 }
