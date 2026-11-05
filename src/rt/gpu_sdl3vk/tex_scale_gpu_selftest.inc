@@ -252,8 +252,9 @@ static int xst_cell_scaled_draw(int f) {
 
 /* The largest copy: a 512x512 texture at factor 4 is 2048x2048, 16 MiB, more than the upload ring
  * slot and the shared staging buffer hold (a title's 512x512 font page crashed the runtime here
- * before the copy went up in bands). Main RAM, so no target or depth buffer can overlap it. */
-#define XST_BIG_ADDR 0x08900000u
+ * before the copy went up in bands). Main RAM, so no target or depth buffer can overlap it: the
+ * kernel partition, which the self-test owns and no game address names. */
+#define XST_BIG_ADDR 0x08400000u
 #define XST_BIG      512
 static int xst_cell_large(int f) {
     (void)f;
