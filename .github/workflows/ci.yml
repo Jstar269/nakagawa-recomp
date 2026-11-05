@@ -1044,6 +1044,38 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 \
             make CC=gcc gpu-coherence-selftest
 
+      # FSR 3's eight passes (src/rt/gpu_sdl3vk/fsr3_pass.c) on lavapipe under the validation layer,
+      # synchronisation validation of shader accesses included. Headless: no window or SDL. An exit
+      # 77 skip, including one for synchronisation validation that is not active, fails the step.
+      - name: Run the FSR 3 pass selftest on lavapipe
+        if: matrix.part == 'translation'
+        run: |
+          set -euo pipefail
+          lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$lvp_icd" || {
+            echo "mesa-vulkan-drivers did not install a lavapipe ICD" >&2
+            exit 1
+          }
+          export VK_ICD_FILENAMES="$lvp_icd"
+          NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-pass-selftest
+
+      # The embedded FSR 3 SPIR-V must be what the pinned DirectXShaderCompiler release makes of AMD's
+      # HLSL (tools/shader_embed.py, DXC_RELEASE). The Linux archive is checked against its pinned
+      # SHA-256 before it runs, and the tool is run directly, so a SKIP (exit 77) fails the step.
+      - name: Reproduce the FSR 3 shaders with the pinned DXC
+        if: matrix.part == 'translation'
+        run: |
+          set -euo pipefail
+          dxc_dir="$RUNNER_TEMP/dxc-v1.9.2609"
+          mkdir -p "$dxc_dir"
+          archive="$dxc_dir/linux_dxc_2026_09_28.x86_x64.tar.gz"
+          curl --fail --location --retry 3 --output "$archive" \
+            https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/linux_dxc_2026_09_28.x86_x64.tar.gz
+          printf '%s  %s\n' 96faadc7f5c282d2ffda49804beb4c3ee38127bc252b723234e3c5cdf7aa39a1 "$archive" \
+            | sha256sum --check --strict
+          tar -xzf "$archive" -C "$dxc_dir"
+          python tools/shader_embed.py verify --shader-set fsr3 --recompile --dxc "$dxc_dir/bin/dxc"
+
       - name: Configure, build, and test CMake Linux player
         if: matrix.part == 'player'
         run: |

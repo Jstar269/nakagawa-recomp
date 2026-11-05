@@ -160,7 +160,7 @@ ace-selftest:
 # fsr3-host-selftest - FSR 3's CPU side (src/rt/fsr3_host.c, src/rt/fsr3_jitter.c) against the record
 # of AMD's own host code (tests/native/fsr3_host_oracle.md): every clear, discard and dispatch, the
 # resource behind each binding, the staged constants, the jitter and the f16 and RCAS helpers. Pure C,
-# no GPU and no game data. fsr3-mutants then requires 16 semantic defects in copies of the port to
+# no GPU and no game data. fsr3-mutants then requires 19 semantic defects in copies of the port to
 # build and fail it on the line each one changes.
 native-core-tests: fsr3-host-selftest fsr3-mutants
 .PHONY: fsr3-host-selftest fsr3-mutants
@@ -171,6 +171,43 @@ fsr3-host-selftest:
 	$(BUILD_DIR)/fsr3_host_selftest$(EXE_EXT) tests/native/fsr3_host_oracle.txt
 fsr3-mutants: fsr3-host-selftest
 	"$(PYTHON)" tools/fsr3_mutants.py --build-dir $(BUILD_DIR)/fsr3-mutants --cc "$(CC)"
+
+# fsr3-shader-verify - the FSR 3 shader set (schema 2: sources, include closures, embeddings, the
+# pinned DXC's options and defines). fsr3-shader-repro-verify also recompiles it with DXC and
+# requires the same bytes; a DXC that is not the pinned release is a SKIP, printed, and the tool's
+# exit 77 (the hosted job runs the tool itself, so there a SKIP fails).
+# fsr3-pass-selftest - FSR 3's eight passes (src/rt/gpu_sdl3vk/fsr3_pass.c) on a headless Vulkan
+# device under the validation layers, synchronisation validation of shader accesses included: P-0
+# creates the pipelines, and F-S, F-M, F-R, F-T, F-C and F-D run synthetic scenes drawn as the GE
+# draws them against their truth. Linked from the pass, the host and the C library alone. No Vulkan
+# headers, loader, device or validation layer, or no synchronisation validation: SKIP (exit 77),
+# visible in the log; NK_UI_VK_REQUIRE=1 makes a skip fail. fsr3-pass-mutants runs each cell's mutants (minutes on a GPU, longer on
+# lavapipe), so it is not part of native-core-tests.
+native-core-tests: fsr3-pass-selftest
+.PHONY: fsr3-shader-verify fsr3-shader-repro-verify fsr3-pass-selftest fsr3-pass-mutants
+DXC ?= dxc
+fsr3-shader-verify:
+	"$(PYTHON)" tools/shader_embed.py verify --shader-set fsr3
+fsr3-shader-repro-verify:
+	@rc=0; "$(PYTHON)" tools/shader_embed.py verify --shader-set fsr3 --recompile --dxc "$(DXC)" || rc=$$?; \
+	if [ $$rc -eq 77 ]; then echo "SKIP fsr3-shader-repro-verify (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then exit $$rc; fi
+fsr3-pass-selftest: fsr3-shader-verify
+	@if ! printf '%s\n' '#include <vulkan/vulkan.h>' | $(CC) -E -x c $(VULKAN_INC_FLAGS) - >/dev/null 2>&1; then \
+		echo "SKIP fsr3-pass-selftest (the Vulkan headers were not found)"; \
+		if [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then exit 1; fi; exit 0; \
+	fi; \
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -Isrc/rt/gpu_sdl3vk \
+		-Ithird_party/fidelityfx_sdk/upscalers/fsr3/include/gpu $(VULKAN_INC_FLAGS) \
+		src/rt/gpu_sdl3vk/fsr3_pass.c src/rt/gpu_sdl3vk/fsr3_pass_selftest.c src/rt/fsr3_host.c \
+		src/rt/fsr3_jitter.c -lm $(NK_UI_VK_SELFTEST_LIBS) -o $(BUILD_DIR)/fsr3_pass_selftest$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_DIR)/fsr3_pass_selftest$(EXE_EXT) || rc=$$?; \
+	if [ $$rc -eq 77 ] && [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then \
+		echo "FAIL fsr3-pass-selftest (skipped, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
+	elif [ $$rc -eq 77 ]; then echo "SKIP fsr3-pass-selftest (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL fsr3-pass-selftest (exit $$rc)"; exit $$rc; fi
+fsr3-pass-mutants: fsr3-shader-verify
+	"$(PYTHON)" tools/fsr3_mutants.py --pass --build-dir $(BUILD_DIR)/fsr3-pass-mutants --cc "$(CC)"
 
 # osk-overlay-selftest - the in-window on-screen keyboard's state machine (src/rt/osk_overlay.c):
 # navigation, typing, the guest's length bound with UTF-16 pairs, backspace, confirm and cancel,

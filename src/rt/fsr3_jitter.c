@@ -75,3 +75,8 @@ int fsr3_jitter_next(Fsr3Jitter *j, int reset, int32_t render_width, int32_t dis
     j->index = j->index == INT32_MAX ? 0 : j->index + 1;
     return 0;
 }
+
+void fsr3_jitter_clip_offset(float jx, float jy, float viewport_w, float viewport_h, float out[2]) {
+    out[0] = 2.0f * jx / viewport_w;
+    out[1] = 2.0f * jy / viewport_h;
+}

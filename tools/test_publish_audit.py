@@ -2413,6 +2413,16 @@ class GeneratedEmbeddingSpdxTests(unittest.TestCase):
             head = (Path(publish_audit.ROOT) / source).read_text(encoding="utf-8").splitlines()[:8]
             self.assertTrue(any("SPDX-License-Identifier:" in line for line in head), source)
 
+    def test_dxc_embeddings_match_the_fsr3_shader_table_and_their_sources_are_byte_exact_imports(self) -> None:
+        import shader_embed
+        contract = {embedded.as_posix(): source.as_posix() for _stage, source, embedded in shader_embed.FSR3_SHADERS}
+        self.assertEqual(publish_audit.SPDX_DXC_EMBEDDING_SOURCES, contract)
+        for embedded, source in contract.items():
+            self.assertNotIn(embedded, publish_audit.SPDX_GENERATED_EMBEDDING_SOURCES)
+            self.assertTrue(source.startswith(publish_audit.SPDX_BYTE_EXACT_IMPORT_TREES), source)
+            head = (Path(publish_audit.ROOT) / source).read_text(encoding="utf-8").splitlines()[:8]
+            self.assertTrue(any("Advanced Micro Devices" in line for line in head), source)
+
 
 class RetailDiscIdTests(unittest.TestCase):
     """A game's disc id is not game data: the audit leaves it alone.

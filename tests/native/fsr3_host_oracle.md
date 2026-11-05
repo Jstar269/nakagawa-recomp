@@ -50,8 +50,8 @@ One line per event, in AMD's order:
 | `barrier <res> <type> <state>` | A transition barrier. |
 | `discard <res>` | A discard. |
 | `dispatch <pipeline> <x> <y> <z>` | A dispatch and its group counts. |
-| `  set <k>` | The pipeline's k-th distinct binding set in this case. The first use of a set is followed by its lines. |
-| `  cb <name> <n>`, `  srv <name> <res>`, `  uav <name> <res> <mip>` | One binding of a set: a constant buffer, a read or a write. |
+| `set <k>`, indented two spaces | The pipeline's k-th distinct binding set in this case. The first use of a set is followed by its lines. |
+| `cb <name> <n>`, `srv <name> <res>`, `uav <name> <res> <mip>`, each indented two spaces | One binding of a set: a constant buffer, a read or a write. |
 | `result <code>` | The dispatch's return code. |
 | `phase`, `jitter`, `jitter0`, `jitterneg` | `ffxFsr3UpscalerGetJitterPhaseCount` and `ffxFsr3UpscalerGetJitterOffset`. |
 | `f16 <e> <3 results>` | `ffxF32ToF16` for 9-bit sign and exponent `e` with mantissas 0, `0x2000` and `0x7fffff`. Together these fix AMD's base and shift tables. |

@@ -248,8 +248,13 @@ def dxc_version(dxc: str) -> str:
 
 
 def dxc_is_pinned(version: str) -> bool:
-    """The pinned release reports `1.9.2609.<n> (01b62ad47)`."""
-    return f"({DXC_RELEASE['commit']})" in version and ".2609." in version
+    """The pinned release's compiler library reports `1.9(<build>-01b62ad4)(1.9.2609.<n>)`.
+
+    The Windows dxc adds ` - 1.9.2609.<n> (01b62ad47)` after it; the Linux one prints the library
+    part alone, so the check reads the part both share.
+    """
+    commit = re.escape(DXC_RELEASE["commit"][:8])
+    return re.search(rf"\(\d+-{commit}\)\(1\.9\.2609\.\d+\)", version) is not None
 
 
 def _dxc_args(define_args: bool = True) -> list[str]:
@@ -445,8 +450,10 @@ def main_dxc(args: argparse.Namespace) -> int:
             print(f"shader verification failed: {error}", file=sys.stderr)
         return 1
     if skipped:
+        # Exit 77, the selftests' SKIP: reproduction was asked for and did not happen, so a caller
+        # that needs it (the hosted job) fails, and make reports the SKIP.
         print(f"fsr3 shader provenance verified; SKIP byte reproduction: {skipped}")
-        return 0
+        return 77
     suffix = " plus byte-for-byte pinned-DXC reproduction" if args.recompile else ""
     print(f"fsr3 shader provenance verified (sources, include closures, embeddings){suffix}")
     return 0

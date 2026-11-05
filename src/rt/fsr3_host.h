@@ -171,6 +171,7 @@ typedef struct {
     uint32_t binding;
     Fsr3BindKind kind;
     uint32_t id; /* SRV, UAV: AMD resource id; CBV: AMD constant buffer id; SAMPLER: AMD's sampler index */
+    int linear;  /* SRV: the shader samples it with s_LinearClamp, so its format needs linear filtering */
     const char *name;
 } Fsr3Binding;
 

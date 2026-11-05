@@ -202,6 +202,43 @@ class PublicCiWiringTests(unittest.TestCase):
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
         self.assertIn("`gpu-coherence-selftest`", docs)
 
+    def test_fsr3_pass_selftest_runs_on_lavapipe_and_a_skip_fails(self) -> None:
+        """The FSR 3 passes run under the validation layer on lavapipe; a skip must not pass."""
+        native_tools = _ci_job_blocks()["native_tools"]
+        step = _ci_step(native_tools, "Run the FSR 3 pass selftest on lavapipe")
+        self.assertIsNotNone(step, "native_tools must run fsr3-pass-selftest")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertIn("set -euo pipefail", text)
+        self.assertIn('export VK_ICD_FILENAMES="$lvp_icd"', text)
+        self.assertRegex(text, r"(?m)^\s+NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-pass-selftest$")
+        self.assertNotIn("continue-on-error", text)
+        self.assertEqual([line.strip() for line in step if line.strip().startswith("if:")],
+                         ["if: matrix.part == 'translation'"])
+
+    def test_fsr3_shaders_are_reproduced_with_the_pinned_linux_dxc(self) -> None:
+        """The hosted job downloads the DXC release shader_embed.py pins, checks its SHA-256, and
+        runs the tool itself, so a SKIP (exit 77, any other DXC) fails the step."""
+        sys.path.insert(0, str(ROOT / "tools"))
+        import shader_embed
+        release = shader_embed.DXC_RELEASE
+        native_tools = _ci_job_blocks()["native_tools"]
+        step = _ci_step(native_tools, "Reproduce the FSR 3 shaders with the pinned DXC")
+        self.assertIsNotNone(step, "native_tools must reproduce the FSR 3 shaders")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertIn("set -euo pipefail", text)
+        url = ("https://github.com/microsoft/DirectXShaderCompiler/releases/download/"
+               f"{release['tag']}/{release['linux_archive']}")
+        self.assertIn(url, text)
+        self.assertIn(f"printf '%s  %s\\n' {release['linux_sha256']} \"$archive\"", text)
+        self.assertIn("sha256sum --check --strict", text)
+        self.assertLess(text.index("sha256sum --check --strict"), text.index("tar -xzf"))
+        self.assertNotIn("make ", text, "make maps exit 77 to a SKIP line; the step must see it")
+        self.assertNotIn("continue-on-error", text)
+        self.assertEqual([line.strip() for line in step if line.strip().startswith("if:")],
+                         ["if: matrix.part == 'translation'"])
+
     def test_ffmpeg_h264_media_selftest_is_wired_in_linux_ci(self) -> None:
         """The vendored H.264 subset must build and execute its real media fixture in CI.
 
@@ -793,6 +830,9 @@ _NATIVE_SERIAL_GATES = {
         "run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make CC=gcc player-ui-tests",
     "Verify lavapipe and run GPU capture selftest": "make CC=gcc gpu-capture-selftest",
     "Run GPU coherence selftest on lavapipe": "make CC=gcc gpu-coherence-selftest",
+    "Run the FSR 3 pass selftest on lavapipe": "NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-pass-selftest",
+    "Reproduce the FSR 3 shaders with the pinned DXC":
+        'python tools/shader_embed.py verify --shader-set fsr3 --recompile --dxc "$dxc_dir/bin/dxc"',
     "Configure, build, and test CMake Linux player": 'ctest --test-dir "$player_build" --output-on-failure',
     "Build and run the Linux showcase headlessly": "make CC=gcc showcase-linux",
     "Smoke the CMake Linux player headlessly": '"$player_build/nakagawa_player" "--iso=$iso" --stage-only)',

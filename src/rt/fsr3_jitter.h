@@ -64,4 +64,11 @@ typedef struct {
 int fsr3_jitter_next(Fsr3Jitter *j, int reset, int32_t render_width, int32_t display_width,
                      float *x, float *y);
 
+/* Written for this project, not AMD's: the clip-space offset that moves a raster's content by
+ * (jx, jy) render pixels, y down as in Vulkan's NDC, for a viewport of viewport_w x viewport_h
+ * pixels: (2 jx / viewport_w, 2 jy / viewport_h), to be multiplied by the vertex's clip w. The
+ * viewport is the one the raster sets (the GE's canvas, 512 x 272 times the scale), never FSR's
+ * renderSize, which is the 480 x 272 rectangle inside it. */
+void fsr3_jitter_clip_offset(float jx, float jy, float viewport_w, float viewport_h, float out[2]);
+
 #endif /* SR_FSR3_JITTER_H */

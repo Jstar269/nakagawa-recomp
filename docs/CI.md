@@ -334,7 +334,12 @@ every device pixel of an uploaded target must hold its guest pixel, and so does 
 where the shader's per-fragment mip level must not change with the render scale, and so does its
 readback-rows case, where guest memory must get the top-left device pixel of each cell while the
 rows it does not keep stay out of the staging buffer, then once more on the `SR_GPU_READBACK_FULL`
-reference path. The job also runs
+reference path. `fsr3-pass-selftest` runs FSR 3's eight compute passes on lavapipe, headless, under
+the validation layer with synchronisation validation of shader accesses, and an exit 77 skip fails
+it, including one for synchronisation validation that is not active. A further step downloads the
+DirectXShaderCompiler release that `tools/shader_embed.py` pins, checks its SHA-256 before use, and
+recompiles every FSR 3 pass from the imported HLSL: any byte that differs from the embedded SPIR-V,
+or a compiler that is not the pinned one, fails it. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by

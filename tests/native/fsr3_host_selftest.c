@@ -11,15 +11,18 @@
  * transition barriers before its discards have no job here (the Vulkan discard is a transition from
  * UNDEFINED), so each barrier line must name a resource the same frame discards, and is not replayed.
  *
- * J: the record's jitter phase counts and offsets, AMD's f32-to-f16 conversion for every sign and
- * exponent, and the RCAS constants for a sweep of sharpness. With FSR3_HOST_EXHAUSTIVE=1 the cell
- * also hashes the f16 conversion of all 2^32 floats against the record's hash.
+ * J: the phase count and the first 72 offsets against Halton(2, 3) computed exactly in integers,
+ * and the clip-space offset for the GE canvas; then the record's jitter phase counts and offsets,
+ * AMD's f32-to-f16 conversion for every sign and exponent, and the RCAS constants for a sweep of
+ * sharpness. With FSR3_HOST_EXHAUSTIVE=1 the cell also hashes the f16 conversion of all 2^32
+ * floats against the record's hash.
  *
  * The record's provenance: tests/native/fsr3_host_oracle.md. No game data.
  */
 #include "fsr3_host.h"
 #include "fsr3_jitter.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -310,6 +313,45 @@ static void check_rcas(const char *line) {
               want[k]);
 }
 
+/* ---- J: the sequence against Halton(2, 3) computed another way ------------------------------------ */
+
+/* The radical inverse of i in base b as an exact fraction, digits read most significant first. */
+static double radical_inverse(int64_t i, int64_t b) {
+    int64_t num = 0, den = 1;
+    for (; i > 0; i /= b) {
+        num = num * b + i % b;
+        den *= b;
+    }
+    return (double)num / (double)den;
+}
+
+static void j_unit(void) {
+    /* n = floor(8 (display / render)^2), in integers. */
+    static const int32_t sizes[][2] = {
+        { 480, 960 }, { 480, 480 }, { 480, 720 }, { 480, 1440 }, { 1920, 3811 }, { 480, 1000 }, { 333, 1000 }, { 1000, 1499 },
+    };
+    for (unsigned k = 0; k < sizeof(sizes) / sizeof(sizes[0]); k++) {
+        const int64_t rw = sizes[k][0], dw = sizes[k][1];
+        const int32_t want = (int32_t)(8 * dw * dw / (rw * rw));
+        const int32_t got = fsr3_jitter_phase_count((int32_t)rw, (int32_t)dw);
+        CHECK(got == want, "J: phase count %d -> %d: %d, floor(8 (d/r)^2) = %d", (int)rw, (int)dw, got, want);
+    }
+    /* The first 72 offsets of the 480 -> 1440 sequence (n = 72), and its wrap. */
+    const int32_t n = 72;
+    for (int32_t i = 0; i <= n; i++) {
+        float x, y;
+        CHECK(fsr3_jitter_offset(&x, &y, i, n) == 0, "J: offset %d refused", (int)i);
+        const double ex = radical_inverse(i % n + 1, 2) - 0.5, ey = radical_inverse(i % n + 1, 3) - 0.5;
+        CHECK(fabs(x - ex) < 1e-6 && fabs(y - ey) < 1e-6, "J: offset %d is (%.9f, %.9f), Halton(2, 3) gives (%.9f, %.9f)",
+              (int)i, x, y, ex, ey);
+    }
+    /* The clip-space offset for the GE canvas: one render pixel is 2 / 512 of NDC across, 2 / 272 down. */
+    float o[2];
+    fsr3_jitter_clip_offset(0.25f, -0.375f, 512.0f, 272.0f, o);
+    CHECK(fabs(o[0] - 0.5 / 512.0) < 1e-9 && fabs(o[1] + 0.75 / 272.0) < 1e-9,
+          "J: clip offset (%.9g, %.9g), want (%.9g, %.9g)", o[0], o[1], 0.5 / 512.0, -0.75 / 272.0);
+}
+
 /* ---- the replay --------------------------------------------------------------------------------- */
 
 int main(int argc, char **argv) {
@@ -426,6 +468,7 @@ int main(int argc, char **argv) {
     }
     fclose(f);
     CHECK(!in_frame, "the record ends inside a frame");
+    j_unit();
     CHECK(cases >= 18 && frames >= 100 && helpers >= 1000, "the record is short: %u cases, %u frames, %u helper lines",
           cases, frames, helpers);
     for (size_t i = 0; i < sizeof(s_libm) / sizeof(s_libm[0]); i++)

@@ -107,6 +107,109 @@ class ShaderEmbedTests(unittest.TestCase):
             self.assertTrue(errors)
 
 
+# ---- schema 2: the FSR 3 set, compiled by the pinned DXC (third_party/fidelityfx_sdk) ------------
+
+FSR3_MANIFEST_REL = shader_embed.FSR3_MANIFEST.relative_to(shader_embed.ROOT)
+
+
+def _fsr3_copy(root: Path) -> Path:
+    """The FSR 3 manifest and every file it names, under a scratch root; the manifest's new path."""
+    manifest = json.loads(shader_embed.FSR3_MANIFEST.read_text(encoding="utf-8"))
+    paths = {FSR3_MANIFEST_REL.as_posix()}
+    for entry in manifest["shaders"]:
+        paths |= {entry["source"], entry["embedded"], *(inc["path"] for inc in entry["includes"])}
+    for rel in paths:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(shader_embed.ROOT / rel, root / rel)
+    return root / FSR3_MANIFEST_REL
+
+
+class Fsr3ShaderSetTests(unittest.TestCase):
+    def test_checked_in_set_matches_its_manifest(self) -> None:
+        errors, skipped = shader_embed.verify_dxc(shader_embed.ROOT, shader_embed.FSR3_MANIFEST)
+        self.assertEqual(errors, [])
+        self.assertIsNone(skipped)
+        manifest = json.loads(shader_embed.FSR3_MANIFEST.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(manifest["compiler"]["release"], shader_embed.DXC_RELEASE)
+        self.assertTrue(shader_embed.dxc_is_pinned(manifest["compiler"]["version"]))
+        for entry in manifest["shaders"]:
+            self.assertTrue(entry["includes"], entry["source"])
+            for inc in entry["includes"]:
+                self.assertTrue(inc["path"].startswith("third_party/fidelityfx_sdk/"), inc["path"])
+
+    def test_a_changed_include_source_or_embedding_is_rejected(self) -> None:
+        manifest = json.loads(shader_embed.FSR3_MANIFEST.read_text(encoding="utf-8"))
+        first = manifest["shaders"][0]
+        cases = (
+            (first["includes"][0]["path"], "include", f"include {first['includes'][0]['path']} SHA-256 mismatch"),
+            (first["source"], "source", "source SHA-256 mismatch"),
+            (first["embedded"], "embedded", "embedded SHA-256 mismatch"),
+        )
+        for rel, what, expect in cases:
+            with self.subTest(changed=what), tempfile.TemporaryDirectory(prefix="nakagawa-fsr3-test-") as temp:
+                root = Path(temp)
+                manifest_path = _fsr3_copy(root)
+                target = root / rel
+                if what == "embedded":  # one word changed, still a valid embedding
+                    text = target.read_text(encoding="ascii")
+                    self.assertIn("0x07230203", text)
+                    target.write_text(text.replace("0x07230203", "0x07230202", 1), encoding="ascii")
+                else:
+                    target.write_bytes(target.read_bytes() + b"\n// changed\n")
+                errors, _ = shader_embed.verify_dxc(root, manifest_path)
+                self.assertTrue(any(expect in error for error in errors), errors)
+
+    def test_a_changed_build_contract_is_rejected(self) -> None:
+        for key, value in (("defines", ["FFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH=0"]), ("options", ["-O0"]),
+                           ("release", {"tag": "v1.8.2505"})):
+            with self.subTest(field=key), tempfile.TemporaryDirectory(prefix="nakagawa-fsr3-test-") as temp:
+                manifest_path = _fsr3_copy(Path(temp))
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["compiler"][key] = value
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                errors, _ = shader_embed.verify_dxc(Path(temp), manifest_path)
+                self.assertIn(f"compiler {key} does not match the build contract", errors)
+
+    def test_a_missing_include_closure_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nakagawa-fsr3-test-") as temp:
+            manifest_path = _fsr3_copy(Path(temp))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["shaders"][0]["includes"] = []
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            errors, _ = shader_embed.verify_dxc(Path(temp), manifest_path)
+            self.assertTrue(any("no include closure recorded" in error for error in errors), errors)
+
+    def test_only_the_pinned_dxc_regenerates_or_reproduces(self) -> None:
+        self.assertTrue(shader_embed.dxc_is_pinned("dxcompiler.dll: 1.9(5512-01b62ad4)(1.9.2609.5) - 1.9.2609.5 (01b62ad47)"))
+        self.assertTrue(shader_embed.dxc_is_pinned("libdxcompiler.so: 1.9(5512-01b62ad4)(1.9.2609.5)"))
+        self.assertFalse(shader_embed.dxc_is_pinned("dxcompiler.dll: 1.8 - 1.8.2505.1 (b9b7f4e3c)"))
+        self.assertFalse(shader_embed.dxc_is_pinned("libdxcompiler.so: 1.9(5512-01b62ad4)(1.9.2610.1)"))
+        self.assertFalse(shader_embed.dxc_is_pinned("libdxcompiler.so: 1.9(5512-0badc0de)(1.9.2609.5)"))
+        real = shader_embed.dxc_version
+        shader_embed.dxc_version = lambda dxc: "dxcompiler.dll: 1.8 - 1.8.2505.1 (b9b7f4e3c)"
+        try:
+            with tempfile.TemporaryDirectory(prefix="nakagawa-fsr3-test-") as temp:
+                manifest_path = _fsr3_copy(Path(temp))
+                with self.assertRaises(ValueError):
+                    shader_embed.regenerate_dxc(Path(temp), manifest_path, "dxc")
+                errors, skipped = shader_embed.verify_dxc(Path(temp), manifest_path, "dxc")
+                self.assertEqual(errors, [])
+                self.assertIn("not the pinned", skipped or "")
+        finally:
+            shader_embed.dxc_version = real
+
+    def test_embeddings_recompile_with_the_pinned_dxc(self) -> None:
+        dxc = os.environ.get("NK_DXC") or shutil.which("dxc")
+        if not dxc:
+            self.skipTest("no DXC (set NK_DXC to the pinned release)")
+        if not shader_embed.dxc_is_pinned(shader_embed.dxc_version(dxc)):
+            self.skipTest(f"{dxc} is not the pinned {shader_embed.DXC_RELEASE['tag']}")
+        errors, skipped = shader_embed.verify_dxc(shader_embed.ROOT, shader_embed.FSR3_MANIFEST, dxc)
+        self.assertEqual(errors, [])
+        self.assertIsNone(skipped)
+
+
 # ---- ge_powf: one text in src/rt/ge.c and shaders/psp_tnl.vert (#318, #1732) ----------------
 
 GE_C = shader_embed.ROOT / "src" / "rt" / "ge.c"
