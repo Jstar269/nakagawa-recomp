@@ -64,6 +64,7 @@
     "tools/test_audit_public_issue_links.py": 3,
     "tools/test_build_system_parity.py": 1,
     "tools/test_callback_correctness.py": 1,
+    "tools/test_ci_paths.py": 4,
     "tools/test_ci_trust_verdict.py": 1,
     "tools/test_codegen_entry_semantics.py": 1,
     "tools/test_codegen_nan_trap.py": 6,
@@ -139,5 +140,5 @@
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 355
+  "total_errors": 359
 }
