@@ -180,6 +180,18 @@ class TestPublishAudit(unittest.TestCase):
         self.assertIsNotNone(publish_audit._forbidden_path("tools/reference_hashes.json"))
         self.assertIsNone(publish_audit._forbidden_path("assets/vfpu/table.dat"))
 
+    def test_code_capture_is_a_forbidden_extension(self):
+        # A .nkcap holds bytes of the user's own game RAM (#1933); it must never be published.
+        for path in (
+            "code_capture_08800000_0123456789abcdef.nkcap",
+            "docs/sample.nkcap",
+            "tests/data/UPPER.NKCAP",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    publish_audit._forbidden_path(path), "prohibited extension " + path[path.rfind("."):]
+                )
+
     def test_forbidden_local_symbol_reference(self):
         # functions.csv is a local-only symbol reference and must be rejected anywhere
         for path in (

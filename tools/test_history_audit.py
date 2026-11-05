@@ -23,6 +23,10 @@ class TestHistoryAudit(unittest.TestCase):
         self.assertGreater(baseline["total_objects"], 0)
         self.assertGreater(baseline["total_refs"], 0)
 
+    def test_code_capture_is_a_forbidden_extension(self):
+        # A .nkcap holds bytes of the user's own game RAM (#1933); history must flag it too.
+        self.assertIn(".nkcap", history_audit.FORBIDDEN_EXTENSIONS)
+
     def test_redaction_and_finding_classification(self):
         token = "ghp_" + "123456789012345678901234567890123456"
         token_literal = "ghp_" + "123456789012345678901234567890123456"

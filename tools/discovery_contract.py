@@ -37,6 +37,7 @@ import sys
 import importlib
 import time
 import unittest
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -111,7 +112,7 @@ def _init_worker(root_str: str, tools_str: str, extra_dirs: tuple[str, ...] = ()
     os.chdir(root_str)
 
 
-def _run_module_worker(module_name: str, search_dirs: tuple[str, ...] = ()) -> dict[str, object]:
+def _run_module_worker(module_name: str, search_dirs: tuple[str, ...] = ()) -> dict[str, Any]:
     root = Path(__file__).resolve().parent.parent
     tools_dir = root / "tools"
     for p in (str(root), str(tools_dir), *search_dirs):
@@ -121,13 +122,7 @@ def _run_module_worker(module_name: str, search_dirs: tuple[str, ...] = ()) -> d
     try:
         mod = importlib.import_module(module_name)
         suite = unittest.defaultTestLoader.loadTestsFromModule(mod)
-        stream = io.StringIO()
-        runner = unittest.TextTestRunner(
-            stream=stream,
-            verbosity=0,
-            resultclass=_RecordingResult,
-        )
-        result = runner.run(suite)
+        result = _run_recording(suite)
         return {
             "module": module_name,
             "started_ids": result.started_ids,
@@ -163,7 +158,7 @@ def _ids(tests) -> list[str]:
     return [test.id() for test in tests]
 
 
-def _counts(ids: list[str]) -> dict[str, object]:
+def _counts(ids: list[str]) -> dict[str, Any]:
     duplicates = {
         test_id: count for test_id, count in Counter(ids).items() if count > 1
     }
@@ -175,10 +170,10 @@ def _counts(ids: list[str]) -> dict[str, object]:
     }
 
 
-class _RecordingResult(unittest.TestResult):
+class _RecordingResult(unittest.TextTestResult):
     """Keep the IDs that actually reached the runner's startTest hook."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.started_ids: list[str] = []
         self.skip_records: list[dict[str, str]] = []
@@ -190,6 +185,18 @@ class _RecordingResult(unittest.TestResult):
     def addSkip(self, test: unittest.TestCase, reason: str) -> None:
         self.skip_records.append({"id": test.id(), "reason": str(reason)})
         super().addSkip(test, reason)
+
+
+def _run_recording(suite: unittest.TestSuite) -> _RecordingResult:
+    """Run *suite* quietly and return the result that kept the started IDs."""
+    runner = unittest.TextTestRunner(
+        stream=io.StringIO(),
+        verbosity=0,
+        resultclass=_RecordingResult,
+    )
+    result = runner.run(suite)
+    assert isinstance(result, _RecordingResult)
+    return result
 
 
 def _module_class(test_id: str) -> str:
@@ -211,7 +218,7 @@ def _contract_report(
     pattern: str | None = None,
     serial_only: frozenset[str] | None = None,
     quiet: bool = False,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     root = Path(__file__).resolve().parent.parent
     tools_dir = root / "tools"
     target_dir = (
@@ -229,7 +236,7 @@ def _contract_report(
     loader = unittest.TestLoader()
     suite = loader.discover(str(target_dir), pattern=pattern_str)
     inventory_a = _ids(_flatten(suite))
-    report: dict[str, object] = {
+    report: dict[str, Any] = {
         "discovery_start": str(target_dir),
         "discovery_pattern": pattern_str,
         "canonical_command": CANONICAL_COMMAND,
@@ -243,13 +250,7 @@ def _contract_report(
     if jobs <= 1:
         if str(target_dir) not in sys.path:
             sys.path.insert(0, str(target_dir))
-        stream = io.StringIO()
-        runner = unittest.TextTestRunner(
-            stream=stream,
-            verbosity=0,
-            resultclass=_RecordingResult,
-        )
-        result = runner.run(suite)
+        result = _run_recording(suite)
         inventory_b = result.started_ids
         skip_records = result.skip_records
         failures = len(result.failures)
@@ -286,7 +287,7 @@ def _contract_report(
         skipped = 0
         successful = True
 
-        def _absorb(mod_name: str, mod_result: dict[str, object]) -> None:
+        def _absorb(mod_name: str, mod_result: dict[str, Any]) -> None:
             nonlocal failures, errors, skipped, successful
             inventory_b.extend(mod_result["started_ids"])
             skip_records.extend(mod_result["skip_records"])
@@ -378,7 +379,7 @@ def _contract_report(
 
 
 def _assert_contract(
-    report: dict[str, object],
+    report: dict[str, Any],
     *,
     expected_skip_reasons: dict[str, str] | None = None,
 ) -> None:
@@ -413,7 +414,7 @@ def _assert_contract(
         raise ValueError("canonical suite failed; discovery accounting is not a green contract")
 
 
-def assert_parity(report1: dict[str, object], report2: dict[str, object]) -> None:
+def assert_parity(report1: dict[str, Any], report2: dict[str, Any]) -> None:
     """Assert identical collection, skip reasons, and execution outcomes between two runs."""
     ids1 = report1.get("inventory_b", {}).get("ids", [])
     ids2 = report2.get("inventory_b", {}).get("ids", [])

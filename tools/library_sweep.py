@@ -21,6 +21,7 @@ import struct
 import subprocess
 import sys
 import time
+from typing import Any
 
 from nk_core import inspect_iso, package_cache
 import title_manifest
@@ -430,7 +431,11 @@ def _windows_process_names() -> set[str]:
             ("szExeFile", wintypes.WCHAR * 260),
         ]
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Windows-only ctypes members, looked up by name so other hosts type-check.
+    win_ctypes: Any = ctypes
+    kernel32 = win_ctypes.WinDLL("kernel32", use_last_error=True)
+    get_last_error = win_ctypes.get_last_error
+    set_last_error = win_ctypes.set_last_error
     kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
     kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
@@ -443,7 +448,7 @@ def _windows_process_names() -> set[str]:
     snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
     if snapshot is None or snapshot == _INVALID_HANDLE_VALUE:
         raise ProcessInspectionError(
-            f"process snapshot failed (Windows error {ctypes.get_last_error()})"
+            f"process snapshot failed (Windows error {get_last_error()})"
         )
     try:
         entry = ProcessEntry32W()
@@ -451,11 +456,11 @@ def _windows_process_names() -> set[str]:
         names: set[str] = set()
         # Clear the thread's last error first: an end of walk is told apart from a
         # failure only by ERROR_NO_MORE_FILES, and a stale value must not pass for it.
-        ctypes.set_last_error(0)
+        set_last_error(0)
         more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
         for listed in range(_MAX_PROCESS_ENTRIES + 1):
             if not more:
-                error = ctypes.get_last_error()
+                error = get_last_error()
                 if error != _ERROR_NO_MORE_FILES:
                     raise ProcessInspectionError(
                         f"process snapshot walk failed (Windows error {error})"
@@ -464,7 +469,7 @@ def _windows_process_names() -> set[str]:
             if listed == _MAX_PROCESS_ENTRIES:
                 break
             names.add(entry.szExeFile.casefold().removesuffix(".exe"))
-            ctypes.set_last_error(0)
+            set_last_error(0)
             more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
         raise ProcessInspectionError(
             f"process snapshot listed more than {_MAX_PROCESS_ENTRIES} processes"
@@ -809,7 +814,7 @@ def _run_bringup(
         "--private-sweep-import-report",
         str(private_import_report_path),
     ]
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "cwd": ROOT,
         "env": _route_environment(),
         "stdout": subprocess.DEVNULL,
@@ -818,7 +823,7 @@ def _run_bringup(
     }
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    process = None
+    process: subprocess.Popen[str] | None = None
     try:
         process = subprocess.Popen(command, **kwargs)
         process.communicate(timeout=time_budget_seconds)
@@ -827,6 +832,7 @@ def _run_bringup(
             _terminate_process_tree(process)
         raise
     except subprocess.TimeoutExpired:
+        assert process is not None  # only communicate() raises TimeoutExpired
         _terminate_process_tree(process)
         progress = _read_bringup_progress(progress_path)
         active_stage, active_elapsed_ms, durations = _progress_stage_details(progress)
@@ -1040,15 +1046,16 @@ def _signed_int_or_none(value, field: str) -> int | None:
 def _validate_stage_map(value, field: str, *, nonnegative: bool) -> dict[str, int]:
     if not isinstance(value, dict) or set(value) != set(STAGES):
         raise ValueError(f"public aggregate field {field} has an invalid stage set")
-    result = {}
+    result: dict[str, int] = {}
     for stage in STAGES:
         item = value[stage]
         if nonnegative:
             result[stage] = _nonnegative_int(item, f"{field}.{stage}")
         else:
-            result[stage] = _signed_int_or_none(item, f"{field}.{stage}")
-            if result[stage] is None:
+            signed = _signed_int_or_none(item, f"{field}.{stage}")
+            if signed is None:
                 raise ValueError(f"public aggregate field {field}.{stage} cannot be null")
+            result[stage] = signed
     return result
 
 
@@ -1573,7 +1580,7 @@ def _public_aggregate(
     ]
     # Blocker rows carry one boundary code each; a title can name several NID families,
     # so the family title counts can legitimately add up to more than recorded_routes.
-    aggregate = {
+    aggregate: dict[str, Any] = {
         "schema_version": 2,
         "source_commit": source_commit,
         "source_fingerprint": source_fingerprint,
@@ -1861,7 +1868,7 @@ def run_sweep(
         if outcome.timed_out:
             run_status = "TIMED_OUT"
             boundary_code = "SWEEP_TIME_BUDGET"
-            issues = []
+            issues: list[int] = []
         elif report is None:
             run_status = "NO_REPORT"
             boundary_code = "SWEEP_ROUTE_FAILED"
@@ -2049,6 +2056,7 @@ def _read_private_report_for_merge(path: Path) -> dict:
         _validate_sweep_rows(rows)
     except ValueError as exc:
         raise ValueError(f"private shard report {report_file} has invalid rows: {exc}") from exc
+    assert isinstance(rows, list)  # _validate_sweep_rows rejects anything else
     if len(rows) > coverage["iso_count"]:
         raise ValueError(f"private shard report {report_file} has more rows than inputs")
     return payload
