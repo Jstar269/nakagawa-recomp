@@ -170,6 +170,61 @@ class ImportParserTests(unittest.TestCase):
             self.assertIn("src/user/ThreadManForUser.S:8", message)
             self.assertIn("src/user/renamed.S:8", message)
 
+    NAND_START = 'IMPORT_START "sceNand_driver",0x00010000\n'
+
+    def _scan_nand(self, *names: str) -> tuple[list[dict[str, object]], str]:
+        # The shape of PSPSDK 71fb45a's src/nand/sceNand_driver.S: one NID declared twice.
+        source = self.NAND_START + "".join(
+            f'IMPORT_FUNC "sceNand_driver",0xC478C1DE,{name}\n' for name in names
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src" / "nand").mkdir(parents=True)
+            (root / "src" / "nand" / "sceNand_driver.S").write_text(source, encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                functions, _ = pspsdk_source.scan_imports(root)
+            return functions, stderr.getvalue()
+
+    def test_placeholder_and_real_name_resolve_to_the_real_name(self) -> None:
+        for names, lines in (
+            (("sceNand_driver_C478C1DE", "sceNandReadPagesRawAll"), (2, 3)),
+            (("sceNandReadPagesRawAll", "sceNand_driver_C478C1DE"), (3, 2)),
+        ):
+            with self.subTest(order=names):
+                functions, stderr = self._scan_nand(*names)
+                self.assertEqual(
+                    [(f["nid"], f["symbol"], f["source_line"]) for f in functions],
+                    [("0xc478c1de", "sceNandReadPagesRawAll", lines[1])],
+                )
+                printed = stderr.splitlines()
+                self.assertEqual(len(printed), 1)
+                self.assertIn("sceNand_driver 0xc478c1de", printed[0])
+                self.assertIn(
+                    f"placeholder sceNand_driver_C478C1DE at src/nand/sceNand_driver.S:{lines[0]}",
+                    printed[0],
+                )
+                self.assertIn(
+                    f"sceNandReadPagesRawAll at src/nand/sceNand_driver.S:{lines[1]}", printed[0]
+                )
+
+    def test_two_real_names_for_one_nid_still_fail(self) -> None:
+        with self.assertRaises(pspsdk_source.SyncError) as ctx:
+            self._scan_nand("sceNandReadPagesRawAll", "sceNandReadPagesRawExtra")
+        self.assertIn("duplicate upstream import sceNand_driver 0xc478c1de", str(ctx.exception))
+
+    def test_near_placeholders_still_fail(self) -> None:
+        for name in (
+            "sceOther_driver_C478C1DE",  # another library's form
+            "sceNand_driver_DEADBEEF",  # another NID
+            "sceNand_driver_c478c1de",  # not PSPSDK's upper-case form
+            "sceNand_driver_C478C1DE_x",  # a prefix match only
+        ):
+            with self.subTest(name=name):
+                with self.assertRaises(pspsdk_source.SyncError) as ctx:
+                    self._scan_nand(name, "sceNandReadPagesRawAll")
+                self.assertIn("duplicate upstream import", str(ctx.exception))
+
     def test_same_name_with_different_nids_fails_with_both_locations(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

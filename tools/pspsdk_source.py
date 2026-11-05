@@ -193,7 +193,41 @@ def _same_import(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return all(a.get(k) == b.get(k) for k in ("library", "nid", "symbol", "alias"))
 
 
+def _is_placeholder(entry: dict[str, Any]) -> bool:
+    """True when the symbol is PSPSDK's unnamed-stub form <library>_<NID>, NID in upper-case hex."""
+    return entry["symbol"] == f"{entry['library']}_{entry['nid'][2:].upper()}"
+
+
+def _check_name(
+    entry: dict[str, Any], seen_names: dict[tuple[str, str], dict[str, Any]]
+) -> None:
+    previous = seen_names.get((entry["library"], entry["symbol"]))
+    if previous is not None and previous is not entry:
+        raise SyncError(
+            f"upstream import {entry['library']} {entry['symbol']} has two NIDs: "
+            f"{previous['nid']} at {previous['source_file']}:"
+            f"{previous['source_line']} and {entry['nid']} at "
+            f"{entry['source_file']}:{entry['source_line']}"
+        )
+
+
 def scan_imports(root: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Collect every IMPORT_FUNC declaration in a PSPSDK tree, one entry per (library, NID).
+
+    Duplicate declarations of one (library, NID):
+
+    - an exact duplicate (same symbol and alias) is kept once, with one line naming both
+      locations;
+    - a placeholder and a real name: when exactly one of the two symbols is PSPSDK's
+      unnamed-stub form ``<library>_<NID>`` for that same library and NID (eight upper-case
+      hex digits, as PSPSDK writes them), the real name is kept, with one line naming the NID,
+      both names and both locations. PSPSDK 71fb45a ("add missing stub") added
+      ``sceNandReadPagesRawAll`` for sceNand_driver 0xC478C1DE and kept the earlier
+      ``sceNand_driver_C478C1DE`` line;
+    - any other pair of names fails closed with both locations.
+
+    One symbol with two NIDs in one library also fails closed with both locations.
+    """
     functions: list[dict[str, Any]] = []
     libraries: dict[str, str] = {}
     seen: dict[tuple[str, str], dict[str, Any]] = {}
@@ -227,23 +261,31 @@ def scan_imports(root: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
                         file=sys.stderr,
                     )
                     continue
+                if _is_placeholder(previous) != _is_placeholder(entry):
+                    kept, dropped = (entry, previous) if _is_placeholder(previous) else (previous, entry)
+                    print(
+                        f"pspsdk_sync: upstream import {entry['library']} {entry['nid']} is "
+                        f"declared as placeholder {dropped['symbol']} at {dropped['source_file']}:"
+                        f"{dropped['source_line']} and as {kept['symbol']} at "
+                        f"{kept['source_file']}:{kept['source_line']}; kept {kept['symbol']}",
+                        file=sys.stderr,
+                    )
+                    if kept is entry:
+                        _check_name(entry, seen_names)
+                        del seen_names[(previous["library"], previous["symbol"])]
+                        functions[next(i for i, f in enumerate(functions) if f is previous)] = entry
+                        seen[key] = entry
+                        seen_names[(entry["library"], entry["symbol"])] = entry
+                    continue
                 raise SyncError(
                     f"duplicate upstream import {entry['library']} {entry['nid']}: "
                     f"{previous['symbol']} at {previous['source_file']}:"
                     f"{previous['source_line']} and {entry['symbol']} at "
                     f"{entry['source_file']}:{entry['source_line']}"
                 )
-            name_key = (entry["library"], entry["symbol"])
-            if name_key in seen_names:
-                previous = seen_names[name_key]
-                raise SyncError(
-                    f"upstream import {entry['library']} {entry['symbol']} has two NIDs: "
-                    f"{previous['nid']} at {previous['source_file']}:"
-                    f"{previous['source_line']} and {entry['nid']} at "
-                    f"{entry['source_file']}:{entry['source_line']}"
-                )
+            _check_name(entry, seen_names)
             seen[key] = entry
-            seen_names[name_key] = entry
+            seen_names[(entry["library"], entry["symbol"])] = entry
             functions.append(entry)
             if len(functions) > MAX_IMPORTS:
                 raise SyncError(f"upstream import count exceeds cap {MAX_IMPORTS}")
