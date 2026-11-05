@@ -338,7 +338,9 @@ typedef struct GeGpuHooks {
      * ge.c has already moved the vertices into canvas coordinates; only canvas columns
      * [x0, x1] may change, and the guest scissor's rows still apply. Called after the
      * primitive's own draw, with the GE state that draw used. A backend that cannot draw the
-     * state drops the primitive with no other effect (no flush, no readback). NULL: no wings. */
+     * state drops the primitive with no other effect (no flush, no readback). Returns 1 only
+     * when the primitive was drawn (recorded) into the canvas, 0 for a drop: ge.c marks a
+     * canvas drawn only from that (ge_wide_drawn). NULL: no wings. */
     int  (*wing_tri)(uint32_t fb, int x0, int x1,
                      const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp);
     int  (*wing_sprite)(uint32_t fb, int x0, int x1,
@@ -446,8 +448,10 @@ int       ge_wide_wing(void);
 /* The display was given framebuffer `fb_addr`: its canvas exists from now on. The last two
  * distinct addresses keep canvases (double buffering). No effect while Fill is off. */
 void      ge_wide_note_display(uint32_t fb_addr);
-/* Whether a wing draw reached fb_addr's canvas since ge_wide_shown(fb_addr). The presenter
- * shows black wings for a frame whose wings were not drawn, never stale ones. */
+/* Whether a wing primitive was drawn into fb_addr's canvas since ge_wide_shown(fb_addr). A
+ * primitive a backend dropped does not count. The first wing draw after ge_wide_shown clears
+ * the canvas, so a drawn canvas holds this frame's wings only; the presenter shows black
+ * wings for a frame whose wings were not drawn, never stale ones. */
 int       ge_wide_drawn(uint32_t fb_addr);
 void      ge_wide_shown(uint32_t fb_addr);
 /* Changes whenever fb_addr's canvas is cleared (a new display buffer, a new wing width); never

@@ -4919,22 +4919,44 @@ static int coherence_run_readback_rows(void) {
 }
 
 /* ---- widescreen Fill (#1881): the wing canvases on both renderers ----------------------------
- *
- * One list on a display framebuffer: sceGuClear-style 64-pixel clear strips, a transform-mode
- * quad from guest x -240 to 720 (rows 68..203), and a through-mode bar over the screen's width
- * (rows 100..139); the fade variant ends with an untextured whole-screen sprite. It runs on the
- * software rasterizer and on this backend, with Fill off and at the 21:9 wing width (76). The
- * authentic frame must be the same with Fill on and off, both canvases must agree byte for
- * byte, the quad must fill both wings in its rows and the clear colour the rest, the bar must
- * reach no wing pixel, and the fade must cover the wings. */
-#define WIDE_LIST  0x002C0000u
-#define WIDE_VTX   0x002C8000u
-#define WIDE_FB    0x04000000u
-#define WIDE_D     76
-#define WIDE_BG    0xff302010u
-#define WIDE_QUAD  0xff20c040u
-#define WIDE_BAR   0xff0000ffu
-#define WIDE_FADE  0xff808080u
+ * The list of ge-cpu-profile-validate-selftest's test_ge_wide_fill: sceGuClear-style clear
+ * strips, a transform-mode quad from guest x -240 to 720 (rows 68..203), band shapes in and
+ * across each screen edge (rows 4..63 left, 208..267 right: flat and gouraud triangle pairs and
+ * transform-mode sprites at non-integer corners, each drawn again WIDE_K pixels toward the
+ * centre so the authentic frame shows it whole), a through-mode bar (rows 100..139), and in the
+ * fade variant an untextured whole-screen sprite. At 16:9, 21:9 and 32:9, on the software
+ * rasterizer and on this backend: guest VRAM must be byte-identical with Fill off and on; each
+ * renderer's canvas must hold the quad, the clear, the fade, and the shapes at the columns its
+ * own frame puts their copies (left-wing column c is frame column c - D + WIDE_K, right-wing
+ * column c is frame column c - D + 480 - WIDE_K); the two canvases must agree byte for byte; a
+ * narrower scissor must reach no wing; a shown canvas must be cleared by the next wing draw;
+ * and a frame whose every wing primitive this backend drops (a logic op: the software
+ * rasterizer's state) must leave the canvas undrawn and black. */
+#define WIDE_LIST      0x002C0000u
+#define WIDE_VTX       0x002C8000u
+#define WIDE_FB        0x04000000u
+#define WIDE_VRAM      0x04000000u
+#define WIDE_VRAM_SIZE 0x00200000u
+#define WIDE_D         76
+#define WIDE_K         270
+#define WIDE_BG        0xff302010u
+#define WIDE_QUAD      0xff20c040u
+#define WIDE_BAR       0xff0000ffu
+#define WIDE_FADE      0xff808080u
+enum { WF_FADE = 1, WF_NARROW = 2, WF_NOCLEAR = 4, WF_LOGICOP = 8 };
+
+typedef struct { float x0, x1, y0, y1; uint32_t c0, c1; int sprite, right; } WideShape;
+static const WideShape k_wide_shapes[] = {
+    { -50.625f,  -30.0f,     4.25f,  17.0f,   0xff4060a0u, 0xff4060a0u, 0, 0 },
+    { -20.625f,   19.6875f, 21.25f,  34.0f,   0xff1080f0u, 0xfff08010u, 0, 0 },
+    { -11.25f,    -0.9375f, 38.25f,  51.0f,   0xffa0a020u, 0xffa0a020u, 1, 0 },
+    {  -0.9375f,  18.75f,   55.25f,  63.75f,  0xff20a0a0u, 0xff20a0a0u, 1, 0 },
+    { 510.0f,    530.625f,  208.25f, 221.0f,  0xff6040a0u, 0xff6040a0u, 0, 1 },
+    { 460.3125f, 500.625f,  225.25f, 238.0f,  0xfff08010u, 0xff1080f0u, 0, 1 },
+    { 491.25f,   501.5625f, 242.25f, 255.0f,  0xff20a0a0u, 0xff20a0a0u, 1, 1 },
+    { 460.3125f, 481.875f,  259.25f, 267.75f, 0xffa0a020u, 0xffa0a020u, 1, 1 },
+};
+#define WIDE_NSHAPES (sizeof k_wide_shapes / sizeof k_wide_shapes[0])
 
 static uint32_t s_wide_vc;
 
@@ -4946,7 +4968,22 @@ static void wide_vtx(uint32_t color, float x, float y) {
     s_wide_vc += 16u;
 }
 
-static uint32_t wide_build(int fade) {
+static void wide_shape(TnlpList *L, const WideShape *sh, float shift) {
+    const float x0 = (sh->x0 + shift - 240.0f) / 240.0f, x1 = (sh->x1 + shift - 240.0f) / 240.0f;
+    const float y0 = (136.0f - sh->y0) / 136.0f, y1 = (136.0f - sh->y1) / 136.0f;
+    const uint32_t at = s_wide_vc;
+    TNLP_W(L, 0x50, sh->c0 != sh->c1 ? 1u : 0u);
+    if (sh->sprite) {
+        wide_vtx(sh->c1, x0, y0); wide_vtx(sh->c1, x1, y1);
+    } else {
+        wide_vtx(sh->c0, x0, y0); wide_vtx(sh->c1, x1, y0); wide_vtx(sh->c0, x0, y1);
+        wide_vtx(sh->c1, x1, y0); wide_vtx(sh->c1, x1, y1); wide_vtx(sh->c0, x0, y1);
+    }
+    TNLP_W(L, 0x01, at);
+    TNLP_W(L, 0x04, sh->sprite ? (6u << 16) | 2u : (3u << 16) | 6u);
+}
+
+static uint32_t wide_build(int flags) {
     TnlpList L = { (uint32_t *)SR_HOST(WIDE_LIST), 0 };
     const uint32_t through = (7u << 2) | (3u << 7) | (1u << 23), transform = (7u << 2) | (3u << 7);
     s_wide_vc = WIDE_VTX;
@@ -4957,7 +4994,7 @@ static uint32_t wide_build(int fade) {
     TNLP_W(&L, 0x15, 0);
     TNLP_W(&L, 0x16, ((FB_H - 1u) << 10) | 479u);
     TNLP_W(&L, 0xD4, 0);
-    TNLP_W(&L, 0xD5, ((FB_H - 1u) << 10) | 479u);
+    TNLP_W(&L, 0xD5, ((FB_H - 1u) << 10) | ((flags & WF_NARROW) ? 400u : 479u));
     TNLP_W(&L, 0xD6, 0);
     TNLP_W(&L, 0xD7, 0xFFFF);
     for (uint32_t cmd = 0x17; cmd <= 0x28; cmd++) TNLP_W(&L, cmd, 0);   /* every unit off */
@@ -4966,12 +5003,14 @@ static uint32_t wide_build(int fade) {
     TNLP_W(&L, 0xE9, 0);
 
     uint32_t at = s_wide_vc;                    /* sceGuClear's strips: 8 x 64 pixels */
-    for (int i = 0; i < 8; i++) { wide_vtx(WIDE_BG, (float)(i * 64), 0.0f); wide_vtx(WIDE_BG, (float)(i * 64 + 64), 272.0f); }
-    TNLP_W(&L, 0xD3, 0x301);
-    TNLP_W(&L, 0x12, through);
-    TNLP_W(&L, 0x01, at);
-    TNLP_W(&L, 0x04, (6u << 16) | 16u);
-    TNLP_W(&L, 0xD3, 0);
+    if (!(flags & WF_NOCLEAR)) {
+        for (int i = 0; i < 8; i++) { wide_vtx(WIDE_BG, (float)(i * 64), 0.0f); wide_vtx(WIDE_BG, (float)(i * 64 + 64), 272.0f); }
+        TNLP_W(&L, 0xD3, 0x301);
+        TNLP_W(&L, 0x12, through);
+        TNLP_W(&L, 0x01, at);
+        TNLP_W(&L, 0x04, (6u << 16) | 16u);
+        TNLP_W(&L, 0xD3, 0);
+    }
 
     static const float ident43[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 };
     static const float ident44[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
@@ -4986,38 +5025,45 @@ static uint32_t wide_build(int fade) {
     TNLP_W(&L, 0x47, tnlp_f24(32767.5f));
     TNLP_W(&L, 0x4C, (2048u - 240u) << 4);
     TNLP_W(&L, 0x4D, (2048u - 136u) << 4);
-    at = s_wide_vc;                             /* clip x -2..2 is guest x -240..720 */
-    wide_vtx(WIDE_QUAD, -2.0f, 0.5f); wide_vtx(WIDE_QUAD, 2.0f, 0.5f); wide_vtx(WIDE_QUAD, -2.0f, -0.5f);
-    wide_vtx(WIDE_QUAD, 2.0f, 0.5f); wide_vtx(WIDE_QUAD, 2.0f, -0.5f); wide_vtx(WIDE_QUAD, -2.0f, -0.5f);
     TNLP_W(&L, 0x12, transform);
-    TNLP_W(&L, 0x01, at);
-    TNLP_W(&L, 0x04, (3u << 16) | 6u);
+    if (flags & WF_LOGICOP) {                   /* COPY: the same pixels, drawn in software */
+        TNLP_W(&L, 0xE6, 3);
+        TNLP_W(&L, 0x28, 1);
+    }
+    if (!(flags & WF_NOCLEAR)) {
+        at = s_wide_vc;                         /* clip x -2..2 is guest x -240..720 */
+        wide_vtx(WIDE_QUAD, -2.0f, 0.5f); wide_vtx(WIDE_QUAD, 2.0f, 0.5f); wide_vtx(WIDE_QUAD, -2.0f, -0.5f);
+        wide_vtx(WIDE_QUAD, 2.0f, 0.5f); wide_vtx(WIDE_QUAD, 2.0f, -0.5f); wide_vtx(WIDE_QUAD, -2.0f, -0.5f);
+        TNLP_W(&L, 0x01, at);
+        TNLP_W(&L, 0x04, (3u << 16) | 6u);
+    }
+    for (size_t i = 0; i < WIDE_NSHAPES; i++) {
+        wide_shape(&L, &k_wide_shapes[i], 0.0f);
+        wide_shape(&L, &k_wide_shapes[i], k_wide_shapes[i].right ? -(float)WIDE_K : (float)WIDE_K);
+    }
+    TNLP_W(&L, 0x50, 0);
+    TNLP_W(&L, 0x28, 0);
 
     at = s_wide_vc;
     wide_vtx(WIDE_BAR, 0.0f, 100.0f); wide_vtx(WIDE_BAR, 480.0f, 140.0f);
-    if (fade) { wide_vtx(WIDE_FADE, 0.0f, 0.0f); wide_vtx(WIDE_FADE, 480.0f, 272.0f); }
+    if (flags & WF_FADE) { wide_vtx(WIDE_FADE, 0.0f, 0.0f); wide_vtx(WIDE_FADE, 480.0f, 272.0f); }
     TNLP_W(&L, 0x12, through);
     TNLP_W(&L, 0x01, at);
-    TNLP_W(&L, 0x04, (6u << 16) | (fade ? 4u : 2u));
+    TNLP_W(&L, 0x04, (6u << 16) | ((flags & WF_FADE) ? 4u : 2u));
     TNLP_W(&L, 0x0F, 0);
     TNLP_W(&L, 0x0C, 0);
     return WIDE_LIST;
 }
 
-#define WIDE_VRAM      0x04000000u
-#define WIDE_VRAM_SIZE 0x00200000u
-
-/* Run the list on one renderer with wing width `wing` from zeroed VRAM; copy all of guest VRAM
- * (after the Vulkan frame is synced back) and, with Fill on, the canvas (512 x 272 RGBA8888
- * words). */
-static int wide_run(int gpu, int wing, int fade, uint32_t *vram, uint32_t *canvas) {
-    coherence_reset_targets();
+/* One frame of the list on the current canvases: zeroed VRAM, then the list; copy all of
+ * guest VRAM (after the Vulkan frame is synced back) and, if a canvas was drawn, the canvas
+ * (512 x 272 RGBA8888 words). */
+static int wide_frame(int gpu, int flags, uint32_t *vram, uint32_t *canvas) {
     memset(SR_HOST(WIDE_VRAM), 0, WIDE_VRAM_SIZE);
     sr_gpu_vram_dirty(WIDE_VRAM, WIDE_VRAM_SIZE);
-    if (ge_wide_set_wing(wing) != wing) return 0;
     ge_wide_note_display(WIDE_FB);
     ge_set_gpu_hooks(gpu ? &k_hooks : NULL);
-    ge_run_list(wide_build(fade), 0);
+    ge_run_list(wide_build(flags), 0);
     ge_set_gpu_hooks(&k_hooks);
     int ok = 1;
     if (gpu) {
@@ -5025,7 +5071,7 @@ static int wide_run(int gpu, int wing, int fade, uint32_t *vram, uint32_t *canva
         if (gegpu_sync_guest_fb(&desc) != GEGPU_SYNC_OK) ok = 0;
     }
     memcpy(vram, SR_HOST(WIDE_VRAM), WIDE_VRAM_SIZE);
-    if (ok && wing) {
+    if (ok && canvas && ge_wide_wing()) {
         if (gpu) ok = gegpu_wide_read(WIDE_FB, canvas);
         else {
             int fmt = -1;
@@ -5033,27 +5079,87 @@ static int wide_run(int gpu, int wing, int fade, uint32_t *vram, uint32_t *canva
             ok = c && fmt == 3;
             if (ok) memcpy(canvas, c, 512u * FB_H * 4u);
         }
-        if (!ge_wide_drawn(WIDE_FB)) ok = 0;
     }
+    return ok;
+}
+
+/* A fresh run with wing width `wing`: Fill is turned on for it and off after. */
+static int wide_run(int gpu, int wing, int flags, uint32_t *vram, uint32_t *canvas) {
+    coherence_reset_targets();
+    if (ge_wide_set_wing(wing) != wing) return 0;
+    int ok = wide_frame(gpu, flags, vram, canvas);
+    if (ok && wing && !(flags & WF_NARROW) && !ge_wide_drawn(WIDE_FB)) ok = 0;
     if (!wing && (ge_wide_canvas(WIDE_FB, NULL) || ge_wide_drawn(WIDE_FB))) ok = 0;
     ge_wide_set_wing(0);
     return ok;
 }
 
-/* The canvas colour the list leaves at canvas pixel (x, y): wings are x < 2 * wing. */
-static uint32_t wide_expect(int wing, int fade, uint32_t x, uint32_t y) {
-    if (x >= 2u * (uint32_t)wing) return 0u;
-    if (fade) return WIDE_FADE;
-    return (y >= 68u && y <= 203u) ? WIDE_QUAD : WIDE_BG;
+static uint32_t wide_want(const uint32_t *frame, int wing, int flags, uint32_t x, uint32_t y) {
+    const uint32_t d = (uint32_t)wing;
+    if (x >= 2u * d) return 0u;
+    if (flags & WF_FADE) return WIDE_FADE;
+    if (y >= 68u && y <= 203u) return (flags & WF_NOCLEAR) ? 0u : WIDE_QUAD;
+    if (y < 68u && x < d) return frame[y * 512u + x - d + WIDE_K];
+    if (y > 203u && x >= d) return frame[y * 512u + x - d + 480u - WIDE_K];
+    return (flags & WF_NOCLEAR) ? 0u : WIDE_BG;
 }
 
-/* One window aspect: Fill off and on, software and Vulkan. Guest VRAM (the authentic frame
- * included) must match Fill off byte for byte on each renderer, and the two canvases must
- * match each other and the expected picture. */
-static int wide_aspect(const char *name, int win_w, int win_h, int want_wing, uint32_t *buf, size_t px) {
-    const size_t vw = WIDE_VRAM_SIZE / 4u;
-    uint32_t *sw_off = buf, *sw_on = buf + vw, *gpu_off = buf + 2 * vw, *gpu_on = buf + 3 * vw;
-    uint32_t *sw_wing = buf + 4 * vw, *gpu_wing = buf + 4 * vw + px;
+/* Whether row y crosses a gouraud shape, whose colours the two renderers interpolate within
+ * one step of each other (each matches its own frame exactly). */
+static int wide_gouraud_row(uint32_t y) {
+    for (size_t i = 0; i < WIDE_NSHAPES; i++)
+        if (k_wide_shapes[i].c0 != k_wide_shapes[i].c1 && (float)y + 1.0f > k_wide_shapes[i].y0 &&
+            (float)y < k_wide_shapes[i].y1)
+            return 1;
+    return 0;
+}
+
+static int wide_near(uint32_t a, uint32_t b) {
+    for (int sh = 0; sh < 32; sh += 8) {
+        const int d = (int)((a >> sh) & 0xFFu) - (int)((b >> sh) & 0xFFu);
+        if (d < -1 || d > 1) return 0;
+    }
+    return 1;
+}
+
+/* Each renderer's canvas against its own frame, exactly, and at render scale 1 the two canvases
+ * against each other: byte for byte, except within one step per channel on a gouraud shape's
+ * rows. Above scale 1 a Vulkan readback is each pixel's top-left sample, which at a sub-pixel
+ * shape edge need not be the 1x software pixel, so there each renderer answers to its own
+ * frame, whose copies of the shapes are sampled the same way. */
+static int wide_compare(const char *name, int wing, int flags, const uint32_t *sw_frame, const uint32_t *sw_wing,
+                        const uint32_t *gpu_frame, const uint32_t *gpu_wing) {
+    for (uint32_t y = 0; y < FB_H; y++)
+        for (uint32_t x = 0; x < 512u; x++) {
+            const size_t i = (size_t)y * 512u + x;
+            const uint32_t sw_want = wide_want(sw_frame, wing, flags, x, y);
+            const uint32_t gpu_want = wide_want(gpu_frame, wing, flags, x, y);
+            const int agree = sw_wing[i] == gpu_wing[i] || (wide_gouraud_row(y) && wide_near(sw_wing[i], gpu_wing[i]));
+            if (sw_wing[i] != sw_want || gpu_wing[i] != gpu_want || (s_scale == 1 && !agree)) {
+                fprintf(stderr, "gpu coherence selftest [wide-fill]: %s canvas (%u,%u) software=%08x (want %08x) "
+                                "vulkan=%08x (want %08x) flags=%d\n",
+                        name, x, y, (unsigned)sw_wing[i], (unsigned)sw_want, (unsigned)gpu_wing[i],
+                        (unsigned)gpu_want, flags);
+                return 0;
+            }
+        }
+    /* The shapes are really in the wings: the mapping alone could pass on two empty bands. */
+    if (!(flags & WF_FADE)) {
+        const uint32_t d = (uint32_t)wing;
+        const uint32_t xl = 40u <= d ? d - 40u : 0u, xr = d + 40u;   /* guest -40 and 520 */
+        if ((40u <= d && sw_wing[10u * 512u + xl] != k_wide_shapes[0].c1) ||
+            (xr < 2u * d && sw_wing[215u * 512u + xr] != k_wide_shapes[4].c1)) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: %s a band shape is missing from the wings\n", name);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Buffers: VRAM images for sw off/on and gpu off/on, then two canvases. */
+typedef struct { uint32_t *sw_off, *sw_on, *gpu_off, *gpu_on, *sw_wing, *gpu_wing; } WideBufs;
+
+static int wide_aspect(const char *name, int win_w, int win_h, int want_wing, const WideBufs *B) {
     const int wing = ge_wide_wing_for(win_w, win_h);
     if (wing != want_wing) {
         fprintf(stderr, "gpu coherence selftest [wide-fill]: %s (%dx%d) gives wing %d, want %d\n",
@@ -5062,15 +5168,16 @@ static int wide_aspect(const char *name, int win_w, int win_h, int want_wing, ui
     }
     int ok = 1;
     for (int fade = 0; ok && fade < 2; fade++) {
+        const int flags = fade ? WF_FADE : 0;
         unsigned long drawn0, dropped0, drawn1, dropped1, drawn2, dropped2;
         gegpu_wide_counts(&drawn0, &dropped0);
-        if (!wide_run(0, 0, fade, sw_off, NULL) || !wide_run(0, wing, fade, sw_on, sw_wing)) {
+        if (!wide_run(0, 0, flags, B->sw_off, NULL) || !wide_run(0, wing, flags, B->sw_on, B->sw_wing)) {
             fprintf(stderr, "gpu coherence selftest [wide-fill]: a software run failed (%s fade=%d)\n", name, fade);
             ok = 0; break;
         }
-        if (!wide_run(1, 0, fade, gpu_off, NULL)) { ok = 0; break; }
+        if (!wide_run(1, 0, flags, B->gpu_off, NULL)) { ok = 0; break; }
         gegpu_wide_counts(&drawn1, &dropped1);
-        if (!wide_run(1, wing, fade, gpu_on, gpu_wing)) {
+        if (!wide_run(1, wing, flags, B->gpu_on, B->gpu_wing)) {
             fprintf(stderr, "gpu coherence selftest [wide-fill]: a Vulkan run failed (%s fade=%d)\n", name, fade);
             ok = 0; break;
         }
@@ -5081,23 +5188,13 @@ static int wide_aspect(const char *name, int win_w, int win_h, int want_wing, ui
                     name, drawn1 - drawn0, drawn2 - drawn1, dropped2 - dropped0);
             ok = 0;
         }
-        if (memcmp(sw_off, sw_on, WIDE_VRAM_SIZE) || memcmp(gpu_off, gpu_on, WIDE_VRAM_SIZE)) {
+        if (memcmp(B->sw_off, B->sw_on, WIDE_VRAM_SIZE) || memcmp(B->gpu_off, B->gpu_on, WIDE_VRAM_SIZE)) {
             fprintf(stderr, "gpu coherence selftest [wide-fill]: %s Fill changed guest VRAM (fade=%d)\n", name, fade);
             ok = 0;
         }
-        for (uint32_t y = 0; ok && wing && y < FB_H; y++) {
-            for (uint32_t x = 0; x < 512u; x++) {
-                const size_t i = (size_t)y * 512u + x;
-                const uint32_t want = wide_expect(wing, fade, x, y);
-                if (sw_wing[i] != want || gpu_wing[i] != want) {
-                    fprintf(stderr, "gpu coherence selftest [wide-fill]: %s canvas (%u,%u) software=%08x vulkan=%08x want=%08x (fade=%d)\n",
-                            name, x, y, (unsigned)sw_wing[i], (unsigned)gpu_wing[i], (unsigned)want, fade);
-                    ok = 0; break;
-                }
-            }
-        }
+        if (ok && wing) ok = wide_compare(name, wing, flags, B->sw_off, B->sw_wing, B->gpu_off, B->gpu_wing);
         /* The bar is in the authentic frame, so the comparison above saw a list that drew it. */
-        if (ok && !fade && sw_on[120u * 512u + 240u] != WIDE_BAR) {
+        if (ok && !fade && B->sw_on[120u * 512u + 240u] != WIDE_BAR) {
             fprintf(stderr, "gpu coherence selftest [wide-fill]: the bar is missing from the frame\n");
             ok = 0;
         }
@@ -5108,14 +5205,75 @@ static int wide_aspect(const char *name, int win_w, int win_h, int want_wing, ui
     return ok;
 }
 
+/* Frames after the first, at the 21:9 wing width, on the same canvases: a narrower scissor
+ * reaches no wing, a shown canvas is cleared by the next wing draw (a frame with no clear
+ * holds its own shapes on black), and on this backend a frame whose every wing primitive is
+ * dropped leaves the canvas undrawn and black. */
+static int wide_frames(const WideBufs *B) {
+    int ok = 1;
+    unsigned long drawn0, dropped0, drawn1, dropped1;
+    for (int gpu = 0; ok && gpu < 2; gpu++) {
+        const char *who = gpu ? "vulkan" : "software";
+        uint32_t *vram = gpu ? B->gpu_on : B->sw_on, *canvas = gpu ? B->gpu_wing : B->sw_wing;
+        coherence_reset_targets();
+        ge_wide_set_wing(WIDE_D);
+        gegpu_wide_counts(&drawn0, &dropped0);
+        if (!wide_frame(gpu, WF_NARROW, vram, NULL) || ge_wide_drawn(WIDE_FB)) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: %s: a narrower scissor reached a wing\n", who);
+            ok = 0;
+        }
+        gegpu_wide_counts(&drawn1, &dropped1);
+        if (ok && drawn1 != drawn0) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: %s: a narrower scissor drew wing primitives\n", who);
+            ok = 0;
+        }
+        if (ok && (!wide_frame(gpu, 0, vram, canvas) || !ge_wide_drawn(WIDE_FB))) ok = 0;
+        ge_wide_shown(WIDE_FB);
+        if (ok && (!wide_frame(gpu, WF_NOCLEAR, vram, canvas) || !ge_wide_drawn(WIDE_FB))) {
+            fprintf(stderr, "gpu coherence selftest [wide-fill]: %s: the frame after a shown one drew no wing\n", who);
+            ok = 0;
+        }
+        if (ok) {
+            for (uint32_t y = 0; ok && y < FB_H; y++)
+                for (uint32_t x = 0; x < 512u; x++) {
+                    const uint32_t want = wide_want(vram, WIDE_D, WF_NOCLEAR, x, y);
+                    if (canvas[(size_t)y * 512u + x] != want) {
+                        fprintf(stderr, "gpu coherence selftest [wide-fill]: %s: shown canvas (%u,%u) = %08x, want %08x\n",
+                                who, x, y, (unsigned)canvas[(size_t)y * 512u + x], (unsigned)want);
+                        ok = 0; break;
+                    }
+                }
+        }
+        if (ok && gpu) {
+            ge_wide_shown(WIDE_FB);
+            gegpu_wide_counts(&drawn0, &dropped0);
+            if (!wide_frame(gpu, WF_NOCLEAR | WF_LOGICOP, vram, canvas)) ok = 0;
+            gegpu_wide_counts(&drawn1, &dropped1);
+            int black = 1;
+            for (size_t i = 0; ok && i < (size_t)512u * FB_H; i++) if (canvas[i]) { black = 0; break; }
+            if (!ok || ge_wide_drawn(WIDE_FB) || dropped1 == dropped0 || drawn1 != drawn0 || !black) {
+                fprintf(stderr, "gpu coherence selftest [wide-fill]: every wing primitive dropped: drawn=%d "
+                                "dropped=%lu recorded=%lu black=%d\n",
+                        ge_wide_drawn(WIDE_FB), dropped1 - dropped0, drawn1 - drawn0, black);
+                ok = 0;
+            }
+        }
+        ge_wide_set_wing(0);
+        if (ok) printf("gpu coherence selftest: PASS %-22s %s frames scale=%d\n", "wide-fill", who, s_scale);
+    }
+    return ok;
+}
+
 static int coherence_run_wide_fill(void) {
-    const size_t px = (size_t)512 * FB_H;
-    uint32_t *buf = (uint32_t *)malloc((size_t)WIDE_VRAM_SIZE * 4u + px * 4u * 2u);
+    const size_t px = (size_t)512 * FB_H, vw = WIDE_VRAM_SIZE / 4u;
+    uint32_t *buf = (uint32_t *)malloc((vw * 4u + px * 2u) * 4u);
     if (!buf) return 0;
-    /* The PSP's 480x272 is already 16:9 to within 4 pixels, so 16:9 has no wings. */
-    int ok = wide_aspect("16:9", 1920, 1080, 0, buf, px) &&
-             wide_aspect("21:9", 2520, 1080, WIDE_D, buf, px) &&
-             wide_aspect("32:9", 3840, 1080, 240, buf, px);
+    const WideBufs B = { buf, buf + vw, buf + 2 * vw, buf + 3 * vw, buf + 4 * vw, buf + 4 * vw + px };
+    /* 480x272 is 30:17: a 16:9 window widens it by under 4 pixels, so 16:9 has no wings. */
+    int ok = wide_aspect("16:9", 1920, 1080, 0, &B) &&
+             wide_aspect("21:9", 2520, 1080, WIDE_D, &B) &&
+             wide_aspect("32:9", 3840, 1080, 240, &B) &&
+             wide_frames(&B);
     coherence_reset_targets();
     free(buf);
     return ok;

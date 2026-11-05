@@ -318,42 +318,6 @@ interpolation are refused together, not stacked (#1272).
 Ultrawide, the widescreen Fill mode (#1881), is not offered in this build: `SR_ACE` still refuses `wide=fill`. Its
 renderer layer is in place and off by default (section 10.7).
 
-### 10.7. Widescreen Fill: the Renderer Layer
-
-Fill shows more of the 3D scene to the left and right of the PSP's 480x272 picture, at the game's own vertical field of
-view and pixel scale, and keeps 2D at its native shape in the centre. The GE has no x or y clip planes, so the
-transformed positions of geometry past the screen edges already exist; the guest's scissor is what drops them. Fill
-draws them again onto host-only images instead of widening any guest matrix. The code is in `src/rt/ge.c` (which
-primitives reach the wings, and the software rasterizer's wings), `src/rt/gpu_sdl3vk/ge_gpu.c` (the Vulkan wings) and
-`ge_wide_*` in `src/rt/ge_shared.h`.
-
-- **The picture itself never changes.** Guest VRAM, depth, readbacks, captures and the snapshot path are those of Fill
-  off. Each display framebuffer has a host-only wing canvas holding both wings, which no guest-memory path reaches.
-- **What reaches the wings.** A transform-mode triangle or sprite that leaves the screen while it draws into a display
-  framebuffer under a scissor as wide as the screen, shifted by whole pixels so it rasterizes as it would on a wider
-  screen. Of the through-mode (2D) draws, only clear-mode sprites that reach a screen edge (`sceGuClear`'s strips)
-  and untextured whole-screen sprites (fades) are stretched across the wings; every other 2D draw stays in the centre.
-  CPU writes (movies), block transfers, lines and points, and on Vulkan any primitive the backend hands to the software
-  rasterizer, do not reach the wings.
-- **Any window aspect wider than the PSP's.** The wing width comes from the window's shape at the PSP's 272 lines: a
-  multiple of 4, so 21:9 (about 635x272) has 76-pixel wings and 32:9 (about 967x272) has 240-pixel wings. The PSP's
-  480x272 is already 16:9, so 16:9 has none. One canvas holds both wings in a 512-column image, the GE's widest
-  framebuffer, so the Vulkan canvas shares every target's size, viewport and readback. That caps a wing at 256 pixels,
-  a picture of 992x272 (about 32.8:9); a wider window (three screens) gets the widest Fill and black beyond it.
-- **Off is the default.** With no wing width set, no canvas exists and no wing is drawn or submitted. What Off still
-  costs is a test per primitive in `src/rt/ge.c` (`s_wide_d`), plus tests of an always-NULL pointer in the software
-  rasterizer's pixel accessors (`s_wing`) and the Vulkan backend's batch path (`s_wing_dst`).
-  `gpu-coherence-selftest` (case `wide-fill`) and `ge-cpu-profile-validate-selftest` run at 16:9, 21:9 and 32:9. They
-  check that all of guest VRAM, the frame included, is byte-identical with Fill on and off, that the software and
-  Vulkan wings agree byte for byte, that the 3D reaches the wings and the 2D does not, and that a narrower scissor
-  keeps every draw out of them.
-
-**Next layers.** Presentation composes the left wing, the picture and the right wing into one image the window's
-shape, shows black wings for a frame that drew none, and turns on `wide=fill`. Then **layer 2**, per title: a game
-that skips objects it considers off screen never submits them, so they appear at the edges of the wings. A declared
-symbolic `guest_memory_code_hook` (section 2.3) that widens that title's culling extents, resolved through its title
-profile and never by a raw address in a package (section 5), fixes that title. The setting's help text says so.
-
 ### 10.6. Smooth Motion
 
 With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the VBLANK rate. The code is
@@ -376,3 +340,53 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
   present latches no input and serves no capture.
 - **Stamps.** The report adds `presents` (real, between, held, superseded) and `present_interval_ms`. Section 10.4
   applies: the run is refused as evidence.
+
+### 10.7. Widescreen Fill: the Renderer Layer
+
+Fill shows more of the 3D scene to the left and right of the PSP's 480x272 picture, at the game's own vertical field of
+view and pixel scale, and keeps 2D at its native shape in the centre. The GE has no x or y clip planes, so the
+transformed positions of geometry past the screen edges already exist; the guest's scissor is what drops them. Fill
+draws them again onto host-only images instead of widening any guest matrix. The code is in `src/rt/ge.c` (which
+primitives reach the wings, and the software rasterizer's wings), `src/rt/gpu_sdl3vk/ge_gpu.c` (the Vulkan wings) and
+`ge_wide_*` in `src/rt/ge_shared.h`.
+
+- **The picture itself never changes.** Guest VRAM, depth, readbacks, captures, the snapshot path and GE time are those
+  of Fill off. Each display framebuffer has a host-only wing canvas holding both wings, which no guest-memory path
+  reaches, and a wing pass charges no GE time and counts in no guest or frame statistic. One route differs: the opt-in
+  GPU T&L route (`SR_GPU_TNL=1`, off by default) declines while Fill is on, because the wings need ge.c's screen-space
+  triangles, so with that switch set the picture is drawn by CPU T&L as it is without the switch.
+- **What reaches the wings.** A transform-mode triangle or sprite that leaves the screen while it draws into a display
+  framebuffer under a scissor as wide as the screen, shifted by whole pixels so it rasterizes as it would on a wider
+  screen: a triangle after the 28.4 snap, a sprite after flooring its corners, so a corner at x = -10.5 lands in column
+  D - 11. Of the through-mode (2D) draws, only clear-mode sprites that reach a screen edge (`sceGuClear`'s strips) and
+  untextured whole-screen sprites (fades) are stretched across the wings; every other 2D draw stays in the centre. CPU
+  writes (movies), block transfers, lines and points do not reach the wings. On Vulkan a primitive whose state the
+  backend draws in software is dropped from the wings, counted, and named once on stderr (`gegpu: Fill dropped a wing
+  primitive`).
+- **Never a stale wing.** The first wing draw after a canvas was shown (`ge_wide_shown`) clears it, so a canvas holds
+  the current frame's wings only, whatever the game clears with. `ge_wide_drawn` is true only when a wing primitive was
+  really drawn since then; the presenter shows black wings otherwise.
+- **Any window aspect wider than the PSP's.** The wing width comes from the window's shape at the PSP's 272 lines,
+  rounded down to a multiple of 4: 21:9 (about 635x272) has 76-pixel wings and 32:9 (about 967x272) has 240-pixel
+  wings. The PSP's 480x272 is 30:17, about 16:9; a 16:9 window widens it by under 4 pixels, so 16:9 has none. One canvas
+  holds both wings in a 512-column image, the GE's widest framebuffer, so the Vulkan canvas shares every target's size,
+  viewport and readback. That caps a wing at 256 pixels, a picture of 992x272 (about 32.8:9); a wider window (three
+  screens) gets the widest Fill and black beyond it.
+- **Off is the default.** With no wing width set, no canvas exists and no wing is drawn or submitted. What Off still
+  costs is a test per primitive in `src/rt/ge.c` (`s_wide_d`), plus tests of an always-NULL pointer in the software
+  rasterizer's pixel accessors (`s_wing`) and the Vulkan backend's batch path (`s_wing_dst`).
+- **Tests.** `gpu-coherence-selftest` (case `wide-fill`, also at render scales 2 and 4) and
+  `ge-cpu-profile-validate-selftest` run one list at 16:9, 21:9 and 32:9. Shapes with sub-pixel corners in and across
+  each edge (flat and gouraud triangles, transform-mode sprites) are drawn a second time wholly on screen, and each wing
+  pixel must equal the frame pixel a wider screen would show there. They also check that all of guest VRAM is
+  byte-identical with Fill on and off, that the GE clock is unchanged, that the software and Vulkan wings agree byte for
+  byte at scale 1, that a narrower scissor reaches no wing, that a shown canvas holds only the next frame's wings, that
+  a frame whose every wing primitive the Vulkan backend drops leaves the canvas undrawn and black, and that the wing
+  hooks receive the guest's vertices snapped and shifted.
+
+**Next layers.** Presentation composes the left wing, the picture and the right wing into one image the window's
+shape, shows black wings for a frame that drew none, and turns on `wide=fill`. Then **layer 2**, per title: a game
+that skips objects it considers off screen never submits them, so they appear at the edges of the wings. A declared
+symbolic `guest_memory_code_hook` (section 2.3) that widens that title's culling extents, resolved through its title
+profile and never by a raw address in a package (section 5), fixes that title, and the title's HUD stays inside the
+PSP's picture at every aspect. The setting's help text says so.

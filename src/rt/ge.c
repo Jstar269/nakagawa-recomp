@@ -728,7 +728,8 @@ static const GeGpuHooks *s_gpu = NULL;
  * canvas exists and none of this runs. */
 typedef struct {
     uint32_t fb;          /* display framebuffer, in ge_fb_addr's form; 0 = free */
-    int drawn;            /* a wing draw reached this canvas since ge_wide_shown */
+    int drawn;            /* a wing primitive was drawn into this canvas since it was cleared */
+    int stale;            /* shown since its last clear: the next wing draw clears it first */
     uint32_t epoch;       /* changes whenever the canvas is cleared (ge_wide_epoch) */
     int fmt;              /* framebuffer format of the last software wing draw */
     uint32_t *color;      /* software canvas: raw framebuffer words, GE_WIDE_CANVAS_W per row */
@@ -4720,6 +4721,7 @@ static GeWideSlot *wide_target(void) {
 
 static void wide_clear_slot(GeWideSlot *w) {
     w->drawn = 0;
+    w->stale = 0;
     w->epoch = ++s_wide_epochs ? s_wide_epochs : ++s_wide_epochs;   /* never 0 */
     if (w->color) memset(w->color, 0, (size_t)GE_WIDE_CANVAS_W * 272u * sizeof *w->color);
     if (w->depth) memset(w->depth, 0, (size_t)GE_WIDE_CANVAS_W * 272u * sizeof *w->depth);
@@ -4747,20 +4749,33 @@ static int wide_sw_canvas(GeWideSlot *w) {
 }
 
 /* One primitive into canvas columns [x0, x1] of w, its vertices already moved there. A GPU
- * backend draws its own canvases; without one the software rasterizer draws this one. */
+ * backend draws its own canvases; without one the software rasterizer draws this one. The
+ * first wing draw after a canvas was shown clears it, so a frame's wings never hold an
+ * earlier frame's pixels, and `drawn` is set only by a primitive that was really drawn: a
+ * backend's wing hook returns 0 for one it dropped. A software wing pass is host-only, so
+ * the frame statistics and the SR_PIXWHO probe keep counting the guest's draws alone. */
 static void wide_pass(GeWideSlot *w, int x0, int x1, const Vtx *v, int sprite, int persp) {
-    w->drawn = 1;
+    if (w->stale) wide_clear_slot(w);
     if (s_gpu) {
-        if (sprite) { if (s_gpu->wing_sprite) (void)s_gpu->wing_sprite(w->fb, x0, x1, &v[0], &v[1], persp); }
-        else if (s_gpu->wing_tri) (void)s_gpu->wing_tri(w->fb, x0, x1, &v[0], &v[1], &v[2], persp);
+        int drew = 0;
+        if (sprite) { if (s_gpu->wing_sprite) drew = s_gpu->wing_sprite(w->fb, x0, x1, &v[0], &v[1], persp); }
+        else if (s_gpu->wing_tri) drew = s_gpu->wing_tri(w->fb, x0, x1, &v[0], &v[1], &v[2], persp);
+        if (drew) w->drawn = 1;
         return;
     }
     if (!wide_sw_canvas(w)) return;
     w->fmt = (int)(ge.fbfmt & 3);
+    who_init();
+    const int who_x = s_who_x;
+    __typeof__(s_stat) stat = s_stat;
+    s_who_x = -1;
     s_wing = w; s_wing_x0 = x0; s_wing_x1 = x1;
     if (sprite) fill_sprite(&v[0], &v[1], persp);
     else        raster_tri(&v[0], &v[1], &v[2], persp);
     s_wing = NULL;
+    s_who_x = who_x;
+    s_stat = stat;
+    w->drawn = 1;
 }
 
 /* A transform-mode triangle that leaves the screen is drawn again in each wing it reaches.
@@ -4799,14 +4814,18 @@ static void wide_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     GeWideSlot *w = wide_target();
     if (!w) return;
     const int d = s_wide_d;
-    const int xa = (int)fminf(p0->x, p1->x), xb = (int)fmaxf(p0->x, p1->x);
+    /* Floor, not truncation: on a wider screen a corner at x = -10.5 lies at x + D, whose
+     * column is D - 11, and a sprite whose left corner lies in (-1, 0) covers column -1. */
+    const int xa = (int)floorf(fminf(p0->x, p1->x)), xb = (int)floorf(fmaxf(p0->x, p1->x));
     const int ya = (int)fminf(p0->y, p1->y), yb = (int)fmaxf(p0->y, p1->y);
     Vtx v[2] = { *p0, *p1 };
     if (persp) {
-        /* fill_sprite's rectangle is the truncated corners; truncating them here, before
-         * the shift, keeps that rectangle and its texture span exact in the canvas, and a
-         * GPU backend's floor then agrees with it even where the canvas x is negative. */
-        const float x0 = (float)(int)p0->x, x1 = (float)(int)p1->x;
+        /* fill_sprite's rectangle is its corners truncated toward zero, which a wider
+         * screen would apply to the shifted, non-negative corner. Flooring before the
+         * whole-pixel shift gives that column, keeps the texture span, and leaves an
+         * integer that the software truncation and a GPU backend's floor agree on even
+         * where the canvas x is negative. */
+        const float x0 = floorf(p0->x), x1 = floorf(p1->x);
         if (xa < 0) {
             v[0].x = x0 + (float)d; v[1].x = x1 + (float)d;
             wide_pass(w, 0, d - 1, v, 1, persp);
@@ -4873,7 +4892,7 @@ int ge_wide_drawn(uint32_t fb_addr) {
 
 void ge_wide_shown(uint32_t fb_addr) {
     GeWideSlot *w = s_wide_d ? wide_slot_for(ge_wide_norm(fb_addr)) : NULL;
-    if (w) w->drawn = 0;
+    if (w) { w->drawn = 0; w->stale = 1; }
 }
 
 uint32_t ge_wide_epoch(uint32_t fb_addr) {

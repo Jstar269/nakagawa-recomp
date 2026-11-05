@@ -3931,13 +3931,30 @@ static WingEnt *wing_get(uint32_t fb) {
     return w;
 }
 
+/* A wing primitive this backend did not draw: count it (gegpu_wide_counts has the totals)
+ * and say once per cause that Fill is missing geometry there. */
+static void wing_drop(int cause) {
+    static unsigned reported = 0;
+    s_cnt_wing_drop++;
+    const unsigned bit = cause >= 0 ? 1u << (cause < 29 ? cause : 29) : cause == -1 ? 1u << 30 : 1u << 31;
+    if (reported & bit) return;
+    reported |= bit;
+    if (cause >= 0)
+        fprintf(stderr, "gegpu: Fill dropped a wing primitive: GE state drawn in software here (fallback "
+                        "reason %d); that wing has no geometry from it\n", cause);
+    else
+        fprintf(stderr, "gegpu: Fill dropped a wing primitive: no %s; that wing has no geometry from it\n",
+                cause == -1 ? "target" : "wing canvas");
+}
+
 /* The state of a wing primitive: the one its own draw used, with the canvas columns for the
  * scissor's and the scissor's rows. A state this backend would hand to the software
  * rasterizer is dropped here instead, with no flush or readback: the wings lack that draw. */
 static int wing_state(int persp, int sprite, Batch *b) {
-    if (gpu_state_unsupported_reason() >= 0) { s_cnt_wing_drop++; return 0; }
+    const int reason = gpu_state_unsupported_reason();
+    if (reason >= 0) { wing_drop(reason); return 0; }
     state_get(persp, sprite, b);
-    if (!begin_target()) { s_cnt_wing_drop++; return 0; }
+    if (!begin_target()) { wing_drop(-1); return 0; }
     if (!sprite) {
         static int nocull = -1;
         if (nocull < 0) nocull = getenv("SR_NOCULL") ? 1 : 0;
@@ -4583,25 +4600,29 @@ int gegpu_sync_guest_fb(const GeGpuFbDescriptor *desc) {
 static int wing_begin(uint32_t fb, int x0, int x1) {
     if (!s_ready || x0 < 0 || x1 < x0 || x1 >= (int)FB_W) return 0;
     WingEnt *w = wing_get(fb);
-    if (!w) { s_cnt_wing_drop++; return 0; }
+    if (!w) { wing_drop(-2); return 0; }
     s_wing_dst = w; s_wing_x0 = x0; s_wing_x1 = x1;
     return 1;
 }
 
+/* Each returns 1 only when the primitive was recorded into the canvas (s_cnt_wing counts
+ * recordings), so ge.c marks a canvas drawn only for a real draw. */
 static int hook_wing_tri(uint32_t fb, int x0, int x1,
                          const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp) {
     if (!wing_begin(fb, x0, x1)) return 0;
-    int r = hook_tri(a, b, c, persp);
+    const unsigned long recorded = s_cnt_wing;
+    (void)hook_tri(a, b, c, persp);
     s_wing_dst = NULL;
-    return r;
+    return s_cnt_wing != recorded;
 }
 
 static int hook_wing_sprite(uint32_t fb, int x0, int x1,
                             const GeVtx *p0, const GeVtx *p1, int persp) {
     if (!wing_begin(fb, x0, x1)) return 0;
-    int r = hook_sprite(p0, p1, persp);
+    const unsigned long recorded = s_cnt_wing;
+    (void)hook_sprite(p0, p1, persp);
     s_wing_dst = NULL;
-    return r;
+    return s_cnt_wing != recorded;
 }
 
 int gegpu_wide_read(uint32_t fb, uint32_t *rgba) {
