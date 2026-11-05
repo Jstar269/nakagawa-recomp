@@ -68,6 +68,16 @@ void nk_tex_scale_configure(const NkTexScaleConfig *cfg) {
 
 const NkTexScaleConfig *nk_tex_scale_config(void) { return &s_cfg; }
 
+size_t nk_tex_scale_admission_line(const NkTexScaleConfig *cfg, char *out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    if (!cfg || (!cfg->factor && !cfg->smart2d)) return 0;
+    const int n = snprintf(out, cap,
+                           "TEX_SCALE: guest-visible, on through SR_TEX_SCALE/SR_SMART_2D and not admitted under "
+                           "contract section 11.2 (each present commits the frame to guest VRAM; section 11.3.1)");
+    return n < 0 ? 0 : ((size_t)n < cap ? (size_t)n : cap - 1);
+}
+
 const NkTexScaleConfig *nk_tex_scale_init_from_env(int enhanced) {
     const char *scale = getenv("SR_TEX_SCALE");
     const char *smart = getenv("SR_SMART_2D");
@@ -92,6 +102,8 @@ const NkTexScaleConfig *nk_tex_scale_init_from_env(int enhanced) {
         if (c.factor) snprintf(f, sizeof(f), "%d", c.factor); else snprintf(f, sizeof(f), "off");
         fprintf(stderr, "TEX_SCALE: on (xbrz=%s, smart2d=%s, budget_mb=%llu)\n", f,
                 c.smart2d ? "on" : "off", (unsigned long long)(c.budget_bytes >> 20));
+        char line[192];
+        if (nk_tex_scale_admission_line(&c, line, sizeof(line))) fprintf(stderr, "%s\n", line);
     }
     return &s_cfg;
 }

@@ -395,10 +395,11 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
   at a render scale above 1x. At 1x such a draw reads whole texels with either filter, so the frame is unchanged.
   Every other draw, a 3D one included, keeps the game's filter.
 - **Guest memory.** Neither feature writes guest memory, the CLUT or a texture source; texture readbacks and
-  render-to-texture results are unchanged. As with texture filtering (section 10.3), a frame committed to guest VRAM
-  at present carries the scaled picture.
+  render-to-texture results are unchanged. What a present commits to guest VRAM does change, which makes both
+  features guest-visible: section 11.3.1 is their entry, and this section covers only their presentation.
 - **Stamps.** `TEX_SCALE: on (xbrz=<factor>, smart2d=on|off, budget_mb=<n>)` at start; at exit,
   `TEX_SCALE: draws (scaled_binds=, onetoone_unscaled=, scaled_uploads=, stale=, smart2d=)` and `TEX_SCALE: exit (scaled=, queue_full=, discarded=, budget_peak_mb=, worker_ms=)`.
+  A run with either feature on also prints, at start, the line section 11.3.1 describes.
   Section 10.4 applies: the run is an Ace run.
 - **A title it breaks.** A title whose fonts or pixel art suffer gets its off switch in its own package, never as
   per-title code in a generic file.
@@ -478,3 +479,30 @@ section 11.2 retroactively; a change to it is. A new item is not admitted by ana
 
 No guest-visible item is admitted by this section alone. Each lands in its own pull request with its entry added here
 (`11.3.<n>`), following the order of section 11.2. This section is the template that entry is checked against.
+
+#### 11.3.1. Texture Scaling and the Smart 2D Filter (Not Yet Admitted)
+
+The two features of section 10.7 (#1273). Their presentation is described there; this entry is what the guest can
+observe.
+
+- **Status: guest-visible, not admitted under section 11.2.** Each present commits the frame it shows to guest VRAM,
+  so a frame drawn with a scaled copy, or with a 1:1 draw sampled nearest by smart 2D, is the frame the guest keeps.
+  The features stay outside section 11.2 until the requirements below exist. Until then they are reachable only
+  through environment variables, for development.
+- **Key.** None yet. `SR_TEX_SCALE` and `SR_SMART_2D` are environment variables, not keys on the launch line (section
+  10.1), and have no library or per-title setting. Those come in the launch-line pull request that follows the Ace
+  settings work (#2074): it adds `tex`, `s2d` and `glyphs` (#2110) to `SR_ACE` in one change, with the library and
+  per-title switches. This entry is completed in that pull request, and only then are the features admitted.
+- **Never silent.** A run with either feature on prints, after its `TEX_SCALE: on` line, one line naming the features
+  as guest-visible, on through the environment and not admitted under section 11.2. The `tex-scale-selftest`
+  settings cell pins it.
+- **What it changes:** the frame a present commits, wherever a draw used a scaled copy or smart 2D at a render scale
+  above 1x.
+- **VRAM bytes:** differ in those frames, at those draws' pixels.
+- **Readbacks:** differ the same way, for a GE or display readback, save picture or screenshot that covers them.
+  Texture readbacks and render-to-texture results are unchanged (section 10.7).
+- **Timing:** unchanged. Scaling runs on worker threads and the renderer never waits for it (section 10.7).
+- **I/O speed:** unchanged.
+- **Tier:** Enhanced. **Default:** off, and Ace-only: in an authentic run both stay off whatever the environment says.
+- **Nothing worse (section 11.2, item 4):** not shown. *Hot Shots Tennis* and *LittleBigPlanet* keep smart 2D off
+  (section 10.7), and neither feature may be on by default before the runs item 4 lists exist.

@@ -20,6 +20,11 @@
  *   SR_SMART_2D       off | on                  nearest filtering for pixel-mapped 2D draws
  *   SR_TEX_SCALE_BUDGET_MB  1..8192             VRAM for scaled copies (default 512)
  * Any other value refuses the setting: it stays off and one TEX_SCALE line names the reason.
+ *
+ * Both features are guest-visible (docs/ENHANCEMENT_CONTRACT.md, section 11.3.1): each present
+ * commits the frame, scaled copies and nearest 2D draws included, to guest VRAM. They are not
+ * admitted under section 11.2 until their launch-line keys and library and per-title switches
+ * exist, so a run that turns one on through these variables says so at start.
  */
 #ifndef NK_TEX_SCALE_H
 #define NK_TEX_SCALE_H
@@ -55,6 +60,10 @@ int nk_tex_scale_parse(const char *scale, const char *smart2d, const char *budge
  * when either feature is on or a setting was refused, and make them the run's configuration.
  * Returns the configuration in force. */
 const NkTexScaleConfig *nk_tex_scale_init_from_env(int enhanced);
+/* The start line naming a guest-visible configuration that is on through the environment,
+ * outside section 11.2 admission. Writes it to `out` (without a newline) and returns its length
+ * when either feature is on; returns 0 and writes an empty string when both are off. */
+size_t nk_tex_scale_admission_line(const NkTexScaleConfig *cfg, char *out, size_t cap);
 /* Tests: set the configuration directly (no environment, no line). */
 void nk_tex_scale_configure(const NkTexScaleConfig *cfg);
 const NkTexScaleConfig *nk_tex_scale_config(void);

@@ -284,6 +284,21 @@ static void test_settings(void) {
     /* authentic: nothing is read */
     const NkTexScaleConfig *a = nk_tex_scale_init_from_env(0);
     CHECK(a->factor == 0 && a->smart2d == 0, "settings: not enhanced, yet a feature is on");
+    /* an item on through the environment is never silent about being outside 11.2 admission */
+    {
+        char line[192];
+        NkTexScaleConfig on = { 0, 0, 1u << 20 };
+        CHECK(nk_tex_scale_admission_line(&on, line, sizeof(line)) == 0 && line[0] == '\0',
+              "settings: admission line printed with both features off");
+        static const int cases[][2] = { { 4, 0 }, { 0, 1 }, { 2, 1 } };
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            on.factor = cases[i][0]; on.smart2d = cases[i][1];
+            const size_t n = nk_tex_scale_admission_line(&on, line, sizeof(line));
+            CHECK(n > 0 && n == strlen(line) && strstr(line, "TEX_SCALE: guest-visible") == line &&
+                  strstr(line, "SR_TEX_SCALE") && strstr(line, "not admitted") && strstr(line, "11.3.1"),
+                  "settings: admission line missing for xbrz=%d smart2d=%d", on.factor, on.smart2d);
+        }
+    }
 
     CHECK(nk_tex_scale_factor_for(4, 256, 256) == 4 && nk_tex_scale_factor_for(6, 512, 512) == 4 &&
           nk_tex_scale_factor_for(4, 1024, 16) == 2 && nk_tex_scale_factor_for(2, 2048, 4) == 0 &&
