@@ -1173,7 +1173,8 @@ class PackageCacheTests(unittest.TestCase):
         text = (ROOT / "src" / "core" / "nk_title_manifest.c").read_text(encoding="utf-8")
         start = text.index("static bool package_runtime_source_digest(")
         block = re.search(r"source_dirs\[\]\s*=\s*\{(.*?)\};", text[start:], re.S)
-        self.assertIsNotNone(block)
+        if block is None:
+            self.fail("package_runtime_source_digest has no source_dirs list")
         names = re.findall(r'"([^"]+)"', block.group(1))
         self.assertEqual(sorted(names), sorted(package_cache.RUNTIME_SOURCE_DIRECTORIES))
 
