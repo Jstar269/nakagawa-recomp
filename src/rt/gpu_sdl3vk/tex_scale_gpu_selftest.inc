@@ -15,6 +15,11 @@
  *   rtt              a render target sampled as a texture, bound directly or read back through
  *                    the cache, is never scaled, and its draws are byte-identical with
  *                    scaling on and off;
+ *   onetoone         a 1:1 draw binds the unscaled texture even with a copy ready: without that
+ *                    rule a cell of an atlas shows its neighbour at its edge (device pixels at a
+ *                    render scale above 1), with it the draw is the unscaled one; a magnified
+ *                    draw keeps the copy, identical with the rule on and off. The cells above
+ *                    check copies through 1:1 sprites, so they run with the rule off;
  *   guest-bytes      after every cell, no guest VRAM byte outside the drawn frame and no CLUT
  *                    byte changes while the scales land;
  *   smart2d          at a render scale above 1, a 1:1 linear sprite samples nearest (every
@@ -480,6 +485,127 @@ static int xst_cell_rtt(int f) {
     return ok;
 }
 
+/* A two-cell atlas, like a font page: glyph A in columns 0-7 and, when `with_b`, glyph B in
+ * columns 8-15 with a stroke on the shared edge (else the field). */
+static void xst_atlas(uint32_t *t, int with_b) {
+    const uint32_t field = 0xFF202020u, ink_a = 0xFFE0E0E0u, ink_b = 0xFF30C0F0u;
+    for (int y = 0; y < XST_H; y++)
+        for (int x = 0; x < XST_W; x++) {
+            uint32_t c = field;
+            if (x < 8 && (x == y / 2 || (y == 12 && x >= 1)))
+                c = ink_a;
+            if (with_b && x >= 8 && (x == 8 || x - 8 == 15 - y || (y >= 3 && y <= 5)))
+                c = ink_b;
+            t[y * XST_W + x] = c;
+        }
+}
+
+/* A sprite of the 8x16 texel cell at (0, 0), `zoom` guest pixels per texel, at (x, y). */
+static int xst_cell_sprite(float x, float y, int zoom) {
+    GeVtx p0, p1;
+    wrap_vtx(&p0, x, y, 0xFFFFFFFFu); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, x + 8.0f * (float)zoom, y + 16.0f * (float)zoom, 0xFFFFFFFFu); p1.u = 8.0f; p1.v = 16.0f;
+    s_tmpl_ok = 0;
+    return hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);
+}
+
+/* Device pixels that differ between the w x h guest-pixel regions at (ax, ay) and (bx, by). */
+static int xst_device_diff(const uint32_t *dev, int ax, int ay, int bx, int by, int w, int h) {
+    const int s = s_scale;
+    int n = 0;
+    for (int ky = 0; ky < h * s; ky++)
+        for (int kx = 0; kx < w * s; kx++)
+            if ((dev[(size_t)(ay * s + ky) * SCL_W + (size_t)(ax * s + kx)] & XST_RGB) !=
+                (dev[(size_t)(by * s + ky) * SCL_W + (size_t)(bx * s + kx)] & XST_RGB))
+                n++;
+    return n;
+}
+
+/* Draws of one atlas cell, `pass` 0 with the 1:1 rule off and 1 with it on: for each atlas
+ * (with glyph B, then without), one draw that decodes and scales and one that finds the copy. */
+static int xst_onetoone_pass(float x0, uint64_t *bound, uint64_t *plain) {
+    uint32_t tex[XST_W * XST_H];
+    int ok = 1;
+    for (int with_b = 1; ok && with_b >= 0; with_b--) {
+        xst_atlas(tex, with_b);
+        xst_upload(tex);
+        ge_state_note_external_write();
+        const float x = x0 + (with_b ? 0.0f : 40.0f);
+        ok = xst_cell_sprite(x, 20.0f, 1);
+        const uint64_t b0 = s_cnt_xs_bound, p0 = s_cnt_xs_plain;
+        ok = ok && xst_cell_sprite(x + 20.0f, 20.0f, 1);
+        *bound += s_cnt_xs_bound - b0;
+        *plain += s_cnt_xs_plain - p0;
+    }
+    return ok;
+}
+
+/* The 1:1 rule. With it off, a 1:1 draw of one cell of an atlas from the scaled copy shows the
+ * neighbouring cell at its edge: the cell draws differently beside glyph B than beside the field
+ * (the marks under LittleBigPlanet's text). With it on, the same draw is the unscaled texture's,
+ * beside either neighbour. A magnified draw keeps the copy and is identical with the rule on or
+ * off. Nearest sampling, so the unscaled texture itself never reads past the cell. */
+static int xst_cell_onetoone(int f) {
+    (void)f;
+    const int smart = s_xs_smart2d;
+    xst_reset();
+    s_xs_smart2d = 0;                 /* the copy alone; smart 2D has its own cell */
+    nk_tex_scale_set_sync(1);
+    xst_state(XST_BASE, XST_TEX, 3u, 0, 1);
+    uint64_t off_bound = 0, off_plain = 0, on_bound = 0, on_plain = 0;
+    s_xs_onetoone_plain = 0;
+    int ok = xst_onetoone_pass(20.0f, &off_bound, &off_plain);      /* rule off: x 20..100 */
+    s_xs_onetoone_plain = 1;
+    ok = ok && xst_onetoone_pass(120.0f, &on_bound, &on_plain);      /* rule on: x 120..200 */
+    /* Magnified 2x from the copy of the field-only atlas, the rule on and then off. */
+    const uint64_t mag_p0 = s_cnt_xs_plain, mag_b0 = s_cnt_xs_bound;
+    ok = ok && xst_cell_sprite(20.0f, 60.0f, 2);
+    s_xs_onetoone_plain = 0;
+    ok = ok && xst_cell_sprite(60.0f, 60.0f, 2);
+    s_xs_onetoone_plain = 1;
+    const uint64_t mag_plain = s_cnt_xs_plain - mag_p0, mag_bound = s_cnt_xs_bound - mag_b0;
+    s_xs_smart2d = smart;
+    if (!ok) { fprintf(stderr, "gpu texscale selftest: FAIL onetoone: draw or readback failed\n"); return 0; }
+    if (off_bound != 2u || off_plain != 0u || on_bound != 2u || on_plain != 2u || mag_bound != 2u || mag_plain != 0u) {
+        fprintf(stderr, "gpu texscale selftest: FAIL onetoone: copies found %llu/%llu/%llu times (want 2/2/2), "
+                        "drawn unscaled %llu/%llu/%llu (want 0/2/0) with the rule off, on, magnified\n",
+                (unsigned long long)off_bound, (unsigned long long)on_bound, (unsigned long long)mag_bound,
+                (unsigned long long)off_plain, (unsigned long long)on_plain, (unsigned long long)mag_plain);
+        return 0;
+    }
+    uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
+    if (!dev || !s_cur || !xst_read_device(s_cur, dev)) {
+        free(dev);
+        fprintf(stderr, "gpu texscale selftest: FAIL onetoone: device readback failed\n");
+        return 0;
+    }
+    /* Positions: rule off at 20 (unscaled, with B), 40 (copy, with B), 60 (unscaled), 80 (copy);
+     * rule on at 120, 140, 160, 180 likewise; magnified at (20, 60) on and (60, 60) off. The
+     * neighbour is measured over guest columns 0-6: above 1x the last guest column's right half
+     * samples past u = 8 (hook_sprite's pixel-centre shift), so even the unscaled texture reads
+     * column 8 there. Over columns 0-6 only a copy can carry the neighbour in. */
+    const int bleed_off = xst_device_diff(dev, 40, 20, 80, 20, 7, 16);
+    const int copy_differs = xst_device_diff(dev, 40, 20, 20, 20, 8, 16);
+    const int bleed_on = xst_device_diff(dev, 140, 20, 180, 20, 7, 16);
+    const int on_vs_plain = xst_device_diff(dev, 140, 20, 20, 20, 8, 16) + xst_device_diff(dev, 180, 20, 60, 20, 8, 16);
+    const int mag_diff = xst_device_diff(dev, 20, 60, 60, 60, 16, 32);
+    free(dev);
+    if (bleed_on != 0 || on_vs_plain != 0 || mag_diff != 0) {
+        fprintf(stderr, "gpu texscale selftest: FAIL onetoone: with the rule on, %d device pixels of the cell depend on "
+                        "its neighbour and %d differ from the unscaled draw; the magnified draw differs in %d with the "
+                        "rule on and off (want 0, 0, 0)\n", bleed_on, on_vs_plain, mag_diff);
+        return 0;
+    }
+    if (s_scale > 1 && bleed_off == 0) {
+        fprintf(stderr, "gpu texscale selftest: FAIL onetoone: the copy shows no neighbour at the cell's edge at render "
+                        "scale %d (vacuous: %d device pixels differ from the texture)\n", s_scale, copy_differs);
+        return 0;
+    }
+    printf("gpu texscale selftest: PASS %-12s 1:1 draws unscaled (%d device pixels of neighbour bleed without the "
+           "rule); magnified draws keep the copy\n", "onetoone", bleed_off);
+    return 1;
+}
+
 static int xst_cell_smart2d(void) {
     uint32_t tex[XST_W * XST_H];
     const int factor = s_xs_factor;
@@ -552,8 +678,11 @@ int gegpu_texscale_selftest(void) {
     }
     int ok = 1;
     static int (*const cells[])(int) = { xst_cell_scaled_draw, xst_cell_large, xst_cell_not_ready,
-                                         xst_cell_rewrite, xst_cell_clut, xst_cell_rtt };
-    static const char *const names[] = { "scaled-draw", "large", "not-ready", "rewrite", "clut", "rtt" };
+                                         xst_cell_rewrite, xst_cell_clut, xst_cell_rtt, xst_cell_onetoone };
+    static const char *const names[] = { "scaled-draw", "large", "not-ready", "rewrite", "clut", "rtt", "onetoone" };
+    /* The cells before onetoone check copies through 1:1 sprites, so they run with the 1:1 rule
+     * off; onetoone turns it back on. */
+    s_xs_onetoone_plain = 0;
     const size_t vram = 0x00200000u, fb0 = XST_BASE & 0x001FFFFFu, fb1 = fb0 + XST_STRIDE * FB_H * 4u;
     uint8_t *before = (uint8_t *)malloc(vram), clut[sizeof(s_ge->clutram)];
     if (!before) return 0;
@@ -582,6 +711,7 @@ int gegpu_texscale_selftest(void) {
         }
     }
     free(before);
+    s_xs_onetoone_plain = 1;
     if (ok) printf("gpu texscale selftest: PASS %-12s VRAM outside the frame and the CLUT unchanged\n", "guest-bytes");
     ok = ok && xst_cell_smart2d();
     xst_reset();

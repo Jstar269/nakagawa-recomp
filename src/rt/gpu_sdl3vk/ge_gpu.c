@@ -197,6 +197,9 @@ typedef struct {
     float   bconst[4];                     /* blend constants (FIX factors) */
     PushPC  pc;
     VkDescriptorSet dset;
+    /* With a scaled copy bound (tex_scale.h): the entry's unscaled set, which a draw that maps one
+     * texel to one pixel binds instead (xs_onetoone_plain). VK_NULL_HANDLE otherwise. */
+    VkDescriptorSet dset_plain;
     uint32_t first, count;
 } Batch;
 
@@ -371,6 +374,12 @@ static int s_xs_factor = 0;
 static int s_xs_smart2d = 0;
 static uint64_t s_xs_serial = 0;           /* content generations handed out */
 static int s_tex_bound_scale = 1;          /* factor of the set tex_get last returned */
+static VkDescriptorSet s_tex_plain_set;    /* with a copy returned: the entry's unscaled set */
+/* A draw that maps one texel to one pixel binds the unscaled texture even when a copy is ready:
+ * xBRZ adds no detail at that size, and a copy of an atlas (a font page) carries neighbouring
+ * cells into a cell's edge. The self-test clears it to check copies through 1:1 sprites. */
+static int s_xs_onetoone_plain = 1;
+static uint64_t s_cnt_xs_plain = 0;
 static int s_tex_noscale = 0;              /* tex_get for a render target read back: never scaled */
 static uint64_t s_cnt_xs_bound = 0, s_cnt_xs_uploads = 0, s_cnt_xs_stale = 0, s_cnt_smart2d = 0;
 static uint32_t s_tex_pool_sets = 0;
@@ -3195,6 +3204,7 @@ static VkDescriptorSet tex_bind_set(TexEnt *e, uint32_t levels) {
         }
         if (e->xs.set_af) set = e->xs.set_af;
     }
+    s_tex_plain_set = tex_entry_set(e);
     s_tex_bound_scale = e->xs.factor;
     s_cnt_xs_bound++;
     return set;
@@ -3719,8 +3729,10 @@ static void build_state(int persp, int sprite, Batch *b) {
         } else {
             b->dset = tex_get();
             /* A scaled copy (tex_scale.h) samples on its own texel lattice in psp.frag. */
-            if (s_tex_bound_scale > 1)
+            if (s_tex_bound_scale > 1) {
                 flags |= (s_tex_bound_scale - 1) << F_TSCALE_SHIFT;
+                b->dset_plain = s_tex_plain_set;
+            }
         }
     }
     /* Shader blend reads the destination through the snapshot. submit_pending copies it right
@@ -4024,6 +4036,19 @@ static void smart2d_apply(Batch *b) {
     s_cnt_smart2d++;
 }
 
+/* A draw with a scaled copy bound that maps one texel to one pixel (the smart 2D test, whatever
+ * the filter) binds the entry's unscaled set and drops the copy's factor (s_xs_onetoone_plain). */
+static int xs_onetoone_candidate(const Batch *b) {
+    return s_xs_onetoone_plain && b->dset_plain != VK_NULL_HANDLE;
+}
+
+static void xs_onetoone_plain(Batch *b) {
+    b->dset = b->dset_plain;
+    b->dset_plain = VK_NULL_HANDLE;
+    b->pc.cfg[0] = (int32_t)((uint32_t)b->pc.cfg[0] & ~((uint32_t)7u << (F_TSCALE_SHIFT + 8)));
+    s_cnt_xs_plain++;
+}
+
 static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     if (!s_ready) return 0;
     cpu_profile_hook_enter();
@@ -4049,11 +4074,15 @@ static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
         s_tri_state.target = s_cur;
         s_tri_state.batch = b;
     }
-    if (smart2d_candidate(&b)) {
+    const int s2d = smart2d_candidate(&b), xs1 = xs_onetoone_candidate(&b);
+    if (s2d || xs1) {
         const float x[3] = { A->x, B->x, C->x }, y[3] = { A->y, B->y, C->y };
         const float u[3] = { A->u, B->u, C->u }, v[3] = { A->v, B->v, C->v };
         const float rw[3] = { A->rw, B->rw, C->rw };
-        if (nk_smart2d_triangle(x, y, u, v, rw)) smart2d_apply(&b);
+        if (nk_smart2d_triangle(x, y, u, v, rw)) {
+            if (s2d) smart2d_apply(&b);
+            if (xs1) xs_onetoone_plain(&b);
+        }
     }
     ensure_room(3);
     uint64_t vertex_started = cpu_profile_now();
@@ -4180,7 +4209,13 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     float ul = (p0->x <= p1->x) ? u0 : u1, ur = (p0->x <= p1->x) ? u1 : u0;
     float vt = (p0->y <= p1->y) ? v0 : v1, vbm = (p0->y <= p1->y) ? v1 : v0;
     float uw = (ur - ul) / (xb - xa), vw = (vbm - vt) / (yb - ya);
-    if (smart2d_candidate(&b) && nk_smart2d_sprite(xa, ya, xb, yb, ul, vt, ur, vbm)) smart2d_apply(&b);
+    {
+        const int s2d = smart2d_candidate(&b), xs1 = xs_onetoone_candidate(&b);
+        if ((s2d || xs1) && nk_smart2d_sprite(xa, ya, xb, yb, ul, vt, ur, vbm)) {
+            if (s2d) smart2d_apply(&b);
+            if (xs1) xs_onetoone_plain(&b);
+        }
+    }
     float centre_shift = 0.5f - 0.5f / (float)s_scale;
     float ua = ul + centre_shift * uw, ub = ur + centre_shift * uw;
     float va = vt + centre_shift * vw, vb = vbm + centre_shift * vw;
@@ -4956,9 +4991,11 @@ void gegpu_shutdown(void) {
     s_tex_n = 0;
     if (s_xs_factor || s_xs_smart2d) {
         nk_tex_scale_shutdown();
-        fprintf(stderr, "TEX_SCALE: draws (scaled_binds=%llu, scaled_uploads=%llu, stale=%llu, smart2d=%llu)\n",
-                (unsigned long long)s_cnt_xs_bound, (unsigned long long)s_cnt_xs_uploads,
-                (unsigned long long)s_cnt_xs_stale, (unsigned long long)s_cnt_smart2d);
+        fprintf(stderr, "TEX_SCALE: draws (scaled_binds=%llu, onetoone_unscaled=%llu, scaled_uploads=%llu, "
+                        "stale=%llu, smart2d=%llu)\n",
+                (unsigned long long)s_cnt_xs_bound, (unsigned long long)s_cnt_xs_plain,
+                (unsigned long long)s_cnt_xs_uploads, (unsigned long long)s_cnt_xs_stale,
+                (unsigned long long)s_cnt_smart2d);
         nk_tex_scale_report();
         s_xs_factor = s_xs_smart2d = 0;
     }

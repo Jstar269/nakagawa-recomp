@@ -368,6 +368,10 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
 - **Sampling.** A copy is sampled on its own texel lattice: the fragment shader's PSP sample-point rule (nearest at
   the texel centre, linear on the 1/16 grid) runs at the copy's resolution, from the factor the draw carries in its
   flags.
+- **One texel per pixel.** A draw that maps one texel to one pixel (the smart 2D test below, whatever the filter)
+  binds the unscaled texture even when a copy is ready. xBRZ adds no detail at that size, and because it scales a
+  whole atlas (a font page), a copy carries a neighbouring cell into a cell's edge: the marks LittleBigPlanet's text
+  showed. Magnified and 3D draws keep the copy.
 - **Smart 2D.** A textured draw that maps one texel to one pixel on each axis (either direction), axis-aligned,
   without perspective and with its edge on a texel boundary, samples nearest: a HUD, a font or a sprite stays crisp
   at a render scale above 1x. At 1x such a draw reads whole texels with either filter, so the frame is unchanged.
@@ -376,10 +380,15 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
   render-to-texture results are unchanged. As with texture filtering (section 10.3), a frame committed to guest VRAM
   at present carries the scaled picture.
 - **Stamps.** `TEX_SCALE: on (xbrz=<factor>, smart2d=on|off, budget_mb=<n>)` at start; at exit,
-  `TEX_SCALE: draws (...)` and `TEX_SCALE: exit (scaled=, queue_full=, discarded=, budget_peak_mb=, worker_ms=)`.
+  `TEX_SCALE: draws (scaled_binds=, onetoone_unscaled=, scaled_uploads=, stale=, smart2d=)` and `TEX_SCALE: exit (scaled=, queue_full=, discarded=, budget_peak_mb=, worker_ms=)`.
   Section 10.4 applies: the run is an Ace run.
 - **A title it breaks.** A title whose fonts or pixel art suffer gets its off switch in its own package, never as
   per-title code in a generic file.
+- **Hot Shots Tennis and LittleBigPlanet keep smart 2D off.** Both draw text from an anti-aliased glyph page, one
+  texel to one pixel. Nearest sampling turns each glyph texel into a hard block at a render scale above 1x, so the
+  filter makes their text worse, not crisper. The evidence is the before-and-after runs at render scale 4 recorded in
+  #2092. `SR_SMART_2D` is off by default for every title, so nothing in the runtime names them. Their per-title
+  setting applies once the per-title Ace settings land (#2074).
 - **Tests.** `tex-scale-selftest` checks the C port against goldens from the upstream release, the borders, the job
   queue, the settings and the classifier. `gpu-texscale-selftest` runs the production path on a Vulkan device at
   render scales 1 and 4; `gpu-texscale-mutant` builds a cache that binds a copy without the content check and
