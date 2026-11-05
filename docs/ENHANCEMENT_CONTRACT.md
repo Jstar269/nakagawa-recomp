@@ -385,6 +385,19 @@ texture filtering changes the frame that every present commits to guest VRAM, so
 the filtered picture (the "Pixels" bullet of section 10.3). It keeps that entry, and is not held to items 2 to 5 of
 section 11.2 retroactively; a change to it is. A new item is not admitted by analogy with it.
 
+A render scale above 1x (the player's Internal Render Resolution, not an Enhanced or Ace item) sits on the same line.
+A readback keeps the top-left device pixel of each guest pixel, so the guest reads what the device drew there:
+
+- Where the device image holds the PSP's own value, the readback returns it. That covers a target uploaded from
+  guest memory, and a sprite sampled nearest at one texel per pixel in either direction, whatever its origin. Every
+  device pixel of such a sprite shows the PSP's texel (`sprite-scaled` in `gpu-coherence-selftest`).
+- Every other draw samples at each device pixel's own position. The readback returns the top-left device sample,
+  which sits 0.5 - 0.5 / scale of a pixel before the PSP's pixel centre. At 4x that is 0.375 of a pixel: for a 1:1
+  linear sprite or triangle the value moves by up to 0.375 of the step between neighbouring texels, and a minified
+  nearest sprite can return a different texel.
+
+At 1x the readback is the PSP's value.
+
 ### 11.2. What an Item Must Have
 
 1. **Authentic stays byte-identical.** With the library choice or the title's choice at Authentic, a build behaves

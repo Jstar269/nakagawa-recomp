@@ -726,6 +726,7 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows
 	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows --readback-full 1
 	$(GPU_COHERENCE_BIN) --scale 2 --case sprite-scaled
+	$(GPU_COHERENCE_BIN) --scale 3 --case sprite-scaled
 	$(GPU_COHERENCE_BIN) --scale 4 --case sprite-scaled
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM

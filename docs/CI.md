@@ -334,7 +334,8 @@ every device pixel of an uploaded target must hold its guest pixel, and so does 
 where the shader's per-fragment mip level must not change with the render scale, and so does its
 readback-rows case, where guest memory must get the top-left device pixel of each cell while the
 rows it does not keep stay out of the staging buffer, then once more on the `SR_GPU_READBACK_FULL`
-reference path, and so does its sprite-scaled case, where a 1:1 textured sprite must sample at
+reference path, and so does its sprite-scaled case (also at scale 3), where a nearest 1:1
+sprite must show the PSP's texel in every device pixel and every other sprite must sample at
 each device pixel's own position. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player

@@ -81,11 +81,14 @@
  *    explicit diagnostic (sr_parse_render_scale in ge_gpu.h). Targets/depth/snapshot images are
  *    allocated at scale x the 512x272 canvas and the viewport/scissor scale with them;
  *    vertices map through the same NDC transform, so higher scales are pure
- *    magnification of the PSP raster grid. Guest VRAM traffic stays at native
- *    resolution (readback samples the top-left subpixel of each guest pixel; upload
- *    replicates), and the ordered-dither pattern stays keyed to GUEST pixels.
- *    Bit-exact VRAM round-trips hold at scale 1 (readback(upload(x)) == x by
- *    construction); higher scales trade that for resolution, like any upscaler.
+ *    magnification of the PSP raster grid, and every device pixel samples its texture at
+ *    its own centre. Guest VRAM traffic stays at native resolution (readback keeps the
+ *    top-left device pixel of each guest pixel; upload replicates), and the ordered-dither
+ *    pattern stays keyed to GUEST pixels. Bit-exact VRAM round-trips hold at scale 1
+ *    (readback(upload(x)) == x by construction); higher scales trade that for
+ *    resolution, like any upscaler: a readback returns the PSP's value where the device
+ *    image holds it (a nearest-filtered 1:1 sprite, hook_sprite) and the top-left device
+ *    sample elsewhere (ENHANCEMENT_CONTRACT.md, section 10.3).
  */
 #include "ge_gpu.h"
 #include "sdl3vk.h"
@@ -3884,6 +3887,21 @@ static int hook_tnl_prim(const GeTnlPrim *p) {
     return cpu_profile_hook_leave(1);
 }
 
+/* One axis of a nearest-filtered sprite above 1x, from coordinate *a at its first pixel edge to
+ * *b at its last, over `span` pixels. At one texel per pixel, either direction, the PSP samples
+ * texel T = floor(a + 0.5 * w) at the first pixel's centre and T + k * w at pixel k
+ * (PSP-GE-SAMPLE-001). Moving the origin to T + 0.5 - 0.5 * w puts every device sample of
+ * pixel k inside that texel, so each guest pixel shows its PSP texel as a whole block and the
+ * readback (the top-left device sample) returns it. An origin already on a texel edge does not
+ * move. Any other mapping keeps its coordinates: its device samples fall where they are. */
+static void sprite_nearest_axis(float *a, float *b, float span) {
+    const float w = (*b - *a) / span;
+    if (fabsf(fabsf(w) - 1.0f) > 1.0f / 1024.0f) return;
+    const float origin = floorf(*a + 0.5f * w) + 0.5f - 0.5f * w;
+    *b = origin + (*b - *a);
+    *a = origin;
+}
+
 static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     if (!s_ready) return 0;
     cpu_profile_hook_enter();
@@ -3907,14 +3925,19 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     /* The coordinate is linear across the rectangle, from the u of the vertex on the left
      * edge to the u of the one on the right (likewise v), and the PSP samples it at each
      * pixel's centre (PSP-GE-SAMPLE-001), which is where Vulkan samples a fragment at 1x.
-     * Above 1x each device pixel samples at its own centre, as a triangle's do, so a 1:1
-     * sprite shows each texel as a whole scale x scale block (sprite-scaled). Shifting the
-     * endpoints so that readback's top-left device sample saw the guest pixel-centre value
-     * moved every other device sample too: by 0.375 of a texel at 4x, which split each
-     * texel's block and read the neighbouring atlas texels at a sprite's far edges. */
+     * Above 1x each device pixel samples at its own centre, as a triangle's do (sprite-scaled).
+     * Shifting the endpoints so that readback's top-left device sample saw the guest
+     * pixel-centre value moved every other device sample too: by 0.375 of a texel at 4x,
+     * which split each texel's block and read the neighbouring atlas texels at a sprite's far
+     * edges. A nearest-filtered 1:1 axis instead shows the PSP's own texel in every device
+     * pixel (sprite_nearest_axis), so its readback stays exact whatever its origin. */
     float ul = (p0->x <= p1->x) ? u0 : u1, ur = (p0->x <= p1->x) ? u1 : u0;
     float vt = (p0->y <= p1->y) ? v0 : v1, vbm = (p0->y <= p1->y) ? v1 : v0;
     float ua = ul, ub = ur, va = vt, vb = vbm;
+    if (s_scale > 1 && s_ge->tex_enable && !(s_ge->tex_filter & 0x100u)) {   /* nearest mag */
+        sprite_nearest_axis(&ua, &ub, xb - xa);
+        sprite_nearest_axis(&va, &vb, yb - ya);
+    }
 
     float z = p1->z, fog = p1->fog;
     int r = p1->r, g = p1->g, bb_ = p1->b, a = p1->a;
