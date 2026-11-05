@@ -960,6 +960,7 @@
     "src/rt/h264_ffmpeg_sub/libavutil/version.h",
     "src/rt/h264_ffmpeg_sub/libavutil/video_enc_params.c",
     "src/rt/h264_ffmpeg_sub/libavutil/video_enc_params.h",
+    "src/rt/h264_ffmpeg_sub/libavutil/wchar_filename.h",
     "src/rt/h264_ffmpeg_sub/nk_h264_api.c",
     "src/rt/h264_ffmpeg_sub/nk_h264_api.h",
     "src/rt/h264_ffmpeg_sub/nk_h264_symbols.h",
