@@ -14,7 +14,7 @@ import functools
 from pathlib import Path
 import re
 import struct
-from typing import Dict, Iterator, Optional, Sequence
+from typing import Any, Dict, Iterator, Optional, Sequence, overload
 
 import psp_import_table
 import title_manifest
@@ -1148,7 +1148,7 @@ def write_experimental_profile(
         else:
             file_size = path.stat().st_size
         digest = hashlib.sha256()
-        with (decrypted_path if uses_decrypted_eboot else path).open("rb") as stream:
+        with (decrypted_path if decrypted_path is not None else path).open("rb") as stream:
             if uses_decrypted_eboot:
                 lba = 0
                 size = file_size
@@ -1263,17 +1263,24 @@ def write_experimental_profile(
     return profile_path
 
 
+@overload
+def _iso_name_without_version(name: str) -> str: ...
+@overload
+def _iso_name_without_version(name: bytes) -> bytes: ...
 def _iso_name_without_version(name: str | bytes) -> str | bytes:
     """Strip the ISO 9660 ';version' suffix: a trailing ';' and one or more ASCII digits.
 
     Any other ';' is part of the name, which Windows accepts. Mirrors
     nk_iso_name_without_version in src/core/nk_iso.c, which must agree with it.
     """
-    semicolon = ";" if isinstance(name, str) else b";"
-    digits = "0123456789" if isinstance(name, str) else b"0123456789"
-    stripped = name.rstrip(digits)
-    if len(stripped) < len(name) and stripped.endswith(semicolon):
-        return stripped[:-1]
+    if isinstance(name, str):
+        text = name.rstrip("0123456789")
+        if len(text) < len(name) and text.endswith(";"):
+            return text[:-1]
+        return name
+    raw = name.rstrip(b"0123456789")
+    if len(raw) < len(name) and raw.endswith(b";"):
+        return raw[:-1]
     return name
 
 
@@ -1717,7 +1724,7 @@ def walk_disc_module_entries(
     Returned paths are ISO member components; callers apply their own format
     and executable checks to the files.
     """
-    directories = deque()
+    directories: deque[tuple[tuple[str, ...], int]] = deque()
     visited = 0
     discovered = 0
 
@@ -2264,7 +2271,7 @@ def inspect_compatibility_preflight(
     *,
     metadata: IsoMetadata,
     runtime_root: Path | str,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Return the player/CLI compatibility checks for a selected ISO."""
     path = Path(iso_path)
     size_bytes = path.stat().st_size
@@ -2328,7 +2335,7 @@ def inspect_compatibility_preflight(
     decrypted_elf: Path | None = None
     decrypted_elf_kind = "MISSING"
     if module_dir is not None:
-        candidate_elf = module_dir / "EBOOT.elf"
+        candidate_elf: Path | None = module_dir / "EBOOT.elf"
         try:
             candidate_elf.resolve(strict=False).relative_to(root.expanduser().resolve(strict=False))
         except ValueError:
@@ -2588,7 +2595,7 @@ def inspect_compatibility_preflight(
                    "With no device, the game runs silently.",
         "issues": [],
     }
-    checks = [disc_check]
+    checks: list[dict[str, Any]] = [disc_check]
     if cfw_loader_detected:
         checks.append({
             "code": "MODIFIED_DUMP_CFW_LOADER",
