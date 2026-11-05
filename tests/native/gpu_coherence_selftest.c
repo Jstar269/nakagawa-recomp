@@ -103,12 +103,17 @@ static int set_env(const char *name, const char *value) {
 }
 
 /* `--scale N`, `--case NAME` and `--readback-full 1` set SR_GPU_SCALE, SR_GPU_COHERENCE_CASE and
- * SR_GPU_READBACK_FULL before the backend starts. Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does not accept. */
+ * SR_GPU_READBACK_FULL before the backend starts; `--twin 1|native` and `--twin-ref PATH` set
+ * SR_GPU_TWIN_COLOR (the host twin, #2050) and SR_GPU_TWIN_REF (a file the twin cases write in a
+ * twin-off run and compare against in a twin-on run). Recipes pass arguments, not a `VAR=value`
+ * prefix, which cmd.exe does not accept. */
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *name = strcmp(argv[i], "--scale") == 0 ? "SR_GPU_SCALE"
                          : strcmp(argv[i], "--case") == 0  ? "SR_GPU_COHERENCE_CASE"
-                         : strcmp(argv[i], "--readback-full") == 0 ? "SR_GPU_READBACK_FULL" : NULL;
+                         : strcmp(argv[i], "--readback-full") == 0 ? "SR_GPU_READBACK_FULL"
+                         : strcmp(argv[i], "--twin") == 0 ? "SR_GPU_TWIN_COLOR"
+                         : strcmp(argv[i], "--twin-ref") == 0 ? "SR_GPU_TWIN_REF" : NULL;
         if (!name || i + 1 >= argc || !set_env(name, argv[++i])) {
             fprintf(stderr, "usage: gpu_coherence_selftest [--scale N] [--case scaled-upload|mip-lod]\n");
             return 2;
