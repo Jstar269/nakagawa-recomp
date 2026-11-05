@@ -1621,9 +1621,11 @@ class TestPresenterContract(unittest.TestCase):
         )
         present = ge[ge.index("int gegpu_present("):ge.index("int gegpu_sync_guest_fb(")]
         # Only -1 from sdl3vk_present_image_ex is remapped; 0 (close) and 1 (shown) are returned
-        # unchanged. The mapping is the last statement, after the present call.
+        # unchanged. The mapping is the last statement, after the present call. The image shown
+        # is the target's own, or its host twin at the twin's scale while the twin is in step (#2050).
+        self.assertIn("VkImage shown = present_image(t);", present)
         self.assertIn(
-            "int pr = sdl3vk_present_image_ex((void *)t->img, DRAW_W * s_scale, FB_H * s_scale);",
+            "int pr = sdl3vk_present_image_ex((void *)shown, DRAW_W * present_scale(t), FB_H * present_scale(t));",
             present,
         )
         self.assertIn("    if (pr == -1) return GEGPU_PRESENT_TARGET_FAILED;\n    return pr;\n}", present)

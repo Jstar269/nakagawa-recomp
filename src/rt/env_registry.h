@@ -120,6 +120,10 @@
     X("SR_GPU_SYNC_SUBMIT", "flag-nonzero", "off (asynchronous submit)", "gpu_sdl3vk/ge_gpu.c", "When enabled, GPU command submission is synchronous instead of asynchronous.") \
     X("SR_GPU_TEX_SHADOW_DISABLE", "flag-nonzero", "off (texture shadow enabled)", "gpu_sdl3vk/ge_gpu.c", "Disables the GPU texture shadow when set to a non-empty value other than 0.") \
     X("SR_GPU_TNL", "string", "off", "ge.c", "Set to exactly 1 to hand eligible transform-mode triangles to the GPU backend for vertex transform.") \
+    X("SR_GPU_TWIN_CAPTURE", "string", "unset (captures follow the shown image)", "gpu_sdl3vk/ge_gpu.c", "Set to authentic to make the presenter show, and so capture, the authentic image while the host twin is on.") \
+    X("SR_GPU_TWIN_COLOR", "string", "off", "gpu_sdl3vk/ge_gpu.c", "Host twin (#2050): 1 draws it at the render scale in 32-bit colour without dither, the authentic chain at 1x; native keeps authentic colour.") \
+    X("SR_GPU_TWIN_DUMP", "path", "unset (no dump)", "gpu_sdl3vk/ge_gpu.c", "File prefix where the coherence self-test's twin-scene case writes each shown frame as raw RGBA.") \
+    X("SR_GPU_TWIN_REF", "path", "unset (no reference check)", "gpu_sdl3vk/ge_gpu.c", "Reference file for the coherence self-test's twin-scene case: a twin-off run writes it, a twin-on run checks against it.") \
     X("SR_GPU_XFER_RING_KB", "number", "built-in default ring size", "gpu_sdl3vk/ge_gpu.c", "Transfer ring size in KiB (0 disables, above 65536 ignored).") \
     X("SR_HEADLESS", "flag-nonzero", "off", "audio_sdl3.c,gui.c,sched.c", "Marks the run headless: silent audio, headless presenter and no pause UI (audio check wants exactly 1).") \
     X("SR_HEADLESS_ACCEPT_PRESENTED_FRAMES", "string", "unset (off)", "gui.c,sched.c", "Requests the headless presented-frames acceptance checkpoint; any non-empty value enables it.") \
