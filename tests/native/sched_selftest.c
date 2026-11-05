@@ -1344,14 +1344,20 @@ static void test_deterministic_clock_charges_the_work_not_the_host(void) {
  *   deterministic clock too -- the runner's 40 slices end at 50 ms, not at 40 slices' worth. */
 enum { DJ_ROOT = 0x09360000u, DJ_SLEEPER = 0x09360100u, DJ_YIELDS = 40 };
 static uint64_t g_dj_vtime_at_end;
+static int g_dj_sleeper_asleep;
 static void deterministic_jump_body(CpuState *s) {
     uint32_t entry = s_tcb[s_cur].entry;
     if (entry == DJ_SLEEPER) {
         sched_delay_current(50000u);
         return;
     }
-    sched_start_thread(sched_create_thread(DJ_SLEEPER, 40, 0), 0, 0);
-    for (int i = 0; i < 4; i++) sr_yield(s);   /* let the sleeper go to sleep */
+    /* A sleeper STRONGER than the root (a lower number): it runs at the root's first yield and goes
+     * to sleep, so the root is the only runnable thread and its yields reach the jump. */
+    uint32_t sleeper = sched_create_thread(DJ_SLEEPER, 20, 0);
+    sched_start_thread(sleeper, 0, 0);
+    for (int i = 0; i < 4; i++) sr_yield(s);
+    int idx = index_of_uid(sleeper);
+    g_dj_sleeper_asleep = idx >= 0 && s_tcb[idx].state == TH_WAIT_DELAY;
     const uint64_t t0 = s_vtime_us;
     for (int i = 0; i < DJ_YIELDS; i++) sr_yield(s);
     g_dj_vtime_at_end = s_vtime_us - t0;
@@ -1366,58 +1372,120 @@ static void test_deterministic_clock_does_not_jump_to_a_sleepers_deadline(void) 
         s_det_slice_us = SCHED_DET_SLICE_US_DEFAULT;
         g_test_body = deterministic_jump_body;
         g_dj_vtime_at_end = 0;
+        g_dj_sleeper_asleep = 0;
         sched_run(DJ_ROOT, 0u, 0u);
         s_host_ns_fn = NULL;
         s_det_clock = 0;
         span[det] = g_dj_vtime_at_end;
+        /* turbo has already jumped past the sleeper by now; only the deterministic clock leaves it asleep */
+        if (det) expect(g_dj_sleeper_asleep, "the sleeper is in its 50 ms delay before the measured yields");
     }
     expect(span[0] >= 50000u, "turbo: the runner's yields jump to the sleeper's deadline (the old behaviour)");
     expect(span[1] > 0u && span[1] <= (uint64_t)DJ_YIELDS * SCHED_DET_SLICE_US_DEFAULT * 2u,
            "deterministic clock: the runner's slices move guest time by the work, not to the sleeper's deadline");
 }
 
-/* SR_DETERMINISTIC_CLOCK and SR_NOVBPACE choose the clock once, at the first read of either:
- * unset means deterministic for a scripted run (a pad script or a frame-capture window) and
- * paced for play; an explicit mode of either variable always wins over the automatic choice. */
+/* SR_DETERMINISTIC_CLOCK and SR_NOVBPACE choose the clock once, at the first read of either.
+ * The deterministic clock is opt-in (#2037): a pad script or a frame-capture window alone keeps a
+ * run on the clock it always had, because a recorded route, the showcase smoke and the oracle
+ * recording are qualified under paced timing.
+ *
+ * MUTANT: switch the clock on for SR_PADSCRIPT or SR_FBSNAP_WINDOWS again -- the "alone" cells
+ *   report a deterministic, unpaced run. */
 static void test_clock_mode_follows_the_environment(void) {
     static const struct {
-        const char *novbpace, *det, *padscript, *fbsnap;
+        const char *novbpace, *det, *padscript, *fbsnap, *slice;
         int paced, det_on;
+        uint64_t slice_us;
         const char *what;
     } cases[] = {
-        { NULL, NULL, NULL, NULL, 1, 0, "play is paced" },
-        { NULL, NULL, "route.pad", NULL, 0, 1, "a pad script makes the run deterministic" },
-        { NULL, NULL, NULL, "100-107", 0, 1, "a frame-capture window makes the run deterministic" },
-        { "", "", "route.pad", NULL, 0, 1, "empty values count as unset" },
-        { "0", NULL, "route.pad", NULL, 1, 0, "an explicit paced mode beats the automatic choice" },
-        { "1", NULL, "route.pad", NULL, 0, 0, "an explicit turbo mode beats the automatic choice" },
-        { NULL, "0", "route.pad", NULL, 1, 0, "an explicit off beats the automatic choice" },
-        { NULL, "1", NULL, NULL, 0, 1, "an explicit on needs no script" },
-        { "1", "1", NULL, NULL, 0, 1, "on over turbo is the deterministic clock" },
+        { NULL, NULL, NULL, NULL, NULL, 1, 0, 100, "play is paced" },
+        { NULL, NULL, "route.pad", NULL, NULL, 1, 0, 100, "a pad script alone keeps the run paced" },
+        { NULL, NULL, NULL, "100-107", NULL, 1, 0, 100, "a frame-capture window alone keeps the run paced" },
+        { NULL, NULL, "route.pad", "100-107", NULL, 1, 0, 100, "a pad script and a capture window together stay paced" },
+        { "", "", "route.pad", NULL, NULL, 1, 0, 100, "empty values count as unset" },
+        { "0", NULL, "route.pad", NULL, NULL, 1, 0, 100, "an explicit paced mode stays paced" },
+        { "1", NULL, "route.pad", NULL, NULL, 0, 0, 100, "an explicit turbo mode is turbo, not deterministic" },
+        { NULL, "0", "route.pad", NULL, NULL, 1, 0, 100, "an explicit off stays paced" },
+        { NULL, "1", NULL, NULL, NULL, 0, 1, 100, "an explicit on needs no script" },
+        { NULL, "1", "route.pad", "100-107", NULL, 0, 1, 100, "an explicit on with a script is deterministic" },
+        { "1", "1", NULL, NULL, NULL, 0, 1, 100, "on over turbo is the deterministic clock" },
+        { NULL, "1", NULL, NULL, "250", 0, 1, 250, "the slice from the environment is the one charged" },
+        { NULL, "0", NULL, NULL, "250", 1, 0, 100, "a slice with the clock off is ignored" },
     };
-    const char *saved_n = getenv("SR_NOVBPACE"), *saved_d = getenv("SR_DETERMINISTIC_CLOCK");
-    const char *saved_p = getenv("SR_PADSCRIPT"), *saved_f = getenv("SR_FBSNAP_WINDOWS");
-    char keep_n[64] = "", keep_d[64] = "", keep_p[256] = "", keep_f[64] = "";
-    if (saved_n) snprintf(keep_n, sizeof(keep_n), "%s", saved_n);
-    if (saved_d) snprintf(keep_d, sizeof(keep_d), "%s", saved_d);
-    if (saved_p) snprintf(keep_p, sizeof(keep_p), "%s", saved_p);
-    if (saved_f) snprintf(keep_f, sizeof(keep_f), "%s", saved_f);
+    const char *names[] = { "SR_NOVBPACE", "SR_DETERMINISTIC_CLOCK", "SR_PADSCRIPT", "SR_FBSNAP_WINDOWS",
+                            "SR_DETERMINISTIC_SLICE_US" };
+    char keep[5][256];
+    int had[5];
+    for (int i = 0; i < 5; i++) {
+        const char *v = getenv(names[i]);
+        had[i] = v != NULL;
+        keep[i][0] = '\0';
+        if (v) snprintf(keep[i], sizeof(keep[i]), "%s", v);
+    }
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         pause_test_set_env("SR_NOVBPACE", cases[i].novbpace);
         pause_test_set_env("SR_DETERMINISTIC_CLOCK", cases[i].det);
         pause_test_set_env("SR_PADSCRIPT", cases[i].padscript);
         pause_test_set_env("SR_FBSNAP_WINDOWS", cases[i].fbsnap);
+        pause_test_set_env("SR_DETERMINISTIC_SLICE_US", cases[i].slice);
         s_pace_on = -1;
         s_det_clock = 0;
+        s_det_slice_us = SCHED_DET_SLICE_US_DEFAULT;
         pace_setup();
-        expect((s_pace_on > 0) == cases[i].paced && s_det_clock == cases[i].det_on, cases[i].what);
+        expect((s_pace_on > 0) == cases[i].paced && s_det_clock == cases[i].det_on &&
+               s_det_slice_us == cases[i].slice_us, cases[i].what);
     }
-    pause_test_set_env("SR_NOVBPACE", saved_n ? keep_n : NULL);
-    pause_test_set_env("SR_DETERMINISTIC_CLOCK", saved_d ? keep_d : NULL);
-    pause_test_set_env("SR_PADSCRIPT", saved_p ? keep_p : NULL);
-    pause_test_set_env("SR_FBSNAP_WINDOWS", saved_f ? keep_f : NULL);
+    for (int i = 0; i < 5; i++) pause_test_set_env(names[i], had[i] ? keep[i] : NULL);
     s_pace_on = 0;
     s_det_clock = 0;
+    s_det_slice_us = SCHED_DET_SLICE_US_DEFAULT;
+}
+
+/* The refusals: pace_setup exits on them, so the parser it calls is checked in-process.
+ *
+ * MUTANT: raise the slice bound (100000 -> 1000000), ignore the slice value, drop the
+ *   SR_NOVBPACE=0 contradiction, or accept any SR_DETERMINISTIC_CLOCK text -- each makes one of
+ *   the cells below fail. */
+static void test_deterministic_clock_environment_is_validated(void) {
+    static const struct {
+        const char *novbpace, *det, *slice;
+        int result, det_on;
+        uint64_t slice_us;
+        const char *what;
+    } cases[] = {
+        { NULL, NULL, NULL, SCHED_DET_OK, 0, 100, "unset is off" },
+        { NULL, "", NULL, SCHED_DET_OK, 0, 100, "empty is off" },
+        { NULL, "0", NULL, SCHED_DET_OK, 0, 100, "0 is off" },
+        { NULL, "1", NULL, SCHED_DET_OK, 1, 100, "1 is on with the default slice" },
+        { NULL, "1", "", SCHED_DET_OK, 1, 100, "an empty slice keeps the default" },
+        { NULL, "1", "250", SCHED_DET_OK, 1, 250, "the slice value is used" },
+        { NULL, "1", "1", SCHED_DET_OK, 1, 1, "the smallest slice is accepted" },
+        { NULL, "1", "100000", SCHED_DET_OK, 1, 100000, "the largest slice is accepted" },
+        { NULL, "1", "100001", SCHED_DET_BAD_SLICE, 0, 100, "a slice above the bound is refused" },
+        { NULL, "1", "1000000", SCHED_DET_BAD_SLICE, 0, 100, "a slice far above the bound is refused" },
+        { NULL, "1", "0", SCHED_DET_BAD_SLICE, 0, 100, "a zero slice is refused" },
+        { NULL, "1", "-5", SCHED_DET_BAD_SLICE, 0, 100, "a negative slice is refused" },
+        { NULL, "1", "12x", SCHED_DET_BAD_SLICE, 0, 100, "a slice with trailing text is refused" },
+        { NULL, "1", "abc", SCHED_DET_BAD_SLICE, 0, 100, "a slice that is not a number is refused" },
+        { NULL, "0", "abc", SCHED_DET_OK, 0, 100, "a slice is not read while the clock is off" },
+        { "0", "1", NULL, SCHED_DET_CONTRADICTS_PACED, 0, 100, "on with SR_NOVBPACE=0 is refused" },
+        { "1", "1", NULL, SCHED_DET_OK, 1, 100, "on with SR_NOVBPACE=1 is accepted" },
+        { "", "1", NULL, SCHED_DET_OK, 1, 100, "on with SR_NOVBPACE empty is accepted" },
+        { "0", "0", NULL, SCHED_DET_OK, 0, 100, "off with SR_NOVBPACE=0 is accepted" },
+        { NULL, "2", NULL, SCHED_DET_BAD_CLOCK, 0, 100, "2 is refused" },
+        { NULL, "yes", NULL, SCHED_DET_BAD_CLOCK, 0, 100, "yes is refused" },
+        { NULL, "true", NULL, SCHED_DET_BAD_CLOCK, 0, 100, "true is refused" },
+        { NULL, "1 ", NULL, SCHED_DET_BAD_CLOCK, 0, 100, "1 with a trailing space is refused" },
+        { NULL, "01", NULL, SCHED_DET_BAD_CLOCK, 0, 100, "01 is refused" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int det_on = -1;
+        uint64_t slice_us = SCHED_DET_SLICE_US_DEFAULT;
+        int result = sched_det_parse(cases[i].novbpace, cases[i].det, cases[i].slice, &det_on, &slice_us);
+        expect(result == cases[i].result && det_on == cases[i].det_on && slice_us == cases[i].slice_us,
+               cases[i].what);
+    }
 }
 
 /* Two threads that block and wake each other within their slices keep one thread always ready,
@@ -5862,6 +5930,7 @@ int main(int argc, char **argv) {
     test_deterministic_clock_charges_the_work_not_the_host();
     test_deterministic_clock_does_not_jump_to_a_sleepers_deadline();
     test_clock_mode_follows_the_environment();
+    test_deterministic_clock_environment_is_validated();
     test_stop_raised_in_a_pause_resumes_no_thread();
     test_module_start_thread_uses_declared_parameters();
     test_module_start_thread_is_deleted_on_return();

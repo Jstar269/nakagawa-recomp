@@ -1333,10 +1333,10 @@ the ungated run. **Do not** reach for `SR_NOVBPACE=1` to speed a route up: that 
 jumps over idle delay waits, and it demonstrably changes game speed (it is the behaviour vblank
 pacing was added to fix). A faster route is worthless if it is not the same route.
 
-A scripted run (one with a pad script or a capture window) is not paced to the host: it uses the
-deterministic clock (`SR_DETERMINISTIC_CLOCK`, #2037), which charges guest time for the work the
-guest does instead of the time the host took, so the same inputs give the same frames. It is not
-turbo: it does not run a title ahead of its own work.
+A run that must give the same frames every time (the picture gate, a capture retake) sets
+`SR_DETERMINISTIC_CLOCK=1` (#2037): guest time then charges the work the guest does instead of the
+time the host took. It is not turbo: it does not run a title ahead of its own work. A pad script or
+a capture window alone does not turn it on, so existing routes keep their paced timing.
 
 `tools/nk_safety.ps1` holds the helpers whose failure modes are silent (bounded wait,
 archive reset, completeness verdict); `tools/test_visual_oracle.py` exercises them against real
@@ -1446,7 +1446,7 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | `SR_DEVELOPER_MODE=0\|1` | Developer mode (the launcher exports its setting): `F3`'s profile HUD and the pause menu's VRAM viewer and Profile page |
 | `SR_REDUCE_MOTION=on\|off\|system` | The launcher's Reduce motion choice (it always exports one): `on` makes the pause overlay's transitions cuts, `off` lets them ease, and `system` (the launcher's Automatic), unset or anything else follows Windows' Animation effects as the overlay draws |
 | `SR_NOVBPACE=0\|1` | Vblank pacing mode: unset, empty, or "0" = paced (default); "1" = turbo. Any other value fails closed at startup |
-| `SR_DETERMINISTIC_CLOCK=0\|1` | Guest time as a function of the guest's work, never the host clock (#2037). Unset or empty: on for a scripted run (`SR_PADSCRIPT` or `SR_FBSNAP_WINDOWS` set, `SR_NOVBPACE` unset), off for play. `1` with `SR_NOVBPACE=0`, or any other value, fails closed at startup |
+| `SR_DETERMINISTIC_CLOCK=0\|1` | Guest time as a function of the guest's work, never the host clock (#2037). `1` = on; unset, empty or `0` = off. `1` with `SR_NOVBPACE=0`, or any other value, fails closed at startup |
 | `SR_DETERMINISTIC_SLICE_US=N` | Guest microseconds the deterministic clock charges per scheduler boundary: 1..100000, default 100 |
 
 For a replayable GE fixture, set `SR_GE_CAPTURE_FRAME=<vblank>` or

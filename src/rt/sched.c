@@ -1426,20 +1426,27 @@ static uint64_t host_now_ns(void) {
     return s_host_ns_fn ? s_host_ns_fn() : SDL_GetTicksNS();
 }
 
-/* SR_DETERMINISTIC_CLOCK: unset or empty = automatic (on for a scripted run, that is one with a
- * pad script or a frame-capture window, unless SR_NOVBPACE names a mode); '0' = off; '1' = on.
- * Returns -1 for a value that is none of these. */
-static int sched_det_clock_request(const char *d, int *explicit_request) {
-    *explicit_request = 0;
-    if (!d || d[0] == '\0') return 0;
-    if (strcmp(d, "0") == 0) { *explicit_request = 1; return 0; }
-    if (strcmp(d, "1") == 0) { *explicit_request = 1; return 1; }
-    return -1;
-}
+/* SR_DETERMINISTIC_CLOCK: unset, empty or '0' = off; '1' = on. There is no automatic choice: a
+ * scripted run keeps the clock it always had unless its caller names this one (#2037).
+ * SR_DETERMINISTIC_SLICE_US (1..100000, default SCHED_DET_SLICE_US_DEFAULT) is read only when the
+ * clock is on. `novbpace` is the SR_NOVBPACE text, already known to be valid.
+ * Returns SCHED_DET_OK, or the reason the request is refused. */
+enum { SCHED_DET_OK = 0, SCHED_DET_BAD_CLOCK, SCHED_DET_CONTRADICTS_PACED, SCHED_DET_BAD_SLICE };
 
-static int sched_env_nonempty(const char *name) {
-    const char *v = getenv(name);
-    return v && v[0] != '\0';
+static int sched_det_parse(const char *novbpace, const char *det, const char *slice,
+                           int *det_on, uint64_t *slice_us) {
+    *det_on = 0;
+    if (!det || det[0] == '\0' || strcmp(det, "0") == 0) return SCHED_DET_OK;
+    if (strcmp(det, "1") != 0) return SCHED_DET_BAD_CLOCK;
+    if (novbpace && strcmp(novbpace, "0") == 0) return SCHED_DET_CONTRADICTS_PACED;
+    if (slice && slice[0]) {
+        char *end = NULL;
+        unsigned long v = strtoul(slice, &end, 10);
+        if (*end != '\0' || v < 1ul || v > 100000ul) return SCHED_DET_BAD_SLICE;
+        *slice_us = (uint64_t)v;
+    }
+    *det_on = 1;
+    return SCHED_DET_OK;
 }
 
 static void pace_setup(void) {
@@ -1456,39 +1463,32 @@ static void pace_setup(void) {
         exit(1);
     }
     const char *d = getenv("SR_DETERMINISTIC_CLOCK");
-    int det_explicit;
-    int det = sched_det_clock_request(d, &det_explicit);
-    if (det < 0) {
+    const char *slice = getenv("SR_DETERMINISTIC_SLICE_US");
+    int det = 0;
+    switch (sched_det_parse(e, d, slice, &det, &s_det_slice_us)) {
+    case SCHED_DET_BAD_CLOCK:
         fprintf(stderr, "SR_DETERMINISTIC_CLOCK: invalid value '%s'; must be unset, empty, '0' or '1'\n", d);
         fflush(stderr);
         exit(1);
-    }
-    if (det_explicit && det && e && strcmp(e, "0") == 0) {
+    case SCHED_DET_CONTRADICTS_PACED:
         fprintf(stderr, "SR_DETERMINISTIC_CLOCK=1 contradicts SR_NOVBPACE=0 (paced): pick one\n");
         fflush(stderr);
         exit(1);
+    case SCHED_DET_BAD_SLICE:
+        fprintf(stderr, "SR_DETERMINISTIC_SLICE_US: invalid value '%s'; must be 1..100000\n", slice);
+        fflush(stderr);
+        exit(1);
+    default:
+        break;
     }
-    if (!det_explicit && (!e || e[0] == '\0') &&
-        (sched_env_nonempty("SR_PADSCRIPT") || sched_env_nonempty("SR_FBSNAP_WINDOWS")))
-        det = 1;
     s_det_clock = det;
     s_pace_on = det ? 0 : paced;
-    if (det) {
-        const char *slice = getenv("SR_DETERMINISTIC_SLICE_US");
-        if (slice && slice[0]) {
-            char *end = NULL;
-            unsigned long v = strtoul(slice, &end, 10);
-            if (*end != '\0' || v < 1ul || v > 100000ul) {
-                fprintf(stderr, "SR_DETERMINISTIC_SLICE_US: invalid value '%s'; must be 1..100000\n", slice);
-                fflush(stderr);
-                exit(1);
-            }
-            s_det_slice_us = (uint64_t)v;
-        }
-    }
-    fprintf(stderr, "pace_setup: s_pace_on = %d (SR_NOVBPACE = %s) deterministic_clock = %d slice_us = %llu\n",
-            s_pace_on, e ? e : "<unset>", s_det_clock,
-            (unsigned long long)(s_det_clock ? s_det_slice_us : 10000u));
+    if (det)
+        fprintf(stderr, "pace_setup: s_pace_on = %d (SR_NOVBPACE = %s) deterministic_clock = 1 slice_us = %llu\n",
+                s_pace_on, e ? e : "<unset>", (unsigned long long)s_det_slice_us);
+    else
+        fprintf(stderr, "pace_setup: s_pace_on = %d (SR_NOVBPACE = %s) deterministic_clock = 0\n",
+                s_pace_on, e ? e : "<unset>");
     fflush(stderr);
     s_clock_epoch_ns = host_now_ns();
     s_vbl_next_ns = s_clock_epoch_ns;

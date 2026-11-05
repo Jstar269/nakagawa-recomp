@@ -10589,6 +10589,57 @@ static void test_audio_queue_drains_in_guest_time_under_the_deterministic_clock(
     reset_fixture();
 }
 
+/* Every call that paces a guest against the audio queue reads the model under the deterministic
+ * clock (#2037): the blocking output's wait loop, the channel rest length, and the Output2 rest
+ * and release. A host mixer that is far behind (a run faster than real time never lets it drain)
+ * must not reach the guest through any of them. The host stub reports 100000 frames throughout;
+ * on a path that still reads it, the blocking output waits it out (the stub's sequence ends in 0,
+ * so it is counted, not hung on), RestLen and Output2Rest report it, and the release is refused.
+ *
+ * MUTANT: audio_output's wait loop calls sr_audio_queued -- the output consumes the host's whole
+ *   sequence (4+ reads) instead of two.
+ * MUTANT: h_AudioRestLen, h_AudioOutput2Rest or h_AudioOutput2Release calls sr_audio_queued --
+ *   the guest sees the host's 100000 frames and the release is refused. */
+static void test_audio_calls_read_the_guest_queue_under_the_deterministic_clock(void) {
+    const uint32_t STEREO_BUF = 0x08a00000u;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 0u) == 0u,
+           "the regular channel reserves 64 frames");
+    s_det_clock = 1;
+    s_vtime_us = 1000u;
+    s_audio_queue_seq[0] = 100000;
+    s_audio_queue_seq[1] = 100000;
+    s_audio_queue_seq[2] = 100000;
+    s_audio_queue_seq[3] = 0;
+    s_audio_queue_seq_len = 4;
+    s_audio_queue_calls = 0;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING, 0u, 0x80008000u, STEREO_BUF) == 64u,
+           "the blocking output returns its frame count");
+    expect(s_audio_queue_calls <= 2u,
+           "the blocking output did not wait out the host mixer's backlog: its lead is the model's 64 frames");
+    s_audio_queue_seq_len = 0;
+    s_audio_queue_result = 100000;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH, 0u, 0u, 0u) == 64u,
+           "GetChannelRestLength reports the model's 64 frames, not the host's 100000");
+    s_vtime_us += 2000u;   /* the 64 frames have played in guest time */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH, 0u, 0u, 0u) == 0u,
+           "and 2 ms of guest time later the model is empty whatever the host holds");
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 64u, 0u, 0u) == 0u,
+           "Output2 reserves a 64-sample channel");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_REST_SAMPLE, 0u, 0u, 0u) == 0u,
+           "Output2 rest sample is the model's, empty, not the host's 100000");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
+           "Output2 release is not refused for a backlog only the host mixer holds");
+    s_det_clock = 0;
+    s_audio_queue_result = 0;
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    reset_fixture();
+}
+
 /* Media telemetry truthfulness on the production audio hand-off.
  *
  * audio_output_calls / audio_output_frames used to be raised only inside the SDL3 host
@@ -46602,6 +46653,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_audio_queue_drains_in_guest_time_under_the_deterministic_clock();
+    test_audio_calls_read_the_guest_queue_under_the_deterministic_clock();
     test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_pulse_never_synthesises_start_in_a_real_window();
     test_ctrl_read_buffer_contract();

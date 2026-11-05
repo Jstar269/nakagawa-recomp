@@ -844,18 +844,24 @@ a hundred times what the yield points just executed stand for, so a title that c
 VBLANKs is outrun by the display and never gets to present. Turbo also jumps the clock to the
 nearest sleeper's deadline at a running thread's yield, so a main thread that computes while the
 audio thread sleeps 23 ms is charged 23 ms for every slice it runs (Hot Shots Tennis never finished
-its start-up this way). The deterministic clock is the turbo virtual clock charged at the rate of
-the guest's work: a scheduler boundary adds `SR_DETERMINISTIC_SLICE_US` (default 100 µs, 1000 yield
-points at 10 million yield points per second), a sleeper's deadline is reached by that work (the
-clock jumps to a deadline only when no thread can run), and no vblank watchdog reads the host clock. The
+its start-up this way; explicit `SR_NOVBPACE=1` keeps that jump). The deterministic clock is the
+turbo virtual clock charged at the rate of the guest's work: a scheduler boundary adds
+`SR_DETERMINISTIC_SLICE_US` (default 100 µs, 1000 yield points at 10 million yield points per
+second; an estimate of about 33 cycles per yield point, not a measurement, and it decides guest
+results), a sleeper's deadline is reached by that work, an idle scheduler (no thread can run)
+advances one display period at a time as turbo's does, so it wakes a short sleeper up to 16.7 ms
+late but identically on every run, and no vblank watchdog reads the host clock. The
 RTC starts at 2012-01-01 00:00:00 UTC instead of the host's date, and the audio queue the guest
 paces against (`sceAudioOutput*Blocking`, `sceAudioGetChannelRestLength`, the PSMF player's audio
 lead) is a model that plays 44100 frames a second of guest time from the first push, not the host
 mixer's depth, which drains in host time and so would make the length of a blocking output depend
-on the host. It is on for a scripted run (a
-pad script or a frame-capture window) and off for play; `SR_DETERMINISTIC_CLOCK=0` or an explicit
-`SR_NOVBPACE` keeps a scripted run on that mode instead. Guest time and the RTC are then a
-function of the guest's own work, so two runs with the same inputs give the same frames.
+on the host. It is on only when the caller sets `SR_DETERMINISTIC_CLOCK=1` (the picture gate
+does); a pad script or a frame-capture window alone keeps the clock a run always had, because
+recorded routes and the showcase smoke are qualified under paced timing. Guest time and the RTC
+are then a function of the guest's own work, so two runs with the same inputs give the same
+frames. Host inputs that remain: whether the host has an audio device, the Memory Stick volume's
+free space, a random console MAC and PSID on fresh user data, and the mixer's 262144-frame cap,
+which drops audio when a run is faster than real time.
 
 **Runtime host-thread audit.** Guest threads, HLE handlers, the window's event pump and the
 pause loop all run on the runtime thread. Work that runs elsewhere, and why a paused guest
@@ -888,7 +894,7 @@ the maintained references for exact behavior.
 | Variable | Values | Purpose |
 | --- | --- | --- |
 | `SR_NOVBPACE` | unset, empty, `0` / `1` | Vblank pacing mode: unset, empty, or `0` = paced (default); `1` = turbo. Other values fail closed |
-| `SR_DETERMINISTIC_CLOCK` | unset, empty, `0` / `1` | Deterministic guest clock: unset or empty = on for a scripted run (`SR_PADSCRIPT` or `SR_FBSNAP_WINDOWS` set and `SR_NOVBPACE` unset), off otherwise; `0` = off; `1` = on. `1` with `SR_NOVBPACE=0` and other values fail closed |
+| `SR_DETERMINISTIC_CLOCK` | unset, empty, `0` / `1` | Deterministic guest clock: `1` = on; unset, empty or `0` = off (paced, or turbo with `SR_NOVBPACE=1`). `1` with `SR_NOVBPACE=0` and other values fail closed |
 | `SR_DETERMINISTIC_SLICE_US` | `1`..`100000` | Guest microseconds the deterministic clock charges per scheduler boundary (default 100). Other values fail closed |
 | `SR_PAUSE_SCRIPT` | `<vcount>:<host_ms>[,...]` | Test-only scheduler pause source for showcase checks. Append `:user` to exercise an interactive refusal; malformed values fail closed |
 | `SR_GPU_GE` | `0` / `1` | Software vs Vulkan GE path |
