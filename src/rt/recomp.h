@@ -1182,6 +1182,18 @@ float sr_vfpu_exp2(float x);
 #define SR_VFPU_STATE   2
 int sr_vfpu_interp(CpuState *s, uint32_t op);
 
+/* Unverified VFPU forms in the run log (#1877; patterns generated into hle_evidence.h from
+ * docs/HLE_COVERAGE.md). sr_vfpu_note_unverified is the interpreter floor's once-per-pattern
+ * line for an executed VFPU load or store and returns 1 when the word is in a pattern (the
+ * patterns for opcodes 0x34 and 0x3f can only come from translated code). Generated start-up
+ * code passes the first word codegen translated in each pattern to
+ * sr_vfpu_report_unverified_uses, which prints each pattern once. Both only log. */
+typedef struct { uint32_t word; uint32_t pc; } SrVfpuUse;
+extern FILE *sr_vfpu_evidence_log; /* a test seam: NULL logs to stderr */
+int  sr_vfpu_note_unverified(uint32_t word, uint32_t pc);
+void sr_vfpu_evidence_reset(void); /* a test seam: every pattern may be named again */
+void sr_vfpu_report_unverified_uses(const SrVfpuUse *uses, uint32_t count);
+
 /* ---- SR_NAN_TRAP: opt-in NaN/Inf origin diagnostic (issue #69) -------------
  *
  * A guest instruction that turns all-finite operands into a NaN or an Inf is the

@@ -48,9 +48,24 @@ them, so they carry no class; `python tools/vfpu_coverage_report.py` lists them.
 
 At run time `sr_syscall` logs one line the first time each `unverified` NID with a handler is
 called: `HLE: unverified: <name> (NID 0x<nid>) has no recorded evidence (docs/HLE_COVERAGE.md)`.
-Controlled refusals already log their own line once. VFPU forms are not logged: AOT-direct forms
-run inline with no shared entry point, and `sr_vfpu_interp` cannot tell which census form a word
-belongs to without the census's own grouping.
+Controlled refusals already log their own line once.
+
+VFPU forms are reported by word pattern, because a census form is not a word range. For each
+`unverified` form the ledger derives the `(mask, match)` word patterns in `src/rt/hle_evidence.h`:
+a bit is in the mask only if flipping it changes the form under the production decoder probe, and
+random words inside each pattern are classified again and must stay unverified. The patterns are
+evidence about the words tested, not a proof over every word. Each pattern is shown in the log as
+its opcode's mnemonic and the census form ids, for example `lv.s [vfpu-32-c8000000-...]`. Under
+`--lle-cpu` the interpreter floor logs
+`VFPU: unverified: first use of <forms> (word 0x<word>) at 0x<pc>: no recorded evidence` once per
+pattern when it executes a matching VFPU load or store (primary opcodes 0x32, 0x35, 0x36, 0x3a,
+0x3d, 0x3e); the patterns for opcodes 0x34 and 0x3f are not memory operations, so only the
+translated-code line below can name them. For translated code the build lists, for each pattern,
+the lowest-addressed word it translated, and the generated start-up code makes the runtime print
+`VFPU: unverified: translated code uses <forms> (word 0x<word>) at 0x<pc>: no recorded evidence`
+once per pattern; no check runs on the hot path. Both lines only log. A title that translates one of
+these forms gets one extra `sr_vfpu_report_unverified_uses` call in its generated start-up code;
+a title that translates none has generated code unchanged.
 
 ## HLE NIDs
 
