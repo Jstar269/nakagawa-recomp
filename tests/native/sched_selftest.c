@@ -1258,6 +1258,238 @@ static void test_stop_request_returns_a_lone_runner_to_the_scheduler(void) {
     g_qs_suspend_dispatch = 0;
 }
 
+
+/* Turbo guest time is a function of what the guest did, never of the host clock (#2037): two
+ * identical runs must see the same timeline however fast the host ran them. The runner here
+ * burns the same number of yields in every run while the host clock behind the seam moves by
+ * a different amount per yield: frozen, a millisecond, and forty milliseconds (more than a
+ * whole safety quantum).
+ *
+ * MUTANT: restore the out-of-band raise in sr_yield (sched_raise_interrupt(SCHED_INTR_VBLANK)
+ *   when sr_vblank_quantum_due()) -- the forty-millisecond run delivers a VBLANK at every yield
+ *   and its VBLANK count differs from the frozen run's. */
+enum { HC_ENTRY = 0x09350000u, HC_YIELDS = 240, HC_RUNS = 3 };
+static uint64_t g_hc_step_ns;
+static void host_clock_body(CpuState *s) {
+    for (int i = 0; i < HC_YIELDS; i++) {
+        g_test_host_ns += g_hc_step_ns;   /* the host runs faster or slower; the guest does not */
+        sr_yield(s);
+    }
+}
+
+static void test_turbo_timeline_does_not_depend_on_the_host_clock(void) {
+    static const uint64_t steps_ns[HC_RUNS] = { 0u, 1000000u, 40000000u };
+    uint64_t vblanks[HC_RUNS], vtime[HC_RUNS];
+    for (int run = 0; run < HC_RUNS; run++) {
+        reset_sched();
+        begin_clock_fixture(0, 1000u);
+        g_hc_step_ns = steps_ns[run];
+        g_test_body = host_clock_body;
+        const uint64_t vbl0 = s_vbl_count;
+        sched_run(HC_ENTRY, 0u, 0u);
+        s_host_ns_fn = NULL;
+        vblanks[run] = s_vbl_count - vbl0;
+        vtime[run] = s_vtime_us;
+    }
+    expect(vblanks[0] > 0u, "host clock: the frozen run still delivered VBLANKs from guest time");
+    for (int run = 1; run < HC_RUNS; run++) {
+        expect(vblanks[run] == vblanks[0],
+               "host clock: a run whose host clock moved delivered the same VBLANK count");
+        expect(vtime[run] == vtime[0],
+               "host clock: a run whose host clock moved ended at the same guest time");
+    }
+}
+
+/* The deterministic clock (#2037) is the turbo virtual clock charged at the rate of the guest's
+ * work: the same yields give the same guest time whatever the host did, and a slice stands for
+ * SCHED_DET_SLICE_US of PSP time rather than turbo's flat 10 ms, so a guest that computes between
+ * VBLANKs is not outrun by the display.
+ *
+ * MUTANT: charge the deterministic clock the turbo 10 ms in scheduler_progress_time -- the guest
+ *   time is 100 times the work's and the "tracks the work" check fails.
+ * MUTANT: read the host clock in the deterministic charge -- the three runs end at different
+ *   guest times. */
+static void test_deterministic_clock_charges_the_work_not_the_host(void) {
+    static const uint64_t steps_ns[HC_RUNS] = { 0u, 1000000u, 40000000u };
+    uint64_t vtime[HC_RUNS];
+    uint64_t turbo_vtime = 0;
+    for (int run = 0; run <= HC_RUNS; run++) {
+        const int det = run < HC_RUNS;
+        reset_sched();
+        begin_clock_fixture(0, 1000u);
+        s_det_clock = det;
+        s_det_slice_us = SCHED_DET_SLICE_US_DEFAULT;
+        g_hc_step_ns = det ? steps_ns[run] : 0u;
+        g_test_body = host_clock_body;
+        sched_run(HC_ENTRY, 0u, 0u);
+        s_host_ns_fn = NULL;
+        s_det_clock = 0;
+        if (det) vtime[run] = s_vtime_us;
+        else turbo_vtime = s_vtime_us;
+    }
+    for (int run = 1; run < HC_RUNS; run++)
+        expect(vtime[run] == vtime[0],
+               "deterministic clock: a run whose host clock moved ended at the same guest time");
+    expect(vtime[0] >= (uint64_t)HC_YIELDS * SCHED_DET_SLICE_US_DEFAULT,
+           "deterministic clock: guest time covers the slices the guest ran");
+    expect(vtime[0] * 10u < turbo_vtime,
+           "deterministic clock: a slice is charged far less than turbo's flat 10 ms");
+}
+
+/* Under the deterministic clock a running thread's slices are the only thing that moves guest
+ * time while it runs (#2037): a thread that is asleep for 50 ms is not reached by jumping the
+ * clock to its deadline at the runner's first yield, as turbo does, but by the runner's work.
+ *
+ * MUTANT: take the turbo jump to the nearest sleeper's deadline in sr_yield under the
+ *   deterministic clock too -- the sleeper is woken by the jump, so "the sleeper is in its 50 ms
+ *   delay before the measured yields" fails. (The span checks alone do not kill it: the jump
+ *   happens in the warm-up yields, before the measurement starts.) */
+enum { DJ_ROOT = 0x09360000u, DJ_SLEEPER = 0x09360100u, DJ_YIELDS = 40 };
+static uint64_t g_dj_vtime_at_end;
+static int g_dj_sleeper_asleep;
+static void deterministic_jump_body(CpuState *s) {
+    uint32_t entry = s_tcb[s_cur].entry;
+    if (entry == DJ_SLEEPER) {
+        sched_delay_current(50000u);
+        return;
+    }
+    /* A sleeper STRONGER than the root (a lower number): it runs at the root's first yield and goes
+     * to sleep, so the root is the only runnable thread and its yields reach the jump. */
+    uint32_t sleeper = sched_create_thread(DJ_SLEEPER, 20, 0);
+    sched_start_thread(sleeper, 0, 0);
+    for (int i = 0; i < 4; i++) sr_yield(s);
+    int idx = index_of_uid(sleeper);
+    g_dj_sleeper_asleep = idx >= 0 && s_tcb[idx].state == TH_WAIT_DELAY;
+    const uint64_t t0 = s_vtime_us;
+    for (int i = 0; i < DJ_YIELDS; i++) sr_yield(s);
+    g_dj_vtime_at_end = s_vtime_us - t0;
+}
+
+static void test_deterministic_clock_does_not_jump_to_a_sleepers_deadline(void) {
+    uint64_t span[2];
+    for (int det = 0; det <= 1; det++) {
+        reset_sched();
+        begin_clock_fixture(0, 1000u);
+        s_det_clock = det;
+        s_det_slice_us = SCHED_DET_SLICE_US_DEFAULT;
+        g_test_body = deterministic_jump_body;
+        g_dj_vtime_at_end = 0;
+        g_dj_sleeper_asleep = 0;
+        sched_run(DJ_ROOT, 0u, 0u);
+        s_host_ns_fn = NULL;
+        s_det_clock = 0;
+        span[det] = g_dj_vtime_at_end;
+        /* turbo has already jumped past the sleeper by now; only the deterministic clock leaves it asleep */
+        if (det) expect(g_dj_sleeper_asleep, "the sleeper is in its 50 ms delay before the measured yields");
+    }
+    expect(span[0] >= 50000u, "turbo: the runner's yields jump to the sleeper's deadline (the old behaviour)");
+    expect(span[1] > 0u && span[1] <= (uint64_t)DJ_YIELDS * SCHED_DET_SLICE_US_DEFAULT * 2u,
+           "deterministic clock: the runner's slices move guest time by the work, not to the sleeper's deadline");
+}
+
+/* SR_DETERMINISTIC_CLOCK and SR_NOVBPACE choose the clock once, at the first read of either.
+ * The deterministic clock is opt-in (#2037): a pad script or a frame-capture window alone keeps a
+ * run on the clock it always had, because a recorded route, the showcase smoke and the oracle
+ * recording are qualified under paced timing.
+ *
+ * MUTANT: switch the clock on for SR_PADSCRIPT or SR_FBSNAP_WINDOWS again -- the "alone" cells
+ *   report a deterministic, unpaced run. */
+static void test_clock_mode_follows_the_environment(void) {
+    static const struct {
+        const char *novbpace, *det, *padscript, *fbsnap, *slice;
+        int paced, det_on;
+        uint64_t slice_us;
+        const char *what;
+    } cases[] = {
+        { NULL, NULL, NULL, NULL, NULL, 1, 0, 100, "play is paced" },
+        { NULL, NULL, "route.pad", NULL, NULL, 1, 0, 100, "a pad script alone keeps the run paced" },
+        { NULL, NULL, NULL, "100-107", NULL, 1, 0, 100, "a frame-capture window alone keeps the run paced" },
+        { NULL, NULL, "route.pad", "100-107", NULL, 1, 0, 100, "a pad script and a capture window together stay paced" },
+        { "", "", "route.pad", NULL, NULL, 1, 0, 100, "empty values count as unset" },
+        { "0", NULL, "route.pad", NULL, NULL, 1, 0, 100, "an explicit paced mode stays paced" },
+        { "1", NULL, "route.pad", NULL, NULL, 0, 0, 100, "an explicit turbo mode is turbo, not deterministic" },
+        { NULL, "0", "route.pad", NULL, NULL, 1, 0, 100, "an explicit off stays paced" },
+        { NULL, "1", NULL, NULL, NULL, 0, 1, 100, "an explicit on needs no script" },
+        { NULL, "1", "route.pad", "100-107", NULL, 0, 1, 100, "an explicit on with a script is deterministic" },
+        { "1", "1", NULL, NULL, NULL, 0, 1, 100, "on over turbo is the deterministic clock" },
+        { NULL, "1", NULL, NULL, "250", 0, 1, 250, "the slice from the environment is the one charged" },
+        { NULL, "0", NULL, NULL, "250", 1, 0, 100, "a slice with the clock off is ignored" },
+    };
+    const char *names[] = { "SR_NOVBPACE", "SR_DETERMINISTIC_CLOCK", "SR_PADSCRIPT", "SR_FBSNAP_WINDOWS",
+                            "SR_DETERMINISTIC_SLICE_US" };
+    char keep[5][256];
+    int had[5];
+    for (int i = 0; i < 5; i++) {
+        const char *v = getenv(names[i]);
+        had[i] = v != NULL;
+        keep[i][0] = '\0';
+        if (v) snprintf(keep[i], sizeof(keep[i]), "%s", v);
+    }
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        pause_test_set_env("SR_NOVBPACE", cases[i].novbpace);
+        pause_test_set_env("SR_DETERMINISTIC_CLOCK", cases[i].det);
+        pause_test_set_env("SR_PADSCRIPT", cases[i].padscript);
+        pause_test_set_env("SR_FBSNAP_WINDOWS", cases[i].fbsnap);
+        pause_test_set_env("SR_DETERMINISTIC_SLICE_US", cases[i].slice);
+        s_pace_on = -1;
+        s_det_clock = 0;
+        s_det_slice_us = SCHED_DET_SLICE_US_DEFAULT;
+        pace_setup();
+        expect((s_pace_on > 0) == cases[i].paced && s_det_clock == cases[i].det_on &&
+               s_det_slice_us == cases[i].slice_us, cases[i].what);
+    }
+    for (int i = 0; i < 5; i++) pause_test_set_env(names[i], had[i] ? keep[i] : NULL);
+    s_pace_on = 0;
+    s_det_clock = 0;
+    s_det_slice_us = SCHED_DET_SLICE_US_DEFAULT;
+}
+
+/* The refusals: pace_setup exits on them, so the parser it calls is checked in-process.
+ *
+ * MUTANT: raise the slice bound (100000 -> 1000000), ignore the slice value, drop the
+ *   SR_NOVBPACE=0 contradiction, or accept any SR_DETERMINISTIC_CLOCK text -- each makes one of
+ *   the cells below fail. */
+static void test_deterministic_clock_environment_is_validated(void) {
+    static const struct {
+        const char *novbpace, *det, *slice;
+        int result, det_on;
+        uint64_t slice_us;
+        const char *what;
+    } cases[] = {
+        { NULL, NULL, NULL, SCHED_DET_OK, 0, 100, "unset is off" },
+        { NULL, "", NULL, SCHED_DET_OK, 0, 100, "empty is off" },
+        { NULL, "0", NULL, SCHED_DET_OK, 0, 100, "0 is off" },
+        { NULL, "1", NULL, SCHED_DET_OK, 1, 100, "1 is on with the default slice" },
+        { NULL, "1", "", SCHED_DET_OK, 1, 100, "an empty slice keeps the default" },
+        { NULL, "1", "250", SCHED_DET_OK, 1, 250, "the slice value is used" },
+        { NULL, "1", "1", SCHED_DET_OK, 1, 1, "the smallest slice is accepted" },
+        { NULL, "1", "100000", SCHED_DET_OK, 1, 100000, "the largest slice is accepted" },
+        { NULL, "1", "100001", SCHED_DET_BAD_SLICE, 0, 100, "a slice above the bound is refused" },
+        { NULL, "1", "1000000", SCHED_DET_BAD_SLICE, 0, 100, "a slice far above the bound is refused" },
+        { NULL, "1", "0", SCHED_DET_BAD_SLICE, 0, 100, "a zero slice is refused" },
+        { NULL, "1", "-5", SCHED_DET_BAD_SLICE, 0, 100, "a negative slice is refused" },
+        { NULL, "1", "12x", SCHED_DET_BAD_SLICE, 0, 100, "a slice with trailing text is refused" },
+        { NULL, "1", "abc", SCHED_DET_BAD_SLICE, 0, 100, "a slice that is not a number is refused" },
+        { NULL, "0", "abc", SCHED_DET_OK, 0, 100, "a slice is not read while the clock is off" },
+        { "0", "1", NULL, SCHED_DET_CONTRADICTS_PACED, 0, 100, "on with SR_NOVBPACE=0 is refused" },
+        { "1", "1", NULL, SCHED_DET_OK, 1, 100, "on with SR_NOVBPACE=1 is accepted" },
+        { "", "1", NULL, SCHED_DET_OK, 1, 100, "on with SR_NOVBPACE empty is accepted" },
+        { "0", "0", NULL, SCHED_DET_OK, 0, 100, "off with SR_NOVBPACE=0 is accepted" },
+        { NULL, "2", NULL, SCHED_DET_BAD_CLOCK, 0, 100, "2 is refused" },
+        { NULL, "yes", NULL, SCHED_DET_BAD_CLOCK, 0, 100, "yes is refused" },
+        { NULL, "true", NULL, SCHED_DET_BAD_CLOCK, 0, 100, "true is refused" },
+        { NULL, "1 ", NULL, SCHED_DET_BAD_CLOCK, 0, 100, "1 with a trailing space is refused" },
+        { NULL, "01", NULL, SCHED_DET_BAD_CLOCK, 0, 100, "01 is refused" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int det_on = -1;
+        uint64_t slice_us = SCHED_DET_SLICE_US_DEFAULT;
+        int result = sched_det_parse(cases[i].novbpace, cases[i].det, cases[i].slice, &det_on, &slice_us);
+        expect(result == cases[i].result && det_on == cases[i].det_on && slice_us == cases[i].slice_us,
+               cases[i].what);
+    }
+}
+
 /* Two threads that block and wake each other within their slices keep one thread always ready,
  * so neither sr_yield's slow path nor the idle loop runs. A third thread waits for the display.
  * Time still passes and the VBLANK arrives, paced and in turbo: a title's own PSMF player
@@ -5696,6 +5928,11 @@ int main(int argc, char **argv) {
     test_vblank_runs_every_enabled_subintr();
     test_waiting_guest_keeps_host_window_pumped();
     test_stop_request_returns_a_lone_runner_to_the_scheduler();
+    test_turbo_timeline_does_not_depend_on_the_host_clock();
+    test_deterministic_clock_charges_the_work_not_the_host();
+    test_deterministic_clock_does_not_jump_to_a_sleepers_deadline();
+    test_clock_mode_follows_the_environment();
+    test_deterministic_clock_environment_is_validated();
     test_stop_raised_in_a_pause_resumes_no_thread();
     test_module_start_thread_uses_declared_parameters();
     test_module_start_thread_is_deleted_on_return();
