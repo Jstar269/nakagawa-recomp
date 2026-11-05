@@ -1538,13 +1538,17 @@ def videorec_smoke(build_dir: Path, fake_ffmpeg: Path) -> int:
             raise RuntimeError(f"record.json reports {record['status']}: {record['reason']}")
         if (record["encoder"], record["muxed"], record["clock"]) != ("ffv1", True, "deterministic"):
             raise RuntimeError("record.json is not an encoded, muxed, deterministic-clock recording")
-        if record["run_end"] != "the process exited":
-            raise RuntimeError(f"the recording ended at {record['run_end']!r}, not the process exit")
+        # The fixture's guest returns to the driver, which names that end and its exit status.
+        if (record["run_end"], record["exit_status"]) != ("the run returned to the driver", 0):
+            raise RuntimeError(
+                f"the recording ended at {record['run_end']!r} with exit status "
+                f"{record['exit_status']!r}, not the driver's clean end")
         if (record["width"], record["height"]) != (DISPLAY_WIDTH, DISPLAY_HEIGHT):
             raise RuntimeError("the offscreen recording is not at the presenter's 480x272")
         count = int(record["frames"])
         stall_ms = int(record["encoder_write_ms"])
-        # The pipe holds less than one frame, so each write waits out most of a stall.
+        # The encoder pipe holds about two frames on Windows (videorec.c sizes it) and the
+        # 64 KiB default on POSIX, so once it fills each write waits out most of a stall.
         if stall_ms < count * VIDEOREC_STALL_MS // 2:
             raise RuntimeError(
                 f"encoder writes took {stall_ms} ms for {count} frames: the stall did not happen")

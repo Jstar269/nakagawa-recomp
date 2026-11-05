@@ -434,9 +434,10 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 # all twenty-seven: hle_mpeg.c and the presentation boundary its A/V measurement drives
 # (display, audio, audio_codec, route, input), plus tests/native/hle_focus_media_stubs.c for the
 # calls into the rest of HLE. tools/hle_focus_check.py then reads the executable's symbol table
-# and fails if any excluded HLE file was linked. The two --videorec-audio runs record ten VBLANKs while the
-# production sceAudioOutputBlocking and 48000 Hz sceAudioSRCOutputBlocking handlers play a block: each fails if its recorder
-# hook in hle_audio.c is gone (#1273). $(HLE_OBJS) are only the symbol reference.
+# and fails if any excluded HLE file was linked. The three --videorec-audio runs record ten VBLANKs while the
+# production sceAudioOutputBlocking, sceAudioOutput2OutputBlocking (44.1 kHz) and 48000 Hz
+# sceAudioSRCOutputBlocking handlers play a block: each fails if its recorder hook in
+# hle_audio.c is gone or skips its channel (#1273). $(HLE_OBJS) are only the symbol reference.
 # The runtime's src/core objects (nk_font, nk_json, nk_xb, nk_input_profile and the platform file)
 # come from native-core-objects-core, which native-core-tests builds for the product core tests
 # already: the same sources, no runtime-only define, so the focused link does not compile them a
@@ -463,6 +464,7 @@ psmf-media-focused-selftest: native-core-objects-core $(PSMF_MEDIA_FOCUSED_RT_OB
 		--include $(HLE_MEDIA_FOCUS_SRCS) --stub $(BUILD_DIR)/hle_focus_media_stubs.o --require hle_register_psmf_player_handlers sr_hle_test_psmf_av_reset
 	$(BUILD_DIR)/psmf_media_focused_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
 	$(BUILD_DIR)/psmf_media_focused_selftest.exe --videorec-audio $(BUILD_DIR)/videorec_audio_channel channel
+	$(BUILD_DIR)/psmf_media_focused_selftest.exe --videorec-audio $(BUILD_DIR)/videorec_audio_output2 output2
 	$(BUILD_DIR)/psmf_media_focused_selftest.exe --videorec-audio $(BUILD_DIR)/videorec_audio_src src
 
 # The hosted gate for the focused link (#307): native-core-tests runs on every pull request.

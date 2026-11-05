@@ -5390,13 +5390,14 @@ static void test_atrac_riff_mutations(unsigned iterations) {
 
 /* ---- the recorder's production audio hooks (#1273, #2080 review) ------------------------
  *
- * Run as `--videorec-audio DIR channel|src`: a recording (raw, on the deterministic clock) of ten
- * VBLANKs through the production sr_vblank_tick, while a production handler plays a constant
- * stereo block from guest memory: sceAudioOutputBlocking on a regular channel (audio_output's
- * hook), or sceAudioSRCOutputBlocking on a 48000 Hz SRC reservation, whose frames the resampler
- * converts to 44100 Hz (audio_src_output's hook; Output2 and SRC at 44100 Hz go through
- * audio_output instead). audio.wav must hold that block's samples: removing either hook in
- * hle_audio.c leaves it silent and fails its run.
+ * Run as `--videorec-audio DIR channel|output2|src`: a recording (raw, on the deterministic clock)
+ * of ten VBLANKs through the production sr_vblank_tick, while a production handler plays a
+ * constant stereo block from guest memory: sceAudioOutputBlocking on a regular channel, or
+ * sceAudioOutput2OutputBlocking (44100 Hz, the Output2 channel), both through audio_output's
+ * hook; or sceAudioSRCOutputBlocking on a 48000 Hz SRC reservation, whose frames the resampler
+ * converts to 44100 Hz (audio_src_output's hook). audio.wav must hold that block's samples:
+ * removing either hook in hle_audio.c, or skipping the Output2 channel in the first, leaves it
+ * silent and fails its run.
  *
  * Two blocks, not one per VBLANK: no scheduler runs here, so guest time does not advance and the
  * deterministic clock's virtual audio queue never drains. A regular channel's blocking output
@@ -5408,9 +5409,9 @@ extern uint32_t s_vcount;  /* hle_display.c (hle_internal.h) */
 #define VR_NID_SRC_BLOCK   0xe0727056u  /* sceAudioSRCOutputBlocking(vol, buf) */
 
 static int videorec_audio_hooks(const char *dir, const char *which) {
-    const int src = strcmp(which, "src") == 0;
-    if (!src && strcmp(which, "channel") != 0) {
-        fprintf(stderr, "--videorec-audio: the path is channel or src, not %s\n", which);
+    const int src = strcmp(which, "src") == 0, output2 = strcmp(which, "output2") == 0;
+    if (!src && !output2 && strcmp(which, "channel") != 0) {
+        fprintf(stderr, "--videorec-audio: the path is channel, output2 or src, not %s\n", which);
         return 2;
     }
 #ifdef _WIN32
@@ -5422,7 +5423,7 @@ static int videorec_audio_hooks(const char *dir, const char *which) {
     setenv("SR_VIDEOREC_CODEC", "raw", 1);
     setenv("SR_DETERMINISTIC_CLOCK", "1", 1);
 #endif
-    const int16_t left = src ? 5000 : 3000, right = src ? -5000 : -3000;
+    const int16_t left = src ? 5000 : output2 ? 4000 : 3000, right = (int16_t)-left;
     for (uint32_t i = 0; i < PB_FRAMES; i++) {
         MEM_W16(PB_AU_A + i * 4u, (uint16_t)left);
         MEM_W16(PB_AU_A + i * 4u + 2u, (uint16_t)right);
@@ -5431,6 +5432,9 @@ static int videorec_audio_hooks(const char *dir, const char *which) {
     if (src) {
         CHECK(guest_mpeg_import(VR_NID_SRC_RESERVE, PB_FRAMES, 48000u, 2u, 0, 0) == 0,
               "videorec-audio: a 48000 Hz SRC channel is reserved");
+    } else if (output2) {
+        CHECK(guest_mpeg_import(PB_NID_OUT2_RESERVE, PB_FRAMES, 0, 0, 0, 0) == 0,
+              "videorec-audio: the Output2 channel is reserved");
     } else {
         channel = (int)guest_mpeg_import(PB_NID_CH_RESERVE, 0xffffffffu, PB_FRAMES, 0u, 0, 0);
         CHECK(channel >= 0 && channel < 8, "videorec-audio: a regular channel is reserved");
@@ -5443,10 +5447,13 @@ static int videorec_audio_hooks(const char *dir, const char *which) {
         s_vcount++;
         sr_vblank_tick();
         if (v != 1 && v != 6) continue;
-        uint32_t r = src
-            ? guest_mpeg_import(VR_NID_SRC_BLOCK, 0x8000u, PB_AU_A, 0, 0, 0)
-            : guest_mpeg_import(PB_NID_OUTPUT_BLOCK, (uint32_t)channel, 0x8000u, PB_AU_A, 0, 0);
-        CHECK(r == (uint32_t)PB_FRAMES, "videorec-audio: the production output handler takes the block");
+        uint32_t r = src ? guest_mpeg_import(VR_NID_SRC_BLOCK, 0x8000u, PB_AU_A, 0, 0, 0)
+                     : output2 ? guest_mpeg_import(PB_NID_OUT2_BLOCK, 0x8000u, PB_AU_A, 0, 0, 0)
+                               : guest_mpeg_import(PB_NID_OUTPUT_BLOCK, (uint32_t)channel, 0x8000u,
+                                                   PB_AU_A, 0, 0);
+        /* sceAudioOutput2OutputBlocking returns 0; the other two return the sample count. */
+        CHECK(r == (output2 ? 0u : (uint32_t)PB_FRAMES),
+              "videorec-audio: the production output handler takes the block");
     }
     s_vcount++;
     sr_vblank_tick();

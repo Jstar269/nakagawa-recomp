@@ -22,7 +22,9 @@
 //     that fails, a mux that fails or crashes, audio far ahead and audio that never reached
 //     audio.wav each FAIL the recording with its reason (a fake FFmpeg: this binary);
 //   - a fatal stop (_Exit, no atexit) after sr_videorec_finish_at leaves PASS naming the stop,
-//     and one without it leaves INCOMPLETE, never PASS (a child process: this binary).
+//     and one without it leaves INCOMPLETE, never PASS; a clean end records its exit status
+//     0, and an exit(1) that names no end records "exit_status": null (a child process: this
+//     binary).
 // No game data, no GPU, no window: exit 0 = every check passed.
 
 #ifndef _POSIX_C_SOURCE
@@ -548,7 +550,8 @@ static void test_refusals(const char *root) {
     CHECK(!sr_videorec_test_start_from_env(), "a relative SR_VIDEOREC_FFMPEG refuses");
     CHECK(record_says(dir, "REFUSED", "is not an absolute path"), "and says so");
     path_in(p, sizeof p, dir, "video.bgr0");
-    CHECK(file_size(p) < 0, "no raw frames are written in its place");
+    CHECK(file_size(p) == (long)(10u * W * H * 4u),
+          "no raw frames are written in its place: the earlier raw run's video is left as it was");
 #ifdef _WIN32
     set_env("SR_VIDEOREC_FFMPEG", "C:/videorec-no-such-dir/ffmpeg.exe");
 #else
@@ -556,6 +559,14 @@ static void test_refusals(const char *root) {
 #endif
     CHECK(!sr_videorec_test_start_from_env(), "a missing SR_VIDEOREC_FFMPEG refuses");
     CHECK(record_says(dir, "REFUSED", "is not an executable file"), "and says so");
+    {
+        char text[4096] = { 0 };
+        path_in(p, sizeof p, dir, "record.json");
+        FILE *f = fopen(p, "rb");
+        if (f) { size_t got = fread(text, 1, sizeof text - 1u, f); text[got] = '\0'; fclose(f); }
+        CHECK(text[0] && strstr(text, "videorec-no-such-dir") == NULL,
+              "the refusal names the key, never the user's FFmpeg path");
+    }
     set_env("SR_VIDEOREC_FFMPEG", NULL);
     const char *saved = getenv("PATH");
     char *path_copy = saved ? strdup(saved) : NULL;
@@ -619,6 +630,21 @@ static void test_stale_folder(const char *root) {
     path_in(p, sizeof p, dir, "recording.mkv");
     f = fopen(p, "wb");
     if (f) { fputs("old", f); fclose(f); }
+    /* A refused start records nothing and deletes nothing: only record.json changes. */
+    set_env("SR_VIDEOREC_DIR", dir);
+    set_env("SR_VIDEOREC_CODEC", "raw");
+    set_env("SR_DETERMINISTIC_CLOCK", NULL);
+    CHECK(!sr_videorec_test_start_from_env(), "a start without the deterministic clock is refused");
+    CHECK(file_size(p) == 3, "a refused start keeps the earlier run's recording.mkv");
+    CHECK(record_says(dir, "REFUSED", "SR_DETERMINISTIC_CLOCK=1"), "and replaces its PASS with REFUSED");
+    set_env("SR_DETERMINISTIC_CLOCK", "1");
+    set_env("SR_VIDEOREC_CODEC", "h265");
+    CHECK(!sr_videorec_test_start_from_env(), "a start with an unknown codec is refused");
+    CHECK(file_size(p) == 3, "a codec refusal keeps the earlier run's recording.mkv too");
+    sr_videorec_test_reset();
+    set_env("SR_VIDEOREC_DIR", NULL);
+    set_env("SR_VIDEOREC_CODEC", NULL);
+    set_env("SR_DETERMINISTIC_CLOCK", NULL);
     CHECK(sr_videorec_test_start(dir, "raw"), "a recording starts in a used folder");
     CHECK(file_size(p) < 0, "the earlier run's recording.mkv is removed");
     CHECK(record_says(dir, "INCOMPLETE", "ended before the recording was finished"),
@@ -691,9 +717,15 @@ static void test_audio_failures(const char *root) {
  * stop). A child records five VBLANKs and stops with _Exit(7): with the finish, record.json is PASS
  * and names the stop; without it, the recording stays INCOMPLETE, never PASS. */
 #define FATAL_STOP_WHY "a fatal stop ended the run"
+#define CLEAN_END_WHY "the run returned to the driver"
 
-static int exit_child(const char *dir, int finish) {
+static void exit_child_finish_at_exit(void) { (void)sr_videorec_finish(); }
+
+/* mode: "finish" or "skip" stop with _Exit(7); "clean" names its end and status 0 and exits 0;
+ * "exit1" leaves through exit(1), which only the atexit fallback sees. */
+static int exit_child(const char *dir, const char *mode) {
     if (!sr_videorec_test_start(dir, "raw")) return 3;
+    if (strcmp(mode, "exit1") == 0) atexit(exit_child_finish_at_exit);
     static uint32_t px[W * H];
     int16_t tone[735 * 2];
     for (int i = 0; i < 735; i++) tone[i * 2] = tone[i * 2 + 1] = (int16_t)(i * 5);
@@ -703,7 +735,14 @@ static int exit_child(const char *dir, int finish) {
         sr_videorec_vblank(v, vtime(v));
         sr_videorec_audio(0, tone, 735, 0x8000, 0x8000, vtime(v));
     }
-    if (finish) (void)sr_videorec_finish_at(FATAL_STOP_WHY);
+    fflush(stdout);
+    fflush(stderr);
+    if (strcmp(mode, "exit1") == 0) exit(1);
+    if (strcmp(mode, "clean") == 0) {
+        (void)sr_videorec_finish_status(CLEAN_END_WHY, 0);
+        exit(0);
+    }
+    if (strcmp(mode, "finish") == 0) (void)sr_videorec_finish_at(FATAL_STOP_WHY);
     fflush(stdout);
     fflush(stderr);
     _Exit(7);
@@ -718,7 +757,7 @@ static int run_exit_child(const char *self, const char *dir, const char *mode) {
 #else
     (void)self;
     pid_t pid = fork();
-    if (pid == 0) _exit(exit_child(dir, strcmp(mode, "finish") == 0));
+    if (pid == 0) _exit(exit_child(dir, mode));
     int status = 0;
     return pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 #endif
@@ -735,15 +774,37 @@ static void test_fatal_stop(const char *root, const char *self) {
     if (f) { size_t got = fread(text, 1, sizeof text - 1u, f); text[got] = '\0'; fclose(f); }
     CHECK(strstr(text, "\"run_end\": \"" FATAL_STOP_WHY "\"") != NULL, "and names the stop");
     CHECK(strstr(text, "\"frames\": 5") != NULL, "with the five frames recorded before it");
+    CHECK(strstr(text, "\"exit_status\": null") != NULL, "a stop that names no status records null");
     snprintf(dir, sizeof dir, "%s/fatal-skip", root);
     CHECK(run_exit_child(self, dir, "skip") == 7, "the other child stops with _Exit(7)");
     CHECK(record_says(dir, "INCOMPLETE", NULL), "a stop that skips the finish never leaves PASS");
+
+    /* A clean end names itself and its status; an exit(1) that names nothing reaches only the
+     * atexit fallback, which never reads as that clean end. */
+    snprintf(dir, sizeof dir, "%s/exit-clean", root);
+    CHECK(run_exit_child(self, dir, "clean") == 0, "the clean child exits 0");
+    CHECK(record_says(dir, "PASS", NULL), "a clean end leaves PASS");
+    path_in(p, sizeof p, dir, "record.json");
+    text[0] = '\0';
+    f = fopen(p, "rb");
+    if (f) { size_t got = fread(text, 1, sizeof text - 1u, f); text[got] = '\0'; fclose(f); }
+    CHECK(strstr(text, "\"run_end\": \"" CLEAN_END_WHY "\"") != NULL, "and names its end");
+    CHECK(strstr(text, "\"exit_status\": 0") != NULL, "with exit status 0");
+    snprintf(dir, sizeof dir, "%s/exit-one", root);
+    CHECK(run_exit_child(self, dir, "exit1") == 1, "the failing child exits 1");
+    path_in(p, sizeof p, dir, "record.json");
+    text[0] = '\0';
+    f = fopen(p, "rb");
+    if (f) { size_t got = fread(text, 1, sizeof text - 1u, f); text[got] = '\0'; fclose(f); }
+    CHECK(strstr(text, "\"exit_status\": null") != NULL, "exit(1) records no exit status");
+    CHECK(strstr(text, "names no end") != NULL && strstr(text, CLEAN_END_WHY) == NULL,
+          "and its run_end says no route named the end, never the clean end");
 }
 
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "-hide_banner") == 0) return fake_ffmpeg(argc, argv);
     if (argc == 4 && strcmp(argv[1], "--exit-child") == 0)
-        return exit_child(argv[2], strcmp(argv[3], "finish") == 0);
+        return exit_child(argv[2], argv[3]);
     const char *root = argc > 1 ? argv[1] : SR_SELFTEST_BUILD_ROOT "/videorec_selftest";
     make_dir(root);
     test_timeline(root);

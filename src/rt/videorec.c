@@ -61,6 +61,9 @@ static char s_dir[900];
 static char s_codec[32];
 static char s_ffmpeg[1024];
 static char s_run_end[96];
+/* The process exit status the route that ended the run named, or VR_EXIT_UNKNOWN. */
+#define VR_EXIT_UNKNOWN (-0x7fffffff - 1)
+static int s_exit_status = VR_EXIT_UNKNOWN;
 static uint64_t s_enc_write_us; /* host time spent handing frames to the encoder */
 
 /* Two packed BGRX pictures: the one last written (s_out) and the newest presented one, which a
@@ -267,16 +270,20 @@ static int vr_is_absolute(const char *p) { return p[0] == '/'; }
 
 /* FFmpeg from SR_VIDEOREC_FFMPEG (an absolute path) or the first absolute PATH entry that holds
  * it. Relative PATH entries, the working directory and the runtime's own folder are never
- * searched, so a file dropped beside a game cannot stand in for the encoder. */
+ * searched, so a file dropped beside a game cannot stand in for the encoder. A refusal names the
+ * key, never the path: logs and record.json get pasted into issues, and a path can hold a user
+ * name. */
 static int vr_find_ffmpeg(char *out, size_t outsz, char *why, size_t whysz) {
     const char *forced = getenv("SR_VIDEOREC_FFMPEG");
     if (forced && forced[0]) {
         if (!vr_is_absolute(forced)) {
-            snprintf(why, whysz, "SR_VIDEOREC_FFMPEG '%s' is not an absolute path", forced);
+            snprintf(why, whysz,
+                     "the custom FFmpeg path in SR_VIDEOREC_FFMPEG is not an absolute path");
             return 0;
         }
         if (!vr_file_exists(forced) || strlen(forced) >= outsz) {
-            snprintf(why, whysz, "SR_VIDEOREC_FFMPEG '%s' is not an executable file", forced);
+            snprintf(why, whysz,
+                     "the custom FFmpeg path in SR_VIDEOREC_FFMPEG is not an executable file");
             return 0;
         }
         snprintf(out, outsz, "%s", forced);
@@ -578,6 +585,20 @@ static int vr_open_files(void) {
     return s_ring != NULL;
 }
 
+/* Whether guest time follows guest work. The runtime asks the scheduler, which parses
+ * SR_DETERMINISTIC_CLOCK once (pace_setup, which also rejects any value but 0 and 1 and the
+ * SR_NOVBPACE=0 contradiction), so the recorder and the clock cannot disagree. The standalone
+ * selftest links no scheduler and reads the key the same way. */
+#ifdef SR_VIDEOREC_SELFTEST
+static int vr_clock_deterministic(void) {
+    const char *det = getenv("SR_DETERMINISTIC_CLOCK");
+    return det && strcmp(det, "1") == 0;
+}
+#else
+int sched_clock_deterministic(void); /* sched.c, declared in recomp.h */
+static int vr_clock_deterministic(void) { return sched_clock_deterministic(); }
+#endif
+
 /* Start a recording into dir, or refuse with the reason in record.json and on stderr.
  * need_det_clock: the runtime records only on the deterministic clock (videorec.h). */
 static int vr_begin(const char *dir, const char *codec, int need_det_clock) {
@@ -590,15 +611,11 @@ static int vr_begin(const char *dir, const char *codec, int need_det_clock) {
         fprintf(stderr, "VIDEOREC: not recording: SR_VIDEOREC_DIR cannot be created\n");
         return 0;
     }
-    if (!vr_clear_outputs()) {
-        fprintf(stderr, "VIDEOREC: not recording: an earlier run's files in SR_VIDEOREC_DIR "
-                        "cannot be removed\n");
-        return 0;
-    }
+    /* Every refusal check comes before the folder is cleared: a refused start replaces only
+     * record.json (REFUSED, so no earlier PASS stands) and leaves the earlier run's recording. */
     char why[1200];
     if (need_det_clock) {
-        const char *det = getenv("SR_DETERMINISTIC_CLOCK");
-        if (!det || strcmp(det, "1") != 0) {
+        if (!vr_clock_deterministic()) {
             vr_refuse("SR_VIDEOREC_DIR needs SR_DETERMINISTIC_CLOCK=1. On the paced clock the "
                       "frame readback, copy and encoder writes hold the guest thread, so the "
                       "guest would skip VBLANKs a run without the recording keeps");
@@ -630,6 +647,13 @@ static int vr_begin(const char *dir, const char *codec, int need_det_clock) {
                  (unsigned long long)(free_bytes >> 20),
                  (unsigned long long)(VR_MIN_FREE_START >> 20));
         vr_refuse(why);
+        return 0;
+    }
+    /* This start records: remove what an earlier run left, so nothing there can pass for this
+     * run's output. A file that cannot be removed refuses the start, as REFUSED if record.json
+     * can still be written. */
+    if (!vr_clear_outputs()) {
+        vr_refuse("an earlier run's files in SR_VIDEOREC_DIR cannot be removed");
         return 0;
     }
     /* Until the finish rewrites it, the summary says the recording is not finished. */
@@ -965,6 +989,8 @@ static int vr_fill_full(FILE *j, const void *ctx) {
                    s_failed ? "FAIL" : "PASS") >= 0 &&
            vr_json_str(j, s_failed ? s_fail_why : "") &&
            fprintf(j, ",\n  \"run_end\": ") >= 0 && vr_json_str(j, s_run_end) &&
+           (s_exit_status == VR_EXIT_UNKNOWN ? fprintf(j, ",\n  \"exit_status\": null")
+                                             : fprintf(j, ",\n  \"exit_status\": %d", s_exit_status)) >= 0 &&
            fprintf(j,
                    ",\n  \"clock\": \"deterministic\",\n"
                    "  \"encoder\": \"%s\",\n"
@@ -1004,12 +1030,22 @@ static void vr_close_checked(FILE **f, const char *why) {
     *f = NULL;
 }
 
-int sr_videorec_finish(void) { return sr_videorec_finish_at("the process exited"); }
+/* The atexit fallback: an exit() call no route named, such as one of the runtime's exit(1) or
+ * exit(2) fatal paths. The recorder cannot see that call's status, so record.json says so
+ * ("exit_status": null) rather than calling the run a clean one. */
+#define VR_RUN_END_UNNAMED "an exit() that names no end; its exit status is unknown"
+
+int sr_videorec_finish(void) { return sr_videorec_finish_at(VR_RUN_END_UNNAMED); }
 
 int sr_videorec_finish_at(const char *run_end) {
+    return sr_videorec_finish_status(run_end, VR_EXIT_UNKNOWN);
+}
+
+int sr_videorec_finish_status(const char *run_end, int exit_status) {
     if (s_state != VR_ON) return s_state == VR_DONE ? !s_failed : 0;
     s_state = VR_DONE;
     snprintf(s_run_end, sizeof s_run_end, "%s", run_end ? run_end : "");
+    s_exit_status = exit_status;
     uint64_t end = s_started ? sr_videorec_frame_sample(s_frames) : 0u;
     vr_flush_audio(end);
     for (int c = 0; c < SR_VIDEOREC_CHANNELS; c++)
@@ -1044,14 +1080,16 @@ int sr_videorec_finish_at(const char *run_end) {
     if (s_started && s_audio_samples != end) vr_fail("audio.wav is shorter than the video");
 
     int written = vr_replace_record(vr_fill_full, &fin);
+    char exit_text[16] = "unknown";
+    if (s_exit_status != VR_EXIT_UNKNOWN) snprintf(exit_text, sizeof exit_text, "%d", s_exit_status);
     fprintf(stderr,
             "VIDEOREC: %s frames=%llu new=%llu repeat=%llu gap=%llu late_vblanks=%llu "
-            "audio_samples=%llu encoder=%s encoder_write_ms=%llu run_end=\"%s\"%s%s\n",
+            "audio_samples=%llu encoder=%s encoder_write_ms=%llu run_end=\"%s\" exit_status=%s%s%s\n",
             s_failed || !written ? "FAIL" : "PASS", (unsigned long long)s_frames,
             (unsigned long long)s_new_frames, (unsigned long long)s_repeat_frames,
             (unsigned long long)s_gap_frames, (unsigned long long)s_late_vblanks,
             (unsigned long long)s_audio_samples, s_codec,
-            (unsigned long long)(s_enc_write_us / 1000u), s_run_end,
+            (unsigned long long)(s_enc_write_us / 1000u), s_run_end, exit_text,
             s_failed ? " reason=" : "", s_failed ? s_fail_why : "");
     fflush(stderr);
     return !s_failed && written;
@@ -1114,6 +1152,7 @@ void sr_videorec_test_reset(void) {
     free(s_ring);
     s_state = VR_UNREAD;
     s_dir[0] = s_codec[0] = s_ffmpeg[0] = s_fail_why[0] = s_run_end[0] = '\0';
+    s_exit_status = VR_EXIT_UNKNOWN;
     s_enc_write_us = 0;
     /* The selftest does not depend on the host disk: plenty of space unless a test says not. */
     s_test_free_set = 1;

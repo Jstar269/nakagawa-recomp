@@ -85,9 +85,14 @@ void sr_videorec_audio(int ch, const int16_t *lr, int nframes, int volL, int vol
 /* Close the files and the encoder, mux, and write record.json. Safe to call more than once;
  * also registered with atexit. Returns 1 when the recording is complete and consistent.
  * sr_videorec_finish_at names how the run ended (record.json "run_end"): every route that
- * leaves with _Exit calls it, since _Exit skips atexit. */
+ * leaves with _Exit calls it, since _Exit skips atexit. sr_videorec_finish_status also records
+ * the process exit status the route is about to return (record.json "exit_status"): the
+ * driver's own ends and sceKernelExitGame call it. Any other end leaves "exit_status": null,
+ * and the atexit fallback says that an exit() named no end, so a run that left through one
+ * of the runtime's exit(1) paths never reads as a clean exit. */
 int sr_videorec_finish(void);
 int sr_videorec_finish_at(const char *run_end);
+int sr_videorec_finish_status(const char *run_end, int exit_status);
 
 /* Audio sample index of video frame k: floor(k * 44100 * 1001 / 60000). */
 uint64_t sr_videorec_frame_sample(uint64_t k);

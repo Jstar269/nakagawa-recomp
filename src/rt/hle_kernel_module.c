@@ -1471,7 +1471,7 @@ static uint32_t h_ExitGame(CpuState *s) {
     fputc('\n', stderr);
     fflush(stderr);
     sr_flight_exit(0u);
-
+    (void)sr_videorec_finish_status("the game exited (sceKernelExitGame)", code);
 
     /* Terminal on hardware in every context.  Do not park the calling thread to keep the
      * runtime observable; that legacy diagnostic path allowed execution after ExitGame. */

@@ -858,8 +858,12 @@ paces against (`sceAudioOutput*Blocking`, `sceAudioGetChannelRestLength`, the PS
 lead) is a model that plays 44100 frames a second of guest time from the first push, not the host
 mixer's depth, which drains in host time and so would make the length of a blocking output depend
 on the host. It is on only when the caller sets `SR_DETERMINISTIC_CLOCK=1` (the picture gate
-does); a pad script or a frame-capture window alone keeps the clock a run always had, because
-recorded routes and the showcase smoke are qualified under paced timing. Guest time and the RTC
+does, and a video recording requires it); a pad script or a frame-capture window alone keeps the
+clock a run always had, because recorded routes and the showcase smoke are qualified under paced
+timing. A route qualified that way may not replay the same way on the deterministic clock, so it is
+re-qualified under `SR_DETERMINISTIC_CLOCK=1` before it is recorded, and a recorded run is not
+real-time, so it cannot be played live
+([Recording a video of a run](DEBUGGING.md#recording-a-video-of-a-run)). Guest time and the RTC
 are then a function of the guest's own work, so two runs with the same inputs give the same
 frames. Host inputs that remain: whether the host has an audio device, the Memory Stick volume's
 free space, a random console MAC and PSID on fresh user data, and the mixer's 262144-frame cap,
