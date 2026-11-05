@@ -1201,7 +1201,7 @@ WSL distro and every runner container; a fine-grained token scoped to this repos
 with only those permissions is the intended form.
 
 The pool's image matches what the hosted Ubuntu 24.04 jobs rely on (the native apt
-packages, Python 3.15.1 in the tool cache, CMake 3.31.6 so the SDL3 caches match, and
+packages, Python 3.15.2 in the tool cache, CMake 3.31.6 so the SDL3 caches match, and
 the CodeQL bundle the pinned CodeQL action uses). Its
 build files and supervisor are kept in the maintainer's workspace, not in this
 repository, because nobody else can run them.
@@ -1213,8 +1213,8 @@ first on `PATH` (#294). The contract is explicit:
 
 | Job / environment | Python running `tools/*` and the fixture generators |
 | --- | --- |
-| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.15.1 |
-| `windows_runtime` (MSYS2 UCRT64 shell) | Windows CPython 3.15.1 from `actions/setup-python`, passed through `PYTHON`; MSYS2's UCRT64 Python 3.14.8 is not used for repository tools |
+| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.15.2 |
+| `windows_runtime` (MSYS2 UCRT64 shell) | Windows CPython 3.15.2 from `actions/setup-python`, passed through `PYTHON`; MSYS2's UCRT64 Python 3.14.8 is not used for repository tools |
 | Local Windows runs | Windows CPython 3.15.x from the python.org installer; set `PYTHON` explicitly when MSYS2 comes first on `PATH` |
 
 Stages that invoke the repository's PowerShell 7.4 asset-copy script opt into
