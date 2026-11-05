@@ -3084,6 +3084,38 @@ static void tex_xs_note_upload(TexEnt *e, uint32_t levels) {
     tex_xs_offer(e, e->hash, levels);
 }
 
+/* A scaled copy reaches 2048x2048 (16 MiB), more than one staging reservation holds: the upload
+ * ring slot (8 MiB by default) and, when a reservation falls back to it, the shared staging
+ * buffer, which is sized for one render target (1 MiB at least). The copy goes up in bands of
+ * rows no larger than that minimum, in order on the one GE queue: the first band moves the image
+ * to TRANSFER_DST and the last to SHADER_READ_ONLY, as tex_upload_level does for a mip chain. */
+#define TEX_XS_BAND_BYTES (1u << 20)
+static int tex_xs_upload_bands(VkImage img, const uint32_t *px, uint32_t w, uint32_t h) {
+    VkImageLayout lay = VK_IMAGE_LAYOUT_UNDEFINED;
+    uint32_t rows = TEX_XS_BAND_BYTES / (w * 4u);
+    if (rows < 1u) rows = 1u;
+    for (uint32_t y = 0; y < h; y += rows) {
+        const uint32_t n = h - y < rows ? h - y : rows;
+        const VkDeviceSize bytes = (VkDeviceSize)w * n * 4u;
+        UploadReservation upload;
+        if (!upload_reserve(bytes, &upload)) return 0;
+        memcpy(upload.map, px + (size_t)y * w, (size_t)bytes);
+        if (y == 0u)
+            to_layout(s_cmd, img, VK_IMAGE_ASPECT_COLOR_BIT, &lay, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkBufferImageCopy bic = {0};
+        bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        bic.imageSubresource.layerCount = 1;
+        bic.imageOffset.y = (int32_t)y;
+        bic.imageExtent.width = w; bic.imageExtent.height = n; bic.imageExtent.depth = 1;
+        bic.bufferOffset = upload.offset;
+        vkCmdCopyBufferToImage(s_cmd, upload.buffer, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+        if (y + n >= h)
+            to_layout(s_cmd, img, VK_IMAGE_ASPECT_COLOR_BIT, &lay, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (!upload_finish(&upload, SR_PERF_GE_TEXTURE_UPLOAD)) return 0;
+    }
+    return 1;
+}
+
 /* Upload a finished scale into entry `e`'s scaled image, made the first time. */
 static int tex_xs_store(TexEnt *e, const NkTexScaleResult *r) {
     const uint32_t sw = (uint32_t)(r->w * r->factor), sh = (uint32_t)(r->h * r->factor);
@@ -3110,8 +3142,7 @@ static int tex_xs_store(TexEnt *e, const NkTexScaleResult *r) {
         e->xs.factor = r->factor;
     }
     if (e->pending) submit_pending();   /* recorded batches may sample the copy being replaced */
-    VkImageLayout lay = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (!tex_upload_level(e->xs.img, &lay, 0u, 1, r->rgba, (int)sw, (int)sh)) {
+    if (!tex_xs_upload_bands(e->xs.img, r->rgba, sw, sh)) {
         e->xs.state = XS_NONE;
         return 0;
     }

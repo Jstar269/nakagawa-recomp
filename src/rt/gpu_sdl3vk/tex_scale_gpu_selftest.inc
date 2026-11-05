@@ -5,6 +5,7 @@
  * path (included by ge_gpu.c in the SR_GPU_TEXSCALE_SELFTEST build; mk/selftests.mk
  * gpu-texscale-selftest). Synthetic textures only. The cells:
  *   scaled-draw      a 1:1 sprite draws the xBRZ copy, sampled on the copy's own lattice;
+ *   large            a 512x512 texture at 4x (16 MiB) uploads in bands and draws the copy;
  *   not-ready        a texture whose scale has not finished draws unscaled, without waiting;
  *   rewrite          a texture the guest rewrites draws unscaled until its own copy lands, then
  *                    the new copy; never the old one (the NK_TEX_SCALE_MUTANT_SKIP_HASH build
@@ -249,6 +250,70 @@ static int xst_cell_scaled_draw(int f) {
     return 1;
 }
 
+/* The largest copy: a 512x512 texture at factor 4 is 2048x2048, 16 MiB, more than the upload ring
+ * slot and the shared staging buffer hold (a title's 512x512 font page crashed the runtime here
+ * before the copy went up in bands). Main RAM, so no target or depth buffer can overlap it. */
+#define XST_BIG_ADDR 0x08900000u
+#define XST_BIG      512
+static int xst_cell_large(int f) {
+    (void)f;
+    const int factor = 4;
+    uint32_t *tex = (uint32_t *)SR_HOST(XST_BIG_ADDR);
+    for (int y = 0; y < XST_BIG; y++)
+        for (int x = 0; x < XST_BIG; x++) {
+            uint32_t c = 0xFF000000u | (xst_hash(0x5000u + (uint32_t)((x / 3) * 977 + (y / 5))) & 0xFFFFFFu);
+            if (x == y || x + y == XST_BIG - 1) c = 0xFFFFFFFFu;
+            tex[y * XST_BIG + x] = c;
+        }
+    uint32_t *big = (uint32_t *)malloc(sizeof(uint32_t) * XST_BIG * XST_BIG * (size_t)(factor * factor));
+    if (!big || !nk_tex_scale_image(tex, XST_BIG, XST_BIG, factor, 1, 1, big)) {
+        free(big);
+        fprintf(stderr, "gpu texscale selftest: FAIL large: reference scale failed\n");
+        return 0;
+    }
+    const int saved = s_xs_factor;
+    xst_reset();
+    s_xs_factor = factor;
+    nk_tex_scale_set_sync(1);
+    xst_state(XST_BASE, XST_BIG_ADDR, 3u, 1, 1);
+    s_ge->tex_bufw = XST_BIG;
+    s_ge->tex_w = XST_BIG;
+    s_ge->tex_h = XST_BIG;
+    ge_state_note_external_write();
+    /* 1:1 sprites of the top-left and bottom-right 16x16 corners: the bands' first and last. */
+    const uint64_t uploads0 = s_cnt_xs_uploads;
+    int ok = 1;
+    for (int pass = 0; ok && pass < 2; pass++) {
+        GeVtx p0, p1;
+        const float u0 = pass ? (float)(XST_BIG - XST_W) : 0.0f, v0 = pass ? (float)(XST_BIG - XST_H) : 0.0f;
+        wrap_vtx(&p0, 20.0f, 160.0f, 0xFFFFFFFFu); p0.u = u0; p0.v = v0;
+        wrap_vtx(&p1, 20.0f + XST_W, 160.0f + XST_H, 0xFFFFFFFFu); p1.u = u0 + XST_W; p1.v = v0 + XST_H;
+        s_tmpl_ok = 0;
+        ok = hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);   /* decodes, scales, queues */
+        s_tmpl_ok = 0;
+        ok = ok && hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);   /* stores, binds */
+        if (!ok) break;
+        uint32_t want[XST_W * XST_H];
+        for (int y = 0; y < XST_H; y++)
+            for (int x = 0; x < XST_W; x++)
+                want[y * XST_W + x] = big[(size_t)(factor * ((int)v0 + y) + factor / 2) * XST_BIG * factor +
+                                          (size_t)(factor * ((int)u0 + x) + factor / 2)];
+        ok = xst_report("large", 20, 160, want, pass ? "the last band of the 16 MiB copy is wrong"
+                                                     : "the first band of the 16 MiB copy is wrong");
+    }
+    free(big);
+    const uint64_t uploads = s_cnt_xs_uploads - uploads0;
+    s_xs_factor = saved;
+    xst_reset();
+    if (!ok) return 0;
+    if (uploads != 1u) {
+        fprintf(stderr, "gpu texscale selftest: FAIL large: %llu scaled uploads, want 1\n", (unsigned long long)uploads);
+        return 0;
+    }
+    printf("gpu texscale selftest: PASS %-12s 512x512 at 4x (16 MiB) uploaded in bands and drawn\n", "large");
+    return 1;
+}
+
 static int xst_cell_not_ready(int f) {
     uint32_t tex[XST_W * XST_H], want[XST_W * XST_H];
     xst_reset();
@@ -485,9 +550,9 @@ int gegpu_texscale_selftest(void) {
         return 0;
     }
     int ok = 1;
-    static int (*const cells[])(int) = { xst_cell_scaled_draw, xst_cell_not_ready, xst_cell_rewrite,
-                                         xst_cell_clut, xst_cell_rtt };
-    static const char *const names[] = { "scaled-draw", "not-ready", "rewrite", "clut", "rtt" };
+    static int (*const cells[])(int) = { xst_cell_scaled_draw, xst_cell_large, xst_cell_not_ready,
+                                         xst_cell_rewrite, xst_cell_clut, xst_cell_rtt };
+    static const char *const names[] = { "scaled-draw", "large", "not-ready", "rewrite", "clut", "rtt" };
     const size_t vram = 0x00200000u, fb0 = XST_BASE & 0x001FFFFFu, fb1 = fb0 + XST_STRIDE * FB_H * 4u;
     uint8_t *before = (uint8_t *)malloc(vram), clut[sizeof(s_ge->clutram)];
     if (!before) return 0;
