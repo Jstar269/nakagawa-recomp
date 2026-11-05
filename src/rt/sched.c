@@ -90,6 +90,12 @@ int     sr_sched_on = 0;
 atomic_int_least32_t sr_timeslice = 0;
 atomic_int_least32_t sr_preempt_due = 0;
 
+/* Guest time a scheduler boundary charges in the deterministic clock: TIMESLICE yield points at
+ * 10 million yield points per second of PSP time. A yield point is a function entry or a loop
+ * back-edge, roughly every 20 Allegrex cycles on a 333 MHz core, so this is the right order, and
+ * what matters to a run is that it is a fixed number: a guest that does more work sees more time
+ * pass, and one that does the same work sees the same time, whatever the host did. */
+#define SCHED_DET_SLICE_US_DEFAULT 100u
 #define TIMESLICE 1000           /* yields per thread run before preemption (smaller = more frequent vblank delivery, fixes UMD-init spin) */
 #define MAXTHREADS 128
 
@@ -1395,6 +1401,12 @@ int sched_wait_vblank_cb(int wait_start) {
  * delay waits, so everything runs as fast as the host allows. */
 static uint64_t s_vtime_us = 0;
 static int s_pace_on = -1;
+/* Deterministic clock (#2037): guest time is a function of the work the guest did and the events
+ * it waited for, never of the host clock. It is the turbo virtual clock with two differences: a
+ * scheduler boundary is charged a slice of the PSP's time for the yield points just executed
+ * (see sched_det_slice_us), and the RTC starts at a fixed date (sched_clock_deterministic). */
+static int s_det_clock;
+static uint64_t s_det_slice_us = SCHED_DET_SLICE_US_DEFAULT;
 static uint64_t s_clock_epoch_ns;
 static uint64_t s_vbl_next_ns;       /* absolute SDL monotonic deadline */
 static uint32_t s_vbl_period_rem;    /* rational-period remainder, denominator 60000 */
@@ -1414,19 +1426,69 @@ static uint64_t host_now_ns(void) {
     return s_host_ns_fn ? s_host_ns_fn() : SDL_GetTicksNS();
 }
 
+/* SR_DETERMINISTIC_CLOCK: unset or empty = automatic (on for a scripted run, that is one with a
+ * pad script or a frame-capture window, unless SR_NOVBPACE names a mode); '0' = off; '1' = on.
+ * Returns -1 for a value that is none of these. */
+static int sched_det_clock_request(const char *d, int *explicit_request) {
+    *explicit_request = 0;
+    if (!d || d[0] == '\0') return 0;
+    if (strcmp(d, "0") == 0) { *explicit_request = 1; return 0; }
+    if (strcmp(d, "1") == 0) { *explicit_request = 1; return 1; }
+    return -1;
+}
+
+static int sched_env_nonempty(const char *name) {
+    const char *v = getenv(name);
+    return v && v[0] != '\0';
+}
+
 static void pace_setup(void) {
     if (s_pace_on >= 0) return;
     const char *e = getenv("SR_NOVBPACE");
+    int paced;
     if (!e || e[0] == '\0' || strcmp(e, "0") == 0) {
-        s_pace_on = 1;
+        paced = 1;
     } else if (strcmp(e, "1") == 0) {
-        s_pace_on = 0;
+        paced = 0;
     } else {
         fprintf(stderr, "SR_NOVBPACE: invalid value '%s'; must be unset, empty, '0' (paced), or '1' (turbo)\n", e);
         fflush(stderr);
         exit(1);
     }
-    fprintf(stderr, "pace_setup: s_pace_on = %d (SR_NOVBPACE = %s)\n", s_pace_on, e ? e : "<unset>");
+    const char *d = getenv("SR_DETERMINISTIC_CLOCK");
+    int det_explicit;
+    int det = sched_det_clock_request(d, &det_explicit);
+    if (det < 0) {
+        fprintf(stderr, "SR_DETERMINISTIC_CLOCK: invalid value '%s'; must be unset, empty, '0' or '1'\n", d);
+        fflush(stderr);
+        exit(1);
+    }
+    if (det_explicit && det && e && strcmp(e, "0") == 0) {
+        fprintf(stderr, "SR_DETERMINISTIC_CLOCK=1 contradicts SR_NOVBPACE=0 (paced): pick one\n");
+        fflush(stderr);
+        exit(1);
+    }
+    if (!det_explicit && (!e || e[0] == '\0') &&
+        (sched_env_nonempty("SR_PADSCRIPT") || sched_env_nonempty("SR_FBSNAP_WINDOWS")))
+        det = 1;
+    s_det_clock = det;
+    s_pace_on = det ? 0 : paced;
+    if (det) {
+        const char *slice = getenv("SR_DETERMINISTIC_SLICE_US");
+        if (slice && slice[0]) {
+            char *end = NULL;
+            unsigned long v = strtoul(slice, &end, 10);
+            if (*end != '\0' || v < 1ul || v > 100000ul) {
+                fprintf(stderr, "SR_DETERMINISTIC_SLICE_US: invalid value '%s'; must be 1..100000\n", slice);
+                fflush(stderr);
+                exit(1);
+            }
+            s_det_slice_us = (uint64_t)v;
+        }
+    }
+    fprintf(stderr, "pace_setup: s_pace_on = %d (SR_NOVBPACE = %s) deterministic_clock = %d slice_us = %llu\n",
+            s_pace_on, e ? e : "<unset>", s_det_clock,
+            (unsigned long long)(s_det_clock ? s_det_slice_us : 10000u));
     fflush(stderr);
     s_clock_epoch_ns = host_now_ns();
     s_vbl_next_ns = s_clock_epoch_ns;
@@ -1440,6 +1502,10 @@ static void pace_setup(void) {
  * skip its own legacy 60 Hz sleep: two independent pacers stack and push frames past the
  * vblank period (the second one then costs a whole extra frame). */
 int sched_vbl_paced(void) { pace_setup(); return s_pace_on > 0; }
+
+/* True when guest time is deterministic (#2037): the RTC then starts at a fixed date instead of
+ * the host's calendar, so two identical runs see the same time of day. */
+int sched_clock_deterministic(void) { pace_setup(); return s_det_clock; }
 
 static uint64_t host_us(void) {
     return (host_now_ns() - s_clock_epoch_ns) / 1000u;
@@ -1468,7 +1534,10 @@ static void scheduler_progress_time(void) {
         uint64_t t = host_us();
         if (t > s_vtime_us) s_vtime_us = t;
     } else {
-        scheduler_add_time(10000u); /* deterministic scheduler quantum, never a clock-read side effect */
+        /* A deterministic scheduler quantum, never a clock-read side effect. Turbo charges a
+         * fixed 10 ms; the deterministic clock charges the slice of PSP time its yield points
+         * stand for, so guest time keeps pace with the work the guest does. */
+        scheduler_add_time(s_det_clock ? s_det_slice_us : 10000u);
     }
     scheduler_latch_due_events();
 }
@@ -1717,9 +1786,10 @@ static void vblank_pace(void) {
  *
  * What that comparison DOES depends on the profile, and the split is the #70 slice B contract:
  *
- *   turbo (SR_NOVBPACE=1): there is no host-anchored virtual clock, so the quantum latches an
- *     out-of-band VBLANK source. This is turbo's only escape from a guest loop that never
- *     reaches an explicit advancement point, and it is retained deliberately.
+ *   turbo (SR_NOVBPACE=1): the quantum is not consulted (#2037). It used to latch an
+ *     out-of-band VBLANK source from the host wall clock, so two identical runs saw VBLANKs at
+ *     different guest times; every sr_yield now charges turbo a quantum of guest time, which
+ *     is its only VBLANK source.
  *
  *   paced (default): the quantum produces NOTHING. scheduler_progress_time() at the top of the
  *     same sr_yield already sampled the host clock and scheduler_latch_due_events() already
@@ -3380,13 +3450,14 @@ void sr_yield(CpuState *s) {
      * is worth counting but must not manufacture an event; scheduler_service_pending()
      * immediately below is the thing that catches up.
      *
-     * Turbo (SR_NOVBPACE=1) keeps the raise: it has no host-anchored virtual clock,
-     * so a guest loop that never reaches an explicit advancement point has no other
-     * VBLANK source at all. */
-    if (sr_vblank_quantum_due()) {
-        if (s_pace_on) s_vblank_late_service_yields++;
-        else sched_raise_interrupt(SCHED_INTR_VBLANK);
-    }
+     * Turbo (SR_NOVBPACE=1) has no host-anchored clock and no host-clock watchdog either (#2037):
+     * every sr_yield charges it a quantum of guest time, which is its VBLANK source. */
+    if (s_pace_on && sr_vblank_quantum_due()) s_vblank_late_service_yields++;
+    /* A virtual clock (turbo) never reads the host clock here (#2037). scheduler_progress_time()
+     * above charged this boundary a whole quantum, so guest time always advances with execution
+     * and the rational source latches from it; a watchdog on host wall time could only add a
+     * VBLANK whose position depended on how fast the host happened to run, so two identical runs
+     * saw different timelines. */
     scheduler_service_pending();
     TCB *t = &s_tcb[s_cur];
     /* Only switch if someone else could run; otherwise keep going (avoids pointless churn). */
@@ -3444,7 +3515,6 @@ void sr_yield(CpuState *s) {
          *   - the eligible-delivery phase (scheduler_service_pending) invoking
          *     deliver_vblank
          *   - the sched_run idle loop driving the vblank chain when nothing is runnable
-         *   - in turbo only, sr_vblank_quantum_due() latching an out-of-band source
          * With no imminent wait, adv stays at 0 -- the recomp-fast-loop Sleep
          * cascade is broken, the worker exits f_00025a18 in ms, frame 2 presents.
          *
@@ -3452,7 +3522,12 @@ void sr_yield(CpuState *s) {
          * finite timed wait -- must skip it or the initial wait check below would
          * set adv=(uint64_t)-1 and create an invalid deadline.
          */
-        if (!s_pace_on) {
+        /* Not under the deterministic clock (#2037): there guest time passes with the work, one
+         * slice per scheduler boundary, and a sleeper's deadline is reached by running, as on a
+         * PSP. This jump charges the running thread a whole wait for every slice it runs (the
+         * title's audio thread wakes every 23 ms, so a main thread doing 0.1 ms of work per
+         * slice saw 23 ms pass per slice), which is why a computing title never finished. */
+        if (!s_pace_on && !s_det_clock) {
             uint64_t adv = 0;
             for (int i = 0; i < s_ntcb; i++) {
                 if (i == s_cur) continue;

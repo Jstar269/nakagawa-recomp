@@ -1203,6 +1203,9 @@ extern int s_psmf_av_test_queue;
 #endif
 int64_t psmf_av_now_us(void);
 int psmf_av_queue_frames(int ch);
+/* The audio queue depth in frames the guest sees on `ch` (-1: no host output). Under the
+ * deterministic clock it is a model that drains in guest time (#2037), not the host mixer's. */
+int hle_audio_queued(int ch);
 void psmf_av_window_tick(int64_t now_us);
 void psmf_av_final(const char *reason);
 void psmf_av_exit_report(void);
