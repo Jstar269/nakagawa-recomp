@@ -51,9 +51,9 @@ static uint32_t h_NetEtherNtostr(CpuState *s) {
     return out;
 }
 
-/* ---- The sceNet core library with no network (#341). Nakagawa has no network stack and opens no
- * socket (AGENTS.md section 5), but on a PSP the core library's start-up needs no network either:
- * sceNetInit only takes its memory pool and starts its threads, and the console says "no network"
+/* ---- The sceNet core library with no network (#341). Nakagawa has no network stack and opens
+ * no connection (AGENTS.md section 5), but on a PSP the core library's start-up needs no network
+ * either: sceNetInit only takes its memory pool and starts its threads, and the console says "no network"
  * later, when a game asks for an address, a group or an access point. pspautotests records that on a
  * PSP (hrydgard/pspautotests 70e72391, tests/net): sceNetInit(0x20000, 0x20, 0x1000, 0x20, 0x1000)
  * returns 0 in every net test, sceNetTerm returns 0, and Term followed by Init again returns 0

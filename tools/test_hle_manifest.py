@@ -1422,7 +1422,10 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x8ab81558": ("sceMp3StartEntry", "0x80010086"),
                 "0x732b042a": ("sceMp3EndEntry", "0x80010086"),
                 # The 59 public PSPSDK ad hoc entry points refuse under the offline network policy (#1139).
-                **pspsdk_adhoc_refusals(),
+                # sceNetAdhocctlGetParameter has its own handler (h_NetAdhocctlGetParameter):
+                # before sceNetAdhocctlInit it answers NOT_INITIALIZED, as a PSP does.
+                **{nid: entry for nid, entry in pspsdk_adhoc_refusals().items()
+                   if entry[0] != "sceNetAdhocctlGetParameter"},
             },
         )
         self.assertEqual(
