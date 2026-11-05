@@ -34,31 +34,28 @@ unchanged, and further SDK components can be added beside these files under this
   files, 2024 for `ffx_core_glsl.h`). `LICENSE.txt` here is SDK v1.1.4's root `LICENSE.txt`, the
   same MIT text.
 - Import method: `git show <pin>:<path>` from a clone of the repository, so the content is the Git
-  blob. Upstream stores the headers with CRLF line endings, and the tree's text rule is LF
-  (`.gitattributes`), so the headers' line endings were normalised to LF, as for
-  `third_party/libchdr/`. Nothing else changed. `LICENSE.txt` is LF upstream and byte-identical.
-  The upstream blob IDs below are `git rev-parse <pin>:<path>`; the SHA-256 values are of the
-  bytes in this tree.
+  blob. Upstream stores every file here with LF line endings, so each is imported byte-identical:
+  `git hash-object` of the file in this tree equals the upstream blob ID below
+  (`git rev-parse <pin>:<path>`). The SHA-256 values are of the same bytes.
 
 ## File manifest
 
 | File | Kind | Upstream path | Upstream blob SHA | SHA-256 |
 | --- | --- | --- | --- | --- |
-| `api/internal/gpu/ffx_common_types.h` | LOCAL DELTA: CRLF line endings normalised to LF (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_common_types.h` | `076e2828973f4300962a8124bac22f48a071213c` | `30b4f299e48eddaa64d9ad56c259fc13688fa5bc5735475c84d9ae10fd94907c` |
-| `api/internal/gpu/ffx_core.h` | LOCAL DELTA: CRLF line endings normalised to LF (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_core.h` | `fdeecf6cd9c00ebf589c34a26321206199c8fe11` | `db3268fc71b7663ca4b51504998602dde9e91262385efbf81acdc9a790133a4d` |
-| `api/internal/gpu/ffx_core_gpu_common.h` | LOCAL DELTA: CRLF line endings normalised to LF (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_core_gpu_common.h` | `4ef2dbd23ade02da7cf95da1d90de3c22b646ae0` | `2df061c94b04bb4dedb6931a9e8241c1aa94eae826c506a75851a7f72ea4f4e8` |
-| `api/internal/gpu/ffx_core_gpu_common_half.h` | LOCAL DELTA: CRLF line endings normalised to LF (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_core_gpu_common_half.h` | `3270ab12048df507fac0bcbde4e1859ecc028747` | `1f7368a8cd327c87c6b8031cf8c2aa32a6c46bb39d8fadf151212dcfd5d61900` |
-| `api/internal/gpu/ffx_core_portability.h` | LOCAL DELTA: CRLF line endings normalised to LF (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_core_portability.h` | `b488f5c97a72e61c5c48b41a09274681a3eea702` | `217281792d09b88ad122055a6361a9303ccbce22238172fa6b30df7978d38968` |
-| `api/internal/gpu/ffx_core_glsl.h` | LOCAL DELTA: CRLF line endings normalised to LF (SDK v1.1.4, commit `c6efa6bf`) | `sdk/include/FidelityFX/gpu/ffx_core_glsl.h` | `c8dccacdbc44460160d3b9fe3ce569ea2b2615e8` | `01afe5b65549b2c0951b494ca4bf570ee2aa89a64344e4c7d98ef86e6613ab42` |
-| `upscalers/fsr3/include/gpu/fsr1/ffx_fsr1.h` | LOCAL DELTA: CRLF line endings normalised to LF (2.4.0) | `Kits/FidelityFX/upscalers/fsr3/include/gpu/fsr1/ffx_fsr1.h` | `2ae12de1074188695a51f55123bede2c301fdd8b` | `328ee880b26f400f7d8e59ffcdf55b83ae71d6de759e72f106a3c8cfc0d4cc8e` |
+| `api/internal/gpu/ffx_common_types.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_common_types.h` | `076e2828973f4300962a8124bac22f48a071213c` | `30b4f299e48eddaa64d9ad56c259fc13688fa5bc5735475c84d9ae10fd94907c` |
+| `api/internal/gpu/ffx_core.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_core.h` | `fdeecf6cd9c00ebf589c34a26321206199c8fe11` | `db3268fc71b7663ca4b51504998602dde9e91262385efbf81acdc9a790133a4d` |
+| `api/internal/gpu/ffx_core_gpu_common.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_core_gpu_common.h` | `4ef2dbd23ade02da7cf95da1d90de3c22b646ae0` | `2df061c94b04bb4dedb6931a9e8241c1aa94eae826c506a75851a7f72ea4f4e8` |
+| `api/internal/gpu/ffx_core_gpu_common_half.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_core_gpu_common_half.h` | `3270ab12048df507fac0bcbde4e1859ecc028747` | `1f7368a8cd327c87c6b8031cf8c2aa32a6c46bb39d8fadf151212dcfd5d61900` |
+| `api/internal/gpu/ffx_core_portability.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_core_portability.h` | `b488f5c97a72e61c5c48b41a09274681a3eea702` | `217281792d09b88ad122055a6361a9303ccbce22238172fa6b30df7978d38968` |
+| `api/internal/gpu/ffx_core_glsl.h` | imported byte-identical (SDK v1.1.4, commit `c6efa6bf`) | `sdk/include/FidelityFX/gpu/ffx_core_glsl.h` | `c8dccacdbc44460160d3b9fe3ce569ea2b2615e8` | `01afe5b65549b2c0951b494ca4bf570ee2aa89a64344e4c7d98ef86e6613ab42` |
+| `upscalers/fsr3/include/gpu/fsr1/ffx_fsr1.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/upscalers/fsr3/include/gpu/fsr1/ffx_fsr1.h` | `2ae12de1074188695a51f55123bede2c301fdd8b` | `328ee880b26f400f7d8e59ffcdf55b83ae71d6de759e72f106a3c8cfc0d4cc8e` |
 | `LICENSE.txt` | imported byte-identical (SDK v1.1.4, commit `c6efa6bf`) | `LICENSE.txt` | `3712e34adea415aa00dab08625ce7224b27f1706` | `82cf74fc23885107c7f69249ac3f1dac55898ff68320eb2c753984cae6b2d78a` |
 | `PROVENANCE.md` | project-authored manifest | n/a | n/a | n/a |
 
 ## Local deltas
 
-Only the line endings, as the manifest says: the CRLF of each header became LF. No line was
-added, removed or edited. The 2.4.0 headers needed no helper that the SDK v1.1.4 GLSL layer lacks: the
-shaders compile with them as imported. Upstream ends some lines in spaces and indents one line of
+None: every file is imported byte-identical. The 2.4.0 headers needed no helper that the SDK v1.1.4
+GLSL layer lacks: the shaders compile with them as imported. Upstream ends some lines in spaces and indents one line of
 `ffx_core_glsl.h` with a tab, so `.gitattributes` exempts the imported files from the whitespace
 checks.
 

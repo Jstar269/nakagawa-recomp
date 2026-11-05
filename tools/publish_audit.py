@@ -1275,7 +1275,7 @@ SPDX_BYTE_EXACT_IMPORT_TREES = (
     # third_party/libchdr/PROVENANCE.md records every upstream blob).
     "third_party/libchdr/",
     # AMD FidelityFX SDK headers (MIT): the notice is in each header comment, without an SPDX
-    # line upstream; CRLF normalised to LF only (third_party/fidelityfx_sdk/PROVENANCE.md).
+    # line upstream; imported byte-identical (third_party/fidelityfx_sdk/PROVENANCE.md).
     "third_party/fidelityfx_sdk/",
 )
 
