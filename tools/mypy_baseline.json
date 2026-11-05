@@ -21,6 +21,7 @@
     "tools/build_graph_snapshot.py": 1,
     "tools/build_profile.py": 2,
     "tools/build_public_export.py": 5,
+    "tools/ci_paths.py": 9,
     "tools/ci_trust_verdict.py": 5,
     "tools/codegen.py": 6,
     "tools/compat_overrides.py": 5,
@@ -138,5 +139,5 @@
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 346
+  "total_errors": 355
 }
