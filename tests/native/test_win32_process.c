@@ -288,6 +288,9 @@ int main(int argc, char *argv[]) {
     assert(WaitForSingleObject(hGrandchild, 0) == WAIT_TIMEOUT);
 
     nk_platform_terminate_process(&tree_proc);
+    /* Terminate returns once the process has ended (nk_platform.h). */
+    assert(!tree_proc.is_active);
+    assert(WaitForSingleObject((HANDLE)tree_proc.native_handle, 0) == WAIT_OBJECT_0);
     nk_platform_close_process(&tree_proc);
 
     DWORD wait_res = WaitForSingleObject(hGrandchild, 2000);
