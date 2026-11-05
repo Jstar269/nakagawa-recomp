@@ -382,6 +382,9 @@ ships it and `assets/prereq_manifest.json` pins it. This job adds GCC 16 against
     then stays a zombie that `kill(pid, 0)` still finds, and `test_posix_process`'s
     process-tree subtest fails although the tree was terminated. On a hosted runner, systemd
     reaps them.
+  - The job sets `SR_SOURCE_COMMIT` to the checked-out revision, as `windows_runtime` does.
+    It runs as root in the container and the checkout belongs to the runner's user, so git
+    refuses the repository and the display smoke's flight step would have no build identity.
   - The job needs network access to the Docker registry and Fedora's mirrors. An
     unauthenticated Docker Hub pull limit or a mirror outage can fail it without any code
     change.

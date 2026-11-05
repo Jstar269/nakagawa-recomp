@@ -2003,8 +2003,12 @@ class Gcc16CanaryWiringTests(unittest.TestCase):
         self.assertNotIn("updates", self.text)
         self.assertNotIn("--enablerepo", self.text)
 
+    def test_the_build_identity_comes_from_the_checked_out_revision(self) -> None:
+        # Root in the container cannot read the runner-owned checkout with git, so the display
+        # smoke's flight step gets its build identity from the job, as on windows_runtime.
+        self.assertIn("    env:\n      SR_SOURCE_COMMIT: ${{ github.sha }}\n    steps:", self.text)
+
     def test_git_is_installed_before_the_checkout(self) -> None:
-        # The flight smoke needs a real git checkout for its build identity.
         self.assertIn("git-core-", " ".join(self._install_packages()))
         self.assertLess(_ci_step_index(self.block, self.INSTALL_STEP),
                         _ci_step_index(self.block, "Check out repository"))
@@ -2034,7 +2038,8 @@ class Gcc16CanaryWiringTests(unittest.TestCase):
     def test_docs_describe_the_canary_and_its_promotion(self) -> None:
         section = _markdown_section((ROOT / "docs" / "CI.md").read_text(encoding="utf-8"),
                                     "### GCC 16 canary")
-        for fact in ("`linux_gcc16`", "--repo=fedora", "`gcc-16.2.1-2.fc45.1`", "`--init`", "Not required",
+        for fact in ("`linux_gcc16`", "--repo=fedora", "`gcc-16.2.1-2.fc45.1`", "`--init`", "`SR_SOURCE_COMMIT`",
+                     "Not required",
                      "no `continue-on-error`", "steps locally against the new digest", "from any event",
                      "conclusion, with none failed by the container", "libavutil/mem.c:272"):
             with self.subTest(fact=fact):

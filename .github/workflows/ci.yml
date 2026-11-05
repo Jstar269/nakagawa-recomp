@@ -1353,9 +1353,15 @@ jobs:
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_native == 'true' }}
     timeout-minutes: 20
+    # The display smoke's flight step needs the commit as its build identity
+    # (mk/runtime_sources.mk). The job runs as root in the container and the checkout belongs to
+    # the runner's user, so git refuses the repository ("dubious ownership") and the Makefile's
+    # `git rev-parse HEAD` comes back empty. Forward the revision the checkout contains, as
+    # windows_runtime does.
+    env:
+      SR_SOURCE_COMMIT: ${{ github.sha }}
     steps:
-      # git-core comes first so the checkout below is a real git checkout: the display smoke's
-      # flight step needs the commit as its build identity (mk/runtime_sources.mk).
+      # git-core comes first so the checkout below is a real git checkout.
       - name: Install GCC 16.2 and the native test dependencies from Fedora 45's GA repository
         timeout-minutes: 8
         run: |
