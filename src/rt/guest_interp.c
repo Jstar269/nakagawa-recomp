@@ -3,10 +3,74 @@
 
 #include "guest_interp.h"
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define SR_EVIDENCE_NO_NIDS /* this file reads the VFPU form table only */
+#include "hle_evidence.h"  /* generated: VFPU forms with no recorded evidence (docs/HLE_COVERAGE.md) */
+
+/* ---- Unverified VFPU forms (#1877) -------------------------------------------------
+ * A form with no recorded evidence is named once in the run log. Two sources report it:
+ *  - The interpreter floor reports the first word it executes in a pattern of the generated
+ *    table, but only for the VFPU loads and stores it runs under --lle-cpu (primary opcodes
+ *    0x32, 0x35, 0x36, 0x3a, 0x3d, 0x3e). The table's patterns for opcodes 0x34 and 0x3f are
+ *    not memory operations and are never reached here.
+ *  - Translated code reports from the build, for every pattern (codegen lists the first word
+ *    it translated per pattern, and the generated start-up code passes the list to
+ *    sr_vfpu_report_unverified_uses), so no check runs on the hot path.
+ * Output goes to stderr only: no result or state changes. */
+static _Atomic(uint32_t) s_vfpu_floor_noted[SR_VFPU_UNVERIFIED_FORM_COUNT + 1u];
+static _Atomic(uint32_t) s_vfpu_built_noted[SR_VFPU_UNVERIFIED_FORM_COUNT + 1u];
+
+FILE *sr_vfpu_evidence_log; /* a test seam: NULL logs to stderr */
+void sr_vfpu_evidence_reset(void) { /* a test seam: forget which patterns were already named */
+    for (unsigned i = 0u; i <= SR_VFPU_UNVERIFIED_FORM_COUNT; i++) {
+        atomic_store_explicit(&s_vfpu_floor_noted[i], 0u, memory_order_relaxed);
+        atomic_store_explicit(&s_vfpu_built_noted[i], 0u, memory_order_relaxed);
+    }
+}
+static FILE *vfpu_evidence_stream(void) {
+    return sr_vfpu_evidence_log ? sr_vfpu_evidence_log : stderr;
+}
+
+static int vfpu_unverified_pattern(uint32_t word) {
+    for (unsigned i = 0u; i < SR_VFPU_UNVERIFIED_FORM_COUNT; i++) {
+        if ((word & sr_vfpu_unverified_forms[i].mask) == sr_vfpu_unverified_forms[i].match) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+int sr_vfpu_note_unverified(uint32_t word, uint32_t pc) {
+    int i = vfpu_unverified_pattern(word);
+    if (i < 0) return 0;
+    if (atomic_load_explicit(&s_vfpu_floor_noted[i], memory_order_relaxed) ||
+        atomic_exchange_explicit(&s_vfpu_floor_noted[i], 1u, memory_order_acq_rel)) {
+        return 1;
+    }
+    fprintf(vfpu_evidence_stream(),
+            "VFPU: unverified: first use of %s (word 0x%08" PRIx32 ") at 0x%08" PRIx32
+            ": no recorded evidence (docs/HLE_COVERAGE.md)\n",
+            sr_vfpu_unverified_forms[i].forms, word, pc);
+    return 1;
+}
+
+void sr_vfpu_report_unverified_uses(const SrVfpuUse *uses, uint32_t count) {
+    for (uint32_t k = 0u; uses && k < count; k++) {
+        int i = vfpu_unverified_pattern(uses[k].word);
+        if (i < 0 || atomic_exchange_explicit(&s_vfpu_built_noted[i], 1u, memory_order_acq_rel)) {
+            continue;
+        }
+        fprintf(vfpu_evidence_stream(),
+                "VFPU: unverified: translated code uses %s (word 0x%08" PRIx32 ") at 0x%08" PRIx32
+                ": no recorded evidence (docs/HLE_COVERAGE.md)\n",
+                sr_vfpu_unverified_forms[i].forms, uses[k].word, uses[k].pc);
+    }
+}
 
 /* Installed by the scheduler (sched.c) when it owns the guest fibers; see recomp.h. */
 int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
@@ -1238,6 +1302,7 @@ static SrGuestInterpResult execute_noncontrol(
                 set_fault(fault, pc, opcode, pc, 1);
                 return SR_GUEST_INTERP_UNSUPPORTED;
             }
+            (void)sr_vfpu_note_unverified(opcode, pc); /* log only; before any fault */
             if (vfpu_width != 0u) {
                 const uint32_t vfpu_address =
                     read_gpr(s, rs) + sign_extend_16(opcode & 0xFFFCu);

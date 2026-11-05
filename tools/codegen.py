@@ -3054,6 +3054,72 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
             pc = next_pc
     return insns, labels, continuations
 
+# ---- Unverified VFPU forms in a title's translation (#1877) ------------------------------
+# tools/verification_ledger.py generates src/rt/hle_evidence.h, which holds the (mask, match)
+# word patterns of the VFPU forms with no recorded evidence. The build lists, per pattern, the
+# lowest-addressed word it translated; the generated start-up code passes the list to
+# sr_vfpu_report_unverified_uses, so the run log names the forms once and no check runs on the
+# hot path. Nothing here changes the translation of any instruction.
+EVIDENCE_HEADER = os.path.join(os.path.dirname(_TOOLS_DIRECTORY), "src", "rt", "hle_evidence.h")
+_VFPU_FORM_ROW_RE = re.compile(r'\{\s*0x([0-9a-fA-F]{8})u,\s*0x([0-9a-fA-F]{8})u,\s*"([^"]*)"\s*\}')
+_UNVERIFIED_VFPU_USES: dict[int, tuple[int, int]] = {}
+_UNVERIFIED_VFPU_COLLECTING = [False]
+# Opcodes that can hold an unverified form; the pattern scan runs only for these.
+_UNVERIFIED_VFPU_OPCODES = frozenset((0x32, 0x34, 0x36, 0x3a, 0x3e, 0x3f))
+
+
+def unverified_vfpu_patterns(header_path=None):
+    """The ``(mask, match, forms)`` rows of ``sr_vfpu_unverified_forms`` in the generated header."""
+    with open(header_path or EVIDENCE_HEADER, encoding="utf-8") as handle:
+        text = handle.read()
+    start = text.find("sr_vfpu_unverified_forms[")
+    end = text.find("};", start)
+    if start < 0 or end < 0:
+        raise ValueError(f"{header_path or EVIDENCE_HEADER}: no sr_vfpu_unverified_forms table")
+    return [(int(m.group(1), 16), int(m.group(2), 16), m.group(3))
+            for m in _VFPU_FORM_ROW_RE.finditer(text, start, end) if m.group(1) != "00000000"]
+
+
+def reset_unverified_vfpu_uses():
+    """Start collecting for one translation. Outside one (the VFPU census classifies words
+    through normal_line while it generates the table this reads) nothing is collected."""
+    _UNVERIFIED_VFPU_USES.clear()
+    _UNVERIFIED_VFPU_COLLECTING[0] = True
+
+
+def stop_collecting_unverified_vfpu_uses():
+    _UNVERIFIED_VFPU_COLLECTING[0] = False
+
+
+def note_unverified_vfpu(addr, w, patterns=None):
+    """Record ``w`` at ``addr`` when it is in an unverified VFPU pattern (the lowest address wins)."""
+    if patterns is None:
+        patterns = _unverified_patterns_cached()
+    for index, (mask, match, _forms) in enumerate(patterns):
+        if w & mask == match:
+            if index not in _UNVERIFIED_VFPU_USES or addr < _UNVERIFIED_VFPU_USES[index][0]:
+                _UNVERIFIED_VFPU_USES[index] = (addr, w)
+            return
+
+
+_PATTERNS_CACHE: list[list[tuple[int, int, str]]] = []
+
+
+def _unverified_patterns_cached():
+    if not _PATTERNS_CACHE:
+        _PATTERNS_CACHE.append(unverified_vfpu_patterns())
+    return _PATTERNS_CACHE[0]
+
+
+def unverified_vfpu_report_lines():
+    """Generated start-up lines that hand the collected words to the runtime, or none."""
+    uses = sorted(_UNVERIFIED_VFPU_USES.values())
+    if not uses:
+        return []
+    items = ", ".join(f"{{ 0x{w:08x}u, 0x{a:08x}u }}" for a, w in uses)
+    return [f"    sr_vfpu_report_unverified_uses((const SrVfpuUse[]){{ {items} }}, {len(uses)}u);"]
+
+
 def _plain_line(addr, w, trace_w, lle_cpu=False, delay_branch_pc=None):
     try:
         eff, saddr, ssize = effect(addr, w, lle_cpu=lle_cpu,
@@ -3066,6 +3132,8 @@ def _plain_line(addr, w, trace_w, lle_cpu=False, delay_branch_pc=None):
             raise
         eff = _vfpu_interp_stmt(addr, w)
         saddr, ssize = None, 0
+    if _UNVERIFIED_VFPU_COLLECTING[0] and (w >> 26) in _UNVERIFIED_VFPU_OPCODES:
+        note_unverified_vfpu(addr, w)
     if saddr is SELF_TRACED:
         return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff}"
     return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
@@ -5650,6 +5718,7 @@ def _registration_lines(elf, ranges, known, base_name, num_files, emitted, resum
         )
         main_out.append("        exit(1);")
         main_out.append("    }")
+    main_out.extend(unverified_vfpu_report_lines())
     if stack_census:
         main_out.append(
             "    sr_stack_census_begin(sr_stack_census_expected_entries, "
@@ -5790,6 +5859,7 @@ def _translate(argv):
     registration source, the chunks and the reports. A refusal is raised as ``_Refusal``;
     ``main`` turns it into the message and exit status.
     """
+    reset_unverified_vfpu_uses()
     args = [a for a in argv[1:] if not a.startswith("--")]
     try:
         cli = _command_line_parser().parse_args([a for a in argv[1:] if a.startswith("--")])
@@ -6257,6 +6327,8 @@ def main(argv):
     except _Refusal as refusal:
         sys.stderr.write(refusal.message)
         return refusal.status
+    finally:
+        stop_collecting_unverified_vfpu_uses()
 
 
 if __name__ == "__main__":
