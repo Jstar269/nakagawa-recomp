@@ -5,7 +5,10 @@
 * fsr3_pass_layout (src/rt/fsr3_host.c) against each embedded module's own decorations: every
   descriptor's binding, kind and name, which SRVs are sampled through s_LinearClamp, the local size,
   and the constant buffers' member order and offsets against the C structs in fsr3_host.h.
-* The storage images that declare a format are exactly the atomic ones, as R32ui (the LOCAL DELTA).
+* The storage images that declare a format are exactly the atomic ones, as R32ui (the LOCAL DELTA),
+  in the upscaler set and, image by image across passes, in the frame-generation set.
+* Only frame generation's optical-flow search uses subgroup operations, the one pass that needs a
+  required subgroup size of 32.
 * The derived C files carry the GPL header, AMD's MIT notice and a dated modification note.
 * The mutant campaigns' texts each match their file exactly once.
 * Inert (F-A-lite, static half): no FSR 3 file is compiled into the runtime or the player, and no
@@ -33,7 +36,8 @@ GPU_DIR = ROOT / "src/rt/gpu_sdl3vk"
 
 OP_NAME, OP_MEMBER_NAME, OP_EXECUTION_MODE, OP_TYPE_IMAGE, OP_TYPE_SAMPLER = 5, 6, 16, 25, 26
 OP_TYPE_STRUCT, OP_TYPE_POINTER, OP_VARIABLE, OP_LOAD, OP_IMAGE_TEXEL_POINTER = 30, 32, 59, 61, 60
-OP_SAMPLED_IMAGE, OP_DECORATE, OP_MEMBER_DECORATE = 86, 71, 72
+OP_SAMPLED_IMAGE, OP_DECORATE, OP_MEMBER_DECORATE, OP_CAPABILITY = 86, 71, 72, 17
+CAP_GROUP_NON_UNIFORM = 61
 DEC_BINDING, DEC_DESCRIPTOR_SET, DEC_OFFSET = 33, 34, 35
 MODE_LOCAL_SIZE, FORMAT_UNKNOWN, FORMAT_R32UI = 17, 0, 33
 
@@ -54,11 +58,14 @@ def reflect(words: list[int]) -> dict:
     names, binding, dset, types, pointers, variables = {}, {}, {}, {}, {}, {}
     member_names, offsets, loads, sampled, texel_pointers = {}, {}, {}, set(), set()
     local = None
+    caps = set()
     i = 5
     while i < len(words):
         count, op = words[i] >> 16, words[i] & 0xFFFF
         a = words[i + 1:i + count]
-        if op == OP_NAME:
+        if op == OP_CAPABILITY:
+            caps.add(a[0])
+        elif op == OP_NAME:
             names[a[0]] = _string(a[1:])
         elif op == OP_MEMBER_NAME:
             member_names[(a[0], a[1])] = _string(a[2:])
@@ -102,7 +109,7 @@ def reflect(words: list[int]) -> dict:
             cbuffers[name] = [(member_names.get((pointee, m)), offsets.get((pointee, m))) for m in range(kind[1])]
         linear = any(loads.get(image) == var for image in sampled)
         rows.append((number, dset.get(var), what, name, linear))
-    return {"local": local, "rows": sorted(rows), "formats": formats, "cbuffers": cbuffers}
+    return {"local": local, "rows": sorted(rows), "formats": formats, "cbuffers": cbuffers, "caps": caps}
 
 
 def c_tables() -> dict[str, list[tuple[int, str, str, bool]]]:
@@ -207,6 +214,47 @@ class BindingTableTests(unittest.TestCase):
                        "FFX_FSR3UPSCALER_OPTION_UPSAMPLE_USE_LANCZOS_TYPE=2", "FFX_SPD_NO_WAVE_OPERATIONS=1",
                        "FFX_FSR3UPSCALER_OPTION_HDR_COLOR_INPUT=0"):
             self.assertIn(define, shader_embed.FSR3_DEFINES)
+
+
+class FrameGenerationShaderTests(unittest.TestCase):
+    """The fsr3fg set: AMD's frame-interpolation and optical-flow passes (PR-C)."""
+
+    def setUp(self) -> None:
+        self.modules = {Path(emb).name: reflect(spirv_words(ROOT / emb))
+                        for _, _, emb in shader_embed.FSR3FG_SHADERS}
+
+    def test_every_pass_is_embedded_once(self) -> None:
+        self.assertEqual(len(self.modules), 17)
+        self.assertEqual(set(self.modules), {p.name for p in GPU_DIR.glob("fsr3fg_*_comp.inc")})
+
+    def test_images_declare_r32ui_exactly_when_an_atomic_reaches_them_in_some_pass(self) -> None:
+        declared, atomic = {}, set()
+        for module, facts in self.modules.items():
+            for name, (image_format, is_atomic) in facts["formats"].items():
+                self.assertIn(image_format, (FORMAT_UNKNOWN, FORMAT_R32UI), (module, name))
+                declared.setdefault(name, set()).add(image_format)
+                if is_atomic:
+                    atomic.add(name)
+        for name, formats in declared.items():
+            with self.subTest(image=name):
+                self.assertEqual(formats, {FORMAT_R32UI} if name in atomic else {FORMAT_UNKNOWN})
+        self.assertEqual(atomic, {
+            "rw_reconstructed_depth_previous_frame", "rw_reconstructed_depth_interpolated_frame",
+            "rw_game_motion_vector_field_x", "rw_game_motion_vector_field_y",
+            "rw_optical_flow_motion_vector_field_x", "rw_optical_flow_motion_vector_field_y",
+            "rw_optical_flow_scd_histogram", "rw_optical_flow_scd_temp", "rw_optical_flow_scd_output"})
+
+    def test_only_the_optical_flow_search_uses_subgroup_operations(self) -> None:
+        users = {m for m, facts in self.modules.items() if CAP_GROUP_NON_UNIFORM in facts["caps"]}
+        self.assertEqual(users, {"fsr3fg_of_compute_optical_flow_advanced_v5_comp.inc"})
+
+    def test_the_manifest_pins_the_shader_options(self) -> None:
+        for define in ("FFX_FRAMEINTERPOLATION_OPTION_INVERTED_DEPTH=1",
+                       "FFX_FRAMEINTERPOLATION_OPTION_LOW_RES_MOTION_VECTORS=1",
+                       "FFX_FRAMEINTERPOLATION_OPTION_JITTERED_MOTION_VECTORS=0",
+                       "FFX_SPD_NO_WAVE_OPERATIONS=1", "FFX_HALF=0"):
+            self.assertIn(define, shader_embed.FSR3FG_DEFINES)
+        self.assertFalse(any("PREFER_WAVE64" in d for d in shader_embed.FSR3FG_DEFINES))
 
 
 class NoticeTests(unittest.TestCase):

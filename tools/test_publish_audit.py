@@ -2415,7 +2415,8 @@ class GeneratedEmbeddingSpdxTests(unittest.TestCase):
 
     def test_dxc_embeddings_match_the_fsr3_shader_table_and_their_sources_are_byte_exact_imports(self) -> None:
         import shader_embed
-        contract = {embedded.as_posix(): source.as_posix() for _stage, source, embedded in shader_embed.FSR3_SHADERS}
+        contract = {embedded.as_posix(): source.as_posix()
+                    for _stage, source, embedded in shader_embed.FSR3_SHADERS + shader_embed.FSR3FG_SHADERS}
         self.assertEqual(publish_audit.SPDX_DXC_EMBEDDING_SOURCES, contract)
         for embedded, source in contract.items():
             self.assertNotIn(embedded, publish_audit.SPDX_GENERATED_EMBEDDING_SOURCES)

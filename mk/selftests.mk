@@ -172,10 +172,11 @@ fsr3-host-selftest:
 fsr3-mutants: fsr3-host-selftest
 	"$(PYTHON)" tools/fsr3_mutants.py --build-dir $(BUILD_DIR)/fsr3-mutants --cc "$(CC)"
 
-# fsr3-shader-verify - the FSR 3 shader set (schema 2: sources, include closures, embeddings, the
-# pinned DXC's options and defines). fsr3-shader-repro-verify also recompiles it with DXC and
-# requires the same bytes; a DXC that is not the pinned release is a SKIP, printed, and the tool's
-# exit 77 (the hosted job runs the tool itself, so there a SKIP fails).
+# fsr3-shader-verify - the FSR 3 shader sets, the upscaler (fsr3) and frame generation (fsr3fg)
+# (schema 2: sources, include closures, embeddings, the pinned DXC's options and defines).
+# fsr3-shader-repro-verify also recompiles both with DXC and requires the same bytes; a DXC that is
+# not the pinned release is a SKIP, printed, and the tool's exit 77 (the hosted job runs the tool
+# itself, so there a SKIP fails).
 # fsr3-pass-selftest - FSR 3's eight passes (src/rt/gpu_sdl3vk/fsr3_pass.c) on a headless Vulkan
 # device under the validation layers, synchronisation validation of shader accesses included: P-0
 # creates the pipelines, and F-S, F-M, F-R, F-T, F-C and F-D run synthetic scenes drawn as the GE
@@ -188,10 +189,13 @@ native-core-tests: fsr3-pass-selftest
 DXC ?= dxc
 fsr3-shader-verify:
 	"$(PYTHON)" tools/shader_embed.py verify --shader-set fsr3
+	"$(PYTHON)" tools/shader_embed.py verify --shader-set fsr3fg
 fsr3-shader-repro-verify:
-	@rc=0; "$(PYTHON)" tools/shader_embed.py verify --shader-set fsr3 --recompile --dxc "$(DXC)" || rc=$$?; \
-	if [ $$rc -eq 77 ]; then echo "SKIP fsr3-shader-repro-verify (exit 77; the reason is printed above)"; \
-	elif [ $$rc -ne 0 ]; then exit $$rc; fi
+	@for set in fsr3 fsr3fg; do \
+		rc=0; "$(PYTHON)" tools/shader_embed.py verify --shader-set $$set --recompile --dxc "$(DXC)" || rc=$$?; \
+		if [ $$rc -eq 77 ]; then echo "SKIP fsr3-shader-repro-verify $$set (exit 77; the reason is printed above)"; \
+		elif [ $$rc -ne 0 ]; then exit $$rc; fi; \
+	done
 fsr3-pass-selftest: fsr3-shader-verify
 	@if ! printf '%s\n' '#include <vulkan/vulkan.h>' | $(CC) -E -x c $(VULKAN_INC_FLAGS) - >/dev/null 2>&1; then \
 		echo "SKIP fsr3-pass-selftest (the Vulkan headers were not found)"; \

@@ -107,21 +107,20 @@ class ShaderEmbedTests(unittest.TestCase):
             self.assertTrue(errors)
 
 
-# ---- schema 2: the FSR 3 set, compiled by the pinned DXC (third_party/fidelityfx_sdk) ------------
-
-FSR3_MANIFEST_REL = shader_embed.FSR3_MANIFEST.relative_to(shader_embed.ROOT)
+# ---- schema 2: the FSR 3 sets, compiled by the pinned DXC (third_party/fidelityfx_sdk) -----------
 
 
-def _fsr3_copy(root: Path) -> Path:
-    """The FSR 3 manifest and every file it names, under a scratch root; the manifest's new path."""
-    manifest = json.loads(shader_embed.FSR3_MANIFEST.read_text(encoding="utf-8"))
-    paths = {FSR3_MANIFEST_REL.as_posix()}
+def _fsr3_copy(root: Path, manifest_path: Path = shader_embed.FSR3_MANIFEST) -> Path:
+    """A DXC set's manifest and every file it names, under a scratch root; the manifest's new path."""
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_rel = manifest_path.relative_to(shader_embed.ROOT)
+    paths = {manifest_rel.as_posix()}
     for entry in manifest["shaders"]:
         paths |= {entry["source"], entry["embedded"], *(inc["path"] for inc in entry["includes"])}
     for rel in paths:
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(shader_embed.ROOT / rel, root / rel)
-    return root / FSR3_MANIFEST_REL
+    return root / manifest_rel
 
 
 class Fsr3ShaderSetTests(unittest.TestCase):
@@ -206,6 +205,52 @@ class Fsr3ShaderSetTests(unittest.TestCase):
         if not shader_embed.dxc_is_pinned(shader_embed.dxc_version(dxc)):
             self.skipTest(f"{dxc} is not the pinned {shader_embed.DXC_RELEASE['tag']}")
         errors, skipped = shader_embed.verify_dxc(shader_embed.ROOT, shader_embed.FSR3_MANIFEST, dxc)
+        self.assertEqual(errors, [])
+        self.assertIsNone(skipped)
+
+
+class Fsr3FrameGenerationShaderSetTests(unittest.TestCase):
+    """The fsr3fg set: the same compiler and options as fsr3, its own defines, sources and manifest."""
+
+    SET = shader_embed.DXC_SETS["fsr3fg"]
+
+    def test_checked_in_set_matches_its_manifest(self) -> None:
+        manifest_path, shaders, defines = self.SET
+        errors, skipped = shader_embed.verify_dxc(shader_embed.ROOT, manifest_path, None, shaders, defines)
+        self.assertEqual(errors, [])
+        self.assertIsNone(skipped)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["compiler"]["options"], list(shader_embed.DXC_OPTIONS))
+        self.assertEqual(manifest["compiler"]["defines"], list(defines))
+        self.assertEqual(len(manifest["shaders"]), 17)
+        for entry in manifest["shaders"]:
+            self.assertTrue(entry["source"].startswith("third_party/fidelityfx_sdk/framegeneration/"), entry)
+            self.assertNotIn("debug_view", entry["source"])
+
+    def test_the_upscaler_defines_do_not_verify_the_frame_generation_set(self) -> None:
+        manifest_path, shaders, _ = self.SET
+        errors, _ = shader_embed.verify_dxc(shader_embed.ROOT, manifest_path, None, shaders)
+        self.assertIn("compiler defines does not match the build contract", errors)
+
+    def test_a_changed_callbacks_header_is_rejected(self) -> None:
+        manifest_path, shaders, defines = self.SET
+        rel = "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_callbacks_hlsl.h"
+        with tempfile.TemporaryDirectory(prefix="nakagawa-fsr3fg-test-") as temp:
+            root = Path(temp)
+            copied = _fsr3_copy(root, manifest_path)
+            target = root / rel
+            target.write_bytes(target.read_bytes().replace(b'[[vk::image_format("r32ui")]] ', b"", 1))
+            errors, _ = shader_embed.verify_dxc(root, copied, None, shaders, defines)
+            self.assertTrue(any(f"include {rel} SHA-256 mismatch" in error for error in errors), errors)
+
+    def test_embeddings_recompile_with_the_pinned_dxc(self) -> None:
+        dxc = os.environ.get("NK_DXC") or shutil.which("dxc")
+        if not dxc:
+            self.skipTest("no DXC (set NK_DXC to the pinned release)")
+        if not shader_embed.dxc_is_pinned(shader_embed.dxc_version(dxc)):
+            self.skipTest(f"{dxc} is not the pinned {shader_embed.DXC_RELEASE['tag']}")
+        manifest_path, shaders, defines = self.SET
+        errors, skipped = shader_embed.verify_dxc(shader_embed.ROOT, manifest_path, dxc, shaders, defines)
         self.assertEqual(errors, [])
         self.assertIsNone(skipped)
 

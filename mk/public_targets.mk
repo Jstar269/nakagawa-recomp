@@ -309,8 +309,8 @@ HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-mach
 HELP_DESCRIPTION_ace-selftest := run Ace Mode's CPU-only selftest (launch line, 30 Hz detector, readout, report; pure C)
 HELP_DESCRIPTION_fsr3-host-selftest := run FSR 3's host selftest against the record of AMD's host code (pure C)
 HELP_DESCRIPTION_fsr3-mutants := run the FSR 3 host mutation campaign (each defect must build and fail the selftest)
-HELP_DESCRIPTION_fsr3-shader-verify := verify the FSR 3 shader set against its schema 2 manifest
-HELP_DESCRIPTION_fsr3-shader-repro-verify := recompile the FSR 3 shader set with the pinned DXC (DXC=...) and compare bytes
+HELP_DESCRIPTION_fsr3-shader-verify := verify the FSR 3 upscaler and frame-generation shader sets against their schema 2 manifests
+HELP_DESCRIPTION_fsr3-shader-repro-verify := recompile both FSR 3 shader sets with the pinned DXC (DXC=...) and compare bytes
 HELP_DESCRIPTION_fsr3-pass-selftest := run FSR 3's passes on a headless Vulkan device against synthetic scenes
 HELP_DESCRIPTION_fsr3-pass-mutants := run the FSR 3 pass mutation campaign on a Vulkan device (each defect must fail its cell)
 HELP_DESCRIPTION_ace-smooth-selftest := run Ace Mode's in-between frames selftest on a headless Vulkan device (SKIPs without one)
