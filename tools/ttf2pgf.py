@@ -1893,6 +1893,31 @@ def _build_manifest(
             "source": dict(pin.source),
             "family": pin.family,
         }
+    parameters: dict[str, object] = {
+        "ppem": ppem,
+        "nominal_em_26_6": nominal_size_26_6,
+        "resolution_26_6": resolution_26_6,
+        "header_ascender_26_6": header_extents[0],
+        "header_descender_26_6": header_extents[1],
+        "baseline_ellipsis": baseline_ellipsis,
+        "supersample": SUPERSAMPLE,
+        "coverage_bits": 4,
+        "rounding": "scale: floor(x * ppem * 64 / upem + 1/2); coverage: floor((n * 15 + 32) / 64)",
+        "hinting": "none",
+        "advance_rounding": "26.6, half-up from font units",
+        "embolden": {
+            "unit": "sub-sample (1/8 pixel)",
+            "x": embolden[0],
+            "y": embolden[1],
+            "advance": embolden[2],
+        },
+    }
+    # Keys added in converter 0.4.0 appear only when used, so a conversion that uses none of them
+    # has the keys it had before.
+    if tracking:
+        parameters["tracking_sub_samples"] = tracking
+    if digit_advance_26_6 is not None:
+        parameters["digit_advance_26_6"] = digit_advance_26_6
     manifest = {
         "converter": {
             "name": CONVERTER_NAME,
@@ -1938,32 +1963,8 @@ def _build_manifest(
             "font_type": font_type,
             **header,
         },
-        "parameters": {
-            "ppem": ppem,
-            "nominal_em_26_6": nominal_size_26_6,
-            "resolution_26_6": resolution_26_6,
-            "header_ascender_26_6": header_extents[0],
-            "header_descender_26_6": header_extents[1],
-            "baseline_ellipsis": baseline_ellipsis,
-            "supersample": SUPERSAMPLE,
-            "coverage_bits": 4,
-            "rounding": "scale: floor(x * ppem * 64 / upem + 1/2); coverage: floor((n * 15 + 32) / 64)",
-            "hinting": "none",
-            "advance_rounding": "26.6, half-up from font units",
-            "embolden": {
-                "unit": "sub-sample (1/8 pixel)",
-                "x": embolden[0],
-                "y": embolden[1],
-                "advance": embolden[2],
-            },
-        },
+        "parameters": parameters,
     }
-    # Keys added in converter 0.4.0 appear only when used, so a conversion that uses none of them
-    # has the keys it had before.
-    if tracking:
-        manifest["parameters"]["tracking_sub_samples"] = tracking
-    if digit_advance_26_6 is not None:
-        manifest["parameters"]["digit_advance_26_6"] = digit_advance_26_6
     return manifest
 
 

@@ -10,7 +10,6 @@ its fonts, one licence text and one pin per font, and nothing else:
 | `OFL.txt` | The full licence text required by OFL section 2; its local digest is in each pin. |
 | `PIN.json`, or `<Font>.pin.json` where a directory holds several fonts | The `font-pin/v1` record: SHA-256 and size of the font, SPDX id, copyright line, licence-text digest, Reserved Font Names, and the upstream URL/repository/path/retrieved provenance. |
 
-
 The converter refuses any input whose bytes do not match the pin
 (`pin-digest-mismatch`), refuses output names that use a Reserved Font Name
 or a recorded brand-mimicking marker, and embeds the pin's complete

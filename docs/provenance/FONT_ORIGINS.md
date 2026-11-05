@@ -347,18 +347,18 @@ are written into `tools/test_ttf2pgf.py`.
 <https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz>,
 SHA-256 `7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0`.
 The eight files in `fixtures/fonts/liberation/` are byte-identical to the
-tarball's members of the same name; each has its own `<Font>.pin.json`:
+tarball's members of the same name; each has its own pin:
 
-| Input | Size (bytes) | SHA-256 |
-| --- | ---: | --- |
-| `LiberationSans-Regular.ttf` | 410,712 | `76d04c18ea243f426b7de1f3ad208e927008f961dc5945e5aad352d0dfde8ee8` |
-| `LiberationSans-Italic.ttf` | 415,816 | `e5bae5c4cde31f22142753855f4f8fb86da6ff39955ed3c0a11248b0d16948b0` |
-| `LiberationSans-Bold.ttf` | 414,456 | `788abee4c806d660e8aee46689dd8540cd4bb98da03dcc9d171ce3efd99a9173` |
-| `LiberationSans-BoldItalic.ttf` | 408,996 | `698da70fc191cc5f33ad4d6d3fe830fe4624b898ea2e3169955928b7c491f1ee` |
-| `LiberationSerif-Regular.ttf` | 393,576 | `058ea80864aef09a23f45cbec2bb5400bc3dfbdea01c3f10538a21fcb497fb74` |
-| `LiberationSerif-Italic.ttf` | 375,632 | `0e3dea9f8d613e006ccfa62201f33e265d19167bd0907725c3e145368b04fc2e` |
-| `LiberationSerif-Bold.ttf` | 370,096 | `d754ba427cfe0bca54ae052384baa8f842da5bd6550ad4da024ac441e7a7d5ce` |
-| `LiberationSerif-BoldItalic.ttf` | 376,772 | `f17db8af71e24d2066b587546021d4f0b296be389512b658dec3c09affeb11a7` |
+| Input | Size (bytes) | SHA-256 | Pin |
+| --- | ---: | --- | --- |
+| `LiberationSans-Regular.ttf` | 410,712 | `76d04c18ea243f426b7de1f3ad208e927008f961dc5945e5aad352d0dfde8ee8` | `LiberationSans-Regular.pin.json` |
+| `LiberationSans-Italic.ttf` | 415,816 | `e5bae5c4cde31f22142753855f4f8fb86da6ff39955ed3c0a11248b0d16948b0` | `LiberationSans-Italic.pin.json` |
+| `LiberationSans-Bold.ttf` | 414,456 | `788abee4c806d660e8aee46689dd8540cd4bb98da03dcc9d171ce3efd99a9173` | `LiberationSans-Bold.pin.json` |
+| `LiberationSans-BoldItalic.ttf` | 408,996 | `698da70fc191cc5f33ad4d6d3fe830fe4624b898ea2e3169955928b7c491f1ee` | `LiberationSans-BoldItalic.pin.json` |
+| `LiberationSerif-Regular.ttf` | 393,576 | `058ea80864aef09a23f45cbec2bb5400bc3dfbdea01c3f10538a21fcb497fb74` | `LiberationSerif-Regular.pin.json` |
+| `LiberationSerif-Italic.ttf` | 375,632 | `0e3dea9f8d613e006ccfa62201f33e265d19167bd0907725c3e145368b04fc2e` | `LiberationSerif-Italic.pin.json` |
+| `LiberationSerif-Bold.ttf` | 370,096 | `d754ba427cfe0bca54ae052384baa8f842da5bd6550ad4da024ac441e7a7d5ce` | `LiberationSerif-Bold.pin.json` |
+| `LiberationSerif-BoldItalic.ttf` | 376,772 | `f17db8af71e24d2066b587546021d4f0b296be389512b658dec3c09affeb11a7` | `LiberationSerif-BoldItalic.pin.json` |
 
 The licence is SIL OFL 1.1 (Liberation 2.x; the 1.x releases were GPL with a
 font exception). Its copyright notice is `Digitized data copyright (c) 2010
@@ -368,7 +368,7 @@ Reserved Font Names `Arimo`, `Tinos`, `Cousine` and `Liberation`; the PGFs are
 named `Nakagawa Open Latin`, and the converter refuses any output name that
 uses a recorded Reserved Font Name. The tarball's `LICENSE` has SHA-256
 `93fed46019c38bbe566b479d22148e2e8a1e85ada614accb0211c37b2c61c19b`; the local
-`OFL.txt` (`a0c060f758d33ee59a674cd7b45914a560d0a5935968af5e87b0c6981fd89ddc`)
+`fixtures/fonts/liberation/OFL.txt` (`a0c060f758d33ee59a674cd7b45914a560d0a5935968af5e87b0c6981fd89ddc`)
 removes trailing spaces on lines 29, 86 and 90 and one extra final newline,
 without changing any wording.
 
