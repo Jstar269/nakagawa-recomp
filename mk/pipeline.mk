@@ -107,6 +107,12 @@ $(BUILD_DIR)/%.o: src/rt/gpu_sdl3vk/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 $(BUILD_DIR)/%.o: src/core/%.c $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
+# The xBRZ texture scaler (third_party/xbrz) runs on worker threads in every build: -O2 keeps
+# it about six times faster than -O0, and its output is the same at every level (its selftest
+# checks it against upstream's goldens).
+$(BUILD_DIR)/xbrz.o: third_party/xbrz/xbrz.c third_party/xbrz/xbrz.h $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) -O2 $(DEPFLAGS) -c $< -o $@
+
 # The pause overlay draws its pages with nk_ui (src/ui, src/rt/overlay); only the window
 # presenter and those sources see the UI include path. SDL3_TTF_AVAILABLE is set further down;
 # these flags are read when a recipe runs.

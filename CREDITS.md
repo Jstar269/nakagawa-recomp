@@ -34,6 +34,9 @@ Nakagawa has since substantially extended and modified that codebase. This repos
   Rich Geldreich; MIT), the Zstandard 1.5.7 decompressor (Meta Platforms; BSD-3-Clause), the LZMA SDK decoder
   (Igor Pavlov; public domain) and dr_flac (David Reid; public domain, Unlicense elected). It reads CHD disc images
   when the player expands them at import, in [`third_party/libchdr/`](third_party/libchdr/PROVENANCE.md).
+- **xBRZ 1.9 — Zenju** — GPL-3.0, with the author's linking exception kept unchanged. The pixel-art scaler behind
+  Ace Mode's texture scaling, translated from C++ to C (a LOCAL DELTA, checked against the upstream release's output)
+  in [`third_party/xbrz/`](third_party/xbrz/PROVENANCE.md).
 - **Monocypher 4.0.3 — Loup Vaillant, Michael Savage, Fabio Scotoni and contributors** — dual BSD-2-Clause or
   CC0-1.0; the project uses it under CC0-1.0. The Ed25519 signature check in
   [`third_party/monocypher/`](third_party/monocypher/).

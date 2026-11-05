@@ -108,7 +108,8 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *name = strcmp(argv[i], "--scale") == 0 ? "SR_GPU_SCALE"
                          : strcmp(argv[i], "--case") == 0  ? "SR_GPU_COHERENCE_CASE"
-                         : strcmp(argv[i], "--readback-full") == 0 ? "SR_GPU_READBACK_FULL" : NULL;
+                         : strcmp(argv[i], "--readback-full") == 0 ? "SR_GPU_READBACK_FULL"
+                         : strcmp(argv[i], "--tex-scale") == 0 ? "SR_TEX_SCALE" : NULL;
         if (!name || i + 1 >= argc || !set_env(name, argv[++i])) {
             fprintf(stderr, "usage: gpu_coherence_selftest [--scale N] [--case scaled-upload|mip-lod]\n");
             return 2;
@@ -123,6 +124,16 @@ int main(int argc, char **argv) {
     /* Ace Mode with 16x texture filtering, read before the device is made (src/rt/ace.h). */
     if (!ace_init_spec("v1;af=16;text=off;readout=off;notice=off;wide=off;smooth=off", NULL)) {
         fprintf(stderr, "gpu ace selftest: FAIL the Ace line was refused\n");
+        free(arena);
+        return 1;
+    }
+#endif
+#ifdef SR_GPU_TEXSCALE_SELFTEST
+    /* Texture scaling and the smart 2D filter take effect only in Ace Mode (tex_scale.h). The
+     * factor defaults to 2; `--tex-scale N` picks another. */
+    if (!ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=off;smooth=off", NULL) ||
+        (!getenv("SR_TEX_SCALE") && !set_env("SR_TEX_SCALE", "2")) || !set_env("SR_SMART_2D", "on")) {
+        fprintf(stderr, "gpu texscale selftest: FAIL the Ace line or the settings were refused\n");
         free(arena);
         return 1;
     }
@@ -146,10 +157,12 @@ int main(int argc, char **argv) {
     }
 #elif defined(SR_GPU_SNAPSHOT_SYNC_SELFTEST)
     ok = gegpu_snapshot_sync_selftest();
+#elif defined(SR_GPU_TEXSCALE_SELFTEST)
+    ok = gegpu_texscale_selftest();
 #else
     ok = gegpu_coherence_selftest();
 #endif
-#ifndef SR_GPU_ACE_SELFTEST
+#if !defined(SR_GPU_ACE_SELFTEST) && !defined(SR_GPU_TEXSCALE_SELFTEST)
     /* Ace Mode off (A2, src/rt/ace.h): every cell above ran with no anisotropic sampler,
      * and the texture pool kept its MAX_TEX sets. */
     {
@@ -173,6 +186,8 @@ int main(int argc, char **argv) {
     puts("gpu ace selftest: OK");
 #elif defined(SR_GPU_SNAPSHOT_SYNC_SELFTEST)
     puts("gpu snapshot sync selftest: OK");
+#elif defined(SR_GPU_TEXSCALE_SELFTEST)
+    puts("gpu texscale selftest: OK");
 #else
     puts("gpu coherence selftest: OK");
 #endif

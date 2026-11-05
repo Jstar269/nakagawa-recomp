@@ -1044,6 +1044,26 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 \
             make CC=gcc gpu-coherence-selftest
 
+      # Ace Mode's texture scaling and smart 2D filter on the same production path
+      # (src/rt/gpu_sdl3vk/tex_scale_gpu_selftest.inc), and the mutant that binds a scaled
+      # copy without its content check, which must fail for that reason.
+      - name: Run GPU texture scaling selftest on lavapipe
+        if: matrix.part == 'translation'
+        run: |
+          set -euo pipefail
+          lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$lvp_icd" || {
+            echo "mesa-vulkan-drivers did not install a lavapipe ICD" >&2
+            exit 1
+          }
+          export VK_ICD_FILENAMES="$lvp_icd"
+          xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 \
+            make CC=gcc gpu-texscale-selftest gpu-texscale-mutant 2>&1 | tee "$RUNNER_TEMP/texscale.log"
+          if grep -q '^SKIP gpu-texscale' "$RUNNER_TEMP/texscale.log"; then
+            echo "the texture scaling selftest skipped on lavapipe" >&2
+            exit 1
+          fi
+
       - name: Configure, build, and test CMake Linux player
         if: matrix.part == 'player'
         run: |

@@ -155,6 +155,8 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/driver.c \
               src/rt/gpu_sdl3vk/sdl3vk.c \
               src/rt/gpu_sdl3vk/ge_gpu.c \
+              src/rt/gpu_sdl3vk/tex_scale.c \
+              third_party/xbrz/xbrz.c \
               src/rt/gpu_sdl3vk/ace_ui.c \
               src/rt/gpu_sdl3vk/ace_smooth.c \
               src/core/nk_input_profile.c \
@@ -193,6 +195,11 @@ endif
 # silently stopped building when #315 landed, which in turn hid #326 breaking
 # the same target a second time.
 HLE_INCLUDES := -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/libavutil
+
+# The Vulkan GE renderer, with texture scaling (tex_scale.c) and the xBRZ scaler it runs
+# (third_party/xbrz, GPL-3.0, see its PROVENANCE.md). Every build that compiles ge_gpu.c takes
+# all three.
+GEGPU_SRCS := src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/tex_scale.c third_party/xbrz/xbrz.c
 
 # Everything needed to LINK src/rt/gpu_sdl3vk/sdl3vk.c, in one place. sdl3vk.c
 # calls the framebuffer-capture policy (sr_fbcap_owner / sr_fbcap_path /

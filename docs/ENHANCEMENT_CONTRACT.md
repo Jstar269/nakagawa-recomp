@@ -339,3 +339,48 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
   present latches no input and serves no capture.
 - **Stamps.** The report adds `presents` (real, between, held, superseded) and `present_interval_ms`. Section 10.4
   applies: the run is refused as evidence.
+
+### 10.7. Texture Scaling and the Smart 2D Filter
+
+Two presentation features in the Vulkan GE renderer (#1273), in the class of a render scale above 1x (section 10.3).
+The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture cache; the scaler is xBRZ 1.9
+(`third_party/xbrz/`, GPL-3.0).
+
+- **Settings.** `SR_TEX_SCALE=off|2|3|4|5|6` (the xBRZ factor), `SR_SMART_2D=off|on` and `SR_TEX_SCALE_BUDGET_MB`
+  (1 to 8192, default 512: the GPU memory the scaled copies may hold), read when the renderer starts. Both features
+  take effect only in Ace Mode: in an authentic run they stay off whatever the environment says, and a request
+  prints one `TEX_SCALE: off (texture scaling and the smart 2D filter need Ace Mode)` line. A value outside the list
+  prints `TEX_SCALE: refused (<reason>)` and leaves both off. The Settings page and the per-title choice come with
+  the Ace settings UI (#2074).
+- **What is scaled.** A texture the texture cache decodes, with one level (no mipmaps), after its palette lookup.
+  The factor drops for a texture whose scaled side would pass 2048 texels, and a texture that would pass 2048 at 2x
+  is not scaled. The image is padded by two texels, repeated or clamped by the texture's wrap mode, so a repeating
+  texture tiles without a seam.
+- **Never scaled.** A render target sampled as a texture: bound directly, it never enters the cache; read back
+  through the cache, it is decoded unscaled; and a texture whose VRAM range meets any live render target's is not
+  scaled.
+- **Never stale.** A scaled copy records the cache entry's upload and the content hash it was made from, and is
+  bound only while both still match. A texture the guest rewrites, or a CLUT texture drawn with another palette (a
+  different cache key), is drawn unscaled until its own copy is ready, and never with the old one.
+- **Never waited on.** Two worker threads scale; the renderer only queues the decoded texels (up to 64 jobs) and
+  stores finished copies at a later lookup. Until then, with a full queue, or once the budget is spent, the texture
+  is drawn unscaled. Nothing is hidden or skipped.
+- **Sampling.** A copy is sampled on its own texel lattice: the fragment shader's PSP sample-point rule (nearest at
+  the texel centre, linear on the 1/16 grid) runs at the copy's resolution, from the factor the draw carries in its
+  flags.
+- **Smart 2D.** A textured draw that maps one texel to one pixel on each axis (either direction), axis-aligned,
+  without perspective and with its edge on a texel boundary, samples nearest: a HUD, a font or a sprite stays crisp
+  at a render scale above 1x. At 1x such a draw reads whole texels with either filter, so the frame is unchanged.
+  Every other draw, a 3D one included, keeps the game's filter.
+- **Guest memory.** Neither feature writes guest memory, the CLUT or a texture source; texture readbacks and
+  render-to-texture results are unchanged. As with texture filtering (section 10.3), a frame committed to guest VRAM
+  at present carries the scaled picture.
+- **Stamps.** `TEX_SCALE: on (xbrz=<factor>, smart2d=on|off, budget_mb=<n>)` at start; at exit,
+  `TEX_SCALE: draws (...)` and `TEX_SCALE: exit (scaled=, queue_full=, discarded=, budget_peak_mb=, worker_ms=)`.
+  Section 10.4 applies: the run is an Ace run.
+- **A title it breaks.** A title whose fonts or pixel art suffer gets its off switch in its own package, never as
+  per-title code in a generic file.
+- **Tests.** `tex-scale-selftest` checks the C port against goldens from the upstream release, the borders, the job
+  queue, the settings and the classifier. `gpu-texscale-selftest` runs the production path on a Vulkan device at
+  render scales 1 and 4; `gpu-texscale-mutant` builds a cache that binds a copy without the content check and
+  passes only when the rewrite cell fails for that reason.

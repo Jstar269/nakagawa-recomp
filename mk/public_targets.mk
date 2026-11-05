@@ -148,6 +148,9 @@ PUBLIC_TARGETS := \
 	gpu-coherence-selftest \
 	gpu-snapsync-selftest \
 	gpu-ace-selftest \
+	tex-scale-selftest \
+	gpu-texscale-selftest \
+	gpu-texscale-mutant \
 	ge-replay \
 	run \
 	run_elf \
@@ -314,6 +317,9 @@ HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptan
 HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
 HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
 HELP_DESCRIPTION_gpu-ace-selftest := run Ace Mode's texture filtering selftest on a real Vulkan device (SKIPs without one)
+HELP_DESCRIPTION_tex-scale-selftest := run the xBRZ texture scaling selftest against the pinned upstream goldens (no GPU)
+HELP_DESCRIPTION_gpu-texscale-selftest := run texture scaling and the smart 2D filter on a real Vulkan device (SKIPs without one)
+HELP_DESCRIPTION_gpu-texscale-mutant := prove the texture scaling selftest kills a cache that binds a stale scaled copy
 HELP_DESCRIPTION_ge-replay := run the graphics-engine replay selftest
 HELP_DESCRIPTION_run := build and launch the current title runtime
 HELP_DESCRIPTION_run_elf := build the reference interpreter runner

@@ -95,6 +95,7 @@
 #include "../ge_shared.h"
 #include "../perf.h"
 #include "../ace.h"   /* Ace Mode: the 30 Hz detector counts draws per target (Ace on only) */
+#include "tex_scale.h"   /* texture scaling (xBRZ) and the smart 2D filter (Ace on only) */
 
 #include <vulkan/vulkan.h>
 #include <SDL3/SDL_timer.h>
@@ -176,6 +177,10 @@ enum { F_TEX = 1, F_RGBA = 2, F_DBL = 4, F_FOG = 8, F_PERSP = 16, F_CLEAR = 32,
        F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DITHER = 512, F_SHBLEND = 4096,
        F_STENCIL = 8192, F_LODFRAG = 16384, F_SALPHA = 32768 };
 #define F_FMT_SHIFT 10                     /* bits 10-11: framebuffer psm for quantization */
+/* bits 17-19 (cfg[0] bits 25-27): the bound texture is a scaled copy (tex_scale.h), factor =
+ * value + 1; 0 for every guest texture and render target, so the shader samples exactly as
+ * before. Bit 16 is left for the 32-bit colour chain's flag (#2050). */
+#define F_TSCALE_SHIFT 17
 
 typedef struct {
     uint8_t blend_on, srcf, dstf, eq;      /* VkBlendFactor / VkBlendOp values */
@@ -228,6 +233,21 @@ typedef struct {
     uint32_t shadow_clut_fmt;
     int shadow_clut_valid;
     uint64_t lru;
+    /* Texture scaling (tex_scale.h): a scaled copy of this entry's content beside the guest-
+     * resolution image, never instead of it. `serial` names the content now in `img`; the
+     * copy is bound only while it was made from that same content (xs_bindable). */
+    struct {
+        uint64_t serial;                   /* this entry's content generation */
+        uint64_t made_serial, made_hash;   /* the content the scaled copy holds */
+        int state;                         /* XS_NONE, XS_QUEUED, XS_READY */
+        int factor;                        /* of the scaled image; 0 = none allocated */
+        int retry;                         /* the queue was full: offer it again on a hit */
+        int min_linear, mag_linear, clamp_u, clamp_v;   /* the entry's sampler, for the copy's */
+        uint64_t bytes;                    /* budget the scaled image holds */
+        VkImage img; VkDeviceMemory mem; VkImageView view; VkSampler smp;
+        VkDescriptorSet set;
+        VkSampler smp_af; VkDescriptorSet set_af;
+    } xs;
 } TexEnt;
 
 typedef struct { PipeKey key; VkPipeline pipe; int used; } PipeEnt;
@@ -345,6 +365,14 @@ static int s_ready = 0;
  * device gives none. Only then is any anisotropic sampler made. */
 static int s_ace_af = 0;
 static uint64_t s_cnt_af_samplers = 0;
+/* Texture scaling and the smart 2D filter (tex_scale.h), read once at init: 0 in an authentic
+ * run, and then no scaled image, job or thread is ever made and no draw's filter changes. */
+static int s_xs_factor = 0;
+static int s_xs_smart2d = 0;
+static uint64_t s_xs_serial = 0;           /* content generations handed out */
+static int s_tex_bound_scale = 1;          /* factor of the set tex_get last returned */
+static int s_tex_noscale = 0;              /* tex_get for a render target read back: never scaled */
+static uint64_t s_cnt_xs_bound = 0, s_cnt_xs_uploads = 0, s_cnt_xs_stale = 0, s_cnt_smart2d = 0;
 static uint32_t s_tex_pool_sets = 0;
 static GeState  *s_ge;
 static uint16_t *s_zbuf;
@@ -2725,6 +2753,24 @@ static uint64_t clut_hash(void) {
 
 static uint64_t s_texlru = 1;
 
+/* ---- texture scaling: the scaled copy of a cache entry (tex_scale.h) --------------------- */
+
+enum { XS_NONE = 0, XS_QUEUED, XS_READY };
+
+/* Free an entry's scaled image and give back its budget. The caller has drained every
+ * command that could reference it (eviction, shutdown). */
+static void tex_xs_free(TexEnt *e) {
+    if (e->xs.set_af) vkFreeDescriptorSets(s_dev, s_dpool_tex, 1, &e->xs.set_af);
+    if (e->xs.smp_af) vkDestroySampler(s_dev, e->xs.smp_af, NULL);
+    if (e->xs.set) vkFreeDescriptorSets(s_dev, s_dpool_tex, 1, &e->xs.set);
+    if (e->xs.smp) vkDestroySampler(s_dev, e->xs.smp, NULL);
+    if (e->xs.view) vkDestroyImageView(s_dev, e->xs.view, NULL);
+    if (e->xs.img) vkDestroyImage(s_dev, e->xs.img, NULL);
+    if (e->xs.mem) vkFreeMemory(s_dev, e->xs.mem, NULL);
+    if (e->xs.bytes) nk_tex_scale_budget_give(e->xs.bytes);
+    memset(&e->xs, 0, sizeof(e->xs));
+}
+
 /* Evict the least-recently-used quarter of the cache (the working set survives; the
  * old full-clear rebuilt EVERY texture every frame once a scene exceeded the cap). */
 static void tex_evict_lru(void) {
@@ -2745,6 +2791,7 @@ static void tex_evict_lru(void) {
         vkDestroyImageView(s_dev, e->view, NULL);
         vkDestroyImage(s_dev, e->img, NULL);
         vkFreeMemory(s_dev, e->mem, NULL);
+        tex_xs_free(e);
         *e = s_tex[--s_tex_n];
     }
 }
@@ -2972,7 +3019,167 @@ static void tex_mip_targets_readback(const TexMipKey *mip, const uint32_t *level
     }
 }
 
+/* Whether entry `e` (with `levels` mip levels) may be drawn from a scaled copy: texture
+ * scaling is on, it has one level, it is not a render target read back through the cache
+ * (s_tex_noscale), and no byte of it lies inside a render target, whose contents stay exactly
+ * as the GE drew them. Checked when a copy is offered and again whenever one would be bound. */
+static int tex_xs_eligible(const TexEnt *e, uint32_t levels) {
+    if (!s_xs_factor || s_tex_noscale || levels != 1u) return 0;
+    if (!nk_tex_scale_factor_for(s_xs_factor, e->w, e->h)) return 0;
+    if (is_vram(e->addr)) {
+        const uint64_t a0 = vram_off(e->addr), a1 = a0 + (e->bytes ? e->bytes : 1u);
+        for (int t = 0; t < MAX_TGT; t++) {
+            const Target *tg = &s_tgts[t];
+            if (!tg->used) continue;
+            const uint64_t t0 = tg->fba, t1 = t0 + (uint64_t)tg->stride * FB_H * (tg->fmt == 3u ? 4u : 2u);
+            if (a0 < t1 && t0 < a1) return 0;
+        }
+    }
+    return 1;
+}
+
+/* The scaled copy is drawn only while it was made from the entry's current content: the same
+ * content generation and the same guest content hash. A texture the guest rewrote, or that a
+ * CPU write invalidated and a decode replaced, is drawn unscaled until its own copy lands. */
+static int tex_xs_bindable(const TexEnt *e) {
+#if defined(SR_GPU_COHERENCE_SELFTEST) && defined(NK_TEX_SCALE_MUTANT_SKIP_HASH)
+    return e->xs.factor != 0;   /* the selftest's mutant: any copy that exists, stale or not */
+#else
+    return e->xs.state == XS_READY && e->xs.made_serial == e->xs.serial &&
+           e->xs.made_hash == e->hash;
+#endif
+}
+
+/* Offer the content just decoded into s_texscratch (level 0 of entry `e`, hash `hash`) for
+ * scaling. A full queue leaves the entry unscaled and marks it to be offered again on a later
+ * hit; a texture that would not fit the budget stays unscaled. */
+static void tex_xs_offer(TexEnt *e, uint64_t hash, uint32_t levels) {
+    e->xs.retry = 0;
+    if (!tex_xs_eligible(e, levels)) return;
+    const int f = nk_tex_scale_factor_for(s_xs_factor, e->w, e->h);
+    if (!e->xs.factor &&
+        nk_tex_scale_budget_used() + (uint64_t)e->w * (uint64_t)e->h * (uint64_t)(f * f) * 4u >
+            nk_tex_scale_config()->budget_bytes)
+        return;
+    const unsigned filter = tex_filter_variant(s_ge->tex_filter);
+    e->xs.min_linear = (filter & 2u) != 0;
+    e->xs.mag_linear = (filter & 1u) != 0;
+    e->xs.clamp_u = s_ge->tex_wrap & 1;
+    e->xs.clamp_v = (s_ge->tex_wrap >> 8) & 1;
+    if (!nk_tex_scale_submit(e->xs.serial, hash, s_texscratch, e->w, e->h, f,
+                             e->xs.clamp_u, e->xs.clamp_v)) {
+        e->xs.retry = 1;
+        return;
+    }
+    e->xs.state = XS_QUEUED;
+}
+
+/* Entry `e`'s guest-resolution image now holds new content (a decode just filled it from
+ * s_texscratch): any scaled copy is stale from here on, and the new content is offered. */
+static void tex_xs_note_upload(TexEnt *e, uint32_t levels) {
+    if (!s_xs_factor) return;
+    if (e->xs.state != XS_NONE) s_cnt_xs_stale++;
+    e->xs.serial = ++s_xs_serial;
+    e->xs.state = XS_NONE;
+    tex_xs_offer(e, e->hash, levels);
+}
+
+/* Upload a finished scale into entry `e`'s scaled image, made the first time. */
+static int tex_xs_store(TexEnt *e, const NkTexScaleResult *r) {
+    const uint32_t sw = (uint32_t)(r->w * r->factor), sh = (uint32_t)(r->h * r->factor);
+    if (e->xs.factor && e->xs.factor != r->factor) return 0;
+    if (!e->xs.factor) {
+        const uint64_t bytes = (uint64_t)sw * sh * 4u;
+        if (!nk_tex_scale_budget_take(bytes)) return 0;
+        e->xs.bytes = bytes;
+        VkSamplerCreateInfo sci;
+        TexMipKey none;
+        memset(&none, 0, sizeof(none));
+        tex_sampler_info(e->xs.min_linear, e->xs.mag_linear, e->xs.clamp_u, e->xs.clamp_v, &none, &sci);
+        if (!make_image_levels(sw, sh, 1u, VK_FORMAT_R8G8B8A8_UNORM,
+                               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                               &e->xs.img, &e->xs.mem) ||
+            !make_view_levels(e->xs.img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 1u,
+                              &e->xs.view) ||
+            vkCreateSampler(s_dev, &sci, NULL, &e->xs.smp) != VK_SUCCESS ||
+            !(e->xs.set = make_descriptor(e->xs.view, e->xs.smp, s_dpool_tex))) {
+            /* Nothing recorded references the half-made image yet. */
+            tex_xs_free(e);
+            return 0;
+        }
+        e->xs.factor = r->factor;
+    }
+    if (e->pending) submit_pending();   /* recorded batches may sample the copy being replaced */
+    VkImageLayout lay = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (!tex_upload_level(e->xs.img, &lay, 0u, 1, r->rgba, (int)sw, (int)sh)) {
+        e->xs.state = XS_NONE;
+        return 0;
+    }
+    e->xs.made_serial = r->serial;
+    e->xs.made_hash = r->hash;
+    e->xs.state = XS_READY;
+    s_cnt_xs_uploads++;
+    return 1;
+}
+
+/* Take finished scales (a few per call, so a burst of new textures spreads its uploads) and
+ * store each in the entry whose content it was made from. A result for content an entry no
+ * longer holds, or for an evicted entry, is dropped. */
+static void tex_xs_collect(void) {
+    if (!s_xs_factor) return;
+    NkTexScaleResult r;
+    for (int n = 0; n < 4 && nk_tex_scale_take(&r); n++) {
+        TexEnt *e = NULL;
+        for (int i = 0; i < s_tex_n && !e; i++)
+            if (s_tex[i].xs.state == XS_QUEUED && s_tex[i].xs.serial == r.serial) e = &s_tex[i];
+        if (e && e->w == r.w && e->h == r.h && e->hash == r.hash) {
+            if (!tex_xs_store(e, &r)) e->xs.state = XS_NONE;
+        }
+        nk_tex_scale_release(&r);
+    }
+}
+
+/* The set a draw binds for entry `e`: its scaled copy while that is current and allowed
+ * (tex_xs_bindable, tex_xs_eligible), else tex_entry_set's. s_tex_bound_scale reports which. */
+static VkDescriptorSet tex_bind_set(TexEnt *e, uint32_t levels) {
+    s_tex_bound_scale = 1;
+    if (!s_xs_factor || !tex_xs_bindable(e) || !tex_xs_eligible(e, levels)) return tex_entry_set(e);
+    VkDescriptorSet set = e->xs.set;
+    if (s_ace_af && (tex_filter_variant(s_ge->tex_filter) & 2u) && !(s_ge->vtype & (1u << 23))) {
+        /* Ace Mode's texture filtering applies to the copy as tex_entry_set applies it. */
+        if (!e->xs.set_af) {
+            VkSamplerCreateInfo sci;
+            tex_sampler_info(1, e->xs.mag_linear, e->xs.clamp_u, e->xs.clamp_v, &e->mip, &sci);
+            sci.anisotropyEnable = VK_TRUE;
+            sci.maxAnisotropy = (float)s_ace_af;
+            if (vkCreateSampler(s_dev, &sci, NULL, &e->xs.smp_af) == VK_SUCCESS) {
+                e->xs.set_af = make_descriptor(e->xs.view, e->xs.smp_af, s_dpool_tex);
+                if (!e->xs.set_af) {
+                    vkDestroySampler(s_dev, e->xs.smp_af, NULL);
+                    e->xs.smp_af = VK_NULL_HANDLE;
+                }
+            } else {
+                e->xs.smp_af = VK_NULL_HANDLE;
+            }
+        }
+        if (e->xs.set_af) set = e->xs.set_af;
+    }
+    s_tex_bound_scale = e->xs.factor;
+    s_cnt_xs_bound++;
+    return set;
+}
+
+/* A hit on an entry whose offer found the queue full: offer it again once there is room. Its
+ * content is unchanged (the hit checked it), so a fresh decode is that content. */
+static void tex_xs_retry(TexEnt *e, uint32_t levels) {
+    if (!e->xs.retry || !nk_tex_scale_can_submit()) return;
+    ge_decode_tex_rgba(s_texscratch);
+    tex_xs_offer(e, e->hash, levels);
+}
+
 static VkDescriptorSet tex_get(void) {
+    s_tex_bound_scale = 1;
+    tex_xs_collect();
     int w = s_ge->tex_w, h = s_ge->tex_h;
     if (w <= 0 || h <= 0 || w > 512 || h > 512) return s_white_set;
     unsigned filter = tex_filter_variant(s_ge->tex_filter);
@@ -3013,7 +3220,8 @@ static VkDescriptorSet tex_get(void) {
         if (e->content_valid && e->hash == hash) {
             if (sr_perf_enabled) sr_perf_texture_cache(1);
             e->pending = 1;
-            return tex_entry_set(e);
+            if (s_xs_factor) tex_xs_retry(e, levels);
+            return tex_bind_set(e, levels);
         }
         if (!e->content_valid && e->hash == hash && tex_shadow_matches(e)) {
             e->content_valid = 1;
@@ -3021,7 +3229,8 @@ static VkDescriptorSet tex_get(void) {
             e->pending = 1;
             s_cnt_shadow_avoided++;
             if (sr_perf_enabled) sr_perf_texture_cache(1);
-            return tex_entry_set(e);
+            if (s_xs_factor) tex_xs_retry(e, levels);
+            return tex_bind_set(e, levels);
         }
         /* same texture state, new contents: update in place (cache stays bounded) */
         if (e->pending) submit_pending();
@@ -3039,7 +3248,8 @@ static VkDescriptorSet tex_get(void) {
         tex_shadow_store(e);
         e->pending = 1;
         s_cnt_texup++;
-        return tex_entry_set(e);
+        tex_xs_note_upload(e, levels);   /* s_texscratch still holds level 0 when levels == 1 */
+        return tex_bind_set(e, levels);
     }
 
     cpu_profile_add(GEGPU_CPU_OBJECT_LOOKUP, lookup_started);
@@ -3072,7 +3282,8 @@ static VkDescriptorSet tex_get(void) {
     e->lru = s_texlru++;
     s_cnt_texup++;
     s_tex_n++;
-    return tex_entry_set(e);
+    tex_xs_note_upload(e, levels);   /* s_texscratch still holds level 0 when levels == 1 */
+    return tex_bind_set(e, levels);
 }
 
 /* ---- capture --------------------------------------------------------------------------- */
@@ -3466,13 +3677,19 @@ static void build_state(int persp, int sprite, Batch *b) {
                 b->pc.texsize[2] = (float)(pix % src->stride);
                 b->pc.texsize[3] = (float)(pix / src->stride);
             } else {
-                /* incompatible stride/format reinterpretation, or mip levels: VRAM + decoder */
+                /* incompatible stride/format reinterpretation, or mip levels: VRAM + decoder.
+                 * A render target is drawn as the GE drew it: never from a scaled copy. */
                 (void)target_readback_span(src, vram_off(g->tex_addr),
                                            tex_span_size(g->tex_bufw, g->tex_w, g->tex_h));
+                s_tex_noscale = 1;
                 b->dset = tex_get();
+                s_tex_noscale = 0;
             }
         } else {
             b->dset = tex_get();
+            /* A scaled copy (tex_scale.h) samples on its own texel lattice in psp.frag. */
+            if (s_tex_bound_scale > 1)
+                flags |= (s_tex_bound_scale - 1) << F_TSCALE_SHIFT;
         }
     }
     /* Shader blend reads the destination through the snapshot. submit_pending copies it right
@@ -3762,6 +3979,20 @@ static struct {
     Batch batch;
 } s_tri_state;
 
+/* The smart 2D filter (tex_scale.h): a textured draw the guest filters linearly, whose texels
+ * map 1:1 onto guest pixels (nk_smart2d_*), samples nearest instead. At the PSP's resolution
+ * both filters read the same texel at every pixel centre; at a higher render scale nearest
+ * keeps each texel (or each texel of a scaled copy) sharp where linear blurs it. */
+static int smart2d_candidate(const Batch *b) {
+    const uint32_t flags = (uint32_t)b->pc.cfg[0] >> 8;
+    return s_xs_smart2d && (flags & F_TEX) && !(flags & (F_NEAREST | F_LODFRAG | F_CLEAR));
+}
+
+static void smart2d_apply(Batch *b) {
+    b->pc.cfg[0] = (int32_t)((uint32_t)b->pc.cfg[0] | ((uint32_t)F_NEAREST << 8));
+    s_cnt_smart2d++;
+}
+
 static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     if (!s_ready) return 0;
     cpu_profile_hook_enter();
@@ -3786,6 +4017,12 @@ static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
         s_tri_state.flushgen = s_flushgen;
         s_tri_state.target = s_cur;
         s_tri_state.batch = b;
+    }
+    if (smart2d_candidate(&b)) {
+        const float x[3] = { A->x, B->x, C->x }, y[3] = { A->y, B->y, C->y };
+        const float u[3] = { A->u, B->u, C->u }, v[3] = { A->v, B->v, C->v };
+        const float rw[3] = { A->rw, B->rw, C->rw };
+        if (nk_smart2d_triangle(x, y, u, v, rw)) smart2d_apply(&b);
     }
     ensure_room(3);
     uint64_t vertex_started = cpu_profile_now();
@@ -3912,6 +4149,7 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     float ul = (p0->x <= p1->x) ? u0 : u1, ur = (p0->x <= p1->x) ? u1 : u0;
     float vt = (p0->y <= p1->y) ? v0 : v1, vbm = (p0->y <= p1->y) ? v1 : v0;
     float uw = (ur - ul) / (xb - xa), vw = (vbm - vt) / (yb - ya);
+    if (smart2d_candidate(&b) && nk_smart2d_sprite(xa, ya, xb, yb, ul, vt, ur, vbm)) smart2d_apply(&b);
     float centre_shift = 0.5f - 0.5f / (float)s_scale;
     float ua = ul + centre_shift * uw, ub = ur + centre_shift * uw;
     float va = vt + centre_shift * vw, vb = vbm + centre_shift * vw;
@@ -4394,6 +4632,9 @@ static const GeGpuHooks k_hooks = {
 #ifdef SR_GPU_COHERENCE_SELFTEST
 #include "ge_gpu_selftest.inc"
 #endif
+#ifdef SR_GPU_TEXSCALE_SELFTEST
+#include "tex_scale_gpu_selftest.inc"
+#endif
 
 void gegpu_ace_stats(GeGpuAceStats *out) {
     if (!out) return;
@@ -4520,7 +4761,14 @@ int gegpu_init(void) {
     /* Ace Mode's texture filtering (ace.h) can give every entry a second, anisotropic set; the
      * pool doubles for it then, and only then. */
     s_ace_af = g_ace_on ? ace_effective()->af : 0;
-    const uint32_t tex_sets = s_ace_af ? 2u * MAX_TEX : MAX_TEX;
+    /* Texture scaling and the smart 2D filter (tex_scale.h): Ace runs only. A scaled copy
+     * brings its own set (and anisotropic set), so the pool doubles again for it. */
+    {
+        const NkTexScaleConfig *xs = nk_tex_scale_init_from_env(g_ace_on);
+        s_xs_factor = xs->factor;
+        s_xs_smart2d = xs->smart2d;
+    }
+    const uint32_t tex_sets = (s_ace_af ? 2u * MAX_TEX : MAX_TEX) * (s_xs_factor ? 2u : 1u);
     s_tex_pool_sets = tex_sets;
     if (s_ace_af) ace_confirm(ACE_FEATURE_AF);   /* the renderer that filters is up */
     VkDescriptorPoolSize dps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2u * tex_sets };
@@ -4672,8 +4920,17 @@ void gegpu_shutdown(void) {
         if (e->view) vkDestroyImageView(s_dev, e->view, NULL);
         if (e->img) vkDestroyImage(s_dev, e->img, NULL);
         if (e->mem) vkFreeMemory(s_dev, e->mem, NULL);
+        tex_xs_free(e);
     }
     s_tex_n = 0;
+    if (s_xs_factor || s_xs_smart2d) {
+        nk_tex_scale_shutdown();
+        fprintf(stderr, "TEX_SCALE: draws (scaled_binds=%llu, scaled_uploads=%llu, stale=%llu, smart2d=%llu)\n",
+                (unsigned long long)s_cnt_xs_bound, (unsigned long long)s_cnt_xs_uploads,
+                (unsigned long long)s_cnt_xs_stale, (unsigned long long)s_cnt_smart2d);
+        nk_tex_scale_report();
+        s_xs_factor = s_xs_smart2d = 0;
+    }
     for (int i = 0; i < s_pipe_n; i++)
         if (s_pipes[i].pipe) vkDestroyPipeline(s_dev, s_pipes[i].pipe, NULL);
     s_pipe_n = 0;
