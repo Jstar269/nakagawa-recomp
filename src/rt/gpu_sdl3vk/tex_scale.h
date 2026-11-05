@@ -21,8 +21,9 @@
  *   SR_TEX_SCALE_BUDGET_MB  1..8192             VRAM for scaled copies (default 512)
  * Any other value refuses the setting: it stays off and one TEX_SCALE line names the reason.
  *
- * Both features are guest-visible (docs/ENHANCEMENT_CONTRACT.md, section 11.3.1): each present
- * commits the frame, scaled copies and nearest 2D draws included, to guest VRAM. They are not
+ * Both features are guest-visible (docs/ENHANCEMENT_CONTRACT.md, the section 11.3 entry "Texture
+ * Scaling and the Smart 2D Filter"): each present commits the frame, scaled copies and nearest 2D
+ * draws included, to guest VRAM. They are not
  * admitted under section 11.2 until their launch-line keys and library and per-title switches
  * exist, so a run that turns one on through these variables says so at start.
  */

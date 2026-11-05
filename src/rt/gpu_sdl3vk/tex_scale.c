@@ -74,7 +74,8 @@ size_t nk_tex_scale_admission_line(const NkTexScaleConfig *cfg, char *out, size_
     if (!cfg || (!cfg->factor && !cfg->smart2d)) return 0;
     const int n = snprintf(out, cap,
                            "TEX_SCALE: guest-visible, on through SR_TEX_SCALE/SR_SMART_2D and not admitted under "
-                           "contract section 11.2 (each present commits the frame to guest VRAM; section 11.3.1)");
+                           "contract section 11.2 (each present commits the frame to guest VRAM; see the contract's "
+                           "\"Texture Scaling and the Smart 2D Filter\" entry)");
     return n < 0 ? 0 : ((size_t)n < cap ? (size_t)n : cap - 1);
 }
 
@@ -104,7 +105,7 @@ const NkTexScaleConfig *nk_tex_scale_init_from_env(int enhanced) {
         if (asked) start_line("TEX_SCALE: off (texture scaling and the smart 2D filter need Ace Mode)");
         return &s_cfg;
     }
-    char why[96], line[192];
+    char why[96], line[256];
     NkTexScaleConfig c;
     if (!nk_tex_scale_parse(scale, smart, budget, &c, why, sizeof(why))) {
         snprintf(line, sizeof(line), "TEX_SCALE: refused (%s)", why);
