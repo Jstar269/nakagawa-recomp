@@ -140,7 +140,7 @@ downloader checks the attestations on the unsigned bundle, which the maintainer 
 records (a workflow artifact expires after 90 days), and matches its hashes to the record. The release notes
 say so.
 
-**Requirements.** The Windows SDK (`signtool.exe`), PowerShell 7.4 or later, Python on `PATH` (or
+**Requirements.** The Windows SDK (`signtool.exe`), PowerShell 7.6 or later, Python on `PATH` (or
 `$env:PYTHON`) for the runtime manifest, and one of:
 
 - a code-signing certificate in a Windows certificate store, chosen by its SHA-1 thumbprint. A certificate on a

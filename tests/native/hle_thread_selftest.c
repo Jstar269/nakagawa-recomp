@@ -664,6 +664,26 @@ unsigned long g_mpeg_put;
 unsigned long g_mpeg_getavc;
 unsigned long g_mpeg_avcdec;
 unsigned long g_mpeg_nodata;
+/* mpeg.c is not linked here. The sceMpeg handlers the interrupt-context check
+ * registers (test_mpeg_create_refused_in_interrupt) reach these spies, which
+ * record only whether a context was asked for and how many are live. */
+static unsigned s_mpi_create_calls, s_mpi_live;
+uint32_t mpeg_init(void) { return 0; }
+uint32_t mpeg_finish(void) { s_mpi_live = 0; return 0; }
+uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_t ringAddr,
+                     uint32_t frameWidth, uint32_t mode, uint32_t ddrTop) {
+    (void)mpegAddr; (void)dataPtr; (void)size; (void)ringAddr;
+    (void)frameWidth; (void)mode; (void)ddrTop;
+    s_mpi_create_calls++;
+    s_mpi_live++;
+    return 0;
+}
+uint32_t mpeg_delete(uint32_t mpegAddr) {
+    (void)mpegAddr;
+    if (!s_mpi_live) return 0xffffffffu;
+    s_mpi_live--;
+    return 0;
+}
 int sr_perf_enabled;
 /* Non-zero, and never repeating: every `sr_perf_now_ns()` caller uses the value only as
  * a "the counters are live" predicate before handing it to a stub, so a constant 0 would
@@ -15646,6 +15666,103 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
     sr_hle_test_data_reset(0);
 }
 
+/* 2c. Archive discovery skips an unpack folder ("<archive>.d" beside the archive
+ *     file "<archive>", the layout staging writes) and walks every other ".d"
+ *     directory. Loose serving is untouched: a loose root's unpack folder still
+ *     serves its files, and the primary root's unpack folders stay out of an
+ *     archive-mode namespace, as before. */
+static const char *const s_xb_unpack_dirs[] = {
+    "", "/primary", "/primary/pack.xb.d", "/primary/pack.xb.d/data",
+    "/primary/pack.xb.d/data/menu", "/primary/orphan.xb.d", "/primary/notes.d",
+    "/loose", "/loose/side.xb.d", "/loose/side.xb.d/data", "/loose/side.xb.d/data/menu"
+};
+static const char *const s_xb_unpack_files[] = {
+    "/primary/pack.xb", "/primary/pack.xb.d/data/decoy.xb",
+    "/primary/pack.xb.d/data/menu/unpacked-primary.to", "/primary/orphan.xb.d/inner.xb",
+    "/primary/notes.d/deep.xb", "/loose/side.xb", "/loose/side.xb.d/data/menu/unpacked.to"
+};
+
+static int host_data_duplicate_write_file(const char *root, const char *relative,
+                                          const char *body);
+
+static int xb_unpack_write_archive(const char *base, const char *relative,
+                                   const char *member, const char *body) {
+    char path[MAX_PATH];
+    if (snprintf(path, sizeof path, "%s%s", base, relative) >= (int)sizeof path) return 0;
+    const HleXbEntry entry = { member, (const uint8_t *)body, strlen(body) };
+    return hle_xb_write(path, &entry, 1u);
+}
+
+static void test_archive_discovery_skips_unpack_folders_only(void) {
+    char scratch[MAX_PATH], base[MAX_PATH], dataroot[MAX_PATH], loose[MAX_PATH + 32];
+    expect(hle_scratch_root(scratch, sizeof scratch), "the unpack-folder fixture has a scratch root");
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    snprintf(base, sizeof base, "%s/xb_unpack_%lu", scratch, (unsigned long)getpid());
+    int made = 1;
+    for (size_t i = 0; i < sizeof(s_xb_unpack_dirs) / sizeof(s_xb_unpack_dirs[0]); i++) {
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s%s", base, s_xb_unpack_dirs[i]);
+        if (!nk_platform_mkdir_p(dir)) made = 0;
+    }
+    made = made &&
+        xb_unpack_write_archive(base, "/primary/pack.xb", "data/menu/inpack.to", "outer-archive") &&
+        /* An archive among an unpack folder's files, as a nested member would be. */
+        xb_unpack_write_archive(base, "/primary/pack.xb.d/data/decoy.xb", "data/menu/decoy.to",
+                                "decoy-archive") &&
+        /* ".d" folders with no archive file of that name beside them. */
+        xb_unpack_write_archive(base, "/primary/orphan.xb.d/inner.xb", "data/menu/orphan.to",
+                                "orphan-archive") &&
+        xb_unpack_write_archive(base, "/primary/notes.d/deep.xb", "data/menu/deep.to",
+                                "deep-archive") &&
+        xb_unpack_write_archive(base, "/loose/side.xb", "data/menu/side.to", "side-archive") &&
+        host_data_duplicate_write_file(base, "/primary/pack.xb.d/data/menu/unpacked-primary.to",
+                                       "unpacked-primary") &&
+        host_data_duplicate_write_file(base, "/loose/side.xb.d/data/menu/unpacked.to",
+                                       "unpacked-loose");
+    expect(made, "the unpack-folder fixture was created");
+
+    snprintf(dataroot, sizeof dataroot, "%s/primary", base);
+    snprintf(loose, sizeof loose, "%s/loose\t\t10\t0\t0\n", base);
+    hle_test_setenv("SR_DATAROOT", dataroot);
+    hle_test_setenv("SR_LOOSE_CONTENT_ROOTS", loose);
+    sr_hle_test_data_reset(0);
+    expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_READY,
+           "a primary root with unpack folders and a loose root reaches READY");
+
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/inpack.to",
+                                          "outer-archive"),
+           "the archive beside its unpack folder is mounted and serves its member");
+    expect(hle_archive_route_open_result("disc0:/PSP_GAME/USRDIR/data/menu/decoy.to") != 0u,
+           "an archive inside an unpack folder is not mounted as a top-level archive");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/orphan.to",
+                                          "orphan-archive"),
+           "a .xb.d folder with no archive beside it is still searched for archives");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/deep.to",
+                                          "deep-archive"),
+           "a .d folder whose name is not an archive's is still searched for archives");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/unpacked.to",
+                                          "unpacked-loose"),
+           "a loose root's unpack folder still serves its files");
+    expect(hle_archive_route_open_result("disc0:/PSP_GAME/USRDIR/data/menu/side.to") != 0u,
+           "an archive in a loose root is served as a file, never mounted");
+    expect(hle_archive_route_open_result(
+               "disc0:/PSP_GAME/USRDIR/data/menu/unpacked-primary.to") != 0u,
+           "archive mode still serves no file from the primary root's unpack folders");
+
+    prewarm_env_restore();
+    sr_hle_test_data_reset(0);
+    for (size_t i = 0; i < sizeof(s_xb_unpack_files) / sizeof(s_xb_unpack_files[0]); i++) {
+        char path[MAX_PATH];
+        snprintf(path, sizeof path, "%s%s", base, s_xb_unpack_files[i]);
+        nk_remove_utf8(path);
+    }
+    for (size_t i = sizeof(s_xb_unpack_dirs) / sizeof(s_xb_unpack_dirs[0]); i-- > 0;) {
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s%s", base, s_xb_unpack_dirs[i]);
+        rmdir(dir);
+    }
+}
+
 static int host_data_duplicate_write_file(const char *root, const char *relative,
                                           const char *body) {
     char path[MAX_PATH];
@@ -19506,6 +19623,93 @@ static TCB *fixture_thread(uint32_t uid, int state, int priority) {
  * come after those definitions. It adds no production code and changes no
  * handler behavior. */
 #include "intr_conformance.h"
+
+/* sceMpegCreate inside an interrupt handler. pspautotests tests/intr/delays
+ * measured it on a PSP: from a VBLANK sub-interrupt handler it returns
+ * 0x80618008 (delays.expected:24), while the same call on a thread returns 0
+ * and sceMpegDelete then returns 0 (lines 12-13), and after a Finish/Init reset
+ * the library creates again (lines 28-30). PPSSPP took the same check in
+ * 177244863. The check lives in the production handler (hle_mpeg.c); the
+ * library behind it is the spies above. The thread calls run with a fixture
+ * thread current; the interrupt call is reached through the production
+ * sub-interrupt registration and resume path (ic_call_in_interrupt). */
+void sr_hle_test_register_mpeg_create_handlers(void);
+
+#define NID_MPI_INIT    0x682a619bu
+#define NID_MPI_FINISH  0x874624d6u
+#define NID_MPI_CREATE  0xd8c5f121u
+#define NID_MPI_DELETE  0x606a4649u
+#define MPI_DESC        0x00258000u   /* SceMpeg word */
+#define MPI_DATA        0x00260000u   /* 0x10000-byte context buffer */
+
+static void mpi_create_args(CpuState *c) {
+    memset(c, 0, sizeof *c);
+    c->r[4] = MPI_DESC;
+    c->r[5] = MPI_DATA;
+    c->r[6] = 0x10000u;     /* sceMpegQueryMemSize */
+    c->r[7] = 0u;           /* no ringbuffer */
+    c->r[8] = 512u;         /* frameWidth (stack_arg 0), as delays.c passes */
+}
+
+/* One call from guest thread context: a fixture thread is current, as for the
+ * matrix's normal leg. None of these four handlers waits. */
+static uint32_t mpi_on_thread(uint32_t nid, const CpuState *args) {
+    TCB *t = fixture_thread(0x1b0u, TH_RUNNING, 32);
+    if (!t) return 0xdeadbeefu;
+    t->started = 1;
+    s_cur = (int)(t - s_tcb);
+    CpuState c = *args;
+    uint32_t r = sr_syscall(&c, nid);
+    s_cur = -1;
+    return r;
+}
+
+static uint32_t mpi_on_thread_a0(uint32_t nid, uint32_t a0) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = a0;
+    return mpi_on_thread(nid, &c);
+}
+
+static void test_mpeg_create_refused_in_interrupt(void) {
+    static const IcProbe create = {
+        "sceMpegCreate", NID_MPI_CREATE, "", ICG_NONE, 0,
+        {0, 0, 0, 0}, {IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN},
+        {IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN},
+        {IC_PREC_NA, IC_PREC_NA, IC_PREC_NA, IC_PREC_NA}, IC_HW_IMMEDIATE, NULL
+    };
+    CpuState c;
+    reset_fixture(); sr_hle_init();
+    sr_hle_test_register_mpeg_create_handlers();
+    s_vbl_next_us = UINT64_MAX;
+    s_mpi_create_calls = 0;
+    s_mpi_live = 0;
+
+    expect(mpi_on_thread_a0(NID_MPI_INIT, 0u) == 0u, "mpeg-intr: sceMpegInit returns 0");
+    mpi_create_args(&c);
+    expect(mpi_on_thread(NID_MPI_CREATE, &c) == 0u,
+           "mpeg-intr: sceMpegCreate on a thread returns 0 (delays.expected:12)");
+    expect(mpi_on_thread_a0(NID_MPI_DELETE, MPI_DESC) == 0u,
+           "mpeg-intr: sceMpegDelete on a thread returns 0 (delays.expected:13)");
+
+    mpi_create_args(&s_ic_probe_cpu);
+    const unsigned creates_before = s_mpi_create_calls;
+    uint64_t in_intr = ic_call_in_interrupt(&create);
+    expect(in_intr == IC_RET(0x80618008u),
+           "mpeg-intr: sceMpegCreate in an interrupt handler returns 0x80618008 "
+           "(delays.expected:24)");
+    expect(s_mpi_create_calls == creates_before,
+           "mpeg-intr: the refused create never reaches the library");
+
+    expect(mpi_on_thread_a0(NID_MPI_FINISH, 0u) == 0u && mpi_on_thread_a0(NID_MPI_INIT, 0u) == 0u,
+           "mpeg-intr: sceMpegFinish and sceMpegInit reset the library");
+    mpi_create_args(&c);
+    expect(mpi_on_thread(NID_MPI_CREATE, &c) == 0u &&
+               mpi_on_thread_a0(NID_MPI_DELETE, MPI_DESC) == 0u,
+           "mpeg-intr: after the reset a thread creates and deletes again (delays.expected:29-30)");
+    (void)mpi_on_thread_a0(NID_MPI_FINISH, 0u);
+    reset_fixture();
+}
 
 static void run_worker(TCB *worker) {
     s_cur = (int)(worker - s_tcb);
@@ -30222,7 +30426,7 @@ static void test_atrac_aa3_and_reinit_1379(void) {
  *   5. MPEG (RingbufferDestruct, FlushAllStream, AvcDecodeFlush)
  *   6. LwMutex status (ReferLwMutexStatus, ReferLwMutexStatusByID)
  *   7. ATRAC second buffer & lifecycle (SetSecondBuffer, GetSecondBufferInfo,
- *      GetBufferInfoForResetting / Reseting, Reinit, ReleaseResources)
+ *      GetBufferInfoForResetting / Reseting, Reinit, EndEntry)
  * Dispatches through sr_syscall to pin the exact production NID mapping. */
 
 #define NID_SCE_CTRL_SET_SAMPLING_MODE               0x1f4011e6u
@@ -30250,7 +30454,7 @@ static void test_atrac_aa3_and_reinit_1379(void) {
 #define NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETTING  0x2dd3e298u
 #define NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETING   0xca3ca3d2u
 #define NID_SCE_ATRAC_REINIT                         0x132f1ecau
-#define NID_SCE_ATRAC_RELEASE_RESOURCES              0xd5c28cc0u
+#define NID_SCE_ATRAC_END_ENTRY                      0xd5c28cc0u
 
 extern void sr_hle_test_ctrl_sampling_reset(void);
 extern uint32_t sr_hle_test_power_lock_count(void);
@@ -30527,7 +30731,7 @@ static void test_td24d_hle_batch(void) {
      * 7. ATRAC second buffer & lifecycle family (5 NIDs / 6 functions):
      *    sceAtracSetSecondBuffer (0x83bf7afd), sceAtracGetSecondBufferInfo (0x83e85ea0),
      *    sceAtracGetBufferInfoForResetting (0x2dd3e298) / sceAtracGetBufferInfoForReseting (0xca3ca3d2),
-     *    sceAtracReinit (0x132f1eca), sceAtracReleaseResources (0xd5c28cc0)
+     *    sceAtracReinit (0x132f1eca), sceAtracEndEntry (0xd5c28cc0)
      * ========================================================================= */
     sr_hle_test_atrac_reinit_reset();
     sr_hle_test_atrac_release_reset();
@@ -30540,9 +30744,9 @@ static void test_td24d_hle_batch(void) {
            "sceAtracReinit succeeds when no ATRAC contexts are in use");
     expect(sr_hle_test_atrac_reinit_count() == 1u, "reinit count incremented");
 
-    /* Release resources succeeds and increments count */
-    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_RESOURCES, 0u, 0u, 0u, 0u) == 0u,
-           "sceAtracReleaseResources succeeds");
+    /* The module-stop entry releases resources: succeeds and increments the count */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_END_ENTRY, 0u, 0u, 0u, 0u) == 0u,
+           "sceAtracEndEntry succeeds");
     expect(sr_hle_test_atrac_release_count() == 1u, "release count incremented");
 
     /* Bad-ID error checks */
@@ -48005,6 +48209,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_route_observer_waits_for_guest_scanout_state();
     test_extracted_data_prepares_before_guest_and_lookup_never_builds();
     test_disc_route_serves_archive_and_loose_content_in_one_namespace();
+    test_archive_discovery_skips_unpack_folders_only();
     test_primary_extracted_archive_duplicates_match_main();
     test_direct_xb_read_precedence_and_listing();
     test_direct_xb_malformed_archive_fails_closed();
@@ -48115,6 +48320,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vpl_blocking_waits();
     test_mbx_lifecycle_and_ordering();
     test_intr_context_conformance();
+    test_mpeg_create_refused_in_interrupt();
     test_psp_mutex();
     test_kernel_nested_join();
     test_kernel_nested_mutex();

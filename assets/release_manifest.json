@@ -9,9 +9,9 @@
     "compiler": "GCC >= 13.0.0 (MSYS2 UCRT64)",
     "make": "GNU Make >= 4.4",
     "python": "Python 3.15.x",
-    "vulkan_sdk": "Vulkan SDK 1.4.363.0",
+    "vulkan_sdk": "Vulkan SDK 1.4.363.1",
     "glslc": "glslc from Vulkan SDK",
-    "sdl": "SDL3 3.4.18"
+    "sdl": "SDL3 3.4.20"
   },
   "lockfiles": {
     "python": "tools/requirements-lock.txt"
@@ -103,7 +103,7 @@
       "name": "dr_libs dr_wav",
       "license": "Unlicense",
       "origin": "https://github.com/mackron/dr_libs",
-      "revision": "d422edf14ec2b81ac40a7f22b5a7f64276b5fc34",
+      "revision": "35b5c392cc15456736c440a68dbe073178bbffe0",
       "notice_path": "third_party/dr_libs/LICENSE.txt",
       "evidence_path": "third_party/dr_libs/PROVENANCE.md",
       "disposition": "vendored_source_only; selftests only, not linked into the player or runtime"
@@ -123,7 +123,7 @@
       "name": "SDL3",
       "license": "Zlib",
       "origin": "https://github.com/libsdl-org/SDL",
-      "revision": "reference_environment sdl3-3.4.18",
+      "revision": "reference_environment sdl3-3.4.20",
       "notice_path": "NOTICE.md",
       "evidence_path": "assets/release_manifest.json",
       "disposition": "external_optional_dependency; audio_backend_excluded"
