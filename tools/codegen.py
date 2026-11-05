@@ -41,7 +41,7 @@ from analyze import (
     is_code_overlay, is_fixed_overlay, static_coverage, branch_kind, BRANCH_UNCOND,
     seeds_in_analysis, _gpr_writes,
 )
-from codegen_hst_stubs import HST_CUSTOM_STUBS, HST_GAME_LOOP_ADDR, HST_GAME_LOOP_WRAPPER
+from codegen_hst_stubs import HST_CUSTOM_STUBS
 from host_stubs import HST_SIMPLE_STUBS
 import codegen_llvm
 import compat_overrides
@@ -5973,15 +5973,6 @@ def _translate(argv):
     s->pc = s->r[31];
 }}"""
             func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == HST_GAME_LOOP_ADDR:
-            func_texts.append("\n".join(emit_function(
-                elf, a, ranges, known, resume_owners=resume_owners,
-                resumable=catalog[a].resumable, profile=profile,
-                dispatch_boundaries=dispatch_boundaries,
-                stack_census=stack_census)))
-            func_texts[-1] = func_texts[-1].replace("void f_000468c8(CpuState *s)", "void f_000468c8_real(CpuState *s)")
-            func_texts.append(HST_GAME_LOOP_WRAPPER); emitted.append(a); continue
 
         if is_stub(a):
             lib_nid = impmap.get(a)
