@@ -784,6 +784,7 @@ set(NK_RUNTIME_SOURCES
     src/rt/perf.c
     src/rt/fbcap_policy.c
     src/rt/fbcap.c
+    src/rt/videorec.c
     src/rt/ge_capture.c
     src/rt/vfpu_interp.c
     src/rt/hle.c
