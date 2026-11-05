@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **459** (declared in `recomp.h`: 389)
-- reach class: emitter-reached 80, production-runtime-only 344, selftest-only 0, address-only 8, none 27
-- provenance class of the home definition: declared-only 1, project_authored_attested 35, upstream_derived 423
+- helpers: **460** (declared in `recomp.h`: 390)
+- reach class: emitter-reached 80, production-runtime-only 345, selftest-only 0, address-only 8, none 27
+- provenance class of the home definition: declared-only 1, project_authored_attested 35, upstream_derived 424
 
 ## Helpers
 
