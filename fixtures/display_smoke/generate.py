@@ -1510,17 +1510,26 @@ def fsr1_smoke(build_dir: Path) -> int:
         if match.returncode != 0 or "MATCH:" not in match.stdout:
             raise RuntimeError(f"FSR 1 changed the guest's flight events: {match.stdout}{match.stderr}")
 
-        dumps = [{p.name: p.read_bytes() for p in (runs[label][0] / "capture").glob("vram_*")
-                  if not p.name.endswith(".json")} for label in ("off", "fsr1")]
-        common = sorted(set(dumps[0]) & set(dumps[1]))
-        if not common:
-            raise RuntimeError("the two runs captured VRAM at no common VBLANK")
-        changed = [name for name in common if dumps[0][name] != dumps[1][name]]
+        # Which guest frame a VBLANK shows depends on host pacing, which differs from run to run, so
+        # the dumps are matched by the guest frame they hold: the band word at the framebuffer's first
+        # pixel (VRAM offset 0) names it. Every dump of a frame both runs captured must be identical.
+        held = []
+        for label in ("off", "fsr1"):
+            by_frame: dict[bytes, list[tuple[str, bytes]]] = {}
+            for dump in sorted((runs[label][0] / "capture").glob("vram_*.bin")):
+                data = dump.read_bytes()
+                by_frame.setdefault(data[:4], []).append((dump.name, data))
+            held.append(by_frame)
+        common = sorted(set(held[0]) & set(held[1]))
+        if len(common) < 3:
+            raise RuntimeError(f"the two runs captured only {len(common)} common guest frames in VRAM")
+        changed = [f"{a} (off) vs {b} (on)" for key in common for a, x in held[0][key]
+                   for b, y in held[1][key] if x != y]
         if changed:
-            raise RuntimeError(f"FSR 1 changed guest VRAM in {changed}")
+            raise RuntimeError(f"FSR 1 changed guest VRAM: {changed}")
     print(
         f"DISPLAY_SMOKE_FSR1 status=PASS upscaled_presents={upscaled.group(1)} guest=MATCH "
-        f"first_frame=EXACT vram_captures={len(common)} vram=IDENTICAL"
+        f"first_frame=EXACT vram_frames={len(common)} vram=IDENTICAL"
     )
     return 0
 
