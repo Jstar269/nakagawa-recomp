@@ -379,10 +379,15 @@ static int sr_heap_is_header(uint32_t hdr) {
         (s_heap_header_bits[slot >> 3] & (uint8_t)(1u << (slot & 7u))) != 0u;
 }
 
+/* Free-list nodes validated so far. Only heap_selftest reads it, to hold the
+ * guard's amortized cost per allocation to a bound. */
+static uint64_t s_heap_nodes_validated = 0u;
+
 /* Validate one free-list node without trusting its fields for host pointer
  * arithmetic. The footer is part of the free-block contract; checking it
  * catches stale or overlapping metadata before allocation follows its link. */
 static int sr_heap_free_node_valid(uint32_t hdr, uint32_t *size_out, uint32_t *next_out) {
+    s_heap_nodes_validated++;
     if (!sr_heap_is_header(hdr) || hdr < SR_HEAP_BASE || hdr >= s_heap_bump_ptr) return 0;
     uint32_t sizeflags = MEM_R32(hdr + 4u);
     uint32_t size = sizeflags & ~1u;
@@ -397,27 +402,40 @@ static int sr_heap_free_node_valid(uint32_t hdr, uint32_t *size_out, uint32_t *n
     return 1;
 }
 
+/* Two free blocks linked one after the other must not overlap. A link into
+ * another node's payload would otherwise create overlapping free blocks even
+ * though both addresses happen to be marked headers. */
+static int sr_heap_free_nodes_overlap(uint32_t a, uint32_t a_size, uint32_t b, uint32_t b_size) {
+    uint64_t a_end = (uint64_t)a + a_size;
+    uint64_t b_end = (uint64_t)b + b_size;
+    return ((uint64_t)b > a && (uint64_t)b < a_end) ||
+           ((uint64_t)a > b && (uint64_t)a < b_end);
+}
+
 /* The free list is guest-visible metadata and can be damaged by a foreign
  * pointer write. Validate every reachable node and use Brent's cycle walk so a
- * cycle cannot spin allocation forever. The interval check rejects a link into
- * another node's payload, which would otherwise create overlapping free blocks
- * even though both addresses happen to be marked headers. This runs on every
- * allocation, so each node is read and validated once: the earlier Floyd walk
- * validated each node about three times and was ~17% of a measured title's busy
- * thread during play (#1296). */
-static int sr_heap_free_list_valid(void) {
-    uint32_t cur = s_heap_free_list, prev = 0u, prev_size = 0u;
+ * cycle cannot spin forever; *len_out (if given) receives the number of nodes
+ * walked. Each node is read and validated once (the earlier Floyd walk validated
+ * each node about three times, #1296/#1309).
+ *
+ * Allocation no longer runs this walk on every call: sr_newlib_malloc validates
+ * every node first-fit visits, and runs this full walk on an amortized budget
+ * (see SR_HEAP_FULL_CHECK_BUDGET). Running it on every call made one HST match
+ * load validate ~88 million nodes for ~122,000 allocations, about 5.5 s of a
+ * 9.5 s load. */
+static int sr_heap_free_list_walk(uint32_t *len_out) {
+    uint32_t cur = s_heap_free_list, prev = 0u, prev_size = 0u, len = 0u;
     uint32_t tortoise = cur, power = 1u, steps = 0u;
+    int ok = 1;
     while (cur != 0u) {
         uint32_t size, next;
-        if (!sr_heap_free_node_valid(cur, &size, &next)) return 0;
-        if (prev != 0u) {
-            uint64_t prev_end = (uint64_t)prev + prev_size;
-            uint64_t cur_end = (uint64_t)cur + size;
-            if (((uint64_t)cur > prev && (uint64_t)cur < prev_end) ||
-                ((uint64_t)prev > cur && (uint64_t)prev < cur_end)) return 0;
+        if (!sr_heap_free_node_valid(cur, &size, &next) ||
+            (prev != 0u && sr_heap_free_nodes_overlap(prev, prev_size, cur, size)) ||
+            (next != 0u && next == tortoise)) {
+            ok = 0;
+            break;
         }
-        if (next != 0u && next == tortoise) return 0;
+        len++;
         if (++steps == power) {
             tortoise = next;
             power <<= 1;
@@ -427,8 +445,25 @@ static int sr_heap_free_list_valid(void) {
         prev_size = size;
         cur = next;
     }
-    return 1;
+    if (len_out) *len_out = len;
+    return ok;
 }
+
+static int sr_heap_free_list_valid(void) {
+    return sr_heap_free_list_walk(NULL);
+}
+
+/* Amortized full check. Each allocation that finds a non-empty free list earns
+ * this many node credits; once the credits reach the length the last full walk
+ * found, the next allocation walks the whole list again and the credits restart.
+ * The full walk therefore costs at most this many node validations per
+ * allocation on average, and damage anywhere in the list -- including nodes no
+ * first-fit search reaches -- is still quarantined within ceil(length / budget)
+ * + 1 allocations. Nodes an allocation actually uses are validated before use,
+ * on every call, independent of the budget. */
+#define SR_HEAP_FULL_CHECK_BUDGET 16u
+static uint32_t s_heap_full_check_credit = 0u;
+static uint32_t s_heap_full_check_len = 0u;   /* 0: walk on the next allocation */
 
 static void sr_heap_set_free_state(uint32_t hdr, int is_free) {
     if (!g_sr_heap_watch) return;
@@ -608,12 +643,32 @@ static void sr_heap_unmark_header(uint32_t hdr) {
         s_heap_header_bits[slot >> 3] &= (uint8_t)~(1u << (slot & 7u));
 }
 
-/* Remove one block from the singly-linked free list.  O(list length), which
- * coalescing keeps small; used when a forward neighbor is absorbed by a merge. */
+/* Remove one block from the singly-linked free list.  O(position of the block),
+ * which coalescing keeps small; used when a forward neighbor is absorbed by a
+ * merge (free, and realloc's in-place growth).  The walk validates every node it
+ * passes the same way first fit does -- the node check, the interval check
+ * against the node before it, and Brent's cycle walk -- and quarantines the list
+ * on damage instead of following a stray link: a cycle that skips the target
+ * would otherwise spin free() forever, and a damaged node's link would be
+ * written through. A target that is not on a valid list is left alone, as
+ * before. */
 static void sr_heap_freelist_unlink(uint32_t target) {
-    uint32_t prev = 0u, cur = s_heap_free_list;
+    uint32_t prev = 0u, prev_size = 0u, cur = s_heap_free_list;
+    uint32_t tortoise = cur, power = 1u, steps = 0u;
     while (cur != 0u) {
-        uint32_t next = MEM_R32(cur + 0u);
+        uint32_t size = 0u, next = 0u;
+        if (!sr_heap_free_node_valid(cur, &size, &next) ||
+            (prev != 0u && sr_heap_free_nodes_overlap(prev, prev_size, cur, size)) ||
+            (next != 0u && next == tortoise)) {
+            static int corrupt_unlink_n = 0;
+            if (corrupt_unlink_n++ < 8)
+                fprintf(stderr,
+                    "HEAP_FREE_LIST_CORRUPT: unlink of 0x%08" PRIx32 " met a damaged node 0x%08" PRIx32 "; quarantining list\n",
+                    target, cur);
+            s_heap_free_list = 0u;
+            s_heap_full_check_len = 0u;
+            return;
+        }
         if (cur == target) {
             if (prev == 0u) s_heap_free_list = next;
             else {
@@ -623,7 +678,13 @@ static void sr_heap_freelist_unlink(uint32_t target) {
             }
             return;
         }
+        if (++steps == power) {
+            tortoise = next;
+            power <<= 1;
+            steps = 0u;
+        }
         prev = cur;
+        prev_size = size;
         cur = next;
     }
 }
@@ -717,35 +778,48 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {
     static int reuse_on = -1;
     if (reuse_on < 0) reuse_on = getenv("SR_HEAP_REUSE_OFF") ? 0 : 1;
 
-    if (reuse_on && s_heap_free_list != 0u && !sr_heap_free_list_valid()) {
-        static int corrupt_list_n = 0;
-        if (corrupt_list_n++ < 8)
-            fprintf(stderr,
-                "HEAP_FREE_LIST_CORRUPT: quarantining invalid/cyclic list head=0x%08" PRIx32 "\n",
-                s_heap_free_list);
-        s_heap_free_list = 0u;
+    if (reuse_on && s_heap_free_list != 0u) {
+        s_heap_full_check_credit += SR_HEAP_FULL_CHECK_BUDGET;
+        if (s_heap_full_check_credit >= s_heap_full_check_len) {
+            uint32_t len = 0u;
+            int ok = sr_heap_free_list_walk(&len);
+            s_heap_full_check_credit = 0u;
+            s_heap_full_check_len = ok ? len : 0u;
+            if (!ok) {
+                static int corrupt_list_n = 0;
+                if (corrupt_list_n++ < 8)
+                    fprintf(stderr,
+                        "HEAP_FREE_LIST_CORRUPT: quarantining invalid/cyclic list head=0x%08" PRIx32 "\n",
+                        s_heap_free_list);
+                s_heap_free_list = 0u;
+            }
+        }
     }
 
-    uint32_t prev = 0u, cur = reuse_on ? s_heap_free_list : 0u;
+    /* First fit. Every node this search reads is validated in full before the
+     * search acts on it (the node check, the interval check against the node
+     * before it, and the same Brent cycle walk as the full check), and the fit's
+     * successor -- which gets spliced into the list -- is validated too. So no
+     * allocation decision rests on metadata the full walk would have rejected. */
+    uint32_t prev = 0u, prev_size = 0u, cur = reuse_on ? s_heap_free_list : 0u;
+    uint32_t tortoise = cur, power = 1u, steps = 0u;
     while (cur != 0u) {
-        if (!sr_heap_is_header(cur) || cur >= s_heap_bump_ptr) {
-            static int corrupt_list_n = 0;
-            if (corrupt_list_n++ < 8)
-                fprintf(stderr, "HEAP_FREE_LIST_CORRUPT: header=0x%08" PRIx32 "; quarantining list\n", cur);
-            s_heap_free_list = 0u;
-            break;
-        }
-        uint32_t block_size = MEM_R32(cur + 4u);
-        uint32_t next = MEM_R32(cur + 0u);
-        if ((block_size & 1u) != 0u || block_size < 16u || (block_size & 15u) != 0u ||
-            cur + block_size < cur || cur + block_size > s_heap_bump_ptr ||
-            (next != 0u && (!sr_heap_is_header(next) || next >= s_heap_bump_ptr))) {
+        uint32_t block_size = 0u, next = 0u, next_size = 0u;
+        int ok = sr_heap_free_node_valid(cur, &block_size, &next) &&
+                 !(prev != 0u && sr_heap_free_nodes_overlap(prev, prev_size, cur, block_size)) &&
+                 !(next != 0u && next == tortoise);
+        if (ok && block_size >= alloc && next != 0u)
+            ok = sr_heap_free_node_valid(next, &next_size, NULL) &&
+                 !sr_heap_free_nodes_overlap(cur, block_size, next, next_size);
+        if (!ok) {
             static int corrupt_block_n = 0;
             if (corrupt_block_n++ < 8)
                 fprintf(stderr,
                     "HEAP_FREE_LIST_CORRUPT: header=0x%08" PRIx32 " size=0x%" PRIx32 " next=0x%08" PRIx32 "; quarantining list\n",
-                    cur, block_size, next);
+                    cur, sr_heap_is_header(cur) ? MEM_R32(cur + 4u) : 0u,
+                    sr_heap_is_header(cur) ? MEM_R32(cur + 0u) : 0u);
             s_heap_free_list = 0u;
+            s_heap_full_check_len = 0u;
             break;
         }
         if (block_size >= alloc) {
@@ -795,7 +869,13 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {
                 guest_ra >= 8u ? guest_ra - 8u : 0u, guest_ra, sched_current_uid());
             return result;
         }
+        if (++steps == power) {
+            tortoise = next;
+            power <<= 1;
+            steps = 0u;
+        }
         prev = cur;
+        prev_size = block_size;
         cur = next;
     }
 

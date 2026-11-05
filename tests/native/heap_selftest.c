@@ -28,7 +28,11 @@
  *     allocator's guarantee that a block it hands out starts zeroed, across the
  *     absorbed metadata words;
  *   - free() keeps a freed block's payload until the block is handed out again;
- *   - randomized alloc/free churn leaves metadata valid and the free list finite.
+ *   - randomized alloc/free churn leaves metadata valid and the free list finite;
+ *   - the free-list guard costs a bounded number of node checks per allocation, not
+ *     the whole list; every node an allocation uses is validated on that same call;
+ *     and damage anywhere else in the list is still quarantined within the
+ *     amortized full walk's bound.
  */
 
 #include "recomp.c"   /* white-box: allocator statics + sr_heap_stats() visible */
@@ -106,6 +110,8 @@ static void heap_reset(void) {
     memset(s_heap_header_bits, 0, sizeof s_heap_header_bits);
     memset(s_heap_free_bits, 0, sizeof s_heap_free_bits);
     memset(s_heap_watch_reported_bits, 0, sizeof s_heap_watch_reported_bits);
+    s_heap_full_check_credit = 0u;
+    s_heap_full_check_len = 0u;
 }
 
 /* Number of free blocks currently in the singly-linked list (bounded walk). */
@@ -657,6 +663,223 @@ static void test_realloc_growth_tail_is_clean(void) {
     CHECK(sr_heap_stats().metadata_valid, "metadata invalid after in-place growth");
 }
 
+/* ---- free-list guard: cost and detection --------------------------------------------- */
+
+enum { GUARD_NODE_BYTES = 64u, GUARD_BLOCK = 80u };   /* malloc(64) carves an 80-byte block */
+
+/* n free 80-byte blocks, each kept apart by a live block so none coalesce, linked in address
+ * order: node[0] is the list head. Returns 0 when setup fails. */
+static int guard_build_list(uint32_t *node, unsigned n) {
+    heap_reset();
+    for (unsigned i = 0; i < n; i++) {
+        node[i] = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+        if (!node[i] || !sr_newlib_malloc(GUARD_NODE_BYTES, 0u)) return 0;
+    }
+    for (unsigned i = 0; i < n; i++) sr_newlib_free(node[i], 0u);
+    for (unsigned i = 0; i < n; i++)
+        MEM_W32(node[i] - 8u, i + 1u < n ? node[i + 1u] - 8u : 0u);
+    s_heap_free_list = node[0] - 8u;
+    return sr_heap_free_list_valid();
+}
+
+/* Failing before: the guard used to walk the whole free list on every allocation, so draining
+ * a 2000-node list one head node at a time cost 2000+1999+...+1 = 2,001,000 node checks. The
+ * bound here is the visited node, the fit's successor, the amortized full-walk budget, the
+ * first full walk and the last one, which the drained list never pays back. The addresses must be first fit's, in list order. */
+static void test_guard_cost_is_amortized(void) {
+    enum { N = 2000 };
+    static uint32_t node[N];
+    CHECK(guard_build_list(node, N), "cost setup failed");
+    s_heap_full_check_credit = 0u;
+    s_heap_full_check_len = 0u;
+    uint64_t before = s_heap_nodes_validated;
+    int order_ok = 1;
+    for (unsigned i = 0; i < N; i++)
+        order_ok &= sr_newlib_malloc(GUARD_NODE_BYTES, 0u) == node[i];
+    uint64_t spent = s_heap_nodes_validated - before;
+    uint64_t bound = (uint64_t)(SR_HEAP_FULL_CHECK_BUDGET + 2u) * N + 2u * N;
+    CHECK(order_ok, "first fit handed out blocks out of list order");
+    CHECK(s_heap_free_list == 0u, "the drained list is not empty");
+    CHECK(spent <= bound, "guard cost %llu node checks for %u allocations (bound %llu)",
+          (unsigned long long)spent, (unsigned)N, (unsigned long long)bound);
+}
+
+typedef enum {
+    GUARD_LINK_OUT_OF_ARENA, GUARD_LINK_INTERIOR, GUARD_LINK_SELF, GUARD_SIZE_ALLOCATED_BIT,
+    GUARD_SIZE_MISALIGNED, GUARD_SIZE_PAST_BUMP, GUARD_FOOTER_MISMATCH, GUARD_OVERLAP_SUCCESSOR,
+    GUARD_KIND_COUNT
+} GuardKind;
+
+static const char *const k_guard_kind[GUARD_KIND_COUNT] = {
+    "link out of arena", "link into a payload", "self link", "size with the allocated bit",
+    "misaligned size", "size past the bump pointer", "footer mismatch",
+    "interval overlapping the successor",
+};
+
+/* Damage free node t (whose list successor is s, or 0) the way a stray guest write would. */
+static void guard_corrupt(GuardKind kind, uint32_t t, uint32_t s) {
+    uint32_t size = MEM_R32(t + 4u);
+    switch (kind) {
+    case GUARD_LINK_OUT_OF_ARENA: MEM_W32(t + 0u, SR_HEAP_END); break;
+    case GUARD_LINK_INTERIOR:     MEM_W32(t + 0u, s + 16u); break;
+    case GUARD_LINK_SELF:         MEM_W32(t + 0u, t); break;
+    case GUARD_SIZE_ALLOCATED_BIT: MEM_W32(t + 4u, size | 1u); break;
+    case GUARD_SIZE_MISALIGNED:   MEM_W32(t + 4u, size + 8u); break;
+    case GUARD_SIZE_PAST_BUMP:    MEM_W32(t + 4u, s_heap_bump_ptr - t + 16u); break;
+    case GUARD_FOOTER_MISMATCH:   MEM_W32(t + size - 4u, size + 16u); break;
+    case GUARD_OVERLAP_SUCCESSOR: {
+        uint32_t grown = (s - t) + 16u;   /* reaches into the successor's header */
+        MEM_W32(t + 4u, grown);
+        MEM_W32(t + grown - 4u, grown);
+        break;
+    }
+    default: break;
+    }
+}
+
+/* Damage on the node an allocation uses (the head, which fits) must be caught by that same
+ * allocation, with the amortized full walk held off, so only the per-visit check can see it:
+ * the list is quarantined and the request comes from the bump allocator. */
+static void test_guard_catches_visited_damage_on_the_same_call(void) {
+    enum { N = 8 };
+    uint32_t node[N];
+    for (int kind = 0; kind < GUARD_KIND_COUNT; kind++) {
+        CHECK(guard_build_list(node, N), "visited-damage setup failed (%s)", k_guard_kind[kind]);
+        guard_corrupt((GuardKind)kind, node[0] - 8u, node[1] - 8u);
+        s_heap_full_check_credit = 0u;
+        s_heap_full_check_len = 0xffffffffu;   /* no full walk on this call */
+        uint32_t bump = s_heap_bump_ptr;
+        uint32_t got = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+        CHECK(got == bump + 8u, "%s on the fitting node was not caught on the same call (got 0x%08x)",
+              k_guard_kind[kind], got);
+        CHECK(s_heap_free_list == 0u, "%s on the fitting node did not quarantine the list",
+              k_guard_kind[kind]);
+    }
+
+    /* Damage on the fit's successor -- the node spliced into the list in its place -- must be
+     * caught on the same call too, not only an overlap with it. */
+    {
+        static const GuardKind succ_kinds[] = {
+            GUARD_LINK_OUT_OF_ARENA, GUARD_SIZE_ALLOCATED_BIT, GUARD_FOOTER_MISMATCH,
+        };
+        for (unsigned i = 0; i < sizeof succ_kinds / sizeof succ_kinds[0]; i++) {
+            const char *name = k_guard_kind[succ_kinds[i]];
+            CHECK(guard_build_list(node, N), "successor-damage setup failed (%s)", name);
+            guard_corrupt(succ_kinds[i], node[1] - 8u, node[2] - 8u);
+            s_heap_full_check_credit = 0u;
+            s_heap_full_check_len = 0xffffffffu;
+            uint32_t bump = s_heap_bump_ptr;
+            uint32_t got = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+            CHECK(got == bump + 8u, "%s on the fit's successor was not caught on the same call (got 0x%08x)",
+                  name, got);
+            CHECK(s_heap_free_list == 0u, "%s on the fit's successor did not quarantine the list", name);
+        }
+    }
+
+    /* The fit overlaps the node the search passed over before it: the head (node[1]) is too
+     * small for a 160-byte block; its successor (node[0], the lower address) claims 176 bytes,
+     * which fits, and reaches into the head's header. */
+    {
+        CHECK(guard_build_list(node, N), "overlap-before setup failed");
+        uint32_t t = node[1] - 8u, s = node[0] - 8u;
+        MEM_W32(t + 0u, s);
+        MEM_W32(s + 0u, node[2] - 8u);
+        s_heap_free_list = t;
+        uint32_t grown = (t - s) + 16u;
+        MEM_W32(s + 4u, grown);
+        MEM_W32(s + grown - 4u, grown);
+        s_heap_full_check_credit = 0u;
+        s_heap_full_check_len = 0xffffffffu;
+        uint32_t bump = s_heap_bump_ptr;
+        uint32_t got = sr_newlib_malloc(150u, 0u);   /* a 160-byte block */
+        CHECK(got == bump + 8u, "a fit overlapping the node before it was handed out (got 0x%08x)", got);
+        CHECK(s_heap_free_list == 0u, "a fit overlapping the node before it did not quarantine the list");
+    }
+
+    /* A cycle behind a tail that the search itself walks into (no node fits), with the full
+     * walk held off: the search's own cycle walk must stop it and quarantine the list. */
+    {
+        enum { C = 11 };
+        uint32_t cyc[C];
+        CHECK(guard_build_list(cyc, C), "search-cycle setup failed");
+        MEM_W32(cyc[C - 1u] - 8u, cyc[2] - 8u);
+        s_heap_full_check_credit = 0u;
+        s_heap_full_check_len = 0xffffffffu;
+        uint32_t bump = s_heap_bump_ptr;
+        uint32_t got = sr_newlib_malloc(4096u, 0u);
+        CHECK(got == bump + 8u, "a search into a free-list cycle did not fall back to the bump allocator");
+        CHECK(s_heap_free_list == 0u, "a search into a free-list cycle did not quarantine the list");
+    }
+}
+
+/* Damage on a node that no allocation reaches (the head is a large block every request fits
+ * and splits) must still be quarantined by the amortized full walk within ceil(n / budget) + 1
+ * allocations. */
+static void test_guard_catches_unvisited_damage_within_the_budget(void) {
+    enum { N = 64, T = 40 };
+    uint32_t node[N];
+    /* N nodes plus the big head. */
+    const uint32_t limit = (N + 1u + SR_HEAP_FULL_CHECK_BUDGET - 1u) / SR_HEAP_FULL_CHECK_BUDGET + 1u;
+    for (int kind = 0; kind <= GUARD_KIND_COUNT; kind++) {
+        int cycle = kind == GUARD_KIND_COUNT;   /* extra cell: a cycle behind a tail */
+        const char *name = cycle ? "cycle behind a tail" : k_guard_kind[kind];
+        CHECK(guard_build_list(node, N), "unvisited-damage setup failed (%s)", name);
+        /* Put a 64 KiB free block in front of node[0]. Every request splits it and the
+         * remainder goes back to the head, so the list keeps its length and no request
+         * ever walks past the head. Carve it (and a live block after it) with the list set
+         * aside, so first fit does not take node[0] for the separator. */
+        uint32_t head = s_heap_free_list;
+        s_heap_free_list = 0u;
+        uint32_t big = sr_newlib_malloc(0x10000u, 0u);
+        uint32_t sep = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+        s_heap_free_list = head;
+        CHECK(big != 0u && sep != 0u, "big-head setup failed (%s)", name);
+        sr_newlib_free(big, 0u);   /* pushed at the head, in front of node[0] */
+        CHECK(s_heap_free_list == big - 8u && MEM_R32(big - 8u) == node[0] - 8u,
+              "big block is not the list head (%s)", name);
+        uint32_t t = node[T] - 8u;
+        if (cycle) MEM_W32(node[N - 1] - 8u, node[2] - 8u);
+        else guard_corrupt((GuardKind)kind, t, node[T + 1] - 8u);
+        s_heap_full_check_credit = 0u;
+        s_heap_full_check_len = N + 1u;   /* as if a full walk had just measured the list */
+        uint32_t calls = 0u;
+        while (s_heap_free_list != 0u && calls < limit + 4u) {
+            CHECK(sr_newlib_malloc(GUARD_NODE_BYTES, 0u) != 0u, "allocation failed (%s)", name);
+            calls++;
+        }
+        CHECK(s_heap_free_list == 0u && calls <= limit,
+              "%s deep in the list was not quarantined within %u allocations (took %u)",
+              name, (unsigned)limit, (unsigned)calls);
+    }
+}
+
+/* Failing before (the old walk spins): free() merging a free successor unlinks it from the
+ * list. With the list damaged into a cycle that skips that successor, the old unlink walked
+ * the cycle forever. It must quarantine instead, and the merge must still complete. */
+static void test_guard_unlink_quarantines_a_damaged_list(void) {
+    heap_reset();
+    uint32_t a0 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t s0 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t a1 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t s1 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t b = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t w = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    uint32_t s2 = sr_newlib_malloc(GUARD_NODE_BYTES, 0u);
+    CHECK(a0 && s0 && a1 && s1 && b && w && s2, "unlink setup mallocs failed");
+    if (!(a0 && s0 && a1 && s1 && b && w && s2)) return;
+    sr_newlib_free(w, 0u);
+    sr_newlib_free(a0, 0u);
+    sr_newlib_free(a1, 0u);   /* list: a1 -> a0 -> w */
+    CHECK(s_heap_free_list == a1 - 8u && MEM_R32(a1 - 8u) == a0 - 8u && MEM_R32(a0 - 8u) == w - 8u,
+          "unlink setup list is not a1 -> a0 -> w");
+    MEM_W32(a0 - 8u, a1 - 8u);   /* a1 -> a0 -> a1: a cycle that cuts w out */
+    sr_newlib_free(b, 0u);       /* merges w, whose unlink meets the cycle */
+    uint32_t b_hdr = b - 8u;
+    CHECK(s_heap_free_list == b_hdr, "a damaged list met by unlink was not quarantined");
+    CHECK(MEM_R32(b_hdr + 0u) == 0u && MEM_R32(b_hdr + 4u) == 2u * GUARD_BLOCK,
+          "the merge did not complete after the quarantine (size 0x%x)", MEM_R32(b_hdr + 4u));
+}
+
 int main(void) {
     /* 64 MB host arena. g_mem maps guest 0x08000000 -> arena[0], so the heap
      * region [0x0a000008,0x0c000000) lands inside arena[0x02000008,0x04000000). */
@@ -681,6 +904,10 @@ int main(void) {
     test_freed_payload_keeps_contents();
     test_split_reuse_hands_out_clean_bytes();
     test_realloc_growth_tail_is_clean();
+    test_guard_cost_is_amortized();
+    test_guard_catches_visited_damage_on_the_same_call();
+    test_guard_catches_unvisited_damage_within_the_budget();
+    test_guard_unlink_quarantines_a_damaged_list();
 
     if (g_failures) {
         fprintf(stderr, "heap selftest: %d FAILURE(S)\n", g_failures);
