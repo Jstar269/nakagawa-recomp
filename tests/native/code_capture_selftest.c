@@ -98,6 +98,9 @@ static int g_failures = 0;
 
 #define CAPTURE_TARGET 0x09c1b780u          /* the routine's entry */
 #define CAPTURE_LEAF   (CAPTURE_TARGET + 0x20u)
+/* The word between the entry's last delay slot and the leaf: inside the translation's extent,
+ * reached from no captured target. `jr ra`, whose slot is the leaf's first word. */
+#define CAPTURE_GAP    (CAPTURE_TARGET + 0x1cu)
 #define CAPTURE_DATA   (CAPTURE_TARGET + 0x100u) /* data the game keeps beside the code */
 #define CAPTURE_DEAD   (CAPTURE_TARGET + 0x200u) /* a called word no translation can be made for */
 #define CAPTURE_FRESH  (CAPTURE_DEAD + 0x100u)   /* where the game writes code after binding */
@@ -120,6 +123,7 @@ static void install_routine(uint32_t leaf_word, uint32_t data_word) {
     };
     for (unsigned i = 0; i < sizeof entry / sizeof entry[0]; i++)
         MEM_W32(CAPTURE_TARGET + 4u * i, entry[i]);
+    MEM_W32(CAPTURE_GAP, 0x03e00008u);                     /* jr    ra (a second entry) */
     MEM_W32(CAPTURE_LEAF, leaf_word);
     MEM_W32(CAPTURE_LEAF + 4u, 0x03e00008u);               /* jr    ra */
     MEM_W32(CAPTURE_LEAF + 8u, 0x00000000u);               /* nop */
@@ -255,6 +259,22 @@ static int run_bound(const char *folder) {
           "the translation takes the call and returns (result %d v0 0x%08x sp 0x%08x)",
           bound.result, bound.v0, bound.sp);
     CHECK(s_code_capture_last[0] == '\0', "a bound call writes no capture");
+
+    /* An entry no captured target led to, inside the bound translation's extent: it has no
+     * executable authority, so the call stops, and it is captured again, inside the first
+     * capture's window, so the next build merges the two and seeds both targets (#1933). Before,
+     * the bound image kept it from any capture and no round could translate it. */
+    CHECK(sr_module_code_fetch_authority(CAPTURE_GAP) == 0,
+          "the gap lies in the bound translation without executable authority (authority %d)",
+          sr_module_code_fetch_authority(CAPTURE_GAP));
+    Call gap = call_at(CAPTURE_GAP);
+    CHECK(gap.result == SR_GUEST_INTERP_NOT_EXECUTABLE && gap.v0 == 0xdeadbeefu,
+          "a call to the untranslated gap stops (result %d v0 0x%08x)", gap.result, gap.v0);
+    char gap_name[32];
+    snprintf(gap_name, sizeof gap_name, "code_capture_%08x_", CAPTURE_GAP);
+    CHECK(strncmp(s_code_capture_last, gap_name, strlen(gap_name)) == 0,
+          "the gap in a bound capture's translation is captured (%s)",
+          s_code_capture_last[0] ? s_code_capture_last : "none");
 
     /* Code written after binding where the untranslatable word's trace ran is not part of the
      * identity, so it has no executable authority: it stops and is captured, never interpreted. */
