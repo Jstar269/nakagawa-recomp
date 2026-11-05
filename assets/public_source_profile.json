@@ -718,6 +718,8 @@
     "src/rt/ge_vram_cli.c",
     "src/rt/gpu_sdl3vk/README.md",
     "src/rt/gpu_sdl3vk/ace_compose_comp.inc",
+    "src/rt/gpu_sdl3vk/ace_hud.c",
+    "src/rt/gpu_sdl3vk/ace_hud.h",
     "src/rt/gpu_sdl3vk/ace_match_comp.inc",
     "src/rt/gpu_sdl3vk/ace_smooth.c",
     "src/rt/gpu_sdl3vk/ace_smooth.h",
