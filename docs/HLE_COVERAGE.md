@@ -26,8 +26,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 26 |
 | `ppsspp-derived` | 119 | 89 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 351 | 226 |
-| `unverified` | 151 | 22 |
+| `synthetic` | 352 | 226 |
+| `unverified` | 150 | 22 |
 | total | 685 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -525,7 +525,7 @@ belongs to without the census's own grouping.
 | `0xab96437f` | `sceIoSync` | io | `unverified` | no recorded evidence |
 | `0xabed3790` | `sceNetAdhocPdpSend` | network | `unverified` | no recorded evidence |
 | `0xace946e8` | `sceIoGetstat` | io | `ppsspp-derived` | handler comment names PPSSPP |
-| `0xad84d37f` | `__sceSasSetPitch` | audio | `unverified` | no recorded evidence |
+| `0xad84d37f` | `__sceSasSetPitch` | audio | `synthetic` | HLE selftest dispatch |
 | `0xae6d2027` | `sceMp3GetMPEGVersion` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0xaee7404d` | `sceUmdRegisterUMDCallBack` | umd | `synthetic` | HLE selftest dispatch |
 | `0xaf36d708` | `sceKernelTryAllocateVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
