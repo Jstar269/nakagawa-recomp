@@ -511,7 +511,7 @@ jobs:
     # required candidate input before any build or OIDC permission is used.
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     needs: [showcase_prx]
-    runs-on: windows-2022
+    runs-on: windows-2025
     # The player, the synthetic smoke and the two showcase demo packages compile
     # on the runner's 2 vCPUs.
     timeout-minutes: 75

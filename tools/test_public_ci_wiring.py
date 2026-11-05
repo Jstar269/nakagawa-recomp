@@ -1876,7 +1876,7 @@ class SelfHostedRunnerWiringTests(unittest.TestCase):
         self.assertEqual(ci.count("needs.classify.outputs.linux_runner_2604 "), len(SELF_HOSTED_JOBS_2604))
         # The classifier, which decides, and the Windows gates stay hosted.
         self.assertIn("    runs-on: ubuntu-26.04", "\n".join(blocks["classify"]))
-        self.assertIn("    runs-on: windows-2022", "\n".join(blocks["windows_runtime"]))
+        self.assertIn("    runs-on: windows-2025", "\n".join(blocks["windows_runtime"]))
         for job in SELF_HOSTED_JOBS | SELF_HOSTED_JOBS_2604:
             block = "\n".join(blocks[job])
             with self.subTest(job=job):

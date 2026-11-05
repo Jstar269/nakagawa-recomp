@@ -1328,7 +1328,7 @@ jobs:
 
   windows_runtime:
     name: Windows runtime compile gate
-    runs-on: windows-2022
+    runs-on: windows-2025
     # Runs alongside the Linux gates rather than after them: it is the longest job
     # (~6.5 min), and waiting for python_tools/native_tools put ~2.5 min on every
     # PR's critical path. A Linux failure still fails ci_required; the Windows run

@@ -1106,12 +1106,10 @@ Record the run links in #373.
 
 ## Windows hosted runner policy
 
-The Windows job intentionally remains on `windows-2022`. Hosted execution is
-active, but that floating label is a GitHub-hosted Windows Server image rather
-than an end-user support promise; the supported developer platform is Windows 11
-x64 as documented in [SETUP.md](SETUP.md). A `windows-2025` migration is a
-separate hosted-validation decision. Consult the current
-[Windows 2022 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)
+The Windows jobs run on `windows-2025`. That label is a GitHub-hosted Windows
+Server image rather than an end-user support promise; the supported developer
+platform is Windows 11 x64 as documented in [SETUP.md](SETUP.md). Consult the current
+[Windows 2025 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md)
 instead of treating a dated image version or tool inventory as an evergreen
 repository guarantee.
 
