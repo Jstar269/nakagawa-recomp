@@ -5672,7 +5672,7 @@ def _bringup_codegen_captures(captures: list[Path]):
     cache key names. Each file is named, not the folder, so the key changes with the set of
     captures (a capture's name carries its target and a hash of its bytes) and a build of a
     larger set is never served from the cache of a smaller one. Each word is quoted, so a path
-    with spaces (a Windows profile such as ``C:/Users/First Last``) stays one argument through
+    with spaces (a Windows profile folder named for a first and last name) stays one argument through
     Make's recipe shell; the caller checks first that every path can be quoted. A value the
     caller set is kept, and it is restored afterwards."""
     if not captures:

@@ -3651,7 +3651,7 @@ class TestBringupCaptureRounds(unittest.TestCase):
         self.assertIn("BRINGUP_CAPTURE_MISSING: round 1 stopped at", self.printed)
 
     def test_a_stop_line_names_the_capture_under_user_data_not_by_its_folder(self):
-        # The capture folder usually names the user (C:/Users/<name>/...): the line printed for
+        # The capture folder usually holds the user's profile name: the line printed for
         # an issue report says where the capture is relative to the user data folder.
         for launches, rounds, stop, name in (
             ([("wrote", self.CAPTURE_A)], 1, "BRINGUP_CAPTURE_BOUND", self.CAPTURE_A),
@@ -3680,7 +3680,7 @@ class TestBringupCaptureRounds(unittest.TestCase):
         self.assertIn("the run stopped at code whose capture could not be written", self.printed)
 
     def test_a_capture_path_with_a_space_stays_one_codegen_argument(self):
-        # A default Windows profile such as C:/Users/First Last puts a space in every capture path.
+        # A Windows profile folder named for a first and last name puts a space in every path.
         status, report = self._run([("wrote", self.CAPTURE_A), None],
                                    case_root=self.root / "First Last")
         self.assertEqual(status, 0, report)
