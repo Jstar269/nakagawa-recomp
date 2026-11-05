@@ -561,7 +561,7 @@ path.write_bytes(canonical_bytes)                        # already-canonical byt
 `CanonicalWriterTests` asserts this for the canonical writers, so the rule
 cannot quietly regress.
 
-**PowerShell.** Use PowerShell 7.4+, which the project already requires: in
+**PowerShell.** Use PowerShell 7.6+, which the project already requires: in
 Windows PowerShell 5.1 `-Encoding utf8` means UTF-8 **with** BOM, and in 7+ it
 means without. `Set-Content` and `Out-File` also join with the host newline. For
 anything byte-exact, bypass the text pipeline entirely:
@@ -1217,7 +1217,7 @@ first on `PATH` (#294). The contract is explicit:
 | `windows_runtime` (MSYS2 UCRT64 shell) | Windows CPython 3.15.1 from `actions/setup-python`, passed through `PYTHON`; MSYS2's UCRT64 Python 3.14.8 is not used for repository tools |
 | Local Windows runs | Windows CPython 3.15.x from the python.org installer; set `PYTHON` explicitly when MSYS2 comes first on `PATH` |
 
-Stages that invoke the repository's PowerShell 7.4 asset-copy script opt into
+Stages that invoke the repository's PowerShell asset-copy script opt into
 the runner's Windows `PATH` explicitly with `MSYS2_PATH_TYPE: inherit` and assert
 `command -v pwsh` themselves. Under `inherit` the MSYS2 UCRT64 directories still
 precede the inherited Windows `PATH`; `windows_runtime` passes Windows CPython's

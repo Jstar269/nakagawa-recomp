@@ -798,8 +798,8 @@ class CliTests(unittest.TestCase):
 class EnvironmentContractTests(unittest.TestCase):
     def test_powerShell_accepts_current_core_line(self) -> None:
         # Still-supported lines per the Microsoft lifecycle table cited in
-        # docs/SETUP.md (7.4 LTS and 7.5 until 2026-11-10; 7.6 LTS beyond).
-        for version in ("7.4.0", "7.4.20", "7.5.10", "7.6.6", "7.7.0"):
+        # docs/SETUP.md (7.6 LTS until 2028-11-14; 7.4 and 7.5 end 2026-11-10).
+        for version in ("7.6.0", "7.6.6", "7.6.9", "7.7.0"):
             with self.subTest(version=version), mock.patch.object(
                 _CHECKS_MODULE,
                 "_probe_powershell",
@@ -826,6 +826,8 @@ class EnvironmentContractTests(unittest.TestCase):
         for edition, version in (
             ("Desktop", "5.1.22621"),
             ("Desktop", "8.0.0"),
+            ("Core", "7.5.11"),
+            ("Core", "7.4.20"),
             ("Core", "7.3.0"),
             ("Core", "6.2.0"),
         ):
@@ -867,7 +869,7 @@ class EnvironmentContractTests(unittest.TestCase):
         # proves no tracked .ps1 needs anything above $IsWindows (6.0); the
         # enforced value is the oldest still-supported line, pinned here so the
         # doctor check, docs, and #requires headers cannot drift apart.
-        self.assertEqual(_CHECKS_MODULE.MINIMUM_POWERSHELL, (7, 4))
+        self.assertEqual(_CHECKS_MODULE.MINIMUM_POWERSHELL, (7, 6))
         floor = _CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT
         for doc in (ROOT / "docs" / "SETUP.md", ROOT / "README.md"):
             # Collapse whitespace: the floor is the rule, so a line wrap inside it must not fail.
