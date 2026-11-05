@@ -633,6 +633,8 @@ static void gui_upscale_init(void) {
     sr_flight_set_present_upscale("fsr1");
     fprintf(stderr, "ACE_MODE: present upscale fsr1 (the window only; captures hold the guest's "
                     "frame)\n");
+    /* In the boot events too, so tools/boot_gate.py sees it when stderr was silenced. */
+    sr_gui_boot_event("BOOT_EVENT phase=present_upscale mode=fsr1");
     fprintf(stderr, "sdl3vk: FSR 1 upscaling on (EASU + RCAS, presentation only)\n");
 }
 

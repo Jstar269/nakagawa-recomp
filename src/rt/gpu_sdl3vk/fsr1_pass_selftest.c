@@ -407,13 +407,18 @@ static double edge_contrast(int w, int h, uint32_t *lo, uint32_t *hi) {
 
 static int s_mutant;
 
-/* RCAS's gain in the steepest step of the soft edge (cell_rcas). Measured on an RTX 3080: x1.265
- * at the default sharpness, x1.324 at the sharpest; an RCAS that copies its input gives x1.000 and
- * FsrRcasCon one stop softer gives x1.088, both outside the bars. RCAS limits its gain to the
- * neighbourhood, so it overshoots the edge's range by a few levels at most (4 and 6 measured). */
+/* RCAS's gain in the steepest step of the soft edge (cell_rcas), whose EASU step is 34 levels.
+ * Measured: x1.265 (43) at the default sharpness on an RTX 3080 and on llvmpipe; x1.324 (45) at the
+ * sharpest on the RTX 3080, x1.353 (46) on llvmpipe. Mutants outside the bars: an RCAS that copies
+ * its input x1.000; FsrRcasCon one stop softer x1.088 at the default; the default made the
+ * sharpest (no gain over it); every setting a tenth of a stop sharper x1.412 (48) at the sharpest,
+ * one stop sharper x3.794 at the default. The sharpest cap allows 47, a level above llvmpipe. RCAS
+ * limits its gain to the neighbourhood, so it overshoots the edge's range by a few levels at most
+ * (4 and 6 measured). */
 #define RCAS_GAIN_DEFAULT_MIN 1.15
 #define RCAS_GAIN_DEFAULT_MAX 1.40
 #define RCAS_GAIN_SHARPEST_OVER_DEFAULT 1.02
+#define RCAS_GAIN_SHARPEST_MAX 1.40
 #define RCAS_OVERSHOOT_MAX 10u
 
 /* edge-adaptive: EASU alone at 2x keeps a step edge sharper than the presenter's bilinear blit,
@@ -449,7 +454,7 @@ static void cell_edge(Fsr1Pass *p, int slant) {
 /* rcas-contrast: on a soft edge at 2x, RCAS at AMD's default sharpness raises the edge's contrast
  * over EASU alone by a measured factor, the sharpest setting (0 stops) raises it further, and
  * neither overshoots the edge's range by more than RCAS_OVERSHOOT_MAX levels (no ringing).
- * An RCAS that copies its input, or FsrRcasCon constants off by a stop, fails here. */
+ * An RCAS that copies its input, or FsrRcasCon constants softer or sharper than AMD's, fails here. */
 static void cell_rcas(Fsr1Pass *p) {
     const int w = 96, h = 96, ow = 192, oh = 192;
     Source src;
@@ -476,6 +481,9 @@ static void cell_rcas(Fsr1Pass *p) {
     CHECK(cm >= cd * RCAS_GAIN_SHARPEST_OVER_DEFAULT,
           "the sharpest setting (%.2f) is not sharper than the default (%.2f) by x%.2f", cm, cd,
           RCAS_GAIN_SHARPEST_OVER_DEFAULT);
+    CHECK(ce > 0 && cm <= ce * RCAS_GAIN_SHARPEST_MAX,
+          "RCAS at the sharpest setting raised the edge contrast by x%.3f, over x%.2f%s",
+          ce > 0 ? cm / ce : 0, RCAS_GAIN_SHARPEST_MAX, s_mutant ? " [the mutant is caught]" : "");
     CHECK(dlo + RCAS_OVERSHOOT_MAX >= LO && dhi <= HI + RCAS_OVERSHOOT_MAX &&
           mlo + RCAS_OVERSHOOT_MAX >= LO && mhi <= HI + RCAS_OVERSHOOT_MAX,
           "RCAS rang past the edge's range %u..%u by more than %u (default %u..%u, sharpest %u..%u)",

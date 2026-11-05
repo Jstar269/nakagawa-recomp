@@ -50,8 +50,11 @@ Presentation enhancements operate strictly after or alongside the host graphics 
   (`display-smoke-fsr1`, which needs a Vulkan device and a display, so it is a local gate). It is
   not part of Authentic: the launcher exports `SR_PRESENT_UPSCALE=off` for an authentic session
   whatever the setting or the inherited environment (section 10.1), and a run with it on says
-  `ACE_MODE: present upscale fsr1` and carries `"present_upscale": "fsr1"` in its flight bundle's
-  `runtime.enhancements`, so `flight_diff.py` never compares it as authentic evidence. GPU cost at
+  `ACE_MODE: present upscale fsr1`, emits a `phase=present_upscale` boot event and carries
+  `"present_upscale": "fsr1"` in its flight bundle's `runtime.enhancements`, so neither
+  `flight_diff.py` nor `boot_gate.py` takes it as authentic evidence. `picture_gate.py` and
+  `library_sweep.py` run the runtime themselves, so they set the key `off` (a picture-gate route
+  may ask for it) and record the value they used. GPU cost at
   4K: 0.40 ms per present for 1920x1088 to 3840x2160 on an RTX 3080 (`fsr1-selftest`).
 - **Forbidden:** Mutating GE display list commands, intercepting guest draw calls to alter gameplay geometry, or feeding host input back into the guest controller state.
 

@@ -1519,6 +1519,9 @@ def fsr1_smoke(build_dir: Path) -> int:
         # The upscaled run is stamped as enhanced, in its log and its bundle; the off run is not.
         if "ACE_MODE: present upscale fsr1" not in fsr_log or "ACE_MODE:" in off_log:
             raise RuntimeError("the fsr1 run's ACE_MODE stamp is missing, or the off run has one")
+        # tools/boot_gate.py also reads the boot event, for a run whose stderr lines were silenced.
+        if "BOOT_EVENT phase=present_upscale mode=fsr1" not in fsr_log or "phase=present_upscale" in off_log:
+            raise RuntimeError("the fsr1 run's present_upscale boot event is missing, or the off run has one")
         stamps = [runs[label][1]["runtime"].get("enhancements") for label in ("off", "fsr1")]
         if stamps != [None, {"present_upscale": "fsr1"}]:
             raise RuntimeError(f"flight bundle enhancements are {stamps}, not none and fsr1")
