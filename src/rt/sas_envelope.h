@@ -26,7 +26,8 @@
  * Core/HW/SasAudio.h: class ADSREnvelope (SetSimpleEnvelope, SetEnvelope,
  * SetRate, WalkCurve, Step, KeyOn, KeyOff, End, GetHeight) and the
  * simple-envelope bitfield decoders (simpleRate, exponentRate, getAttackRate
- * and the rest). PPSSPP's comment cites JPCSP's sceSasCore.java for the
+ * and the rest); and Core/HLE/sceSas.cpp: the per-phase curve check of
+ * sceSasSetADSRMode. PPSSPP's comment cites JPCSP's sceSasCore.java for the
  * bitfield layout. Label: derived-translated
  * (docs/provenance/INDEPENDENCE_MODEL.md).
  *
@@ -35,11 +36,15 @@
  * compatibility flag is left out; savestate (DoState) and debug-string code
  * are left out; KeyOn enters the attack state directly, without PPSSPP's
  * STATE_KEYON / STATE_KEYON_STEP delay, because that delay belongs with the
- * mixer's key-on sample delay, which this runtime does not model yet; and a
- * voice that no envelope call has configured keeps this runtime's previous
- * default curve (sas_envelope_reset), since the PSP's default is unmeasured;
- * the height read back is also clamped at 0 from below (PPSSPP clamps only the
- * top), so a decay step that overshoots zero never reads as a negative height.
+ * mixer's key-on sample delay (the first 32 output samples after a key-on,
+ * SasAudio.cpp MixVoice), which this runtime does not model yet; a voice that
+ * no envelope call has configured keeps this runtime's previous default curve
+ * (sas_envelope_reset). That default departs from both references: PPSSPP
+ * (SasAudio.h) and jpcsp (SoundVoice.java) start every rate and the sustain
+ * level at 0, so an unconfigured voice stays silent there. It is kept until a
+ * PSP measurement settles it. The height read back is also clamped at 0 from
+ * below (PPSSPP clamps only the top), so a decay step that overshoots zero
+ * never reads as a negative height.
  * The rate formulas and curves are PPSSPP's model, not PSP measurements.
  */
 #ifndef NK_RT_SAS_ENVELOPE_H
@@ -138,7 +143,21 @@ static inline void sas_envelope_set_simple(SasEnvelope *e, uint32_t env1, uint32
     e->sustain_level = (int)(((env1 & 0xFu) + 1u) << 26);
 }
 
-/* __sceSasSetADSRmode: the selected phases' curves (0..5, validated by the caller). */
+/* __sceSasSetADSRmode's per-phase check (PPSSPP sceSas.cpp sceSasSetADSRMode, as jpcsp's
+ * checkADSRmode): the attack takes the increasing curves 0, 2 and 4, the decay and the release
+ * the decreasing ones 1, 3 and 5, the sustain any of 0..5. The caller has cleared each value's
+ * top bit, which the PSP ignores. Returns the phase bits (1 attack, 2 decay, 4 sustain,
+ * 8 release) whose curve is refused; the call fails when one of them is in its mask. */
+static inline uint32_t sas_envelope_refused_curves(int a, int d, int s, int r) {
+    uint32_t refused = 0;
+    if (a < 0 || a > 5 || (a & 1) != 0) refused |= 0x1u;
+    if (d < 0 || d > 5 || (d & 1) != 1) refused |= 0x2u;
+    if (s < 0 || s > 5) refused |= 0x4u;
+    if (r < 0 || r > 5 || (r & 1) != 1) refused |= 0x8u;
+    return refused;
+}
+
+/* __sceSasSetADSRmode: the selected phases' curves (checked by sas_envelope_refused_curves). */
 static inline void sas_envelope_set_curves(SasEnvelope *e, uint32_t mask, int a, int d, int s, int r) {
     if (mask & 0x1u) e->attack_type = a;
     if (mask & 0x2u) e->decay_type = d;

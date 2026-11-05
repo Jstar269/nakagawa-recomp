@@ -835,6 +835,14 @@ static void sas_advance_envelope(SasVoice *v) {
     if (sas_envelope_ended(&v->envelope)) v->on = 0;
 }
 
+/* The voice's sound data has run out: its envelope ends, so both height getters read 0
+ * (PPSSPP ends the envelope there too), and the voice stops. */
+static void sas_voice_data_ended(SasVoice *v) {
+    sas_envelope_end(&v->envelope);
+    v->env_level = 0;
+    v->on = 0;
+}
+
 static int sas_next_sample(SasVoice *v, int *sample) {
     if (v->type == SAS_VOICE_NOISE) {
         static uint32_t nseed = 0x12345678;
@@ -919,7 +927,7 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
         if (!v->on || v->paused) continue;
         for (int i = 0; i < n; i++) {
             int samp = 0;
-            if (!sas_next_sample(v, &samp)) { v->on = 0; break; }
+            if (!sas_next_sample(v, &samp)) { sas_voice_data_ended(v); break; }
             sas_advance_envelope(v);
             int s_env = (int)(((int64_t)samp * v->env_level) >> 30);
             mixl[i] += (s_env * v->voll) >> 12;
@@ -1070,10 +1078,10 @@ static uint32_t h_SasSetADSRmode(CpuState *s) {
     int32_t sustain = (int32_t)stack_arg(s, 1), r = (int32_t)stack_arg(s, 2);
     if (e) return e;
     if (mask & ~SAS_ADSR_ALL) return SAS_ERROR_ADSR_MODE;
-    if ((mask & SAS_ADSR_ATTACK && (a < 0 || a > 5)) ||
-        (mask & SAS_ADSR_DECAY && (d < 0 || d > 5)) ||
-        (mask & SAS_ADSR_SUSTAIN && (sustain < 0 || sustain > 5)) ||
-        (mask & SAS_ADSR_RELEASE && (r < 0 || r > 5))) return SAS_ERROR_ADSR_MODE;
+    /* The PSP ignores each value's top bit, then refuses a curve its phase cannot take
+     * (sas_envelope.h); a refused call changes no curve. */
+    a &= 0x7FFFFFFF; d &= 0x7FFFFFFF; sustain &= 0x7FFFFFFF; r &= 0x7FFFFFFF;
+    if (sas_envelope_refused_curves(a, d, sustain, r) & mask) return SAS_ERROR_ADSR_MODE;
     sas_envelope_set_curves(&v->envelope, mask, a, d, sustain, r);
     return 0;
 }
