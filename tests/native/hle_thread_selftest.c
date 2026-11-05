@@ -15666,6 +15666,103 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
     sr_hle_test_data_reset(0);
 }
 
+/* 2c. Archive discovery skips an unpack folder ("<archive>.d" beside the archive
+ *     file "<archive>", the layout staging writes) and walks every other ".d"
+ *     directory. Loose serving is untouched: a loose root's unpack folder still
+ *     serves its files, and the primary root's unpack folders stay out of an
+ *     archive-mode namespace, as before. */
+static const char *const s_xb_unpack_dirs[] = {
+    "", "/primary", "/primary/pack.xb.d", "/primary/pack.xb.d/data",
+    "/primary/pack.xb.d/data/menu", "/primary/orphan.xb.d", "/primary/notes.d",
+    "/loose", "/loose/side.xb.d", "/loose/side.xb.d/data", "/loose/side.xb.d/data/menu"
+};
+static const char *const s_xb_unpack_files[] = {
+    "/primary/pack.xb", "/primary/pack.xb.d/data/decoy.xb",
+    "/primary/pack.xb.d/data/menu/unpacked-primary.to", "/primary/orphan.xb.d/inner.xb",
+    "/primary/notes.d/deep.xb", "/loose/side.xb", "/loose/side.xb.d/data/menu/unpacked.to"
+};
+
+static int host_data_duplicate_write_file(const char *root, const char *relative,
+                                          const char *body);
+
+static int xb_unpack_write_archive(const char *base, const char *relative,
+                                   const char *member, const char *body) {
+    char path[MAX_PATH];
+    if (snprintf(path, sizeof path, "%s%s", base, relative) >= (int)sizeof path) return 0;
+    const HleXbEntry entry = { member, (const uint8_t *)body, strlen(body) };
+    return hle_xb_write(path, &entry, 1u);
+}
+
+static void test_archive_discovery_skips_unpack_folders_only(void) {
+    char scratch[MAX_PATH], base[MAX_PATH], dataroot[MAX_PATH], loose[MAX_PATH + 32];
+    expect(hle_scratch_root(scratch, sizeof scratch), "the unpack-folder fixture has a scratch root");
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    snprintf(base, sizeof base, "%s/xb_unpack_%lu", scratch, (unsigned long)getpid());
+    int made = 1;
+    for (size_t i = 0; i < sizeof(s_xb_unpack_dirs) / sizeof(s_xb_unpack_dirs[0]); i++) {
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s%s", base, s_xb_unpack_dirs[i]);
+        if (!nk_platform_mkdir_p(dir)) made = 0;
+    }
+    made = made &&
+        xb_unpack_write_archive(base, "/primary/pack.xb", "data/menu/inpack.to", "outer-archive") &&
+        /* An archive among an unpack folder's files, as a nested member would be. */
+        xb_unpack_write_archive(base, "/primary/pack.xb.d/data/decoy.xb", "data/menu/decoy.to",
+                                "decoy-archive") &&
+        /* ".d" folders with no archive file of that name beside them. */
+        xb_unpack_write_archive(base, "/primary/orphan.xb.d/inner.xb", "data/menu/orphan.to",
+                                "orphan-archive") &&
+        xb_unpack_write_archive(base, "/primary/notes.d/deep.xb", "data/menu/deep.to",
+                                "deep-archive") &&
+        xb_unpack_write_archive(base, "/loose/side.xb", "data/menu/side.to", "side-archive") &&
+        host_data_duplicate_write_file(base, "/primary/pack.xb.d/data/menu/unpacked-primary.to",
+                                       "unpacked-primary") &&
+        host_data_duplicate_write_file(base, "/loose/side.xb.d/data/menu/unpacked.to",
+                                       "unpacked-loose");
+    expect(made, "the unpack-folder fixture was created");
+
+    snprintf(dataroot, sizeof dataroot, "%s/primary", base);
+    snprintf(loose, sizeof loose, "%s/loose\t\t10\t0\t0\n", base);
+    hle_test_setenv("SR_DATAROOT", dataroot);
+    hle_test_setenv("SR_LOOSE_CONTENT_ROOTS", loose);
+    sr_hle_test_data_reset(0);
+    expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_READY,
+           "a primary root with unpack folders and a loose root reaches READY");
+
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/inpack.to",
+                                          "outer-archive"),
+           "the archive beside its unpack folder is mounted and serves its member");
+    expect(hle_archive_route_open_result("disc0:/PSP_GAME/USRDIR/data/menu/decoy.to") != 0u,
+           "an archive inside an unpack folder is not mounted as a top-level archive");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/orphan.to",
+                                          "orphan-archive"),
+           "a .xb.d folder with no archive beside it is still searched for archives");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/deep.to",
+                                          "deep-archive"),
+           "a .d folder whose name is not an archive's is still searched for archives");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/unpacked.to",
+                                          "unpacked-loose"),
+           "a loose root's unpack folder still serves its files");
+    expect(hle_archive_route_open_result("disc0:/PSP_GAME/USRDIR/data/menu/side.to") != 0u,
+           "an archive in a loose root is served as a file, never mounted");
+    expect(hle_archive_route_open_result(
+               "disc0:/PSP_GAME/USRDIR/data/menu/unpacked-primary.to") != 0u,
+           "archive mode still serves no file from the primary root's unpack folders");
+
+    prewarm_env_restore();
+    sr_hle_test_data_reset(0);
+    for (size_t i = 0; i < sizeof(s_xb_unpack_files) / sizeof(s_xb_unpack_files[0]); i++) {
+        char path[MAX_PATH];
+        snprintf(path, sizeof path, "%s%s", base, s_xb_unpack_files[i]);
+        nk_remove_utf8(path);
+    }
+    for (size_t i = sizeof(s_xb_unpack_dirs) / sizeof(s_xb_unpack_dirs[0]); i-- > 0;) {
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s%s", base, s_xb_unpack_dirs[i]);
+        rmdir(dir);
+    }
+}
+
 static int host_data_duplicate_write_file(const char *root, const char *relative,
                                           const char *body) {
     char path[MAX_PATH];
@@ -48112,6 +48209,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_route_observer_waits_for_guest_scanout_state();
     test_extracted_data_prepares_before_guest_and_lookup_never_builds();
     test_disc_route_serves_archive_and_loose_content_in_one_namespace();
+    test_archive_discovery_skips_unpack_folders_only();
     test_primary_extracted_archive_duplicates_match_main();
     test_direct_xb_read_precedence_and_listing();
     test_direct_xb_malformed_archive_fails_closed();
