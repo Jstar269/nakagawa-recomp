@@ -664,6 +664,26 @@ unsigned long g_mpeg_put;
 unsigned long g_mpeg_getavc;
 unsigned long g_mpeg_avcdec;
 unsigned long g_mpeg_nodata;
+/* mpeg.c is not linked here. The sceMpeg handlers the interrupt-context check
+ * registers (test_mpeg_create_refused_in_interrupt) reach these spies, which
+ * record only whether a context was asked for and how many are live. */
+static unsigned s_mpi_create_calls, s_mpi_live;
+uint32_t mpeg_init(void) { return 0; }
+uint32_t mpeg_finish(void) { s_mpi_live = 0; return 0; }
+uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_t ringAddr,
+                     uint32_t frameWidth, uint32_t mode, uint32_t ddrTop) {
+    (void)mpegAddr; (void)dataPtr; (void)size; (void)ringAddr;
+    (void)frameWidth; (void)mode; (void)ddrTop;
+    s_mpi_create_calls++;
+    s_mpi_live++;
+    return 0;
+}
+uint32_t mpeg_delete(uint32_t mpegAddr) {
+    (void)mpegAddr;
+    if (!s_mpi_live) return 0xffffffffu;
+    s_mpi_live--;
+    return 0;
+}
 int sr_perf_enabled;
 /* Non-zero, and never repeating: every `sr_perf_now_ns()` caller uses the value only as
  * a "the counters are live" predicate before handing it to a stub, so a constant 0 would
@@ -19506,6 +19526,93 @@ static TCB *fixture_thread(uint32_t uid, int state, int priority) {
  * come after those definitions. It adds no production code and changes no
  * handler behavior. */
 #include "intr_conformance.h"
+
+/* sceMpegCreate inside an interrupt handler. pspautotests tests/intr/delays
+ * measured it on a PSP: from a VBLANK sub-interrupt handler it returns
+ * 0x80618008 (delays.expected:24), while the same call on a thread returns 0
+ * and sceMpegDelete then returns 0 (lines 12-13), and after a Finish/Init reset
+ * the library creates again (lines 28-30). PPSSPP took the same check in
+ * 177244863. The check lives in the production handler (hle_mpeg.c); the
+ * library behind it is the spies above. The thread calls run with a fixture
+ * thread current; the interrupt call is reached through the production
+ * sub-interrupt registration and resume path (ic_call_in_interrupt). */
+void sr_hle_test_register_mpeg_create_handlers(void);
+
+#define NID_MPI_INIT    0x682a619bu
+#define NID_MPI_FINISH  0x874624d6u
+#define NID_MPI_CREATE  0xd8c5f121u
+#define NID_MPI_DELETE  0x606a4649u
+#define MPI_DESC        0x00258000u   /* SceMpeg word */
+#define MPI_DATA        0x00260000u   /* 0x10000-byte context buffer */
+
+static void mpi_create_args(CpuState *c) {
+    memset(c, 0, sizeof *c);
+    c->r[4] = MPI_DESC;
+    c->r[5] = MPI_DATA;
+    c->r[6] = 0x10000u;     /* sceMpegQueryMemSize */
+    c->r[7] = 0u;           /* no ringbuffer */
+    c->r[8] = 512u;         /* frameWidth (stack_arg 0), as delays.c passes */
+}
+
+/* One call from guest thread context: a fixture thread is current, as for the
+ * matrix's normal leg. None of these four handlers waits. */
+static uint32_t mpi_on_thread(uint32_t nid, const CpuState *args) {
+    TCB *t = fixture_thread(0x1b0u, TH_RUNNING, 32);
+    if (!t) return 0xdeadbeefu;
+    t->started = 1;
+    s_cur = (int)(t - s_tcb);
+    CpuState c = *args;
+    uint32_t r = sr_syscall(&c, nid);
+    s_cur = -1;
+    return r;
+}
+
+static uint32_t mpi_on_thread_a0(uint32_t nid, uint32_t a0) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = a0;
+    return mpi_on_thread(nid, &c);
+}
+
+static void test_mpeg_create_refused_in_interrupt(void) {
+    static const IcProbe create = {
+        "sceMpegCreate", NID_MPI_CREATE, "", ICG_NONE, 0,
+        {0, 0, 0, 0}, {IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN},
+        {IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN},
+        {IC_PREC_NA, IC_PREC_NA, IC_PREC_NA, IC_PREC_NA}, IC_HW_IMMEDIATE, NULL
+    };
+    CpuState c;
+    reset_fixture(); sr_hle_init();
+    sr_hle_test_register_mpeg_create_handlers();
+    s_vbl_next_us = UINT64_MAX;
+    s_mpi_create_calls = 0;
+    s_mpi_live = 0;
+
+    expect(mpi_on_thread_a0(NID_MPI_INIT, 0u) == 0u, "mpeg-intr: sceMpegInit returns 0");
+    mpi_create_args(&c);
+    expect(mpi_on_thread(NID_MPI_CREATE, &c) == 0u,
+           "mpeg-intr: sceMpegCreate on a thread returns 0 (delays.expected:12)");
+    expect(mpi_on_thread_a0(NID_MPI_DELETE, MPI_DESC) == 0u,
+           "mpeg-intr: sceMpegDelete on a thread returns 0 (delays.expected:13)");
+
+    mpi_create_args(&s_ic_probe_cpu);
+    const unsigned creates_before = s_mpi_create_calls;
+    uint64_t in_intr = ic_call_in_interrupt(&create);
+    expect(in_intr == IC_RET(0x80618008u),
+           "mpeg-intr: sceMpegCreate in an interrupt handler returns 0x80618008 "
+           "(delays.expected:24)");
+    expect(s_mpi_create_calls == creates_before,
+           "mpeg-intr: the refused create never reaches the library");
+
+    expect(mpi_on_thread_a0(NID_MPI_FINISH, 0u) == 0u && mpi_on_thread_a0(NID_MPI_INIT, 0u) == 0u,
+           "mpeg-intr: sceMpegFinish and sceMpegInit reset the library");
+    mpi_create_args(&c);
+    expect(mpi_on_thread(NID_MPI_CREATE, &c) == 0u &&
+               mpi_on_thread_a0(NID_MPI_DELETE, MPI_DESC) == 0u,
+           "mpeg-intr: after the reset a thread creates and deletes again (delays.expected:29-30)");
+    (void)mpi_on_thread_a0(NID_MPI_FINISH, 0u);
+    reset_fixture();
+}
 
 static void run_worker(TCB *worker) {
     s_cur = (int)(worker - s_tcb);
@@ -48115,6 +48222,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vpl_blocking_waits();
     test_mbx_lifecycle_and_ordering();
     test_intr_context_conformance();
+    test_mpeg_create_refused_in_interrupt();
     test_psp_mutex();
     test_kernel_nested_join();
     test_kernel_nested_mutex();
