@@ -52,6 +52,7 @@ The one partial pin that exists is described under "Pins" below.
 | sal063 base for all inherited files | `da17b0e1db209206a407d097d132201e516e3855` (2026-06-14, "Update README.md") | `NOTICE.md`; `THIRD_PARTY_LICENSES/SAL063_CREDITS.txt`; the commit and its tree exist on GitHub and list the files marked "sal063 base blob" below. |
 | PPSSPP source of the sceMpeg port in `rt/mpeg.c` (and the mpeg wrappers in `rt/hle_mpeg.c`, from `rt/hle.c`) | `4e109dd6ae34cbcb39751bb7647d345569700161` (PPSSPP commit of 2026-05-20), file `Core/HLE/sceMpeg.cpp` | sal063's own `src/rt/mpeg.c` at `da17b0e` begins "ported from PPSSPP (Core/HLE/sceMpeg.cpp, rev 4e109dd6, GPLv2+)", and `SAL063_CREDITS.txt` repeats "rev 4e109dd6". The abbreviation was expanded to the full commit with the GitHub API; it resolves to exactly one PPSSPP commit that predates the sal063 base. This is a claim made by sal063 and has not been re-verified against the translated code. |
 | PPSSPP source of the sceMp3 adaptation in `rt/hle_audio_codec.c` (added to `rt/hle.c` 2026-10-24) | `0028f30da6784570264a41ef6cce1c3963692ea7` (PPSSPP `master` when adapted), files `Core/HLE/sceMp3.cpp` and `Core/HW/SimpleAudioDec.cpp` (`AuCtx`) | Adapted by this project under the 2026-10-20 import rule; the sceMp3 block comment (now in `rt/hle_audio_codec.c`) names the pin, keeps the PPSSPP copyright line, lists the modifications and labels the block derived-translated. The decoder behind it is minimp3 (`src/rt/minimp3/PROVENANCE.md`), not PPSSPP code. |
+| PPSSPP source of the SAS envelope model in `rt/sas_envelope.h` (added 2026-11-04, #1296) | `3bc60270eae3069f13dfbfdb7292a7e1375de6f6` (PPSSPP `master` when adapted), files `Core/HW/SasAudio.cpp` (blob `0d5170cb97757abc0ae72a0805bdcbaead8ddf38`) and `Core/HW/SasAudio.h` (blob `bbf6677d75c0262663106cc70505b688d5040474`), class `ADSREnvelope` and the simple-envelope bitfield decoders; `Core/HLE/sceSas.cpp` (blob `bf7d901847bd88998e558da829c295998bfb9ad2`), the per-phase curve check of `sceSasSetADSRMode` | Adapted by this project under the import rule; the file header names the pin, keeps the PPSSPP copyright and licence notice, lists the modifications and labels the file derived-translated. |
 | Every other PPSSPP-derived file | unknown | No revision text exists in sal063's tree or in this repository's history. |
 
 ## Import-rule check (2026-10-20 and later)
@@ -74,6 +75,7 @@ for later adaptation found none:
 - 2026-10-24: the sceMp3 block in `rt/hle.c` (since #307 in `rt/hle_audio_codec.c`) adapts PPSSPP
   `Core/HLE/sceMp3.cpp`
   and `Core/HW/SimpleAudioDec.cpp` at the exact pin in the table above, and says so.
+- 2026-11-04: `rt/sas_envelope.h` adapts PPSSPP `Core/HW/SasAudio.cpp` and `Core/HW/SasAudio.h` (the SAS envelope) and the `sceSasSetADSRMode` curve check from `Core/HLE/sceSas.cpp` at the exact pin in the table above, and says so (#1296).
 
 This is a text search of the history, not proof that no PPSSPP code was typed
 in by hand without a mention. The 2026-10-20 rule did not change the status of
@@ -223,6 +225,12 @@ Created in this repository. The code moved out of a sal063-lineage file, so the 
 | `rt/fbcap.h` | moved from `gpu_sdl3vk/sdl3vk.c` (#769, 2026-10-08) | inherited (sal063), moved | none declared; unknown (inherited via sal063 `da17b0e`) | not in the sal063 tree | SPDX GPL-2.0-or-later; psp-recomp authors copyright; Nakagawa Recomp authors copyright; sal063 derivation line; Nakagawa modification line 2026-10-08 | 1 |
 | `rt/gpu_sdl3vk/sdl3vk_selftest.inc` | moved from `gpu_sdl3vk/sdl3vk.c` (#1531, 2026-11-01) | inherited (sal063), moved | none declared; unknown (inherited via sal063 `da17b0e`) | not in the sal063 tree. Self-test code moved verbatim out of `sdl3vk.c`, which includes it at the original spot. The file keeps the notices of the file it came from | SPDX GPL-2.0-or-later; psp-recomp authors copyright; Nakagawa Recomp authors copyright; sal063 derivation line; Nakagawa modification line 2026-11-01 | 1 |
 | `rt/gpu_sdl3vk/ge_gpu_selftest.inc` | moved from `gpu_sdl3vk/ge_gpu.c` (#1531, 2026-11-01) | inherited (sal063), moved | none declared; unknown (inherited via sal063 `da17b0e`) | not in the sal063 tree. Self-test code moved verbatim out of `ge_gpu.c`, which includes it at the original spot. The file keeps the notices of the file it came from | SPDX GPL-2.0-or-later; psp-recomp authors copyright; Nakagawa Recomp authors copyright; sal063 derivation line; Nakagawa modification line 2026-11-01 | 1 |
+
+### G. Adapted from PPSSPP by this project at an exact pin
+
+| Path (under `src/`) | Lineage | Classification | PPSSPP pin | Local modifications | Notice lines in the file header | Commits here |
+| --- | --- | --- | --- | --- | --- | --- |
+| `rt/sas_envelope.h` | PPSSPP `3bc60270` (no sal063 lineage) | derived-translated | `3bc60270eae3069f13dfbfdb7292a7e1375de6f6`, `Core/HW/SasAudio.cpp`, `Core/HW/SasAudio.h` and `Core/HLE/sceSas.cpp` (see Pins) | LOCAL DELTA: `ADSREnvelope`, the simple-envelope decoders and the ADSRmode curve check translated from C++ to C99 static inline functions over a plain struct; the per-title `RockmanDash2SoundFix` flag, savestate and debug-string code left out; KeyOn enters the attack state without the `STATE_KEYON`/`STATE_KEYON_STEP` delay; an unconfigured voice keeps the runtime's previous default curve, which departs from PPSSPP's and jpcsp's all-zero default until a PSP measurement settles it; the height read back is clamped at 0 from below. | SPDX GPL-2.0-or-later; PPSSPP copyright and GPL-2.0-or-later notice as upstream; Nakagawa Recomp authors copyright; PPSSPP derivation line naming the pin; Nakagawa modification line 2026-11-04 | 1 |
 
 ## Related files that this manifest does not cover
 
