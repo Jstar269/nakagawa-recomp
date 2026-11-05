@@ -41,10 +41,6 @@
 
 static uint64_t s_package_build_session_generation;
 
-/* How long package_builder_cancel waits on Win32 for a stopped build to end
-   (POSIX terminate waits on its own). */
-#define PACKAGE_BUILD_CANCEL_WAIT_MS 2000
-
 static inline void safe_str_copy(char *dest, size_t dest_size, const char *src);
 
 static bool package_builder_developer_log_path(char *out_path, size_t out_size) {
@@ -2498,23 +2494,18 @@ void package_builder_poll(PackageBuildSession *session, uint64_t current_time_ms
 void package_builder_cancel(PackageBuildSession *session) {
     if (!session) return;
     if (session->is_building) {
+        /* Terminate waits a bounded time for the build to end (nk_platform.h), so a
+           cancelled build is not still writing once its caller goes on or the player
+           exits. The wait runs on the caller's thread, the UI thread for Cancel; a
+           killed process normally ends in milliseconds. A build still running after
+           it is reported, never hidden. */
         nk_platform_terminate_process(&session->process);
-#if defined(_WIN32) || defined(_WIN64)
-        /* POSIX terminate already reaps the child (and gives up after its own
-           2 s + 1 s), so a second wait there would only see ECHILD. Win32
-           terminate only asks for the end, so wait for it: a cancelled build
-           must not still be writing once its caller goes on, or once the
-           player exits. The wait runs on the caller's thread, the UI thread
-           for Cancel, so it is bounded; a killed process normally ends in
-           milliseconds. A timeout is reported, never hidden. */
-        if (nk_platform_wait_process(&session->process, PACKAGE_BUILD_CANCEL_WAIT_MS) < 0) {
-            fprintf(stderr, "[BUILD] Cancel: the build process had not ended %d ms "
-                            "after it was stopped; it may still be writing\n",
-                    PACKAGE_BUILD_CANCEL_WAIT_MS);
+        if (session->process.is_active) {
+            fprintf(stderr, "[BUILD] Cancel: the build process had not ended after it was "
+                            "stopped; it may still be writing\n");
             package_builder_add_output_line(
-                session, "[build] CANCEL: the build process had not ended 2 s after it was stopped");
+                session, "[build] CANCEL: the build process had not ended after it was stopped");
         }
-#endif
         nk_platform_close_process(&session->process);
         session->is_building = false;
         session->is_cancelled = true;
