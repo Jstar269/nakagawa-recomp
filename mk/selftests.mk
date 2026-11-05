@@ -742,7 +742,7 @@ gpu-coherence-selftest-snapbar-mutants: shader-verify $(RT_GE_O)
 		$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPBAR_MUTANT=$$m -ffunction-sections -fdata-sections \
 			-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(LDFLAGS) -Wl,--gc-sections -o $$bin \
 			tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-			$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS) || exit 1; \
+			$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS) || exit 1; \
 		$$bin --case submit-batch > $$bin.log 2>&1; result=$$?; \
 		if test $$result -eq 77; then echo "snapbar mutant $$m: SKIP (no Vulkan device)"; exit 77; fi; \
 		if test $$result -eq 0; then cat $$bin.log; echo "snapbar mutant $$m unexpectedly passed" >&2; exit 1; fi; \
