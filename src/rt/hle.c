@@ -3213,7 +3213,12 @@ int hle_fd_allocate(void) {
     }
     return -1;
 }
-/* Destination of a seek on a file descriptor (#1380). A Memory Stick seek to a destination
+/* Destination of a seek on a file descriptor (#1380). A disc0: (UMD) file's position stays
+ * inside [0, size]: a destination before the start or past the end answers 0x80010005, with
+ * sceIoLseek's high word 0xFFFFFFFF and the position unchanged, through sceIoLseek and
+ * sceIoLseek32 and from every whence, and a destination at the end is accepted (measured on a
+ * PSP-3000 6.61 by PSP-IO-EOF-002 umd-eof-*-seek-past, -seek-negative and -seek-wide,
+ * 2026-11-04). A Memory Stick seek to a destination
  * before the start answers EINVAL (0x80010016; sceIoLseek's high word 0xFFFFFFFF) with the
  * position unchanged, from SEEK_SET, SEEK_CUR and SEEK_END and through sceIoLseek32, on
  * read-write and read-only descriptors (measured on a PSP-3000 6.61 by PSP-IO-EOF-001

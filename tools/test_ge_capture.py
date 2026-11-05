@@ -16,18 +16,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from makefile_text import read_makefile  # noqa: E402
 
-try:
-    from tools.ge_replay_metrics import (
-        CPU_PHASES, GE_CPU_PHASES, GE_PRIM_PROFILE_PHASES, GE_PROFILE_CHECKS, HIERARCHY_FIELDS,
-        WALL_PHASES, parse_cpu_profile, parse_ge_cpu_profile, parse_ge_cpu_validation,
-        parse_hierarchy, parse_hook_cpu_profile, parse_primitive_profile, parse_wall_profile,
-    )
-except ModuleNotFoundError:  # direct execution from tools/
-    from ge_replay_metrics import (
-        CPU_PHASES, GE_CPU_PHASES, GE_PRIM_PROFILE_PHASES, GE_PROFILE_CHECKS, HIERARCHY_FIELDS,
-        WALL_PHASES, parse_cpu_profile, parse_ge_cpu_profile, parse_ge_cpu_validation,
-        parse_hierarchy, parse_hook_cpu_profile, parse_primitive_profile, parse_wall_profile,
-    )
+from ge_replay_metrics import (  # noqa: E402
+    CPU_PHASES, GE_CPU_PHASES, GE_PRIM_PROFILE_PHASES, GE_PROFILE_CHECKS, HIERARCHY_FIELDS,
+    WALL_PHASES, parse_cpu_profile, parse_ge_cpu_profile, parse_ge_cpu_validation,
+    parse_hierarchy, parse_hook_cpu_profile, parse_primitive_profile, parse_wall_profile,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 RT = ROOT / "src" / "rt"
