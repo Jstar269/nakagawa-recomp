@@ -355,17 +355,21 @@ modules at their manifest bases, and the in-game run of the late-module route.
   (relocation kinds 16/32/26/HI16/LO16, HI16/LO16 pairing and carry adjustment, word
   encoding).
 - [C3] uofw (unofficial PSP firmware reimplementation), `src/kd/loadcore/loadelf.c`
-  at commit `5e192e75a83d043d5a65db21128d62758e5741f5` —
-  <https://github.com/uofw/uofw/blob/5e192e75a83d043d5a65db21128d62758e5741f5/src/kd/loadcore/loadelf.c>
+  at commit `28306bb5bd4fcdcc0c1d469bf1f3bdb885dde3e9` —
+  <https://github.com/uofw/uofw/blob/28306bb5bd4fcdcc0c1d469bf1f3bdb885dde3e9/src/kd/loadcore/loadelf.c>
   (PSP relocation program-header types, format A record fields, format B header,
   tables, command fields, segment-width rule, kind behaviours, refusal of LITERAL,
   `~PSP` handling). Read by the spec session only; divergences from it are recorded
-  in §3.6 with evidence.
-- [C4] PSPSDK public headers at commit `654ac51fc73fbf7ad9350fac90e39e66e7a0b1c6`
+  in §3.6 with evidence. The spec session read it at
+  `5e192e75a83d043d5a65db21128d62758e5741f5`; the file is byte-identical at
+  `28306bb5`, uofw head on 2026-11-05.
+- [C4] PSPSDK public headers at commit `687501d09733390ad75d855f73d69a0672b93a12`
   (<https://github.com/pspdev/pspsdk>): `src/user/pspmoduleinfo.h` (`SceModuleInfo`
   layout), `src/kernel/psploadcore.h` (module structures), and the system-library
   NIDs for module_start / module_stop / module_info as used by PSPSDK's
-  `tools/psp-build-exports.c`.
+  `tools/psp-build-exports.c`. The spec session read them at
+  `654ac51fc73fbf7ad9350fac90e39e66e7a0b1c6`; all three are byte-identical at
+  `687501d0`, PSPSDK head on 2026-11-05.
 - [C5] PSP Developer Wiki, *PRX File Format* —
   <https://www.psdevwiki.com/psp/PRX_File_Format> (names the two relocation segment
   types and the 4-byte header of the compressed one).

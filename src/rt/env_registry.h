@@ -30,7 +30,7 @@
     X("SCHED_DUMP", "flag-presence", "off", "sched.c", "Diagnostic switch read in sched.c that enables scheduler state dumping in the idle loop.") \
     X("SDL_VIDEODRIVER", "system", "unset (SDL picks the driver)", "gui.c", "Read with SDL_VIDEO_DRIVER to detect the offscreen driver for the headless presented-frames acceptance mode.") \
     X("SDL_VIDEO_DRIVER", "system", "unset", "gui.c", "Alias of SDL_VIDEODRIVER; a value of offscreen makes headless acceptance fail because a real presenter is required.") \
-    X("SR_ACE", "string", "off", "ace.c", "Spec string that turns on the optional image-quality enhancements (filtering, text, readout, notice, wide, smooth).") \
+    X("SR_ACE", "string", "off", "ace.c", "Spec string that turns on the optional enhancements (filtering, text, readout, notice, wide, smooth, band-limited SAS resampling).") \
     X("SR_ACE_REPORT", "path", "unset (no report written)", "ace.c", "Output path for the per-run Ace Mode JSON report.") \
     X("SR_ACE_SMOOTH_DEPTH", "string", "on", "gpu_sdl3vk/ace_hud.c", "Exactly 0 stops Ace Smooth reading the GE's depth for its in-betweens.") \
     X("SR_ACE_SMOOTH_HUD", "string", "on", "gpu_sdl3vk/ace_hud.c", "Exactly 0 stops Ace Smooth reading the HUD mask of through-mode draws for its in-betweens.") \

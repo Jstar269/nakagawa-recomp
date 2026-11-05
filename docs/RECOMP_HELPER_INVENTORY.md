@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **459** (declared in `recomp.h`: 389)
-- reach class: emitter-reached 80, production-runtime-only 344, selftest-only 0, address-only 8, none 27
-- provenance class of the home definition: declared-only 1, project_authored_attested 35, upstream_derived 423
+- helpers: **466** (declared in `recomp.h`: 394)
+- reach class: emitter-reached 81, production-runtime-only 349, selftest-only 0, address-only 8, none 28
+- provenance class of the home definition: declared-only 1, project_authored_attested 38, upstream_derived 427
 
 ## Helpers
 
@@ -81,6 +81,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `ge_last_finish_id` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_run_list` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_run_list_until` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
+| `ge_take_signal_fault` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_timing_list_clk` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_timing_run_clk` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_timing_set_enabled` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
@@ -313,7 +314,9 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_heap_dump_failure` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_free_block` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_free_list_valid` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_heap_free_list_walk` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_free_node_valid` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_heap_free_nodes_overlap` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_freelist_unlink` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_header_slot` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_is_header` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
@@ -338,6 +341,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_hle_register_late_import` | `rt/hle_kernel_module.c` | yes | production-runtime-only | `rt/hle_kernel_module.c`: upstream_derived |
 | `sr_hle_release_thread_resources` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_hle_resolve_late_import` | `rt/hle.c`, `rt/snapshot_runner.c`, `rt/verify_harness.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested; `rt/verify_harness.c`: project_authored_attested |
+| `sr_hle_sas_set_band_limited` | `rt/hle_audio.c` | yes | production-runtime-only | `rt/hle_audio.c`: upstream_derived |
 | `sr_host_address` | `rt/recomp.h` | yes | emitter-reached (direct, via `SR_HOST`) | `rt/recomp.h`: upstream_derived |
 | `sr_host_data_entry_count` | `rt/hle_data.c` | yes | production-runtime-only | `rt/hle_data.c`: upstream_derived |
 | `sr_host_data_prepare` | `rt/hle_data.c` | yes | production-runtime-only | `rt/hle_data.c`: upstream_derived |
@@ -469,12 +473,15 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_vfpu_asin` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_c2i` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vfpu_cos` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
+| `sr_vfpu_evidence_reset` | `rt/guest_interp.c` | yes | none | `rt/guest_interp.c`: project_authored_attested |
 | `sr_vfpu_exp2` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_f2h` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vfpu_h2f` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
 | `sr_vfpu_interp` | `rt/vfpu_interp.c` | yes | emitter-reached (direct) | `rt/vfpu_interp.c`: upstream_derived |
 | `sr_vfpu_log2` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
+| `sr_vfpu_note_unverified` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_vfpu_rcp` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
+| `sr_vfpu_report_unverified_uses` | `rt/guest_interp.c` | yes | emitter-reached (direct) | `rt/guest_interp.c`: project_authored_attested |
 | `sr_vfpu_rnd_seed` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vfpu_rnd_step` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
 | `sr_vfpu_rndf_step` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |

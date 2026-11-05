@@ -1044,6 +1044,7 @@
     "src/rt/recomp.c",
     "src/rt/recomp.h",
     "src/rt/sas_envelope.h",
+    "src/rt/sas_resample.h",
     "src/rt/savedata.c",
     "src/rt/sce_kernel_errors.h",
     "src/rt/sched.c",
