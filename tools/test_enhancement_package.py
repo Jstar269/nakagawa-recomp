@@ -1155,7 +1155,8 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         from enhancement_package import EnhancementPackageError, plan_site_rewrite
 
         def plan(transform: str, word: int) -> dict:
-            return plan_site_rewrite({"id": "S", "transform": transform}, word)
+            rewrite: dict = plan_site_rewrite({"id": "S", "transform": transform}, word)
+            return rewrite
 
         self.assertEqual(plan("count_x2_even", 0x28410008),  # slti at, v0, 8
                          {"kind": "word_even", "word": 0x28410010, "reg": 2, "rt": 1})
@@ -1267,6 +1268,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             )
             exe = tmp / "even_hold.exe"
             # The generated call statement keeps its guards on one line, as codegen emits it.
+            assert GCC is not None, "skipUnless(GCC) runs this test only with a compiler"
             subprocess.run([GCC, "-std=c11", "-Wall", "-Werror", "-Wno-unused-function",
                             "-Wno-misleading-indentation", "-Wno-unused-variable",
                             "-o", str(exe), str(harness)],
