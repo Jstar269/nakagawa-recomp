@@ -1,8 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 /*
- * Derived from the AMD FidelityFX SDK v2.4.0 (commit 7539ae8b6568ad29ed78a753404351daf3b5cca7),
- * Kits/FidelityFX/upscalers/fsr3/internal/ffx_fsr3upscaler.cpp, under the MIT licence below.
+ * Derived from the AMD FidelityFX SDK v2.4.0 (commit 7539ae8b6568ad29ed78a753404351daf3b5cca7), under the MIT
+ * licence below, from these files under Kits/FidelityFX/:
+ *   upscalers/fsr3/internal/ffx_fsr3upscaler.cpp (the host: creation, the dispatch plan, constants, clears
+ *     and discards);
+ *   upscalers/fsr3/internal/ffx_fsr3upscaler_private.h (the constant-buffer layout);
+ *   upscalers/fsr3/include/ffx_fsr3upscaler.h (the creation flags);
+ *   upscalers/fsr3/include/gpu/spd/ffx_spd.h (ffxSpdSetup);
+ *   upscalers/fsr3/include/gpu/fsr1/ffx_fsr1.h (FsrRcasCon);
+ *   api/internal/gpu/ffx_core_cpu.h (ffxF32ToF16).
  *
  * Copyright (C) 2026 Advanced Micro Devices, Inc.
  *

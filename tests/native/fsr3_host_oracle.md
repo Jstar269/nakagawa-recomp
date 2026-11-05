@@ -106,5 +106,5 @@ the indices around the count and twice the count.
 - The phase count and the SPD mip count come from the same functions but are integers, so they must
   match exactly.
 
-`tools/fsr3_mutants.py` applies 16 semantic defects, one at a time, to copies of the port. Each one
+`tools/fsr3_mutants.py` applies 19 semantic defects, one at a time, to copies of the port. Each one
 must build and then fail the replay on the line it changes.

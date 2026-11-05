@@ -1,8 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 /*
- * Derived from the AMD FidelityFX SDK v2.4.0 (commit 7539ae8b6568ad29ed78a753404351daf3b5cca7),
- * Kits/FidelityFX/upscalers/fsr3/internal/ffx_fsr3upscaler.cpp, under the MIT licence below.
+ * Derived from the AMD FidelityFX SDK v2.4.0 (commit 7539ae8b6568ad29ed78a753404351daf3b5cca7), under the MIT
+ * licence below, from these files under Kits/FidelityFX/:
+ *   upscalers/fsr3/internal/ffx_fsr3upscaler.cpp (halton, ffxFsr3UpscalerGetJitterPhaseCount,
+ *     ffxFsr3UpscalerGetJitterOffset, and fsr3upscalerDispatch's phase-count ramp);
+ *   upscalers/fsr3/include/ffx_fsr3upscaler.h (the jitter functions' declarations).
+ * fsr3_jitter_clip_offset is project-written.
  *
  * Copyright (C) 2026 Advanced Micro Devices, Inc.
  *
