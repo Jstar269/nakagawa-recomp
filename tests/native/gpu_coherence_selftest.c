@@ -138,7 +138,7 @@ int main(int argc, char **argv) {
     }
 #else
     if (twin_arg && !authentic &&
-        !ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=off;smooth=off", NULL)) {
+        !ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=off;smooth=off;sas=off", NULL)) {
         fprintf(stderr, "gpu coherence selftest: FAIL the Ace line for the host twin was refused\n");
         free(arena);
         return 1;
