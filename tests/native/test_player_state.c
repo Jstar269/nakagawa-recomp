@@ -6200,7 +6200,7 @@ static void test_play_mode_settings(void) {
     player_app_set_experimental_60hz_session(app, false);
     assert(app->games[2].enhancement_package_id[0] == '\0');
     /* Ace's own off switch on a title that follows the library is an entry of its own: it is
-       kept and saved (section 10.8), and holds once the title chooses Ace. */
+       kept and saved (section 10.9), and holds once the title chooses Ace. */
     player_app_set_title_60hz(app, 1, false);
     {
         const PlayerTitlePlay *own = player_settings_title_play(&app->settings, "TEST90002");
@@ -6320,7 +6320,7 @@ static void test_play_mode_settings(void) {
 }
 
 /* The settings mapping from the development builds' keys (docs/ENHANCEMENT_CONTRACT.md
- * section 10.8): "ace" becomes the library's default and parts, "ace_titles" the titles'
+ * section 10.9): "ace" becomes the library's default and parts, "ace_titles" the titles'
  * choices and parts, and a disc in "enhancement_60hz_discs" plain Ace: Enhanced plus its 60 FPS
  * game logic (owner, 2026-11-04). The keys are read only when "enhanced" is absent. */
 static void test_play_mode_settings_mapping(void) {

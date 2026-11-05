@@ -1676,7 +1676,7 @@ static void play_settings_read(PlayerSettings *settings, const NkJsonNode *enhan
 }
 
 /* The development builds' "Ace Mode" settings (before #2055), mapped onto the play modes as
-   docs/ENHANCEMENT_CONTRACT.md section 10.8 says:
+   docs/ENHANCEMENT_CONTRACT.md section 10.9 says:
    - "ace" {"enabled": true} is an Enhanced library default, false Authentic; its feature
      values carry over (a value this build does not know keeps the fresh default, as those
      builds did);

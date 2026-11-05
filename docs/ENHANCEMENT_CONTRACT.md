@@ -394,7 +394,7 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
 `sas=sinc` (#2054) resamples SAS VAG voices through a band-limited filter on the host. The mixed values land in guest
 memory, so it is a guest-visible item, and its entry is section 11.3.1.
 
-### 10.8. Settings
+### 10.9. Settings
 
 `settings.json` keeps the library's choice in `"enhanced"` and a sparse `"title_play"` map, every value by name:
 
@@ -499,7 +499,7 @@ No guest-visible item is admitted by this section alone. Each lands in its own p
   with any other value, is refused, and Ace is off for that run.
 - **Tier and default.** Enhanced: it applies to every game, in Enhanced and Ace runs alike (section 10.5). The
   default is off. It is the part "Clean pitched sound" (`"sas"`, `sinc` or `off`) on the library's Settings >
-  Enhanced page and on each game's own page (section 10.8), so the library and each title can turn it on or off
+  Enhanced page and on each game's own page (section 10.9), so the library and each title can turn it on or off
   alone (section 11.2, item 2), and the launch line carries `sas=sinc` or `sas=off`. It stays off by default until
   the "nothing worse" runs below exist.
 - **The authentic path.** Without the item the mixer does not interpolate (a zero-order hold). Each output sample

@@ -307,7 +307,7 @@ typedef struct {
     /* The play modes (#2055): "enhanced" and the sparse "title_play" in settings.json,
        additions to schema version 2 as text_size is. A file without them is read from the
        development builds' "ace", "ace_titles" and "enhancement_60hz_discs"
-       (docs/ENHANCEMENT_CONTRACT.md section 10.8). A title in Ace launches its enhanced
+       (docs/ENHANCEMENT_CONTRACT.md section 10.9). A title in Ace launches its enhanced
        build, packages/<disc_id>-enhanced-<id> (section 9), unless its 60 FPS game logic is
        turned off. */
     PlayerEnhancedSettings enhanced;
