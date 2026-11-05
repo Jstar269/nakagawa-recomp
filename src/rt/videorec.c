@@ -5,7 +5,7 @@
 //
 // Pure C with no SDL or Vulkan dependency, so it builds in every runtime configuration and its
 // selftest needs no GPU. The only host service beyond files is starting FFmpeg with a pipe on
-// its standard input: CreateProcessW on Windows, fork/execv on POSIX, never a shell.
+// its standard input: CreateProcessW on Windows, posix_spawn on POSIX, never a shell.
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -23,9 +23,11 @@
 #include <direct.h>
 #else
 #include <signal.h>
+#include <spawn.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+extern char **environ;
 #endif
 
 /* ---- configuration and state ---------------------------------------------------------- */
@@ -269,20 +271,27 @@ static int vr_proc_start(VrProc *p, const char *exe, const char *const *argv, in
     p->in = -1;
     int fds[2] = { -1, -1 };
     if (with_stdin && pipe(fds) != 0) return 0;
-    pid_t pid = fork();
-    if (pid < 0) {
+    /* posix_spawn, not fork: the runtime has many threads, and the child must run no
+     * runtime code between fork and exec. The encoder reads frames on stdin and writes its
+     * console output to the runtime's stderr. A program that cannot start fails here. */
+    posix_spawn_file_actions_t fa;
+    if (posix_spawn_file_actions_init(&fa) != 0) {
         if (with_stdin) { close(fds[0]); close(fds[1]); }
         return 0;
     }
-    if (pid == 0) {
-        if (with_stdin) {
-            dup2(fds[0], 0);
-            close(fds[0]);
-            close(fds[1]);
-        }
-        dup2(2, 1);
-        execv(exe, (char *const *)argv);
-        _exit(127);
+    int ok = 1;
+    if (with_stdin) {
+        ok = posix_spawn_file_actions_adddup2(&fa, fds[0], 0) == 0 &&
+             posix_spawn_file_actions_addclose(&fa, fds[0]) == 0 &&
+             posix_spawn_file_actions_addclose(&fa, fds[1]) == 0;
+    }
+    ok = ok && posix_spawn_file_actions_adddup2(&fa, 2, 1) == 0;
+    pid_t pid = -1;
+    if (ok) ok = posix_spawn(&pid, exe, &fa, NULL, (char *const *)argv, environ) == 0;
+    posix_spawn_file_actions_destroy(&fa);
+    if (!ok) {
+        if (with_stdin) { close(fds[0]); close(fds[1]); }
+        return 0;
     }
     if (with_stdin) {
         close(fds[0]);
