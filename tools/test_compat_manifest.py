@@ -258,8 +258,8 @@ RECOMP_C = REPO_ROOT / "src" / "rt" / "recomp.c"
 
 def extract_codegen_custom_stub_addresses() -> set[int]:
     """The addresses codegen.py replaces with a hand-written body: the keys of
-    codegen_hst_stubs.HST_CUSTOM_STUBS plus the game-loop wrapper's address."""
-    return set(codegen.HST_CUSTOM_STUBS) | {codegen.HST_GAME_LOOP_ADDR}
+    codegen_hst_stubs.HST_CUSTOM_STUBS."""
+    return set(codegen.HST_CUSTOM_STUBS)
 
 
 def extract_dispatch_hook_table(table_name: str) -> list[tuple[int, str]]:
@@ -1324,9 +1324,26 @@ class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
     def test_the_census_report_names_untested_entries_outside_the_gate(self):
         """#363's acceptance is broader than the temporary-patch category.  The
         remaining behavior-changing categories are REPORTED -- named debt with a
-        stable id -- instead of being gated here or left invisible."""
+        stable id -- instead of being gated here or left invisible.  The live list
+        may be empty once that debt is retired; an injected entry must be named."""
         untested = compat_overrides.untested_non_temporary_entries()
-        self.assertTrue(untested, "the out-of-gate untested report is empty")
+        report = compat_overrides.format_debt_census()
+        if not untested:
+            self.assertIn("UNTESTED OUTSIDE THE DEBT GATE: none", report)
+        mutant = dict(address=0x08ff0028, category="faithful_abi_bridge",
+                      name="synthetic untested bridge", test="none")
+        compat_overrides.HST_SIMPLE_STUBS.append(mutant)
+        try:
+            injected = compat_overrides.untested_non_temporary_entries()
+            injected_report = compat_overrides.format_debt_census()
+        finally:
+            compat_overrides.HST_SIMPLE_STUBS.pop()
+        added = [record for record in injected if record not in untested]
+        self.assertEqual(len(added), 1, f"the injected untested bridge was not reported once: {added}")
+        self.assertIn("UNTESTED OUTSIDE THE DEBT GATE (behavior-changing", injected_report)
+        self.assertIn(added[0]["id"], injected_report)
+        untested = injected
+        report = injected_report
         ids = [record["id"] for record in untested]
         self.assertEqual(ids, sorted(ids), "the out-of-gate report is not ordered")
         self.assertEqual(len(ids), len(set(ids)), "out-of-gate census ids are not unique")
@@ -1336,8 +1353,6 @@ class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
                               compat_overrides.NON_TEMPORARY_BEHAVIOR_CHANGING_CATEGORIES)
                 self.assertTrue(compat_overrides.has_no_test(record))
                 self.assertNotEqual(record["category"], "temporary_compatibility_patch")
-        report = compat_overrides.format_debt_census()
-        self.assertIn("UNTESTED OUTSIDE THE DEBT GATE", report)
         for record in untested:
             self.assertIn(record["id"], report)
 

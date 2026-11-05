@@ -3236,6 +3236,62 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         self.assert_rebuild_started(frames, run["stdout"])
 
+    # A stand-in for tools/nk_cli.py that builds nothing: it records that it
+    # started, then writes a heartbeat until it is stopped or 8 s pass.
+    SLOW_BUILD_CLI = (
+        "import os, pathlib, time\n"
+        "witness = pathlib.Path(os.environ['NK_UI_TEST_BUILD_WITNESS'])\n"
+        "(witness / 'started').write_text(str(os.getpid()), encoding='utf-8')\n"
+        "deadline = time.monotonic() + 8.0\n"
+        "with open(witness / 'heartbeat', 'a', encoding='utf-8') as beat:\n"
+        "    while time.monotonic() < deadline:\n"
+        "        beat.write('.')\n"
+        "        beat.flush()\n"
+        "        time.sleep(0.05)\n"
+        "(witness / 'finished').write_text('outlived the player', encoding='utf-8')\n"
+    )
+
+    def test_closing_the_player_stops_a_running_package_build(self) -> None:
+        # The player used to exit with a package build still running. On Linux
+        # the build ran on as an orphan and kept writing into the data folder,
+        # which is how test_incompatible_card_offers_rebuild_package_in_the_
+        # legacy_renderer failed hosted CI with "Directory not empty" when its
+        # scratch folder was removed. A slow stand-in build makes that certain.
+        with tempfile.TemporaryDirectory(
+            prefix=".slow-build-", dir=ROOT, ignore_cleanup_errors=True
+        ) as tmp:
+            install_root = Path(tmp) / "install"
+            (install_root / "tools").mkdir(parents=True)
+            (install_root / "tools" / "nk_cli.py").write_text(self.SLOW_BUILD_CLI,
+                                                              encoding="utf-8")
+            witness = Path(tmp) / "witness"
+            witness.mkdir()
+            run = self.run_player(
+                "ready",
+                ("WAIT_PACKAGE_STATUS=INCOMPATIBLE,10000", "KEY_RETURN", "WAIT_MS=1500"),
+                incompatible_package=True,
+                wait_background=True,
+                ui_mode="legacy",
+                env_extra={
+                    "NK_INSTALL_ROOT": str(install_root),
+                    "NK_UI_TEST_BUILD_WITNESS": str(witness),
+                },
+            )
+            frames = run["frames"]
+            assert isinstance(frames, list)
+            if frames[-1]["view"] != "building_package":
+                self.skipTest("no build started: this host lacks the build tools")
+            self.assertTrue((witness / "started").exists(), run["stdout"])
+            heartbeat = witness / "heartbeat"
+            size_at_exit = heartbeat.stat().st_size
+            time.sleep(1.0)
+            self.assertEqual(heartbeat.stat().st_size, size_at_exit,
+                             "the package build kept running after the player closed")
+            self.assertFalse((witness / "finished").exists())
+            # Windows ended the build with the player's job object even before
+            # the fix; the player now stops it itself, and says so.
+            self.assertIn("[PLAYER] Closing: the package build was stopped.", run["stderr"])
+
     def test_incompatible_title_offers_rebuild_package_in_the_next_ui(self) -> None:
         shown = self.run_player(
             "ready", ("WAIT_MS=100",), incompatible_package=True, wait_background=True,

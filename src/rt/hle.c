@@ -34,6 +34,7 @@
 
 #include "hle_internal.h"
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
+#define SR_EVIDENCE_NO_VFPU /* this file reads the NID table only */
 #include "hle_evidence.h" /* generated: NIDs with no recorded evidence (docs/HLE_COVERAGE.md) */
 int sr_thread_has_pending_callbacks(uint32_t thread_uid);
 int sr_thread_dispatch_callbacks(void);    /* internal pump count; public CheckCallback is Boolean */
@@ -464,8 +465,17 @@ uint32_t alloc_block(uint32_t size) {
         return 0xFFFFFFFFu;
     }
 
+    /* The slot is the size rounded up to 256 bytes. A size within 255 of 4 GB has no such slot:
+     * the rounding would wrap to a 256-byte slot that a small free block satisfies, so it is
+     * refused here like any other request the partition cannot hold. */
+    if (size > 0xFFFFFF00u) {
+        if (guard) {
+            fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) rounds past 4 GB\n", size, size);
+            fflush(stderr);
+        }
+        return 0xFFFFFFFFu;
+    }
     uint32_t needed_slot = (size + 0xFFu) & ~0xFFu;
-    if (needed_slot == 0) needed_slot = 0x100u;
 
     uint32_t addr = 0;
     uint32_t slot_size = 0;
@@ -1942,6 +1952,13 @@ uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...) {
 /* The same named stop for handlers that live outside this file (hle_power.c). */
 uint32_t sr_hle_unmodelled_stop(const char *import_name, const char *detail) {
     return hle_unmodelled_stop(import_name, "%s", detail);
+}
+
+/* The import a NID names, for a stop raised outside its handler (hle_ge.c names the call
+ * that ran a display list). nid_names.h is not included twice: its table is static. */
+const char *hle_import_name(uint32_t nid) {
+    const char *name = sr_nid_name(nid);
+    return name ? name : "unknown-import";
 }
 
 int guest_cstr(uint32_t addr, char *out, int max);
