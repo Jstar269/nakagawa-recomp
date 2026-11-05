@@ -1954,6 +1954,13 @@ uint32_t sr_hle_unmodelled_stop(const char *import_name, const char *detail) {
     return hle_unmodelled_stop(import_name, "%s", detail);
 }
 
+/* The import a NID names, for a stop raised outside its handler (hle_ge.c names the call
+ * that ran a display list). nid_names.h is not included twice: its table is static. */
+const char *hle_import_name(uint32_t nid) {
+    const char *name = sr_nid_name(nid);
+    return name ? name : "unknown-import";
+}
+
 int guest_cstr(uint32_t addr, char *out, int max);
 uint32_t free_block(uint32_t uid) {
     for (int i = 0; i < s_nblocks; i++) {
