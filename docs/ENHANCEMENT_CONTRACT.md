@@ -395,6 +395,13 @@ A readback keeps the top-left device pixel of each guest pixel, so the guest rea
   which sits 0.5 - 0.5 / scale of a pixel before the PSP's pixel centre. At 4x that is 0.375 of a pixel: for a 1:1
   linear sprite or triangle the value moves by up to 0.375 of the step between neighbouring texels, and a minified
   nearest sprite can return a different texel.
+- At the edges of an axis-aligned through-mode primitive (a sprite, or a strip or quad drawn as screen-aligned
+  rectangles, flipped or not), no device pixel samples outside the texture range the primitive's 1x pixel centres
+  cover. Those centres follow the rasteriser's top-left rule. A device pixel in the outer part of an edge pixel shows
+  that pixel's own sample, as the PSP does, instead of reaching past it (with repeat wrapping, into the texture's
+  opposite edge). This makes the picture at scale match the PSP's edge sample: it is an Authentic correctness rule at
+  scale, not an Enhanced item. Rotated primitives and transform-mode (3D) geometry are not clamped
+  (`uv-edge-clamp` in `gpu-coherence-selftest`).
 
 At 1x the readback is the PSP's value.
 

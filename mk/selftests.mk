@@ -702,7 +702,7 @@ asset-index-selftest:
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
 # The scaled-upload case (#1296), the per-fragment mip level case (#1373), the readback-rows
 # case (#323, also on its SR_GPU_READBACK_FULL reference path), the undrawn-rows case and the
-# sprite-scaled case run again alone
+# sprite-scaled case and the uv-edge-clamp case run again alone
 # at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
 # cmd.exe does not take one.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
@@ -728,6 +728,9 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 2 --case sprite-scaled
 	$(GPU_COHERENCE_BIN) --scale 3 --case sprite-scaled
 	$(GPU_COHERENCE_BIN) --scale 4 --case sprite-scaled
+	$(GPU_COHERENCE_BIN) --scale 2 --case uv-edge-clamp
+	$(GPU_COHERENCE_BIN) --scale 3 --case uv-edge-clamp
+	$(GPU_COHERENCE_BIN) --scale 4 --case uv-edge-clamp
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies

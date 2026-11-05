@@ -1,6 +1,6 @@
 {
   "compiler": {
-    "name": "glslc.exe",
+    "name": "glslc.EXE",
     "options": [
       "--target-env=vulkan1.1"
     ],
@@ -11,29 +11,29 @@
   "shaders": [
     {
       "embedded": "psp_vert.inc",
-      "embedded_sha256": "421c00b8e3e6fdeed242f849f92a5209651c90dd32ea7fcbf4c2a29595df05d6",
+      "embedded_sha256": "52bedcef06b4eb86f8bbf02f26aeafa4efffd719aa9cbbe0f1643b21c9583944",
       "source": "shaders/psp.vert",
-      "source_sha256": "c94c133a49ada1877da55f69e64ab87826be05af8333d132d6b2cf6f539b07a9",
-      "spirv_bytes": 1796,
-      "spirv_sha256": "2677e644af6e91541bc89b390c9a65218dfa7116dfff383a33a4e0407c14d139",
+      "source_sha256": "85c46c9d0a66da92f8cda97c7bc4a293e983718a0e884fc760c95bf6582f2c41",
+      "spirv_bytes": 1940,
+      "spirv_sha256": "07291398f54c27b09e628d0581955dc4c2f976f35559df529b0f014cad58a3bf",
       "stage": "vert"
     },
     {
       "embedded": "psp_frag.inc",
-      "embedded_sha256": "6a8c6c2714e6e9ecac91cd84d4306ef2c873ac475cd8239ee6243eef4c2f2a5a",
+      "embedded_sha256": "b2a11b457106b302b583255ffeae731c79cef689d074b48a9757af1508e61dc7",
       "source": "shaders/psp.frag",
-      "source_sha256": "bcbc6f9d46e4f6064862180e6ac07656eabb0dc9d332f4937ba0078429811b13",
-      "spirv_bytes": 32548,
-      "spirv_sha256": "d21ce8129f58b193fe36f8208b34674e86025af94629a600664cae737de7dd80",
+      "source_sha256": "87bfe3178e039e36ae4c00c1e2b3a4f67d287074b5a18326c7de0f5b4972c4e7",
+      "spirv_bytes": 33244,
+      "spirv_sha256": "231900067cb3d69495e8103bf20fd233b470b80883fe88d8f3f5788bc18391b9",
       "stage": "frag"
     },
     {
       "embedded": "psp_tnl_vert.inc",
-      "embedded_sha256": "d6d0a9568e3069ba4b71a59e5b593b70e346d5dc033aa7cbc780a34d37cc2785",
+      "embedded_sha256": "400bf51cb15cc92cbc063cd7af8f09599d5f9f45403f4d5f84f7a729ca4a13c3",
       "source": "shaders/psp_tnl.vert",
-      "source_sha256": "a7efe6e7af2e2f221a4888f465e379ab0f58da9ce1ec36521a208a59e5671dcd",
-      "spirv_bytes": 74564,
-      "spirv_sha256": "9172d49d108606477ce141ec28c43f6dcbf4f1455951d43ba86c937a5f7f2ceb",
+      "source_sha256": "fd36683226295712d127f660d640f5600bea4067e638583ff73d1e9e3b000120",
+      "spirv_bytes": 74668,
+      "spirv_sha256": "af506d243c856101869fbab71d80854b81fb1b9a21d767bdcd86b5a4c8d92d7e",
       "stage": "vert"
     },
     {

@@ -1653,7 +1653,8 @@ static int coherence_run_psp_sample_points(void) {
  *   every device pixel of that pixel, whatever its origin: on a texel edge, half a texel off
  *   (+0.5, PSP-GE-SAMPLE-001's "+0.5-texel" mapping) or a quarter off. Guest VRAM gets that
  *   texel at every scale.
- * - Every other sprite samples at each device pixel's own centre, as a triangle does: a
+ * - Every other sprite samples at each device pixel's own centre, as a triangle does, except
+ *   that a sample in an edge pixel's outer half takes that pixel's centre (uv-edge-clamp): a
  *   minified nearest one, and linear ones (exact within 2 of the filtered value). Guest VRAM
  *   gets the top-left device sample.
  * Before this case hook_sprite shifted every sprite's coordinate by 0.5 - 0.5 / scale of a
@@ -1666,9 +1667,13 @@ static int coherence_read_device(VkImage img, VkImageAspectFlags aspect, VkImage
 
 typedef struct { float a0, w; } SprAxis;      /* coordinate at the first pixel edge, per pixel */
 
-/* The 0-255 channel a device sample at device index d of a sprite axis shows. */
-static float coherence_spr_expect(SprAxis ax, int nearest, uint32_t d, uint32_t s) {
-    const float pos = ax.a0 + (((float)d + 0.5f) / (float)s) * ax.w;
+/* The 0-255 channel a device sample at device index d of a sprite axis of n pixels shows. Above
+ * 1x a sample in an edge pixel's outer half takes that pixel's centre coordinate (the edge clamp,
+ * uv-edge-clamp); at 1x every sample is a centre. */
+static float coherence_spr_expect(SprAxis ax, int nearest, uint32_t d, uint32_t s, uint32_t n) {
+    float at = ((float)d + 0.5f) / (float)s;
+    if (s > 1u) at = fminf(fmaxf(at, 0.5f), (float)n - 0.5f);
+    const float pos = ax.a0 + at * ax.w;
     if (!nearest) return 16.0f * (pos - 0.5f);
     if (fabsf(fabsf(ax.w) - 1.0f) < 1e-6f) {                   /* 1:1: the PSP's texel */
         const uint32_t g = d / s;
@@ -1770,8 +1775,8 @@ static int coherence_run_sprite_scaled(void) {
         const float tol = nearest ? 0.0f : 2.0f;
         for (uint32_t dy = 0; dy < (uint32_t)cells[c].n * s; dy++) {
             for (uint32_t dx = 0; dx < (uint32_t)cells[c].n * s; dx++) {
-                const float wr = coherence_spr_expect(ax, nearest, dx, s);
-                const float wg = coherence_spr_expect(ay, nearest, dy, s);
+                const float wr = coherence_spr_expect(ax, nearest, dx, s, (uint32_t)cells[c].n);
+                const float wg = coherence_spr_expect(ay, nearest, dy, s, (uint32_t)cells[c].n);
                 const uint32_t X = (uint32_t)cells[c].x * s + dx, Y = (uint32_t)y0 * s + dy;
                 const uint32_t got = dev[(size_t)Y * SCL_W + X];
                 const float er = fabsf((float)(got & 0xFFu) - wr);
@@ -1809,6 +1814,199 @@ static int coherence_run_sprite_scaled(void) {
     free(dev);
     coherence_reset_targets();
     if (ok) printf("gpu coherence selftest: PASS %-22s %d cells scale=%u\n", "sprite-scaled", ncells, s);
+    return ok;
+}
+
+/* uv-edge-clamp: through-mode rectangles whose texture coordinate reaches the texture's edge at
+ * the rectangle's edge, at 16 texels over 12 pixels, as LittleBigPlanet's loading screen draws its
+ * planet (a 128x64 texture over 220x52 pixels, flipped, linear, repeat). The texture's red channel
+ * follows its row and green its column: 0 in texel 0, 255 in texel 15, 128 between. At 1x each edge
+ * pixel's centre samples inside the edge texel (the PSP's own picture). Above 1x the outer device
+ * samples of an edge pixel lie past that centre, and with linear filtering and repeat wrapping they
+ * blended in the texture's opposite edge, a line along the rectangle's edge. Every device sample of
+ * every cell must show the model below: the coordinate at that device sample's position, clamped
+ * above 1x to the coordinates the 1x pixel centres sample, filtered the way psp.frag filters (weights
+ * in 1/16), within 2.
+ * - strips (two triangles each) and a sprite, flipped and not, linear with repeat and clamp
+ *   wrapping, and nearest with repeat;
+ * - a strip whose u also changes with y (as a rotated rectangle's does) keeps every device sample
+ *   where it falls: it gets no clamp.
+ * At 1x no primitive carries a clamp range at all (checked on the vertices hook_sprite writes), so
+ * the 1x picture is exactly the one before the clamp existed. */
+typedef struct { int sprite; uint32_t tflt, wrap; float ul, ur, vt, vb, shear; const char *name; } EdgeCell;
+
+static float coh_edge_texel(int i, int clampwrap) {
+    if (clampwrap) i = i < 0 ? 0 : i > 15 ? 15 : i;
+    else i &= 15;
+    return i == 0 ? 0.0f : i == 15 ? 255.0f : 128.0f;
+}
+
+/* One channel at coordinate c (texels), as psp.frag samples it: rounded to 1/4096, then nearest
+ * takes texel floor(c) and linear blends floor(c - 0.5) and the next texel by a weight truncated
+ * to 1/16. */
+static float coh_edge_sample(double c, int nearest, int clampwrap) {
+    c = floor(c * 4096.0 + 0.5) / 4096.0;
+    if (nearest) return coh_edge_texel((int)floor(c), clampwrap);
+    const double f = c - 0.5, i0 = floor(f), w = floor((f - i0) * 16.0) / 16.0;
+    return (float)((1.0 - w) * coh_edge_texel((int)i0, clampwrap) + w * coh_edge_texel((int)i0 + 1, clampwrap));
+}
+
+/* The coordinate along one axis of n pixels from c0 at its first edge to c1 at its last, at
+ * device index d of render scale s; above 1x clamped to the first and last pixel centres'. */
+static double coh_edge_coord(double c0, double c1, uint32_t n, uint32_t d, uint32_t s, int clamp_it) {
+    const double per = (c1 - c0) / (double)n;
+    const double at = ((double)d + 0.5) / (double)s;
+    double c = c0 + at * per;
+    if (clamp_it && s > 1u) {
+        const double a = (double)(float)(c0 + 0.5 * per), b = (double)(float)(c1 - 0.5 * per);
+        const double lo = a < b ? a : b, hi = a < b ? b : a;
+        c = c < lo ? lo : c > hi ? hi : c;
+    }
+    return c;
+}
+
+static int coherence_run_uv_edge_clamp(void) {
+    const char *name = "uv-edge-clamp";
+    const uint32_t fba = 0x00160000u, base = 0x04000000u | fba, stride = 512u;
+    const size_t bytes = (size_t)stride * FB_H * 4u;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    uint32_t *tex = (uint32_t *)SR_HOST(COH_SAMPLE_TEX);
+    for (unsigned v = 0; v < 16u; v++)
+        for (unsigned u = 0; u < 16u; u++)
+            tex[v * 16u + u] = 0xFF000000u | ((uint32_t)coh_edge_texel((int)u, 0) << 8) |
+                               (uint32_t)coh_edge_texel((int)v, 0);
+    sr_gpu_vram_dirty(COH_SAMPLE_TEX, 16u * 16u * 4u);
+
+    static const EdgeCell cells[] = {
+        { 0, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "strip-linear-repeat-flipped-v" },
+        { 0, 0x101u, 0x000u, 16.0f, 0.0f, 0.0f, 16.0f, 0.0f, "strip-linear-repeat-flipped-u" },
+        { 0, 0x101u, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "strip-linear-clamp" },
+        { 0, 0x000u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "strip-nearest-repeat" },
+        { 1, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "sprite-linear-repeat" },
+        { 0, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 3.0f, "strip-sheared-u-free" },
+    };
+    const int ncells = (int)(sizeof(cells) / sizeof(cells[0]));
+    const int y0 = 40, n = 12;
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(COH_SAMPLE_VERTS);
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_SAMPLE_LIST);
+    int p = 0, nv = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x9C, fba);
+    DL_EMIT(0x9D, stride | (0x04000000u >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x4C, 0);
+    DL_EMIT(0x4D, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0x15, 0);
+    DL_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, COH_SAMPLE_TEX & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 16u | ((COH_SAMPLE_TEX & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (4u << 8) | 4u);
+    DL_EMIT(0xC2, 0);
+    DL_EMIT(0xC8, 0);
+    DL_EMIT(0xC0, 0);
+    DL_EMIT(0xC3, 3);
+    DL_EMIT(0xC9, 3u | (1u << 8));                         /* replace, RGBA */
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3u << 0) | (3u << 7) | (1u << 23));     /* float UV and position, through */
+    for (int c = 0; c < ncells; c++) {
+        const EdgeCell *e = &cells[c];
+        const float x0 = (float)(20 + 20 * c), x1 = x0 + (float)n, ya = (float)y0, yb = ya + (float)n;
+        uint32_t first = COH_SAMPLE_VERTS + (uint32_t)nv * (uint32_t)sizeof(RawSpriteVtx);
+        DL_EMIT(0xC6, e->tflt);
+        DL_EMIT(0xC7, e->wrap);
+        DL_EMIT(0xCB, 0);                                  /* TEXFLUSH */
+        if (e->sprite) {
+            vtx[nv++] = (RawSpriteVtx){ e->ul, e->vt, x0, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ur, e->vb, x1, yb, 0.0f };
+            DL_EMIT(0x01, first & 0x00FFFFFFu);
+            DL_EMIT(0x04, (6u << 16) | 2u);
+        } else {   /* bottom-left, bottom-right, top-left, top-right, as LittleBigPlanet orders them */
+            vtx[nv++] = (RawSpriteVtx){ e->ul + e->shear, e->vb, x0, yb, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ur + e->shear, e->vb, x1, yb, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ul, e->vt, x0, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ur, e->vt, x1, ya, 0.0f };
+            DL_EMIT(0x01, first & 0x00FFFFFFu);
+            DL_EMIT(0x04, (4u << 16) | 4u);
+        }
+    }
+    DL_EMIT(0xC6, 0);
+    DL_EMIT(0xC7, 0);
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+
+    const uint32_t s = (uint32_t)s_scale;
+    uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
+    if (!dev) return 0;
+    coherence_reset_targets();
+    memset(fb, 0, bytes);
+    sr_gpu_vram_dirty(base, (uint32_t)bytes);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(COH_SAMPLE_LIST, 0);
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                               .width = 480, .height = 272 };
+    int ok = gegpu_sync_guest_fb(&desc);
+    Target *t = ok ? target_find_by_fba(fba) : NULL;
+    ok = t != NULL && coherence_read_device(t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+                                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 4u, dev);
+    if (!ok) fprintf(stderr, "gpu coherence selftest [%s]: draw or device read failed\n", name);
+    int bad = 0;
+    for (int c = 0; ok && c < ncells; c++) {
+        const EdgeCell *e = &cells[c];
+        const int nearest = e->tflt == 0u, clampwrap = e->wrap != 0u, separable = e->shear == 0.0f;
+        int cell_bad = 0;
+        for (uint32_t dy = 0; dy < (uint32_t)n * s; dy++) {
+            for (uint32_t dx = 0; dx < (uint32_t)n * s; dx++) {
+                double u = coh_edge_coord(e->ul, e->ur, (uint32_t)n, dx, s, separable);
+                const double v = coh_edge_coord(e->vt, e->vb, (uint32_t)n, dy, s, separable);
+                if (!separable) u += (((double)dy + 0.5) / (double)s) * (double)e->shear / (double)n;
+                const float wr = coh_edge_sample(v, nearest, clampwrap);   /* red: the row */
+                const float wg = coh_edge_sample(u, nearest, clampwrap);   /* green: the column */
+                const uint32_t X = (uint32_t)(20 + 20 * c) * s + dx, Y = (uint32_t)y0 * s + dy;
+                const uint32_t got = dev[(size_t)Y * SCL_W + X];
+                const float er = fabsf((float)(got & 0xFFu) - wr);
+                const float eg = fabsf((float)((got >> 8) & 0xFFu) - wg);
+                if (er > 2.0f || eg > 2.0f) {
+                    if (cell_bad++ < 4)
+                        fprintf(stderr, "gpu coherence selftest [%s/%s]: scale=%u device pixel (%u,%u) "
+                                "r=%u g=%u, want %.2f %.2f (u=%.4f v=%.4f)\n", name, e->name, s, dx, dy,
+                                got & 0xFFu, (got >> 8) & 0xFFu, wr, wg, u, v);
+                }
+            }
+        }
+        bad += cell_bad;
+    }
+    /* At 1x a primitive carries no clamp range; above 1x a through-mode textured sprite does. */
+    if (ok) {
+        s_ge->tex_enable = 1;
+        GeVtx p0 = { 300.0f, 40.0f, 0.0f, 1.0f, 0.0f, 16.0f, 1.0f, 0xff, 0xff, 0xff, 0xff };
+        GeVtx p1 = p0;
+        p1.x = 312.0f; p1.y = 52.0f; p1.u = 16.0f; p1.v = 0.0f;
+        ok = hook_sprite(&p0, &p1, 0) && s_nverts > 0u;
+        const float *box = ok ? s_vcpu[s_nverts - 1u].box : NULL;
+        const int free_box = box && box[0] > box[2] && box[1] > box[3];
+        if (ok && (s == 1u) != free_box) {
+            fprintf(stderr, "gpu coherence selftest [%s]: scale=%u the sprite's clamp range is "
+                    "(%.4f,%.4f)-(%.4f,%.4f): want %s\n", name, s, box[0], box[1], box[2], box[3],
+                    s == 1u ? "none at 1x" : "a range above 1x");
+            ok = 0;
+        }
+        if (ok) ok = submit_pending();
+    }
+    if (bad) {
+        fprintf(stderr, "gpu coherence selftest [%s]: %d device pixel(s) differ at scale %u\n", name, bad, s);
+        ok = 0;
+    }
+    free(dev);
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS %-22s %d cells scale=%u\n", name, ncells, s);
     return ok;
 }
 
@@ -5093,6 +5291,7 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "mip-lod") == 0) return coherence_run_mip_lod();
         if (strcmp(only, "readback-rows") == 0) return coherence_run_readback_rows();
         if (strcmp(only, "sprite-scaled") == 0) return coherence_run_sprite_scaled();
+        if (strcmp(only, "uv-edge-clamp") == 0) return coherence_run_uv_edge_clamp();
         if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
         if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
@@ -5150,6 +5349,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_mip_levels()) ok = 0;
     if (!coherence_run_psp_sample_points()) ok = 0;
     if (!coherence_run_sprite_scaled()) ok = 0;
+    if (!coherence_run_uv_edge_clamp()) ok = 0;
     /* After the mip fixtures: it rewrites the depth buffer they start from. */
     if (!coherence_run_stencil_parity()) ok = 0;
     if (!coherence_run_stencil_constant()) ok = 0;

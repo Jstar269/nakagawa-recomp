@@ -21,6 +21,7 @@ layout(location = 0) noperspective in vec2  v_uv;
 layout(location = 1) noperspective in float v_rw;
 layout(location = 2) noperspective in float v_fog;
 layout(location = 3) noperspective in vec4  v_color;
+layout(location = 4) flat in vec4 v_uvbox;   /* edge clamp range (ge_gpu.c uv_edge_axis) */
 
 layout(location = 0) out vec4 o_color;
 
@@ -165,6 +166,11 @@ void main() {
              * within 1/8192 of that lattice, far below the 1/16 weight step. */
             float rw = max(abs(v_rw), 1e-20);
             vec2 uv = v_uv / rw;
+            /* Above 1x a screen-aligned through-mode primitive carries the coordinates its 1x
+             * pixel centres sample (ge_gpu.c, edge clamp): a device sample in an edge pixel's
+             * outer half takes the edge pixel's own coordinate instead of reaching past it. */
+            if (v_uvbox.x <= v_uvbox.z) uv.x = clamp(uv.x, v_uvbox.x, v_uvbox.z);
+            if (v_uvbox.y <= v_uvbox.w) uv.y = clamp(uv.y, v_uvbox.y, v_uvbox.w);
             uv = floor(uv * 4096.0 + vec2(0.5)) / 4096.0;
             if ((flags & 64) != 0) uv = floor(uv) + vec2(0.5);
             else uv = floor((uv - vec2(0.5)) * 16.0) / 16.0 + vec2(0.5);
