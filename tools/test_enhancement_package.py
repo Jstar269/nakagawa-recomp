@@ -2948,6 +2948,16 @@ class TestHoldAndEvenStaticChecks(unittest.TestCase):
             ("no return", [self.NOP] * 300, r"has no jr \$ra in its first 256"),
             ("unreadable", [self.SUB, self.ADD_F0], "cannot be read at 0x00002008"),
             ("no delay slot", [self.SUB, self.ADD_F0, self.JR_RA], "cannot be read at its return's delay slot"),
+            ("ra moved", [self.SUB, self.ADD_F0, 0x27FF0004, self.JR_RA, self.NOP], r"writes \$ra at 0x00002008"),
+            ("ra set", [self.SUB, self.ADD_F0, 0x3C1F0800, self.JR_RA, self.NOP], r"writes \$ra"),
+            ("ra loaded", [self.SUB, self.ADD_F0, 0x8FBF0000, self.JR_RA, self.NOP], r"writes \$ra"),
+            ("sp moved", [self.SUB, 0x27BDFFF0, self.ADD_F0, self.JR_RA, self.NOP], r"writes \$sp"),
+            ("fcsr", [self.SUB, 0x44C0F800, self.ADD_F0, self.JR_RA, self.NOP], "writes an FPU control register"),
+            ("unknown word", [self.SUB, 0x78000000, self.ADD_F0, self.JR_RA, self.NOP], "cannot read"),
+            # beq to the return's delay slot: the slot runs, then execution falls through to the sw.
+            ("branch to the return's slot", [self.SUB, 0x10000003, self.NOP, self.ADD_F0, self.JR_RA, self.NOP,
+                                             0xAC850000, self.JR_RA, self.NOP],
+             "branches from 0x00002004 to 0x00002014, outside the body up to its jr"),
         )
         for name, callee, why in cases:
             with self.subTest(name), self.assertRaisesRegex(EnhancementPackageError, why):
@@ -2958,6 +2968,8 @@ class TestHoldAndEvenStaticChecks(unittest.TestCase):
                          {"kind": "word_even", "word": 0x288300C8, "reg": 4, "rt": 3})
         # Unrelated instructions between the load and the compare are allowed.
         self.assertIn(0x1108, self._even([self.LW_A0, 0x00031080, self.SLTI, self.JR_RA, self.NOP]))
+        # A plain branch's delay slot runs on both paths, so a load there reaches the compare.
+        self.assertIn(0x1108, self._even([0x14400002, self.LW_A0, self.SLTI, self.JR_RA, self.NOP]))
 
     def test_even_counter_refusals(self) -> None:
         cases = (
@@ -2970,6 +2982,13 @@ class TestHoldAndEvenStaticChecks(unittest.TestCase):
             ("unknown word", [self.LW_A0, 0x78000000, self.SLTI, self.JR_RA, self.NOP], "cannot tell whether"),
             ("too far", [self.LW_A0] + [self.NOP] * 16 + [self.SLTI, self.JR_RA, self.NOP],
              "not loaded from memory in the straight-line"),
+            # The callee runs between a call's delay slot and the compare.
+            ("call's slot", [0x0C000C00, self.LW_A0, self.SLTI, self.JR_RA, self.NOP],
+             "loaded at 0x00001104, in the delay slot of 0x0c000c00"),
+            ("jalr's slot", [0x0320F809, self.LW_A0, self.SLTI, self.JR_RA, self.NOP], "in the delay slot of"),
+            # bnel skips its slot on the fall-through path to the compare.
+            ("branch-likely's slot", [0x54400002, self.LW_A0, self.SLTI, self.JR_RA, self.NOP],
+             "in the delay slot of 0x54400002"),
         )
         for name, body, why in cases:
             with self.subTest(name), self.assertRaisesRegex(EnhancementPackageError, why):

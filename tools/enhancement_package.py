@@ -943,7 +943,17 @@ def _leaf_refusal(w: int) -> str | None:
         return "writes memory"
     if op in (0x10, 0x1C):
         return "uses a system instruction"
+    if op == 0x11 and rs == 0x06:
+        return "writes an FPU control register (ctc1)"
     return None
+
+
+def _is_likely_branch(w: int) -> bool:
+    """A branch-likely: its delay slot runs only when the branch is taken."""
+    op, rs, rt = w >> 26, (w >> 21) & 31, (w >> 16) & 31
+    return (op in (0x14, 0x15, 0x16, 0x17)
+            or (op == 0x01 and rt in (0x02, 0x03))
+            or (op in (0x11, 0x12) and rs == 0x08 and rt & 0x02 != 0))  # bc1fl/bc1tl, bvfl/bvtl
 
 
 def _fpr_uses(w: int) -> tuple[frozenset[int], frozenset[int]]:
@@ -1033,7 +1043,7 @@ def _check_hold_callee(site_path: str, site_addr: int, word: int, read_words_fn:
     else:
         fail(site_path, f"{where} has no jr $ra in its first {HOLD_CALLEE_MAX_WORDS} instructions "
                         f"(fail-closed refusal)")
-    last = target + 4 * (len(body) - 1)
+    ret = target + 4 * (len(body) - 2)  # the jr $ra; the word after it is its delay slot
     f12_first: str | None = None
     writes_f0 = False
     for i, w in enumerate(body):
@@ -1042,10 +1052,17 @@ def _check_hold_callee(site_path: str, site_addr: int, word: int, read_words_fn:
         if why is not None:
             fail(site_path, f"{where} {why} at 0x{pc:08x}: a skipped call must drop nothing but its "
                             f"result (fail-closed refusal)")
+        written = _gpr_destination(w)
+        if written in (29, 31, -1):
+            what = {29: "writes $sp", 31: "writes $ra", -1: f"has a word this check cannot read (0x{w:08x})"}
+            fail(site_path, f"{where} {what[written]} at 0x{pc:08x}: a skipped call must leave the "
+                            f"caller's frame and return as the call would (fail-closed refusal)")
         branch = _branch_target(w, pc)
-        if branch is not None and not target <= branch <= last:
+        if branch is not None and not target <= branch <= ret:
+            # A branch to the return's delay slot would run the slot and then fall through
+            # past the body this check reads.
             fail(site_path, f"{where} branches from 0x{pc:08x} to 0x{branch:08x}, outside the body "
-                            f"this check reads (fail-closed refusal)")
+                            f"up to its jr $ra (fail-closed refusal)")
         reads, writes = _fpr_uses(w)
         if f12_first is None and 12 in reads:
             f12_first = "read"
@@ -1072,6 +1089,13 @@ def _check_even_counter(site_path: str, fn_addr: int, site_addr: int, word: int,
         written = _gpr_destination(w)
         if written == rs:
             if (w >> 26) in _LOAD_OPS:
+                prev = _read_word(read_words_fn, pc - 4) if pc > fn_addr else None
+                if prev is not None and (_is_jump(prev) or _is_likely_branch(prev)):
+                    # A call's slot runs before the callee, which may change the counter; a
+                    # branch-likely skips its slot on the path that falls through to the compare.
+                    fail(site_path, f"count_x2_even's counter ${rs} is loaded at 0x{pc:08x}, in the delay "
+                                    f"slot of 0x{prev:08x}: the load does not reach the compare on every "
+                                    f"path (fail-closed refusal)")
                 return
             fail(site_path, f"count_x2_even's counter ${rs} is computed at 0x{pc:08x} (0x{w:08x}), not "
                             f"loaded from memory: the site must compare a stored count (fail-closed refusal)")

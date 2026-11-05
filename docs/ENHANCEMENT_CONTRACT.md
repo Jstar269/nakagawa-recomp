@@ -189,9 +189,9 @@ Each `sites` entry names a symbolic `function`, a 4-byte-aligned `insn_offset`, 
 | --- | --- | --- |
 | `vblank_wait_2_to_1` | `addi`/`addiu`/`slti`/`sltiu`/`ori` with immediate 2 | immediate 2 becomes 1 |
 | `gate_30hz` | `jal`; accumulating `addiu rt, rt, imm`, `addu`/`subu`/`add`/`sub` with the destination as a source, `add.s`/`sub.s` likewise | the statement runs only on even logic updates (§9.5), so every instance runs on the same alternate updates |
-| `gate_30hz_hold` | `jal` | the call runs only on even logic updates, as `gate_30hz`; on a skipped update `f0` takes the value of `f12`. It is for a helper that returns its first float argument advanced by one update (an ease toward a target): a skipped update holds the value, so each 30 Hz value shows for two updates. The resolver refuses the site unless the callee, read from its entry to its `jr $ra` and that delay slot, makes no call, jump or trap, writes no memory, branches only inside that body, reads `f12` before it writes it, and writes `f0`: skipping it then drops nothing but its result. The site's evidence shows the rest: that the result is stored back as the value the call advances, and that nothing reads the helper's other outputs |
+| `gate_30hz_hold` | `jal` | the call runs only on even logic updates, as `gate_30hz`; on a skipped update `f0` takes the value of `f12`. It is for a helper that returns its first float argument advanced by one update (an ease toward a target): a skipped update holds the value, so each 30 Hz value shows for two updates. The resolver refuses the site unless the callee, read from its entry to its `jr $ra` and that delay slot, makes no call, jump or trap, writes no memory, `$ra`, `$sp` or FPU control register, branches only to words up to that `jr $ra`, reads `f12` before it writes it, and writes `f0`: skipping it then drops nothing but its result. The check reads the body in address order, not along each path, and does not look at VFPU registers. The site's evidence shows the rest: that the result is stored back as the value the call advances, and that nothing reads the helper's other outputs |
 | `count_x2` | positive `addi`/`addiu`/`slti`/`sltiu` immediate; `andi` mask $2^n-1$; `lui` of a normal float; `sll`; integer loads; `lwc1`/`swc1`; `sw` (only with `stock_values`, §9.6); `lv.s` (the loaded VFPU register is scaled); single-precision arithmetic and `cvt.s.w`; a unit countdown `addiu rt, rt, -1` | the produced value is doubled (a countdown is gated) |
-| `count_x2_even` | `slti`/`sltiu rt, rs, n` with $0 < n \le$ `0x3FFF` and `rt` neither `$zero` nor `rs` | a bound on a counter of logic updates since an event: true while `rs` $< 2n$ and `rs` is even, so the $n$ events of the stock window still happen, one every second update, at the stock instants (`count_x2` would make $2n$ of them, twice as dense). Under `slti` a negative `rs` stays true, as in stock, so an inactive value such as $-1$ keeps its meaning; under `sltiu` it is a large unsigned value, false in both forms. The resolver refuses the site unless `rs` is loaded from memory (`lb`, `lbu`, `lh`, `lhu` or `lw`) within the 16 instructions before the compare, with no branch, jump or call in between. The site's evidence shows the rest: that the stored count advances by one every update |
+| `count_x2_even` | `slti`/`sltiu rt, rs, n` with $0 < n \le$ `0x3FFF` and `rt` neither `$zero` nor `rs` | a bound on a counter of logic updates since an event: true while `rs` $< 2n$ and `rs` is even, so the $n$ events of the stock window still happen, one every second update, at the stock instants (`count_x2` would make $2n$ of them, twice as dense). Under `slti` a negative `rs` stays true, as in stock, so an inactive value such as $-1$ keeps its meaning; under `sltiu` it is a large unsigned value, false in both forms. The resolver refuses the site unless `rs` is loaded from memory (`lb`, `lbu`, `lh`, `lhu` or `lw`) within the 16 instructions before the compare, with no branch, jump or call in between, and not in the delay slot of a jump, a call or a branch-likely. The check reads backward in address order and does not see a branch from elsewhere into those instructions. The site's evidence shows the rest: that the stored count advances by one every update |
 | `step_x0.5`, `probability_per_update_x0.5` | as `count_x2` except integer loads, plus accumulating `+1`/`-1`/`addu`/`subu` updates | the produced value is halved (exactly, or by gating a unit or register step); `add.s fd, fd, ft` halves the addend `ft` |
 | `decay_k_to_1-sqrt(1-k)` | `lui` of a float $k \in (0, 1)$; `lwc1` or `lv.s` of the factor | $k \to 1 - \sqrt{1-k}$, evaluated as $k / (1 + \sqrt{1-k})$ in double so that a small $k$ does not cancel to 0, and rounded to the upper half; after an `lwc1` or `lv.s` the loaded register is mapped at run time, and a value outside $(0, 1)$ keeps its stock value and is reported once per site (`ENHANCEMENT_FACTOR_KEPT`) |
 | `retention_m_to_sqrt(m)` | `lui` of a float $m \in (0, 1)$; `lwc1` or `lv.s` of the factor | $m \to \sqrt{m}$, rounded to the upper half; after an `lwc1` or `lv.s` as for `decay_k_to_1-sqrt(1-k)` |
@@ -427,7 +427,7 @@ section 11.2 retroactively; a change to it is. A new item is not admitted by ana
 No guest-visible item is admitted by this section alone. Each lands in its own pull request with its entry added here
 (`11.3.<n>`), following the order of section 11.2. This section is the template that entry is checked against.
 
-#### 11.3.1. The 60 FPS logic transforms `count_x2_even` and `gate_30hz_hold`
+#### 11.3.2. The 60 FPS logic transforms `count_x2_even` and `gate_30hz_hold`
 
 Every section 9 transform rewrites guest code, so what the guest computes differs with it on. These two are the
 first section 9 transforms admitted under this section; a later section 9 transform is admitted the same way, with
@@ -437,11 +437,12 @@ its own entry.
   `enhancement_60hz_discs` list (or `--experimental-60hz` for the session), which launches the title's enhanced
   package with `SR_EXPERIMENTAL_60HZ=1`. A transform acts only at the sites the title's package names with it, so
   each title's package is that title's switch for each transform.
-- **Off switch.** Turning the title's 60 FPS game logic off launches the authentic package with
-  `SR_EXPERIMENTAL_60HZ=0`; any value other than `1` runs every stock statement. A package turns one transform off
-  for its title by not naming it: the site keeps its stock instruction, or a package names `count_x2` or
-  `gate_30hz` there instead. There is no run-time switch for one transform alone; the package is the per-title data
-  that section 11.2, item 5 asks for.
+- **Off switch.** The same setting, per title: turning a title's 60 FPS game logic off launches its authentic
+  package with `SR_EXPERIMENTAL_60HZ=0`, and any value other than `1` runs every stock statement. This switch is
+  coarser than section 11.2, item 2 asks: it turns off every section 9 transform of the title's package together,
+  not these two alone, and there is no launch-line key or library setting for them alone. A package leaves either
+  transform out for its title by not naming it (the site keeps its stock instruction, or names `count_x2` or
+  `gate_30hz` instead); that is the per-title data of section 11.2, item 5.
 - **What it changes.** `count_x2_even` doubles a `slti`/`sltiu` bound on a counter of logic updates and reads false
   on a non-negative odd count, so the window's events happen at the stock instants. `gate_30hz_hold` skips a call to
   an ease helper on odd logic updates and gives `f0` the value of `f12`, so each 30 Hz value shows for two updates.
@@ -464,6 +465,11 @@ its own entry.
   `tools/test_enhancement_package.py` builds a fixture with the package and without it, checks that each site's
   toggle-off statement is the Authentic statement byte for byte, runs the same harness on both builds, and checks
   that the toggle-off output equals the Authentic output byte for byte.
+- **Sampled checking.** With `SR_EXPERIMENTAL_60HZ=1`, the in-play verifier
+  ([sampled in-play checking](DEBUGGING.md#sampled-in-play-checking)) compares the enhanced code with the stock
+  reference interpreter, so a sampled call whose body holds any enhancement site, these two included, reports a
+  mismatch there; there is no enhancement skip class. Run it with the toggle off, or read such a mismatch as
+  expected. A skipped `gate_30hz` or `gate_30hz_hold` call never reaches its return boundary, so it starts no check.
 - **"Nothing worse".** The transforms replace `count_x2` and `gate_30hz` where those were wrong, and their tests pin
   that: an event window keeps its stock count and instants, and a held ease keeps its 30 Hz values. The private
   comparison runs of section 11.2, item 4 are recorded in the pull request that turns a title's 60 FPS game logic
