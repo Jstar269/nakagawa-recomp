@@ -227,7 +227,7 @@ def _read_guest_cstr(data: bytes, gmap: _GuestMap, vaddr: int, what: str) -> str
     raise ImportTableError(f"{what}: name at {vaddr:#x} is unterminated within {MAX_LIBNAME_LEN} bytes")
 
 
-def _parse_elf_maps(data: bytes) -> tuple[_GuestMap, int | None, int | None, dict[str, tuple[int, int]]]:
+def _parse_elf_maps(data: bytes) -> tuple[_GuestMap, int | None, int | None, dict[bytes, tuple[int, int]]]:
     """Validate the ELF envelope.
 
     Returns (guest map, module-info vaddr or None, phdr[0].p_paddr or None,
@@ -277,7 +277,7 @@ def _parse_elf_maps(data: bytes) -> tuple[_GuestMap, int | None, int | None, dic
                 gmap.add(p_vaddr, p_filesz, p_offset, len(data), f"program header {i}")
 
     modinfo_vaddr: int | None = None
-    sections: dict[str, tuple[int, int]] = {}
+    sections: dict[bytes, tuple[int, int]] = {}
     if e_shnum:
         if e_shnum > MAX_SECTIONS:
             raise ImportTableError(f"e_shnum {e_shnum} exceeds cap {MAX_SECTIONS}")
@@ -287,8 +287,8 @@ def _parse_elf_maps(data: bytes) -> tuple[_GuestMap, int | None, int | None, dic
             raise ImportTableError(f"e_shstrndx {e_shstrndx} out of range ({e_shnum} sections)")
         shdrs = []
         for i in range(e_shnum):
-            sh = _need(data, e_shoff + i * 40, 40, f"section header {i}")
-            shdrs.append(struct.unpack("<10I", sh))
+            raw_header = _need(data, e_shoff + i * 40, 40, f"section header {i}")
+            shdrs.append(struct.unpack("<10I", raw_header))
         str_type, str_off, str_size = shdrs[e_shstrndx][1], shdrs[e_shstrndx][4], shdrs[e_shstrndx][5]
         if str_type != 3:  # SHT_STRTAB
             raise ImportTableError("shstrtab section is not SHT_STRTAB")
@@ -717,9 +717,12 @@ def _pair_region(
             raise ImportTableError(
                 f"import window {w.library} with {w.count} functions runs past "
                 f"the stub region ({stub_count} slots)")
+        library = w.library
+        if library is None:
+            raise ImportTableError(f"import window with {w.count} functions has no library name")
         for i in range(w.count):
-            claims[first_pos + i] = w.library
-            claimers.setdefault(first_pos + i, []).append(w.library)
+            claims[first_pos + i] = library
+            claimers.setdefault(first_pos + i, []).append(library)
 
     stubs = {stub_base + p * 8: (claims.get(p, UNATTRIBUTED_LIBRARY), nids[p]) for p in range(nid_count)}
     findings = [region.finding] if region.finding else []
@@ -903,6 +906,7 @@ def parse_import_table(data: bytes) -> ImportTable:
             if first_sym + num_funcs * 8 > U32_MAX + 1:
                 raise ImportTableError(f"{what}: stub area {first_sym:#x} wraps the 32-bit space")
             gmap.to_off(first_sym, num_funcs * 8, f"{what} function stub span")
+            assert libname is not None  # read above for any window that imports something
             table.libraries.append(libname)
         windows.append(ImportWindow(libname, num_funcs, nid_data, first_sym))
         pos = next_pos

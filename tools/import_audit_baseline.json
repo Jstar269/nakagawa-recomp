@@ -175,11 +175,10 @@
     "status": "partial"
   },
   "0x0bf0a3ae": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_NetGetLocalEtherAddr",
     "name": "sceNetGetLocalEtherAddr",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x0bf608fb": {
     "classification": "controlled_unsupported",
@@ -655,11 +654,10 @@
     "status": "partial"
   },
   "0x281928a9": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_NetTerm",
     "name": "sceNetTerm",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x289d82fe": {
     "classification": "dedicated",
@@ -1040,11 +1038,10 @@
     "status": "unreviewed"
   },
   "0x39af39a6": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_NetInit",
     "name": "sceNetInit",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x3a20a200": {
     "classification": "controlled_unsupported",
@@ -3630,11 +3627,10 @@
     "status": "unreviewed"
   },
   "0xded9d28e": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_NetAdhocctlGetParameter",
     "name": "sceNetAdhocctlGetParameter",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0xdf089680": {
     "classification": "dedicated",
