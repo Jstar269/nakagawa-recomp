@@ -204,6 +204,12 @@ void main() {
                     if (lod == 0.0) lod = 0.25;
                 }
                 t = textureLod(u_tex, uv / pc.texsize.xy, lod) * 255.0;
+            } else if (v_uvbox.x <= v_uvbox.z || v_uvbox.y <= v_uvbox.w) {
+                /* A clamped primitive (through mode, so rw is 1) takes its footprint from the
+                 * unclamped coordinate: a clamped band has the same minification or
+                 * magnification as the rest of the primitive instead of a zero footprint. */
+                vec2 gdx = duv_dx / (lod_scale * pc.texsize.xy), gdy = duv_dy / (lod_scale * pc.texsize.xy);
+                t = textureGrad(u_tex, uv / pc.texsize.xy, gdx, gdy) * 255.0;
             } else {
                 t = texture(u_tex, uv / pc.texsize.xy) * 255.0;
             }

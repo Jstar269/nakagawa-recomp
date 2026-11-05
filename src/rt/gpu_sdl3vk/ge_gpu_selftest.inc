@@ -1830,7 +1830,13 @@ static int coherence_run_sprite_scaled(void) {
  * - strips (two triangles each) and a sprite, flipped and not, linear with repeat and clamp
  *   wrapping, and nearest with repeat;
  * - a strip whose u also changes with y (as a rotated rectangle's does) keeps every device sample
- *   where it falls: it gets no clamp.
+ *   where it falls: it gets no clamp;
+ * - strips with fractional edges (n + 0.5, a pixel centre on the edge, and n + 0.25 and n + 0.75),
+ *   flipped in v or u, linear and nearest: the range follows the PSP's top-left rule, which covers
+ *   a centre on the left or top edge and not one on the right or bottom edge, so a rule that
+ *   breaks the tie the other way moves the range by a pixel and fails. These are checked over a
+ *   ring one guest pixel wide around them too: device pixels the strip does not cover at this
+ *   scale must keep the cleared target.
  * At 1x no primitive carries a clamp range at all (checked on the vertices hook_sprite writes), so
  * the 1x picture is exactly the one before the clamp existed. */
 typedef struct { int sprite; uint32_t tflt, wrap; float ul, ur, vt, vb, shear; const char *name; } EdgeCell;
@@ -1838,7 +1844,7 @@ typedef struct { int sprite; uint32_t tflt, wrap; float ul, ur, vt, vb, shear; c
 static float coh_edge_texel(int i, int clampwrap) {
     if (clampwrap) i = i < 0 ? 0 : i > 15 ? 15 : i;
     else i &= 15;
-    return i == 0 ? 0.0f : i == 15 ? 255.0f : 128.0f;
+    return i == 0 ? 0.0f : i == 15 ? 255.0f : (float)(16 * i);   /* a ramp between the dark and bright edges */
 }
 
 /* One channel at coordinate c (texels), as psp.frag samples it: rounded to 1/4096, then nearest
@@ -1865,6 +1871,36 @@ static double coh_edge_coord(double c0, double c1, uint32_t n, uint32_t d, uint3
     return c;
 }
 
+typedef struct { float x0, x1, y0, y1; uint32_t tflt; float ul, ur, vt, vb; const char *name; } FracCell;
+
+/* The coordinate at guest position q on an axis from e0 (coordinate c0) to e1 (c1), above 1x
+ * clamped to the coordinates of the first and last pixel centres k + 0.5 the PSP covers there:
+ * e0 <= k + 0.5 < e1, a centre on the first edge covered and one on the last not. The centres
+ * are counted one by one here, independently of the renderer's closed form. */
+static double coh_frac_coord(double e0, double e1, double c0, double c1, double q, uint32_t s) {
+    const double slope = (c1 - c0) / (e1 - e0);
+    double c = c0 + (q - e0) * slope;
+    if (s > 1u) {
+        double first = 0.0, last = -1.0;
+        int any = 0;
+        for (int k = (int)floor(e0) - 1; k <= (int)ceil(e1) + 1; k++) {
+            const double ck = (double)k + 0.5;
+            if (ck >= e0 && ck < e1) {
+                if (!any) first = ck;
+                last = ck;
+                any = 1;
+            }
+        }
+        if (any) {
+            const double a = (double)(float)(c0 + (first - e0) * slope);
+            const double b = (double)(float)(c0 + (last - e0) * slope);
+            const double lo = a < b ? a : b, hi = a < b ? b : a;
+            c = c < lo ? lo : c > hi ? hi : c;
+        }
+    }
+    return c;
+}
+
 static int coherence_run_uv_edge_clamp(void) {
     const char *name = "uv-edge-clamp";
     const uint32_t fba = 0x00160000u, base = 0x04000000u | fba, stride = 512u;
@@ -1884,8 +1920,22 @@ static int coherence_run_uv_edge_clamp(void) {
         { 0, 0x000u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "strip-nearest-repeat" },
         { 1, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "sprite-linear-repeat" },
         { 0, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 3.0f, "strip-sheared-u-free" },
+        /* 64 texels over 12 pixels in u (minified at every scale up to 4), linear minification
+         * and nearest magnification: the clamped bands must keep the linear filter. */
+        { 0, 0x001u, 0x000u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f, "strip-minified-u" },
     };
     const int ncells = (int)(sizeof(cells) / sizeof(cells[0]));
+    /* Strips with fractional edges, 16 texels over 12 pixels, linear unless named nearest. An edge
+     * on n + 0.5 puts a pixel centre exactly on it (the top-left rule's tie); n + 0.25 and n + 0.75
+     * put the first and last covered centres a quarter and three quarters of a pixel inside. */
+    static const FracCell fcells[] = {
+        { 20.5f, 32.5f, 70.5f, 82.5f, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-ties-flipped-v" },
+        { 40.25f, 52.25f, 70.75f, 82.75f, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-quarter-edges" },
+        { 60.75f, 72.75f, 70.25f, 82.25f, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-three-quarter-edges" },
+        { 80.5f, 92.5f, 70.5f, 82.5f, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-ties-nearest" },
+        { 100.5f, 112.5f, 70.5f, 82.5f, 0x101u, 16.0f, 0.0f, 0.0f, 16.0f, "strip-ties-flipped-u" },
+    };
+    const int nfrac = (int)(sizeof(fcells) / sizeof(fcells[0]));
     const int y0 = 40, n = 12;
     RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(COH_SAMPLE_VERTS);
     uint32_t *dl = (uint32_t *)SR_HOST(COH_SAMPLE_LIST);
@@ -1936,6 +1986,19 @@ static int coherence_run_uv_edge_clamp(void) {
             DL_EMIT(0x04, (4u << 16) | 4u);
         }
     }
+    DL_EMIT(0xC7, 0);   /* the fractional cells: repeat wrapping */
+    for (int c = 0; c < nfrac; c++) {
+        const FracCell *f = &fcells[c];
+        uint32_t first = COH_SAMPLE_VERTS + (uint32_t)nv * (uint32_t)sizeof(RawSpriteVtx);
+        DL_EMIT(0xC6, f->tflt);
+        DL_EMIT(0xCB, 0);
+        vtx[nv++] = (RawSpriteVtx){ f->ul, f->vb, f->x0, f->y1, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ f->ur, f->vb, f->x1, f->y1, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ f->ul, f->vt, f->x0, f->y0, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ f->ur, f->vt, f->x1, f->y0, 0.0f };
+        DL_EMIT(0x01, first & 0x00FFFFFFu);
+        DL_EMIT(0x04, (4u << 16) | 4u);
+    }
     DL_EMIT(0xC6, 0);
     DL_EMIT(0xC7, 0);
     DL_EMIT(0x0F, 0);
@@ -1983,6 +2046,45 @@ static int coherence_run_uv_edge_clamp(void) {
         }
         bad += cell_bad;
     }
+    /* The fractional cells, over their box and one guest pixel around it: a device pixel the strip
+     * covers at this scale shows the model, any other the cleared target. A device pixel centre
+     * exactly on an edge at this scale is skipped: which side covers it is the device rasteriser's
+     * own tie rule, not the PSP's. */
+    for (int c = 0; ok && c < nfrac; c++) {
+        const FracCell *f = &fcells[c];
+        const int nearest = f->tflt == 0u;
+        int cell_bad = 0;
+        const int gx0 = (int)floor(f->x0) - 1, gx1 = (int)ceil(f->x1) + 1;
+        const int gy0 = (int)floor(f->y0) - 1, gy1 = (int)ceil(f->y1) + 1;
+        for (uint32_t Y = (uint32_t)gy0 * s; Y < (uint32_t)gy1 * s; Y++) {
+            const double py = ((double)Y + 0.5) / (double)s;
+            if (py == f->y0 || py == f->y1) continue;
+            for (uint32_t X = (uint32_t)gx0 * s; X < (uint32_t)gx1 * s; X++) {
+                const double qx = ((double)X + 0.5) / (double)s;
+                if (qx == f->x0 || qx == f->x1) continue;
+                const uint32_t got = dev[(size_t)Y * SCL_W + X];
+                const int covered = qx >= f->x0 && qx < f->x1 && py >= f->y0 && py < f->y1;
+                float wr = 0.0f, wg = 0.0f;
+                int fail;
+                if (covered) {
+                    const double u = coh_frac_coord(f->x0, f->x1, f->ul, f->ur, qx, s);
+                    const double v = coh_frac_coord(f->y0, f->y1, f->vt, f->vb, py, s);
+                    wr = coh_edge_sample(v, nearest, 0);
+                    wg = coh_edge_sample(u, nearest, 0);
+                    fail = fabsf((float)(got & 0xFFu) - wr) > 2.0f ||
+                           fabsf((float)((got >> 8) & 0xFFu) - wg) > 2.0f;
+                } else {
+                    fail = got != 0u;
+                }
+                if (fail && cell_bad++ < 4)
+                    fprintf(stderr, "gpu coherence selftest [%s/%s]: scale=%u device pixel (%u,%u) "
+                            "(guest %.3f,%.3f) %s r=%u g=%u, want %s %.2f %.2f\n", name, f->name, s, X, Y,
+                            qx, py, covered ? "covered" : "outside", got & 0xFFu, (got >> 8) & 0xFFu,
+                            covered ? "" : "the cleared target, not", wr, wg);
+            }
+        }
+        bad += cell_bad;
+    }
     /* At 1x a primitive carries no clamp range; above 1x a through-mode textured sprite does. */
     if (ok) {
         s_ge->tex_enable = 1;
@@ -2006,7 +2108,7 @@ static int coherence_run_uv_edge_clamp(void) {
     }
     free(dev);
     coherence_reset_targets();
-    if (ok) printf("gpu coherence selftest: PASS %-22s %d cells scale=%u\n", name, ncells, s);
+    if (ok) printf("gpu coherence selftest: PASS %-22s %d cells scale=%u\n", name, ncells + nfrac, s);
     return ok;
 }
 

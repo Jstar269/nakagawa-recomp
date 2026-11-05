@@ -701,10 +701,10 @@ asset-index-selftest:
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
 # The scaled-upload case (#1296), the per-fragment mip level case (#1373), the readback-rows
-# case (#323, also on its SR_GPU_READBACK_FULL reference path), the undrawn-rows case and the
-# sprite-scaled case and the uv-edge-clamp case run again alone
-# at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
-# cmd.exe does not take one.
+# case (#323, also on its SR_GPU_READBACK_FULL reference path) and the undrawn-rows case run
+# again alone at render scales 2 and 4; the sprite-scaled and uv-edge-clamp cases (#2110) run
+# alone at scales 2, 3 and 4. Each is selected by arguments: a VAR=value prefix needs a POSIX
+# shell, and cmd.exe does not take one.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
