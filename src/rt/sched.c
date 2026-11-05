@@ -92,9 +92,10 @@ atomic_int_least32_t sr_preempt_due = 0;
 
 /* Guest time a scheduler boundary charges in the deterministic clock: TIMESLICE yield points at
  * 10 million yield points per second of PSP time. A yield point is a function entry or a loop
- * back-edge, roughly every 20 Allegrex cycles on a 333 MHz core, so this is the right order, and
- * what matters to a run is that it is a fixed number: a guest that does more work sees more time
- * pass, and one that does the same work sees the same time, whatever the host did. */
+ * back-edge, roughly every 33 Allegrex cycles on a 333 MHz core. That is an estimate, not a
+ * measurement. What matters to a run is that it is a fixed number: a guest that does more work
+ * sees more time pass, and one that does the same work sees the same time, whatever the host
+ * did. It decides guest results, so a picture-gate reference records it. */
 #define SCHED_DET_SLICE_US_DEFAULT 100u
 #define TIMESLICE 1000           /* yields per thread run before preemption (smaller = more frequent vblank delivery, fixes UMD-init spin) */
 #define MAXTHREADS 128

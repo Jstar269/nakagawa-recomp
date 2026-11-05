@@ -10640,6 +10640,48 @@ static void test_audio_calls_read_the_guest_queue_under_the_deterministic_clock(
     reset_fixture();
 }
 
+/* The SRC output pushes its converted frames into the guest-time model, and the PSMF player reads
+ * the lead from it, under the deterministic clock (#2037). The host stub reports 100000 frames
+ * throughout: the guest must see the frames the SRC output pushed, not the host's backlog.
+ *
+ * MUTANT: delete audio_vq_pushed in the resampling branch of audio_src_output -- the model
+ *   stays empty and the first model check fails.
+ * MUTANT: psmf_av_queue_frames returns sr_audio_queued(ch) (extern int sr_audio_queued(int ch);
+ *   in the function) -- it reports the host's 100000 and the second check fails. */
+static void test_src_push_and_psmf_lead_read_the_guest_queue_under_the_deterministic_clock(void) {
+    extern int hle_audio_queued(int ch);
+    extern int psmf_av_queue_frames(int ch);
+    enum { SRC_BUF = 0x08a00000u, SRC_SLOT = 8 };
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    s_det_clock = 1;
+    s_vtime_us = 1000u;
+    s_audio_queue_result = 100000;
+    /* 48000 Hz: a 44100 Hz SRC output is a plain audio_output and is covered above; only a
+     * converted rate takes the resampler path that pushes into the model itself. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 48000u, 2u) == 0u,
+           "the SRC channel reserves 1024 samples at 48000 Hz");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, SRC_BUF, 0u) == 0x400u,
+           "the SRC output returns the reserved sample count");
+    expect(s_audio_push_calls == 1u && s_audio_push_frames > 0,
+           "the SRC output pushed converted frames to the host mixer");
+    expect(hle_audio_queued(SRC_SLOT) == s_audio_push_frames,
+           "the guest-time model holds exactly the frames the SRC output pushed, not the host's 100000");
+    expect(psmf_av_queue_frames(SRC_SLOT) == s_audio_push_frames,
+           "the PSMF audio lead is the model's, not the host's 100000");
+    s_vtime_us += 100000u;   /* 100 ms of guest time plays everything the SRC pushed */
+    expect(psmf_av_queue_frames(SRC_SLOT) == 0,
+           "and the lead is empty once the guest time has played it");
+    s_det_clock = 0;
+    s_audio_queue_result = 0;
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    reset_fixture();
+}
+
 /* Media telemetry truthfulness on the production audio hand-off.
  *
  * audio_output_calls / audio_output_frames used to be raised only inside the SDL3 host
@@ -46902,6 +46944,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_audio_output_telemetry_counts_guest_frames();
     test_audio_queue_drains_in_guest_time_under_the_deterministic_clock();
     test_audio_calls_read_the_guest_queue_under_the_deterministic_clock();
+    test_src_push_and_psmf_lead_read_the_guest_queue_under_the_deterministic_clock();
     test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_pulse_never_synthesises_start_in_a_real_window();
     test_ctrl_read_buffer_contract();

@@ -215,6 +215,26 @@ starts and then exits nonzero or times out is a `FAIL` (exit 1); `NOT_RUN` is fo
 not start or published no frame. `check --accept` captures at least twice and stores the frame
 only when the runs agree. `display-smoke --work-dir` clears only a folder it made.
 
+The gate sets `SR_DETERMINISTIC_CLOCK=1` and `SR_FPS_CAP=0` for every run
+([#2037](https://github.com/Jstar269/nakagawa-recomp/issues/2037)), whatever the route's `env` or
+the shell says. The deterministic clock makes guest time a function of the guest's work instead of
+the host's speed, and `SR_FPS_CAP=0` publishes every present of the window. A route can set
+`SR_DETERMINISTIC_SLICE_US` (default 100): the slice decides guest results, so `accept` records it
+in the reference's `.json` sidecar and a `FAIL` against a reference taken with another slice says
+`slice-differs`. A reference accepted before this change was taken under paced timing and has no
+`slice_us` in its sidecar: re-accept it with `check --accept`. Outside the gate, a pad script or
+a capture window does not turn the clock on; those runs keep their paced timing.
+
+The gate sets `SR_DETERMINISTIC_CLOCK=1` and `SR_FPS_CAP=0` for every run
+([#2037](https://github.com/Jstar269/nakagawa-recomp/issues/2037)), whatever the route's `env` or
+the shell says. The deterministic clock makes guest time a function of the guest's work instead of
+the host's speed, and `SR_FPS_CAP=0` publishes every present of the window. A route can set
+`SR_DETERMINISTIC_SLICE_US` (default 100): the slice decides guest results, so `accept` records it
+in the reference's `.json` sidecar and a `FAIL` against a reference taken with another slice says
+`slice-differs`. A reference accepted before this change was taken under paced timing and has no
+`slice_us` in its sidecar: re-accept it with `check --accept`. Only a pad script or a capture
+window does not turn the clock on for other runs; they keep their paced timing.
+
 ## Local presented-frame acceptance
 
 For a locally authorized title run using an already prepared library entry, the

@@ -1341,7 +1341,9 @@ static void test_deterministic_clock_charges_the_work_not_the_host(void) {
  * clock to its deadline at the runner's first yield, as turbo does, but by the runner's work.
  *
  * MUTANT: take the turbo jump to the nearest sleeper's deadline in sr_yield under the
- *   deterministic clock too -- the runner's 40 slices end at 50 ms, not at 40 slices' worth. */
+ *   deterministic clock too -- the sleeper is woken by the jump, so "the sleeper is in its 50 ms
+ *   delay before the measured yields" fails. (The span checks alone do not kill it: the jump
+ *   happens in the warm-up yields, before the measurement starts.) */
 enum { DJ_ROOT = 0x09360000u, DJ_SLEEPER = 0x09360100u, DJ_YIELDS = 40 };
 static uint64_t g_dj_vtime_at_end;
 static int g_dj_sleeper_asleep;
