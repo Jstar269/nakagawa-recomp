@@ -115,7 +115,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
           cache: pip
           cache-dependency-path: |
             .pre-commit-config.yaml
@@ -124,12 +124,12 @@ jobs:
       - name: Install pre-commit
         shell: bash
         run: |
-          # Exact CPython 3.15.1 / Ubuntu 26.04 x86_64 bootstrap closure. PyYAML
+          # Exact CPython 3.15.2 / Ubuntu 26.04 x86_64 bootstrap closure. PyYAML
           # As of 2026-10-23, PyYAML 6.0.3 has no cp315 wheel, so build its
           # hashed sdist with pinned tools.
           cat > "$RUNNER_TEMP/pre-commit-build-requirements.txt" <<'LOCK'
-          Cython==3.3.0 \
-              --hash=sha256:9b24b5c8cd536946b62086fcafee6d5509d3f549f72d553d2336af87ffbe0da1
+          Cython==3.3.1 \
+              --hash=sha256:fcb6c86dddaedd1da5d77ba2469c1a4bea52442e02d8f0653ff78667fbaaa8d9
           setuptools==84.2.1 \
               --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
           packaging==26.3 \
@@ -144,24 +144,24 @@ jobs:
               --hash=sha256:a8dc6b26ad22ff227d2634a65cb388215ce6cc96bbcc5cfde7641ae87e8dacc0
           distlib==0.4.4 \
               --hash=sha256:cf09d55b1e85a89576b036aeb71550bfd68320f3f21761ca329eadadad918638
-          filelock==4.2.4 \
-              --hash=sha256:301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e
+          filelock==4.2.9 \
+              --hash=sha256:a379c50a729e5b68c8519a4d26489f755d9769960a236ecd838190e2a78db2e9
           identify==2.6.20 \
               --hash=sha256:6a16b69b93187244e0548cbfd25b3e4a6f9a7a2ad784625c3bec2b8d27b81aaa
-          nodeenv==1.11.0 \
-              --hash=sha256:edaa16e6c14d7cf395d75d4bbd5a26390f4dc06501a33b4e76282b02cc688a25
+          nodeenv==1.12.0 \
+              --hash=sha256:80644d65c10cc2be12e3e4b54b3367ff288c7ad24ae75c2dcc65454fc7449d4d
           packaging==26.3 \
               --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
-          platformdirs==4.13.5 \
-              --hash=sha256:53d3ec4280b815c1e0b02edad7f9ee8fda1ba9c0865dd9c2e6e63849ce82fc1e
-          pre-commit==4.6.2 \
-              --hash=sha256:e2dde9a75d3bce11bd3831c26d134df00a2803c1d818be6a0383c3dcda25dc4e
+          platformdirs==4.14.5 \
+              --hash=sha256:8e778c6fa421516f4d3369449f8df3b0e1b72c0e0005fe88e3ec772d0a14e750
+          pre-commit==4.7.0 \
+              --hash=sha256:2e229038ad3656081b70c27913157e4b636ef306f643f024a8a8e3f0f7b2f877
           PyYAML==6.0.3 \
               --hash=sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f
-          python-discovery==1.6.4 \
-              --hash=sha256:530179cc51a1816d512b15635b3dc931295ae12efb183783ad31190a5d425d2b
-          virtualenv==21.14.11 \
-              --hash=sha256:b319f8590a84e5de5f8f2c803ecd2237e9bc0ffa7c1e875e3169c107cecb7454
+          python-discovery==1.9.4 \
+              --hash=sha256:b468f365040b40f4cb39918b0766d3e5a2f340968e07df752fbc96f1bb4641ab
+          virtualenv==21.15.5 \
+              --hash=sha256:bcf98c32139cf3df7f0cc2c8c48ca150645c20e66f8c4fe6c1e5e40bcae73947
           LOCK
           python -m pip install --disable-pip-version-check --no-build-isolation --no-binary=PyYAML --require-hashes -r "$RUNNER_TEMP/pre-commit-requirements.txt"
 
@@ -223,7 +223,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26.12.1"
+          node-version: "26.13.0"
 
       - name: Lint repository Markdown
         run: npx --yes markdownlint-cli2@0.24.0
@@ -251,7 +251,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
 
       # #293/#294: represent the release-export candidate path in hosted CI.
       # One invocation runs the publication gates, generates the public-safe
@@ -442,7 +442,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
           cache: pip
           cache-dependency-path: |
             pyproject.toml
@@ -462,10 +462,10 @@ jobs:
         shell: bash
         run: |
           cat > "$RUNNER_TEMP/mypy-requirements.txt" <<'LOCK'
-          mypy==2.1.0 --hash=sha256:a663814603a5c563fb87a4f96fb473eeb30d1f5a4885afcf44f9db000a366289
+          mypy==2.4.1 --hash=sha256:a2d4a51db92059eecc2c33b2a5194b28585ebfd917292c015fe87a77dbff6cd2
           ast-serialize==0.13.1 --hash=sha256:121e1d08d58b75c15491cc3003609cbad71ac2b0016043c36d30a6b2032b6605
           librt==0.16.0 --hash=sha256:e56aaf8c167548dc8e5d6f3bd0f48dcdd299a23c73be3f744aab79d99e9c7f5d
-          mypy-extensions==1.1.0 --hash=sha256:1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505
+          mypy-extensions==1.2.0 --hash=sha256:993e7a20aa5671eb41a7132cf555af30062da99729601601b9a8382b11cae768
           pathspec==1.1.1 --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189
           typing-extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
           LOCK
@@ -578,7 +578,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
 
       # The runner's Ubuntu mirror is sometimes very slow rather than stalled (2026-10-23: 43.6 kB/s,
       # 39 minutes for 103 MB; then one package per ~7 minutes), so timeouts alone do not help. The
@@ -1328,7 +1328,7 @@ jobs:
 
   windows_runtime:
     name: Windows runtime compile gate
-    runs-on: windows-2022
+    runs-on: windows-2025
     # Runs alongside the Linux gates rather than after them: it is the longest job
     # (~6.5 min), and waiting for python_tools/native_tools put ~2.5 min on every
     # PR's critical path. A Linux failure still fails ci_required; the Windows run
@@ -1375,11 +1375,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Windows CPython 3.15.1
+      - name: Set up Windows CPython 3.15.2
         id: windows-cpython
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
           architecture: x64
 
       - name: Set up MSYS2 UCRT64
@@ -1403,16 +1403,16 @@ jobs:
             mingw-w64-ucrt-x86_64-vulkan-loader
 
       # MSYS2 still ships Python 3.14.8. Repository tools and Make recipes use
-      # the separately installed Windows CPython 3.15.1 through PYTHON; the
+      # the separately installed Windows CPython 3.15.2 through PYTHON; the
       # UCRT64 compiler and libraries remain first on PATH.
-      - name: Pin the Windows Python toolchain (CPython 3.15.1)
+      - name: Pin the Windows Python toolchain (CPython 3.15.2)
         shell: pwsh
         env:
           PYTHON_EXE: ${{ steps.windows-cpython.outputs.python-path }}
         run: |
           $version = & $env:PYTHON_EXE -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
-          if ($LASTEXITCODE -ne 0 -or $version -ne "3.15.1") {
-            throw "Expected Windows CPython 3.15.1, got '$version'"
+          if ($LASTEXITCODE -ne 0 -or $version -ne "3.15.2") {
+            throw "Expected Windows CPython 3.15.2, got '$version'"
           }
           $pythonPath = $env:PYTHON_EXE.Replace('\', '/')
           $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
@@ -1540,7 +1540,7 @@ jobs:
       - name: Build and run full production pipeline smoke
         if: matrix.part == 'smoke'
         shell: msys2 {0}
-        # The ordinary compile target invokes the repository's PowerShell 7.4
+        # The ordinary compile target invokes the repository's PowerShell
         # asset-copy script after linking. Keep the broader Windows PATH scoped
         # to this step so MSYS2 can resolve the runner's `pwsh` without changing
         # tool selection in the other UCRT64 compile gates.
@@ -1927,7 +1927,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
 
       - name: Run compact import/publication smoke
         # Publication audit is part of the always-present hygiene job; this

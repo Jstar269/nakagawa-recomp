@@ -130,15 +130,15 @@
     "tools/tree_lint.py": 5,
     "tools/ttf2pgf.py": 3,
     "tools/validate_assets.py": 1,
-    "tools/vblank_ledger.py": 3,
+    "tools/vblank_ledger.py": 2,
     "tools/verify_key_scrub.py": 1,
     "tools/verify_sbom.py": 7,
     "tools/verify_vfpu_provenance.py": 2,
     "tools/vfpu_fuzz_gen.py": 1
   },
-  "mypy_version": "2.1.0",
+  "mypy_version": "2.4.1",
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 359
+  "total_errors": 358
 }
