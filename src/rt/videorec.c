@@ -24,8 +24,10 @@
 #else
 #include <signal.h>
 #include <spawn.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 extern char **environ;
 #endif
@@ -36,6 +38,12 @@ enum { VR_UNREAD = 0, VR_OFF, VR_ON, VR_DONE };
 
 #define VR_RING_FRAMES (1u << 20) /* about 23.8 s of mixed audio ahead of the flush point */
 #define VR_PERIOD_US 16683u       /* one VBLANK period, rounded; only used to spot late VBLANKs */
+/* Free space on the drive holding SR_VIDEOREC_DIR: a recording does not start with less than
+ * VR_MIN_FREE_START, and stops (FAIL) when it falls under VR_MIN_FREE_RUN, checked every
+ * VR_FREE_CHECK_FRAMES frames. A lossless 4K recording takes gigabytes a minute. */
+#define VR_MIN_FREE_START ((uint64_t)4u << 30)
+#define VR_MIN_FREE_RUN ((uint64_t)1u << 30)
+#define VR_FREE_CHECK_FRAMES 60u
 
 typedef struct {
 #ifdef _WIN32
@@ -51,8 +59,9 @@ typedef struct {
 static int s_state = VR_UNREAD;
 static char s_dir[900];
 static char s_codec[32];
-static char s_encoder_note[160];
 static char s_ffmpeg[1024];
+static char s_run_end[96];
+static uint64_t s_enc_write_us; /* host time spent handing frames to the encoder */
 
 /* Two packed BGRX pictures: the one last written (s_out) and the newest presented one, which a
  * present writes into the other buffer so a gap frame can still repeat the written picture. */
@@ -116,6 +125,126 @@ static void vr_path(char *out, size_t outsz, const char *name) {
     snprintf(out, outsz, "%s/%s", s_dir, name);
 }
 
+/* The same file as an FFmpeg "file:" URL, so a folder that starts with '-' or contains "proto:"
+ * is never read as an option or a protocol. */
+static void vr_url(char *out, size_t outsz, const char *name) {
+    snprintf(out, outsz, "file:%s/%s", s_dir, name);
+}
+
+static uint64_t vr_now_us(void) {
+#ifdef _WIN32
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER c;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&c);
+    uint64_t f = (uint64_t)freq.QuadPart, t = (uint64_t)c.QuadPart;
+    return t / f * 1000000u + t % f * 1000000u / f;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+#endif
+}
+
+#ifdef SR_VIDEOREC_SELFTEST
+static int s_test_free_set;
+static uint64_t s_test_free;
+static int s_test_audio_write_fails;
+#endif
+
+/* Free bytes on the drive holding s_dir. Returns 0 when it cannot be read. */
+static int vr_free_bytes(uint64_t *out) {
+#ifdef SR_VIDEOREC_SELFTEST
+    if (s_test_free_set) {
+        *out = s_test_free;
+        return 1;
+    }
+#endif
+#ifdef _WIN32
+    ULARGE_INTEGER avail;
+    if (!GetDiskFreeSpaceExA(s_dir, &avail, NULL, NULL)) return 0;
+    *out = (uint64_t)avail.QuadPart;
+#else
+    struct statvfs v;
+    if (statvfs(s_dir, &v) != 0) return 0;
+    *out = (uint64_t)v.f_bavail * (uint64_t)v.f_frsize;
+#endif
+    return 1;
+}
+
+/* A JSON string, escaped. */
+static int vr_json_str(FILE *f, const char *s) {
+    if (fputc('"', f) == EOF) return 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        int r;
+        if (*p == '"' || *p == '\\') r = fprintf(f, "\\%c", *p);
+        else if (*p < 0x20) r = fprintf(f, "\\u%04x", *p);
+        else r = fputc(*p, f) == EOF ? -1 : 1;
+        if (r < 0) return 0;
+    }
+    return fputc('"', f) != EOF;
+}
+
+/* Replace record.json with what `fill` writes, through record.json.tmp, so a reader never sees a
+ * half-written summary. Returns 0 and says so on stderr when it could not be written. */
+static int vr_replace_record(int (*fill)(FILE *, const void *), const void *ctx) {
+    char tmp[1024], p[1024];
+    vr_path(tmp, sizeof tmp, "record.json.tmp");
+    vr_path(p, sizeof p, "record.json");
+    FILE *j = fopen(tmp, "w");
+    int ok = j != NULL && fill(j, ctx);
+    if (j && (ferror(j) | fclose(j))) ok = 0;
+#ifdef _WIN32
+    if (ok && !MoveFileExA(tmp, p, MOVEFILE_REPLACE_EXISTING)) ok = 0;
+#else
+    if (ok && rename(tmp, p) != 0) ok = 0;
+#endif
+    if (!ok) {
+        remove(tmp);
+        fprintf(stderr, "VIDEOREC: FAIL record.json could not be written in SR_VIDEOREC_DIR\n");
+        fflush(stderr);
+    }
+    return ok;
+}
+
+typedef struct {
+    const char *status;
+    const char *reason;
+} VrShortRecord;
+
+static int vr_fill_short(FILE *j, const void *ctx) {
+    const VrShortRecord *r = (const VrShortRecord *)ctx;
+    return fprintf(j, "{\n  \"schema\": 2,\n  \"status\": \"%s\",\n  \"reason\": ", r->status) >= 0 &&
+           vr_json_str(j, r->reason) && fprintf(j, "\n}\n") >= 0;
+}
+
+static int vr_write_short_record(const char *status, const char *reason) {
+    VrShortRecord r = { status, reason };
+    return vr_replace_record(vr_fill_short, &r);
+}
+
+/* Remove what an earlier run left in s_dir, so nothing there can pass for this run's output.
+ * Returns 0 when a file is there and cannot be removed. */
+static int vr_clear_outputs(void) {
+    static const char *const names[] = { "record.json", "record.json.tmp", "recording.mkv",
+                                         "video.mkv", "video.bgr0", "audio.wav", "frames.csv",
+                                         "logic.srt", NULL };
+    for (int i = 0; names[i]; i++) {
+        char p[1024];
+        vr_path(p, sizeof p, names[i]);
+        struct stat st;
+        if (stat(p, &st) == 0 && remove(p) != 0) return 0;
+    }
+    return 1;
+}
+
+/* A recording that cannot start: say why on stderr and in record.json, record nothing. */
+static void vr_refuse(const char *why) {
+    fprintf(stderr, "VIDEOREC: not recording: %s\n", why);
+    fflush(stderr);
+    (void)vr_write_short_record("REFUSED", why);
+}
+
 /* ---- FFmpeg ---------------------------------------------------------------------------- */
 
 #ifdef _WIN32
@@ -139,13 +268,23 @@ static int vr_is_absolute(const char *p) { return p[0] == '/'; }
 /* FFmpeg from SR_VIDEOREC_FFMPEG (an absolute path) or the first absolute PATH entry that holds
  * it. Relative PATH entries, the working directory and the runtime's own folder are never
  * searched, so a file dropped beside a game cannot stand in for the encoder. */
-static int vr_find_ffmpeg(char *out, size_t outsz) {
+static int vr_find_ffmpeg(char *out, size_t outsz, char *why, size_t whysz) {
     const char *forced = getenv("SR_VIDEOREC_FFMPEG");
     if (forced && forced[0]) {
-        if (!vr_is_absolute(forced) || !vr_file_exists(forced)) return 0;
+        if (!vr_is_absolute(forced)) {
+            snprintf(why, whysz, "SR_VIDEOREC_FFMPEG '%s' is not an absolute path", forced);
+            return 0;
+        }
+        if (!vr_file_exists(forced) || strlen(forced) >= outsz) {
+            snprintf(why, whysz, "SR_VIDEOREC_FFMPEG '%s' is not an executable file", forced);
+            return 0;
+        }
         snprintf(out, outsz, "%s", forced);
         return 1;
     }
+    snprintf(why, whysz, "%s is not in any absolute PATH entry; install FFmpeg, set "
+                         "SR_VIDEOREC_FFMPEG to its absolute path, or set SR_VIDEOREC_CODEC=raw",
+             VR_EXE_NAME);
     const char *path = getenv("PATH");
     if (!path) return 0;
     const char *p = path;
@@ -162,7 +301,10 @@ static int vr_find_ffmpeg(char *out, size_t outsz) {
             }
             if (vr_is_absolute(dir)) {
                 int w = snprintf(out, outsz, "%s/%s", dir, VR_EXE_NAME);
-                if (w > 0 && (size_t)w < outsz && vr_file_exists(out)) return 1;
+                if (w > 0 && (size_t)w < outsz && vr_file_exists(out)) {
+                    why[0] = '\0';
+                    return 1;
+                }
                 out[0] = 0;
             }
         }
@@ -215,8 +357,15 @@ static int vr_proc_start(VrProc *p, const char *exe, const char *const *argv, in
     HANDLE rd = NULL, wr = NULL;
     if (with_stdin) {
         SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
-        /* A 64 MiB pipe lets the encoder lag by a frame or two without stalling the runtime. */
-        if (!CreatePipe(&rd, &wr, &sa, 64u << 20)) return 0;
+        /* The pipe holds about two frames (1 to 64 MiB): the encoder may lag by a frame without
+         * the writer waiting, and one that falls further behind makes the writes wait, which
+         * encoder_write_ms counts. On the deterministic clock that wait costs wall-clock time only.
+         * A larger pipe would only hide a slow encoder until it filled. */
+        uint64_t two_frames = (uint64_t)s_w * s_h * 4u * 2u;
+        DWORD pipe_bytes = two_frames < (1u << 20)    ? (DWORD)(1u << 20)
+                           : two_frames > (64u << 20) ? (DWORD)(64u << 20)
+                                                      : (DWORD)two_frames;
+        if (!CreatePipe(&rd, &wr, &sa, pipe_bytes)) return 0;
         SetHandleInformation(wr, HANDLE_FLAG_INHERIT, 0);
     }
     STARTUPINFOW si;
@@ -353,7 +502,7 @@ static int vr_codec_args(const char *codec, const char **out, int max) {
 static int vr_start_encoder(void) {
     char size[32], video[1024];
     snprintf(size, sizeof size, "%ux%u", (unsigned)s_w, (unsigned)s_h);
-    vr_path(video, sizeof video, "video.mkv");
+    vr_url(video, sizeof video, "video.mkv");
     const char *argv[48];
     int n = 0;
     argv[n++] = "ffmpeg";
@@ -414,7 +563,6 @@ static int vr_make_dir(const char *dir) {
 
 static int vr_open_files(void) {
     char p[1024];
-    if (!vr_make_dir(s_dir)) return 0;
     vr_path(p, sizeof p, "audio.wav");
     s_wav = fopen(p, "wb");
     vr_path(p, sizeof p, "frames.csv");
@@ -425,33 +573,75 @@ static int vr_open_files(void) {
     uint8_t h[44];
     vr_wav_header(h, 0);
     if (fwrite(h, 1, sizeof h, s_wav) != sizeof h) return 0;
-    fputs("frame,vcount,guest_us,kind,guest_flips\n", s_csv);
+    if (fputs("frame,vcount,guest_us,kind,guest_flips\n", s_csv) < 0) return 0;
     s_ring = (int32_t *)calloc((size_t)VR_RING_FRAMES * 2u, sizeof *s_ring);
     return s_ring != NULL;
 }
 
-static int vr_begin(const char *dir, const char *codec) {
+/* Start a recording into dir, or refuse with the reason in record.json and on stderr.
+ * need_det_clock: the runtime records only on the deterministic clock (videorec.h). */
+static int vr_begin(const char *dir, const char *codec, int need_det_clock) {
     if (!dir || !dir[0] || strlen(dir) >= sizeof s_dir - 32) {
-        fprintf(stderr, "VIDEOREC: SR_VIDEOREC_DIR is empty or too long; not recording\n");
+        fprintf(stderr, "VIDEOREC: not recording: SR_VIDEOREC_DIR is empty or too long\n");
         return 0;
     }
     snprintf(s_dir, sizeof s_dir, "%s", dir);
+    if (!vr_make_dir(s_dir)) {
+        fprintf(stderr, "VIDEOREC: not recording: SR_VIDEOREC_DIR cannot be created\n");
+        return 0;
+    }
+    if (!vr_clear_outputs()) {
+        fprintf(stderr, "VIDEOREC: not recording: an earlier run's files in SR_VIDEOREC_DIR "
+                        "cannot be removed\n");
+        return 0;
+    }
+    char why[1200];
+    if (need_det_clock) {
+        const char *det = getenv("SR_DETERMINISTIC_CLOCK");
+        if (!det || strcmp(det, "1") != 0) {
+            vr_refuse("SR_VIDEOREC_DIR needs SR_DETERMINISTIC_CLOCK=1. On the paced clock the "
+                      "frame readback, copy and encoder writes hold the guest thread, so the "
+                      "guest would skip VBLANKs a run without the recording keeps");
+            return 0;
+        }
+    }
     snprintf(s_codec, sizeof s_codec, "%s", codec && codec[0] ? codec : "ffv1");
     const char *probe[24];
     if (strcmp(s_codec, "raw") != 0 && vr_codec_args(s_codec, probe, 24) < 0) {
-        fprintf(stderr, "VIDEOREC: SR_VIDEOREC_CODEC '%s' is not ffv1, x264rgb, nvenc or raw; "
-                        "not recording\n", s_codec);
+        snprintf(why, sizeof why, "SR_VIDEOREC_CODEC '%s' is not ffv1, x264rgb, nvenc or raw",
+                 s_codec);
+        vr_refuse(why);
         return 0;
     }
-    if (strcmp(s_codec, "raw") != 0 && !vr_find_ffmpeg(s_ffmpeg, sizeof s_ffmpeg)) {
-        snprintf(s_encoder_note, sizeof s_encoder_note,
-                 "FFmpeg not found on PATH; raw frames written instead of %s", s_codec);
-        fprintf(stderr, "VIDEOREC: %s\n", s_encoder_note);
-        snprintf(s_codec, sizeof s_codec, "raw");
+    char ffwhy[1100];
+    if (strcmp(s_codec, "raw") != 0 && !vr_find_ffmpeg(s_ffmpeg, sizeof s_ffmpeg, ffwhy, sizeof ffwhy)) {
+        snprintf(why, sizeof why, "encoder %s needs FFmpeg: %s", s_codec, ffwhy);
+        vr_refuse(why);
+        return 0;
+    }
+    uint64_t free_bytes = 0;
+    if (!vr_free_bytes(&free_bytes)) {
+        vr_refuse("the free space on SR_VIDEOREC_DIR's drive cannot be read");
+        return 0;
+    }
+    if (free_bytes < VR_MIN_FREE_START) {
+        snprintf(why, sizeof why, "SR_VIDEOREC_DIR's drive has %llu MiB free; a recording needs "
+                                  "at least %llu MiB",
+                 (unsigned long long)(free_bytes >> 20),
+                 (unsigned long long)(VR_MIN_FREE_START >> 20));
+        vr_refuse(why);
+        return 0;
+    }
+    /* Until the finish rewrites it, the summary says the recording is not finished. */
+    if (!vr_write_short_record("INCOMPLETE", "the run ended before the recording was finished")) {
+        fprintf(stderr, "VIDEOREC: not recording: record.json cannot be written\n");
+        return 0;
     }
     if (!vr_open_files()) {
-        fprintf(stderr, "VIDEOREC: cannot create the recording files in SR_VIDEOREC_DIR; "
-                        "not recording\n");
+        FILE **open_files[] = { &s_wav, &s_csv, &s_srt };
+        for (size_t i = 0; i < sizeof open_files / sizeof open_files[0]; i++)
+            if (*open_files[i]) { fclose(*open_files[i]); *open_files[i] = NULL; }
+        vr_refuse("the recording files cannot be created in SR_VIDEOREC_DIR");
         return 0;
     }
     fprintf(stderr, "VIDEOREC: recording every VBLANK at 60000/1001 fps, audio 44100 Hz, "
@@ -467,7 +657,7 @@ static void vr_init_once(void) {
     s_state = VR_OFF;
     const char *dir = getenv("SR_VIDEOREC_DIR");
     if (!dir || !dir[0]) return;
-    if (!vr_begin(dir, getenv("SR_VIDEOREC_CODEC"))) return;
+    if (!vr_begin(dir, getenv("SR_VIDEOREC_CODEC"), 1)) return;
     const char *start = getenv("SR_VIDEOREC_START");
     unsigned long sv = start && start[0] ? strtoul(start, NULL, 10) : 0ul;
     s_start_vcount = sv > 0xFFFFFFFFul ? 0xFFFFFFFFu : (uint32_t)sv;
@@ -569,9 +759,30 @@ static void vr_srt_cue(uint64_t from, uint64_t to) {
     vr_srt_time(a, sizeof a, from);
     vr_srt_time(b, sizeof b, to);
     double fps = (double)s_block_flips * 60000.0 / (1001.0 * (double)(to - from));
-    fprintf(s_srt, "%u\n%s --> %s\ngame %.1f fps (%llu frames)\n\n", ++s_srt_cues, a, b, fps,
-            (unsigned long long)s_block_flips);
+    if (fprintf(s_srt, "%u\n%s --> %s\ngame %.1f fps (%llu frames)\n\n", ++s_srt_cues, a, b, fps,
+                (unsigned long long)s_block_flips) < 0)
+        vr_fail("logic.srt write failed");
     s_block_flips = 0;
+}
+
+/* Stop writing video after a failure that makes more of it pointless (the disk filling up). */
+static void vr_stop_video(void) {
+    if (s_enc.running) (void)vr_proc_finish(&s_enc);
+    if (s_raw) {
+        fclose(s_raw);
+        s_raw = NULL;
+    }
+}
+
+static void vr_check_free_space(void) {
+    uint64_t free_bytes = 0;
+    if (!vr_free_bytes(&free_bytes)) {
+        vr_fail("the free space on SR_VIDEOREC_DIR's drive could not be read; recording stopped");
+        vr_stop_video();
+    } else if (free_bytes < VR_MIN_FREE_RUN) {
+        vr_fail("SR_VIDEOREC_DIR's drive has under 1 GiB free; recording stopped");
+        vr_stop_video();
+    }
 }
 
 void sr_videorec_guest_flip(void) {
@@ -583,7 +794,10 @@ static void vr_write_frame(uint32_t vcount, uint64_t guest_us, const char *kind)
     size_t bytes = (size_t)s_w * s_h * 4u;
     const uint8_t *px = s_buf[s_out];
     if (s_enc.running) {
-        if (!vr_proc_write(&s_enc, px, bytes)) {
+        uint64_t t0 = vr_now_us();
+        int ok = vr_proc_write(&s_enc, px, bytes);
+        s_enc_write_us += vr_now_us() - t0;
+        if (!ok) {
             vr_fail("the encoder stopped taking frames");
             (void)vr_proc_finish(&s_enc);
         }
@@ -595,12 +809,14 @@ static void vr_write_frame(uint32_t vcount, uint64_t guest_us, const char *kind)
         flips = s_flips_pending;
         s_flips_pending = 0;
     }
-    fprintf(s_csv, "%llu,%u,%llu,%s,%llu\n", (unsigned long long)s_frames, vcount,
-            (unsigned long long)guest_us, kind, (unsigned long long)flips);
+    if (fprintf(s_csv, "%llu,%u,%llu,%s,%llu\n", (unsigned long long)s_frames, vcount,
+                (unsigned long long)guest_us, kind, (unsigned long long)flips) < 0)
+        vr_fail("frames.csv write failed");
     s_guest_flips += flips;
     s_block_flips += flips;
     s_frames++;
     if (s_frames % 60u == 0u) vr_srt_cue(s_frames - 60u, s_frames);
+    if (s_frames % VR_FREE_CHECK_FRAMES == 0u) vr_check_free_space();
 }
 
 /* Finalise mixed samples [s_flushed, upto) into the WAV file. */
@@ -621,9 +837,14 @@ static void vr_flush_audio(uint64_t upto) {
         }
         uint8_t le[2048 * 4];
         for (size_t i = 0; i < n * 2u; i++) vr_put_le16(le + i * 2u, (uint16_t)buf[i]);
-        if (s_wav && fwrite(le, 1, n * 4u, s_wav) != n * 4u) vr_fail("audio write failed");
+        /* Only samples that reached audio.wav count: the finish compares that count with the
+         * video's length, so a failed write shows there. */
+        size_t written = s_wav ? fwrite(le, 4u, n, s_wav) : 0u;
+#ifdef SR_VIDEOREC_SELFTEST
+        if (s_test_audio_write_fails) written = 0;
+#endif
         s_flushed += n;
-        s_audio_samples += n;
+        s_audio_samples += written;
     }
 }
 
@@ -657,7 +878,7 @@ void sr_videorec_vblank(uint32_t vcount, uint64_t guest_us) {
         return;
     }
     if (vcount == s_last_vcount) return;  /* already written for this VBLANK */
-    /* VCOUNT steps no tick serviced (the host fell behind) keep their place on the timeline. */
+    /* VCOUNT steps no tick was serviced for keep their place on the timeline as gap frames. */
     uint32_t steps = vcount - s_last_vcount;
     for (uint32_t i = 1; i < steps; i++) {
         s_k++;
@@ -717,12 +938,11 @@ void sr_videorec_audio(int ch, const int16_t *lr, int nframes, int volL, int vol
 /* ---- finish ---------------------------------------------------------------------------- */
 
 static int vr_mux(void) {
-    char video[1024], audio[1024], out[1024];
-    vr_path(video, sizeof video, "video.mkv");
-    vr_path(audio, sizeof audio, "audio.wav");
-    vr_path(out, sizeof out, "recording.mkv");
-    char srt[1024];
-    vr_path(srt, sizeof srt, "logic.srt");
+    char video[1024], audio[1024], out[1024], srt[1024];
+    vr_url(video, sizeof video, "video.mkv");
+    vr_url(audio, sizeof audio, "audio.wav");
+    vr_url(out, sizeof out, "recording.mkv");
+    vr_url(srt, sizeof srt, "logic.srt");
     /* The logic-rate subtitles go in as a track that is off by default. */
     const char *argv[] = { "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                            "-i", video, "-i", audio, "-i", srt,
@@ -734,9 +954,62 @@ static int vr_mux(void) {
     return vr_proc_finish(&p);
 }
 
-int sr_videorec_finish(void) {
+typedef struct {
+    int enc_status, mux_status;
+    uint64_t end;
+} VrFinal;
+
+static int vr_fill_full(FILE *j, const void *ctx) {
+    const VrFinal *f = (const VrFinal *)ctx;
+    return fprintf(j, "{\n  \"schema\": 2,\n  \"status\": \"%s\",\n  \"reason\": ",
+                   s_failed ? "FAIL" : "PASS") >= 0 &&
+           vr_json_str(j, s_failed ? s_fail_why : "") &&
+           fprintf(j, ",\n  \"run_end\": ") >= 0 && vr_json_str(j, s_run_end) &&
+           fprintf(j,
+                   ",\n  \"clock\": \"deterministic\",\n"
+                   "  \"encoder\": \"%s\",\n"
+                   "  \"video\": \"%s\",\n  \"muxed\": %s,\n"
+                   "  \"width\": %u,\n  \"height\": %u,\n"
+                   "  \"fps_num\": %u,\n  \"fps_den\": %u,\n  \"first_vcount\": %u,\n"
+                   "  \"frames\": %llu,\n  \"new_frames\": %llu,\n  \"repeat_frames\": %llu,\n"
+                   "  \"guest_flips\": %llu,\n"
+                   "  \"gap_frames\": %llu,\n  \"late_vblanks\": %llu,\n  \"refused_frames\": %llu,\n"
+                   "  \"readback_failures\": %llu,\n"
+                   "  \"audio_rate\": %u,\n  \"audio_samples\": %llu,\n"
+                   "  \"audio_samples_expected\": %llu,\n  \"audio_before_start\": %llu,\n"
+                   "  \"audio_trimmed_at_end\": %llu,\n  \"audio_overflow\": %llu,\n"
+                   "  \"audio_clipped\": %llu,\n  \"audio_max_channel_lead\": %llu,\n"
+                   "  \"encoder_write_ms\": %llu,\n"
+                   "  \"encoder_exit\": %d,\n  \"mux_exit\": %d\n}\n",
+                   s_codec, strcmp(s_codec, "raw") == 0 ? "video.bgr0" : "video.mkv",
+                   /* raw has no mux step: null, so no PASS ever says muxed: false */
+                   strcmp(s_codec, "raw") == 0 ? "null" : f->mux_status == 0 ? "true" : "false",
+                   s_w, s_h, SR_VIDEOREC_FPS_NUM,
+                   SR_VIDEOREC_FPS_DEN, s_vcount0, (unsigned long long)s_frames,
+                   (unsigned long long)s_new_frames, (unsigned long long)s_repeat_frames,
+                   (unsigned long long)s_guest_flips,
+                   (unsigned long long)s_gap_frames, (unsigned long long)s_late_vblanks,
+                   (unsigned long long)s_refused_frames, (unsigned long long)s_resolve_failures,
+                   SR_VIDEOREC_AUDIO_RATE, (unsigned long long)s_audio_samples,
+                   (unsigned long long)f->end, (unsigned long long)s_audio_before_start,
+                   (unsigned long long)s_audio_trimmed, (unsigned long long)s_audio_overflow,
+                   (unsigned long long)s_audio_clipped, (unsigned long long)s_max_lead,
+                   (unsigned long long)(s_enc_write_us / 1000u), f->enc_status,
+                   f->mux_status) >= 0;
+}
+
+static void vr_close_checked(FILE **f, const char *why) {
+    if (!*f) return;
+    if (ferror(*f) | fclose(*f)) vr_fail(why);
+    *f = NULL;
+}
+
+int sr_videorec_finish(void) { return sr_videorec_finish_at("the process exited"); }
+
+int sr_videorec_finish_at(const char *run_end) {
     if (s_state != VR_ON) return s_state == VR_DONE ? !s_failed : 0;
     s_state = VR_DONE;
+    snprintf(s_run_end, sizeof s_run_end, "%s", run_end ? run_end : "");
     uint64_t end = s_started ? sr_videorec_frame_sample(s_frames) : 0u;
     vr_flush_audio(end);
     for (int c = 0; c < SR_VIDEOREC_CHANNELS; c++)
@@ -746,80 +1019,42 @@ int sr_videorec_finish(void) {
         vr_wav_header(h, s_audio_samples);
         if (fseek(s_wav, 0, SEEK_SET) != 0 || fwrite(h, 1, sizeof h, s_wav) != sizeof h)
             vr_fail("audio header write failed");
-        if (fclose(s_wav) != 0) vr_fail("audio close failed");
-        s_wav = NULL;
+        vr_close_checked(&s_wav, "audio.wav could not be closed");
     }
-    if (s_csv) { fclose(s_csv); s_csv = NULL; }
+    vr_close_checked(&s_csv, "frames.csv could not be written");
     if (s_srt) {
         if (s_frames % 60u) vr_srt_cue(s_frames - s_frames % 60u, s_frames);
-        fclose(s_srt);
-        s_srt = NULL;
+        vr_close_checked(&s_srt, "logic.srt could not be written");
     }
-    if (s_raw) {
-        if (fclose(s_raw) != 0) vr_fail("raw video close failed");
-        s_raw = NULL;
-    }
-    int enc_status = -2, mux_status = -2;
+    vr_close_checked(&s_raw, "video.bgr0 could not be written");
+    VrFinal fin = { -2, -2, end };
     if (s_enc.running) {
-        enc_status = vr_proc_finish(&s_enc);
-        if (enc_status != 0) vr_fail("the encoder exited with an error");
-        else if (s_frames) mux_status = vr_mux();
-        if (mux_status > 0 || mux_status == -1) vr_fail("muxing audio and video failed");
+        fin.enc_status = vr_proc_finish(&s_enc);
+        if (fin.enc_status != 0) vr_fail("the encoder exited with an error");
+        else if (s_frames) fin.mux_status = vr_mux();
     }
+    /* An encoded recording passes only once FFmpeg muxed it and exited 0: any other exit,
+     * including a Windows exception code (negative as an int), is a failure. */
+    if (strcmp(s_codec, "raw") != 0 && s_started && fin.mux_status != 0)
+        vr_fail(fin.mux_status == -2 ? "the recording was not muxed"
+                                     : "muxing audio and video failed");
     if (!s_started) vr_fail("no frame was presented while recording");
     if (s_refused_frames) vr_fail("frames of another size were presented");
     if (s_audio_overflow) vr_fail("audio ran more than 23 s ahead of the picture");
-    if (s_started && s_audio_samples != end) vr_fail("audio length differs from the video's");
+    if (s_started && s_audio_samples != end) vr_fail("audio.wav is shorter than the video");
 
-    char p[1024];
-    vr_path(p, sizeof p, "record.json");
-    FILE *j = fopen(p, "w");
-    if (j) {
-        fprintf(j,
-                "{\n  \"schema\": 1,\n  \"status\": \"%s\",\n  \"reason\": \"%s\",\n"
-                "  \"encoder\": \"%s\",\n  \"encoder_note\": \"%s\",\n"
-                "  \"video\": \"%s\",\n  \"muxed\": %s,\n"
-                "  \"width\": %u,\n  \"height\": %u,\n"
-                "  \"fps_num\": %u,\n  \"fps_den\": %u,\n  \"first_vcount\": %u,\n"
-                "  \"frames\": %llu,\n  \"new_frames\": %llu,\n  \"repeat_frames\": %llu,\n"
-                "  \"guest_flips\": %llu,\n"
-                "  \"gap_frames\": %llu,\n  \"late_vblanks\": %llu,\n  \"refused_frames\": %llu,\n"
-                "  \"readback_failures\": %llu,\n"
-                "  \"audio_rate\": %u,\n  \"audio_samples\": %llu,\n"
-                "  \"audio_samples_expected\": %llu,\n  \"audio_before_start\": %llu,\n"
-                "  \"audio_trimmed_at_end\": %llu,\n  \"audio_overflow\": %llu,\n"
-                "  \"audio_clipped\": %llu,\n  \"audio_max_channel_lead\": %llu,\n"
-                "  \"encoder_exit\": %d,\n  \"mux_exit\": %d\n}\n",
-                s_failed ? "FAIL" : "PASS", s_failed ? s_fail_why : "", s_codec, s_encoder_note,
-                strcmp(s_codec, "raw") == 0 ? "video.bgr0" : "video.mkv",
-                mux_status == 0 ? "true" : "false", s_w, s_h, SR_VIDEOREC_FPS_NUM,
-                SR_VIDEOREC_FPS_DEN, s_vcount0, (unsigned long long)s_frames,
-                (unsigned long long)s_new_frames, (unsigned long long)s_repeat_frames,
-                (unsigned long long)s_guest_flips,
-                (unsigned long long)s_gap_frames, (unsigned long long)s_late_vblanks,
-                (unsigned long long)s_refused_frames, (unsigned long long)s_resolve_failures,
-                SR_VIDEOREC_AUDIO_RATE, (unsigned long long)s_audio_samples,
-                (unsigned long long)end, (unsigned long long)s_audio_before_start,
-                (unsigned long long)s_audio_trimmed, (unsigned long long)s_audio_overflow,
-                (unsigned long long)s_audio_clipped, (unsigned long long)s_max_lead,
-                enc_status, mux_status);
-        fclose(j);
-    }
+    int written = vr_replace_record(vr_fill_full, &fin);
     fprintf(stderr,
             "VIDEOREC: %s frames=%llu new=%llu repeat=%llu gap=%llu late_vblanks=%llu "
-            "audio_samples=%llu encoder=%s%s%s\n",
-            s_failed ? "FAIL" : "PASS", (unsigned long long)s_frames,
+            "audio_samples=%llu encoder=%s encoder_write_ms=%llu run_end=\"%s\"%s%s\n",
+            s_failed || !written ? "FAIL" : "PASS", (unsigned long long)s_frames,
             (unsigned long long)s_new_frames, (unsigned long long)s_repeat_frames,
             (unsigned long long)s_gap_frames, (unsigned long long)s_late_vblanks,
-            (unsigned long long)s_audio_samples, s_codec, s_failed ? " reason=" : "",
-            s_failed ? s_fail_why : "");
-    if (s_gap_frames || s_late_vblanks)
-        fprintf(stderr, "VIDEOREC: the host fell behind guest time on %llu VBLANKs; those frames "
-                        "repeat the previous picture (a deterministic guest clock removes this, "
-                        "#2037)\n",
-                (unsigned long long)(s_gap_frames + s_late_vblanks));
+            (unsigned long long)s_audio_samples, s_codec,
+            (unsigned long long)(s_enc_write_us / 1000u), s_run_end,
+            s_failed ? " reason=" : "", s_failed ? s_fail_why : "");
     fflush(stderr);
-    return !s_failed;
+    return !s_failed && written;
 }
 
 #ifdef SR_VIDEOREC_SELFTEST
@@ -830,11 +1065,23 @@ int sr_videorec_test_start(const char *dir, const char *codec) {
 int sr_videorec_test_start_at(const char *dir, const char *codec, uint32_t start_vcount) {
     sr_videorec_test_reset();
     s_state = VR_OFF;
-    if (!vr_begin(dir, codec)) return 0;
+    if (!vr_begin(dir, codec, 0)) return 0;
     s_start_vcount = start_vcount;
     s_state = VR_ON;
     return 1;
 }
+
+int sr_videorec_test_start_from_env(void) {
+    sr_videorec_test_reset();
+    return sr_videorec_active();
+}
+
+void sr_videorec_test_set_free_bytes(uint64_t bytes) {
+    s_test_free_set = 1;
+    s_test_free = bytes;
+}
+
+void sr_videorec_test_fail_audio_writes(int on) { s_test_audio_write_fails = on; }
 
 void sr_videorec_test_stats(SrVideoRecStats *out) {
     memset(out, 0, sizeof *out);
@@ -866,7 +1113,12 @@ void sr_videorec_test_reset(void) {
     s_out = 0;
     free(s_ring);
     s_state = VR_UNREAD;
-    s_dir[0] = s_codec[0] = s_encoder_note[0] = s_ffmpeg[0] = s_fail_why[0] = '\0';
+    s_dir[0] = s_codec[0] = s_ffmpeg[0] = s_fail_why[0] = s_run_end[0] = '\0';
+    s_enc_write_us = 0;
+    /* The selftest does not depend on the host disk: plenty of space unless a test says not. */
+    s_test_free_set = 1;
+    s_test_free = (uint64_t)1u << 40;
+    s_test_audio_write_fails = 0;
     s_cur = NULL;
     s_ring = NULL;
     s_wav = s_csv = s_raw = s_srt = NULL;

@@ -82,13 +82,18 @@ display-smoke:
 # display-smoke-run is the aggregate source-owned gate: it runs the guest-only
 # scheduler route and the --sched --gui route through the explicit no-window
 # presenter, then records and compares GE/present events from the same guest, and records a
-# video of it (videorec, #1273) to prove a recording leaves the guest unchanged.
+# video of it (videorec, #1273) to prove a recording leaves the guest unchanged. The recording
+# goes through the videorec selftest acting as FFmpeg, which stalls every frame write, and runs
+# on the deterministic clock, which recording requires.
 display-smoke-run: display-smoke
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR)
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui --offscreen
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) vramdump --build-dir $(DISPLAY_SMOKE_DIR)
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) flight --build-dir $(DISPLAY_SMOKE_DIR)
-	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) videorec --build-dir $(DISPLAY_SMOKE_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -DSR_VIDEOREC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		-o $(DISPLAY_SMOKE_DIR)/videorec_fake_ffmpeg.exe tests/native/videorec_selftest.c src/rt/videorec.c
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) videorec --build-dir $(DISPLAY_SMOKE_DIR) \
+		--fake-ffmpeg $(DISPLAY_SMOKE_DIR)/videorec_fake_ffmpeg.exe
 
 # display-smoke-picture-gate runs the picture gate (#1845) headless: no reference gives SKIP, a run
 # accepted as the reference then matches at 0.00%, and a one-pixel change to it is reported.

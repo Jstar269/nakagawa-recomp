@@ -4,7 +4,13 @@
 // videorec.h - video recording of a run: every VBLANK's presented picture plus the game's own
 // mixed audio, on one guest timeline (#1273, capture keys).
 //
-// Off unless SR_VIDEOREC_DIR names a folder. Then:
+// Off unless SR_VIDEOREC_DIR names a folder, and then only on the deterministic clock
+// (SR_DETERMINISTIC_CLOCK=1): without it the recorder refuses, says why on stderr and in
+// record.json, and records nothing. Recording does cost the guest thread host time (the GPU
+// readback, a frame copy, and writes to the encoder that block when it falls behind). On the
+// paced clock that host time would make the guest skip VBLANKs; on the deterministic clock guest
+// time follows the guest's own work, so the guest timeline is the same with or without the
+// recording, only slower in wall-clock time. Then:
 //   - the presenter hands the recorder each frame it shows, at its output resolution
 //     (sr_videorec_frame, or sr_videorec_frame_pending for a GPU readback still in flight);
 //   - every serviced VBLANK writes one video frame: the newest presented picture, or the
@@ -12,13 +18,18 @@
 //   - every sceAudioOutput* hand-off is mixed into one stereo 44100 Hz track at the guest time
 //     it was made, each channel continuing where its last buffer ended, as the PSP plays it.
 // Frame k of the video and audio sample k * 44100 * 1001 / 60000 are the same guest instant, so
-// the two cannot drift apart however fast or slow the host runs. The recorder is host-side
-// only: it writes no guest memory and changes no guest-visible state or timing.
+// the two cannot drift apart however fast or slow the host runs. The recorder writes no guest
+// memory.
 //
 // Files in SR_VIDEOREC_DIR: video.mkv (FFV1 through FFmpeg, see SR_VIDEOREC_CODEC) or
-// video.bgr0 (raw frames, when FFmpeg is not used), audio.wav, frames.csv (one row per
-// video frame), logic.srt (the game's frame rate per second), record.json (the summary) and,
-// when FFmpeg muxed them, recording.mkv. The picture carries no host readout or overlay.
+// video.bgr0 (SR_VIDEOREC_CODEC=raw), audio.wav, frames.csv (one row per video frame),
+// logic.srt (the game's frame rate per second), record.json (the summary) and, when FFmpeg
+// muxed them, recording.mkv. The picture carries no host readout or overlay. A start removes
+// what an earlier run left in the folder and writes record.json as INCOMPLETE; only the finish
+// replaces it with PASS or FAIL, so a run that ended without one never shows PASS. A named
+// encoder that cannot run (no FFmpeg, a bad SR_VIDEOREC_FFMPEG or codec) refuses the
+// recording; it never falls back to raw frames. Under 4 GiB free on the folder's drive refuses
+// it, and under 1 GiB during the run stops it as FAIL.
 #ifndef SR_VIDEOREC_H
 #define SR_VIDEOREC_H
 
@@ -72,8 +83,11 @@ void sr_videorec_audio(int ch, const int16_t *lr, int nframes, int volL, int vol
                        uint64_t guest_us);
 
 /* Close the files and the encoder, mux, and write record.json. Safe to call more than once;
- * also registered with atexit. Returns 1 when the recording is complete and consistent. */
+ * also registered with atexit. Returns 1 when the recording is complete and consistent.
+ * sr_videorec_finish_at names how the run ended (record.json "run_end"): every route that
+ * leaves with _Exit calls it, since _Exit skips atexit. */
 int sr_videorec_finish(void);
+int sr_videorec_finish_at(const char *run_end);
 
 /* Audio sample index of video frame k: floor(k * 44100 * 1001 / 60000). */
 uint64_t sr_videorec_frame_sample(uint64_t k);
@@ -91,6 +105,11 @@ typedef struct {
 } SrVideoRecStats;
 void sr_videorec_test_stats(SrVideoRecStats *out);
 void sr_videorec_test_reset(void);
+/* Start from the environment, as the runtime does (SR_VIDEOREC_DIR, SR_DETERMINISTIC_CLOCK...). */
+int sr_videorec_test_start_from_env(void);
+/* The free space the recorder sees (the reset sets 1 TiB), and failing audio.wav writes. */
+void sr_videorec_test_set_free_bytes(uint64_t bytes);
+void sr_videorec_test_fail_audio_writes(int on);
 #endif
 
 #endif /* SR_VIDEOREC_H */

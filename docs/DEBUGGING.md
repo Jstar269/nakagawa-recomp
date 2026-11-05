@@ -1465,8 +1465,8 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | `SR_FBDUMP=N` | At vcount=N publish the presented frame as `present_source.ppm` and exit; status 0 only if a capture was truly published, else 1 |
 | `SR_VRAMDUMP=V[,V...]` | Capture the raw 2 MiB guest VRAM image and GE metadata at up to eight unique presented vblanks; pair with `SR_VRAMDUMP_DIR` |
 | `SR_VRAMDUMP_DIR=PATH` | Existing directory for `vram_<vblank>.bin` and `.json` capture files |
-| `SR_VIDEOREC_DIR=PATH` | Record the run: one video frame per VBLANK at the presenter's output size plus the game's mixed audio, on one guest timeline ([Recording a video of a run](#recording-a-video-of-a-run)) |
-| `SR_VIDEOREC_CODEC=ffv1\|x264rgb\|nvenc\|raw` | Encoder for a recording (default `ffv1`, lossless); `raw` writes unencoded frames and needs no FFmpeg |
+| `SR_VIDEOREC_DIR=PATH` | Record the run: one video frame per VBLANK at the presenter's output size plus the game's mixed audio, on one guest timeline. Needs `SR_DETERMINISTIC_CLOCK=1`; without it the recording is refused ([Recording a video of a run](#recording-a-video-of-a-run)) |
+| `SR_VIDEOREC_CODEC=ffv1\|x264rgb\|nvenc\|raw` | Encoder for a recording (default `ffv1`, lossless); `raw` writes unencoded frames and needs no FFmpeg. An encoder that cannot run refuses the recording; it never falls back to `raw` |
 | `SR_VIDEOREC_SIZE=WxH` | Output size of a recording, independent of the window (even numbers); default: the window's size at the first recorded present |
 | `SR_VIDEOREC_START=V` | Start the recording at VBLANK V (its first presented picture from there on); earlier pictures and sound are not recorded |
 | `SR_VIDEOREC_FFMPEG=PATH` | Absolute path of the FFmpeg a recording uses; default: the first absolute `PATH` entry that holds it |
@@ -2190,7 +2190,8 @@ player and game behave as they do for everyone ([#314](https://github.com/Jstar2
 - **Run one native self-test the way CI does.** `mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime CC=gcc
   hle-thread-selftest` (likewise `psmf-media-selftest`). Each prints a `<name>: N checks, M failures` summary; there is
   no per-test filter, so run the whole target.
-- **Record a video.** `SR_VIDEOREC_DIR=<private folder>` plus `SR_VIDEOREC_SIZE=3840x2160`, a route
+- **Record a video.** `SR_VIDEOREC_DIR=<private folder>` plus `SR_DETERMINISTIC_CLOCK=1`,
+  `SR_VIDEOREC_SIZE=3840x2160`, a route
   (`SR_PADSCRIPT`) and `SR_EXIT_AT_VBLANK`; `record.json` says `PASS` and `recording.mkv` holds picture
   and sound ([Recording a video of a run](#recording-a-video-of-a-run)).
 - **Capture frames unattended.** Set `SR_NOINPUT=1` so the automatic START pulse does not reach the game, bound the run
@@ -2205,9 +2206,16 @@ did not flip, so the video has a constant 60000/1001 frames per second. Every `s
 hand-off is mixed into one 44100 Hz stereo track at the guest time it was made, each channel
 continuing where its last buffer ended, as the PSP plays it. Frame *k* and audio sample
 `k * 44100 * 1001 / 60000` are the same guest instant, so picture and sound cannot drift apart. The
-recorder is host-side only: it writes no guest memory and changes no guest-visible state or timing
-(`display-smoke-run` records the display fixture and compares its guest flight events with an
-unrecorded run).
+recorder writes no guest memory.
+
+A recording needs `SR_DETERMINISTIC_CLOCK=1`. Reading the picture back, copying it and writing it to
+the encoder take host time on the thread that runs the guest. On the default paced clock that time
+would make the guest skip VBLANKs that a run without the recording keeps, so the recorder refuses to
+start there and says why. On the deterministic clock guest time charges the guest's own work, not
+the host's, so the guest timeline is the same with and without the recording; a slow encoder makes
+the run take longer in host time instead. `display-smoke-run` proves this: it records the display
+fixture through an encoder that stalls every frame write and compares the guest's flight events,
+including the VBLANK count at each `sceDisplaySetFrameBuf`, with an unrecorded run.
 
 On the Vulkan presenter the recorded picture is the one the window shows (Ace Mode's smooth motion
 included), scaled with the window's own scaling mode into a fixed-size target. It is a clean capture:
@@ -2224,22 +2232,32 @@ The folder receives `video.mkv` (FFV1, piped to FFmpeg's standard input), `audio
 (one row per frame: VBLANK, guest time, whether it is a `new` picture, a `repeat` or a `gap`, and its
 guest flips), `logic.srt`, `record.json` (the summary, `PASS` or `FAIL` with the reason) and
 `recording.mkv`: picture, sound and the frame-rate subtitles (a track that is off by default) muxed
-without re-encoding. Without FFmpeg, or with `SR_VIDEOREC_CODEC=raw`, the frames go to `video.bgr0`
-(raw BGRX, size and rate in `record.json`).
+without re-encoding. With `SR_VIDEOREC_CODEC=raw` the frames go to `video.bgr0` instead (raw BGRX,
+size and rate in `record.json`, no mux, `"muxed": null`).
+
+`record.json` is written when the recording starts, as `INCOMPLETE`, and replaced only when the
+recording is finished: on a normal exit, at `SR_EXIT_AT_VBLANK`, and on the fatal stops (the watchdog,
+the `SR_FBDUMP` exit, an unregistered NID or unsupported import, a route check, a guest fault and the
+others), with `run_end` naming the one that ended the run. A crash leaves `INCOMPLETE`, never `PASS`.
+A start first removes the recorder's files a previous run left in the folder. An encoded recording is
+`PASS` only when the encoder and the mux both exited 0, so `PASS` always comes with `"muxed": true`.
+A recording that cannot start is `REFUSED` with the reason: no deterministic clock, a codec it does
+not know, an FFmpeg that is not an absolute path to an executable file, no FFmpeg on `PATH` for an
+encoded codec, or less than 4 GiB free in the folder. Under 1 GiB free during the run the recorder
+stops writing video and the recording is `FAIL`; so is any write that fails.
 
 FFmpeg is the user's own local tool: Nakagawa never ships, downloads or bundles it. The recorder
 starts the FFmpeg it finds in an absolute `PATH` entry, or the one `SR_VIDEOREC_FFMPEG` names, without
 a shell, and only when `SR_VIDEOREC_DIR` is set.
 
-Guest time still follows the host clock in the default paced mode, so a host that cannot keep up
-with the encoder makes the guest skip VBLANKs. At 3840x2160 none of the three encoders keeps up with
-60 frames a second on its own: on one desktop (RTX 3080), offline, FFV1 encoded 49.6, `nvenc` 48.2
-and `x264rgb` 43.3 frames a second. `nvenc` takes its load off the CPU, which the game needs; all
-three are RGB-lossless (`nvenc` encodes 4:4:4 RGB, `-pix_fmt gbrp`). The recorder writes those as `gap` frames in their place, counts them with `late_vblanks`
-in `record.json` and prints `VIDEOREC: the host fell behind`, so such a recording is never mistaken
-for a clean one. Pair it with `SR_PADSCRIPT` to record the same route in Authentic and Enhanced or
-Ace Mode, with `SR_VIDEOREC_START` to skip the boot, and with `SR_EXIT_AT_VBLANK`, which finishes the
-recording before it exits. A recording of a
+At 3840x2160 none of the three encoders keeps up with 60 frames a second on its own: on one desktop
+(RTX 3080), offline, FFV1 encoded 49.6, `nvenc` 48.2 and `x264rgb` 43.3 frames a second. On the
+deterministic clock that only makes a 4K recording run slower than real time; `encoder_write_ms` in
+`record.json` is the host time spent waiting on the encoder. `nvenc` takes its load off the CPU; all
+three are RGB-lossless (`nvenc` encodes 4:4:4 RGB, `-pix_fmt gbrp`). A VBLANK the recorder was not
+called for is written as a `gap` frame in its place and counted in `record.json`. Pair a recording
+with `SR_PADSCRIPT` to record the same route in Authentic and Enhanced or Ace Mode, with
+`SR_VIDEOREC_START` to skip the boot, and with `SR_EXIT_AT_VBLANK` to end it. A recording of a
 retail title is private: keep it out of the repository and every upload.
 
 ## Troubleshooting

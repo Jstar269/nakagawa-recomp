@@ -225,6 +225,7 @@ static void hle_guest_fault(CpuState *s, const char *name, uint32_t addr, int st
     if (sr_sched_on) {
         sr_trace_close();
         sr_compat_report();
+        (void)sr_videorec_finish_at("a guest fault stopped the run");
         sr_perf_shutdown();
         SR_VERIFY_REPORT_NOW();
         fflush(stderr);

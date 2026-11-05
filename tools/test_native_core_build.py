@@ -61,6 +61,8 @@ _RUNS_BEFORE_PROCESS_TEST = (
 ) + (
     "build/mygame/ge_raster_ref_selftest",
     "build/mygame/psmf_media_focused_selftest --fuzz-iters 0",
+    "build/mygame/psmf_media_focused_selftest --videorec-audio build/mygame/videorec_audio_channel channel",
+    "build/mygame/psmf_media_focused_selftest --videorec-audio build/mygame/videorec_audio_src src",
     # memory-watch-selftest: the store watch on the interpreter's data word (SR_WATCH from
     # the target), then on a main-RAM word, where unwatched stores take the inline path.
     "build/mygame/dispatch_isolation_selftest_generic",
