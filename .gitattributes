@@ -86,3 +86,8 @@ third_party/dr_libs/dr_wav.h          whitespace=-blank-at-eol
 # project-authored manifest keeps the normal rules.
 third_party/libchdr/**                whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab
 third_party/libchdr/PROVENANCE.md     whitespace=blank-at-eol,blank-at-eof,space-before-tab
+# AMD FidelityFX SDK headers (third_party/fidelityfx_sdk/PROVENANCE.md): upstream ends some
+# lines in spaces and indents one with a tab, so the imports are exempt from the whitespace
+# checks; the project-authored manifest keeps the normal rules.
+third_party/fidelityfx_sdk/**             whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab,-indent-with-non-tab
+third_party/fidelityfx_sdk/PROVENANCE.md  whitespace=blank-at-eol,blank-at-eof,space-before-tab
