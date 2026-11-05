@@ -5457,14 +5457,19 @@ static void test_saves_backup_refuses_what_it_cannot_hold(void) {
         char locked[NK_MAX_PATH * 3];
         removal_test_path(locked, sizeof(locked), save_dir, "LOCKED", NULL, NULL);
         assert(nk_platform_mkdir_p(locked));
-        assert(chmod(locked, 0) == 0);
+        /* Change the mode through one descriptor, so both changes apply to the folder made
+           here, not to whatever the path names later. */
+        int locked_fd = open(locked, O_RDONLY | O_DIRECTORY);
+        assert(locked_fd >= 0);
+        assert(fchmod(locked_fd, 0) == 0);
         assert(player_app_back_up_saves(app, 0, "20261105-090100", PLAYER_SAVE_BACKUP_MANUAL,
                                         backup, sizeof(backup), error, sizeof(error)) ==
                PLAYER_SAVES_FAILED);
         assert(!player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error,
                                                 sizeof(error)));
         assert(saves_test_has_text(data_bin, "linked bytes"));
-        assert(chmod(locked, 0700) == 0);
+        assert(fchmod(locked_fd, 0700) == 0);
+        assert(close(locked_fd) == 0);
         linked = true;
     }
 #endif
