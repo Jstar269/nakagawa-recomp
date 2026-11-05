@@ -636,7 +636,7 @@ a title that translates none has generated code unchanged.
 | `0xd4b95ffb` | `sceUtilitySavedataUpdate` | utility | `synthetic` | HLE selftest dispatch |
 | `0xd59ead2f` | `sceKernelWakeupThread` | kernel_thread | `synthetic` | HLE selftest dispatch; note |
 | `0xd5a229c9` | `__sceSasRevEVOL` | audio | `unverified` | no recorded evidence |
-| `0xd5c28cc0` | `sceAtracReleaseResources` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
+| `0xd5c28cc0` | `sceAtracEndEntry` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xd5ebbbcd` | `__sceSasSetSteepWave` | audio | `synthetic` | HLE selftest dispatch |
 | `0xd61e6961` | `sceKernelReleaseSubIntrHandler` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
 | `0xd675ebb8` | `sceKernelSelfStopUnloadModule` | kernel_module | `synthetic` | HLE selftest dispatch |
