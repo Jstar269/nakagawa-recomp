@@ -2495,6 +2495,10 @@ void package_builder_cancel(PackageBuildSession *session) {
     if (!session) return;
     if (session->is_building) {
         nk_platform_terminate_process(&session->process);
+        /* POSIX terminate already reaps the child. Win32 terminate only asks
+           for the end, so wait for it: a cancelled build must not still be
+           writing once its caller goes on, or once the player exits. */
+        (void)nk_platform_wait_process(&session->process, 5000);
         nk_platform_close_process(&session->process);
         session->is_building = false;
         session->is_cancelled = true;
