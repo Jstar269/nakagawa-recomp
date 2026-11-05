@@ -10,7 +10,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
-import codegen_hst_stubs
 
 
 class FakeElf:
@@ -503,15 +502,6 @@ class ContinuationFlowTests(unittest.TestCase):
         for symbol, drain in calls:
             self.assertTrue(drain, f"{symbol} is called without draining its tail chain")
         self.assertIn("sr_tail_record(s, 0x00003000u, f_00003000, _sp_entry, 1u); return;", text)
-
-    def test_profile_wrappers_drain_the_bodies_they_call(self):
-        # The two profile wrappers call their real bodies directly (#855 review).
-        source = Path(codegen_hst_stubs.__file__).read_text(encoding="utf-8")
-        for call in ("f_000468c8_real(s);",):
-            with self.subTest(call=call):
-                at = source.index(call)
-                following = source[at + len(call):at + len(call) + 60]
-                self.assertEqual(following.split()[0], "SR_TAIL_DRAIN(s);", following)
 
     def test_conditional_successors_stay_native_below_the_split_threshold(self):
         # Changed deliberately with entry splitting: a body

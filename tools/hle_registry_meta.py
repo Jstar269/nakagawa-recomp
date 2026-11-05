@@ -324,6 +324,38 @@ HANDLER_METADATA = {
         ],
         "limitation": "the return codes follow the measured states, and INIT ends on the vblank after InitStart (#1386); Update does not drive the keyboard, whose text is collected from GetStatus (#281), and Update in FINISHED returns 0, which is not measured (#341)",
     },
+    "h_NetInit": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_net_core_without_network",
+            "PSPAutotests tests/net (70e72391, recorded on a PSP): sceNetInit(0x20000, 0x20, 0x1000, 0x20, 0x1000) returns 0 in every net test with no access point connected, and again after sceNetTerm (net/adhoc/socketids)",
+        ],
+        "limitation": "the library's state and its pool (from the user partition) only: no network stack, no socket and no host network API; the SceNetCallout and SceNetNetintr threads are not created; the PSP results were recorded with the WLAN switch on, and with the console profile's switch off sceNetInit still returns 0 (UNMEASURED; PPSSPP does not consult the switch either); the pool-size and priority codes, the pool's placement and the Init failure codes follow PPSSPP (a behaviour reference, UNMEASURED); a second Init without Term starts over with one pool, but checks its arguments before releasing the first pool, unlike PPSSPP (the PSP's order is UNMEASURED); a pool size whose 256-byte rounding passes 4 GB is refused with NO_MEMORY",
+    },
+    "h_NetTerm": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_net_core_without_network",
+            "PSPAutotests tests/net (70e72391, recorded on a PSP): sceNetTerm returns 0 after sceNetInit (net/adhoc/apctl, apctlinit, loopback)",
+        ],
+        "limitation": "frees the pool and clears the library state; sceNetTerm before sceNetInit returns 0 as PPSSPP does (UNMEASURED)",
+    },
+    "h_NetGetLocalEtherAddr": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_net_core_without_network",
+            "PSPAutotests tests/net (70e72391, recorded on a PSP): 0x80410180 with the buffer untouched before, during and after sceNetApctlInit (net/adhoc/apctlinit) and before an ad hoc group (net/adhoc/adhocctl, net/adhoc/pdp)",
+        ],
+        "limitation": "always 0x80410180, because no ad hoc group and no access point connection ever starts with no network; the address a PSP returns once one has started is not modelled; the answer before sceNetInit is UNMEASURED",
+    },
+    "h_NetAdhocctlGetParameter": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_net_core_without_network",
+            "PSPAutotests tests/net (70e72391, recorded on a PSP): before sceNetAdhocctlInit, GetState, AddHandler and Create return NOT_INITIALIZED 0x80410b08 (net/adhoc/adhocctl \"Before init\")",
+        ],
+        "limitation": "always NOT_INITIALIZED (0x80410b08), writing nothing, because sceNetAdhocctlInit stays refused with no network; GetParameter's own pre-init code is UNMEASURED and follows the measured calls; with the WLAN switch off PPSSPP answers DISCONNECTED (0x80410b09) instead (UNMEASURED)",
+    },
     "h_MsgDialogAbort": {
         "status": "partial",
         "evidence": [

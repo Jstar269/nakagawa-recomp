@@ -10033,6 +10033,17 @@
       }
     },
     {
+      "path": "src/rt/sas_resample.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "sas-resample-2054",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "src/rt/savedata.c",
       "classification": "upstream_derived",
       "evidence": {
