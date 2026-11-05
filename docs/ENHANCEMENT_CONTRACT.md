@@ -284,7 +284,8 @@ exports `SR_ACE_REPORT`, the per-run report under `<user data>/ace/`.
 
 With `SR_ACE=off` (the default: players opt in) every Ace branch sits behind one switch that stays false: the Vulkan
 device is created with no features, every sampler and the texture descriptor pool are as before, the presenter
-registers no UI pass, the observation counters do not run, and nothing is printed. `gpu-coherence-selftest` checks
+registers no UI pass, the observation counters do not run, and nothing is printed. The one exception is a run with
+`SR_GPU_TWIN_COLOR` set: it prints one `TWIN: off` or `TWIN: refused` line and changes nothing else (section 10.7). `gpu-coherence-selftest` checks
 the samplers and the pool; `display-smoke` keeps its image hash.
 
 ### 10.3. What Ace Changes, and What It Never Changes
@@ -358,11 +359,12 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
 - **Stamps.** The report adds `presents` (real, between, held, superseded) and `present_interval_ms`. Section 10.4
   applies: the run is refused as evidence.
 
-### 10.8. Full 32-Bit Colour (the Host Twin)
+### 10.7. Full 32-Bit Colour (the Host Twin)
 
 The game's 16-bit render targets are presented in full 32-bit colour without dither (#2050), in the Vulkan GE renderer.
-It is a presentation feature, in the class of a render scale above 1x (section 10.3). The code is the host twin in
-`src/rt/gpu_sdl3vk/ge_gpu.c` (its header and the comment at `s_twin`). This entry follows #2092's section 10.7.
+It is a presentation-only change (section 2.2): it changes only the image the host shows, never what the guest
+draws, reads or waits for. The code is the host twin in `src/rt/gpu_sdl3vk/ge_gpu.c` (its header and the comment
+at `s_twin`). #2092 also adds a section 10.7; whichever of the two lands second takes 10.8.
 
 - **How.** Every render target and depth buffer gets a host-only twin at the user's render scale. Every write to the
   authentic image reaches its twin, in order: each render op is drawn a second time into the twin without dither or
@@ -371,9 +373,20 @@ It is a presentation feature, in the class of a render scale above 1x (section 1
   a twin only while it holds every write its image took; otherwise it shows the authentic image and re-seeds the twin.
 - **Guest memory.** The authentic chain keeps the user's render scale, and nothing reads a twin back. Guest VRAM,
   every readback, every block transfer into RAM and the frame each present commits to guest VRAM are the twin-off
-  run's at the same scale, byte for byte (`gpu-coherence-selftest` twin-scene, at scales 1, 2 and 4). The feature is
-  not guest-visible, so section 11 does not apply. Present-source captures follow the shown image, so they hold the
-  twin's picture; `SR_GPU_TWIN_CAPTURE=authentic` shows and captures the authentic image instead.
+  run's at the same scale, byte for byte (`gpu-coherence-selftest` twin-scene, at scales 1, 2 and 4). Present-source
+  captures follow the shown image, so they hold the twin's picture; `SR_GPU_TWIN_CAPTURE=authentic` shows and
+  captures the authentic image instead.
+- **What the guest can observe (section 11.1).** Each of the four items is unchanged:
+  - VRAM bytes and other guest memory: unchanged, byte for byte (twin-scene, above).
+  - Readbacks: unchanged. GE and display readbacks, block transfers into RAM and the committed frame read the
+    authentic image, as with the twin off (twin-scene).
+  - Timing the guest can measure: unchanged. The guest timing model (VBLANK schedule, GE timing, media clocks) does
+    not follow host GPU work (section 10.3). The second draw of each render op, and the drain when a twin allocation
+    fails, are host waits.
+  - I/O speed: unchanged. The twin performs no guest I/O.
+- **Default.** Off. It stays off by default until section 11.2 item 4's "nothing worse" runs pass: picture-gate or
+  route runs on *Hot Shots Tennis* and *LittleBigPlanet*, and a library sweep, each with the twin on against the same
+  run with it off. Its launch-line key (`twin`, below) is admitted under section 11.2, like #2092's keys.
 - **Setting.** `SR_GPU_TWIN_COLOR=1` (full colour) or `native` (the twin with the authentic colour, which the identity
   self-tests use), read when the renderer starts. Unset, empty, `0` and `off` are off. Any other value prints
   `TWIN: refused (...)` and leaves it off. It takes effect only in Ace Mode: in an authentic run it stays off whatever
@@ -389,7 +402,7 @@ It is a presentation feature, in the class of a render scale above 1x (section 1
 
 ## 11. Guest-Visible Items
 
-Sections 10.3 and 10.6 describe host-only features: what the guest reads, in its registers, memory and timing, is the
+Sections 10.3, 10.6 and 10.7 describe host-only features: what the guest reads, in its registers, memory and timing, is the
 same with them on or off. The owner's decision of 2026-11-04 (#2055) is that Enhanced does not have to stay fully
 Authentic: a change that improves a game without making anything worse is allowed, even when the guest can observe
 it. This section is the class for those changes. It adds to the classes above and removes none of them.
@@ -409,7 +422,7 @@ An item is guest-visible when, with it on, any of the following differs from the
 - the speed of I/O the guest performs: disc, Memory Stick or savedata reads and writes.
 
 The item's contract entry (section 11.2) names each of these that applies. An item that changes none of them is
-host-only and follows sections 10.2 to 10.6, not this section. One existing feature already sits on this line:
+host-only and follows sections 10.2 to 10.7, not this section. One existing feature already sits on this line:
 texture filtering changes the frame that every present commits to guest VRAM, so a game that copies its screen keeps
 the filtered picture (the "Pixels" bullet of section 10.3). It keeps that entry, and is not held to items 2 to 5 of
 section 11.2 retroactively; a change to it is. A new item is not admitted by analogy with it.
