@@ -36,6 +36,9 @@
 #include "psp_seal_fixture.h"
 #include "pgf_golden_vectors.h"
 #include "../../src/rt/recomp.h"
+/* The runtime's SR_ACE parser, built into this test by source (it uses the C library only),
+ * so every line the player writes is checked against the parser that reads it (#2054). */
+#include "../../src/rt/ace.c"
 
 /* The per-run root setup and its recursive cleanup run inside assert(); keep
  * them even in a build that defines NDEBUG (#735). */
@@ -6584,10 +6587,24 @@ static void test_input_classification_and_check_again(void) {
  * packages/<disc>-enhanced-<id>. Each entry validates only the variant it names,
  * neither stands in for the other, each must be the build its folder names,
  * and an id that is not a package name never forms a path. */
+
+/* The runtime accepts the player's SR_ACE line as an Ace-on line. A key the runtime requires and
+ * the player does not write refuses the whole line, which would turn Ace off for every launch. */
+static bool player_ace_line_accepted(const char *line) {
+    AceConfig c;
+    char why[64];
+    if (!ace_parse(line, &c, why, sizeof(why)) || !c.on) {
+        fprintf(stderr, "the runtime refuses the player's SR_ACE line '%s' (%s)\n", line, why);
+        return false;
+    }
+    return true;
+}
+
 /* Ace Mode (src/rt/ace.h, docs/ENHANCEMENT_CONTRACT.md section 11): the library's defaults,
  * the per-title precedence (C2), the launch line, settings that round-trip and survive bad
  * values (C3), the per-run report's "Last session" line, and Authentic taking 60 FPS game
  * logic off. */
+
 static void test_ace_mode_settings(void) {
     char sep = nk_platform_path_separator();
     char cache_root[512], root[700], path[800], line[160];
@@ -6621,7 +6638,8 @@ static void test_ace_mode_settings(void) {
     player_ace_resolve(&app->settings, "TEST90001", &r);
     assert(r.on && r.af == 16 && r.text && !r.readout && r.notice);
     assert(player_ace_launch_line(&r, line, sizeof(line)) &&
-           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off") == 0);
+           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off") == 0);
+    assert(player_ace_line_accepted(line));
     player_app_cycle_title_ace_mode(app, 1);                      /* library -> on */
     player_app_cycle_title_ace_mode(app, 1);                      /* on -> authentic */
     assert(player_app_title_ace_mode(app, 1) == PLAYER_ACE_TITLE_AUTHENTIC);
@@ -6718,7 +6736,7 @@ static void test_ace_mode_settings(void) {
         assert(nk_platform_mkdir_p(dir));
         assert(player_ace_report_path(root, "TEST90001", report, sizeof(report)));
         write_text_file(report,
-            "{\n  \"schema\": 1,\n  \"spec\": \"v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off\",\n"
+            "{\n  \"schema\": 1,\n  \"spec\": \"v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off\",\n"
             "  \"effective\": {\"af\": 16, \"text\": true, \"readout\": false, \"notice\": true, "
             "\"wide\": \"off\", \"smooth\": \"off\"},\n  \"unavailable\": {},\n"
             "  \"rate\": {\"dominant\": \"30 Hz\", \"seconds\": {\"30 Hz\": 50.0}},\n"
@@ -6767,7 +6785,8 @@ static void test_ace_smooth_motion(void) {
     player_ace_resolve(&app->settings, "TEST90001", &r);
     assert(r.on && r.smooth == 0);
     assert(player_ace_launch_line(&r, line, sizeof(line)) &&
-           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off") == 0);
+           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off") == 0);
+    assert(player_ace_line_accepted(line));
     assert(player_app_title_ace_smooth(app, 0) == -1);
 
     /* The library value reaches the line as x2, and never as match. */
@@ -6776,7 +6795,8 @@ static void test_ace_smooth_motion(void) {
     player_ace_resolve(&app->settings, "TEST90001", &r);
     assert(r.on && r.smooth == 1);
     assert(player_ace_launch_line(&r, line, sizeof(line)) &&
-           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2") == 0);
+           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2;sas=off") == 0);
+    assert(player_ace_line_accepted(line));
     assert(strstr(line, "match") == NULL);
 
     /* A title's own choice wins over the library's; the cycle is library, on, off, library. */
@@ -6804,7 +6824,8 @@ static void test_ace_smooth_motion(void) {
     player_ace_apply_logic_60(&r, true);
     assert(r.smooth == 0 && r.on && r.af == 16 && r.text && r.notice);
     assert(player_ace_launch_line(&r, line, sizeof(line)) &&
-           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off") == 0);
+           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off") == 0);
+    assert(player_ace_line_accepted(line));
 
     /* Saved by name beside the sibling keys, and read back. */
     app->settings.ace.smooth = 1;

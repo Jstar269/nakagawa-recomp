@@ -1327,6 +1327,13 @@ void nk_platform_terminate_process(NkProcessHandle *process) {
     }
     if (process->native_handle) {
         TerminateProcess((HANDLE)process->native_handle, 1);
+        /* TerminateProcess only starts the end; wait for it, as the POSIX backend reaps
+           its child, so the caller never goes on while it may still be writing. */
+        if (WaitForSingleObject((HANDLE)process->native_handle,
+                                NK_PLATFORM_TERMINATE_WAIT_MS) != WAIT_OBJECT_0) {
+            process->is_active = true;
+            return;
+        }
     }
     process->is_active = false;
 }

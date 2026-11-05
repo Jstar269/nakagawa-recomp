@@ -5545,6 +5545,15 @@ static int player_shutdown(PlayerRun *run) {
         }
         app->prerequisite_fetcher_started = false;
     }
+    /* A package build still running stops before the player goes. Left alone
+       it outlived the window and kept writing into the user's data folder: on
+       Windows the build's job object ended it as the player exited, but
+       elsewhere it ran on as an orphan. Cancel ends the whole build process
+       tree and waits for it, the same as Cancel on the build screen. */
+    if (app->build_session.is_building) {
+        player_app_cancel_package_build(app);
+        fprintf(stderr, "[PLAYER] Closing: the package build was stopped.\n");
+    }
 
     player_update_shutdown();
     player_report_shutdown();

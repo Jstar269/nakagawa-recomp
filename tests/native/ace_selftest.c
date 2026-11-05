@@ -20,7 +20,7 @@ static int s_fail;
                        fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } \
     } while (0)
 
-static const char *const k_good = "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off";
+static const char *const k_good = "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off";
 
 /* ---- C1: the launch line ------------------------------------------------------------------- */
 
@@ -29,8 +29,8 @@ static void cell_parse(void) {
     char why[64];
     CHECK(ace_parse(k_good, &c, why, sizeof(why)) == 1, "the canonical line parses (%s)", why);
     CHECK(c.on == 1 && c.af == 16 && c.text == 1 && c.readout == 0 && c.notice == 1 &&
-          c.wide == 0 && c.smooth == 0, "fields of the canonical line");
-    CHECK(ace_parse("v1;smooth=off;wide=off;notice=off;readout=on;text=off;af=0", &c, why,
+          c.wide == 0 && c.smooth == 0 && c.sas == ACE_SAS_OFF, "fields of the canonical line");
+    CHECK(ace_parse("v1;sas=off;smooth=off;wide=off;notice=off;readout=on;text=off;af=0", &c, why,
                     sizeof(why)) == 1 && c.on && c.af == 0 && c.readout == 1,
           "keys in any order");
     CHECK(ace_parse("off", &c, why, sizeof(why)) == 1 && c.on == 0, "off is valid and off");
@@ -54,6 +54,13 @@ static void cell_parse(void) {
         { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=match", "this smooth mode is not part of this build" },
         { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "line too long" },
+        /* sas (#2054): required like every key, off or sinc, and nothing else. */
+        { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off", "missing key" },
+        { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=on", "bad value" },
+        { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=Sinc", "bad value" },
+        { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=linear", "bad value" },
+        { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off;sas=sinc", "duplicate key" },
+        { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=", "field is not key=value" },
     };
     for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
         memset(&c, 0x5A, sizeof(c));
@@ -66,10 +73,18 @@ static void cell_parse(void) {
 
     /* format and parse agree */
     char line[ACE_SPEC_MAX];
-    AceConfig a = { 1, 4, 0, 1, 0, 0, 0 }, b;
+    AceConfig a = { 1, 4, 0, 1, 0, 0, 0, 0 }, b;
     CHECK(ace_format(&a, line, sizeof(line)) && ace_parse(line, &b, NULL, 0) &&
           memcmp(&a, &b, sizeof(a)) == 0, "format round trip (%s)", line);
     CHECK(ace_format(&a, line, 8) == 0 && line[0] == '\0', "format refuses a short buffer");
+    a.sas = ACE_SAS_SINC;
+    CHECK(ace_format(&a, line, sizeof(line)) &&
+          strcmp(line, "v1;af=4;text=off;readout=on;notice=off;wide=off;smooth=off;sas=sinc") == 0 &&
+          ace_parse(line, &b, NULL, 0) && b.sas == ACE_SAS_SINC && memcmp(&a, &b, sizeof(a)) == 0,
+          "sas=sinc round trip (%s)", line);
+    CHECK(ace_parse("v1;sas=sinc;af=0;text=off;readout=off;notice=off;wide=off;smooth=off", &b, why,
+                    sizeof(why)) == 1 && b.on && b.sas == ACE_SAS_SINC && b.af == 0,
+          "sas=sinc alone is a valid line (%s)", why);
     a.on = 0;
     CHECK(ace_format(&a, line, sizeof(line)) && strcmp(line, "off") == 0, "off formats as off");
 }
@@ -114,6 +129,19 @@ static void cell_switch(void) {
     ace_feature_unavailable(ACE_FEATURE_READOUT, "no window");
     ace_set_readout(1);
     CHECK(ace_effective()->readout == 0, "a readout this host cannot draw stays off");
+
+    /* sas=sinc: named in the words, the stamp's line and the report; off with its feature. */
+    CHECK(ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=off;smooth=off;sas=sinc", NULL) == 1 &&
+          ace_effective()->sas == ACE_SAS_SINC, "sas=sinc turns Ace on");
+    CHECK(ace_feature_words(words, sizeof(words)) > 0 && strcmp(words, "clean pitched sound") == 0,
+          "sas feature words: '%s'", words);
+    char json[ACE_REPORT_MAX];
+    CHECK(ace_report_json(json, sizeof(json)) > 0 && strstr(json, "\"sas\": \"sinc\"") != NULL,
+          "the report names sas=sinc:\n%s", json);
+    ace_feature_unavailable(ACE_FEATURE_SAS, "test");
+    CHECK(ace_effective()->sas == ACE_SAS_OFF && ace_requested()->sas == ACE_SAS_SINC,
+          "an unavailable sas is off for the run");
+    CHECK(ace_init_spec(k_good, NULL) == 1 && ace_effective()->sas == ACE_SAS_OFF, "sas=off is off");
 }
 
 /* ---- C4: the 30 Hz detector ----------------------------------------------------------------- */
@@ -406,7 +434,7 @@ static void cell_pace(void) {
     AceConfig c;
     char why[64];
     AcePace p;
-    CHECK(ace_parse("v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2", &c, why, sizeof(why)) == 1 &&
+    CHECK(ace_parse("v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2;sas=off", &c, why, sizeof(why)) == 1 &&
           c.smooth == ACE_SMOOTH_X2, "smooth=x2 is part of this build");
     ace_pace_reset(&p);
     /* Off: every present is today's and nothing is ever held. */

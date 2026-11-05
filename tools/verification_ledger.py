@@ -36,6 +36,7 @@ import json
 from pathlib import Path
 import re
 import sys
+from typing import Any
 
 TOOLS = Path(__file__).resolve().parent
 if str(TOOLS) not in sys.path:
@@ -434,6 +435,86 @@ def classify_vfpu(census: dict, kernels: tuple[str, ...]) -> tuple[list[dict], i
     return sorted(rows, key=lambda r: r["form_id"]), refused
 
 
+#: Opcode bits (31..26) are always part of a form's mask; bits 25..0 are tested one at a time.
+VFPU_WORD_BITS = 26
+#: Random words checked inside each widened mask (fixed seed, so the output is reproducible).
+VFPU_CUBE_SAMPLES = 256
+
+
+def vfpu_unverified_masks(vfpu_rows: list[dict]) -> list[dict]:
+    """The ``(mask, match)`` word patterns of the ``unverified`` VFPU forms.
+
+    A census form is not a word pattern: its row key holds the decoder's behaviour, and the
+    census visits a sampled set of words. This derives a pattern from that evidence and
+    checks it, so the runtime and codegen can name the form of a word they meet:
+
+    1. The form's visited words (rebuilt from ``vfpu_coverage_report.systematic_records``)
+       give a base pattern: the bits all of them share.
+    2. A bit stays in the mask only if flipping it in some visited word changes the census row
+       (the census classifies the flipped word again with the production decoder probe).
+       Every other bit is free.
+    3. ``VFPU_CUBE_SAMPLES`` random words inside the pattern are classified again; each must
+       land in an ``unverified`` census row, or the run fails.
+    4. No word the census visited may match a pattern unless its row is unverified.
+
+    The pattern is evidence about the words tested, not a proof over all 2^32 words.
+    Rows that share one pattern share one entry."""
+    import random
+
+    import vfpu_coverage_report as census_mod
+
+    class_of_form = {row["form_id"]: row["class"] for row in vfpu_rows}
+    groups: dict[tuple, list[int]] = {}
+    for record in census_mod.systematic_records():
+        groups.setdefault(census_mod.row_key(record), []).append(int(record["word"]))
+    form_of_key = {key: census_mod.form_id_of(key, min(words)) for key, words in groups.items()}
+    unverified_keys = {key for key, form in form_of_key.items() if class_of_form.get(form) == "unverified"}
+    missing = sorted(f for f, c in class_of_form.items() if c == "unverified" and f not in form_of_key.values())
+    if missing:
+        raise LedgerError("unverified VFPU form with no visited word: " + ", ".join(missing))
+    visited = {word: key for key, words in groups.items() for word in words}
+
+    def keys_of(words: list[int]) -> dict[int, tuple]:
+        return {int(r["word"]): census_mod.row_key(r) for r in census_mod.classify_words(words)}
+
+    rng = random.Random(0x1877)
+    patterns: dict[tuple[int, int], set[str]] = {}
+    for key in sorted(unverified_keys, key=lambda k: form_of_key[k]):
+        words = sorted(groups[key])
+        shared = 0xFFFFFFFF
+        for word in words:
+            shared &= ~(word ^ words[0])
+        flips = keys_of(sorted({w ^ (1 << b) for w in words for b in range(VFPU_WORD_BITS)}))
+        mask = 0xFC000000
+        for bit in range(VFPU_WORD_BITS):
+            if not (shared >> bit) & 1:
+                continue  # the visited words already differ here, so it cannot be tested apart
+            if any(flips[w ^ (1 << bit)] != key for w in words):
+                mask |= 1 << bit
+        match = words[0] & mask
+        free = ~mask & 0x03FFFFFF
+        samples = sorted({match | (rng.getrandbits(32) & free) for _ in range(VFPU_CUBE_SAMPLES)})
+        stray = sorted(w for w, k in keys_of(samples).items() if k not in unverified_keys)
+        if stray:
+            raise LedgerError(
+                f"VFPU form {form_of_key[key]}: pattern {mask:08x}/{match:08x} holds words outside the "
+                f"unverified forms, for example 0x{stray[0]:08x}"
+            )
+        patterns.setdefault((mask, match), set()).add(form_of_key[key])
+    result: list[dict[str, Any]] = [
+        {"mask": mask, "match": match, "forms": sorted(forms)} for (mask, match), forms in sorted(patterns.items())
+    ]
+    for word, key in visited.items():
+        if key in unverified_keys:
+            continue
+        for entry in result:
+            if word & entry["mask"] == entry["match"]:
+                raise LedgerError(
+                    f"VFPU pattern {entry['mask']:08x}/{entry['match']:08x} matches the verified word 0x{word:08x}"
+                )
+    return result
+
+
 def build_ledger() -> dict:
     sources = hle_manifest.runtime_hle_sources()
     manifest = hle_manifest.build_manifest()
@@ -474,6 +555,7 @@ def build_ledger() -> dict:
         "vfpu_measured_rows_not_linked": unlinked_vfpu,
         "hle": hle_rows,
         "vfpu": vfpu_rows,
+        "vfpu_unverified_masks": vfpu_unverified_masks(vfpu_rows),
     }
 
 
@@ -543,9 +625,24 @@ def render_markdown(ledger: dict) -> str:
         "",
         "At run time `sr_syscall` logs one line the first time each `unverified` NID with a handler is",
         "called: `HLE: unverified: <name> (NID 0x<nid>) has no recorded evidence (docs/HLE_COVERAGE.md)`.",
-        "Controlled refusals already log their own line once. VFPU forms are not logged: AOT-direct forms",
-        "run inline with no shared entry point, and `sr_vfpu_interp` cannot tell which census form a word",
-        "belongs to without the census's own grouping.",
+        "Controlled refusals already log their own line once.",
+        "",
+        "VFPU forms are reported by word pattern, because a census form is not a word range. For each",
+        "`unverified` form the ledger derives the `(mask, match)` word patterns in `src/rt/hle_evidence.h`:",
+        "a bit is in the mask only if flipping it changes the form under the production decoder probe, and",
+        "random words inside each pattern are classified again and must stay unverified. The patterns are",
+        "evidence about the words tested, not a proof over every word. Each pattern is shown in the log as",
+        "its opcode's mnemonic and the census form ids, for example `lv.s [vfpu-32-c8000000-...]`. Under",
+        "`--lle-cpu` the interpreter floor logs",
+        "`VFPU: unverified: first use of <forms> (word 0x<word>) at 0x<pc>: no recorded evidence` once per",
+        "pattern when it executes a matching VFPU load or store (primary opcodes 0x32, 0x35, 0x36, 0x3a,",
+        "0x3d, 0x3e); the patterns for opcodes 0x34 and 0x3f are not memory operations, so only the",
+        "translated-code line below can name them. For translated code the build lists, for each pattern,",
+        "the lowest-addressed word it translated, and the generated start-up code makes the runtime print",
+        "`VFPU: unverified: translated code uses <forms> (word 0x<word>) at 0x<pc>: no recorded evidence`",
+        "once per pattern; no check runs on the hot path. Both lines only log. A title that translates one of",
+        "these forms gets one extra `sr_vfpu_report_unverified_uses` call in its generated start-up code;",
+        "a title that translates none has generated code unchanged.",
         "",
         "## HLE NIDs",
         "",
@@ -571,25 +668,63 @@ def render_markdown(ledger: dict) -> str:
     return "\n".join(out) + "\n"
 
 
+# What a run log shows for a pattern: the mnemonic of its primary opcode, then the census form ids.
+# The two opcode groups that are not memory operations have no single mnemonic.
+VFPU_OPCODE_NAMES = {
+    0x32: "lv.s",
+    0x35: "lvl.q/lvr.q",
+    0x36: "lv.q",
+    0x3A: "sv.s",
+    0x3D: "svl.q/svr.q",
+    0x3E: "sv.q",
+}
+
+
+def _vfpu_pattern_label(pattern: dict) -> str:
+    opcode = (int(pattern["match"]) >> 26) & 0x3F
+    name = VFPU_OPCODE_NAMES.get(opcode, f"VFPU opcode 0x{opcode:02x}")
+    return f"{name} [{' '.join(pattern['forms'])}]"
+
+
 def render_header(ledger: dict) -> str:
     nids = sorted(int(r["nid"], 16) for r in ledger["hle"] if r["class"] == "unverified")
+    masks = ledger["vfpu_unverified_masks"]
     out = [
         "// SPDX-License-Identifier: GPL-3.0-or-later",
         "// Copyright (C) 2026 the Nakagawa Recomp authors",
         "",
-        "/* Registered HLE NIDs whose evidence class is `unverified` (docs/HLE_COVERAGE.md).",
-        f" * Generated by tools/verification_ledger.py; do not edit. Regenerate with {FIX_COMMAND}.",
-        " * sr_syscall logs the first call of each one; nothing else reads this table. */",
+        "/* Registered HLE NIDs and VFPU instruction forms whose evidence class is `unverified`",
+        " * (docs/HLE_COVERAGE.md). Generated by tools/verification_ledger.py; do not edit.",
+        f" * Regenerate with {FIX_COMMAND}.",
+        " * sr_syscall logs the first call of each NID; sr_vfpu_note_unverified (src/rt/guest_interp.c) logs",
+        " * the first use of each VFPU load or store form the interpreter floor runs, and",
+        " * sr_vfpu_report_unverified_uses names the forms codegen translated; tools/codegen.py reads the",
+        " * VFPU table to list a title's forms.",
+        " * A source defines SR_EVIDENCE_NO_NIDS or SR_EVIDENCE_NO_VFPU before including to leave one out. */",
         "#ifndef SR_HLE_EVIDENCE_H",
         "#define SR_HLE_EVIDENCE_H",
         "#include <stdint.h>",
         "",
+        "#ifndef SR_EVIDENCE_NO_NIDS",
         f"#define SR_HLE_UNVERIFIED_NID_COUNT {len(nids)}u",
         "/* Sorted ascending for binary search. */",
         f"static const uint32_t sr_hle_unverified_nids[{max(len(nids), 1)}] = {{",
     ]
     out += [f"    0x{n:08x}u," for n in nids] or ["    0u, /* empty: SR_HLE_UNVERIFIED_NID_COUNT is 0 */"]
-    out += ["};", "", "#endif", ""]
+    out += [
+        "};",
+        "#endif",
+        "",
+        "#ifndef SR_EVIDENCE_NO_VFPU",
+        "/* A word is in a form when (word & mask) == match. `forms` lists the ledger rows' form ids. */",
+        "typedef struct { uint32_t mask; uint32_t match; const char *forms; } SrVfpuUnverifiedForm;",
+        f"#define SR_VFPU_UNVERIFIED_FORM_COUNT {len(masks)}u",
+        f"static const SrVfpuUnverifiedForm sr_vfpu_unverified_forms[{max(len(masks), 1)}] = {{",
+    ]
+    out += [
+        f'    {{ 0x{m["mask"]:08x}u, 0x{m["match"]:08x}u, "{_vfpu_pattern_label(m)}" }},' for m in masks
+    ] or ['    { 0u, 0u, "" }, /* empty: SR_VFPU_UNVERIFIED_FORM_COUNT is 0 */']
+    out += ["};", "#endif", "", "#endif", ""]
     return "\n".join(out)
 
 

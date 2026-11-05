@@ -2894,7 +2894,7 @@ bool player_ace_launch_line(const PlayerAceResolved *ace, char *out, size_t cap)
     if (!ace || !ace->on) {
         n = snprintf(out, cap, "off");
     } else {
-        n = snprintf(out, cap, "v1;af=%d;text=%s;readout=%s;notice=%s;wide=off;smooth=%s",
+        n = snprintf(out, cap, "v1;af=%d;text=%s;readout=%s;notice=%s;wide=off;smooth=%s;sas=off",
                      ace_af_valid(ace->af) ? ace->af : 0, ace->text ? "on" : "off",
                      ace->readout ? "on" : "off", ace->notice ? "on" : "off",
                      ace->smooth == 1 ? "x2" : "off");
