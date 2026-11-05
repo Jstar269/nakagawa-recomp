@@ -657,8 +657,9 @@ Behavioral side effects, waits, wakeups, callbacks, outputs, and error values ar
 
 The source-owned PSP DMAC matrix also keeps the copy boundary explicit. Fully valid RAM/VRAM
 requests are copied at their requested size through 1 MiB; the measured `0xC000` prefix is an
-allocator-boundary observation, not an API-wide size cap. The runtime copies the measured
-one-byte arena-end prefix shape and keeps larger or wrapped overruns fail-closed. A guest thread
+allocator-boundary observation, not an API-wide size cap. A source or destination span that runs
+past the end of the guest arena, or wraps, is refused whole with nothing copied; that is a runtime
+safety boundary, since the PSP's answer past the end of RAM is unmeasured. A guest thread
 that starts a channel transfer stays blocked in the call for the transfer's measured duration
 (a timing table by size and by main-RAM/VRAM source and destination, with surcharges when source
 and destination differ modulo 16); meanwhile another thread's `sceDmacTryMemcpy` returns BUSY
