@@ -165,6 +165,7 @@ static int write_launch_environment_probe(void) {
     const char *ace = getenv("SR_ACE");
     const char *ace_report = getenv("SR_ACE_REPORT");
     const char *host_time_zone = getenv("SR_HOST_TIME_ZONE");
+    const char *code_capture = getenv("SR_CODE_CAPTURE");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
                      "NK_LAUNCH_TEST_UNRELATED=%s\n"
@@ -187,7 +188,8 @@ static int write_launch_environment_probe(void) {
                      "SR_REDUCE_MOTION=%s\n"
                      "SR_ACE=%s\n"
                      "SR_ACE_REPORT=%s\n"
-                     "SR_HOST_TIME_ZONE=%s\n",
+                     "SR_HOST_TIME_ZONE=%s\n"
+                     "SR_CODE_CAPTURE=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
                      fps ? fps : "<unset>",
@@ -209,7 +211,8 @@ static int write_launch_environment_probe(void) {
                      reduce_motion ? reduce_motion : "<unset>",
                      ace ? ace : "<unset>",
                      ace_report ? ace_report : "<unset>",
-                     host_time_zone ? host_time_zone : "<unset>") >= 0;
+                     host_time_zone ? host_time_zone : "<unset>",
+                     code_capture ? code_capture : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     /* Subtest 21 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
      * enough for nk_launch_stop to have a running child to stop. */
@@ -402,6 +405,11 @@ static void test_no_iso_child_environment(const char *test_executable,
     char *old_launcher_display = capture_environment_value("SR_LAUNCHER_DISPLAY_BOUNDS",
                                                            &had_launcher_display);
     set_environment_value("SR_LAUNCHER_DISPLAY_BOUNDS", "7,7,7,7");
+    /* With no SR_CODE_CAPTURE of the user's, the launcher names the title's own capture folder
+       (#1933); the user's value is checked on the second launch below. */
+    bool had_code_capture;
+    char *old_code_capture = capture_environment_value("SR_CODE_CAPTURE", &had_code_capture);
+    restore_environment_value("SR_CODE_CAPTURE", NULL, false);
 
     /* The enhanced build launches or nothing does (docs/ENHANCEMENT_CONTRACT.md
        section 9): with no packages/<disc>-enhanced-<id>, neither the developer
@@ -574,6 +582,20 @@ static void test_no_iso_child_environment(const char *test_executable,
         assert(strstr(observed, expected_zone) != NULL);
         assert(strstr(observed, "poisoned-parent-zone") == NULL);
     }
+    /* The title's code-capture folder (#1933) under the per-user data directory, beside its
+       bring-up cache, where `nk_cli.py bringup` reads the captures on its next build. The runtime
+       does not create the folder, so the launcher has. */
+    {
+        char capture_dir[NK_MAX_PATH * 2 + 64];
+        char expected[NK_MAX_PATH * 2 + 96];
+        snprintf(capture_dir, sizeof(capture_dir), "%s%ccache%cbringup%cTEST00006%ccaptures",
+                 per_user_root, sep, sep, sep, sep);
+        snprintf(expected, sizeof(expected), "SR_CODE_CAPTURE=%s\n", capture_dir);
+        assert(strstr(observed, expected) != NULL);
+        assert(nk_platform_dir_exists(capture_dir));
+    }
+    /* A folder the user named is kept for the next launch. */
+    set_environment_value("SR_CODE_CAPTURE", "user-named-capture-folder");
 
     /* Diagnostic benchmark mode preserves SR_NOVBPACE in child environment */
     session.config.benchmark_mode = true;
@@ -618,6 +640,9 @@ static void test_no_iso_child_environment(const char *test_executable,
     }
     assert(strstr(observed, "SR_LAUNCHER_DISPLAY_BOUNDS=\n") != NULL);
     assert(strstr(observed, "7,7,7,7") == NULL);
+    assert(strstr(observed, "SR_CODE_CAPTURE=user-named-capture-folder\n") != NULL);
+    restore_environment_value("SR_CODE_CAPTURE", old_code_capture, had_code_capture);
+    free(old_code_capture);
     session.enhancement_package_id[0] = '\0';
     session.config.developer_mode = false;
     session.config.reduce_motion = NK_REDUCE_MOTION_SYSTEM;
