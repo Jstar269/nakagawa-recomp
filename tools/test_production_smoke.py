@@ -3446,6 +3446,203 @@ class TestSanitizedBringup(unittest.TestCase):
         )
 
 
+class TestBringupCaptureRounds(unittest.TestCase):
+    """The bring-up's code-capture rounds (#1933), on synthetic captures with the package build
+    and the launch faked: no game, PSP or network."""
+
+    CAPTURE_A = "code_capture_08a10000_0123456789abcdef.nkcap"
+    CAPTURE_B = "code_capture_08a20000_fedcba9876543210.nkcap"
+
+    setUp = TestSanitizedBringup.setUp
+
+    def _run(self, launches, *, capture_rounds=None, case_root=None):
+        """Run cmd_bringup with one entry of ``launches`` per launch: None runs to a presented
+        frame; ("wrote" | "already holds" | "names", NAME) stops at capture NAME, writing it to
+        the run's SR_CODE_CAPTURE folder unless it says "names" (a capture it did not write)."""
+        if case_root is None:
+            case_root = self.root / f"case-{len(list(self.root.iterdir()))}"
+        self.case_root = case_root
+        report_path = case_root / "bringup.json"
+        args = argparse.Namespace(
+            iso=str(self.iso), work_dir=str(case_root / "work"), report=str(report_path),
+            launch_timeout=1, instruction_trace=False,
+            private_sweep_import_report=str(case_root / "work" / "sweep-imports.json"),
+        )
+        if capture_rounds is not None:
+            args.capture_rounds = capture_rounds
+        self.build_user_args = []
+        self.launch_envs = []
+        pending = list(launches)
+
+        def fake_package_build(build_args, stage_observer=None):
+            self.build_user_args.append(os.environ.get("CODEGEN_USER_ARGS"))
+            stage_observer("codegen", "START", 0)
+            stage_observer("codegen", "PASS", 3)
+            build_args.aot_stage_result = {"status": "REUSED", "reason": "NONE"}
+            stage_observer("compile", "PASS", 3)
+            package_dir = build_args.user_data_root / "packages" / "ULUS99998"
+            package_dir.mkdir(parents=True, exist_ok=True)
+            (package_dir / "runtime.exe").write_bytes(b"synthetic runtime marker")
+            (package_dir / "runtime_image.bin").write_bytes(b"synthetic runtime image")
+            (package_dir / "package.json").write_text(json.dumps({
+                "executable": {"path": "runtime.exe"},
+                "runtime": {"run_entry": "0x08800100"},
+            }), encoding="utf-8")
+            stage_observer("build_package", "PASS", 2)
+            return 0
+
+        class FakeProcess:
+            def __init__(self, returncode, output):
+                self.returncode = returncode
+                self.output = output
+
+            def communicate(self, timeout=None):
+                return self.output, None
+
+            def kill(self):
+                self.returncode = -9
+
+        def fake_popen(command, **kwargs):
+            env = dict(kwargs.get("env", {}))
+            self.launch_envs.append(env)
+            Path(env["SR_FLIGHT_OUTPUT"]).write_text(json.dumps({
+                "recorder": {"dropped": 0},
+                "events": [{"class": "hle", "kind": 1, "arg0": 0x289D82FE}],
+            }), encoding="utf-8")
+            step = pending.pop(0)
+            if step is None:
+                return FakeProcess(0, (
+                    "BOOT_EVENT phase=window_ready backend=offscreen\n"
+                    "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+                    "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+                ))
+            verb, name = step
+            if verb != "names":
+                (Path(env["SR_CODE_CAPTURE"]) / name).write_bytes(b"NKCODE01" + bytes(28))
+            target = name.split("_")[2]
+            return FakeProcess(1, (
+                f"DISPATCH_STOP reason=target-not-executable target=0x{target}\n"
+                f"  CODE_CAPTURE: {'wrote' if verb == 'names' else verb} {name} "
+                f"[0x{target},0x{target}) target=0x{target}; translate it with "
+                "tools/code_capture.py (#1933)\n"
+            ))
+
+        printed = []
+        completed = subprocess.CompletedProcess(["synthetic-codegen"], 0, "", "")
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(nk_cli.subprocess, "run", return_value=completed))
+            stack.enter_context(mock.patch.object(nk_cli.subprocess, "Popen", side_effect=fake_popen))
+            stack.enter_context(mock.patch.object(
+                nk_cli, "cmd_build_package", side_effect=fake_package_build
+            ))
+            stack.enter_context(mock.patch.dict(os.environ, {}, clear=False))
+            os.environ.pop("CODEGEN_USER_ARGS", None)
+            os.environ.pop("SR_CODE_CAPTURE", None)
+            stack.enter_context(mock.patch(
+                "builtins.print", side_effect=lambda *a, **_k: printed.append(" ".join(map(str, a)))
+            ))
+            status = nk_cli.cmd_bringup(args)
+            self.assertNotIn("CODEGEN_USER_ARGS", os.environ, "the rounds restore the variable")
+        self.assertEqual(pending, [], "every planned launch ran")
+        self.printed = "\n".join(printed)
+        self.capture_dir = case_root / "work" / "user-data" / "cache" / "bringup" / "ULUS99998" / "captures"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        nk_cli.validate_bringup_report(report)
+        return status, report
+
+    def _translated(self, build_index):
+        user_args = self.build_user_args[build_index] or ""
+        return sorted(token.removeprefix("--code-capture=") for token in user_args.split()
+                      if token.startswith("--code-capture="))
+
+    def test_a_run_without_a_capture_takes_one_round_unchanged(self):
+        status, report = self._run([None])
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["failure_class"], "NONE")
+        self.assertEqual(len(self.launch_envs), 1)
+        self.assertEqual(self.build_user_args, [None])
+        self.assertNotIn("code_capture", report)
+        self.assertNotIn("Code capture rounds", self.printed)
+        # The run is told the title's capture folder, beside its bring-up cache.
+        self.assertEqual(Path(self.launch_envs[0]["SR_CODE_CAPTURE"]), self.capture_dir)
+        self.assertTrue(self.capture_dir.is_dir())
+
+    def test_a_new_capture_is_translated_by_a_second_round(self):
+        status, report = self._run([("wrote", self.CAPTURE_A), None])
+        self.assertEqual(status, 0, report)
+        self.assertEqual(len(self.launch_envs), 2)
+        self.assertEqual(self._translated(0), [])
+        self.assertEqual(self._translated(1), [(self.capture_dir / self.CAPTURE_A).as_posix()])
+        self.assertEqual(report["failure_class"], "NONE")
+        capture = report["code_capture"]
+        self.assertEqual(capture["round_limit"], nk_cli.BRINGUP_CAPTURE_ROUNDS_DEFAULT)
+        self.assertEqual(capture["stop"], "NONE")
+        self.assertEqual([(row["round"], row["captures_translated"], row["outcome"])
+                          for row in capture["rounds"]],
+                         [(1, 0, "NEW_CAPTURE"), (2, 1, "NO_CAPTURE_STOP")])
+        self.assertNotEqual(capture["rounds"][0]["failure_class"], "NONE")
+        self.assertEqual(capture["rounds"][1]["failure_class"], "NONE")
+        self.assertIn("round 1: translated 0 capture(s); the run stopped at a new capture",
+                      self.printed)
+        self.assertIn("round 2: translated 1 capture(s); the run did not stop at a capture",
+                      self.printed)
+        # The public report names no capture: its name carries a guest address and a hash.
+        self.assertNotIn("code_capture_", json.dumps(report))
+
+    def test_a_capture_left_by_an_earlier_run_is_translated_in_the_first_round(self):
+        status, report = self._run([("wrote", self.CAPTURE_A), None])
+        self.assertEqual(status, 0, report)
+        # A second bring-up into the same data folder (or after a player run wrote the
+        # capture) translates it from the start and launches once.
+        status, report = self._run([None], case_root=self.case_root)
+        self.assertEqual(status, 0, report)
+        self.assertEqual(len(self.launch_envs), 1)
+        self.assertEqual(self._translated(0), [(self.capture_dir / self.CAPTURE_A).as_posix()])
+        self.assertEqual(report["code_capture"], {
+            "round_limit": nk_cli.BRINGUP_CAPTURE_ROUNDS_DEFAULT,
+            "stop": "NONE",
+            "rounds": [{"round": 1, "captures_translated": 1, "outcome": "NO_CAPTURE_STOP",
+                        "failure_class": "NONE"}],
+        })
+
+    def test_the_round_limit_is_a_named_non_zero_stop(self):
+        status, report = self._run([("wrote", self.CAPTURE_A), ("wrote", self.CAPTURE_B)],
+                                   capture_rounds=2)
+        self.assertEqual(status, 1)
+        self.assertEqual(len(self.launch_envs), 2)
+        self.assertEqual(report["code_capture"]["stop"], "BRINGUP_CAPTURE_BOUND")
+        self.assertEqual(report["code_capture"]["round_limit"], 2)
+        self.assertEqual([row["outcome"] for row in report["code_capture"]["rounds"]],
+                         ["NEW_CAPTURE", "NEW_CAPTURE"])
+        self.assertNotEqual(report["failure_class"], "NONE")
+        self.assertIn(f"BRINGUP_CAPTURE_BOUND: 2 rounds reached; last capture {self.CAPTURE_B}",
+                      self.printed)
+
+    def test_a_capture_its_own_build_translated_is_a_named_stop_not_a_loop(self):
+        status, report = self._run([("wrote", self.CAPTURE_A), ("already holds", self.CAPTURE_A)])
+        self.assertEqual(status, 1)
+        self.assertEqual(len(self.launch_envs), 2)
+        self.assertEqual(self._translated(1), [(self.capture_dir / self.CAPTURE_A).as_posix()])
+        self.assertEqual(report["code_capture"]["stop"], "BRINGUP_CAPTURE_NOT_BOUND")
+        self.assertEqual([row["outcome"] for row in report["code_capture"]["rounds"]],
+                         ["NEW_CAPTURE", "CAPTURE_ALREADY_TRANSLATED"])
+        self.assertIn(f"BRINGUP_CAPTURE_NOT_BOUND: round 2 stopped at {self.CAPTURE_A}, which "
+                      "its build translated; the translation did not bind", self.printed)
+
+    def test_a_capture_the_folder_does_not_hold_is_a_named_stop(self):
+        status, report = self._run([("names", self.CAPTURE_A)])
+        self.assertEqual(status, 1)
+        self.assertEqual(len(self.launch_envs), 1)
+        self.assertEqual(report["code_capture"]["stop"], "BRINGUP_CAPTURE_MISSING")
+        self.assertIn("BRINGUP_CAPTURE_MISSING: round 1 stopped at", self.printed)
+
+    def test_the_round_limit_option_is_checked(self):
+        self.assertEqual(nk_cli._capture_rounds_argument("3"), 3)
+        for value in ("0", str(nk_cli.BRINGUP_CAPTURE_ROUNDS_MAX + 1), "two"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                nk_cli._capture_rounds_argument(value)
+
+
 class TestBringupReportOpcodeNames(unittest.TestCase):
     """A bring-up report must always land, with schema-legal opcode keys.
 
