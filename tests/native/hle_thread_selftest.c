@@ -10553,6 +10553,135 @@ static uint32_t audio_dispatch(CpuState *cpu, uint32_t nid,
     return sr_syscall(cpu, nid);
 }
 
+/* Under the deterministic clock (#2037) the audio queue the guest paces against drains in guest
+ * time, not in the host mixer's: a run that is faster than real time must not see a queue that
+ * never empties (every blocking output would then wait out the same lead again and guest time
+ * would race ahead of the work). 44100 frames a second of guest time, from the first push.
+ *
+ * MUTANT: return the host queue depth under the deterministic clock -- the guest sees the
+ *   host's 100000 frames and the drain checks fail. */
+static void test_audio_queue_drains_in_guest_time_under_the_deterministic_clock(void) {
+    extern int hle_audio_queued(int ch);
+    const uint32_t STEREO_BUF = 0x08a00000u;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 0u) == 0u,
+           "drain fixture reserves the regular channel");
+    s_det_clock = 1;
+    s_audio_queue_result = 0;
+    s_vtime_us = 1000u;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING, 0u, 0x80008000u,
+                          STEREO_BUF) == 64u, "the 64-frame output returns");
+    expect(hle_audio_queued(0) == 64, "the guest sees the 64 frames it just pushed");
+    s_vtime_us += 1000u;   /* 1 ms of guest time plays 44.1 frames */
+    expect(hle_audio_queued(0) == 20, "a millisecond of guest time drains 44 of them");
+    s_vtime_us += 1000u;
+    expect(hle_audio_queued(0) == 0, "the second millisecond empties the queue, carry kept");
+    s_audio_queue_result = 100000;   /* the host mixer is far behind: the guest must not see it */
+    expect(hle_audio_queued(0) == 0, "the host mixer's backlog is not what the guest sees");
+    s_audio_queue_result = -1;
+    expect(hle_audio_queued(0) == -1, "no host output stays no host output");
+    s_det_clock = 0;
+    s_audio_queue_result = 100000;
+    expect(hle_audio_queued(0) == 100000, "without the deterministic clock the host depth is reported");
+    s_audio_queue_result = 0;
+    reset_fixture();
+}
+
+/* Every call that paces a guest against the audio queue reads the model under the deterministic
+ * clock (#2037): the blocking output's wait loop, the channel rest length, and the Output2 rest
+ * and release. A host mixer that is far behind (a run faster than real time never lets it drain)
+ * must not reach the guest through any of them. The host stub reports 100000 frames throughout;
+ * on a path that still reads it, the blocking output waits it out (the stub's sequence ends in 0,
+ * so it is counted, not hung on), RestLen and Output2Rest report it, and the release is refused.
+ *
+ * MUTANT: audio_output's wait loop calls sr_audio_queued -- the output consumes the host's whole
+ *   sequence (4+ reads) instead of two.
+ * MUTANT: h_AudioRestLen, h_AudioOutput2Rest or h_AudioOutput2Release calls sr_audio_queued --
+ *   the guest sees the host's 100000 frames and the release is refused. */
+static void test_audio_calls_read_the_guest_queue_under_the_deterministic_clock(void) {
+    const uint32_t STEREO_BUF = 0x08a00000u;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 0u) == 0u,
+           "the regular channel reserves 64 frames");
+    s_det_clock = 1;
+    s_vtime_us = 1000u;
+    s_audio_queue_seq[0] = 100000;
+    s_audio_queue_seq[1] = 100000;
+    s_audio_queue_seq[2] = 100000;
+    s_audio_queue_seq[3] = 0;
+    s_audio_queue_seq_len = 4;
+    s_audio_queue_calls = 0;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING, 0u, 0x80008000u, STEREO_BUF) == 64u,
+           "the blocking output returns its frame count");
+    expect(s_audio_queue_calls <= 2u,
+           "the blocking output did not wait out the host mixer's backlog: its lead is the model's 64 frames");
+    s_audio_queue_seq_len = 0;
+    s_audio_queue_result = 100000;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH, 0u, 0u, 0u) == 64u,
+           "GetChannelRestLength reports the model's 64 frames, not the host's 100000");
+    s_vtime_us += 2000u;   /* the 64 frames have played in guest time */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH, 0u, 0u, 0u) == 0u,
+           "and 2 ms of guest time later the model is empty whatever the host holds");
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 64u, 0u, 0u) == 0u,
+           "Output2 reserves a 64-sample channel");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_REST_SAMPLE, 0u, 0u, 0u) == 0u,
+           "Output2 rest sample is the model's, empty, not the host's 100000");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
+           "Output2 release is not refused for a backlog only the host mixer holds");
+    s_det_clock = 0;
+    s_audio_queue_result = 0;
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    reset_fixture();
+}
+
+/* The SRC output pushes its converted frames into the guest-time model, and the PSMF player reads
+ * the lead from it, under the deterministic clock (#2037). The host stub reports 100000 frames
+ * throughout: the guest must see the frames the SRC output pushed, not the host's backlog.
+ *
+ * MUTANT: delete audio_vq_pushed in the resampling branch of audio_src_output -- the model
+ *   stays empty and the first model check fails.
+ * MUTANT: psmf_av_queue_frames returns sr_audio_queued(ch) (extern int sr_audio_queued(int ch);
+ *   in the function) -- it reports the host's 100000 and the second check fails. */
+static void test_src_push_and_psmf_lead_read_the_guest_queue_under_the_deterministic_clock(void) {
+    extern int hle_audio_queued(int ch);
+    extern int psmf_av_queue_frames(int ch);
+    enum { SRC_BUF = 0x08a00000u, SRC_SLOT = 8 };
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    s_det_clock = 1;
+    s_vtime_us = 1000u;
+    s_audio_queue_result = 100000;
+    /* 48000 Hz: a 44100 Hz SRC output is a plain audio_output and is covered above; only a
+     * converted rate takes the resampler path that pushes into the model itself. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 48000u, 2u) == 0u,
+           "the SRC channel reserves 1024 samples at 48000 Hz");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, SRC_BUF, 0u) == 0x400u,
+           "the SRC output returns the reserved sample count");
+    expect(s_audio_push_calls == 1u && s_audio_push_frames > 0,
+           "the SRC output pushed converted frames to the host mixer");
+    expect(hle_audio_queued(SRC_SLOT) == s_audio_push_frames,
+           "the guest-time model holds exactly the frames the SRC output pushed, not the host's 100000");
+    expect(psmf_av_queue_frames(SRC_SLOT) == s_audio_push_frames,
+           "the PSMF audio lead is the model's, not the host's 100000");
+    s_vtime_us += 100000u;   /* 100 ms of guest time plays everything the SRC pushed */
+    expect(psmf_av_queue_frames(SRC_SLOT) == 0,
+           "and the lead is empty once the guest time has played it");
+    s_det_clock = 0;
+    s_audio_queue_result = 0;
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    reset_fixture();
+}
+
 /* Media telemetry truthfulness on the production audio hand-off.
  *
  * audio_output_calls / audio_output_frames used to be raised only inside the SDL3 host
@@ -12653,6 +12782,37 @@ static void delay_coro_body(void *arg) {
     s_delay_ret = sr_syscall(&cpu, s_delay_nid);
     s_delay_done = 1;
     selftest_park_on_scheduler();
+}
+
+/* A deterministic run (#2037) starts the RTC at a fixed date, not the host's calendar, so two
+ * identical runs see the same time of day; any other run starts from the host's.
+ *
+ * MUTANT: drop the sched_clock_deterministic() branch in rtc_now_tick -- the deterministic ticks
+ *   follow the host calendar and the fixed-date check fails. */
+static void test_rtc_epoch_is_fixed_in_a_deterministic_run(void) {
+    extern uint64_t rtc_now_tick(void);
+    const uint64_t unix_epoch_tick = 62135596800000000ull;   /* 1970-01-01 in the PSP RTC's microseconds */
+    const uint64_t fixed = unix_epoch_tick + 1325376000ull * 1000000ull;   /* 2012-01-01 UTC */
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    uint64_t tick[2];
+    for (int run = 0; run < 2; run++) {
+        s_det_clock = 1;
+        sr_hle_test_reset_rtc_epoch();
+        s_vtime_us = 1234u;
+        tick[run] = rtc_now_tick();   /* the epoch is anchored at guest time zero: the first read is the date */
+    }
+    expect(tick[0] == tick[1] && tick[0] == fixed,
+           "deterministic clock: the RTC starts at the fixed date");
+    s_vtime_us += 5000u;
+    expect(rtc_now_tick() == fixed + 5000u, "the fixed-date RTC then follows guest time");
+    s_det_clock = 0;
+    sr_hle_test_reset_rtc_epoch();
+    s_vtime_us = 1234u;
+    expect(rtc_now_tick() > fixed + 365ull * 86400ull * 1000000ull,
+           "without the deterministic clock the RTC starts from the host's calendar");
+    sr_hle_test_reset_rtc_epoch();
 }
 
 /* Production-path clock regression: a controlled scheduler delay advances the
@@ -46782,6 +46942,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vaudio_plays_through_the_src_slot();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
+    test_audio_queue_drains_in_guest_time_under_the_deterministic_clock();
+    test_audio_calls_read_the_guest_queue_under_the_deterministic_clock();
+    test_src_push_and_psmf_lead_read_the_guest_queue_under_the_deterministic_clock();
     test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_pulse_never_synthesises_start_in_a_real_window();
     test_ctrl_read_buffer_contract();
@@ -46853,6 +47016,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ctrl_sampling_mode_cycle_matrix();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
+    test_rtc_epoch_is_fixed_in_a_deterministic_run();
     test_delay_zero_probe_semantics();
     test_delay_thread_zero_loop_still_preempts_at_timeslice();
     test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
