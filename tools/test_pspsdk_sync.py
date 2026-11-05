@@ -17,7 +17,7 @@ import pspsdk_compare
 import pspsdk_source
 import pspsdk_sync
 
-PIN = "314b2083f2e1eaf145fc5de342736336fe1f0148"
+PIN = "687501d09733390ad75d855f73d69a0672b93a12"
 
 IMPORT_SOURCE = r'''
     .set noreorder
