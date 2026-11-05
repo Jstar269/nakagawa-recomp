@@ -4749,6 +4749,8 @@ typedef struct {
     char package[NK_MAX_PATH];
     char cache_packages[NK_MAX_PATH];
     char cache_bringup[NK_MAX_PATH];
+    char data_bringup[NK_MAX_PATH];
+    char captures[NK_MAX_PATH];
     char games[NK_MAX_PATH];
     char memstick[NK_MAX_PATH];
     char staging[NK_MAX_PATH];
@@ -4776,6 +4778,12 @@ static void removal_fixture_make(RemovalFixture *f, const char *disc) {
                       "packages", disc);
     removal_test_path(f->cache_bringup, sizeof(f->cache_bringup), f->build_root, "cache",
                       "bringup", disc);
+    /* The launcher's capture folder is under the per-user data directory even with a runtime
+       root set (#1933). */
+    removal_test_path(f->data_bringup, sizeof(f->data_bringup), f->data_root, "cache",
+                      "bringup", disc);
+    removal_test_path(f->captures, sizeof(f->captures), f->data_bringup, "captures", NULL,
+                      NULL);
     removal_test_path(f->games, sizeof(f->games), f->data_root, "games", disc, NULL);
     removal_test_path(f->memstick, sizeof(f->memstick), f->games, "memstick", NULL, NULL);
     snprintf(name, sizeof(name), ".staging_%s", disc);
@@ -4791,6 +4799,7 @@ static void removal_fixture_make(RemovalFixture *f, const char *disc) {
     removal_test_tree(f->package, "package.json", 3000);
     removal_test_tree(f->cache_packages, "objects.bin", 200);
     removal_test_tree(f->cache_bringup, "bringup.json", 100);
+    removal_test_tree(f->captures, "code_capture_08900000_0123456789abcdef.nkcap", 13);
     removal_test_tree(f->games, "EBOOT.BIN", 1000);
     removal_test_tree(f->memstick, "DATA.BIN", 40);
     removal_test_tree(f->staging, "partial.bin", 7);
@@ -5091,8 +5100,9 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     assert(player_app_plan_game_removal(app, 0, &plan));
     assert(plan.kind_present[PLAYER_REMOVAL_PACKAGE] &&
            plan.kind_bytes[PLAYER_REMOVAL_PACKAGE] == 3000u);
+    /* The build root's two caches, and the captures under the per-user data directory. */
     assert(plan.kind_present[PLAYER_REMOVAL_BUILD_CACHE] &&
-           plan.kind_bytes[PLAYER_REMOVAL_BUILD_CACHE] == 300u);
+           plan.kind_bytes[PLAYER_REMOVAL_BUILD_CACHE] == 313u);
     /* The copied disc files without their Memory Stick folder, and the
        leftover staging folder. */
     assert(plan.kind_present[PLAYER_REMOVAL_EXTRACTED] &&
@@ -5107,6 +5117,20 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
         assert(in_copy == plan.paths[i].disc_copy);
         assert(!(plan.paths[i].disc_copy && plan.paths[i].saves));
         assert(!native_test_path_within(plan.paths[i].path, f.manifests));
+    }
+    /* Without a runtime root the build root is the per-user data directory: its bring-up
+       folder is planned once, not twice. */
+    {
+        char runtime_root[sizeof(app->runtime_root)];
+        size_t bringup_paths = 0;
+        memcpy(runtime_root, app->runtime_root, sizeof(runtime_root));
+        app->runtime_root[0] = '\0';
+        assert(player_app_plan_game_removal(app, 0, &plan));
+        for (size_t i = 0; i < plan.path_count; ++i) {
+            if (native_test_path_within(plan.paths[i].path, f.data_bringup)) bringup_paths++;
+        }
+        assert(bringup_paths == 1u && plan.kind_bytes[PLAYER_REMOVAL_BUILD_CACHE] == 13u);
+        memcpy(app->runtime_root, runtime_root, sizeof(runtime_root));
     }
 
     /* Nothing goes while the game starts, runs or builds. */
@@ -5128,6 +5152,7 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     assert(!nk_platform_dir_exists(f.package));
     assert(!nk_platform_dir_exists(f.cache_packages));
     assert(!nk_platform_dir_exists(f.cache_bringup));
+    assert(!nk_platform_dir_exists(f.data_bringup));
     assert(!nk_platform_dir_exists(f.staging));
     assert(nk_platform_dir_exists(f.games) && nk_platform_dir_exists(f.memstick));
     {

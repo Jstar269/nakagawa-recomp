@@ -192,7 +192,7 @@
       "properties": {
         "round_limit": { "type": "integer", "minimum": 1 },
         "stop": {
-          "enum": ["NONE", "BRINGUP_CAPTURE_BOUND", "BRINGUP_CAPTURE_NOT_BOUND", "BRINGUP_CAPTURE_MISSING"]
+          "enum": ["NONE", "BRINGUP_CAPTURE_BOUND", "BRINGUP_CAPTURE_NOT_BOUND", "BRINGUP_CAPTURE_MISSING", "BRINGUP_CAPTURE_WRITE_FAILED", "BRINGUP_CAPTURE_PATH_UNQUOTABLE"]
         },
         "rounds": { "type": "array", "items": { "$ref": "#/$defs/capture_round" } }
       }
@@ -207,7 +207,7 @@
         "round": { "type": "integer", "minimum": 1 },
         "captures_translated": { "type": "integer", "minimum": 0 },
         "outcome": {
-          "enum": ["NO_CAPTURE_STOP", "NEW_CAPTURE", "CAPTURE_ALREADY_TRANSLATED", "CAPTURE_MISSING"]
+          "enum": ["NO_CAPTURE_STOP", "NEW_CAPTURE", "CAPTURE_ALREADY_TRANSLATED", "CAPTURE_MISSING", "CAPTURE_WRITE_FAILED"]
         },
         "failure_class": { "$ref": "#/properties/failure_class" }
       }

@@ -1708,9 +1708,10 @@ NkResult nk_launch_start(NkLaunchSession *session) {
        capture of it to SR_CODE_CAPTURE. The title's folder is the one `nk_cli.py bringup`
        translates on its next build (cache/bringup/<DISC>/captures under the per-user data
        directory, removed with the title's build cache). The runtime writes into the folder and
-       does not create it, so it is created here; a folder that cannot be created is still named,
-       and the runtime then names the capture it could not write. A value the user set is kept
-       (an empty one turns the capture off). */
+       does not create it, so it is created here. A folder that cannot be created is named on
+       stderr (by disc ID, not by its path, which names the user) and still passed on, so the
+       runtime then names the capture it could not write. A value the user set is kept (an empty
+       one turns the capture off). */
     {
         char capture_dir[NK_MAX_PATH];
         if (!getenv("SR_CODE_CAPTURE") &&
@@ -1718,7 +1719,13 @@ NkResult nk_launch_start(NkLaunchSession *session) {
             int w = snprintf(env_code_capture, sizeof(env_code_capture), "SR_CODE_CAPTURE=%s",
                              capture_dir);
             if (w > 0 && (size_t)w < sizeof(env_code_capture)) {
-                (void)nk_platform_mkdir_p_private(capture_dir);
+                if (!nk_platform_mkdir_p_private(capture_dir)) {
+                    fprintf(stderr,
+                            "NK_LAUNCH: cannot create the code-capture folder "
+                            "cache/bringup/%s/captures under the user data folder; a capture "
+                            "the run writes will fail by name\n",
+                            session->disc_id);
+                }
                 envp[env_count++] = env_code_capture;
             }
         }

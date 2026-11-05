@@ -438,23 +438,30 @@ repository ignores `*.nkcap`, and a capture is never committed or published.
 `mingw32-make code-capture-selftest` runs the whole loop on a synthetic routine.
 
 The player's launcher sets `SR_CODE_CAPTURE` for every title it starts, to the title's own folder
-`<user data>/cache/bringup/<DISC_ID>/captures` (created on launch, removed with the title's build
-cache). A value you set yourself is kept, and an empty one turns the capture off where the platform
-keeps empty variables. `nk_cli.py bringup` uses the same folder, always, and loops: every build
-translates each capture the folder holds (one `--code-capture=<file>` per capture in
-`CODEGEN_USER_ARGS`, so the package cache key changes with the set). When a launch stops at a capture
-the build did not translate, it builds and launches again, up to `--capture-rounds N` rounds
+`<user data>/cache/bringup/<DISC_ID>/captures`, under the per-user data directory even when a
+runtime root is set. The launcher creates it, and says so on stderr when it cannot; Remove from
+library removes it with the title's build cache. A value you set yourself is kept, and an empty one
+turns the capture off where the platform keeps empty variables. `nk_cli.py bringup` uses the same
+folder, always, and loops: every build translates each capture the folder holds (one quoted
+`"--code-capture=<file>"` per capture in `CODEGEN_USER_ARGS`, so a path with spaces stays one
+argument and the package cache key changes with the set). When a launch stops at a capture the
+build did not translate, it builds and launches again, up to `--capture-rounds N` rounds
 (default 4, at most 16). The report's `code_capture` field and the summary list every round. It
 gives counts and outcomes, never capture names. A title whose folder holds no capture and whose run
-writes none takes one round, and its report has no `code_capture` field. Three named stops exit
-non-zero:
+writes none takes one round, and its report has no `code_capture` field. A stop line names a
+capture as `<user data>/cache/bringup/<DISC_ID>/captures/<file>`, never by its full path, which
+usually names you. Five named stops exit non-zero:
 
-- `BRINGUP_CAPTURE_BOUND: <n> rounds reached; last capture <file>`: the last round still stopped at
-  a new capture. Raise `--capture-rounds`.
+- `BRINGUP_CAPTURE_BOUND: <n> rounds reached; last capture <capture>`: the last round still stopped
+  at a new capture. Raise `--capture-rounds`.
 - `BRINGUP_CAPTURE_NOT_BOUND`: the run stopped at a capture its own build translated. The
   translation did not bind, because memory did not hold the captured words when the game called
   them, so another round would build the same thing.
 - `BRINGUP_CAPTURE_MISSING`: the run named a capture the folder does not hold.
+- `BRINGUP_CAPTURE_WRITE_FAILED`: the run stopped at run-time code, but the runtime could not write
+  its capture to the folder.
+- `BRINGUP_CAPTURE_PATH_UNQUOTABLE`: the capture folder's path holds a character the build's
+  codegen arguments cannot carry (`$`, `` ` ``, `"`, `\`, `%`), so no round is built with it.
 
 The share is a time share. It overstates the interpreter's share of instructions, because the
 interpreter is slower per instruction. The exact instruction share still needs a

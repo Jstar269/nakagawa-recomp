@@ -3489,6 +3489,14 @@ bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
                                 build_root, "titles", disc, "decrypted") && ok;
     }
     if (have_data) {
+        /* The launcher names <per-user data>/cache/bringup/<disc>/captures to the runtime
+           (SR_CODE_CAPTURE, #1933) whatever the runtime root, so with a runtime root set the
+           captures of the game's run-time code are there, not under the build root. Without
+           one the two roots are the same folder, already planned above. */
+        if (!have_build || strcmp(build_root, data_root) != 0) {
+            ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, PLAYER_REMOVAL_ALWAYS, NULL,
+                                    data_root, "cache", "bringup", disc) && ok;
+        }
         /* The extracted disc files keep their Memory Stick folder, the saves
            of a game started from them, unless the saves go too. */
         ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, PLAYER_REMOVAL_ALWAYS,

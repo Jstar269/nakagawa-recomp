@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -3455,8 +3456,9 @@ class TestBringupCaptureRounds(unittest.TestCase):
 
     def _run(self, launches, *, capture_rounds=None, case_root=None):
         """Run cmd_bringup with one entry of ``launches`` per launch: None runs to a presented
-        frame; ("wrote" | "already holds" | "names", NAME) stops at capture NAME, writing it to
-        the run's SR_CODE_CAPTURE folder unless it says "names" (a capture it did not write)."""
+        frame; ("wrote" | "already holds" | "names" | "failed", NAME) stops at capture NAME,
+        writing it to the run's SR_CODE_CAPTURE folder unless it says "names" (a capture it did not
+        write) or "failed" (the runtime could not write it)."""
         if case_root is None:
             case_root = self.root / f"case-{len(list(self.root.iterdir()))}"
         self.case_root = case_root
@@ -3515,14 +3517,18 @@ class TestBringupCaptureRounds(unittest.TestCase):
                     "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
                 ))
             verb, name = step
-            if verb != "names":
+            if verb not in ("names", "failed"):
                 (Path(env["SR_CODE_CAPTURE"]) / name).write_bytes(b"NKCODE01" + bytes(28))
             target = name.split("_")[2]
+            if verb == "failed":
+                note = (f"  CODE_CAPTURE: failed; cannot write {name} to the SR_CODE_CAPTURE "
+                        "folder\n")
+            else:
+                note = (f"  CODE_CAPTURE: {'wrote' if verb == 'names' else verb} {name} "
+                        f"[0x{target},0x{target}) target=0x{target}; translate it with "
+                        "tools/code_capture.py (#1933)\n")
             return FakeProcess(1, (
-                f"DISPATCH_STOP reason=target-not-executable target=0x{target}\n"
-                f"  CODE_CAPTURE: {'wrote' if verb == 'names' else verb} {name} "
-                f"[0x{target},0x{target}) target=0x{target}; translate it with "
-                "tools/code_capture.py (#1933)\n"
+                f"DISPATCH_STOP reason=target-not-executable target=0x{target}\n" + note
             ))
 
         printed = []
@@ -3549,9 +3555,18 @@ class TestBringupCaptureRounds(unittest.TestCase):
         return status, report
 
     def _translated(self, build_index):
+        # Split as Make's recipe shell does: each capture is one quoted word.
         user_args = self.build_user_args[build_index] or ""
-        return sorted(token.removeprefix("--code-capture=") for token in user_args.split()
+        return sorted(token.removeprefix("--code-capture=") for token in shlex.split(user_args)
                       if token.startswith("--code-capture="))
+
+    def _label(self, name):
+        return f"<user data>/cache/bringup/ULUS99998/captures/{name}"
+
+    def _stop_line(self, stop):
+        lines = [line for line in self.printed.splitlines() if line.startswith(f"{stop}:")]
+        self.assertEqual(len(lines), 1, self.printed)
+        return lines[0]
 
     def test_a_run_without_a_capture_takes_one_round_unchanged(self):
         status, report = self._run([None])
@@ -3613,8 +3628,8 @@ class TestBringupCaptureRounds(unittest.TestCase):
         self.assertEqual([row["outcome"] for row in report["code_capture"]["rounds"]],
                          ["NEW_CAPTURE", "NEW_CAPTURE"])
         self.assertNotEqual(report["failure_class"], "NONE")
-        self.assertIn(f"BRINGUP_CAPTURE_BOUND: 2 rounds reached; last capture {self.CAPTURE_B}",
-                      self.printed)
+        self.assertIn(f"BRINGUP_CAPTURE_BOUND: 2 rounds reached; last capture "
+                      f"{self._label(self.CAPTURE_B)}", self.printed)
 
     def test_a_capture_its_own_build_translated_is_a_named_stop_not_a_loop(self):
         status, report = self._run([("wrote", self.CAPTURE_A), ("already holds", self.CAPTURE_A)])
@@ -3624,8 +3639,9 @@ class TestBringupCaptureRounds(unittest.TestCase):
         self.assertEqual(report["code_capture"]["stop"], "BRINGUP_CAPTURE_NOT_BOUND")
         self.assertEqual([row["outcome"] for row in report["code_capture"]["rounds"]],
                          ["NEW_CAPTURE", "CAPTURE_ALREADY_TRANSLATED"])
-        self.assertIn(f"BRINGUP_CAPTURE_NOT_BOUND: round 2 stopped at {self.CAPTURE_A}, which "
-                      "its build translated; the translation did not bind", self.printed)
+        self.assertIn(f"BRINGUP_CAPTURE_NOT_BOUND: round 2 stopped at "
+                      f"{self._label(self.CAPTURE_A)}, which its build translated; the "
+                      "translation did not bind", self.printed)
 
     def test_a_capture_the_folder_does_not_hold_is_a_named_stop(self):
         status, report = self._run([("names", self.CAPTURE_A)])
@@ -3633,6 +3649,74 @@ class TestBringupCaptureRounds(unittest.TestCase):
         self.assertEqual(len(self.launch_envs), 1)
         self.assertEqual(report["code_capture"]["stop"], "BRINGUP_CAPTURE_MISSING")
         self.assertIn("BRINGUP_CAPTURE_MISSING: round 1 stopped at", self.printed)
+
+    def test_a_stop_line_names_the_capture_under_user_data_not_by_its_folder(self):
+        # The capture folder usually names the user (C:/Users/<name>/...): the line printed for
+        # an issue report says where the capture is relative to the user data folder.
+        for launches, rounds, stop, name in (
+            ([("wrote", self.CAPTURE_A)], 1, "BRINGUP_CAPTURE_BOUND", self.CAPTURE_A),
+            ([("wrote", self.CAPTURE_A), ("already holds", self.CAPTURE_A)], None,
+             "BRINGUP_CAPTURE_NOT_BOUND", self.CAPTURE_A),
+            ([("names", self.CAPTURE_B)], None, "BRINGUP_CAPTURE_MISSING", self.CAPTURE_B),
+            ([("failed", self.CAPTURE_B)], None, "BRINGUP_CAPTURE_WRITE_FAILED", self.CAPTURE_B),
+        ):
+            with self.subTest(stop=stop):
+                status, _report = self._run(launches, capture_rounds=rounds)
+                self.assertEqual(status, 1)
+                line = self._stop_line(stop)
+                self.assertIn(self._label(name), line)
+                for folder in (self.capture_dir, self.root):
+                    self.assertNotIn(str(folder), line)
+                    self.assertNotIn(folder.as_posix(), line)
+
+    def test_a_capture_the_runtime_could_not_write_is_its_own_named_stop(self):
+        status, report = self._run([("failed", self.CAPTURE_A)])
+        self.assertEqual(status, 1)
+        self.assertEqual(len(self.launch_envs), 1)
+        self.assertEqual(report["code_capture"]["stop"], "BRINGUP_CAPTURE_WRITE_FAILED")
+        self.assertEqual([row["outcome"] for row in report["code_capture"]["rounds"]],
+                         ["CAPTURE_WRITE_FAILED"])
+        self.assertNotEqual(report["failure_class"], "NONE")
+        self.assertIn("the run stopped at code whose capture could not be written", self.printed)
+
+    def test_a_capture_path_with_a_space_stays_one_codegen_argument(self):
+        # A default Windows profile such as C:/Users/First Last puts a space in every capture path.
+        status, report = self._run([("wrote", self.CAPTURE_A), None],
+                                   case_root=self.root / "First Last")
+        self.assertEqual(status, 0, report)
+        expected = (self.capture_dir / self.CAPTURE_A).as_posix()
+        self.assertIn(" ", expected)
+        self.assertEqual(self._translated(1), [expected])
+        # Through a Make recipe, as mk/pipeline.mk passes $(CODEGEN_USER_ARGS) to codegen.py.
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        if make is None:
+            self.skipTest("SKIP: no make on PATH for the recipe half of the check")
+        makefile = self.root / "args.mk"
+        makefile.write_text(
+            "show:\n\t\"$(PYTHON)\" -c \"import json, sys; print(json.dumps(sys.argv[1:]))\" "
+            "$(CODEGEN_USER_ARGS)\n", encoding="utf-8")
+        run = subprocess.run(
+            [make, "--no-print-directory", "-s", "-f", str(makefile),
+             f"PYTHON={Path(sys.executable).as_posix()}", "show"],
+            env={**os.environ, "CODEGEN_USER_ARGS": self.build_user_args[1]},
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(run.stdout.strip().splitlines()[-1]),
+                         [f"--code-capture={expected}"])
+
+    def test_a_capture_path_the_build_arguments_cannot_carry_is_a_named_stop(self):
+        # Make expands $ in CODEGEN_USER_ARGS, so a folder with one is refused before a build
+        # would translate the wrong path.
+        status, report = self._run([("wrote", self.CAPTURE_A)], case_root=self.root / "a$b")
+        self.assertEqual(status, 1)
+        self.assertEqual(len(self.launch_envs), 1, "the second round is not built")
+        self.assertEqual(len(self.build_user_args), 1)
+        self.assertEqual(report["code_capture"]["stop"], "BRINGUP_CAPTURE_PATH_UNQUOTABLE")
+        self.assertEqual(report["failure_class"], "CODEGEN_FAILED")
+        line = self._stop_line("BRINGUP_CAPTURE_PATH_UNQUOTABLE")
+        self.assertIn("'$'", line)
+        self.assertNotIn(str(self.root), line)
 
     def test_the_round_limit_option_is_checked(self):
         self.assertEqual(nk_cli._capture_rounds_argument("3"), 3)

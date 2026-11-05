@@ -5627,14 +5627,42 @@ def _bringup_captures(folder: Path) -> list[Path]:
 
 
 _CODE_CAPTURE_STOP_RE = re.compile(
-    r"CODE_CAPTURE: (?:wrote|already holds) (code_capture_[0-9a-f]{8}_[0-9a-f]{16}\.nkcap) "
+    r"CODE_CAPTURE: (?:(wrote|already holds)|failed; cannot write) "
+    r"(code_capture_[0-9a-f]{8}_[0-9a-f]{16}\.nkcap) "
 )
 
 
-def _bringup_capture_stop(launch_output: str | None) -> str | None:
-    """The capture the run stopped at (src/rt/recomp.c code_capture_note), or None."""
-    names = _CODE_CAPTURE_STOP_RE.findall(launch_output or "")
-    return names[-1] if names else None
+def _bringup_capture_stop(launch_output: str | None) -> tuple[bool, str] | None:
+    """The capture the run stopped at (src/rt/recomp.c code_capture_note), or None.
+
+    Returns ``(written, name)``: ``written`` is False when the runtime could not write the
+    capture to its folder."""
+    stops = _CODE_CAPTURE_STOP_RE.findall(launch_output or "")
+    if not stops:
+        return None
+    verb, name = stops[-1]
+    return bool(verb), name
+
+
+def _bringup_capture_label(disc_id: str, name: str) -> str:
+    """A capture's path as the bring-up prints it: under ``<user data>``, never the folder itself,
+    which usually names the user. The file stays in the title's private folder."""
+    return f"<user data>/cache/bringup/{disc_id.upper()}/captures/{name}"
+
+
+# The characters a capture path cannot carry through CODEGEN_USER_ARGS: Make expands ``$`` in it,
+# and inside the double quotes that keep a path with spaces in one argument, sh reads ``$``, `` ` ``,
+# ``"`` and ``\``, and cmd reads ``%`` and ``"``.
+_CODEGEN_ARG_UNQUOTABLE = frozenset('"$`\\%\n\r')
+
+
+def _codegen_capture_argument(path: Path) -> str | None:
+    """``path`` as one quoted ``--code-capture`` word of CODEGEN_USER_ARGS, or None when it holds a
+    character the quoting cannot carry (``_CODEGEN_ARG_UNQUOTABLE``)."""
+    text = path.as_posix()
+    if any(character in _CODEGEN_ARG_UNQUOTABLE for character in text):
+        return None
+    return f'"--code-capture={text}"'
 
 
 @contextlib.contextmanager
@@ -5643,13 +5671,18 @@ def _bringup_codegen_captures(captures: list[Path]):
     option in CODEGEN_USER_ARGS, the codegen argument route every package build reads and its
     cache key names. Each file is named, not the folder, so the key changes with the set of
     captures (a capture's name carries its target and a hash of its bytes) and a build of a
-    larger set is never served from the cache of a smaller one. A value the caller set is
-    kept, and it is restored afterwards."""
+    larger set is never served from the cache of a smaller one. Each word is quoted, so a path
+    with spaces (a Windows profile such as ``C:/Users/First Last``) stays one argument through
+    Make's recipe shell; the caller checks first that every path can be quoted. A value the
+    caller set is kept, and it is restored afterwards."""
     if not captures:
         yield
         return
     previous = os.environ.get("CODEGEN_USER_ARGS")
-    added = " ".join(f"--code-capture={path.as_posix()}" for path in captures)
+    words = [_codegen_capture_argument(path) for path in captures]
+    if None in words:
+        raise ValueError("a capture path cannot be quoted in CODEGEN_USER_ARGS")
+    added = " ".join(word for word in words if word is not None)
     os.environ["CODEGEN_USER_ARGS"] = f"{previous} {added}" if previous else added
     try:
         yield
@@ -5665,6 +5698,7 @@ _CAPTURE_OUTCOME_TEXT = {
     "NEW_CAPTURE": "stopped at a new capture",
     "CAPTURE_ALREADY_TRANSLATED": "stopped at a capture its build translated",
     "CAPTURE_MISSING": "stopped at a capture the folder does not hold",
+    "CAPTURE_WRITE_FAILED": "stopped at code whose capture could not be written",
 }
 
 
@@ -5694,7 +5728,10 @@ def _bringup_capture_rounds(st: Any) -> int:
     has no ``code_capture`` field. The rounds are bounded by ``--capture-rounds``; a run that
     still stops at a new capture in the last round is the named stop BRINGUP_CAPTURE_BOUND, and a
     run that stops at a capture its own build translated is BRINGUP_CAPTURE_NOT_BOUND, since
-    another round would build the same thing. Either exits non-zero, never as success.
+    another round would build the same thing. A run whose capture could not be written is
+    BRINGUP_CAPTURE_WRITE_FAILED, and a capture folder whose path cannot be passed to the build is
+    BRINGUP_CAPTURE_PATH_UNQUOTABLE. Each exits non-zero, never as success. The stop lines name
+    a capture under ``<user data>``, not by its full path.
     """
     limit = getattr(st.args, "capture_rounds", BRINGUP_CAPTURE_ROUNDS_DEFAULT)
     folder = bringup_capture_dir(st.user_root, st.metadata.disc_id)
@@ -5709,6 +5746,21 @@ def _bringup_capture_rounds(st: Any) -> int:
             st.report = copy.deepcopy(analyzed_report)
         if rounds or translated:
             st.report["code_capture"] = {"round_limit": limit, "stop": "NONE", "rounds": rounds}
+        unquotable = sorted({character for path in translated
+                             if _codegen_capture_argument(path) is None
+                             for character in path.as_posix()
+                             if character in _CODEGEN_ARG_UNQUOTABLE})
+        if unquotable:
+            named_stop = "BRINGUP_CAPTURE_PATH_UNQUOTABLE"
+            st.report["code_capture"]["stop"] = named_stop
+            st.fail_stage(st.report, "codegen", "CODEGEN_FAILED", [1933])
+            status = _bringup_finish(st)
+            print(
+                f"{named_stop}: the title's capture folder path holds {' '.join(map(repr, unquotable))}, "
+                "which the package build's codegen arguments cannot carry; move the user data "
+                "folder to a path without them"
+            )
+            return status or 1
         st.launch_output = None
         with _bringup_codegen_captures(translated):
             rc: int | None = _bringup_codegen(st)
@@ -5719,35 +5771,46 @@ def _bringup_capture_rounds(st: Any) -> int:
         rc = _bringup_launch(st)
         if rc is not None:
             return rc
-        stopped = _bringup_capture_stop(st.launch_output)
-        if stopped is None and "code_capture" not in st.report:
+        capture_stop = _bringup_capture_stop(st.launch_output)
+        if capture_stop is None and "code_capture" not in st.report:
             return _bringup_finish(st)
         named_stop, message = "NONE", None
-        if stopped is None:
+        if capture_stop is None:
             outcome = "NO_CAPTURE_STOP"
-        elif stopped in {path.name for path in translated}:
-            outcome = "CAPTURE_ALREADY_TRANSLATED"
-            named_stop = "BRINGUP_CAPTURE_NOT_BOUND"
-            message = (
-                f"{named_stop}: round {round_number} stopped at {stopped}, which its build "
-                "translated; the translation did not bind (guest memory did not hold the captured "
-                "words when the game called them), so another round would stop there again"
-            )
-        elif not (folder / stopped).is_file():
-            outcome = "CAPTURE_MISSING"
-            named_stop = "BRINGUP_CAPTURE_MISSING"
-            message = (
-                f"{named_stop}: round {round_number} stopped at {stopped}, which {folder} does "
-                "not hold, so no round can translate it"
-            )
         else:
-            outcome = "NEW_CAPTURE"
-            if round_number >= limit:
-                named_stop = "BRINGUP_CAPTURE_BOUND"
+            written, stopped = capture_stop
+            label = _bringup_capture_label(st.metadata.disc_id, stopped)
+            if not written:
+                outcome = "CAPTURE_WRITE_FAILED"
+                named_stop = "BRINGUP_CAPTURE_WRITE_FAILED"
                 message = (
-                    f"{named_stop}: {round_number} rounds reached; last capture {stopped} "
-                    "(raise --capture-rounds to translate it)"
+                    f"{named_stop}: round {round_number} stopped at code whose capture {label} "
+                    "could not be written; check that the title's capture folder can be written"
                 )
+            elif stopped in {path.name for path in translated}:
+                outcome = "CAPTURE_ALREADY_TRANSLATED"
+                named_stop = "BRINGUP_CAPTURE_NOT_BOUND"
+                message = (
+                    f"{named_stop}: round {round_number} stopped at {label}, which its build "
+                    "translated; the translation did not bind (guest memory did not hold the "
+                    "captured words when the game called them), so another round would stop "
+                    "there again"
+                )
+            elif not (folder / stopped).is_file():
+                outcome = "CAPTURE_MISSING"
+                named_stop = "BRINGUP_CAPTURE_MISSING"
+                message = (
+                    f"{named_stop}: round {round_number} stopped at {label}, which the title's "
+                    "capture folder does not hold, so no round can translate it"
+                )
+            else:
+                outcome = "NEW_CAPTURE"
+                if round_number >= limit:
+                    named_stop = "BRINGUP_CAPTURE_BOUND"
+                    message = (
+                        f"{named_stop}: {round_number} rounds reached; last capture {label} "
+                        "(raise --capture-rounds to translate it)"
+                    )
         rounds.append({
             "round": round_number,
             "captures_translated": len(translated),
