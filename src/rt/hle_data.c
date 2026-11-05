@@ -76,9 +76,11 @@ void sreg_build_font_registry(void) {
             continue;
         }
         if (getenv("SR_FONTLOG"))
-            fprintf(stderr, "sceReg: font index %u is served from the %s source as %s%s\n", index,
+            fprintf(stderr, "sceReg: font index %u is served from the %s source as %s%s%s\n", index,
                     info.source, info.file_name,
-                    info.served_as_regular ? " (its measured bold or italic style is served as regular)" : "");
+                    info.served_as_regular ? " (its measured bold or italic style is served as regular)" : "",
+                    info.served_as_other_family
+                        ? " (its measured family is served by a face of the other family)" : "");
         ok = sreg_add_font_info(prop, index, &info);
     }
     if (!ok) {
