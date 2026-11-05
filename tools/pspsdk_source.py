@@ -195,7 +195,7 @@ def _same_import(a: dict[str, Any], b: dict[str, Any]) -> bool:
 
 def _is_placeholder(entry: dict[str, Any]) -> bool:
     """True when the symbol is PSPSDK's unnamed-stub form <library>_<NID>, NID in upper-case hex."""
-    return entry["symbol"] == f"{entry['library']}_{entry['nid'][2:].upper()}"
+    return bool(entry["symbol"] == f"{entry['library']}_{entry['nid'][2:].upper()}")
 
 
 def _check_name(
@@ -251,19 +251,19 @@ def scan_imports(root: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
         for entry in parsed:
             key = (entry["library"], entry["nid"])
             if key in seen:
-                previous = seen[key]
-                if _same_import(previous, entry):
+                first = seen[key]
+                if _same_import(first, entry):
                     # The same stub declared twice links to one import: keep the first.
                     print(
                         f"pspsdk_sync: duplicate upstream import {entry['library']} "
-                        f"{entry['nid']} {entry['symbol']} at {previous['source_file']}:"
-                        f"{previous['source_line']} and {entry['source_file']}:"
+                        f"{entry['nid']} {entry['symbol']} at {first['source_file']}:"
+                        f"{first['source_line']} and {entry['source_file']}:"
                         f"{entry['source_line']}; kept once",
                         file=sys.stderr,
                     )
                     continue
-                if _is_placeholder(previous) != _is_placeholder(entry):
-                    kept, dropped = (entry, previous) if _is_placeholder(previous) else (previous, entry)
+                if _is_placeholder(first) != _is_placeholder(entry):
+                    kept, dropped = (entry, first) if _is_placeholder(first) else (first, entry)
                     print(
                         f"pspsdk_sync: upstream import {entry['library']} {entry['nid']} is "
                         f"declared as placeholder {dropped['symbol']} at {dropped['source_file']}:"
@@ -276,13 +276,13 @@ def scan_imports(root: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
                     _check_name(entry, seen_names)
                     seen_names.setdefault((entry["library"], entry["symbol"]), entry)
                     if kept is entry:
-                        functions[next(i for i, f in enumerate(functions) if f is previous)] = entry
+                        functions[next(i for i, f in enumerate(functions) if f is first)] = entry
                         seen[key] = entry
                     continue
                 raise SyncError(
                     f"duplicate upstream import {entry['library']} {entry['nid']}: "
-                    f"{previous['symbol']} at {previous['source_file']}:"
-                    f"{previous['source_line']} and {entry['symbol']} at "
+                    f"{first['symbol']} at {first['source_file']}:"
+                    f"{first['source_line']} and {entry['symbol']} at "
                     f"{entry['source_file']}:{entry['source_line']}"
                 )
             _check_name(entry, seen_names)
