@@ -1146,6 +1146,10 @@ extern uint32_t s_ctrl_sampling_cycle;
 __attribute__((format(printf, 2, 3))) uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...);
 int guest_cstr(uint32_t addr, char *out, int max);
 uint32_t free_block(uint32_t uid);
+/* sceNet core library state (hle_network.c): reset at LoadExec and by the self-tests. */
+void hle_net_reset(void);
+int sr_hle_test_net_inited(void);
+uint32_t sr_hle_test_net_pool_uid(void);
 extern FplPool s_fpls[FPL_MAX];
 FplPool *fpl_lookup(uint32_t uid);
 void fpl_remove_waiter(FplPool *p, uint32_t thread_uid);

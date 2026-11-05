@@ -465,8 +465,17 @@ uint32_t alloc_block(uint32_t size) {
         return 0xFFFFFFFFu;
     }
 
+    /* The slot is the size rounded up to 256 bytes. A size within 255 of 4 GB has no such slot:
+     * the rounding would wrap to a 256-byte slot that a small free block satisfies, so it is
+     * refused here like any other request the partition cannot hold. */
+    if (size > 0xFFFFFF00u) {
+        if (guard) {
+            fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) rounds past 4 GB\n", size, size);
+            fflush(stderr);
+        }
+        return 0xFFFFFFFFu;
+    }
     uint32_t needed_slot = (size + 0xFFu) & ~0xFFu;
-    if (needed_slot == 0) needed_slot = 0x100u;
 
     uint32_t addr = 0;
     uint32_t slot_size = 0;
