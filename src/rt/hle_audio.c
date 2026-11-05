@@ -11,6 +11,7 @@
  * (#307). */
 
 #include "hle_internal.h"
+#include "sas_envelope.h"
 
 /* SR_AUDIOSTAT aggregate counters (investigation telemetry). Declared here because
  * the ATRAC decode path and the vblank exit dump both precede the SAS definitions. */
@@ -142,6 +143,48 @@ static uint32_t h_AudioChangeChannelVolume(CpuState *s) {
  * slightly slower than the device every iteration (sleep + decode time), so streams drifted
  * behind (voice lagging subtitles) and underran (crackle). */
 extern int sr_audio_queued(int ch);
+
+/* ---- the audio device under the deterministic clock (#2037) --------------------------------
+ *
+ * The host mixer drains its queue in host time. A guest that paces itself against the queue
+ * (sceAudioOutput*Blocking waits out the lead beyond two periods, sceAudioGetChannelRestLength
+ * and the PSMF player's audio lead report it) then sees guest time depend on how fast the host
+ * ran: a run that is faster than real time never sees the queue drain, so each blocking output
+ * waits out the same lead again, guest time races ahead of the work, and the title sits in its
+ * music while its clock runs. Under the deterministic clock the queue the guest sees is the
+ * device the PSP has: it plays 44100 frames a second of GUEST time from the first push. The
+ * host mixer still plays what it is given, and its own depth is only consulted for "is there an
+ * output at all" (-1 stays -1, so a run without audio keeps its open-loop pacing). */
+static uint32_t s_vq_frames[9];
+static uint64_t s_vq_last_us[9];
+static uint64_t s_vq_carry[9];   /* microsecond-frames not yet a whole frame, denominator 1e6 */
+
+static void audio_vq_drain(uint32_t slot) {
+    uint64_t now = now_usec();
+    uint64_t dt = now > s_vq_last_us[slot] ? now - s_vq_last_us[slot] : 0u;
+    s_vq_last_us[slot] = now;
+    if (!s_vq_frames[slot]) { s_vq_carry[slot] = 0u; return; }
+    uint64_t scaled = dt * 44100u + s_vq_carry[slot];
+    uint64_t drained = scaled / 1000000u;
+    s_vq_carry[slot] = scaled % 1000000u;
+    if (drained >= s_vq_frames[slot]) { s_vq_frames[slot] = 0u; s_vq_carry[slot] = 0u; }
+    else s_vq_frames[slot] -= (uint32_t)drained;
+}
+
+/* The queue depth in frames the guest sees on `ch`, or -1 when the host has no output for it. */
+int hle_audio_queued(int ch) {
+    int host = sr_audio_queued(ch);
+    if (host < 0 || ch < 0 || ch > 8 || !sched_clock_deterministic()) return host;
+    audio_vq_drain((uint32_t)ch);
+    return s_vq_frames[ch] > (uint32_t)INT_MAX ? INT_MAX : (int)s_vq_frames[ch];
+}
+
+static void audio_vq_pushed(int ch, int nframes) {
+    if (ch < 0 || ch > 8 || nframes <= 0 || !sched_clock_deterministic()) return;
+    audio_vq_drain((uint32_t)ch);
+    uint64_t sum = (uint64_t)s_vq_frames[ch] + (uint32_t)nframes;
+    s_vq_frames[ch] = sum > UINT32_MAX ? UINT32_MAX : (uint32_t)sum;
+}
 static uint32_t s_audio_delay_carry[9];
 
 /* Convert a frame delta to microseconds without discarding the 44.1 kHz fractional carry.
@@ -250,6 +293,9 @@ void hle_audio_guest_reset(void) {
     s_audio_src_freq = 0;
     sr_audio_resampler_destroy(&s_audio_src_resampler);
     memset(s_audio_delay_carry, 0, sizeof(s_audio_delay_carry));
+    memset(s_vq_frames, 0, sizeof(s_vq_frames));
+    memset(s_vq_last_us, 0, sizeof(s_vq_last_us));
+    memset(s_vq_carry, 0, sizeof(s_vq_carry));
     memset(g_audio_bufs, 0, sizeof(g_audio_bufs));
     memset(g_audio_nbufs, 0, sizeof(g_audio_nbufs));
     s_lead_last_vbl = 0u;
@@ -310,9 +356,10 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
         psmf_av_audio_submit((int)ch, buf, bytes, mono ? 2u : 4u, 44100u);   /* queue lead read before the push */
         uint64_t out_started = sr_perf_now_ns();
         sr_audio_push((int)ch, lr, (int)n, voll, volr);
+        audio_vq_pushed((int)ch, (int)n);
         if (out_started) sr_perf_audio_output(out_started, n);
     }
-    int q = sr_audio_queued((int)ch);
+    int q = hle_audio_queued((int)ch);
     if (q < 0 || n == 0) {                 /* no host audio: open-loop pacing as before */
         sched_delay_current(n ? audio_frames_to_us(ch, n) : 1000u);
         return n;
@@ -332,7 +379,7 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
      * boundary latency a whole period of headroom while still pacing against the
      * device's real drain; n is bounded by the reserve/SetChannelDataLen
      * contracts (<= 65536 frames), so 2u * n cannot wrap. */
-    while ((q = sr_audio_queued((int)ch)) >= 0 && (uint32_t)q > 2u * n)
+    while ((q = hle_audio_queued((int)ch)) >= 0 && (uint32_t)q > 2u * n)
         sched_delay_current(audio_frames_to_us(ch, (uint32_t)q - 2u * n));
     audio_note_lead((int)ch, q);
     return n;
@@ -357,7 +404,7 @@ static uint32_t h_AudioChangeChannelConfig(CpuState *s) {
 static uint32_t h_AudioRestLen(CpuState *s) {
     (void)s;
     if (A0 >= 8u) return SCE_AUDIO_ERROR_INVALID_CH;
-    int q = sr_audio_queued((int)A0);
+    int q = hle_audio_queued((int)A0);
     return q > 0 ? (uint32_t)q : 0u;
 }
 
@@ -404,7 +451,7 @@ static uint32_t h_AudioOutput2Reserve(CpuState *s) {
 static uint32_t h_AudioOutput2Release(CpuState *s) {
     (void)s;
     if (!audio_output2_reserved()) return SCE_AUDIO_ERROR_NOT_RESERVED;
-    if (sr_audio_queued(AUDIO_OUTPUT2_CHANNEL) > 0) return SCE_AUDIO_ERROR_OUTPUT2_BUSY;
+    if (hle_audio_queued(AUDIO_OUTPUT2_CHANNEL) > 0) return SCE_AUDIO_ERROR_OUTPUT2_BUSY;
     s_audio_ch[AUDIO_OUTPUT2_CHANNEL] = 0;
     s_audio_len[AUDIO_OUTPUT2_CHANNEL] = 0;
     return 0;
@@ -424,7 +471,7 @@ static uint32_t h_AudioOutput2Blocking(CpuState *s) {
 static uint32_t h_AudioOutput2Rest(CpuState *s) {
     (void)s;
     if (!audio_output2_reserved()) return SCE_AUDIO_ERROR_NOT_RESERVED;
-    int queued = sr_audio_queued(AUDIO_OUTPUT2_CHANNEL);
+    int queued = hle_audio_queued(AUDIO_OUTPUT2_CHANNEL);
     return queued > 0 ? (uint32_t)queued : 0u;
 }
 
@@ -513,6 +560,7 @@ static uint32_t audio_src_output(CpuState *s, int owner, uint32_t vol, uint32_t 
             uint64_t out_started = sr_perf_now_ns();
             sr_audio_push(AUDIO_OUTPUT2_CHANNEL, converted, (int)converted_frames,
                           (int)vol, (int)vol);
+            audio_vq_pushed(AUDIO_OUTPUT2_CHANNEL, (int)converted_frames);
             if (out_started)
                 sr_perf_audio_output(out_started, (uint32_t)converted_frames);
         }
@@ -654,13 +702,10 @@ typedef struct {
     uint32_t pcm;                 /* mono signed-16 PCM source */
     uint32_t pcm_samples, pcm_pos;
     int pcm_loop_start;
-    /* ADSR rates/modes and retained simple-envelope words. */
-    int adsr_a, adsr_d, adsr_s, adsr_r;
-    int mode_a, mode_d, mode_s, mode_r;
-    int sustain_level;            /* 0..0x40000000 */
-    uint32_t simple_adsr1, simple_adsr2;
-    int env_level;                /* 0..0x40000000 */
-    int env_phase;                /* 0=ATTACK, 1=DECAY, 2=SUSTAIN, 3=RELEASE, 4=OFF */
+    /* The ADSR envelope (sas_envelope.h) and its height after the last step, 0..0x40000000,
+     * which the mixer scales by and the height getters return. */
+    SasEnvelope envelope;
+    int env_level;
     int noise;                    /* 0..63 (noise clock) */
 } SasVoice;
 
@@ -828,29 +873,21 @@ static void sas_output_write(uint32_t out, uint32_t frame, int channel, int valu
     MEM_W16(out + off, (uint16_t)(int16_t)value);
 }
 
-static int sas_env_step(int configured, int fallback) {
-    return configured > 0 ? configured : fallback;
+/* One sample's envelope step (sas_envelope.h). The configured rates and curves are used as
+ * the game set them: a rate of 0 holds the height, it is not replaced by a default. A voice
+ * whose envelope has ended (released to zero) stops. */
+static void sas_advance_envelope(SasVoice *v) {
+    sas_envelope_step(&v->envelope);
+    v->env_level = sas_envelope_height(&v->envelope);
+    if (sas_envelope_ended(&v->envelope)) v->on = 0;
 }
 
-static void sas_advance_envelope(SasVoice *v) {
-    if (v->env_phase == 0) {
-        int64_t level = (int64_t)v->env_level + sas_env_step(v->adsr_a, 0x1000000);
-        if (level >= SAS_ENVELOPE_MAX) { v->env_level = SAS_ENVELOPE_MAX; v->env_phase = 1; }
-        else v->env_level = (int)level;
-    } else if (v->env_phase == 1) {
-        int step = sas_env_step(v->adsr_d, 0x800000);
-        if (v->env_level > v->sustain_level) {
-            v->env_level -= step;
-            if (v->env_level <= v->sustain_level) {
-                v->env_level = v->sustain_level; v->env_phase = 2;
-            }
-        } else {
-            v->env_level = v->sustain_level; v->env_phase = 2;
-        }
-    } else if (v->env_phase == 3) {
-        v->env_level -= sas_env_step(v->adsr_r, 0x1000000);
-        if (v->env_level <= 0) { v->env_level = 0; v->env_phase = 4; v->on = 0; }
-    }
+/* The voice's sound data has run out: its envelope ends, so both height getters read 0
+ * (PPSSPP ends the envelope there too), and the voice stops. */
+static void sas_voice_data_ended(SasVoice *v) {
+    sas_envelope_end(&v->envelope);
+    v->env_level = 0;
+    v->on = 0;
 }
 
 static int sas_next_sample(SasVoice *v, int *sample) {
@@ -937,7 +974,7 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
         if (!v->on || v->paused) continue;
         for (int i = 0; i < n; i++) {
             int samp = 0;
-            if (!sas_next_sample(v, &samp)) { v->on = 0; break; }
+            if (!sas_next_sample(v, &samp)) { sas_voice_data_ended(v); break; }
             sas_advance_envelope(v);
             int s_env = (int)(((int64_t)samp * v->env_level) >> 30);
             mixl[i] += (s_env * v->voll) >> 12;
@@ -1014,7 +1051,7 @@ static uint32_t h_SasInit(CpuState *s) {
     memset(s_sasv, 0, sizeof(s_sasv));
     for (int i = 0; i < SAS_VOICES; i++) {
         s_sasv[i].pitch = 0x1000; s_sasv[i].loop_start = -1; s_sasv[i].pcm_loop_start = -1;
-        s_sasv[i].sustain_level = SAS_ENVELOPE_MAX; s_sasv[i].env_phase = 4;
+        sas_envelope_reset(&s_sasv[i].envelope);
     }
     s_sas_core.end_flags = sas_live_end_flags();
     return 0;
@@ -1077,10 +1114,7 @@ static uint32_t h_SasSetADSR(CpuState *s) {
     if ((mask & SAS_ADSR_ATTACK && a < 0) || (mask & SAS_ADSR_DECAY && d < 0) ||
         (mask & SAS_ADSR_SUSTAIN && sustain < 0) || (mask & SAS_ADSR_RELEASE && r < 0))
         return SAS_ERROR_ADSR_VAL;
-    if (mask & SAS_ADSR_ATTACK) v->adsr_a = a;
-    if (mask & SAS_ADSR_DECAY) v->adsr_d = d;
-    if (mask & SAS_ADSR_SUSTAIN) v->adsr_s = sustain;
-    if (mask & SAS_ADSR_RELEASE) v->adsr_r = r;
+    sas_envelope_set_rates(&v->envelope, mask, a, d, sustain, r);
     return 0;
 }
 
@@ -1091,14 +1125,11 @@ static uint32_t h_SasSetADSRmode(CpuState *s) {
     int32_t sustain = (int32_t)stack_arg(s, 1), r = (int32_t)stack_arg(s, 2);
     if (e) return e;
     if (mask & ~SAS_ADSR_ALL) return SAS_ERROR_ADSR_MODE;
-    if ((mask & SAS_ADSR_ATTACK && (a < 0 || a > 5)) ||
-        (mask & SAS_ADSR_DECAY && (d < 0 || d > 5)) ||
-        (mask & SAS_ADSR_SUSTAIN && (sustain < 0 || sustain > 5)) ||
-        (mask & SAS_ADSR_RELEASE && (r < 0 || r > 5))) return SAS_ERROR_ADSR_MODE;
-    if (mask & SAS_ADSR_ATTACK) v->mode_a = a;
-    if (mask & SAS_ADSR_DECAY) v->mode_d = d;
-    if (mask & SAS_ADSR_SUSTAIN) v->mode_s = sustain;
-    if (mask & SAS_ADSR_RELEASE) v->mode_r = r;
+    /* The PSP ignores each value's top bit, then refuses a curve its phase cannot take
+     * (sas_envelope.h); a refused call changes no curve. */
+    a &= 0x7FFFFFFF; d &= 0x7FFFFFFF; sustain &= 0x7FFFFFFF; r &= 0x7FFFFFFF;
+    if (sas_envelope_refused_curves(a, d, sustain, r) & mask) return SAS_ERROR_ADSR_MODE;
+    sas_envelope_set_curves(&v->envelope, mask, a, d, sustain, r);
     return 0;
 }
 
@@ -1106,9 +1137,10 @@ static uint32_t h_SasSetSimpleADSR(CpuState *s) {
     SasVoice *v; uint32_t e = sas_voice_for(A0, A1, &v);
     if (e) return e;
     if ((A3 >> 13) & 1u) return SAS_ERROR_ADSR_MODE;
-    v->simple_adsr1 = A2; v->simple_adsr2 = A3;
-    v->adsr_a = (int)(A2 & 0xffffu); v->adsr_r = (int)(A3 & 0xffffu);
-    v->adsr_d = 0; v->adsr_s = SAS_ENVELOPE_MAX;
+    /* Two packed 16-bit words: rates, curves and the sustain level (sas_envelope.h). They
+     * were stored here as raw per-sample steps, which made every SimpleADSR attack and
+     * release the wrong length. */
+    sas_envelope_set_simple(&v->envelope, A2, A3);
     return 0;
 }
 
@@ -1117,7 +1149,7 @@ static uint32_t h_SasSetSL(CpuState *s) {
     int32_t level = (int32_t)A2;
     if (e) return e;
     if (level < 0 || level > SAS_ENVELOPE_MAX) return SAS_ERROR_ADSR_VAL;
-    v->sustain_level = level; return 0;
+    sas_envelope_set_sustain_level(&v->envelope, level); return 0;
 }
 
 static uint32_t h_SasSetNoise(CpuState *s) {
@@ -1147,7 +1179,7 @@ static uint32_t h_SasSetKeyOn(CpuState *s) {
         (v->type == SAS_VOICE_PCM && (!v->pcm || !v->pcm_samples))) return SAS_ERROR_INVALID_STATE;
     v->pos = 0; v->pcm_pos = 0; v->hist1 = v->hist2 = 0; v->bufn = v->bufi = 0; v->frac = 0;
     if (!v->voll && !v->volr) { v->voll = SAS_VOLUME_MAX; v->volr = SAS_VOLUME_MAX; }
-    v->env_level = 0; v->env_phase = 0; v->on = 1;
+    sas_envelope_key_on(&v->envelope); v->env_level = 0; v->on = 1;
     if (sas_log_on()) {
         static uint32_t calls; calls++;
         fprintf(stderr, "SAS_KEYON: call=%u vbl=%u voice=%u type=%d vag=0x%08x size=%u voll=%d volr=%d on=%d\n",
@@ -1159,7 +1191,7 @@ static uint32_t h_SasSetKeyOn(CpuState *s) {
 static uint32_t h_SasSetKeyOff(CpuState *s) {
     SasVoice *v; uint32_t e = sas_voice_for(A0, A1, &v);
     if (e) return e;
-    if (v->on) v->env_phase = 3;
+    if (v->on) sas_envelope_key_off(&v->envelope);
     return 0;
 }
 
