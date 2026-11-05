@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **459** (declared in `recomp.h`: 389)
-- reach class: emitter-reached 80, production-runtime-only 344, selftest-only 0, address-only 8, none 27
-- provenance class of the home definition: declared-only 1, project_authored_attested 35, upstream_derived 423
+- helpers: **461** (declared in `recomp.h`: 389)
+- reach class: emitter-reached 80, production-runtime-only 346, selftest-only 0, address-only 8, none 27
+- provenance class of the home definition: declared-only 1, project_authored_attested 35, upstream_derived 425
 
 ## Helpers
 
@@ -313,7 +313,9 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_heap_dump_failure` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_free_block` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_free_list_valid` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_heap_free_list_walk` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_free_node_valid` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_heap_free_nodes_overlap` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_freelist_unlink` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_header_slot` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_is_header` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
