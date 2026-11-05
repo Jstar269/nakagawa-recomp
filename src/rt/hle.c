@@ -2917,6 +2917,11 @@ uint64_t rtc_now_tick(void) {
          * first RTC query made after boot-time work does not double-count the
          * elapsed scheduler time.  Subsequent reads are guest-time only. */
         uint64_t host_tick = RTC_FILETIME_EPOCH_TICK + sr_host_filetime_ticks() / 10u;
+        /* A deterministic run (#2037) starts the calendar at a fixed date, so two identical
+         * runs see the same time of day: a game that seeds a random generator from the RTC, or
+         * shows the date, does the same thing each time. */
+        if (sched_clock_deterministic())
+            host_tick = RTC_UNIX_EPOCH_TICK + 1325376000ull * 1000000ull;   /* 2012-01-01 00:00:00 UTC */
         uint64_t elapsed = now_usec();
         s_rtc_epoch_tick = host_tick >= elapsed ? host_tick - elapsed : 0u;
         s_rtc_last_tick = host_tick;
