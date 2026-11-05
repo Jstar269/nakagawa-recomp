@@ -394,11 +394,11 @@
           "Copyright (C) 2026 Advanced Micro Devices, Inc.",
           "Copyright (C) 2024 Advanced Micro Devices, Inc."
         ],
-        "note": "FSR 1 (ffx_fsr1.h) and the ffx_core headers from FidelityFX SDK v2.4.0, and ffx_core_glsl.h from FidelityFX SDK 1.1 (commit 1bbe66e7ea0d358e84af4471a90aa9c35b583de0), with line endings normalised to LF (third_party/fidelityfx_sdk/PROVENANCE.md). They are compiled into the SPIR-V of the native player's presentation upscaler, src/rt/gpu_sdl3vk/shaders/fsr1_easu.comp and fsr1_rcas.comp. The SDK's docs/license.md lists each v2.4.0 file under MIT; each header carries the MIT notice.",
+        "note": "FSR 1 (ffx_fsr1.h) and the ffx_core headers from FidelityFX SDK v2.4.0, and ffx_core_glsl.h from FidelityFX SDK v1.1.4 (commit c6efa6bf7f2027b3ec94f28578bb5965eabb9e55), the last release with a GLSL layer, with line endings normalised to LF (third_party/fidelityfx_sdk/PROVENANCE.md). They are compiled into the SPIR-V of the native player's presentation upscaler, src/rt/gpu_sdl3vk/shaders/fsr1_easu.comp and fsr1_rcas.comp. The SDK's docs/license.md lists each v2.4.0 file under MIT; each header carries the MIT notice.",
         "license_texts": [
           {
             "file": "third_party/fidelityfx_sdk/LICENSE.txt",
-            "copied_from": "FidelityFX SDK LICENSE.txt at commit 1bbe66e7ea0d358e84af4471a90aa9c35b583de0 (SDK 1.1), imported byte-identical; the same MIT text as the notice in every v2.4.0 header",
+            "copied_from": "FidelityFX SDK LICENSE.txt at commit c6efa6bf7f2027b3ec94f28578bb5965eabb9e55 (SDK v1.1.4), imported byte-identical; the same MIT text as the notice in every v2.4.0 header",
             "sha256": "82cf74fc23885107c7f69249ac3f1dac55898ff68320eb2c753984cae6b2d78a"
           }
         ]
