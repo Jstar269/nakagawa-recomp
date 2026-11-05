@@ -113,7 +113,7 @@ def fail(path: str, message: str) -> NoReturn:
     raise QualificationError(f"{path}: {message}")
 
 
-def load_public_json(path: Path) -> object:
+def load_public_json(path: Path) -> Any:
     """Read one public JSON document with the manifest parser's size and duplicate-key rules."""
     if path.is_symlink():
         raise QualificationError(f"{path}: symbolic links are not accepted")
@@ -551,7 +551,7 @@ def run_player(player: Path, sandbox: Path, runtime_root: Path, launch_index: in
     command = launch_command(player, sandbox, runtime_root, launch_index)
     started = time.perf_counter()
     process = subprocess.Popen(
-        command, cwd=ROOT, env=child_environment(os.environ, sandbox),
+        command, cwd=ROOT, env=child_environment(dict(os.environ), sandbox),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
         # POSIX: the player leads its own session, so _stop_process_tree can signal the whole group.
@@ -614,7 +614,7 @@ def run_smoke(
     timeout_seconds: int = SMOKE_TIMEOUT_SECONDS,
     evidence: dict | None = None,
     compile_duration_ms: int = 0,
-) -> tuple[int, Path | None, dict | None]:
+) -> tuple[int, Path, dict]:
     """Run the public smoke for one manifest. Returns (exit status, report path, report)."""
     inspect_started = time.perf_counter()
     manifest = load_public_manifest(manifest_path)

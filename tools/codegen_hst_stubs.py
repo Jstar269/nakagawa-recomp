@@ -14,11 +14,7 @@ to the chunk unchanged, so editing a body here changes the generated C exactly a
 ``codegen.py`` did.  ``tools/compat_overrides.py`` (``CODEGEN_CUSTOM_STUBS``) records why each
 address is coupled to the title, and ``tools/test_compat_manifest.py`` checks the two agree.
 
-``HST_GAME_LOOP_ADDR`` is the one stub that wraps a translated body instead of replacing it:
-``codegen.py`` emits the real function renamed ``f_000468c8_real`` and appends
-``HST_GAME_LOOP_WRAPPER``, which calls it in a frame loop.
-
-Retired stubs, kept here so nobody reinstates them: 0x000011b0 (__register_frame_info bypass), 0x0000260c (exception helper bypass), 0x0000fe3c (_getmodreent), 0x00015ea0 (CSV tokenizer) and 0x000149a8 (strcpy) were retired under #363: the guest's own bodies run as written.  0x0001034c (heap-statistics walk skip) and
+Retired stubs, kept here so nobody reinstates them: 0x000468c8 (main_RunGameLoop scheduler wrapper, which ran the translated body renamed ``f_000468c8_real`` inside a frame loop with a yield per iteration) was retired under #363: the worker thread's own loop yields through its syscalls, and the function translates as written.  0x000011b0 (__register_frame_info bypass), 0x0000260c (exception helper bypass), 0x0000fe3c (_getmodreent), 0x00015ea0 (CSV tokenizer) and 0x000149a8 (strcpy) were retired under #363: the guest's own bodies run as written.  0x0001034c (heap-statistics walk skip) and
 0x001d9eb0 (title backdrop chooser postcondition) were retired under #363, because the walk
 runs over the retail allocator's statically linked, untouched bins once the allocator is
 host-bridged, and the chooser never yields 0; both now translate as written.  0x0001a5f8 and
@@ -28,8 +24,6 @@ the delay-slot store) and 0x1a5f8 is a computed-goto resume point reached throug
 tables.  Both are discovered entries and translate faithfully;
 ``tools/test_codegen_no_shadow_stubs.py`` keeps them so.
 """
-
-HST_GAME_LOOP_ADDR = 0x000468C8
 
 # One body shared by 0x00011090, 0x000110DC; "@ADDR@" is the address in
 # lower-case hex, as in the function name.
@@ -53,14 +47,6 @@ _MEMSET_NATIVE = """void f_@ADDR@(CpuState *s) {  /* custom stub: sceKernelMemse
 def _per_address(template, addresses):
     return {a: template.replace("@ADDR@", f"{a:08x}") for a in addresses}
 
-
-HST_GAME_LOOP_WRAPPER = """void f_000468c8(CpuState *s) {  /* custom stub: main_RunGameLoop - infinite frame loop */
-    for (;;) {
-        SR_YIELD(s, 0x000468c8u);
-        f_000468c8_real(s);
-        SR_TAIL_DRAIN(s);
-    }
-}"""
 
 HST_CUSTOM_STUBS = {
 

@@ -270,6 +270,12 @@ int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms);
    False when the child has no such window yet, or where there is no window
    system to ask (the POSIX build). */
 bool nk_platform_bring_process_window_to_front(const NkProcessHandle *process);
+/* Ends the process and its children, then waits a bounded time for it to go, so a stopped
+   process is not still writing once the caller goes on. POSIX sends SIGTERM, then SIGKILL,
+   and reaps the child (up to about 3 s). Win32 terminates its job and the process and waits
+   up to NK_PLATFORM_TERMINATE_WAIT_MS; is_active stays true there when it had not ended by
+   then. The caller's thread blocks for that wait. */
+#define NK_PLATFORM_TERMINATE_WAIT_MS 2000
 void nk_platform_terminate_process(NkProcessHandle *process);
 void nk_platform_close_process(NkProcessHandle *process);
 /* Whether nk_platform_bring_process_window_to_front can work on this host at all. Win32 can;

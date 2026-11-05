@@ -12,6 +12,7 @@
 
 #include "hle_internal.h"
 #include "sas_envelope.h"
+#include "sas_resample.h"   /* Ace Mode's sas=sinc (#2054) */
 
 /* SR_AUDIOSTAT aggregate counters (investigation telemetry). Declared here because
  * the ATRAC decode path and the vblank exit dump both precede the SAS definitions. */
@@ -707,6 +708,9 @@ typedef struct {
     SasEnvelope envelope;
     int env_level;
     int noise;                    /* 0..63 (noise clock) */
+    /* Ace Mode's sas=sinc only (host-side, never read otherwise): the decoded samples before
+     * the next grain's first one, oldest first (sas_mix_band_limited). */
+    int16_t rs_hist[SAS_RS_REACH];
 } SasVoice;
 
 typedef struct {
@@ -726,6 +730,12 @@ typedef struct {
 static SasVoice s_sasv[SAS_VOICES];
 static SasCoreState s_sas_core;
 static int s_sas_max_voices = SAS_VOICES;
+/* Ace Mode's sas=sinc for the run (sr_hle_sas_set_band_limited); 0 is authentic. */
+static int s_sas_band_limited;
+/* Nonzero while sas=sinc decodes ahead on a copy of a voice: no SR_SASLOG dumps. */
+static int s_sas_lookahead;
+
+int sr_hle_sas_set_band_limited(int on) { s_sas_band_limited = on ? 1 : 0; return 1; }
 
 void hle_sas_guest_reset(void) {
     memset(&s_sas_core, 0, sizeof(s_sas_core));
@@ -761,7 +771,7 @@ static int sas_vag_block(SasVoice *v) {
     uint32_t a = v->vag + v->pos;
     int hdr = MEM_R8(a), flags = MEM_R8(a + 1);
     if (flags == 7) return 0;                            /* end marker block */
-    if (sas_log_on()) {
+    if (sas_log_on() && !s_sas_lookahead) {
         /* Bounded per-voice VAG block dumps (two emissions max, matching the
          * docs): the first block (pos 0, first grain) and the block at +0x10,
          * which is the first data block after a legitimate zero prefix. The
@@ -922,6 +932,100 @@ static uint32_t sas_live_end_flags(void) {
     return m;
 }
 
+/* ---- pitch and resampling ------------------------------------------------------------------
+ *
+ * The authentic path (every run without Ace Mode's sas=sinc) does not interpolate: it is a
+ * zero-order hold. Each output sample plays the decoded sample at the voice's whole position, then
+ * a 12-bit fraction advances by the pitch (0x1000 = one source sample per output sample) and every
+ * whole step moves to the next decoded sample. A pitch above 0x1000 skips samples with no low-pass
+ * filter (aliasing), and one below repeats them (images of the source band). A step that runs past
+ * the end of a 28-sample VAG block lands on the next block's first sample, and PCM and noise
+ * voices ignore the pitch. This rule has been in the mixer since the initial public export
+ * (2026-08-11), inherited with this file; no physical-PSP measurement of the SAS core's own
+ * interpolation backs it.
+ *
+ * With sas=sinc (#2054, docs/ENHANCEMENT_CONTRACT.md section 10.7) a VAG voice runs the same loop:
+ * its decode position, fraction, envelope, end of sample and end flags are the authentic ones. The
+ * loop records each output sample's stream position and envelope instead of mixing, and
+ * sas_mix_band_limited mixes values from sas_resample.h. Samples ahead of the position come from a
+ * copy of the voice decoded ahead; samples behind it are kept per voice in rs_hist. */
+#define SAS_RS_SRC_MAX (SAS_RS_REACH + SAS_GRAIN_MAX * (SAS_RS_PITCH_MAX / 0x1000) + SAS_RS_REACH + 8)
+static int16_t s_rs_src[SAS_RS_SRC_MAX];
+static int32_t s_rs_k[SAS_GRAIN_MAX];
+static uint16_t s_rs_frac[SAS_GRAIN_MAX];
+static int s_rs_env[SAS_GRAIN_MAX];
+static int16_t s_rs_out[SAS_GRAIN_MAX];
+
+/* Stream positions for one grain. Index 0 is the first sample the grain plays; base is the index
+ * of the current block's first sample and next that of the block after it; decoded counts the
+ * blocks the voice decoded during the grain. */
+typedef struct { int32_t base, next; int played, decoded; } SasRsGrain;
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* The most blocks one grain's lookahead decoded past the blocks the voice itself decoded. */
+static int s_sas_rs_lead_max;
+int sr_hle_test_sas_lookahead_lead(void) {
+    int lead = s_sas_rs_lead_max;
+    s_sas_rs_lead_max = 0;
+    return lead;
+}
+#endif
+
+static void sas_rs_begin(const SasVoice *v, SasRsGrain *g) {
+    g->base = -v->bufi;
+    g->next = v->bufi < v->bufn ? v->bufn - v->bufi : 0;
+    g->played = 0;
+    g->decoded = 0;
+}
+
+/* Output sample i played the voice's current sample; decoded says a new block was decoded for it. */
+static void sas_rs_note(const SasVoice *v, SasRsGrain *g, int i, int decoded) {
+    if (decoded) { g->base = g->next; g->next = g->base + v->bufn; g->decoded++; }
+    s_rs_k[i] = g->base + v->bufi;
+    s_rs_frac[i] = (uint16_t)v->frac;
+    s_rs_env[i] = v->env_level;
+    g->played = i + 1;
+}
+
+/* Mixes the grain the loop recorded. pre is the voice as the grain began. */
+static void sas_mix_band_limited(SasVoice *v, const SasVoice *pre, const SasRsGrain *g, int32_t *mixl,
+                                 int32_t *mixr, int32_t *mixsl, int32_t *mixsr) {
+    if (!g->played) return;
+    int32_t k_next = v->bufi < v->bufn ? g->base + v->bufi : g->next;
+    /* One past the last source sample the last output's window can reach, plus one spare. */
+    int32_t end = s_rs_k[g->played - 1] + sas_rs_reach(v->pitch) + 2;
+    if (end < k_next + 1) end = k_next + 1;
+    if (end > SAS_RS_SRC_MAX - SAS_RS_REACH) end = SAS_RS_SRC_MAX - SAS_RS_REACH;
+    int16_t *src = s_rs_src + SAS_RS_REACH;
+    memcpy(s_rs_src, pre->rs_hist, sizeof(pre->rs_hist));
+    SasVoice ahead = *pre;
+    int live = 1, ahead_blocks = 0;
+    for (int32_t j = 0; j < end; j++) {
+        int samp = 0;
+        if (live && ahead.bufi >= ahead.bufn) {
+            s_sas_lookahead = 1;
+            live = sas_vag_block(&ahead);
+            s_sas_lookahead = 0;
+            ahead_blocks += live;
+        }
+        if (live) samp = ahead.buf[ahead.bufi++];
+        src[j] = (int16_t)samp;
+    }
+#ifdef SR_HLE_THREAD_SELFTEST
+    if (ahead_blocks - g->decoded > s_sas_rs_lead_max) s_sas_rs_lead_max = ahead_blocks - g->decoded;
+#endif
+    (void)ahead_blocks;
+    sas_rs_render(src, end, s_rs_k, s_rs_frac, g->played, v->pitch, s_rs_out);
+    for (int i = 0; i < g->played; i++) {
+        int s_env = (int)(((int64_t)s_rs_out[i] * s_rs_env[i]) >> 30);
+        mixl[i] += (s_env * v->voll) >> 12;
+        mixr[i] += (s_env * v->volr) >> 12;
+        mixsl[i] += (s_env * v->effect_l) >> 12;
+        mixsr[i] += (s_env * v->effect_r) >> 12;
+    }
+    memcpy(v->rs_hist, src + k_next - SAS_RS_REACH, sizeof(v->rs_hist));
+}
+
 /* Mix one grain into out (s16 stereo or four planar channels). add=0 overwrites. */
 static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gain) {
     uint64_t perf_started = sr_perf_now_ns();
@@ -972,21 +1076,31 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
     for (int vi = 0; vi < s_sas_max_voices; vi++) {
         SasVoice *v = &s_sasv[vi];
         if (!v->on || v->paused) continue;
+        int rs = s_sas_band_limited && v->type == SAS_VOICE_VAG;
+        SasVoice pre;
+        SasRsGrain grain;
+        if (rs) { pre = *v; sas_rs_begin(v, &grain); }
         for (int i = 0; i < n; i++) {
             int samp = 0;
+            int decoded = v->bufi >= v->bufn;
             if (!sas_next_sample(v, &samp)) { sas_voice_data_ended(v); break; }
             sas_advance_envelope(v);
-            int s_env = (int)(((int64_t)samp * v->env_level) >> 30);
-            mixl[i] += (s_env * v->voll) >> 12;
-            mixr[i] += (s_env * v->volr) >> 12;
-            mixsl[i] += (s_env * v->effect_l) >> 12;
-            mixsr[i] += (s_env * v->effect_r) >> 12;
+            if (rs) {
+                sas_rs_note(v, &grain, i, decoded);
+            } else {
+                int s_env = (int)(((int64_t)samp * v->env_level) >> 30);
+                mixl[i] += (s_env * v->voll) >> 12;
+                mixr[i] += (s_env * v->volr) >> 12;
+                mixsl[i] += (s_env * v->effect_l) >> 12;
+                mixsr[i] += (s_env * v->effect_r) >> 12;
+            }
             v->frac += (uint32_t)(v->pitch > 0 ? v->pitch : 0x1000);
             while (v->frac >= 0x1000) {
                 v->frac -= 0x1000;
                 if (v->type == SAS_VOICE_VAG) v->bufi++;
             }
         }
+        if (rs) sas_mix_band_limited(v, &pre, &grain, mixl, mixr, mixsl, mixsr);
     }
     for (int i = 0; i < n; i++) {
         /* The gain product is 64-bit: twenty full-scale voices already sum past INT32_MAX / 4096,
@@ -1068,6 +1182,7 @@ static uint32_t h_SasSetVoice(CpuState *s) {
     v->pos = 0; v->loop_requested = loop; v->loop_start = -1;
     v->pcm = v->pcm_samples = v->pcm_pos = 0; v->pcm_loop_start = -1;
     v->noise = 0; v->hist1 = v->hist2 = 0; v->bufn = v->bufi = 0; v->frac = 0;
+    memset(v->rs_hist, 0, sizeof(v->rs_hist));
     return 0;
 }
 
@@ -1178,6 +1293,7 @@ static uint32_t h_SasSetKeyOn(CpuState *s) {
         (v->type == SAS_VOICE_VAG && (!v->vag || v->vag_size < 16u)) ||
         (v->type == SAS_VOICE_PCM && (!v->pcm || !v->pcm_samples))) return SAS_ERROR_INVALID_STATE;
     v->pos = 0; v->pcm_pos = 0; v->hist1 = v->hist2 = 0; v->bufn = v->bufi = 0; v->frac = 0;
+    memset(v->rs_hist, 0, sizeof(v->rs_hist));
     if (!v->voll && !v->volr) { v->voll = SAS_VOLUME_MAX; v->volr = SAS_VOLUME_MAX; }
     sas_envelope_key_on(&v->envelope); v->env_level = 0; v->on = 1;
     if (sas_log_on()) {
