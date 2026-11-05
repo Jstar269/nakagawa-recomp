@@ -289,8 +289,8 @@ loader, no AOT change, no guest hook. The runtime part is `src/rt/ace.h`; the in
 ### 10.1. The Launch Line
 
 The launcher always exports `SR_ACE`, so an inherited value cannot opt a launch in: `off`, or
-`v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2`. Every key is required, in any order, each once; a value
-for a feature this build does not carry (`wide=fill`, `smooth=match`) refuses the line. So does anything else: Ace
+`v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2;sas=off`. Every key is required, in any order, each once; a
+value for a feature this build does not carry (`wide=fill`, `smooth=match`) refuses the line. So does anything else: Ace
 is off for the run and one `ACE_MODE: refused (<reason>)` line says why. Unset is off. With Ace on the launcher also
 exports `SR_ACE_REPORT`, the per-run report under `<user data>/ace/`.
 
@@ -314,6 +314,8 @@ the samplers and the pool; `display-smoke` keeps its image hash.
   the filtered picture: the same class as a render scale above 1x, and the launcher says so. The launch notice, the
   speed readout and the crisp keyboard draw only on the swapchain image, never on the frame a capture reads, and so
   do Smooth motion's in-between frames (section 10.6).
+- **Sound:** `sas=sinc` writes band-limited sample values into the guest's SAS output buffer, so it is a
+  guest-visible item. Its entry is section 11.3.1.
 
 ### 10.4. Stamps and Evidence
 
@@ -371,6 +373,11 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
   present latches no input and serves no capture.
 - **Stamps.** The report adds `presents` (real, between, held, superseded) and `present_interval_ms`. Section 10.4
   applies: the run is refused as evidence.
+
+### 10.7. Band-Limited SAS Resampling
+
+`sas=sinc` (#2054) resamples SAS VAG voices through a band-limited filter on the host. The mixed values land in guest
+memory, so it is a guest-visible item, and its entry is section 11.3.1.
 
 ## 11. Guest-Visible Items
 
@@ -438,3 +445,69 @@ section 11.2 retroactively; a change to it is. A new item is not admitted by ana
 
 No guest-visible item is admitted by this section alone. Each lands in its own pull request with its entry added here
 (`11.3.<n>`), following the order of section 11.2. This section is the template that entry is checked against.
+
+#### 11.3.1. Band-Limited SAS Resampling (`sas=sinc`)
+
+- **Key.** `sas=off` or `sas=sinc` on the launch line (section 10.1), a required key (#2054). A line without it, or
+  with any other value, is refused, and Ace is off for that run.
+- **Tier and default.** Enhanced: it applies to every game, in this build through the library-wide Ace Mode of
+  section 10. The default is off, and the player writes `sas=off` on every launch line today. The library and
+  per-title settings that turn it on or off alone (section 11.2, item 2) are the player side of #2074. They are not
+  built here, so a player cannot turn the item on yet.
+- **The authentic path.** Without the item the mixer does not interpolate (a zero-order hold). Each output sample
+  plays the decoded sample at the voice's whole position. A 12-bit fraction then advances by the pitch (0x1000 is one
+  source sample per output sample). Above 0x1000 the voice skips samples with no low-pass filter, so it aliases.
+  Below 0x1000 it repeats them, so it carries images of its source band. A step that runs past the end of a 28-sample
+  VAG block lands on the next block's first sample, dropping the overshoot. This rule has been in the mixer since the
+  initial public export. It is not a physical-PSP measurement of the SAS core.
+- **What changes.** A VAG voice's output samples are a Kaiser-windowed sinc (24 zero crossings, beta 7) evaluated at
+  the voice's exact position, with a DC gain of exactly 1. Above a pitch of 0x1000 the cutoff drops by the pitch
+  ratio, so the source is low-passed below the output's Nyquist frequency before it is decimated. The code is in
+  `src/rt/hle_audio.c`, next to the authentic mixer, and `src/rt/sas_resample.h`. PCM and noise voices, which ignore
+  the pitch today, are mixed as before.
+- **Guest memory.** VRAM bytes are unchanged. The sample values the SAS core writes into the guest's output buffer
+  change: by the measurements below, the energy aliased above the output's Nyquist frequency falls by 25 to 30 dB,
+  and the images above the source's Nyquist frequency by 78 to 81 dB. A title that reads that buffer back (a level
+  meter, its own effect chain) sees those values. Every other guest-readable SAS result is unchanged: the voice's
+  decode position, fraction, envelope, end of sample, end flags and the grain run the authentic statements in the
+  authentic order.
+- **Readbacks.** Unchanged. The item touches no GE or display readback, save picture or screenshot.
+- **Timing.** Unchanged. The grain, the SAS calls' return values, the end flags and the envelope heights are the
+  authentic ones in every grain, and data that ends mid-grain ends on the same sample. The filter costs host time
+  inside the SAS call, like any host cost.
+- **I/O speed.** Unchanged. The item performs no disc, Memory Stick or savedata access.
+- **Reading ahead.** Samples ahead of the position come from a copy of the voice that decodes ahead of it, reading
+  the guest's VAG data in memory. The voice itself never decodes ahead. The copy decodes at most one sample past the
+  farthest sample the filter can read (one spare). Past the last block the authentic decoder has read by the end of
+  the same grain, it decodes at most 1 VAG block (16 bytes) at a pitch of 0x1000 or below, rising to 4 blocks
+  (64 bytes) at 0x4000. A title that streams VAG data into its buffer just in time may not have written those blocks
+  yet. The copy then mixes the stale bytes into the output samples at the end of the grain whose filter window
+  reaches them. Only the mixed values are affected. The copy is discarded, so voice state never changes.
+- **Authentic stays byte-identical (section 11.2, item 1).** `hle-thread-selftest` plays a two-voice authentic run
+  (a loop, a key-off, an end of data) that must match a checksum taken from the mixer before #2054. Main's mixer
+  after the envelope change of #1296 gives the same checksum. A run switched on and then off gives it again, and a
+  mutant that only rounds the authentic mix differently is caught by that checksum alone.
+- **"Nothing worse" (section 11.2, item 4).** `hle-thread-selftest` plays synthetic VAG data through the guest
+  calls, off and on, and fails without the item.
+  - **Upward pitches.** A sweep lying wholly above the output's Nyquist frequency once pitched, so all of its
+    output is alias. At pitch 0x1800 the alias energy falls by 25.5 dB (floor 22), at 0x2A00 by 28.1 dB (floor 25)
+    and at 0x4000 by 29.8 dB (floor 26).
+  - **Downward pitches.** An in-band sweep, measuring the share of energy above the source's Nyquist frequency at
+    that pitch, where only images land. It falls by 78.4 dB at 0x0B00 (floor 75) and 80.7 dB at 0x0800 (floor 77).
+  - **Negative control.** A model of the authentic stepping replays the same stream. It matches the mixer within
+    0.5 dB. On that model, linear interpolation and a 4-tap cubic reach at most 2.9 dB upward and 20.9 dB downward,
+    so they fail every floor.
+  - **Other cells.** A looped voice mixes the same samples as its data unrolled. A constant signal comes out
+    unchanged at three pitches. Two voices mix to the sum of each alone. A key-on mid-play restarts the voice like a
+    fresh one.
+  - **The read bound.** A selftest-only counter checks the lookahead's read count against its bound. Stale data
+    just past that bound changes nothing, and data inside it reaches only the mixed values.
+  - **Mutants.** Each was built from a scratch copy, run, and failed for its intended reason: linear interpolation
+    or a 4-tap cubic in place of the sinc (the floors and the model match), a key-on that keeps the filter history
+    (the key-on cell), history not kept across grains (the constant-signal cells and the image floors), the
+    rounding change above (the checksum), and a lookahead one block longer (the read-bound counter).
+  - **Not run.** No private route or picture-gate run on *Hot Shots Tennis* or *LittleBigPlanet* and no library
+    sweep, with the item on against off. Until they exist the item stays off by default.
+- **Per-title off switch (section 11.2, item 5).** None. No title is known to regress with the item on.
+- **Evidence tools (section 11.2, item 6).** `ACE_MODE: on (...)` and the flight recorder's `runtime.enhancements`
+  carry `sas=` with the rest of the launch line, and section 10.4's refusals apply to the run unchanged.

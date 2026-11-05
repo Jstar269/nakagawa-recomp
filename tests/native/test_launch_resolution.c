@@ -400,7 +400,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     set_environment_value("SR_PRESENT_UPSCALE", "fsr1");
     bool had_ace;
     char *old_ace = capture_environment_value("SR_ACE", &had_ace);
-    set_environment_value("SR_ACE", "v1;af=16;text=on;readout=on;notice=on;wide=off;smooth=off");
+    set_environment_value("SR_ACE", "v1;af=16;text=on;readout=on;notice=on;wide=off;smooth=off;sas=off");
     bool had_ace_report;
     char *old_ace_report = capture_environment_value("SR_ACE_REPORT", &had_ace_report);
     set_environment_value("SR_ACE_REPORT", "poisoned-parent-report.json");
@@ -618,7 +618,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     session.config.reduce_motion = NK_REDUCE_MOTION_OFF;
     /* An Ace Mode session exports its line and, with it, the report path. */
     snprintf(session.config.ace_spec, sizeof(session.config.ace_spec),
-             "v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off");
+             "v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off");
     int ace_report_len = snprintf(session.config.ace_report_path,
                                   sizeof(session.config.ace_report_path),
                                   "%s%cace%cTEST00001.json", root, sep, sep);
@@ -643,7 +643,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=1\n") != NULL);
     assert(strstr(observed, "SR_DEVELOPER_MODE=1\n") != NULL);
     assert(strstr(observed, "SR_REDUCE_MOTION=off\n") != NULL);
-    assert(strstr(observed, "SR_ACE=v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off\n") != NULL);
+    assert(strstr(observed, "SR_ACE=v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off\n") != NULL);
     /* An enhanced session follows the setting. */
     assert(strstr(observed, "SR_PRESENT_UPSCALE=fsr1\n") != NULL);
     {
@@ -676,7 +676,7 @@ static void test_no_iso_child_environment(const char *test_executable,
                      "fixture-60hz");
         } else {
             snprintf(session.config.ace_spec, sizeof(session.config.ace_spec),
-                     "v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off");
+                     "v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off");
         }
         assert(nk_launch_start(&session) == NK_OK);
         child_exit = nk_launch_wait(&session, -1);
@@ -689,7 +689,7 @@ static void test_no_iso_child_environment(const char *test_executable,
         assert(!ferror(report));
         assert(fclose(report) == 0);
         assert(strstr(observed, only == 0 ? "SR_ACE=off\n"
-                                          : "SR_ACE=v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off\n") != NULL);
+                                          : "SR_ACE=v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off\n") != NULL);
         assert(strstr(observed, "SR_PRESENT_UPSCALE=fsr1\n") != NULL);
         session.enhancement_package_id[0] = '\0';
         snprintf(session.config.ace_spec, sizeof(session.config.ace_spec), "off");

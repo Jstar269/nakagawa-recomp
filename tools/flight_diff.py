@@ -10,7 +10,7 @@ import re
 import sys
 from itertools import zip_longest
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "assets" / "flight_recorder_schema.json"
@@ -92,7 +92,7 @@ class BundleIncomparable(FlightDiffError):
         self.reasons = list(reasons)
 
 
-def _fail(path: str, message: str) -> None:
+def _fail(path: str, message: str) -> NoReturn:
     raise FlightDiffError(f"{path}: {message}")
 
 

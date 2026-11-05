@@ -41,7 +41,6 @@ class SoakAuditTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self._tmp.name)
-        self._tmp.cleanup = self._tmp.cleanup  # keep a reference
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
