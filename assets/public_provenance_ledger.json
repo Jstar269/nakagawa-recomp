@@ -12858,7 +12858,7 @@
         "record_id": "xbrz-translation-texscale",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "GPL-3.0 with the author's linking exception (MAME, FreeFileSync, Snes9x, ePSXe)",
+        "license": "GPL-3.0-only",
         "modification_status": "modified_or_translated; see trusted record"
       }
     },
@@ -12870,7 +12870,7 @@
         "record_id": "xbrz-translation-texscale",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
-        "license": "GPL-3.0 with the author's linking exception (MAME, FreeFileSync, Snes9x, ePSXe)",
+        "license": "GPL-3.0-only",
         "modification_status": "modified_or_translated; see trusted record"
       }
     },
