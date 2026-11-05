@@ -2415,7 +2415,7 @@ uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot) {
         hle_enhancement_attach((int)rc, path, flags) < 0) {
         fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: the run stops here\n");
         sr_trace_close();
-        (void)sr_videorec_finish_at("ENHANCEMENT_DATA_MISMATCH");
+        (void)sr_videorec_finish_status("ENHANCEMENT_DATA_MISMATCH", 1);
         sr_perf_shutdown();
         SR_VERIFY_REPORT_NOW();
         fflush(stderr);

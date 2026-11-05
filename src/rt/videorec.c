@@ -153,6 +153,7 @@ static uint64_t vr_now_us(void) {
 static int s_test_free_set;
 static uint64_t s_test_free;
 static int s_test_audio_write_fails;
+static const char *s_test_clear_fail_at; /* an output name whose move aside fails */
 #endif
 
 /* Free bytes on the drive holding s_dir. Returns 0 when it cannot be read. */
@@ -226,17 +227,73 @@ static int vr_write_short_record(const char *status, const char *reason) {
     return vr_replace_record(vr_fill_short, &r);
 }
 
-/* Remove what an earlier run left in s_dir, so nothing there can pass for this run's output.
- * Returns 0 when a file is there and cannot be removed. */
-static int vr_clear_outputs(void) {
-    static const char *const names[] = { "record.json", "record.json.tmp", "recording.mkv",
-                                         "video.mkv", "video.bgr0", "audio.wav", "frames.csv",
-                                         "logic.srt", NULL };
-    for (int i = 0; names[i]; i++) {
+/* The files a recording writes in s_dir, which a new start clears. */
+static const char *const k_vr_outputs[] = { "record.json", "record.json.tmp", "recording.mkv",
+                                            "video.mkv", "video.bgr0", "audio.wav", "frames.csv",
+                                            "logic.srt", NULL };
+#define VR_ASIDE_SUFFIX ".videorec-old"
+
+/* Bytes the earlier run's output files hold: the clear frees them, so the start's free-space
+ * check counts them as free. */
+static uint64_t vr_outputs_bytes(void) {
+    uint64_t total = 0;
+    for (int i = 0; k_vr_outputs[i]; i++) {
         char p[1024];
-        vr_path(p, sizeof p, names[i]);
+        vr_path(p, sizeof p, k_vr_outputs[i]);
         struct stat st;
-        if (stat(p, &st) == 0 && remove(p) != 0) return 0;
+        if (stat(p, &st) == 0 && S_ISREG(st.st_mode)) total += (uint64_t)st.st_size;
+    }
+    return total;
+}
+
+/* Remove what an earlier run left in s_dir, so nothing there can pass for this run's output, all
+ * or nothing: every file is first renamed aside (NAME.videorec-old), and only when all of them
+ * moved are the moved files deleted. A file that cannot be moved (open in another program, or a
+ * folder where a file belongs) puts back the ones already moved and returns 0, so a start that
+ * cannot clear the folder leaves the earlier recording whole. A leftover aside file from an earlier
+ * clear is removed first; one that cannot be deleted at the end stays, named as aside, and is
+ * never read as output. */
+static int vr_clear_outputs(void) {
+    int moved = 0;
+    for (int i = 0; k_vr_outputs[i]; i++) {
+        char p[1024], aside[1100];
+        vr_path(p, sizeof p, k_vr_outputs[i]);
+        snprintf(aside, sizeof aside, "%s" VR_ASIDE_SUFFIX, p);
+        (void)remove(aside);
+        struct stat st;
+        int ok = 1;
+        if (stat(p, &st) == 0) {
+            ok = S_ISREG(st.st_mode) && rename(p, aside) == 0;
+#ifdef SR_VIDEOREC_SELFTEST
+            if (ok && s_test_clear_fail_at && strcmp(s_test_clear_fail_at, k_vr_outputs[i]) == 0) {
+                (void)rename(aside, p);
+                ok = 0;
+            }
+#endif
+        } else {
+            continue;
+        }
+        if (!ok) {
+            /* Put back what moved, in reverse. */
+            for (int j = i - 1; j >= 0; j--) {
+                char q[1024], qa[1100];
+                vr_path(q, sizeof q, k_vr_outputs[j]);
+                snprintf(qa, sizeof qa, "%s" VR_ASIDE_SUFFIX, q);
+                if (stat(qa, &st) == 0 && rename(qa, q) != 0) {
+                    fprintf(stderr, "VIDEOREC: %s could not be put back from %s" VR_ASIDE_SUFFIX
+                                    " in SR_VIDEOREC_DIR\n", k_vr_outputs[j], k_vr_outputs[j]);
+                    fflush(stderr);
+                }
+            }
+            return 0;
+        }
+        moved++;
+    }
+    for (int i = 0; moved && k_vr_outputs[i]; i++) {
+        char p[1024], aside[1100];
+        vr_path(p, sizeof p, k_vr_outputs[i]);
+        snprintf(aside, sizeof aside, "%s" VR_ASIDE_SUFFIX, p);
+        (void)remove(aside);
     }
     return 1;
 }
@@ -641,6 +698,9 @@ static int vr_begin(const char *dir, const char *codec, int need_det_clock) {
         vr_refuse("the free space on SR_VIDEOREC_DIR's drive cannot be read");
         return 0;
     }
+    /* The clear below frees the earlier run's files, so they count as free here: checking after
+     * the clear would delete the earlier recording before a refusal. */
+    free_bytes += vr_outputs_bytes();
     if (free_bytes < VR_MIN_FREE_START) {
         snprintf(why, sizeof why, "SR_VIDEOREC_DIR's drive has %llu MiB free; a recording needs "
                                   "at least %llu MiB",
@@ -650,10 +710,13 @@ static int vr_begin(const char *dir, const char *codec, int need_det_clock) {
         return 0;
     }
     /* This start records: remove what an earlier run left, so nothing there can pass for this
-     * run's output. A file that cannot be removed refuses the start, as REFUSED if record.json
-     * can still be written. */
+     * run's output. A file that cannot be removed refuses the start with every earlier file in
+     * place, as REFUSED when record.json can be replaced. When record.json itself is the file that
+     * cannot be replaced (open in another program), no record can say so: stderr does, and the
+     * earlier record stays. */
     if (!vr_clear_outputs()) {
-        vr_refuse("an earlier run's files in SR_VIDEOREC_DIR cannot be removed");
+        vr_refuse("an earlier run's files in SR_VIDEOREC_DIR cannot be removed (one is open in "
+                  "another program, or is a folder); none was removed");
         return 0;
     }
     /* Until the finish rewrites it, the summary says the recording is not finished. */
@@ -1121,6 +1184,8 @@ void sr_videorec_test_set_free_bytes(uint64_t bytes) {
 
 void sr_videorec_test_fail_audio_writes(int on) { s_test_audio_write_fails = on; }
 
+void sr_videorec_test_fail_clear_at(const char *name) { s_test_clear_fail_at = name; }
+
 void sr_videorec_test_stats(SrVideoRecStats *out) {
     memset(out, 0, sizeof *out);
     out->frames = s_frames;
@@ -1158,6 +1223,7 @@ void sr_videorec_test_reset(void) {
     s_test_free_set = 1;
     s_test_free = (uint64_t)1u << 40;
     s_test_audio_write_fails = 0;
+    s_test_clear_fail_at = NULL;
     s_cur = NULL;
     s_ring = NULL;
     s_wav = s_csv = s_raw = s_srt = NULL;

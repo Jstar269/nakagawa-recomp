@@ -2251,22 +2251,27 @@ size and rate in `record.json`, no mux, `"muxed": null`).
 recording is finished: on a normal exit, at `SR_EXIT_AT_VBLANK`, and on the fatal stops (the watchdog,
 the `SR_FBDUMP` exit, an unregistered NID or unsupported import, a route check, a guest fault and the
 others), with `run_end` naming the one that ended the run. A crash leaves `INCOMPLETE`, never `PASS`.
-`PASS` and `FAIL` describe the recording, not the run: `exit_status` is the process exit status when
-the end that finished the recording named it (the driver's own ends, such as `the run returned to the
-driver` with 0, and the game's `sceKernelExitGame` with 0), and `null` otherwise. An `exit()` that no
-route named, such as one of the runtime's fatal `exit(1)` paths, reaches only the recorder's `atexit`
-fallback: its `run_end` says no route named the end and its `exit_status` is `null`, so it never reads
-as a clean exit. A script that needs the run's outcome checks the process exit code as well.
+`PASS` and `FAIL` describe the recording, not the run: `exit_status` is the process exit status of
+the end that finished the recording. Every named end records its own: `SR_EXIT_AT_VBLANK` (the end
+of a scripted showcase recording), `the run returned to the driver` and the game's `sceKernelExitGame`
+record 0, and each fatal stop records the code it exits with (1 for the watchdog, 7 for an
+unregistered NID, and so on). An `exit()` that no route named, such as one of the runtime's fatal
+`exit(1)` paths, reaches only the recorder's `atexit` fallback: its `run_end` says no route named the
+end and its `exit_status` is `null`, so it never reads as a clean exit.
 
 A recording that cannot start is `REFUSED` with the reason: no deterministic clock, a codec it does
 not know, an FFmpeg that is not an absolute path to an executable file, no FFmpeg on `PATH` for an
-encoded codec, or less than 4 GiB free in the folder. A refusal names the setting at fault, never the
-user's FFmpeg path. Every check runs before the folder is touched, so a refused start replaces only
-`record.json` (with `REFUSED`, so no earlier `PASS` stands) and leaves the previous run's recording
-where it was. A start that does record first removes the recorder's files a previous run left in the
-folder, and refuses if it cannot. An encoded recording is `PASS` only when the encoder and the mux
-both exited 0, so `PASS` always comes with `"muxed": true`. Under 1 GiB free during the run the
-recorder stops writing video and the recording is `FAIL`; so is any write that fails.
+encoded codec, or less than 4 GiB free in the folder, counting the previous run's files there as
+free, since the start removes them. A refusal names the setting at fault, never the user's FFmpeg
+path. Every check runs before the folder is touched, so a refused start replaces only `record.json`
+(with `REFUSED`, so no earlier `PASS` stands) and leaves the previous run's recording where it was.
+A start that does record first removes the recorder's files a previous run left in the folder, all or
+nothing: it moves each aside, and if one cannot be moved (open in another program, or a folder with
+that name) it puts the others back and refuses, so the previous recording stays whole. When
+`record.json` itself is the file that cannot be replaced, only stderr can say so, and the previous
+record stays. An encoded recording is `PASS` only when the encoder and the mux both exited 0, so
+`PASS` always comes with `"muxed": true`. Under 1 GiB free during the run the recorder stops writing
+video and the recording is `FAIL`; so is any write that fails.
 
 FFmpeg is the user's own local tool: Nakagawa never ships, downloads or bundles it. The recorder
 starts the FFmpeg it finds in an absolute `PATH` entry, or the one `SR_VIDEOREC_FFMPEG` names, without

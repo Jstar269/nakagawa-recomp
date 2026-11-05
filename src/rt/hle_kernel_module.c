@@ -989,7 +989,7 @@ static uint32_t hle_libfont_startup_stop(const char *reason) {
     if (sr_sched_on) {
         sr_trace_close();
         sr_compat_report();
-        (void)sr_videorec_finish_at("the libfont start-up stop");
+        (void)sr_videorec_finish_status("the libfont start-up stop", HLE_LIBFONT_STARTUP_STOP_EXIT);
         sr_perf_shutdown();
         SR_VERIFY_REPORT_NOW();
         fflush(stderr);

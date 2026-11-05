@@ -24,8 +24,9 @@ Verifies:
 5. The production runner (nk_manager.ps1) sets no dispatch control and reports
    the retired SR_UNSAFE_CONTINUE_ON_DISPATCH_MISS escape as inert.
 6. Every fatal stop in the HLE files that ends the process with _Exit or _exit, which skip
-   atexit, finishes a video recording first (sr_videorec_finish_at, #1273), so record.json
-   never stays INCOMPLETE after a stop the runtime chose.
+   atexit, finishes a video recording first with its exit status
+   (sr_videorec_finish_status, #1273), so record.json never stays INCOMPLETE after a stop the
+   runtime chose, and its exit_status is the code the stop exits with.
 """
 
 from __future__ import annotations
@@ -189,6 +190,8 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
 
 
 FATAL_EXIT_RE = re.compile(r"\b_[Ee]xit\(")
+EXIT_ARG_RE = re.compile(r"\b_[Ee]xit\(\s*([^()]*?)\s*\)")
+FINISH_STATUS_RE = re.compile(r"\bsr_videorec_finish_status\(\s*\"[^\"]*\"\s*,\s*([^()]*?)\s*\)")
 
 
 def _without_comments(source: str) -> str:
@@ -239,6 +242,8 @@ class TestFatalStopsFinishRecording(unittest.TestCase):
     """A stop that skips atexit must finish the run's recording itself (#1273, #2080 review)."""
 
     def test_every_hle_exit_that_skips_atexit_finishes_the_recording(self):
+        """Each stop finishes the recording with the status it exits with (record.json
+        exit_status agrees with run_end and the process exit code)."""
         stops = []
         for path in sorted(RT.glob("hle*.c")):
             code = _without_comments(path.read_text(encoding="utf-8"))
@@ -247,10 +252,25 @@ class TestFatalStopsFinishRecording(unittest.TestCase):
                 stops.append(f"{path.name}:{line}")
                 with self.subTest(stop=f"{path.name}:{line}"):
                     block = _enclosing_block(code, match.start())
-                    self.assertIn("sr_videorec_finish_at(", block,
-                                  "the stop exits without finishing a recording")
+                    finishes = FINISH_STATUS_RE.findall(block)
+                    self.assertTrue(finishes, "the stop exits without finishing a recording "
+                                              "with its exit status (sr_videorec_finish_status)")
+                    exit_arg = EXIT_ARG_RE.match(code, match.start())
+                    self.assertIsNotNone(exit_arg)
+                    self.assertEqual(finishes[-1], exit_arg.group(1),
+                                     "the recorded exit status is not the code the stop exits with")
         # The stops this covers today; a new one is checked the same way.
         self.assertGreaterEqual(len(stops), 11, stops)
+
+    def test_exit_at_vblank_records_a_clean_end(self):
+        """SR_EXIT_AT_VBLANK is the documented end of a showcase recording: exit status 0."""
+        src = (RT / "hle_display.c").read_text(encoding="utf-8")
+        self.assertIn('sr_videorec_finish_status("SR_EXIT_AT_VBLANK", 0)', src)
+
+    def test_finish_status_pattern(self):
+        code = _without_comments('{ sr_videorec_finish_status("a, b", ROUTE_FAIL_EXIT); _Exit(ROUTE_FAIL_EXIT); }')
+        self.assertEqual(FINISH_STATUS_RE.findall(code), ["ROUTE_FAIL_EXIT"])
+        self.assertEqual(EXIT_ARG_RE.search(code).group(1), "ROUTE_FAIL_EXIT")
 
     def test_comments_and_strings_do_not_count(self):
         code = _without_comments('a(); /* _Exit(1) */ b("_exit(2)"); // _Exit(3)\n_Exit(4);')

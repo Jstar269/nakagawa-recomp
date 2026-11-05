@@ -733,7 +733,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                 fprintf(stderr, "SR_FBDUMP: no trustworthy framebuffer snapshot was written\n");
                 sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, 1u);
                 sr_compat_report();
-                (void)sr_videorec_finish_at("SR_FBDUMP found no trustworthy framebuffer");
+                (void)sr_videorec_finish_status("SR_FBDUMP found no trustworthy framebuffer", 1);
                 sr_perf_shutdown();
                 SR_VERIFY_REPORT_NOW();
                 _Exit(1);
@@ -743,7 +743,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                 sr_flight_exit((uint32_t)capture_exit_status);
                 psmf_av_final("capture_exit");
                 sr_compat_report();
-                (void)sr_videorec_finish_at("SR_FBDUMP capture exit");
+                (void)sr_videorec_finish_status("SR_FBDUMP capture exit", capture_exit_status);
                 sr_perf_shutdown();
                 SR_VERIFY_REPORT_NOW();
                 _Exit(capture_exit_status);
@@ -1036,7 +1036,7 @@ void sr_vblank_tick(void) {
               fprintf(stderr, "WATCHDOG: aborting after %u vblanks with no new frame (SR_WATCHDOG_EXIT=%d)\n", diff, wde);
               sr_flight_hang(diff, (uint32_t)wde);
               sr_compat_report();
-              (void)sr_videorec_finish_at("SR_WATCHDOG_EXIT");
+              (void)sr_videorec_finish_status("SR_WATCHDOG_EXIT", 1);
               sr_perf_shutdown();
               SR_VERIFY_REPORT_NOW();
               _Exit(1);
@@ -1105,7 +1105,7 @@ void sr_vblank_tick(void) {
              * SR_AUDIOSTAT is set; after the stats call above it is a no-op. */
             hle_exit_close_audio_dump();
             /* The same for a video recording: its encoder is finished and the files muxed. */
-            (void)sr_videorec_finish_at("SR_EXIT_AT_VBLANK");
+            (void)sr_videorec_finish_status("SR_EXIT_AT_VBLANK", 0);
             sr_dump_calls();
             fflush(stderr);
             fflush(stdout);

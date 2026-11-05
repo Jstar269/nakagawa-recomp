@@ -592,6 +592,16 @@ static void test_refusals(const char *root) {
 static void test_disk_space(const char *root) {
     char dir[600];
     snprintf(dir, sizeof dir, "%s/disk", root);
+    /* An earlier selftest run's files here would count as free space (a start may remove them),
+     * so remove them first: the refusal must see exactly the injected value. */
+    static const char *const k_left[] = { "record.json", "record.json.tmp", "recording.mkv",
+                                          "video.mkv", "video.bgr0", "audio.wav", "frames.csv",
+                                          "logic.srt" };
+    for (size_t i = 0; i < sizeof k_left / sizeof k_left[0]; i++) {
+        char p[700];
+        path_in(p, sizeof p, dir, k_left[i]);
+        (void)remove(p);
+    }
     /* The environment route reads the free space at its first call, after the injected value. */
     set_env("SR_VIDEOREC_DIR", dir);
     set_env("SR_VIDEOREC_CODEC", "raw");
@@ -641,6 +651,53 @@ static void test_stale_folder(const char *root) {
     set_env("SR_VIDEOREC_CODEC", "h265");
     CHECK(!sr_videorec_test_start_from_env(), "a start with an unknown codec is refused");
     CHECK(file_size(p) == 3, "a codec refusal keeps the earlier run's recording.mkv too");
+
+    /* A clear that fails part-way (audio.wav cannot be moved aside, as when it is open in another
+     * program) puts back what it moved: the start is refused with every earlier file in place. */
+    char wav[700], aside[760];
+    path_in(wav, sizeof wav, dir, "audio.wav");
+    f = fopen(wav, "wb");
+    if (f) { fputs("wave", f); fclose(f); }
+    set_env("SR_VIDEOREC_CODEC", "raw");
+    sr_videorec_test_reset();
+    sr_videorec_test_fail_clear_at("audio.wav");
+    CHECK(!sr_videorec_active(), "a start whose clear fails is refused");
+    CHECK(file_size(p) == 3 && file_size(wav) == 4,
+          "and recording.mkv and audio.wav are both still there, unchanged");
+    snprintf(aside, sizeof aside, "%s.videorec-old", p);
+    CHECK(file_size(aside) < 0, "nothing is left moved aside");
+    CHECK(record_says(dir, "REFUSED", "none was removed"), "record.json says the clear was refused");
+    sr_videorec_test_fail_clear_at(NULL);
+
+    /* The same without injection: a folder where an output file belongs (video.bgr0) cannot be
+     * cleared, and the earlier recording.mkv, moved aside before it, is put back. */
+    char dir2[600], p2[700], blocker[700];
+    snprintf(dir2, sizeof dir2, "%s/stale-blocked", root);
+    make_dir(dir2);
+    path_in(p2, sizeof p2, dir2, "recording.mkv");
+    f = fopen(p2, "wb");
+    if (f) { fputs("old", f); fclose(f); }
+    path_in(blocker, sizeof blocker, dir2, "video.bgr0");
+    make_dir(blocker);
+    char inner[760];
+    snprintf(inner, sizeof inner, "%s/keep", blocker);
+    f = fopen(inner, "wb");
+    if (f) { fputs("x", f); fclose(f); }
+    set_env("SR_VIDEOREC_DIR", dir2);
+    CHECK(!sr_videorec_test_start_from_env(), "a folder named video.bgr0 refuses the start");
+    CHECK(file_size(p2) == 3, "and the earlier recording.mkv is put back");
+    CHECK(record_says(dir2, "REFUSED", "cannot be removed"), "and record.json says why");
+
+    /* The earlier run's files count as free space, since the clear frees them: 2 bytes short of
+     * 4 GiB free with a 3-byte earlier recording starts, and removes it. */
+    set_env("SR_VIDEOREC_DIR", dir);
+    sr_videorec_test_reset();
+    sr_videorec_test_set_free_bytes(((uint64_t)4u << 30) - 2u);
+    CHECK(sr_videorec_active(), "the earlier run's files count as free space at the start");
+    CHECK(file_size(p) < 0, "and the start removed the earlier recording.mkv");
+    sr_videorec_test_reset();
+    f = fopen(p, "wb");
+    if (f) { fputs("old", f); fclose(f); }
     sr_videorec_test_reset();
     set_env("SR_VIDEOREC_DIR", NULL);
     set_env("SR_VIDEOREC_CODEC", NULL);
@@ -713,9 +770,10 @@ static void test_audio_failures(const char *root) {
 
 /* A fatal stop ends the process with _Exit, which runs no atexit handler: hle.c's unregistered
  * NID, the watchdog, the frame-dump exit and the other stops in src/rt/hle*.c. Each calls
- * sr_videorec_finish_at first (tools/test_dispatch_fatal_policy.py requires that of every such
- * stop). A child records five VBLANKs and stops with _Exit(7): with the finish, record.json is PASS
- * and names the stop; without it, the recording stays INCOMPLETE, never PASS. */
+ * sr_videorec_finish_status first, with its exit code (tools/test_dispatch_fatal_policy.py requires
+ * that of every such stop). A child records five VBLANKs and stops with _Exit(7): with the finish,
+ * record.json is PASS, names the stop and records exit status 7; without it, the recording stays
+ * INCOMPLETE, never PASS. */
 #define FATAL_STOP_WHY "a fatal stop ended the run"
 #define CLEAN_END_WHY "the run returned to the driver"
 
@@ -742,7 +800,7 @@ static int exit_child(const char *dir, const char *mode) {
         (void)sr_videorec_finish_status(CLEAN_END_WHY, 0);
         exit(0);
     }
-    if (strcmp(mode, "finish") == 0) (void)sr_videorec_finish_at(FATAL_STOP_WHY);
+    if (strcmp(mode, "finish") == 0) (void)sr_videorec_finish_status(FATAL_STOP_WHY, 7);
     fflush(stdout);
     fflush(stderr);
     _Exit(7);
@@ -774,7 +832,7 @@ static void test_fatal_stop(const char *root, const char *self) {
     if (f) { size_t got = fread(text, 1, sizeof text - 1u, f); text[got] = '\0'; fclose(f); }
     CHECK(strstr(text, "\"run_end\": \"" FATAL_STOP_WHY "\"") != NULL, "and names the stop");
     CHECK(strstr(text, "\"frames\": 5") != NULL, "with the five frames recorded before it");
-    CHECK(strstr(text, "\"exit_status\": null") != NULL, "a stop that names no status records null");
+    CHECK(strstr(text, "\"exit_status\": 7") != NULL, "with the status it exits with, 7");
     snprintf(dir, sizeof dir, "%s/fatal-skip", root);
     CHECK(run_exit_child(self, dir, "skip") == 7, "the other child stops with _Exit(7)");
     CHECK(record_says(dir, "INCOMPLETE", NULL), "a stop that skips the finish never leaves PASS");

@@ -86,10 +86,10 @@ void sr_videorec_audio(int ch, const int16_t *lr, int nframes, int volL, int vol
  * also registered with atexit. Returns 1 when the recording is complete and consistent.
  * sr_videorec_finish_at names how the run ended (record.json "run_end"): every route that
  * leaves with _Exit calls it, since _Exit skips atexit. sr_videorec_finish_status also records
- * the process exit status the route is about to return (record.json "exit_status"): the
- * driver's own ends and sceKernelExitGame call it. Any other end leaves "exit_status": null,
- * and the atexit fallback says that an exit() named no end, so a run that left through one
- * of the runtime's exit(1) paths never reads as a clean exit. */
+ * the process exit status the route is about to return (record.json "exit_status"): every HLE
+ * stop, the driver's own ends and sceKernelExitGame call it. The atexit fallback records
+ * "exit_status": null and says that an exit() named no end, so a run that left through one of
+ * the runtime's exit(1) paths never reads as a clean exit. */
 int sr_videorec_finish(void);
 int sr_videorec_finish_at(const char *run_end);
 int sr_videorec_finish_status(const char *run_end, int exit_status);
@@ -115,6 +115,8 @@ int sr_videorec_test_start_from_env(void);
 /* The free space the recorder sees (the reset sets 1 TiB), and failing audio.wav writes. */
 void sr_videorec_test_set_free_bytes(uint64_t bytes);
 void sr_videorec_test_fail_audio_writes(int on);
+/* Make the clear's move aside of one output file (by name, e.g. "audio.wav") fail; NULL clears. */
+void sr_videorec_test_fail_clear_at(const char *name);
 #endif
 
 #endif /* SR_VIDEOREC_H */
