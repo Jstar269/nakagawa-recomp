@@ -30329,7 +30329,7 @@ static void test_atrac_aa3_and_reinit_1379(void) {
  *   5. MPEG (RingbufferDestruct, FlushAllStream, AvcDecodeFlush)
  *   6. LwMutex status (ReferLwMutexStatus, ReferLwMutexStatusByID)
  *   7. ATRAC second buffer & lifecycle (SetSecondBuffer, GetSecondBufferInfo,
- *      GetBufferInfoForResetting / Reseting, Reinit, ReleaseResources)
+ *      GetBufferInfoForResetting / Reseting, Reinit, EndEntry)
  * Dispatches through sr_syscall to pin the exact production NID mapping. */
 
 #define NID_SCE_CTRL_SET_SAMPLING_MODE               0x1f4011e6u
@@ -30357,7 +30357,7 @@ static void test_atrac_aa3_and_reinit_1379(void) {
 #define NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETTING  0x2dd3e298u
 #define NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETING   0xca3ca3d2u
 #define NID_SCE_ATRAC_REINIT                         0x132f1ecau
-#define NID_SCE_ATRAC_RELEASE_RESOURCES              0xd5c28cc0u
+#define NID_SCE_ATRAC_END_ENTRY                      0xd5c28cc0u
 
 extern void sr_hle_test_ctrl_sampling_reset(void);
 extern uint32_t sr_hle_test_power_lock_count(void);
@@ -30634,7 +30634,7 @@ static void test_td24d_hle_batch(void) {
      * 7. ATRAC second buffer & lifecycle family (5 NIDs / 6 functions):
      *    sceAtracSetSecondBuffer (0x83bf7afd), sceAtracGetSecondBufferInfo (0x83e85ea0),
      *    sceAtracGetBufferInfoForResetting (0x2dd3e298) / sceAtracGetBufferInfoForReseting (0xca3ca3d2),
-     *    sceAtracReinit (0x132f1eca), sceAtracReleaseResources (0xd5c28cc0)
+     *    sceAtracReinit (0x132f1eca), sceAtracEndEntry (0xd5c28cc0)
      * ========================================================================= */
     sr_hle_test_atrac_reinit_reset();
     sr_hle_test_atrac_release_reset();
@@ -30647,9 +30647,9 @@ static void test_td24d_hle_batch(void) {
            "sceAtracReinit succeeds when no ATRAC contexts are in use");
     expect(sr_hle_test_atrac_reinit_count() == 1u, "reinit count incremented");
 
-    /* Release resources succeeds and increments count */
-    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_RESOURCES, 0u, 0u, 0u, 0u) == 0u,
-           "sceAtracReleaseResources succeeds");
+    /* The module-stop entry releases resources: succeeds and increments the count */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_END_ENTRY, 0u, 0u, 0u, 0u) == 0u,
+           "sceAtracEndEntry succeeds");
     expect(sr_hle_test_atrac_release_count() == 1u, "release count incremented");
 
     /* Bad-ID error checks */
