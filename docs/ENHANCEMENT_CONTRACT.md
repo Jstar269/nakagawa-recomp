@@ -285,7 +285,7 @@ exports `SR_ACE_REPORT`, the per-run report under `<user data>/ace/`.
 With `SR_ACE=off` (the default: players opt in) every Ace branch sits behind one switch that stays false: the Vulkan
 device is created with no features, every sampler and the texture descriptor pool are as before, the presenter
 registers no UI pass, the observation counters do not run, and nothing is printed. The one exception is a run with
-`SR_GPU_TWIN_COLOR` set: it prints one `TWIN: off` or `TWIN: refused` line and changes nothing else (section 10.8). `gpu-coherence-selftest` checks
+`SR_GPU_TWIN_COLOR` set: it prints one `TWIN: off` or `TWIN: refused` line and changes nothing else (section 10.11). `gpu-coherence-selftest` checks
 the samplers and the pool; `display-smoke` keeps its image hash.
 
 ### 10.3. What Ace Changes, and What It Never Changes
@@ -366,7 +366,7 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
 `sas=sinc` (#2054) resamples SAS VAG voices through a band-limited filter on the host. The mixed values land in guest
 memory, so it is a guest-visible item, and its entry is section 11.3.1.
 
-### 10.8. Full 32-Bit Colour (the Host Twin)
+### 10.11. Full 32-Bit Colour (the Host Twin)
 
 The game's 16-bit render targets are presented in full 32-bit colour without dither (#2050), in the Vulkan GE renderer.
 It is a presentation-only change (section 2.2): it changes only the image the host shows, never what the guest
@@ -409,7 +409,7 @@ at `s_twin`).
 
 ## 11. Guest-Visible Items
 
-Sections 10.3, 10.6 and 10.8 describe host-only features: what the guest reads, in its registers, memory and timing, is the
+Sections 10.3, 10.6 and 10.11 describe host-only features: what the guest reads, in its registers, memory and timing, is the
 same with them on or off. The owner's decision of 2026-11-04 (#2055) is that Enhanced does not have to stay fully
 Authentic: a change that improves a game without making anything worse is allowed, even when the guest can observe
 it. This section is the class for those changes. It adds to the classes above and removes none of them.
@@ -429,7 +429,7 @@ An item is guest-visible when, with it on, any of the following differs from the
 - the speed of I/O the guest performs: disc, Memory Stick or savedata reads and writes.
 
 The item's contract entry (section 11.2) names each of these that applies. An item that changes none of them is
-host-only and follows sections 10.2 to 10.6 and 10.8, not this section. One existing feature already sits on this line:
+host-only and follows sections 10.2 to 10.6 and 10.11, not this section. One existing feature already sits on this line:
 texture filtering changes the frame that every present commits to guest VRAM, so a game that copies its screen keeps
 the filtered picture (the "Pixels" bullet of section 10.3). It keeps that entry, and is not held to items 2 to 5 of
 section 11.2 retroactively; a change to it is. A new item is not admitted by analogy with it.

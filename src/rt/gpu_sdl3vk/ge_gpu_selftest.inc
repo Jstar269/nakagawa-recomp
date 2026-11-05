@@ -5502,7 +5502,7 @@ static int coherence_run_twin_scene(void) {
     return ok;
 }
 
-/* twin-gate: the switch's values and the Ace gate (ENHANCEMENT_CONTRACT.md 10.8). Only "1" and
+/* twin-gate: the switch's values and the Ace gate (ENHANCEMENT_CONTRACT.md 10.11). Only "1" and
  * "native" ask for the twin; unset, empty, "0" and "off" are off; anything else is refused and off,
  * never more permissive. With Ace Mode off (`--authentic`) the twin stays off whatever the value.
  * The run's own value must have decided s_twin exactly so, unless the device refused the twin. */

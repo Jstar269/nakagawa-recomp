@@ -90,7 +90,7 @@
  *    line carries its key, after #2074): every target and depth surface gets a second,
  *    host-only image. The authentic chain (the images guest VRAM is read from and committed
  *    from) keeps the user's render scale, so guest VRAM is the twin-off run's, and the twin
- *    runs at that scale beside it (ENHANCEMENT_CONTRACT.md 10.8). Each render op is recorded a
+ *    runs at that scale beside it (ENHANCEMENT_CONTRACT.md 10.11). Each render op is recorded a
  *    second time into the twin; uploads, VRAM patches, depth uploads and block transfers
  *    reach it as nearest-filtered blits of the authentic image; destination snapshots have
  *    twin snapshots. The twin's pass sets F_FULLC and clears the dither: the shader keeps
@@ -5084,7 +5084,7 @@ int gegpu_init(void) {
      * selftests). It is an Ace Mode feature: in an authentic run it stays off whatever the
      * environment says. The twin runs at the user's render scale beside the authentic chain,
      * which keeps that scale too, so guest VRAM and every readback are the twin-off run's
-     * (ENHANCEMENT_CONTRACT.md 10.8). It needs nearest blits of the colour and depth formats
+     * (ENHANCEMENT_CONTRACT.md 10.11). It needs nearest blits of the colour and depth formats
      * (seeding). */
     int twin_req = 0;
     s_tscale = s_scale;                    /* set after the render scale is read */
