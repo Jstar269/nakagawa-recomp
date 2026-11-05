@@ -325,6 +325,69 @@ static int xst_cell_large(int f) {
     return 1;
 }
 
+/* The store bound: at most XS_UPLOAD_BYTES_PER_PRESENT of copies are stored per present, the first
+ * always. Three 512x512 textures at 2x (4 MiB copies) are scaled in one present: the first two
+ * copies land, the third waits in the job table through further draws of that present and lands at
+ * the next one. Without the bound the third lands at once. */
+#define XST_UP_ADDR(i) (XST_BIG_ADDR + (uint32_t)(i) * 0x00100000u)
+static TexEnt *xst_entry_at(uint32_t addr) {
+    for (int i = 0; i < s_tex_n; i++)
+        if (s_tex[i].addr == addr) return &s_tex[i];
+    return NULL;
+}
+static int xst_up_draw(uint32_t addr) {
+    xst_state(XST_BASE, addr, 3u, 1, 1);
+    s_ge->tex_bufw = XST_BIG;
+    s_ge->tex_w = XST_BIG;
+    s_ge->tex_h = XST_BIG;
+    ge_state_note_external_write();
+    GeVtx p0, p1;
+    wrap_vtx(&p0, 20.0f, 160.0f, 0xFFFFFFFFu); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 20.0f + XST_W, 160.0f + XST_H, 0xFFFFFFFFu); p1.u = (float)XST_W; p1.v = (float)XST_H;
+    s_tmpl_ok = 0;
+    return hook_sprite(&p0, &p1, 0);
+}
+static int xst_up_ready(uint32_t addr) {
+    const TexEnt *e = xst_entry_at(addr);
+    return e && e->xs.state == XS_READY;
+}
+static int xst_cell_upload_cap(int f) {
+    (void)f;
+    const int factor = 2, saved = s_xs_factor;
+    const uint64_t copy = (uint64_t)XST_BIG * XST_BIG * (uint64_t)(factor * factor) * 4u;
+    xst_reset();
+    s_xs_factor = factor;
+    nk_tex_scale_set_sync(1);
+    for (uint32_t i = 0; i < 3u; i++) {
+        uint32_t *t = (uint32_t *)SR_HOST(XST_UP_ADDR(i));
+        for (int k = 0; k < XST_BIG * XST_BIG; k++)
+            t[k] = 0xFF000000u | (xst_hash(0x7000u + i * 0x40000u + (uint32_t)(k / 7)) & 0xFFFFFFu);
+    }
+    const uint64_t up0 = s_cnt_xs_uploads, cap0 = s_cnt_xs_upload_capped;
+    /* One present: each draw stores the copy the draw before it scaled (sync), then scales its own. */
+    int ok = xst_up_draw(XST_UP_ADDR(0)) && xst_up_draw(XST_UP_ADDR(1)) && xst_up_draw(XST_UP_ADDR(2));
+    ok = ok && xst_up_draw(XST_UP_ADDR(2)) && xst_up_draw(XST_UP_ADDR(1));   /* C's copy is done, and waits */
+    const int a1 = xst_up_ready(XST_UP_ADDR(0)), b1 = xst_up_ready(XST_UP_ADDR(1)), c1 = xst_up_ready(XST_UP_ADDR(2));
+    const uint64_t up1 = s_cnt_xs_uploads - up0, cap1 = s_cnt_xs_upload_capped - cap0;
+    s_cnt_present_cpu++;   /* the next present */
+    ok = ok && xst_up_draw(XST_UP_ADDR(2));
+    const int c2 = xst_up_ready(XST_UP_ADDR(2));
+    const uint64_t up2 = s_cnt_xs_uploads - up0;
+    s_xs_factor = saved;
+    xst_reset();
+    if (!ok) { fprintf(stderr, "gpu texscale selftest: FAIL upload-cap: draw failed\n"); return 0; }
+    if (!a1 || !b1 || c1 || up1 != 2u || cap1 != 1u || !c2 || up2 != 3u) {
+        fprintf(stderr, "gpu texscale selftest: FAIL upload-cap: in one present A/B/C stored %d/%d/%d (want 1/1/0), "
+                        "%llu copies stored (want 2), capped %llu (want 1); at the next present C stored %d, %llu "
+                        "copies (want 1, 3)\n", a1, b1, c1, (unsigned long long)up1, (unsigned long long)cap1, c2,
+                (unsigned long long)up2);
+        return 0;
+    }
+    printf("gpu texscale selftest: PASS %-12s %llu MiB copies: two stored in one present, the third at the next\n",
+           "upload-cap", (unsigned long long)(copy >> 20));
+    return 1;
+}
+
 static int xst_cell_not_ready(int f) {
     uint32_t tex[XST_W * XST_H], want[XST_W * XST_H];
     xst_reset();
@@ -765,11 +828,11 @@ int gegpu_texscale_selftest(void) {
         return 0;
     }
     int ok = 1;
-    static int (*const cells[])(int) = { xst_cell_scaled_draw, xst_cell_large, xst_cell_not_ready,
-                                         xst_cell_rewrite, xst_cell_clut, xst_cell_budget, xst_cell_rtt,
-                                         xst_cell_onetoone };
-    static const char *const names[] = { "scaled-draw", "large", "not-ready", "rewrite", "clut", "budget", "rtt",
-                                         "onetoone" };
+    static int (*const cells[])(int) = { xst_cell_scaled_draw, xst_cell_large, xst_cell_upload_cap,
+                                         xst_cell_not_ready, xst_cell_rewrite, xst_cell_clut, xst_cell_budget,
+                                         xst_cell_rtt, xst_cell_onetoone };
+    static const char *const names[] = { "scaled-draw", "large", "upload-cap", "not-ready", "rewrite", "clut",
+                                         "budget", "rtt", "onetoone" };
     /* The cells before onetoone check copies through 1:1 sprites, so they run with the 1:1 rule
      * off; onetoone turns it back on. */
     s_xs_onetoone_plain = 0;

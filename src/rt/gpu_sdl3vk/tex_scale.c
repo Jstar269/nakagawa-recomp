@@ -297,10 +297,21 @@ static int ensure_started(void) {
     return 1;
 }
 
-int nk_tex_scale_can_submit(void) {
+/* Room for a job holding `host` bytes, under s_mx: a free slot, and the jobs' host memory stays
+ * within NK_TEX_SCALE_HOST_MB (one job is always accepted, so the largest copy can be made). The
+ * one test for nk_tex_scale_can_submit and nk_tex_scale_submit, so a caller told there is room is
+ * never refused (a refused retry would decode again on every hit). */
+static Job *room_for(uint64_t host) {
+    Job *j = oldest(JOB_FREE);
+    if (!j || (s_host_bytes && s_host_bytes + host > ((uint64_t)NK_TEX_SCALE_HOST_MB << 20))) return NULL;
+    return j;
+}
+
+int nk_tex_scale_can_submit(int w, int h, int factor) {
+    if (factor < 2 || factor > NK_TEX_SCALE_MAX || w <= 0 || h <= 0) return 0;
     if (!ensure_started()) return 0;
     SDL_LockMutex(s_mx);
-    int room = oldest(JOB_FREE) != NULL && s_host_bytes < ((uint64_t)NK_TEX_SCALE_HOST_MB << 20);
+    const int room = room_for(job_host_bytes(w, h, factor)) != NULL;
     SDL_UnlockMutex(s_mx);
     return room;
 }
@@ -310,11 +321,9 @@ int nk_tex_scale_submit(uint64_t serial, uint64_t hash, const uint32_t *rgba, in
     if (factor < 2 || factor > NK_TEX_SCALE_MAX || w <= 0 || h <= 0) return 0;
     if (!ensure_started()) return 0;
     SDL_LockMutex(s_mx);
-    Job *j = oldest(JOB_FREE);
     const uint64_t host = job_host_bytes(w, h, factor);
-    /* A full table, or jobs already holding NK_TEX_SCALE_HOST_MB of host memory (one job is
-     * always accepted, so the largest copy can be made). */
-    if (!j || (s_host_bytes && s_host_bytes + host > ((uint64_t)NK_TEX_SCALE_HOST_MB << 20))) {
+    Job *j = room_for(host);
+    if (!j) {
         s_stats.refused_full++;
         SDL_UnlockMutex(s_mx);
         return 0;
@@ -443,22 +452,34 @@ void nk_tex_scale_report(void) {
 
 /* ---- smart 2D filter ------------------------------------------------------------------- */
 
-/* Tolerance in texels: texture coordinates are floats the guest wrote as integers. The edge may
- * sit S2D_EPS off a texel boundary and the map may drift S2D_EPS more across the whole draw, so
- * every pixel centre lies within 1/32 texel of a texel centre: the PSP's linear filter, on its
- * 1/16 grid, then reads that one texel, and nearest at 1x is the same frame. A bound on the
- * slope alone would let a wide draw drift by texels (480 pixels over 487 texels). */
-#define S2D_EPS (1.0f / 64.0f)
+/* Texture coordinates are floats the guest wrote as integers, so a 1:1 draw may sit a little off
+ * the texel lattice. The two filters agree at 1x only where the coordinate a pixel centre samples
+ * is at or just above a texel centre: the linear rule (psp.frag) floors u - 0.5 to a 1/16 step,
+ * so a centre even 1/4096 below takes 1/16 of the texel before, while nearest takes the texel
+ * itself. The shader first rounds the coordinate to 1/4096, which lifts a value up to 1/8192
+ * below a centre onto it. So every pixel centre's coordinate must lie in
+ * [centre - S2D_BELOW, centre + S2D_ABOVE]: S2D_BELOW is half that rounding margin, left for a
+ * host's interpolation error, and S2D_ABOVE stays well inside the 1/16 step. The map may also
+ * drift at most S2D_EPS over the whole span: a bound on the slope alone would let a wide draw
+ * drift by texels (480 pixels over 487 texels). The coordinate is linear across the draw, so the
+ * first and last pixel centres bound every one between them. */
+#define S2D_EPS   (1.0f / 64.0f)
+#define S2D_BELOW (1.0f / 16384.0f)
+#define S2D_ABOVE (1.0f / 32.0f)
 
-static int near_int(float v) { return fabsf(v - floorf(v + 0.5f)) <= S2D_EPS; }
+static int on_centre(float u) {
+    const float t = u - 0.5f, d = t - floorf(t + 0.5f);   /* signed offset from the nearest centre */
+    return d >= -S2D_BELOW && d <= S2D_ABOVE;
+}
 
 int nk_smart2d_sprite(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1) {
     const float w = fabsf(x1 - x0), h = fabsf(y1 - y0);
     if (!(w >= 1.0f && h >= 1.0f)) return 0;
-    /* one texel per pixel, either direction, over the whole span, and the edge on a texel
-     * boundary so every pixel centre is a texel centre */
-    return fabsf(fabsf(u1 - u0) - w) <= S2D_EPS && fabsf(fabsf(v1 - v0) - h) <= S2D_EPS &&
-           near_int(u0) && near_int(v0);
+    /* one texel per pixel, either direction, over the whole span ... */
+    if (fabsf(fabsf(u1 - u0) - w) > S2D_EPS || fabsf(fabsf(v1 - v0) - h) > S2D_EPS) return 0;
+    /* ... and the first and last pixel centres (half a pixel in from each edge) on a texel centre */
+    const float hu = (u1 - u0) * (0.5f / w), hv = (v1 - v0) * (0.5f / h);
+    return on_centre(u0 + hu) && on_centre(u1 - hu) && on_centre(v0 + hv) && on_centre(v1 - hv);
 }
 
 int nk_smart2d_triangle(const float x[3], const float y[3], const float u[3], const float v[3],
@@ -485,10 +506,16 @@ int nk_smart2d_triangle(const float x[3], const float y[3], const float u[3], co
     if (fabsf(fabsf(dudx) - 1.0f) * bw + fabsf(dudy) * bh > S2D_EPS ||
         fabsf(dvdx) * bw + fabsf(fabsf(dvdy) - 1.0f) * bh > S2D_EPS)
         return 0;
-    /* u at the box's corner, taken back to x = 0 along the exact +/-1 map: an integer puts every
-     * pixel centre on a texel centre (the drift inside the box is bounded above) */
-    const float sx = dudx > 0.0f ? 1.0f : -1.0f, sy = dvdy > 0.0f ? 1.0f : -1.0f;
-    const float uc = tu[0] + dudx * (xmin - x[0]) + dudy * (ymin - y[0]);
-    const float vc = tv[0] + dvdx * (xmin - x[0]) + dvdy * (ymin - y[0]);
-    return near_int(uc - sx * xmin) && near_int(vc - sy * ymin);
+    /* The pixel centres the box can hold span [cx0, cx1] x [cy0, cy1]; u and v are linear, so
+     * their values at those four corners bound every centre the triangle covers. */
+    const float cx0 = ceilf(xmin - 0.5f) + 0.5f, cx1 = floorf(xmax - 0.5f) + 0.5f;
+    const float cy0 = ceilf(ymin - 0.5f) + 0.5f, cy1 = floorf(ymax - 0.5f) + 0.5f;
+    if (cx1 < cx0 || cy1 < cy0) return 0;          /* covers no pixel centre */
+    const float cx[2] = { cx0, cx1 }, cy[2] = { cy0, cy1 };
+    for (int i = 0; i < 2; i++)
+        for (int j = 0; j < 2; j++) {
+            const float ex = cx[i] - x[0], ey = cy[j] - y[0];
+            if (!on_centre(tu[0] + dudx * ex + dudy * ey) || !on_centre(tv[0] + dvdx * ex + dvdy * ey)) return 0;
+        }
+    return 1;
 }

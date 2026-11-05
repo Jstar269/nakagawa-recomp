@@ -2771,7 +2771,7 @@ enum { XS_NONE = 0, XS_QUEUED, XS_READY };
 /* Why an entry is offered again on a later hit: the job queue was full, or the copy did not fit
  * the budget (tried again at most once per present, and only when it could fit). */
 enum { XS_RETRY_NONE = 0, XS_RETRY_QUEUE, XS_RETRY_BUDGET };
-/* A copy no draw has bound for this many presents (about a second) may be freed for another. */
+/* A copy no draw has bound for this many presents (one to two seconds) may be freed for another. */
 #define XS_IDLE_PRESENTS 60u
 /* Scaled copies stored per present: once this many bytes went up, the rest wait for the next
  * present (the first copy of a present is always stored, so a 16 MiB copy lands). This bounds
@@ -3323,7 +3323,9 @@ static VkDescriptorSet tex_bind_set(TexEnt *e, uint32_t levels) {
  * so a fresh decode is that content. A budget wait tries at most once per present, and decodes
  * only when the copy could fit with the idle copies freed. */
 static void tex_xs_retry(TexEnt *e, uint32_t levels) {
-    if (e->xs.retry == XS_RETRY_NONE || !nk_tex_scale_can_submit()) return;
+    if (e->xs.retry == XS_RETRY_NONE ||
+        !nk_tex_scale_can_submit(e->w, e->h, nk_tex_scale_factor_for(s_xs_factor, e->w, e->h)))
+        return;
     if (e->xs.retry == XS_RETRY_BUDGET) {
         const uint64_t now = xs_now();
         if (e->xs.retry_present == now) return;

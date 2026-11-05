@@ -390,7 +390,7 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
   the rest wait in the job table for the next present. Until its copy is stored, or with the job table full, a
   texture is drawn unscaled. Nothing is hidden or skipped.
 - **Budget.** The copies hold at most `SR_TEX_SCALE_BUDGET_MB` of GPU memory. A copy that would not fit first frees
-  copies that no draw has bound for 60 presents (about a second), the longest idle first, until a quarter of the
+  copies that no draw has bound for 60 presents (one to two seconds), the longest idle first, until a quarter of the
   budget is spare besides the new copy; that drains the GE once, as a cache eviction does. A copy bound in those 60
   presents is never freed, so when the copies in use fill the budget, the new texture is drawn unscaled. It is
   offered again on a later draw, at most once per present and only when it could fit, and so is a texture whose
@@ -404,9 +404,12 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
   showed. Magnified and 3D draws keep the copy.
 - **Smart 2D.** A textured draw that maps one texel to one pixel on each axis (either direction), axis-aligned,
   without perspective and with its edge on a texel boundary, samples nearest: a HUD, a font or a sprite stays crisp
-  at a render scale above 1x. The map may differ from 1:1 by 1/64 texel over the draw's whole span and the edge by
-  1/64 more, so every pixel centre is within 1/32 texel of a texel centre. At 1x such a draw reads whole texels with
-  either filter, so the frame is unchanged.
+  at a render scale above 1x. The map may differ from 1:1 by 1/64 texel over the draw's whole span, and the
+  coordinate every pixel centre samples must lie on a texel centre or at most 1/32 texel above it, never more than
+  1/16384 below. The PSP's linear rule floors to a 1/16 step, so a centre even slightly below takes part of the
+  texel before, while above it up to the next step reads the texel alone. At 1x every draw the test accepts reads
+  the same whole texel with either filter, so the frame is unchanged; `tex-scale-selftest` checks that against the
+  shader's two rules over offsets and drifts on both sides of the lattice, and refuses the draws just below it.
   Every other draw, a 3D one included, keeps the game's filter.
 - **Guest memory.** Neither feature writes guest memory, the CLUT or a texture source; texture readbacks and
   render-to-texture results are unchanged. What a present commits to guest VRAM does change, which makes both

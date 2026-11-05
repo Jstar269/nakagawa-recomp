@@ -9,17 +9,21 @@
  *   - wrap and clamp: a repeating texture's copy is the middle of a 3x3 tiling's copy (no seam),
  *     a clamped one the middle of an edge-extended copy, and the R/B channel order is upstream's;
  *   - jobs: a queued job returns the same pixels with its serial and hash; a held queue keeps a
- *     job queued and a full one refuses the next; nothing waits for a worker;
+ *     job queued and a full one refuses the next; nothing waits for a worker; the host-memory cap
+ *     refuses the job that would pass it, and can_submit always gives submit's answer;
  *   - settings, the per-size factor and the budget; with SR_TEX_SCALE and SR_SMART_2D set, an
  *     authentic start keeps both off and prints only the "need Ace Mode" line (the
  *     tex-scale-gate-mutant build, which removes that gate, must fail here);
  *   - the smart 2D classifier: 1:1 sprites and triangles (either direction) are pixel-mapped;
  *     magnified, offset, rotated and perspective draws are not, nor a wide draw whose map
- *     drifts past the tolerance over its span, at the edge of that tolerance.
+ *     drifts past the tolerance over its span, at the edge of that tolerance, nor a draw whose
+ *     pixel centres fall just below the texel lattice; every draw it accepts reads one texel per
+ *     pixel under both of psp.frag's filter rules at 1x.
  */
 #include "tex_scale.h"
 #include "../../../third_party/xbrz/xbrz.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -242,7 +246,7 @@ static void test_jobs(void) {
     nk_tex_scale_wait_idle();
     CHECK(!nk_tex_scale_take(&r), "jobs: a held job finished");
     int queued = 1;
-    while (nk_tex_scale_can_submit()) {
+    while (nk_tex_scale_can_submit(W, H, F)) {
         if (!nk_tex_scale_submit(100u + (uint64_t)queued, 1u, tex, W, H, F, 1, 0)) break;
         queued++;
     }
@@ -273,6 +277,48 @@ static void test_jobs(void) {
           (unsigned long long)st.scaled, (unsigned long long)st.refused_full);
     nk_tex_scale_shutdown();
     if (!s_fail) printf("tex scale selftest: PASS jobs queued=%d held, full, ordered, sync\n", queued);
+}
+
+/* The host-memory cap. With the jobs held, 512x512 textures at 2x (5 MiB of host memory each,
+ * source and result) are taken until the next would pass NK_TEX_SCALE_HOST_MB, well before the
+ * table is full. can_submit gives submit's answer at every step: a caller told there is room is
+ * never refused (the renderer would otherwise decode again on every hit). A small job that still
+ * fits under the cap is taken; a large one is not. */
+static uint32_t s_big[512 * 512];
+static void test_host_cap(void) {
+    enum { BW = 512, BH = 512, BF = 2, SW = 20, SH = 12 };
+    const uint64_t each = (uint64_t)BW * BH * 4u * (1u + BF * BF), cap = (uint64_t)NK_TEX_SCALE_HOST_MB << 20;
+    const int fit = (int)(cap / each);
+    for (int i = 0; i < BW * BH; i++) s_big[i] = 0xFF000000u | (uint32_t)i;
+    nk_tex_scale_set_hold(1);
+    int taken = 0, disagree = 0;
+    for (int i = 0; i < NK_TEX_SCALE_QUEUE; i++) {
+        const int can = nk_tex_scale_can_submit(BW, BH, BF);
+        const int did = nk_tex_scale_submit(500u + (uint64_t)i, 1u, s_big, BW, BH, BF, 1, 1);
+        if (can != did) disagree++;
+        if (!did) break;
+        taken++;
+    }
+    CHECK(fit < NK_TEX_SCALE_QUEUE && taken == fit && disagree == 0,
+          "host cap: took %d jobs of %llu bytes (want %d, under %u MiB with the table's %d slots not full); "
+          "can_submit and submit disagreed %d times", taken, (unsigned long long)each, fit, NK_TEX_SCALE_HOST_MB,
+          NK_TEX_SCALE_QUEUE, disagree);
+    const uint64_t small = (uint64_t)SW * SH * 4u * 5u;
+    CHECK((uint64_t)fit * each + small <= cap && nk_tex_scale_can_submit(SW, SH, 2) &&
+          nk_tex_scale_submit(600u, 1u, s_big, SW, SH, 2, 1, 1), "host cap: a small job that fits under the cap was refused");
+    CHECK(!nk_tex_scale_can_submit(BW, BH, BF) && !nk_tex_scale_submit(601u, 1u, s_big, BW, BH, BF, 1, 1),
+          "host cap: a large job past the cap was offered or taken");
+    nk_tex_scale_shutdown();   /* the held jobs are dropped unrun */
+    /* From an empty table the large job is taken again. */
+    nk_tex_scale_set_sync(1);
+    NkTexScaleResult r;
+    CHECK(nk_tex_scale_can_submit(BW, BH, BF) && nk_tex_scale_submit(602u, 1u, s_big, BW, BH, BF, 1, 1) &&
+          nk_tex_scale_take(&r) && r.serial == 602u, "host cap: an empty table refused a large job");
+    nk_tex_scale_release(&r);
+    nk_tex_scale_set_sync(0);
+    nk_tex_scale_shutdown();
+    if (!s_fail) printf("tex scale selftest: PASS host-cap %d jobs of %llu MiB, can_submit equals submit\n", taken,
+                        (unsigned long long)(each >> 20));
 }
 
 /* ---- settings, factor, budget ------------------------------------------------------------ */
@@ -367,6 +413,23 @@ static int tri(float x0, float y0, float u0, float v0, float x1, float y1, float
     return nk_smart2d_triangle(x, y, u, v, rw);
 }
 
+/* psp.frag's two rules at 1x, on one axis: the coordinate a pixel centre samples is rounded to
+ * 1/4096; nearest takes texel floor(u); linear taps floor((u - 0.5) * 16) / 16 + 0.5, which reads
+ * one texel alone only on a whole step. Whether both give the same single texel. */
+static int s2d_rules_agree(float u) {
+    u = floorf(u * 4096.0f + 0.5f) / 4096.0f;
+    const float t = floorf((u - 0.5f) * 16.0f) / 16.0f;
+    return t == floorf(t) && t == floorf(u);
+}
+
+/* Pixels of an n-pixel span from u0 at its first edge to u1 at its last where the rules differ. */
+static int s2d_span_differs(int n, float u0, float u1) {
+    int d = 0;
+    for (int i = 0; i < n; i++)
+        if (!s2d_rules_agree(u0 + (u1 - u0) * (((float)i + 0.5f) / (float)n))) d++;
+    return d;
+}
+
 static void test_smart2d(void) {
     /* sprites */
     CHECK(nk_smart2d_sprite(10, 10, 26, 26, 0, 0, 16, 16), "smart2d: 1:1 sprite");
@@ -406,13 +469,63 @@ static void test_smart2d(void) {
           tri(480, 0, 480, 0, 480, 272, 480, 272, 0, 272, 0, 272, 1, 1, 1), "smart2d: a full-screen 1:1 triangle pair");
     CHECK(tri(300, 200, 40, 8, 316, 200, 56, 8, 300, 216, 40, 24, 1, 1, 1),
           "smart2d: a 1:1 triangle far from the origin");
-    if (!s_fail) printf("tex scale selftest: PASS smart2d sprites and triangles\n");
+    /* Just below the lattice. psp.frag's linear rule floors, so a pixel centre's coordinate even
+     * 1/4096 below a texel centre takes 1/16 of the texel before while nearest takes the texel:
+     * at 1x the two frames differ. Each of these was accepted before (16 of 16, or 472 of 480,
+     * pixels changed) and is refused. Just above is safe and stays accepted. */
+    const float q = 1.0f / 128.0f, s64 = 1.0f / 64.0f;
+    CHECK(!nk_smart2d_sprite(0, 0, 16, 16, -q, 0, 16 - q, 16), "smart2d: u0 1/128 below the lattice");
+    CHECK(!nk_smart2d_sprite(0, 0, 16, 16, -s64, 0, 16 - s64, 16), "smart2d: u0 1/64 below the lattice");
+    CHECK(!nk_smart2d_sprite(0, 0, 16, 16, 0, -q, 16, 16 - q), "smart2d: v0 1/128 below the lattice");
+    CHECK(!nk_smart2d_sprite(0, 0, 480, 16, 0, 0, 480 - q, 16), "smart2d: 480 pixels over 480 - 1/128 texels");
+    CHECK(!nk_smart2d_sprite(0, 0, 480, 16, 0, 0, 480 - s64, 16), "smart2d: 480 pixels over 480 - 1/64 texels");
+    CHECK(!nk_smart2d_sprite(0, 0, 16, 480, 0, 0, 16, 480 - q), "smart2d: 480 rows over 480 - 1/128 texels");
+    CHECK(!nk_smart2d_sprite(0, 0, 480, 16, 480 - q, 0, 0, 16), "smart2d: mirrored, from 480 - 1/128");
+    CHECK(!nk_smart2d_sprite(100, 0, 116, 16, 10 - 0.01f, 0, 26 - 0.01f, 16), "smart2d: edge 10 - 1/100 at x = 100");
+    CHECK(!tri(10, 10, -q, 0, 26, 10, 16 - q, 0, 10, 26, -q, 16, 1, 1, 1), "smart2d: a triangle 1/128 below in u");
+    CHECK(!tri(0, 0, 0, 0, 480, 0, 480 - q, 0, 0, 272, 0, 272, 1, 1, 1), "smart2d: a triangle over 480 - 1/128 texels");
+    CHECK(!tri(0, 0, 0, 0, 480, 0, 480, 0, 0, 272, 0, 272 - q, 1, 1, 1), "smart2d: a triangle over 272 - 1/128 rows");
+    CHECK(nk_smart2d_sprite(0, 0, 16, 16, q, 0, 16 + q, 16), "smart2d: u0 1/128 above the lattice");
+    CHECK(nk_smart2d_sprite(0, 0, 480, 16, s64, 0, 480 + 2 * s64, 16), "smart2d: 1/64 above, drifting 1/64 more");
+    CHECK(tri(10, 10, q, 0, 26, 10, 16 + q, 0, 10, 26, q, 16, 1, 1, 1), "smart2d: a triangle 1/128 above in u");
+    /* The property, against the shader's own rules: across offsets and drifts on either side of the
+     * lattice, both directions and both axes, every draw the classifier accepts reads the same texel
+     * under both filters at every pixel. */
+    int accepted = 0, off_lattice = 0, bad = 0;
+    char first_bad[96] = "";
+    static const int ns[] = { 16, 480 };
+    for (int ni = 0; ni < 2; ni++)
+        for (int ei = -32; ei <= 32; ei++)
+            for (int di = -16; di <= 16; di++)
+                for (int dir = 0; dir < 2; dir++)
+                    for (int kind = 0; kind < 3; kind++) {
+                        const int n = ns[ni];
+                        const float e = (float)ei / 512.0f, dd = (float)di / 512.0f, b = 10.0f;
+                        const float u0 = dir ? b + (float)n + e : b + e;
+                        const float u1 = dir ? b + e - dd : b + (float)n + e + dd;
+                        int ok;
+                        if (kind == 0) ok = nk_smart2d_sprite(0, 0, (float)n, 16, u0, 0, u1, 16);
+                        else if (kind == 1) ok = nk_smart2d_sprite(0, 0, 16, (float)n, 0, u0, 16, u1);
+                        else ok = tri(0, 0, u0, 0, (float)n, 0, u1, 0, 0, 16, u0, 16, 1, 1, 1);
+                        if (!ok) continue;
+                        accepted++;
+                        if (ei || di) off_lattice++;
+                        const int differ = s2d_span_differs(n, u0, u1);
+                        if (differ && !bad++)
+                            snprintf(first_bad, sizeof(first_bad), "kind %d n %d u %.6f..%.6f: %d pixels", kind, n,
+                                     (double)u0, (double)u1, differ);
+                    }
+    CHECK(bad == 0 && off_lattice > 0, "smart2d: %d accepted draws (%d off the lattice) change the frame at 1x; "
+          "first: %s", bad, off_lattice, first_bad);
+    if (!s_fail) printf("tex scale selftest: PASS smart2d sprites and triangles; %d accepted draws (%d off the lattice) "
+                        "read one texel per pixel under both filters\n", accepted, off_lattice);
 }
 
 int main(void) {
     test_golden();
     test_wrap_clamp();
     test_jobs();
+    test_host_cap();
     test_settings();
     test_smart2d();
     if (s_fail) return 1;

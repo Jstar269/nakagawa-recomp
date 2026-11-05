@@ -93,8 +93,9 @@ uint64_t nk_tex_scale_budget_used(void);
  * full or memory ran out (the texture is drawn unscaled). */
 int nk_tex_scale_submit(uint64_t serial, uint64_t hash, const uint32_t *rgba, int w, int h,
                         int factor, int clamp_u, int clamp_v);
-/* Whether a submit would be accepted now (queue room, and host memory under the cap). */
-int nk_tex_scale_can_submit(void);
+/* Whether a submit of a w x h texture at `factor` would be accepted now: queue room, and its host
+ * memory within the cap. The same test nk_tex_scale_submit makes. */
+int nk_tex_scale_can_submit(int w, int h, int factor);
 
 typedef struct NkTexScaleResult {
     uint64_t serial, hash;
@@ -135,9 +136,10 @@ int nk_tex_scale_image(const uint32_t *rgba, int w, int h, int factor, int clamp
 
 /* ---- smart 2D filter ------------------------------------------------------------------- */
 /* Whether a draw maps texels to pixels 1:1: one texel per guest pixel along each axis (either
- * direction), no rotation, no perspective, and every pixel centre on a texel centre. Such a
- * draw samples the same texels under nearest and linear filtering at the PSP's own
- * resolution; above it, nearest keeps each texel crisp where linear would blur it across the
+ * direction), no rotation, no perspective, and every pixel centre on a texel centre or at most
+ * 1/32 texel above it, never below (the linear rule floors, so a centre just below one would
+ * take part of the texel before). Such a draw samples the same texels under nearest and linear
+ * filtering at the PSP's own resolution; above it, nearest keeps each texel crisp where linear would blur it across the
  * scaled pixels. Coordinates are guest pixels and texels.
  *
  * A sprite: corners (x0, y0) and (x1, y1) with texel coordinates (u0, v0) at the left/top
