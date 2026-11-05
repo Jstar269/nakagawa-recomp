@@ -362,9 +362,9 @@ With `sas=sinc`, SAS voices are resampled by a band-limited filter on the host (
   fraction, envelope, end of sample, end flags and the grain are the authentic ones, and only the mixed
   sample values differ. PCM and noise voices, which ignore the pitch today, are mixed as before. The mixed values
   land in the guest's SAS output buffer, so a title that reads it back sees them (section 10.3).
-- **Reading ahead.** The copy decodes only as far as the filter reaches. Past the last block the authentic decoder
-  has read by the end of the same grain, it decodes at most 1 VAG block (16 bytes) at a pitch of 0x1000 or below,
-  rising to 4 blocks (64 bytes) at 0x4000. A title that streams VAG data into its buffer just in time may not have
+- **Reading ahead.** The copy decodes at most one sample past the farthest sample the filter can read (one spare).
+  Past the last block the authentic decoder has read by the end of the same grain, it decodes at most 1 VAG block
+  (16 bytes) at a pitch of 0x1000 or below, rising to 4 blocks (64 bytes) at 0x4000. A title that streams VAG data into its buffer just in time may not have
   written those blocks yet. The copy then mixes the stale bytes into the output samples at the end of the grain whose
   filter window reaches them. Only the mixed values are affected. The copy is discarded, so voice state never changes.
 - **Evidence.** `hle-thread-selftest` plays synthetic VAG data through the guest calls, off and on.
