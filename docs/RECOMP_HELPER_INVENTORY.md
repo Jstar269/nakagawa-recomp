@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **459** (declared in `recomp.h`: 389)
-- reach class: emitter-reached 80, production-runtime-only 344, selftest-only 0, address-only 8, none 27
-- provenance class of the home definition: declared-only 1, project_authored_attested 35, upstream_derived 423
+- helpers: **460** (declared in `recomp.h`: 390)
+- reach class: emitter-reached 80, production-runtime-only 345, selftest-only 0, address-only 8, none 27
+- provenance class of the home definition: declared-only 1, project_authored_attested 35, upstream_derived 424
 
 ## Helpers
 
@@ -338,6 +338,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_hle_register_late_import` | `rt/hle_kernel_module.c` | yes | production-runtime-only | `rt/hle_kernel_module.c`: upstream_derived |
 | `sr_hle_release_thread_resources` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_hle_resolve_late_import` | `rt/hle.c`, `rt/snapshot_runner.c`, `rt/verify_harness.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested; `rt/verify_harness.c`: project_authored_attested |
+| `sr_hle_sas_set_band_limited` | `rt/hle_audio.c` | yes | production-runtime-only | `rt/hle_audio.c`: upstream_derived |
 | `sr_host_address` | `rt/recomp.h` | yes | emitter-reached (direct, via `SR_HOST`) | `rt/recomp.h`: upstream_derived |
 | `sr_host_data_entry_count` | `rt/hle_data.c` | yes | production-runtime-only | `rt/hle_data.c`: upstream_derived |
 | `sr_host_data_prepare` | `rt/hle_data.c` | yes | production-runtime-only | `rt/hle_data.c`: upstream_derived |
