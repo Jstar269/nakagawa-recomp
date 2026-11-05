@@ -1445,6 +1445,19 @@ static int sp_load_leaves_frame(uint32_t opcode, uint32_t before, uint32_t after
     return boundary == NULL || after < before || after >= boundary->entry_sp;
 }
 
+/* A `jr $ra` that returns past the call this run is part of (#2016): to the resume PC of an
+ * enclosing live native linked call, with $sp back at or above that call's entry $sp, so the
+ * callee of that call has released its frame. A longjmp into a native frame ends this way:
+ * the interpreter runs the rest of that frame, then returns from it to its caller, a call
+ * the interpreter's own boundary does not name. Any other target is ordinary guest control
+ * flow, which the interpreter follows: a callee that points $ra at a trampoline, or the
+ * return of a call the interpreter ran inline. */
+static int interp_returns_past_its_call(CpuState *s, const SrGuestInterpCallBoundary *boundary,
+                                        uint32_t target, uint32_t sp) {
+    if (boundary != NULL && target == boundary->resume_pc) return 0;
+    return sr_aot_return_boundary_encloses_resume(s, target, sp);
+}
+
 static SrGuestInterpResult sr_guest_interp_run_internal(
     CpuState *s,
     uint32_t entry,
@@ -1687,6 +1700,34 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                 s->pc = pc;
                 continue;
             }
+            /* `jr $ra` past this run's call (#2016). Running on from the target would run the
+             * continuation of a native caller that is still on the host stack and will run it
+             * again, and a return the interpreter cannot hand back loops. Under a TAIL step, or
+             * under a call a checked generated site began, the return is captured on that
+             * native linked call, whose end check resolves it as it resolves a native `jr $ra`:
+             * it unwinds the frames in between, or stops by name at a call whose caller runs
+             * its own continuation. Under any other call boundary that caller is this run's
+             * own, so it is the named mismatch stop a native callee of that call gets. */
+            if ((opcode >> 21) == 31u && (opcode & 0x3fu) == 0x08u &&
+                interp_returns_past_its_call(s, boundary, transfer.target, s->r[29])) {
+                if (log_dispatch) {
+                    fprintf(stderr,
+                            "GUEST_INTERP_RETURN_ELSEWHERE pc=0x%08" PRIx32 " target=0x%08" PRIx32
+                            " sp=0x%08" PRIx32 "\n",
+                            pc, transfer.target, s->r[29]);
+                }
+                /* A checked generated site (dispatch_call_checked) began this call's own
+                 * boundary, whose caller honours its end check as at a direct call: the return
+                 * is captured there, and the site's end resolves it as a native callee's. */
+                const int captures = boundary == NULL || boundary->site_boundary;
+                if (captures && sr_aot_return_boundary_capture_return(
+                        s, transfer.target, boundary != NULL ? &boundary->resume_pc : NULL)) {
+                    s->pc = transfer.target;
+                    return SR_GUEST_INTERP_CALL_RETURN;
+                }
+                set_fault(fault, pc, opcode, transfer.target, 1);
+                return SR_GUEST_INTERP_RETURN_TARGET_MISMATCH;
+            }
             pc = transfer.taken ? transfer.target : pc + 8u;
             s->pc = pc;
             continue;
@@ -1763,6 +1804,7 @@ const char *sr_guest_interp_result_name(SrGuestInterpResult result) {
     case SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE:
         return "host-stack-bounds-unavailable";
     case SR_GUEST_INTERP_NULL_CODE_POINTER: return "null-code-pointer";
+    case SR_GUEST_INTERP_RETURN_TARGET_MISMATCH: return "return-target-mismatch";
     default: return "unknown";
     }
 }

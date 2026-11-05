@@ -55,6 +55,31 @@ class StubsReachTheGeneratedC(unittest.TestCase):
                 self.assertNotIn(f"f_{addr:08x}_real", self.none)
 
 
+#: Hand-written bodies retired under #363: the guest's own code runs at each address.
+RETIRED = (0x000011B0, 0x0000260C, 0x0000FE3C, 0x00015EA0, 0x000149A8)
+
+
+class RetiredStubsTranslateAsWritten(unittest.TestCase):
+    """A retired address gets the same translated body under --profile=hst as under --profile=none."""
+
+    @classmethod
+    def setUpClass(cls):
+        words = isolation._build_specimen_words({addr: isolation._body_leaf() for addr in RETIRED})
+        cls.hst = isolation._codegen_functions(words, "hst")
+        cls.none = isolation._codegen_functions(words, "none")
+
+    def test_no_retired_address_has_a_hand_written_body(self):
+        self.assertEqual(set(RETIRED) & set(STUBS), set())
+        self.assertEqual(set(RETIRED) & set(HST_SIMPLE_STUBS), set())
+
+    def test_hst_translates_each_retired_address_as_written(self):
+        for addr in RETIRED:
+            with self.subTest(addr=f"0x{addr:08x}"):
+                name = f"f_{addr:08x}"
+                self.assertNotIn("custom stub", self.hst[name])
+                self.assertEqual(self.hst[name], self.none[name])
+
+
 #: The main_RunGameLoop scheduler wrapper, retired under #363: the worker thread's own loop runs.
 GAME_LOOP = 0x000468C8
 
