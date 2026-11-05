@@ -10021,14 +10021,15 @@
       }
     },
     {
-      "path": "src/rt/sas_resample.h",
-      "classification": "project_authored_attested",
+      "path": "src/rt/sas_envelope.h",
+      "classification": "upstream_derived",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "sas-resample-2054",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "record_id": "sas-envelope-1296",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
       }
     },
     {

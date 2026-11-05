@@ -26,8 +26,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 26 |
 | `ppsspp-derived` | 119 | 89 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 350 | 226 |
-| `unverified` | 152 | 22 |
+| `synthetic` | 352 | 226 |
+| `unverified` | 150 | 22 |
 | total | 685 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -73,7 +73,7 @@ belongs to without the census's own grouping.
 | `0x05db22ce` | `sceGeUnsetCallback` | ge | `synthetic` | HLE selftest dispatch; note |
 | `0x06a70004` | `sceIoMkdir` | io | `unverified` | no recorded evidence |
 | `0x07ec321a` | `sceMp3ReserveMp3Handle` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
-| `0x07f58c24` | `__sceSasGetAllEnvelopeHeights` | audio | `unverified` | no recorded evidence |
+| `0x07f58c24` | `__sceSasGetAllEnvelopeHeights` | audio | `synthetic` | HLE selftest dispatch |
 | `0x0840e808` | `sceMp3ResetPlayPositionByFrame` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x08d98894` | `sceNpDrmEdataSetupKey` | npdrm | `unverified` | no recorded evidence |
 | `0x08fff7a0` | `sceNetAdhocctlScan` | network | `unverified` | no recorded evidence |
@@ -321,7 +321,7 @@ belongs to without the census's own grouping.
 | `0x5ec81c55` | `sceAudioChReserve` | audio | `synthetic` | HLE selftest dispatch; note |
 | `0x5f10d406` | `sceKernelCpuResumeIntr` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
 | `0x5f32beaa` | `sceKernelReferVTimerStatus` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-001, PSP-HLE-VTIMER-002 |
-| `0x5f9529f6` | `__sceSasSetSL` | audio | `unverified` | no recorded evidence |
+| `0x5f9529f6` | `__sceSasSetSL` | audio | `synthetic` | HLE selftest dispatch |
 | `0x5fb86ab0` | `sceGeListDeQueue` | ge | `hardware-measured` | PSP oracle PSP-GE-CONTROL-001 |
 | `0x60107536` | `sceKernelDeleteLwMutex` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x606a4649` | `sceMpegDelete` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
