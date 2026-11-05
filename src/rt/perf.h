@@ -247,6 +247,12 @@ void     sr_perf_vblank_coalesced(void);
 void     sr_perf_vblank_service(uint32_t delivered);
 void     sr_perf_phase_report(int force);
 void     sr_perf_ge_submit(SrPerfGeReason reason);
+/* SR_GPU_TIMESTAMPS: GPU execution time from timestamp queries, credited when the work's fence has
+ * signalled, so a frame row holds the GPU work that finished during that frame. _on() is called once
+ * the queries exist; until then the SR_PERF_FRAMES gpu_* columns stay empty. */
+void     sr_perf_gpu_timestamps_on(void);
+void     sr_perf_gpu_time(SrPerfGeReason reason, uint64_t ns);
+void     sr_perf_gpu_present_time(uint64_t ns);
 void     sr_perf_ge_wait(uint64_t started_ns, SrPerfGeReason reason);
 void     sr_perf_ge_event(SrPerfGeEvent event, uint64_t count);
 void     sr_perf_ge_frontend_profile_config(uint32_t stride, int calibration_enabled);

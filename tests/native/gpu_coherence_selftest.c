@@ -148,6 +148,12 @@ int main(int argc, char **argv) {
     ok = gegpu_snapshot_sync_selftest();
 #else
     ok = gegpu_coherence_selftest();
+    if (ok == 77) {   /* --case gpu-timestamps on a queue without timestamp queries */
+        gegpu_shutdown();
+        sdl3vk_shutdown();
+        free(arena);
+        return 77;
+    }
 #endif
 #ifndef SR_GPU_ACE_SELFTEST
     /* Ace Mode off (A2, src/rt/ace.h): every cell above ran with no anisotropic sampler,

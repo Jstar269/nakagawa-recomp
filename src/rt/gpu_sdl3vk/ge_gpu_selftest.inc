@@ -3435,6 +3435,88 @@ static int coherence_run_submit_batch(void) {
     return ok;
 }
 
+/* SR_GPU_TIMESTAMPS (the harness's --case gpu-timestamps). The submit-batch list, whose
+ * recordings mix render batches, snapshot copies and ring uploads, runs with timestamps off and then
+ * on. Both runs give ge.c's frames (timestamps change no rendering); every recording of the timed run
+ * is collected once its fence has signalled; and its GPU time splits into render, snapshot and upload
+ * time, with only the few microseconds after a buffer's last op left on the buffer's mixed submit
+ * reason. Returns 77 (SKIP) when the queue has no timestamps. */
+static int coherence_run_gpu_timestamps(void) {
+    const SubmitBatchShape sh = { 48u, 8u, 2u, 24u, 6u, 8u, 24u };
+    const size_t bytes = (size_t)FB_W * FB_H * 4u;
+    uint32_t *ref_a = (uint32_t *)malloc(bytes), *ref_b = (uint32_t *)malloc(bytes);
+    if (!ref_a || !ref_b) {
+        free(ref_a); free(ref_b);
+        fprintf(stderr, "gpu coherence selftest [gpu-timestamps]: out of memory\n");
+        return 0;
+    }
+    coherence_reset_targets();
+    ge_set_gpu_hooks(NULL);
+    ge_run_list(submit_batch_prepare(&sh, SB_TEX), 0);
+    ge_set_gpu_hooks(&k_hooks);
+    memcpy(ref_a, SR_HOST(0x04000000u | SB_FBA_A), bytes);
+    memcpy(ref_b, SR_HOST(0x04000000u | SB_FBA_B), bytes);
+
+    SubmitBatchRun run;
+    const uint32_t cap = s_submit_batch_ops;
+    /* Off: a warm-up that also creates the pipelines and targets, then the reference run. */
+    int ok = !s_ts_on &&
+             submit_batch_run(&sh, SB_TEX + 0x100u, cap, &run) &&
+             submit_batch_run(&sh, SB_TEX + 0x200u, cap, &run) &&
+             submit_batch_same("A", cap, (const uint32_t *)SR_HOST(0x04000000u | SB_FBA_A), ref_a) &&
+             submit_batch_same("B", cap, (const uint32_t *)SR_HOST(0x04000000u | SB_FBA_B), ref_b);
+    if (!ok) {
+        fprintf(stderr, "gpu coherence selftest [gpu-timestamps]: the untimed run failed\n");
+        free(ref_a); free(ref_b);
+        return 0;
+    }
+    Sdl3VkInfo vi;
+    if (!cmd_drain(GEGPU_BOUNDARY_LIFETIME) || !sdl3vk_get_vk(&vi) || !ts_setup(vi.queue_family)) {
+        printf("gpu coherence selftest: SKIP gpu-timestamps (the GE queue has no timestamp queries)\n");
+        free(ref_a); free(ref_b);
+        return 77;
+    }
+    uint64_t ns_before[SR_PERF_GE_REASON_COUNT];
+    memcpy(ns_before, s_ts_ns, sizeof ns_before);
+    const uint64_t buffers_before = s_ts_buffers;
+    /* Every queue submit from here to the final drain: the list's own, the snapshot boundary's
+     * readbacks, and the drain's flush of any open chain. submit_batch_run drains first. */
+    GeGpuReplayStats q_before, q_after;
+    gegpu_replay_stats_get(&q_before);
+    ok = submit_batch_run(&sh, SB_TEX + 0x300u, cap, &run) &&
+         submit_batch_same("A", cap, (const uint32_t *)SR_HOST(0x04000000u | SB_FBA_A), ref_a) &&
+         submit_batch_same("B", cap, (const uint32_t *)SR_HOST(0x04000000u | SB_FBA_B), ref_b) &&
+         cmd_drain(GEGPU_BOUNDARY_LIFETIME);
+    gegpu_replay_stats_get(&q_after);
+    const unsigned long long submits = q_after.queue_submits - q_before.queue_submits;
+    uint64_t ns[SR_PERF_GE_REASON_COUNT], total = 0;
+    for (int i = 0; i < SR_PERF_GE_REASON_COUNT; i++) total += ns[i] = s_ts_ns[i] - ns_before[i];
+    const uint64_t buffers = s_ts_buffers - buffers_before;
+    const uint64_t upload = ns[SR_PERF_GE_TEXTURE_UPLOAD] + ns[SR_PERF_GE_TARGET_UPLOAD] +
+                            ns[SR_PERF_GE_DEPTH_UPLOAD];
+    if (ok && (buffers != submits || !ns[SR_PERF_GE_RENDER_BATCH] || !ns[SR_PERF_GE_SNAPSHOT_COPY] ||
+               (run.uploads && !upload) || ns[SR_PERF_GE_MIXED_DRAIN] * 4u > total)) {
+        fprintf(stderr, "gpu coherence selftest [gpu-timestamps]: buffers=%llu submits=%llu render_ns=%llu "
+                        "snapshot_ns=%llu upload_ns=%llu (uploads=%llu) mixed_ns=%llu total_ns=%llu: want every "
+                        "submitted recording collected, render, snapshot and upload time, and under a quarter "
+                        "left on the mixed reason\n",
+                (unsigned long long)buffers, submits, (unsigned long long)ns[SR_PERF_GE_RENDER_BATCH],
+                (unsigned long long)ns[SR_PERF_GE_SNAPSHOT_COPY], (unsigned long long)upload, run.uploads,
+                (unsigned long long)ns[SR_PERF_GE_MIXED_DRAIN], (unsigned long long)total);
+        ok = 0;
+    }
+    if (ok)
+        printf("gpu coherence selftest: PASS %-22s buffers=%llu ops=%llu render_us=%.1f snapshot_us=%.1f "
+               "upload_us=%.1f mixed_us=%.1f total_us=%.1f frames=ge.c-exact\n", "gpu-timestamps",
+               (unsigned long long)buffers, run.ops, (double)ns[SR_PERF_GE_RENDER_BATCH] / 1e3,
+               (double)ns[SR_PERF_GE_SNAPSHOT_COPY] / 1e3, (double)upload / 1e3,
+               (double)ns[SR_PERF_GE_MIXED_DRAIN] / 1e3, (double)total / 1e3);
+    free(ref_a);
+    free(ref_b);
+    coherence_reset_targets();
+    return ok;
+}
+
 static int coherence_queue_flat_sprite(uint32_t base, uint32_t stride, uint32_t fmt,
                                        float x0, float y0, float x1, float y1) {
     memset(s_ge, 0, sizeof(*s_ge));
@@ -4929,6 +5011,7 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "readback-rows") == 0) return coherence_run_readback_rows();
         if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
         if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
+        if (strcmp(only, "gpu-timestamps") == 0) return coherence_run_gpu_timestamps();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }

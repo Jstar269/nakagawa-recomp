@@ -73,6 +73,7 @@ typedef struct PresentFrame {
     VkDeviceMemory fbimg_mem;
     VkImage source;
     int submitted;
+    int ts_written;   /* SR_GPU_TIMESTAMPS: this recording holds its start/end pair */
 } PresentFrame;
 
 static SDL_Window      *s_win;
@@ -88,6 +89,13 @@ static VkCommandPool    s_pool;
 static VkCommandBuffer  s_cmd;              /* diagnostic capture only */
 static VkFence          s_fence;
 static PresentFrame     s_frame[PRESENT_FRAMES];
+/* SR_GPU_TIMESTAMPS=1: the GPU time of each presentation command buffer (the blit to the swapchain
+ * image, the HUD and any capture copy), from a timestamp pair at its start and end, read once its
+ * frame's fence has signalled and credited to SR_PERF_FRAMES' gpu_present_ms. It changes no
+ * rendering. The overlay path (sdl3vk_present_overlay) is not timed. */
+static VkQueryPool      s_pts_pool;
+static double           s_pts_period_ns = 1.0;
+static uint64_t         s_pts_mask = ~0ull;
 static uint32_t         s_frame_cursor;
 static int              s_scaling = SDL3VK_SCALING_SHARP;  /* SR_PRESENT_SCALING (issue #1129) */
 static uint32_t         s_max_image_dim = 4096;  /* Vulkan's guaranteed minimum until init reads it */
@@ -279,6 +287,15 @@ static int wait_present_frame(PresentFrame *f) {
     }
     f->submitted=0;
     f->source=VK_NULL_HANDLE;
+    if (f->ts_written) {
+        uint64_t v[2];
+        uint32_t q = (uint32_t)(f - s_frame) * 2u;
+        f->ts_written = 0;
+        if (vkGetQueryPoolResults(s_dev, s_pts_pool, q, 2u, sizeof v, v, sizeof v[0],
+                                  VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+            sr_perf_gpu_present_time((uint64_t)((double)(((v[1] & s_pts_mask) - (v[0] & s_pts_mask)) &
+                                                         s_pts_mask) * s_pts_period_ns));
+    }
     return 1;
 }
 
@@ -792,6 +809,29 @@ int sdl3vk_init(const char *title) {
 
     VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
     INIT_VK(vkCreateFence(s_dev, &fci, NULL, &s_fence));
+    {
+        const char *ts = getenv("SR_GPU_TIMESTAMPS");
+        if (ts && ts[0] && strcmp(ts, "0") != 0) {
+            uint32_t nq = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(s_pdev, &nq, NULL);
+            VkQueueFamilyProperties qf[16];
+            if (nq > 16u) nq = 16u;
+            vkGetPhysicalDeviceQueueFamilyProperties(s_pdev, &nq, qf);
+            uint32_t bits = s_qfam < nq ? qf[s_qfam].timestampValidBits : 0u;
+            VkPhysicalDeviceProperties tp;
+            vkGetPhysicalDeviceProperties(s_pdev, &tp);
+            VkQueryPoolCreateInfo qpc = { .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+            qpc.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            qpc.queryCount = PRESENT_FRAMES * 2u;
+            if (bits && tp.limits.timestampPeriod > 0.0f &&
+                vkCreateQueryPool(s_dev, &qpc, NULL, &s_pts_pool) == VK_SUCCESS) {
+                s_pts_period_ns = (double)tp.limits.timestampPeriod;
+                s_pts_mask = bits >= 64u ? ~0ull : ((1ull << bits) - 1ull);
+            } else {
+                s_pts_pool = VK_NULL_HANDLE;
+            }
+        }
+    }
     VkSemaphoreCreateInfo sci2 = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     /* Per-frame command/sync/upload resources.  No resource is reused before its fence. */
     for(int i=0;i<PRESENT_FRAMES;i++){
@@ -1950,6 +1990,12 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         if (PSTEP_VK(PSTEP_BEGIN_CMD, vkBeginCommandBuffer(cmd, &bi)) != VK_SUCCESS) {
             why = "vkBeginCommandBuffer failed"; goto fail_acquired;
         }
+        f->ts_written = 0;
+        if (s_pts_pool) {
+            vkCmdResetQueryPool(cmd, s_pts_pool, (uint32_t)(f - s_frame) * 2u, 2u);
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, s_pts_pool,
+                                (uint32_t)(f - s_frame) * 2u);
+        }
 
         if (upload) {
             /* staging buffer -> fb image */
@@ -2069,9 +2115,13 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             if (!cap_record(cmd, cb, src, srcw, srch)) { why = "capture record failed"; goto fail; }
             cap_in_submit = 1;
         }
+        if (s_pts_pool)
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s_pts_pool,
+                                (uint32_t)(f - s_frame) * 2u + 1u);
         if (PSTEP_VK(PSTEP_END_CMD, vkEndCommandBuffer(cmd)) != VK_SUCCESS) {
             why = "vkEndCommandBuffer failed"; goto fail_acquired;
         }
+        f->ts_written = s_pts_pool != VK_NULL_HANDLE;
 
         VkPipelineStageFlags wait_st = VK_PIPELINE_STAGE_TRANSFER_BIT;
         VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
@@ -2647,6 +2697,8 @@ void sdl3vk_shutdown(void) {
         memset(f, 0, sizeof(*f));   /* its command buffer is freed with the pool */
     }
     s_frame_cursor = 0;
+    if (s_pts_pool)    vkDestroyQueryPool(s_dev, s_pts_pool, NULL);
+    s_pts_pool = VK_NULL_HANDLE;
     if (s_fence)       vkDestroyFence(s_dev, s_fence, NULL);
     if (s_pool)        vkDestroyCommandPool(s_dev, s_pool, NULL);
     if (s_dev)         vkDestroyDevice(s_dev, NULL);

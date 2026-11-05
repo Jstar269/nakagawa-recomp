@@ -337,6 +337,11 @@ typedef struct {
     VkDescriptorSet tset;
     uint32_t tused, pused;
     int in_flight;
+    /* SR_GPU_TIMESTAMPS: timestamps written into this recording (its start, one after each
+     * recorded op, its end; 0 when none), and the submit reason of the work between query i and
+     * query i + 1. */
+    uint32_t ts_n;
+    uint8_t ts_kind[SUBMIT_BATCH_MAX + 1];
 } SubmitSlot;
 
 /* ---- backend state -------------------------------------------------------------------- */
@@ -748,12 +753,141 @@ static void replay_note_wait(GeGpuReplayBoundaryKind boundary, uint64_t elapsed)
     if (s_cpu_profile_hook_depth > 0) s_cpu_profile_stats.hook_wait_ns += elapsed;
 }
 
+/* SR_GPU_TIMESTAMPS=1: GPU execution time of the GE's command buffers, from timestamp queries.
+ * Each recording gets one at its start (top of pipe), one after every op it records
+ * (cmd_batch_record: a render batch, a snapshot copy, a ring upload) and one at its end, each at
+ * the bottom of the pipe: the GPU writes it once all earlier work in the buffer has finished. The
+ * time between two neighbouring queries is charged to the op that ends it, and the end segment to
+ * the buffer's submit reason, so a buffer that mixes render batches and snapshot copies splits by
+ * kind. Ops overlap on the GPU, so the split is an attribution; the sum is the buffer's whole
+ * execution span. Times are collected when the slot's fence has signalled (cmd_wait_slot,
+ * cmd_drain) and also reach the SR_PERF_FRAMES rows (sr_perf_gpu_time). A diagnostic: it adds
+ * query writes to the command stream and changes no rendering, no guest memory and no wait.
+ * Presentation's own blit is timed by sdl3vk (sr_perf_gpu_present_time). */
+#define TS_PER_SLOT (SUBMIT_BATCH_MAX + 2u)
+static int s_ts_on = 0;
+static VkQueryPool s_ts_pool = VK_NULL_HANDLE;
+static double s_ts_period_ns = 1.0;
+static uint64_t s_ts_mask = ~0ull;
+static uint64_t s_ts_ns[SR_PERF_GE_REASON_COUNT];
+static uint64_t s_ts_total_ns[SR_PERF_GE_REASON_COUNT];
+static uint64_t s_ts_buffers = 0;   /* recordings whose times were collected (selftest) */
+static uint64_t s_ts_presents = 0, s_ts_total_presents = 0;
+
+static const char *const s_ts_reason_name[SR_PERF_GE_REASON_COUNT] = {
+    "render", "snapshot", "tex_upload", "target_upload", "depth_upload", "depth_readback",
+    "readback_transition", "transfer_blit", "init", "mixed",
+};
+
+/* Creates the query pool; 0 when the queue has no timestamps. Called before any recording. */
+static int ts_setup(uint32_t queue_family) {
+    if (s_ts_on) return 1;
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(s_pdev, &props);
+    uint32_t nq = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(s_pdev, &nq, NULL);
+    VkQueueFamilyProperties qf[16];
+    if (nq > 16u) nq = 16u;
+    vkGetPhysicalDeviceQueueFamilyProperties(s_pdev, &nq, qf);
+    uint32_t bits = queue_family < nq ? qf[queue_family].timestampValidBits : 0u;
+    VkQueryPoolCreateInfo qpc = { .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+    qpc.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    qpc.queryCount = SUBMIT_FRAMES * TS_PER_SLOT;
+    if (!bits || !(props.limits.timestampPeriod > 0.0f) ||
+        vkCreateQueryPool(s_dev, &qpc, NULL, &s_ts_pool) != VK_SUCCESS) {
+        s_ts_pool = VK_NULL_HANDLE;
+        fprintf(stderr, "gegpu: SR_GPU_TIMESTAMPS: this queue has no timestamps\n");
+        return 0;
+    }
+    s_ts_on = 1;
+    s_ts_period_ns = (double)props.limits.timestampPeriod;
+    s_ts_mask = bits >= 64u ? ~0ull : ((1ull << bits) - 1ull);
+    sr_perf_gpu_timestamps_on();
+    fprintf(stderr, "gegpu: GPU timestamps on (period %.3f ns, %u valid bits)\n", s_ts_period_ns, bits);
+    return 1;
+}
+
+static uint32_t ts_base(const SubmitSlot *slot) { return (uint32_t)(slot - s_submit) * TS_PER_SLOT; }
+
+static void ts_begin(SubmitSlot *slot) {
+    slot->ts_n = 0;
+    if (!s_ts_on) return;
+    vkCmdResetQueryPool(slot->cmd, s_ts_pool, ts_base(slot), TS_PER_SLOT);
+    vkCmdWriteTimestamp(slot->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, s_ts_pool, ts_base(slot));
+    slot->ts_n = 1;
+}
+
+/* After an op of kind `reason` is recorded. The last query of the slot is kept for ts_end. */
+static void ts_mark(SubmitSlot *slot, SrPerfGeReason reason) {
+    if (!s_ts_on || !slot->ts_n || slot->ts_n >= TS_PER_SLOT - 1u) return;
+    vkCmdWriteTimestamp(slot->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s_ts_pool,
+                        ts_base(slot) + slot->ts_n);
+    slot->ts_kind[slot->ts_n - 1u] = (uint8_t)reason;
+    slot->ts_n++;
+}
+
+static void ts_end(SubmitSlot *slot, SrPerfGeReason reason) {
+    if (!s_ts_on || !slot->ts_n) return;
+    vkCmdWriteTimestamp(slot->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s_ts_pool,
+                        ts_base(slot) + slot->ts_n);
+    slot->ts_kind[slot->ts_n - 1u] = (uint8_t)reason;
+    slot->ts_n++;
+}
+
+/* After the slot's fence has signalled: every query it wrote is available. */
+static void ts_collect(SubmitSlot *slot) {
+    if (!s_ts_on || slot->ts_n < 2u) { slot->ts_n = 0; return; }
+    uint64_t v[TS_PER_SLOT];
+    const uint32_t n = slot->ts_n;
+    slot->ts_n = 0;
+    if (vkGetQueryPoolResults(s_dev, s_ts_pool, ts_base(slot), n, sizeof(v[0]) * n, v, sizeof v[0],
+                              VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) return;
+    for (uint32_t i = 1; i < n; i++) {
+        uint64_t ticks = ((v[i] & s_ts_mask) - (v[i - 1u] & s_ts_mask)) & s_ts_mask;
+        unsigned r = slot->ts_kind[i - 1u] < SR_PERF_GE_REASON_COUNT ? slot->ts_kind[i - 1u]
+                                                                     : (unsigned)SR_PERF_GE_MIXED_DRAIN;
+        uint64_t ns = (uint64_t)((double)ticks * s_ts_period_ns);
+        s_ts_ns[r] += ns;
+        sr_perf_gpu_time((SrPerfGeReason)r, ns);
+    }
+    s_ts_buffers++;
+}
+
+static void ts_report(int final) {
+    if (!s_ts_on) return;
+    uint64_t *ns = final ? s_ts_total_ns : s_ts_ns;
+    uint64_t presents = final ? s_ts_total_presents : s_ts_presents;
+    uint64_t sum = 0;
+    for (int i = 0; i < SR_PERF_GE_REASON_COUNT; i++) sum += ns[i];
+    double per = presents ? (double)presents : 1.0;
+    fprintf(stderr, "GEGPU_TS%s presents=%llu scale=%d gpu_ms_per_present=%.3f", final ? "_TOTAL" : "",
+            (unsigned long long)presents, s_scale, (double)sum / 1e6 / per);
+    for (int i = 0; i < SR_PERF_GE_REASON_COUNT; i++)
+        if (ns[i]) fprintf(stderr, " %s=%.3f", s_ts_reason_name[i], (double)ns[i] / 1e6 / per);
+    if (final) fprintf(stderr, " gpu_ms_total=%.3f", (double)sum / 1e6);
+    fprintf(stderr, "\n");
+}
+
+static void ts_note_present(void) {
+    if (!s_ts_on) return;
+    s_ts_presents++;
+    s_ts_total_presents++;
+    if (s_ts_presents < 60u) return;
+    ts_report(0);
+    for (int i = 0; i < SR_PERF_GE_REASON_COUNT; i++) {
+        s_ts_total_ns[i] += s_ts_ns[i];
+        s_ts_ns[i] = 0;
+    }
+    s_ts_presents = 0;
+}
+
 static int cmd_wait_slot(SubmitSlot *slot, GeGpuReplayBoundaryKind boundary) {
     if (!slot || !slot->in_flight) return 1;
     uint64_t perf_started = sr_perf_now_ns();
     uint64_t wait_started = SDL_GetTicksNS();
     VKC(vkWaitForFences(s_dev, 1, &slot->fence, VK_TRUE, UINT64_MAX));
     uint64_t waited = SDL_GetTicksNS() - wait_started;
+    ts_collect(slot);
     replay_note_wait(boundary, waited);
     if (perf_started) {
         sr_perf_vulkan_wait(perf_started, slot->reason == SR_PERF_GE_DEPTH_READBACK ||
@@ -817,6 +951,7 @@ static int cmd_drain(GeGpuReplayBoundaryKind boundary) {
     VKC(vkResetFences(s_dev, count, fences));
     for (uint32_t i = 0; i < count; i++) {
         SubmitSlot *slot = &s_submit[slots[i]];
+        ts_collect(slot);
         slot->in_flight = 0;
         slot->reason_mask = 0;
         slot->recorded_ops = 0;
@@ -846,12 +981,14 @@ static int cmd_begin_fresh(void) {
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VKC(vkBeginCommandBuffer(s_cmd, &bi));
+    ts_begin(slot);
     return 1;
 }
 
 static int cmd_finish_submit(SrPerfGeReason reason, int defer) {
     SubmitSlot *slot = s_cmd_slot;
     if (!slot) return 0;
+    ts_end(slot, reason);
     VKC(vkEndCommandBuffer(s_cmd));
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1; si.pCommandBuffers = &s_cmd;
@@ -912,6 +1049,7 @@ static int cmd_batch_record(SrPerfGeReason reason) {
     if (!s_cmd_slot) return 0;
     s_cmd_slot->reason_mask |= 1u << reason;
     s_cmd_slot->recorded_ops++;
+    ts_mark(s_cmd_slot, reason);
     if (!s_async_submit || s_cmd_slot->recorded_ops >= s_submit_batch_ops)
         return cmd_batch_flush();
     return 1;
@@ -4313,6 +4451,7 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
      * target owns a newer frame, so gui_present syncs guest VRAM only for this code (issue #827). */
     if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;
     s_cnt_present_gpu++;
+    ts_note_present();
     stats_tick();
     int pr = sdl3vk_present_image_ex((void *)t->img, DRAW_W * s_scale, FB_H * s_scale);
     /* Only SDL's -1 is remapped: it is a present that failed after the target was prepared, so
@@ -4449,6 +4588,10 @@ int gegpu_init(void) {
     vkGetPhysicalDeviceProperties(s_pdev, &props);
     s_xfer_align = props.limits.optimalBufferCopyOffsetAlignment;
     if (s_xfer_align < 4) s_xfer_align = 4;
+    {
+        const char *ts = getenv("SR_GPU_TIMESTAMPS");
+        if (ts && ts[0] && strcmp(ts, "0") != 0) (void)ts_setup(vi.queue_family);
+    }
 
     VkCommandPoolCreateInfo cpi = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -4650,6 +4793,13 @@ void gegpu_shutdown(void) {
      * object that a recorded command or descriptor can reference. */
     (void)vkDeviceWaitIdle(s_dev);
     stats_emit(1);
+    if (s_ts_on) {
+        for (int i = 0; i < SR_PERF_GE_REASON_COUNT; i++) s_ts_total_ns[i] += s_ts_ns[i];
+        ts_report(1);
+        vkDestroyQueryPool(s_dev, s_ts_pool, NULL);
+        s_ts_pool = VK_NULL_HANDLE;
+        s_ts_on = 0;
+    }
     ge_set_gpu_hooks(NULL);
     s_ready = 0;
 
