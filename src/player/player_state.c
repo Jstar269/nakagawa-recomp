@@ -6230,7 +6230,7 @@ static void player_saves_zip_error(char *error, size_t error_size, const char *l
     }
 }
 
-/* Every rename the saves code makes, through the test seam. */
+/* Every rename and folder sync the saves code makes, through the test seams. */
 #if defined(NK_SAVES_TEST_SEAMS)
 static unsigned s_saves_rename_calls;
 static unsigned s_saves_rename_fail_at;
@@ -6246,8 +6246,24 @@ static int player_saves_rename(const char *from, const char *to) {
     }
     return nk_rename_utf8(from, to);
 }
+
+static unsigned s_saves_sync_dir_calls;
+static unsigned s_saves_sync_dir_fail_at;
+
+void player_saves_test_fail_sync_dir(unsigned nth) {
+    s_saves_sync_dir_fail_at = nth;
+    s_saves_sync_dir_calls = 0;
+}
+
+static bool player_saves_sync_dir(const char *path) {
+    if (s_saves_sync_dir_fail_at != 0u && ++s_saves_sync_dir_calls == s_saves_sync_dir_fail_at) {
+        return false;
+    }
+    return nk_platform_sync_dir(path);
+}
 #else
 #define player_saves_rename nk_rename_utf8
+#define player_saves_sync_dir nk_platform_sync_dir
 #endif
 
 bool player_app_save_folder(const GameRecord *game, char *out, size_t out_size) {
@@ -6533,7 +6549,7 @@ static PlayerSavesResult player_saves_zip(PlayerApp *app, const GameRecord *game
     }
     /* The archive's bytes are on the disk (nk_zip_write_folder); so is its name before
        anything that trusts the backup deletes or replaces the saves. */
-    if (!nk_platform_sync_dir(backups)) {
+    if (!player_saves_sync_dir(backups)) {
         player_saves_error(error, error_size,
                            "The backup %s was written, but could not be confirmed on the disk.",
                            path);
@@ -6712,8 +6728,13 @@ PlayerSavesResult player_app_restore_saves(PlayerApp *app, int game_index,
                            back ? "put back" : "left aside");
         return PLAYER_SAVES_FAILED;
     }
-    /* The restored files are on the disk (nk_zip_reader_extract); so is the swap. */
-    if (!nk_platform_sync_dir(parent)) {
+    /* The restored files are on the disk (nk_zip_reader_extract); so is the swap. A swap that
+       cannot be confirmed is still done (the saves are restored, and the old ones kept aside),
+       and the user is told. */
+    if (!player_saves_sync_dir(parent)) {
+        player_saves_error(error, error_size,
+                           "The change could not be confirmed on the disk%s.",
+                           had ? ", so keep the folder of your saves from before" : "");
         player_dev_log_add(app, "saves", "restore of %s: folder sync failed", folder);
     }
     if (kept && kept_size && had) snprintf(kept, kept_size, "%s", aside);
@@ -6874,7 +6895,7 @@ static bool player_saves_copy_tree(const char *from, const char *to, unsigned de
             ok = player_saves_copy_file(source, target, copy);
         }
     }
-    if (ok && !nk_platform_sync_dir(to)) {
+    if (ok && !player_saves_sync_dir(to)) {
         snprintf(copy->problem, sizeof(copy->problem), "%s could not be written to the disk.", to);
         ok = false;
     }
@@ -7009,7 +7030,7 @@ PlayerSavesResult player_app_add_save(PlayerApp *app, int game_index, const char
         return PLAYER_SAVES_FAILED;
     }
     /* The swap on the disk before the copy it replaced goes. */
-    if (exists && !nk_platform_sync_dir(savedata)) {
+    if (exists && !player_saves_sync_dir(savedata)) {
         player_saves_error(error, error_size,
                            "\"%s\" is in place, but the change could not be confirmed on the "
                            "disk, so the copy it replaced was kept: it is in %s.", name, old);

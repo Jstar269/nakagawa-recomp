@@ -1751,12 +1751,14 @@ static void player_ui_saves_op(PlayerUiNk *player, PlayerApp *app, int index, un
         player_ui_saves_reload(player, app, index);
         if (result == PLAYER_SAVES_DONE) {
             (void)snprintf(text, sizeof(text),
-                           "Restored the backup from %s.%s", when,
+                           "Restored the backup from %s.%s%s%s", when,
                            kept[0] != '\0'
                                ? " Your saves from before are the newest backup, and their "
                                  "folder is kept beside the save folder."
-                               : "");
-            player_ui_saves_status(player, PLAYER_UI_NOTE_DONE, text);
+                               : "",
+                           error[0] != '\0' ? " " : "", error);
+            player_ui_saves_status(player, error[0] != '\0' ? PLAYER_UI_NOTE_WARNING
+                                                              : PLAYER_UI_NOTE_DONE, text);
         } else {
             player_ui_saves_status(player, PLAYER_UI_NOTE_NEUTRAL, "");
             player_app_set_error(app, "SAVES_RESTORE_FAILED", "Your saves were not restored",

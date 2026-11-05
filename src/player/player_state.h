@@ -1118,6 +1118,9 @@ typedef enum {
 /* Test seam (player-state test build only): the nth rename the saves code makes from now
    fails, as a rename refused by the system would; 0 turns it off. */
 void player_saves_test_fail_rename(unsigned nth);
+/* The same for the folder syncs the saves code makes (not nk_zip's own): the nth from now
+   fails, as a folder that cannot be put on the disk would; 0 turns it off. */
+void player_saves_test_fail_sync_dir(unsigned nth);
 #endif
 
 /* The title's Memory Stick folder (not created): <saves>/<disc ID>, or the title ID or
@@ -1146,7 +1149,8 @@ size_t player_app_list_save_backups(const PlayerApp *app, int game_index, Player
  * save folder; only then is the save folder renamed to "<folder>-backup-<stamp>" (its path
  * in `kept`, empty when there were no saves) and the new one put in its place. Any failure
  * before that swap deletes the new folder and leaves the saves as they were; a failed swap
- * puts the old folder back. */
+ * puts the old folder back. A swap that cannot be confirmed on the disk afterwards still returns
+ * DONE (the saves are restored, and the old ones kept), with `error` saying so. */
 PlayerSavesResult player_app_restore_saves(PlayerApp *app, int game_index,
                                            const char *backup_path, const char *stamp,
                                            char *kept, size_t kept_size, char *error,

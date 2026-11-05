@@ -5628,6 +5628,31 @@ static void test_saves_change_nothing_without_a_whole_backup(void) {
     assert(saves_test_entries_named(f.saves_root, restore_prefix) == 0u);
     nk_zip_test_reset();
 
+    /* N-b: the restore's swap cannot be confirmed on the disk (folder syncs: the before-restore
+       backup's, then the save root's after the swap). The saves are restored, the old ones
+       are kept aside, and the message says so instead of only "restored". */
+    player_saves_test_fail_sync_dir(2u);
+    assert(player_app_restore_saves(app, 0, good, "20261105-100950", kept, sizeof(kept), error,
+                                    sizeof(error)) == PLAYER_SAVES_DONE);
+    assert(strstr(error, "could not be confirmed on the disk") != NULL);
+    assert(kept[0] != '\0' && nk_platform_dir_exists(kept));
+    assert(saves_test_has_text(data_bin, "original bytes"));
+    player_saves_test_fail_sync_dir(0u);
+    assert(player_app_restore_saves(app, 0, good, "20261105-100960", kept, sizeof(kept), error,
+                                    sizeof(error)) == PLAYER_SAVES_DONE);
+    assert(error[0] == '\0');
+
+    /* N-f: Add-replace deletes the copy it replaced only after the swap is on the disk (folder
+       syncs: the before-add backup's, the new copy's, then SAVEDATA's after the swap). With
+       that last sync failing, the new save is in place and the old copy is still there. */
+    player_saves_test_fail_sync_dir(3u);
+    assert(player_app_add_save(app, 0, pick, true, "20261105-100970", added, sizeof(added),
+                               error, sizeof(error)) == PLAYER_SAVES_DONE);
+    assert(strstr(error, "the copy it replaced was kept") != NULL);
+    assert(saves_test_has_text(data_bin, "added bytes"));
+    assert(saves_test_entries_containing(savedata, "-replaced-") == 1u);
+    player_saves_test_fail_sync_dir(0u);
+
     /* With every seam off, the same restore goes through. */
     assert(player_app_restore_saves(app, 0, good, "20261105-101000", kept, sizeof(kept), error,
                                     sizeof(error)) == PLAYER_SAVES_DONE);
