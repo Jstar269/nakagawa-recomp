@@ -92,7 +92,11 @@ class TestGuestSpanRouting(unittest.TestCase):
         dmac = dmac_file[dmac_start:dmac_file.index(transfer, dmac_start) + len(transfer)]
         self.assertIn("sr_guest_span_prefix(src, n)", dmac)
         self.assertIn("sr_guest_span_prefix(dst, n)", dmac)
-        self.assertIn("uint32_t effective = src_prefix < dst_prefix ? src_prefix : dst_prefix;", dmac)
+        # A span that runs past the guest arena is refused whole before any copy (#303): there is
+        # no partial prefix copy, so the copy length is the request's.
+        self.assertIn("if (src_prefix != n || dst_prefix != n) {", dmac)
+        self.assertIn("const uint32_t effective = n;", dmac)
+        self.assertNotIn("src_prefix < dst_prefix ? src_prefix : dst_prefix", dmac)
         self.assertNotIn("SCE_DMAC_EFFECTIVE_MAX", dmac)
         # Every copy goes through dmac_copy, after the span preflight above.
         self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), n)", dmac)

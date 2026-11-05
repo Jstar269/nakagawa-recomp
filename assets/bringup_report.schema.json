@@ -183,9 +183,35 @@
           ]
         }
       }
+    },
+    "code_capture": {
+      "description": "The build-and-launch rounds of a bring-up whose run stopped at code the game installed at run time, or whose capture folder already held captures (#1933). Absent when no capture appeared. Counts and named outcomes only: a capture's name carries a guest address and a hash of game bytes, so it stays in the private work output.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["round_limit", "stop", "rounds"],
+      "properties": {
+        "round_limit": { "type": "integer", "minimum": 1 },
+        "stop": {
+          "enum": ["NONE", "BRINGUP_CAPTURE_BOUND", "BRINGUP_CAPTURE_NOT_BOUND", "BRINGUP_CAPTURE_MISSING"]
+        },
+        "rounds": { "type": "array", "items": { "$ref": "#/$defs/capture_round" } }
+      }
     }
   },
   "$defs": {
+    "capture_round": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["round", "captures_translated", "outcome", "failure_class"],
+      "properties": {
+        "round": { "type": "integer", "minimum": 1 },
+        "captures_translated": { "type": "integer", "minimum": 0 },
+        "outcome": {
+          "enum": ["NO_CAPTURE_STOP", "NEW_CAPTURE", "CAPTURE_ALREADY_TRANSLATED", "CAPTURE_MISSING"]
+        },
+        "failure_class": { "$ref": "#/properties/failure_class" }
+      }
+    },
     "stage": {
       "type": "object",
       "additionalProperties": false,
