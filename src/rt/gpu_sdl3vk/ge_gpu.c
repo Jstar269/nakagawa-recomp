@@ -3907,14 +3907,14 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     /* The coordinate is linear across the rectangle, from the u of the vertex on the left
      * edge to the u of the one on the right (likewise v), and the PSP samples it at each
      * pixel's centre (PSP-GE-SAMPLE-001), which is where Vulkan samples a fragment at 1x.
-     * Readback keeps the top-left device sample of each scaled guest pixel, at guest
-     * offset 0.5 / scale; shift the endpoints so that sample sees the pixel-centre value. */
+     * Above 1x each device pixel samples at its own centre, as a triangle's do, so a 1:1
+     * sprite shows each texel as a whole scale x scale block (sprite-scaled). Shifting the
+     * endpoints so that readback's top-left device sample saw the guest pixel-centre value
+     * moved every other device sample too: by 0.375 of a texel at 4x, which split each
+     * texel's block and read the neighbouring atlas texels at a sprite's far edges. */
     float ul = (p0->x <= p1->x) ? u0 : u1, ur = (p0->x <= p1->x) ? u1 : u0;
     float vt = (p0->y <= p1->y) ? v0 : v1, vbm = (p0->y <= p1->y) ? v1 : v0;
-    float uw = (ur - ul) / (xb - xa), vw = (vbm - vt) / (yb - ya);
-    float centre_shift = 0.5f - 0.5f / (float)s_scale;
-    float ua = ul + centre_shift * uw, ub = ur + centre_shift * uw;
-    float va = vt + centre_shift * vw, vb = vbm + centre_shift * vw;
+    float ua = ul, ub = ur, va = vt, vb = vbm;
 
     float z = p1->z, fog = p1->fog;
     int r = p1->r, g = p1->g, bb_ = p1->b, a = p1->a;

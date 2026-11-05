@@ -1647,6 +1647,138 @@ static int coherence_run_psp_sample_points(void) {
     return ok;
 }
 
+/* A textured sprite at a render scale above 1 samples the texture where each device pixel
+ * really is, as a triangle does: a 1:1 nearest sprite shows each texel as a whole
+ * scale x scale block, and a 1:1 linear one shows the filtered value at the device pixel's
+ * own position. Guest VRAM still keeps the PSP's texel for the nearest sprite. Before this
+ * case hook_sprite shifted the coordinate by 0.5 - 0.5 / scale of a texel for every device
+ * sample, which put a texel boundary inside each block of text and art (HST's button text
+ * at 4x). At scale 1 the expectation is PSP-GE-SAMPLE-001's; gpu-coherence-selftest also runs
+ * this case alone at render scales 2 and 4. */
+static int coherence_read_device(VkImage img, VkImageAspectFlags aspect, VkImageLayout *layout,
+                                 VkImageLayout after, uint32_t bpp, void *out);
+static int coherence_run_sprite_scaled(void) {
+    const uint32_t fba = 0x00160000u, base = 0x04000000u | fba, stride = 512u;
+    const size_t bytes = (size_t)stride * FB_H * 4u;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    uint32_t *tex = (uint32_t *)SR_HOST(COH_SAMPLE_TEX);
+    for (unsigned v = 0; v < 16u; v++)
+        for (unsigned u = 0; u < 16u; u++) tex[v * 16u + u] = 0xFF000000u | ((16u * v) << 8) | (16u * u);
+    sr_gpu_vram_dirty(COH_SAMPLE_TEX, 16u * 16u * 4u);
+
+    /* 12 x 12 pixels from texel 2 to texel 14, clamped: every linear sample stays inside. */
+    static const struct { int x; uint32_t tflt; const char *name; } cells[2] = {
+        { 100, 0x000u, "nearest-1to1" }, { 120, 0x101u, "linear-1to1" },
+    };
+    const int y0 = 10, n = 12;
+    const float t0 = 2.0f;
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(COH_SAMPLE_VERTS);
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_SAMPLE_LIST);
+    int p = 0, nv = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x9C, fba);
+    DL_EMIT(0x9D, stride | (0x04000000u >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x4C, 0);
+    DL_EMIT(0x4D, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0x15, 0);
+    DL_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, COH_SAMPLE_TEX & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 16u | ((COH_SAMPLE_TEX & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (4u << 8) | 4u);
+    DL_EMIT(0xC2, 0);
+    DL_EMIT(0xC8, 0);
+    DL_EMIT(0xC0, 0);
+    DL_EMIT(0xC3, 3);
+    DL_EMIT(0xC7, (1u << 8) | 1u);                         /* clamp u and v */
+    DL_EMIT(0xC9, 3u | (1u << 8));                         /* replace, RGBA */
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3u << 0) | (3u << 7) | (1u << 23));     /* float UV and position, through */
+    for (int c = 0; c < 2; c++) {
+        uint32_t first = COH_SAMPLE_VERTS + (uint32_t)nv * (uint32_t)sizeof(RawSpriteVtx);
+        DL_EMIT(0xC6, cells[c].tflt);
+        DL_EMIT(0xCB, 0);                                  /* TEXFLUSH */
+        vtx[nv++] = (RawSpriteVtx){ t0, t0, (float)cells[c].x, (float)y0, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ t0 + (float)n, t0 + (float)n, (float)(cells[c].x + n),
+                                    (float)(y0 + n), 0.0f };
+        DL_EMIT(0x01, first & 0x00FFFFFFu);
+        DL_EMIT(0x04, (6u << 16) | 2u);
+    }
+    DL_EMIT(0xC6, 0);
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+
+    const uint32_t s = (uint32_t)s_scale;
+    uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
+    if (!dev) return 0;
+    coherence_reset_targets();
+    memset(fb, 0, bytes);
+    sr_gpu_vram_dirty(base, (uint32_t)bytes);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(COH_SAMPLE_LIST, 0);
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                               .width = 480, .height = 272 };
+    int ok = gegpu_sync_guest_fb(&desc);
+    Target *t = ok ? target_find_by_fba(fba) : NULL;
+    ok = t != NULL && coherence_read_device(t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+                                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 4u, dev);
+    if (!ok) fprintf(stderr, "gpu coherence selftest [sprite-scaled]: draw or device read failed\n");
+    int bad = 0;
+    for (int c = 0; ok && c < 2; c++) {
+        const int linear = cells[c].tflt != 0u;
+        for (uint32_t dy = 0; dy < (uint32_t)n * s; dy++) {
+            for (uint32_t dx = 0; dx < (uint32_t)n * s; dx++) {
+                /* The device pixel's centre, in texels: t0 + (d + 0.5) / scale. */
+                const float pu = t0 + ((float)dx + 0.5f) / (float)s;
+                const float pv = t0 + ((float)dy + 0.5f) / (float)s;
+                const float wr = linear ? 16.0f * (pu - 0.5f) : 16.0f * floorf(pu);
+                const float wg = linear ? 16.0f * (pv - 0.5f) : 16.0f * floorf(pv);
+                const uint32_t X = (uint32_t)cells[c].x * s + dx, Y = (uint32_t)y0 * s + dy;
+                const uint32_t got = dev[(size_t)Y * SCL_W + X];
+                const float er = fabsf((float)(got & 0xFFu) - wr);
+                const float eg = fabsf((float)((got >> 8) & 0xFFu) - wg);
+                /* Linear: the filter's weight and rounding are within 2 of the exact value; the
+                 * old shift moved it by 16 * (0.5 - 0.5 / scale), 4 at scale 2 and 6 at 4. */
+                const float tol = linear ? 2.0f : 0.0f;
+                if (er > tol || eg > tol) {
+                    if (bad++ < 6)
+                        fprintf(stderr, "gpu coherence selftest [sprite-scaled/%s]: scale=%u device "
+                                "pixel (%u,%u) r=%u g=%u, want %.2f %.2f\n", cells[c].name, s, dx, dy,
+                                got & 0xFFu, (got >> 8) & 0xFFu, wr, wg);
+                }
+            }
+        }
+    }
+    /* Guest VRAM keeps the top-left device sample of each pixel: the PSP's own texel for the
+     * nearest sprite at every scale. */
+    for (int dy = 0; ok && dy < n; dy++)
+        for (int dx = 0; dx < n; dx++) {
+            const uint32_t want = (16u * (2u + (uint32_t)dy)) << 8 | (16u * (2u + (uint32_t)dx));
+            const uint32_t got = fb[(size_t)(y0 + dy) * stride + (size_t)(cells[0].x + dx)] & 0x00FFFFFFu;
+            if (got != want) {
+                if (bad++ < 12)
+                    fprintf(stderr, "gpu coherence selftest [sprite-scaled/guest]: scale=%u pixel "
+                            "(%d,%d) = %06x, want %06x\n", s, dx, dy, got, want);
+            }
+        }
+    if (bad) {
+        fprintf(stderr, "gpu coherence selftest [sprite-scaled]: %d pixel(s) differ at scale %u\n", bad, s);
+        ok = 0;
+    }
+    free(dev);
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS %-22s 2 cells scale=%u\n", "sprite-scaled", s);
+    return ok;
+}
+
 /* Put TEXMODE, TEXLEVEL and TEXFILTER back to level 0 only through the list path, so the
  * later fixtures start from the state they assume and the state serial moves with it. */
 static void coherence_mip_reset_state(void) {
@@ -4927,6 +5059,7 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "scaled-upload") == 0) return coherence_run_scaled_upload();
         if (strcmp(only, "mip-lod") == 0) return coherence_run_mip_lod();
         if (strcmp(only, "readback-rows") == 0) return coherence_run_readback_rows();
+        if (strcmp(only, "sprite-scaled") == 0) return coherence_run_sprite_scaled();
         if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
         if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
@@ -4983,6 +5116,7 @@ int gegpu_coherence_selftest(void) {
      * ones before them leave. */
     if (!coherence_run_mip_levels()) ok = 0;
     if (!coherence_run_psp_sample_points()) ok = 0;
+    if (!coherence_run_sprite_scaled()) ok = 0;
     /* After the mip fixtures: it rewrites the depth buffer they start from. */
     if (!coherence_run_stencil_parity()) ok = 0;
     if (!coherence_run_stencil_constant()) ok = 0;
