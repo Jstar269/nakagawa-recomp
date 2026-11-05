@@ -2086,8 +2086,8 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
         out->enhancement_on = false;
     }
     /* Smooth motion (#1272) is a feature of Ace being on for the title. While the title's 60 FPS
-       game logic is on (out->enhancement_on, Authentic already off), the two are refused
-       together: the button is disabled and says so. */
+       game logic is on (out->enhancement_on, Authentic already off), this build has no
+       interpolator for a 60 Hz source (contract section 10.5): the button is disabled and says so. */
     out->smooth_shown = out->ace_shown && ace.on;
     out->smooth_on = false;
     out->smooth_enabled = false;

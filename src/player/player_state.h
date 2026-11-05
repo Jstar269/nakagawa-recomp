@@ -1561,10 +1561,11 @@ const PlayerAceTitle *player_settings_ace_title(const PlayerSettings *settings,
  * turns Ace on; each feature then takes the title's value, else the library's. */
 void player_ace_resolve(const PlayerSettings *settings, const char *disc_id,
                         PlayerAceResolved *out);
-/* True 60 Hz game logic and smooth motion are refused together, not stacked (#1272): a title
- * that launches its enhanced 60 FPS build (GameRecord.enhancement_package_id set) calls this
- * with logic_60 true, and smooth motion is off for that launch whatever the settings say.
- * Ace's other features are untouched. */
+/* True 60 Hz game logic and smooth motion may be stacked by contract (docs/ENHANCEMENT_CONTRACT.md
+ * section 10.5), but this build's smooth motion interpolates only a 30 Hz source (section 10.6),
+ * so a title that launches its enhanced 60 FPS build (GameRecord.enhancement_package_id set)
+ * calls this with logic_60 true and smooth motion is off for that launch. The item that adds
+ * interpolation above 30 Hz removes this limit. Ace's other features are untouched. */
 void player_ace_apply_logic_60(PlayerAceResolved *ace, bool logic_60);
 /* The SR_ACE line for a resolution: "off", or "v1;af=16;text=on;readout=off;notice=on;
  * wide=off;smooth=off" (smooth=x2 when smooth motion is on; wide is always off, and

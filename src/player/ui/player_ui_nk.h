@@ -283,7 +283,7 @@ typedef struct {
     /* Smooth motion (#1272) beside the Ace Mode button: shown while Ace is in effect for the
        title; the button's words ("Smooth motion: On (library default)"); lit when on; and
        whether it can change now. It is disabled, and says so, while the title's 60 FPS game
-       logic is on: the two are refused together. */
+       logic is on: this build has no interpolator for a 60 Hz source (contract section 10.5). */
     bool smooth_shown;
     const char *smooth_label;
     bool smooth_on;
