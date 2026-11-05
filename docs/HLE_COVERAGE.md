@@ -26,9 +26,9 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 26 |
 | `ppsspp-derived` | 122 | 89 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 352 | 226 |
-| `unverified` | 147 | 22 |
-| total | 685 | 363 |
+| `synthetic` | 355 | 226 |
+| `unverified` | 146 | 22 |
+| total | 687 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -86,7 +86,7 @@ a title that translates none has generated code unchanged.
 | `0x05572a5f` | `sceKernelExitGame` | kernel_module | `hardware-measured` | PSP oracle PSP-SMOKE-001 |
 | `0x0558b075` | `sceMpegAvcCopyYCbCr` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x05db22ce` | `sceGeUnsetCallback` | ge | `synthetic` | HLE selftest dispatch; note |
-| `0x06a70004` | `sceIoMkdir` | io | `unverified` | no recorded evidence |
+| `0x06a70004` | `sceIoMkdir` | io | `synthetic` | HLE selftest dispatch |
 | `0x07ec321a` | `sceMp3ReserveMp3Handle` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x07f58c24` | `__sceSasGetAllEnvelopeHeights` | audio | `synthetic` | HLE selftest dispatch |
 | `0x0840e808` | `sceMp3ResetPlayPositionByFrame` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
@@ -373,6 +373,7 @@ a title that translates none has generated code unchanged.
 | `0x6af9b50a` | `sceUmdCancelWaitDriveStat` | umd | `ppsspp-derived` | handler comment names PPSSPP; registry notes name PPSSPP |
 | `0x6b30100f` | `sceKernelUnlockMutex` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x6b4a146c` | `sceUmdGetDriveStat` | umd | `synthetic` | HLE selftest dispatch; note |
+| `0x6d08a871` | `sceIoUnassign` | io | `synthetic` | HLE selftest dispatch |
 | `0x6d212bac` | `sceKernelWaitSemaCB` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch |
 | `0x6f92741b` | `sceNetAdhocPdpCreate` | network | `unverified` | no recorded evidence |
 | `0x6fc46853` | `sceAudioChRelease` | audio | `synthetic` | HLE selftest dispatch; note |
@@ -552,6 +553,7 @@ a title that translates none has generated code unchanged.
 | `0xb287bd61` | `sceGeDrawSync` | ge | `hardware-measured` | PSP oracle PSP-GE-CONTROL-001, PSP-VRAM-MIRROR-001 |
 | `0xb293727f` | `sceIoChangeAsyncPriority` | io | `unverified` | no recorded evidence |
 | `0xb29ddf9c` | `sceIoDopen` | io | `synthetic` | HLE selftest dispatch; note |
+| `0xb2a628c1` | `sceIoAssign` | io | `synthetic` | HLE selftest dispatch |
 | `0xb3a59970` | `sceKernelGetVTimerBase` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-002 |
 | `0xb3b5d042` | `sceAtracGetOutputChannel` | audio_codec | `unverified` | generic success handler; performs none of the API contract |
 | `0xb435dec5` | `sceKernelDcacheWritebackInvalidateAll` | cache_dma | `unverified` | no recorded evidence |
