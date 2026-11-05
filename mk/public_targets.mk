@@ -172,7 +172,7 @@ PUBLIC_TARGETS := \
 
 PROJECT_LATIN_STYLE_TARGETS := $(foreach i,1 2 3 4 5 6 7 9 10 11 12 13 14 15,project-latin-$(i)-font)
 PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-latin-small-font project-korean-font $(PROJECT_LATIN_STYLE_TARGETS)
-INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-latin-small-font project-korean-font $(PROJECT_LATIN_STYLE_TARGETS) project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-latin-small-font project-korean-font project-latin-1-font project-latin-2-font project-latin-3-font project-latin-4-font project-latin-5-font project-latin-6-font project-latin-7-font project-latin-9-font project-latin-10-font project-latin-11-font project-latin-12-font project-latin-13-font project-latin-14-font project-latin-15-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
