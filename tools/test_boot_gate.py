@@ -83,7 +83,7 @@ class BootGateTests(unittest.TestCase):
 
     def test_ace_mode_run_is_never_boot_evidence(self) -> None:
         # An Ace Mode run (src/rt/ace.h) is enhanced, so a clean boot still fails (C6).
-        stamp = "ACE_MODE: on (af=16, text=on, readout=off, notice=on, wide=off, smooth=off)\n"
+        stamp = "ACE_MODE: on (af=16, text=on, readout=off, notice=on, wide=off, smooth=off, sas=off)\n"
         result = self.parse(
             [stamp] + self.ordered_prefix() + [event("first_frame", source="cpu", nonzero_pixels=9)]
         )

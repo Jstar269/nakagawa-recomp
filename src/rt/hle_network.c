@@ -51,6 +51,89 @@ static uint32_t h_NetEtherNtostr(CpuState *s) {
     return out;
 }
 
+/* ---- The sceNet core library with no network (#341). Nakagawa has no network stack and opens
+ * no connection (AGENTS.md section 5), but on a PSP the core library's start-up needs no network
+ * either: sceNetInit only takes its memory pool and starts its threads, and the console says "no network"
+ * later, when a game asks for an address, a group or an access point. pspautotests records that on a
+ * PSP (hrydgard/pspautotests 70e72391, tests/net): sceNetInit(0x20000, 0x20, 0x1000, 0x20, 0x1000)
+ * returns 0 in every net test, sceNetTerm returns 0, and Term followed by Init again returns 0
+ * (net/adhoc/socketids). A game that treats a refused sceNetInit as impossible goes on with a
+ * network object it never set up: LittleBigPlanet's "connect" jumped through a NULL method there.
+ *
+ * So sceNetInit and sceNetTerm keep the library's state and its pool, and the calls that need a
+ * network answer as a PSP with no group and no access point connection does. Nothing here reaches a
+ * host network API. UNMEASURED, from PPSSPP Core/HLE/sceNet.cpp (commit 3bc60270, a behaviour
+ * reference): the argument checks, the pool taken from the user partition, and sceNetTerm before
+ * sceNetInit (0). A second sceNetInit without Term starts over with one pool; PPSSPP terminates
+ * before it checks the arguments, while here the arguments are checked first, so an invalid second
+ * call leaves the first pool in place (the PSP's order is UNMEASURED). The library's two threads
+ * (SceNetCallout, SceNetNetintr) are not created.
+ *
+ * Every recording above was made with the WLAN switch on (pspautotests net/inet/offline: "The WLAN
+ * switch must be on"), which is the console profile's default. With the profile's switch off
+ * (sceWlanGetSwitchState 0) sceNetInit still returns 0 here: that case is UNMEASURED, and PPSSPP
+ * does not consult the switch either. */
+static struct {
+    int inited;
+    uint32_t pool_uid;  /* the user-partition block holding the pool */
+} s_netlib;
+
+#define NET_POOL_NONE 0xffffffffu
+
+/* sceNetInit(poolSize, calloutPri, calloutStack, netintrPri, netintrStack). */
+static uint32_t h_NetInit(CpuState *s) {
+    const uint32_t pool_size = A0, callout_pri = A1, netintr_pri = A3;
+    if (pool_size == 0u) return 0x800201b7u;               /* SCE_KERNEL_ERROR_ILLEGAL_MEMSIZE */
+    if (callout_pri < 0x08u || callout_pri > 0x77u || netintr_pri < 0x08u || netintr_pri > 0x77u)
+        return SCE_KERNEL_ERROR_ILLEGAL_PRIORITY;
+    if (s_netlib.inited && s_netlib.pool_uid != NET_POOL_NONE) free_block(s_netlib.pool_uid);
+    s_netlib.inited = 0;
+    s_netlib.pool_uid = alloc_block(pool_size);
+    if (s_netlib.pool_uid == NET_POOL_NONE) return SCE_KERNEL_ERROR_NO_MEMORY;
+    s_netlib.inited = 1;
+    return 0u;
+}
+
+/* sceNetTerm(void): frees the pool; 0 (measured after sceNetInit). */
+static uint32_t h_NetTerm(CpuState *s) {
+    (void)s;
+    if (s_netlib.inited && s_netlib.pool_uid != NET_POOL_NONE) free_block(s_netlib.pool_uid);
+    s_netlib.inited = 0;
+    s_netlib.pool_uid = NET_POOL_NONE;
+    return 0u;
+}
+
+/* sceNetGetLocalEtherAddr(u8 *mac): the address exists only once an ad hoc group operation or an
+ * access-point connection has started. Before that a PSP returns 0x80410180 and leaves the buffer
+ * untouched (pspautotests net/adhoc/apctlinit, before, during and after sceNetApctlInit; also
+ * net/adhoc/adhocctl and net/adhoc/pdp before a group). With no network neither ever starts here. */
+#define SCE_NET_ERROR_LOCAL_ADDR_UNAVAILABLE 0x80410180u
+static uint32_t h_NetGetLocalEtherAddr(CpuState *s) {
+    (void)s;
+    return SCE_NET_ERROR_LOCAL_ADDR_UNAVAILABLE;
+}
+
+/* sceNetAdhocctlGetParameter(SceNetAdhocctlParameter *param): sceNetAdhocctlInit stays refused
+ * (no network), so the ad hoc control library is never initialized and the call returns its
+ * NOT_INITIALIZED code, 0x80410b08, writing nothing. A PSP returns that code before
+ * sceNetAdhocctlInit to GetState, AddHandler and Create (pspautotests net/adhoc/adhocctl
+ * "Before init"); GetParameter's own pre-init answer is UNMEASURED and follows them, as PPSSPP's
+ * order does with WLAN on. After init and out of a group the PSP answers 0x80410b09. */
+#define SCE_NET_ADHOCCTL_ERROR_NOT_INITIALIZED 0x80410b08u
+static uint32_t h_NetAdhocctlGetParameter(CpuState *s) {
+    (void)s;
+    return SCE_NET_ADHOCCTL_ERROR_NOT_INITIALIZED;
+}
+
+/* A new program (LoadExec) starts with the library uninitialized. Its pool lives in the user
+ * partition, which the same reset rebuilds, so nothing is freed here. */
+void hle_net_reset(void) {
+    s_netlib.inited = 0;
+    s_netlib.pool_uid = NET_POOL_NONE;
+}
+int sr_hle_test_net_inited(void) { return s_netlib.inited; }
+uint32_t sr_hle_test_net_pool_uid(void) { return s_netlib.pool_uid; }
+
 /* Registration runs of the shared helpers in hle.c (#307). Each holds one run of this file's
  * registrations, in their order, and is called from the helper where the run stood. */
 
@@ -63,17 +146,15 @@ void hle_register_console_profile_network(void) {
 
 /* From hle_register_unregistered_import_batch(). */
 void hle_register_unregistered_import_network_1(void) {
-    sr_hle_register_unsupported(0x0bf0a3aeu, "sceNetGetLocalEtherAddr", 0x80010086u);
+    /* The core library with no network (h_NetInit): it starts and stops as on a PSP, and the
+     * local address is unavailable because no group or access point ever connects. */
+    sr_hle_register(0x0bf0a3aeu, "sceNetGetLocalEtherAddr", h_NetGetLocalEtherAddr);
     sr_hle_register(0x89360950u, "sceNetEtherNtostr", h_NetEtherNtostr);
-    /* sceNetInit follows the same offline network policy as sceNetGetLocalEtherAddr: the runtime
-     * has no network stack, so the call refuses with that code rather than reporting success. */
-    sr_hle_register_unsupported(0x39af39a6u, "sceNetInit", 0x80010086u);
-    /* A title that sees sceNetInit fail may still execute its cleanup path. Keep that
-     * cleanup as a named offline refusal instead of the unknown-NID stop. */
-    sr_hle_register_unsupported(0x281928a9u, "sceNetTerm", 0x80010086u);
-    /* The same offline refusal for the net stack's thread and memory bookkeeping a title reaches
-     * after sceNetInit refused and for adhoc discovery, which has no peers to find: no network
-     * stack exists to hold a pool or a thread record (the 0x80010086 convention above). */
+    sr_hle_register(0x39af39a6u, "sceNetInit", h_NetInit);
+    sr_hle_register(0x281928a9u, "sceNetTerm", h_NetTerm);
+    /* The net stack's thread and memory bookkeeping, and ad hoc discovery, which has no peers to
+     * find, stay refused with the offline network code 0x80010086 (SCE_KERNEL_ERROR_ERRNO_
+     * FUNCTION_NOT_SUPPORTED): their answers with no network are not modelled yet. */
     sr_hle_register_unsupported(0x50647530u, "sceNetFreeThreadinfo", 0x80010086u);
     sr_hle_register_unsupported(0xcc393e48u, "sceNetGetMallocStat", 0x80010086u);
     sr_hle_register_unsupported(0xf7d13214u, "sceNetAdhocDiscoverStop", 0x80010086u);
@@ -89,8 +170,9 @@ void hle_register_unregistered_import_network_1(void) {
      * pspnet_adhoc.h (22), pspnet_adhocctl.h (21) and pspnet_adhocmatching.h (16), each NID
      * sha1(name) as tools/nid_corpus.json records for its pspsdk-sourced names. With no network
      * stack they refuse under the offline network policy, with the runtime's documented
-     * SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED that sceNetInit returns. The code is not a
-     * measured ad hoc result; PSP-visible ad hoc state and errors are unmeasured. */
+     * SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED (0x80010086). The code is not a measured ad
+     * hoc result; PSP-visible ad hoc state and errors are unmeasured. sceNetAdhocctlGetParameter
+     * is the exception: it answers that the library is not initialized (h_NetAdhocctlGetParameter). */
     sr_hle_register_unsupported(0x7f75c338u, "sceNetAdhocGameModeCreateMaster", 0x80010086u);
     sr_hle_register_unsupported(0x3278ab0cu, "sceNetAdhocGameModeCreateReplica", 0x80010086u);
     sr_hle_register_unsupported(0xa0229362u, "sceNetAdhocGameModeDeleteMaster", 0x80010086u);
@@ -124,7 +206,7 @@ void hle_register_unregistered_import_network_1(void) {
     sr_hle_register_unsupported(0x362cbe8fu, "sceNetAdhocctlGetAdhocId", 0x80010086u);
     sr_hle_register_unsupported(0x5a014ce0u, "sceNetAdhocctlGetGameModeInfo", 0x80010086u);
     sr_hle_register_unsupported(0x8916c003u, "sceNetAdhocctlGetNameByAddr", 0x80010086u);
-    sr_hle_register_unsupported(0xded9d28eu, "sceNetAdhocctlGetParameter", 0x80010086u);
+    sr_hle_register(0xded9d28eu, "sceNetAdhocctlGetParameter", h_NetAdhocctlGetParameter);
     sr_hle_register_unsupported(0x8db83fdcu, "sceNetAdhocctlGetPeerInfo", 0x80010086u);
     sr_hle_register_unsupported(0xe162cb14u, "sceNetAdhocctlGetPeerList", 0x80010086u);
     sr_hle_register_unsupported(0x81aee1beu, "sceNetAdhocctlGetScanInfo", 0x80010086u);

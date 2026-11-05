@@ -24,10 +24,10 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 26 |
-| `ppsspp-derived` | 119 | 89 |
+| `ppsspp-derived` | 122 | 89 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 351 | 226 |
-| `unverified` | 151 | 22 |
+| `synthetic` | 352 | 226 |
+| `unverified` | 147 | 22 |
 | total | 685 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -48,9 +48,24 @@ them, so they carry no class; `python tools/vfpu_coverage_report.py` lists them.
 
 At run time `sr_syscall` logs one line the first time each `unverified` NID with a handler is
 called: `HLE: unverified: <name> (NID 0x<nid>) has no recorded evidence (docs/HLE_COVERAGE.md)`.
-Controlled refusals already log their own line once. VFPU forms are not logged: AOT-direct forms
-run inline with no shared entry point, and `sr_vfpu_interp` cannot tell which census form a word
-belongs to without the census's own grouping.
+Controlled refusals already log their own line once.
+
+VFPU forms are reported by word pattern, because a census form is not a word range. For each
+`unverified` form the ledger derives the `(mask, match)` word patterns in `src/rt/hle_evidence.h`:
+a bit is in the mask only if flipping it changes the form under the production decoder probe, and
+random words inside each pattern are classified again and must stay unverified. The patterns are
+evidence about the words tested, not a proof over every word. Each pattern is shown in the log as
+its opcode's mnemonic and the census form ids, for example `lv.s [vfpu-32-c8000000-...]`. Under
+`--lle-cpu` the interpreter floor logs
+`VFPU: unverified: first use of <forms> (word 0x<word>) at 0x<pc>: no recorded evidence` once per
+pattern when it executes a matching VFPU load or store (primary opcodes 0x32, 0x35, 0x36, 0x3a,
+0x3d, 0x3e); the patterns for opcodes 0x34 and 0x3f are not memory operations, so only the
+translated-code line below can name them. For translated code the build lists, for each pattern,
+the lowest-addressed word it translated, and the generated start-up code makes the runtime print
+`VFPU: unverified: translated code uses <forms> (word 0x<word>) at 0x<pc>: no recorded evidence`
+once per pattern; no check runs on the hot path. Both lines only log. A title that translates one of
+these forms gets one extra `sr_vfpu_report_unverified_uses` call in its generated start-up code;
+a title that translates none has generated code unchanged.
 
 ## HLE NIDs
 
@@ -84,7 +99,7 @@ belongs to without the census's own grouping.
 | `0x0afd0d8b` | `scePowerIsBatteryExist` | power | `synthetic` | HLE selftest dispatch |
 | `0x0b2228e9` | `sceNetAdhocGameModeDeleteReplica` | network | `unverified` | no recorded evidence |
 | `0x0b588501` | `sceCtrlReadLatch` | input | `hardware-measured` | PSP oracle PSP-HLE-CTRL-LATCH-001 |
-| `0x0bf0a3ae` | `sceNetGetLocalEtherAddr` | network | `unverified` | no recorded evidence |
+| `0x0bf0a3ae` | `sceNetGetLocalEtherAddr` | network | `synthetic` | HLE selftest dispatch |
 | `0x0bf608fb` | `sceGeRestoreContext` | ge | `synthetic` | HLE selftest dispatch |
 | `0x0c116e1b` | `sceAtracLowLevelDecode` | audio_codec | `unverified` | no recorded evidence |
 | `0x0c622081` | `sceWlanGetEtherAddr` | network | `synthetic` | HLE selftest dispatch |
@@ -162,7 +177,7 @@ belongs to without the census's own grouping.
 | `0x27e22ec2` | `sceKernelResumeDispatchThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x27eb27b8` | `sceIoLseek` | io | `hardware-measured` | PSP oracle PSP-IO-001 |
 | `0x27f6e642` | `sceFontGetNumFontList` | font | `synthetic` | HLE selftest dispatch; note |
-| `0x281928a9` | `sceNetTerm` | network | `synthetic` | HLE selftest dispatch |
+| `0x281928a9` | `sceNetTerm` | network | `ppsspp-derived` | registry notes name PPSSPP |
 | `0x289d82fe` | `sceDisplaySetFrameBuf` | display | `synthetic` | HLE selftest dispatch |
 | `0x28a8e98a` | `sceRegGetKeyValue` | system | `synthetic` | HLE selftest dispatch |
 | `0x28b6489c` | `sceKernelDeleteSema` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
@@ -225,7 +240,7 @@ belongs to without the census's own grouping.
 | `0x38553111` | `sceAudioSRCChReserve` | audio | `hardware-measured` | PSP oracle PSP-HLE-AUDIO-SRC-001 |
 | `0x39461b4d` | `sceRegFlushRegistry` | system | `synthetic` | HLE selftest dispatch |
 | `0x39810265` | `sceKernelReferVplStatus` | kernel_memory | `synthetic` | HLE selftest dispatch |
-| `0x39af39a6` | `sceNetInit` | network | `synthetic` | HLE selftest dispatch |
+| `0x39af39a6` | `sceNetInit` | network | `ppsspp-derived` | registry notes name PPSSPP |
 | `0x3a20a200` | `sceAudiocodecGetEDRAM` | audio_codec | `unverified` | no recorded evidence |
 | `0x3a622550` | `sceCtrlPeekBufferPositive` | input | `synthetic` | HLE selftest dispatch; note |
 | `0x3ad58b8c` | `sceKernelSuspendDispatchThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
@@ -525,7 +540,7 @@ belongs to without the census's own grouping.
 | `0xab96437f` | `sceIoSync` | io | `unverified` | no recorded evidence |
 | `0xabed3790` | `sceNetAdhocPdpSend` | network | `unverified` | no recorded evidence |
 | `0xace946e8` | `sceIoGetstat` | io | `ppsspp-derived` | handler comment names PPSSPP |
-| `0xad84d37f` | `__sceSasSetPitch` | audio | `unverified` | no recorded evidence |
+| `0xad84d37f` | `__sceSasSetPitch` | audio | `synthetic` | HLE selftest dispatch |
 | `0xae6d2027` | `sceMp3GetMPEGVersion` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0xaee7404d` | `sceUmdRegisterUMDCallBack` | umd | `synthetic` | HLE selftest dispatch |
 | `0xaf36d708` | `sceKernelTryAllocateVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
@@ -646,7 +661,7 @@ belongs to without the census's own grouping.
 | `0xdc93cfef` | `sceGeGetCmd` | ge | `synthetic` | HLE selftest dispatch |
 | `0xdcc80c2f` | `sceFontGetCharInfo` | font | `synthetic` | HLE selftest dispatch |
 | `0xdea197d4` | `sceDisplayGetMode` | display | `unverified` | no recorded evidence |
-| `0xded9d28e` | `sceNetAdhocctlGetParameter` | network | `unverified` | no recorded evidence |
+| `0xded9d28e` | `sceNetAdhocctlGetParameter` | network | `ppsspp-derived` | registry notes name PPSSPP |
 | `0xdf089680` | `scePsmfPlayerGetPsmfInfo` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; registry notes name PPSSPP |
 | `0xdf52098f` | `sceKernelTryReceiveMsgPipe` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0xdfa8baf8` | `scePowerUnregisterCallback` | power | `synthetic` | HLE selftest dispatch |
@@ -660,7 +675,7 @@ belongs to without the census's own grouping.
 | `0xe1c93e47` | `sceRtcGetTime64_t` | rtc | `synthetic` | HLE selftest dispatch; note |
 | `0xe1cd9561` | `__sceSasSetVoicePCM` | audio | `synthetic` | HLE selftest dispatch |
 | `0xe1ce83a7` | `sceMpegGetAtracAu` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c; registry notes name PPSSPP |
-| `0xe1d621d7` | `sceNetAdhocInit` | network | `unverified` | no recorded evidence |
+| `0xe1d621d7` | `sceNetAdhocInit` | network | `synthetic` | HLE selftest dispatch |
 | `0xe23e3a35` | `sceAtracGetNextDecodePosition` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xe23eec33` | `sceIoWaitAsync` | io | `synthetic` | conformance cells and HLE selftest dispatch |
 | `0xe26f226e` | `sceNetAdhocctlInit` | network | `unverified` | no recorded evidence |

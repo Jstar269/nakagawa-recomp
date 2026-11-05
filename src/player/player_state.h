@@ -1486,8 +1486,9 @@ void player_ace_resolve(const PlayerSettings *settings, const char *disc_id,
  * interpolation above 30 Hz removes this limit. Ace's other features are untouched. */
 void player_ace_apply_logic_60(PlayerAceResolved *ace, bool logic_60);
 /* The SR_ACE line for a resolution: "off", or "v1;af=16;text=on;readout=off;notice=on;
- * wide=off;smooth=off" (smooth=x2 when smooth motion is on; wide is always off, and
- * smooth=match is never written). Returns false when it does not fit. */
+ * wide=off;smooth=off;sas=off" (smooth=x2 when smooth motion is on; wide and sas are always off
+ * until the settings carry them, and smooth=match is never written). Returns false when it does
+ * not fit. */
 bool player_ace_launch_line(const PlayerAceResolved *ace, char *out, size_t cap);
 /* <user_root>/ace/<disc ID>.json: the runtime's per-run report for that disc. */
 bool player_ace_report_path(const char *user_root, const char *disc_id, char *out, size_t cap);
