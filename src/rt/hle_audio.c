@@ -690,7 +690,7 @@ static int s_sas_band_limited;
 /* Nonzero while sas=sinc decodes ahead on a copy of a voice: no SR_SASLOG dumps. */
 static int s_sas_lookahead;
 
-void sr_hle_sas_set_band_limited(int on) { s_sas_band_limited = on ? 1 : 0; }
+int sr_hle_sas_set_band_limited(int on) { s_sas_band_limited = on ? 1 : 0; return 1; }
 
 void hle_sas_guest_reset(void) {
     memset(&s_sas_core, 0, sizeof(s_sas_core));
