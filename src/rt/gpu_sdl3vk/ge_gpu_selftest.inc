@@ -5208,11 +5208,14 @@ static int wide_aspect(const char *name, int win_w, int win_h, int want_wing, co
 /* Frames after the first, at the 21:9 wing width, on the same canvases: a narrower scissor
  * reaches no wing, a shown canvas is cleared by the next wing draw (a frame with no clear
  * holds its own shapes on black), and on this backend a frame whose every wing primitive is
- * dropped leaves the canvas undrawn and black. */
+ * dropped leaves the canvas undrawn and black. The Vulkan leg runs first and each leg runs
+ * whatever the other found, so either renderer's failure is reported on its own. */
 static int wide_frames(const WideBufs *B) {
-    int ok = 1;
+    int ok_all = 1;
     unsigned long drawn0, dropped0, drawn1, dropped1;
-    for (int gpu = 0; ok && gpu < 2; gpu++) {
+    for (int leg = 0; leg < 2; leg++) {
+        const int gpu = leg == 0;
+        int ok = 1;
         const char *who = gpu ? "vulkan" : "software";
         uint32_t *vram = gpu ? B->gpu_on : B->sw_on, *canvas = gpu ? B->gpu_wing : B->sw_wing;
         coherence_reset_targets();
@@ -5260,8 +5263,10 @@ static int wide_frames(const WideBufs *B) {
         }
         ge_wide_set_wing(0);
         if (ok) printf("gpu coherence selftest: PASS %-22s %s frames scale=%d\n", "wide-fill", who, s_scale);
+        else fprintf(stderr, "gpu coherence selftest [wide-fill]: FAIL %s frames\n", who);
+        ok_all &= ok;
     }
-    return ok;
+    return ok_all;
 }
 
 static int coherence_run_wide_fill(void) {
@@ -5270,10 +5275,11 @@ static int coherence_run_wide_fill(void) {
     if (!buf) return 0;
     const WideBufs B = { buf, buf + vw, buf + 2 * vw, buf + 3 * vw, buf + 4 * vw, buf + 4 * vw + px };
     /* 480x272 is 30:17: a 16:9 window widens it by under 4 pixels, so 16:9 has no wings. */
-    int ok = wide_aspect("16:9", 1920, 1080, 0, &B) &&
-             wide_aspect("21:9", 2520, 1080, WIDE_D, &B) &&
-             wide_aspect("32:9", 3840, 1080, 240, &B) &&
-             wide_frames(&B);
+    /* Every part runs, so one failure does not hide another's. */
+    int ok = wide_aspect("16:9", 1920, 1080, 0, &B);
+    ok &= wide_aspect("21:9", 2520, 1080, WIDE_D, &B);
+    ok &= wide_aspect("32:9", 3840, 1080, 240, &B);
+    ok &= wide_frames(&B);
     coherence_reset_targets();
     free(buf);
     return ok;

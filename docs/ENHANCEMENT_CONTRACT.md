@@ -378,11 +378,12 @@ primitives reach the wings, and the software rasterizer's wings), `src/rt/gpu_sd
 - **Tests.** `gpu-coherence-selftest` (case `wide-fill`, also at render scales 2 and 4) and
   `ge-cpu-profile-validate-selftest` run one list at 16:9, 21:9 and 32:9. Shapes with sub-pixel corners in and across
   each edge (flat and gouraud triangles, transform-mode sprites) are drawn a second time wholly on screen, and each wing
-  pixel must equal the frame pixel a wider screen would show there. They also check that all of guest VRAM is
-  byte-identical with Fill on and off, that the GE clock is unchanged, that the software and Vulkan wings agree byte for
-  byte at scale 1, that a narrower scissor reaches no wing, that a shown canvas holds only the next frame's wings, that
-  a frame whose every wing primitive the Vulkan backend drops leaves the canvas undrawn and black, and that the wing
-  hooks receive the guest's vertices snapped and shifted.
+  pixel must equal, exactly and at every scale, the pixel of the same renderer's frame that a wider screen would show
+  there. At render scale 1 the software and Vulkan wings must also agree with each other: byte for byte, except on a
+  gouraud shape's rows, where each channel may differ by one step. The tests also check that all of guest VRAM is
+  byte-identical with Fill on and off, that the GE clock is unchanged, that a narrower scissor reaches no wing, that a
+  shown canvas holds only the next frame's wings, that a frame whose every wing primitive the Vulkan backend drops
+  leaves the canvas undrawn and black, and that the wing hooks receive the guest's vertices snapped and shifted.
 
 **Next layers.** Presentation composes the left wing, the picture and the right wing into one image the window's
 shape, shows black wings for a frame that drew none, and turns on `wide=fill`. Then **layer 2**, per title: a game
