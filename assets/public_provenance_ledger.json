@@ -13460,6 +13460,17 @@
       }
     },
     {
+      "path": "tools/ge_draw_identity.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-draw-identity-motion0",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/ge_flight_overhead.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -15783,6 +15794,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_ge_draw_identity.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-draw-identity-motion0",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
