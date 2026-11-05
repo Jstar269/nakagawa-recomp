@@ -1920,9 +1920,13 @@ static int coherence_run_uv_edge_clamp(void) {
         { 0, 0x000u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "strip-nearest-repeat" },
         { 1, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "sprite-linear-repeat" },
         { 0, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 3.0f, "strip-sheared-u-free" },
-        /* 64 texels over 12 pixels in u (minified at every scale up to 4), linear minification
-         * and nearest magnification: the clamped bands must keep the linear filter. */
+        /* Linear minification and nearest magnification, so the filter shows the footprint. 64
+         * texels over 12 pixels in u stay minified at every scale up to 4; 32 over 12 is minified
+         * at 1x and 2x (2.67 and 1.33 texels per device pixel) and magnified at 3x and 4x. The
+         * clamped bands must filter as the rest of the primitive does: at 2x a half-clamped quad
+         * whose footprint came from the clamped coordinate would drop to 0.67 and magnify. */
         { 0, 0x001u, 0x000u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f, "strip-minified-u" },
+        { 0, 0x001u, 0x000u, 0.0f, 32.0f, 16.0f, 0.0f, 0.0f, "strip-minified-u-to-2x" },
     };
     const int ncells = (int)(sizeof(cells) / sizeof(cells[0]));
     /* Strips with fractional edges, 16 texels over 12 pixels, linear unless named nearest. An edge
@@ -2023,7 +2027,12 @@ static int coherence_run_uv_edge_clamp(void) {
     int bad = 0;
     for (int c = 0; ok && c < ncells; c++) {
         const EdgeCell *e = &cells[c];
-        const int nearest = e->tflt == 0u, clampwrap = e->wrap != 0u, separable = e->shear == 0.0f;
+        /* The filter the sampler picks from the primitive's footprint: texels per device pixel on
+         * its steeper axis, minification above 1 (TEXFILTER bits 0-2), magnification otherwise
+         * (bits 8-10). Every other cell uses one filter for both. */
+        const double rho = fmax(fabs((double)e->ur - e->ul), fabs((double)e->vb - e->vt)) / ((double)n * s);
+        const uint32_t filt = rho > 1.0 ? (e->tflt & 7u) : ((e->tflt >> 8) & 7u);
+        const int nearest = filt == 0u, clampwrap = e->wrap != 0u, separable = e->shear == 0.0f;
         int cell_bad = 0;
         for (uint32_t dy = 0; dy < (uint32_t)n * s; dy++) {
             for (uint32_t dx = 0; dx < (uint32_t)n * s; dx++) {

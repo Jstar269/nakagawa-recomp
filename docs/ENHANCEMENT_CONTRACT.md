@@ -389,8 +389,10 @@ is the other existing feature on this line, with its own rule for changes.
 A render scale above 1x (the player's Internal Render Resolution, not an Enhanced or Ace item) sits on the same line.
 Its off switch is 1x, where the picture and every readback are the PSP's values. A change to how the renderer draws
 above 1x is part of this render-scale item, not a new item or a new class, when it keeps 1x byte-identical and above
-1x only moves pixels toward the 1x picture. Items 2 to 5 of section 11.2 do not apply to such a change; its pull
-request still carries a test that fails without it and the comparison runs that show it. A readback keeps the
+1x moves the picture toward the 1x picture. That is a claim about the picture, not about every pixel: the change's
+pull request traces each device pixel that ends farther from its own 1x value and says why it does. Items 2 to 5 of
+section 11.2 do not apply to such a change; its pull request still carries a test that fails without it and the
+comparison runs that show it. A readback keeps the
 top-left device pixel of each guest pixel, so the guest reads what the device drew there:
 
 - Where the device image holds the PSP's own value, the readback returns it. That covers a target uploaded from
@@ -406,8 +408,10 @@ top-left device pixel of each guest pixel, so the guest reads what the device dr
   cover. Those centres follow the rasteriser's top-left rule. A device pixel in the outer part of an edge pixel shows
   that pixel's own sample, as the PSP does, instead of reaching past it (with repeat wrapping, into the texture's
   opposite edge), and is filtered with the primitive's own footprint. This change is part of the render-scale item
-  above: 1x stays byte-identical, and above 1x each changed device pixel takes the sample of the nearest 1x pixel
-  centre inside the primitive, which moves it toward the 1x picture (`uv-edge-clamp` in `gpu-coherence-selftest`).
+  above: 1x stays byte-identical, and above 1x it removes the edge bleed, moving the picture toward the 1x picture
+  (`uv-edge-clamp` in `gpu-coherence-selftest`). A pixel that ends farther from its own 1x value comes from
+  interpolation on the axis the clamp leaves free, or from content beneath the primitive; #2104 traces each one on
+  its captures.
   What it does not do:
   - Rotated and sheared primitives, a strip half without both a horizontal and a vertical leg (a trapezoid), and
     transform-mode (3D) geometry are not clamped.
