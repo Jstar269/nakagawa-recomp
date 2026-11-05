@@ -284,8 +284,9 @@ exports `SR_ACE_REPORT`, the per-run report under `<user data>/ace/`.
 
 With `SR_ACE=off` (the default: players opt in) every Ace branch sits behind one switch that stays false: the Vulkan
 device is created with no features, every sampler and the texture descriptor pool are as before, the presenter
-registers no UI pass, the observation counters do not run, and nothing is printed. `gpu-coherence-selftest` checks
-the samplers and the pool; `display-smoke` keeps its image hash.
+registers no UI pass, and the observation counters do not run. Nothing is printed, except one `TEX_SCALE: off`
+line when the environment asks for texture scaling or the smart 2D filter, which names the request and does not obey
+it (section 10.7). `gpu-coherence-selftest` checks the samplers and the pool; `display-smoke` keeps its image hash.
 
 ### 10.3. What Ace Changes, and What It Never Changes
 
@@ -360,7 +361,8 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
 
 ### 10.7. Texture Scaling and the Smart 2D Filter
 
-Two presentation features in the Vulkan GE renderer (#1273), in the class of a render scale above 1x (section 10.3).
+Two features in the Vulkan GE renderer (#1273). Both are guest-visible (section 11.1) and are not admitted under
+section 11.2: section 11.3.1 is their entry and says what the guest can observe, and this section says how they draw.
 The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture cache; the scaler is xBRZ 1.9
 (`third_party/xbrz/`, GPL-3.0).
 
@@ -368,8 +370,9 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
   (1 to 8192, default 512: the GPU memory the scaled copies may hold), read when the renderer starts. Both features
   take effect only in Ace Mode: in an authentic run they stay off whatever the environment says, and a request
   prints one `TEX_SCALE: off (texture scaling and the smart 2D filter need Ace Mode)` line. A value outside the list
-  prints `TEX_SCALE: refused (<reason>)` and leaves both off. The Settings page and the per-title choice come with
-  the Ace settings UI (#2074).
+  prints `TEX_SCALE: refused (<reason>)` and leaves both off. There is no launch-line key, library setting or
+  per-title setting yet: they come in the launch-line pull request that follows the Ace settings work (#2074), and
+  only that pull request admits the features (section 11.3.1).
 - **What is scaled.** A texture the texture cache decodes, with one level (no mipmaps), after its palette lookup.
   The factor drops for a texture whose scaled side would pass 2048 texels, and a texture that would pass 2048 at 2x
   is not scaled. The image is padded by two texels, repeated or clamped by the texture's wrap mode, so a repeating
@@ -380,9 +383,18 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
 - **Never stale.** A scaled copy records the cache entry's upload and the content hash it was made from, and is
   bound only while both still match. A texture the guest rewrites, or a CLUT texture drawn with another palette (a
   different cache key), is drawn unscaled until its own copy is ready, and never with the old one.
-- **Never waited on.** Two worker threads scale; the renderer only queues the decoded texels (up to 64 jobs) and
-  stores finished copies at a later lookup. Until then, with a full queue, or once the budget is spent, the texture
-  is drawn unscaled. Nothing is hidden or skipped.
+- **Never waited on.** Two worker threads scale; the renderer only queues the decoded texels and stores finished
+  copies at a later lookup. The jobs, waiting, running or finished, are at most 64 and hold at most 128 MiB of host
+  memory together (one job is always accepted, so the largest copy, 16 MiB, can be made). Storing a copy is an upload
+  on the renderer thread, so at most 8 MiB of copies are stored per present, the first copy of a present always;
+  the rest wait in the job table for the next present. Until its copy is stored, or with the job table full, a
+  texture is drawn unscaled. Nothing is hidden or skipped.
+- **Budget.** The copies hold at most `SR_TEX_SCALE_BUDGET_MB` of GPU memory. A copy that would not fit first frees
+  copies that no draw has bound for 60 presents (about a second), the longest idle first, until a quarter of the
+  budget is spare besides the new copy; that drains the GE once, as a cache eviction does. A copy bound in those 60
+  presents is never freed, so when the copies in use fill the budget, the new texture is drawn unscaled. It is
+  offered again on a later draw, at most once per present and only when it could fit, and so is a texture whose
+  copy was freed.
 - **Sampling.** A copy is sampled on its own texel lattice: the fragment shader's PSP sample-point rule (nearest at
   the texel centre, linear on the 1/16 grid) runs at the copy's resolution, from the factor the draw carries in its
   flags.
@@ -392,13 +404,17 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
   showed. Magnified and 3D draws keep the copy.
 - **Smart 2D.** A textured draw that maps one texel to one pixel on each axis (either direction), axis-aligned,
   without perspective and with its edge on a texel boundary, samples nearest: a HUD, a font or a sprite stays crisp
-  at a render scale above 1x. At 1x such a draw reads whole texels with either filter, so the frame is unchanged.
+  at a render scale above 1x. The map may differ from 1:1 by 1/64 texel over the draw's whole span and the edge by
+  1/64 more, so every pixel centre is within 1/32 texel of a texel centre. At 1x such a draw reads whole texels with
+  either filter, so the frame is unchanged.
   Every other draw, a 3D one included, keeps the game's filter.
 - **Guest memory.** Neither feature writes guest memory, the CLUT or a texture source; texture readbacks and
   render-to-texture results are unchanged. What a present commits to guest VRAM does change, which makes both
   features guest-visible: section 11.3.1 is their entry, and this section covers only their presentation.
 - **Stamps.** `TEX_SCALE: on (xbrz=<factor>, smart2d=on|off, budget_mb=<n>)` at start; at exit,
-  `TEX_SCALE: draws (scaled_binds=, onetoone_unscaled=, scaled_uploads=, stale=, smart2d=)` and `TEX_SCALE: exit (scaled=, queue_full=, discarded=, budget_peak_mb=, worker_ms=)`.
+  `TEX_SCALE: draws (scaled_binds=, onetoone_unscaled=, scaled_uploads=, stale=, smart2d=, reclaimed=,
+  budget_short=, upload_capped=)` and
+  `TEX_SCALE: exit (scaled=, queue_full=, discarded=, budget_peak_mb=, worker_ms=)`.
   A run with either feature on also prints, at start, the line section 11.3.1 describes.
   Section 10.4 applies: the run is an Ace run.
 - **A title it breaks.** A title whose fonts or pixel art suffer gets its off switch in its own package, never as
@@ -407,11 +423,14 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
   texel to one pixel. Nearest sampling turns each glyph texel into a hard block at a render scale above 1x, so the
   filter makes their text worse, not crisper. The evidence is the before-and-after runs at render scale 4 recorded in
   #2092. `SR_SMART_2D` is off by default for every title, so nothing in the runtime names them. Their per-title
-  setting applies once the per-title Ace settings land (#2074).
+  setting comes with the launch-line pull request that follows #2074 (section 11.3.1).
 - **Tests.** `tex-scale-selftest` checks the C port against goldens from the upstream release, the borders, the job
-  queue, the settings and the classifier. `gpu-texscale-selftest` runs the production path on a Vulkan device at
-  render scales 1 and 4; `gpu-texscale-mutant` builds a cache that binds a copy without the content check and
-  passes only when the rewrite cell fails for that reason.
+  queue, the settings (an authentic start with both variables set keeps both off) and the classifier, with refused
+  draws at the edge of its tolerance. `tex-scale-gate-mutant` builds the selftest without the Ace gate and passes only
+  when the settings cell fails for that reason. `gpu-texscale-selftest` runs the production path on a Vulkan device
+  at render scales 1, 4 and 2, the budget's reclamation included; `gpu-texscale-mutant` builds a cache that binds a
+  copy without its content check (state, serial and hash) and passes only when the rewrite cell fails for that
+  reason.
 
 ## 11. Guest-Visible Items
 
@@ -501,7 +520,14 @@ observe.
 - **VRAM bytes:** differ in those frames, at those draws' pixels.
 - **Readbacks:** differ the same way, for a GE or display readback, save picture or screenshot that covers them.
   Texture readbacks and render-to-texture results are unchanged (section 10.7).
-- **Timing:** unchanged. Scaling runs on worker threads and the renderer never waits for it (section 10.7).
+- **Timing:** differs. Scaling runs on worker threads, but storing a finished copy is an upload on the renderer
+  thread, the thread the guest runs on, and a budget reclaim drains the GE once (section 10.7), so a guest frame can
+  take longer. Measured at render scale 4 with `SR_TEX_SCALE=4 SR_SMART_2D=on` against the same build with both
+  off, in 200-second attract runs before the per-present store bound: *Hot Shots Tennis* presented 94.1% of its
+  frame intervals at one VBLANK against 98.9% (625 two-VBLANK intervals against 99); *LittleBigPlanet* 98.7%
+  against 97.1%, no loss. Storing is now bounded to 8 MiB of copies per present, the first copy of a present
+  always (up to 16 MiB); the bounded build's pacing has not been measured. The VBLANK schedule, the GE timing model
+  and the media clocks are unchanged.
 - **I/O speed:** unchanged.
 - **Tier:** Enhanced. **Default:** off, and Ace-only: in an authentic run both stay off whatever the environment says.
 - **Nothing worse (section 11.2, item 4):** not shown. *Hot Shots Tennis* and *LittleBigPlanet* keep smart 2D off

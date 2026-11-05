@@ -78,32 +78,47 @@ size_t nk_tex_scale_admission_line(const NkTexScaleConfig *cfg, char *out, size_
     return n < 0 ? 0 : ((size_t)n < cap ? (size_t)n : cap - 1);
 }
 
+static char s_start_line[384];   /* what the last nk_tex_scale_init_from_env printed */
+
+static void start_line(const char *text) {
+    const size_t used = strlen(s_start_line);
+    if (used + 1 < sizeof(s_start_line)) snprintf(s_start_line + used, sizeof(s_start_line) - used, "%s\n", text);
+    fprintf(stderr, "%s\n", text);
+}
+
+const char *nk_tex_scale_start_lines(void) { return s_start_line; }
+
 const NkTexScaleConfig *nk_tex_scale_init_from_env(int enhanced) {
     const char *scale = getenv("SR_TEX_SCALE");
     const char *smart = getenv("SR_SMART_2D");
     const char *budget = getenv("SR_TEX_SCALE_BUDGET_MB");
     memset(&s_cfg, 0, sizeof(s_cfg));
+    s_start_line[0] = '\0';
     int asked = (scale && scale[0] && strcmp(scale, "off") != 0) ||
                 (smart && smart[0] && strcmp(smart, "off") != 0);
+#ifdef NK_TEX_SCALE_MUTANT_NO_ACE_GATE
+    enhanced = 1;   /* tex-scale-gate-mutant: the Ace gate removed; the settings cell must fail */
+#endif
     if (!enhanced) {
         /* Authentic: nothing is read further, and a request is named, not obeyed. */
-        if (asked) fprintf(stderr, "TEX_SCALE: off (texture scaling and the smart 2D filter need Ace Mode)\n");
+        if (asked) start_line("TEX_SCALE: off (texture scaling and the smart 2D filter need Ace Mode)");
         return &s_cfg;
     }
-    char why[96];
+    char why[96], line[192];
     NkTexScaleConfig c;
     if (!nk_tex_scale_parse(scale, smart, budget, &c, why, sizeof(why))) {
-        fprintf(stderr, "TEX_SCALE: refused (%s)\n", why);
+        snprintf(line, sizeof(line), "TEX_SCALE: refused (%s)", why);
+        start_line(line);
         return &s_cfg;
     }
     s_cfg = c;
     if (c.factor || c.smart2d) {
         char f[8];
         if (c.factor) snprintf(f, sizeof(f), "%d", c.factor); else snprintf(f, sizeof(f), "off");
-        fprintf(stderr, "TEX_SCALE: on (xbrz=%s, smart2d=%s, budget_mb=%llu)\n", f,
-                c.smart2d ? "on" : "off", (unsigned long long)(c.budget_bytes >> 20));
-        char line[192];
-        if (nk_tex_scale_admission_line(&c, line, sizeof(line))) fprintf(stderr, "%s\n", line);
+        snprintf(line, sizeof(line), "TEX_SCALE: on (xbrz=%s, smart2d=%s, budget_mb=%llu)", f,
+                 c.smart2d ? "on" : "off", (unsigned long long)(c.budget_bytes >> 20));
+        start_line(line);
+        if (nk_tex_scale_admission_line(&c, line, sizeof(line))) start_line(line);
     }
     return &s_cfg;
 }
@@ -202,6 +217,12 @@ static SDL_Condition *s_work_cv, *s_idle_cv;
 static SDL_Thread *s_threads[WORKERS];
 static int s_started, s_quit, s_hold, s_sync;
 static NkTexScaleStats s_stats;
+/* Host bytes the jobs not FREE hold or will hold (source plus result), under s_mx. */
+static uint64_t s_host_bytes;
+
+static uint64_t job_host_bytes(int w, int h, int factor) {
+    return (uint64_t)w * (uint64_t)h * 4u * (1u + (uint64_t)factor * (uint64_t)factor);
+}
 
 static void run_job(Job *j) {
     uint64_t t0 = SDL_GetTicksNS();
@@ -278,7 +299,7 @@ static int ensure_started(void) {
 int nk_tex_scale_can_submit(void) {
     if (!ensure_started()) return 0;
     SDL_LockMutex(s_mx);
-    int room = oldest(JOB_FREE) != NULL;
+    int room = oldest(JOB_FREE) != NULL && s_host_bytes < ((uint64_t)NK_TEX_SCALE_HOST_MB << 20);
     SDL_UnlockMutex(s_mx);
     return room;
 }
@@ -289,7 +310,10 @@ int nk_tex_scale_submit(uint64_t serial, uint64_t hash, const uint32_t *rgba, in
     if (!ensure_started()) return 0;
     SDL_LockMutex(s_mx);
     Job *j = oldest(JOB_FREE);
-    if (!j) {
+    const uint64_t host = job_host_bytes(w, h, factor);
+    /* A full table, or jobs already holding NK_TEX_SCALE_HOST_MB of host memory (one job is
+     * always accepted, so the largest copy can be made). */
+    if (!j || (s_host_bytes && s_host_bytes + host > ((uint64_t)NK_TEX_SCALE_HOST_MB << 20))) {
         s_stats.refused_full++;
         SDL_UnlockMutex(s_mx);
         return 0;
@@ -299,6 +323,7 @@ int nk_tex_scale_submit(uint64_t serial, uint64_t hash, const uint32_t *rgba, in
         SDL_UnlockMutex(s_mx);
         return 0;
     }
+    s_host_bytes += host;
     memcpy(j->src, rgba, (size_t)w * (size_t)h * sizeof(uint32_t));
     j->serial = serial;
     j->hash = hash;
@@ -329,6 +354,8 @@ int nk_tex_scale_take(NkTexScaleResult *out) {
         Job *j = oldest(JOB_DONE);
         if (!j) break;
         j->state = JOB_FREE;
+        const uint64_t host = job_host_bytes(j->w, j->h, j->factor);
+        s_host_bytes = host > s_host_bytes ? 0 : s_host_bytes - host;
         if (j->failed || !j->dst) {
             s_stats.discarded++;
             continue;
@@ -391,6 +418,7 @@ void nk_tex_scale_shutdown(void) {
     s_mx = NULL;
     s_started = 0;
     s_hold = 0;
+    s_host_bytes = 0;
 }
 
 void nk_tex_scale_stats(NkTexScaleStats *out) {
@@ -414,19 +442,22 @@ void nk_tex_scale_report(void) {
 
 /* ---- smart 2D filter ------------------------------------------------------------------- */
 
-/* Tolerance in texels and pixels: vertex positions arrive on the 1/16 subpixel grid, and
- * texture coordinates are floats the guest wrote as integers. */
+/* Tolerance in texels: texture coordinates are floats the guest wrote as integers. The edge may
+ * sit S2D_EPS off a texel boundary and the map may drift S2D_EPS more across the whole draw, so
+ * every pixel centre lies within 1/32 texel of a texel centre: the PSP's linear filter, on its
+ * 1/16 grid, then reads that one texel, and nearest at 1x is the same frame. A bound on the
+ * slope alone would let a wide draw drift by texels (480 pixels over 487 texels). */
 #define S2D_EPS (1.0f / 64.0f)
 
 static int near_int(float v) { return fabsf(v - floorf(v + 0.5f)) <= S2D_EPS; }
-static int near_unit(float v) { return fabsf(fabsf(v) - 1.0f) <= S2D_EPS; }
 
 int nk_smart2d_sprite(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1) {
-    const float w = x1 - x0, h = y1 - y0;
-    if (!(fabsf(w) >= 1.0f && fabsf(h) >= 1.0f)) return 0;
-    /* one texel per pixel, either direction, and the edge on a texel boundary so every pixel
-     * centre is a texel centre */
-    return near_unit((u1 - u0) / w) && near_unit((v1 - v0) / h) && near_int(u0) && near_int(v0);
+    const float w = fabsf(x1 - x0), h = fabsf(y1 - y0);
+    if (!(w >= 1.0f && h >= 1.0f)) return 0;
+    /* one texel per pixel, either direction, over the whole span, and the edge on a texel
+     * boundary so every pixel centre is a texel centre */
+    return fabsf(fabsf(u1 - u0) - w) <= S2D_EPS && fabsf(fabsf(v1 - v0) - h) <= S2D_EPS &&
+           near_int(u0) && near_int(v0);
 }
 
 int nk_smart2d_triangle(const float x[3], const float y[3], const float u[3], const float v[3],
@@ -443,8 +474,20 @@ int nk_smart2d_triangle(const float x[3], const float y[3], const float u[3], co
     const float dv1 = tv[1] - tv[0], dv2 = tv[2] - tv[0];
     const float dudx = (du1 * dy2 - du2 * dy1) / det, dudy = (dx1 * du2 - dx2 * du1) / det;
     const float dvdx = (dv1 * dy2 - dv2 * dy1) / det, dvdy = (dx1 * dv2 - dx2 * dv1) / det;
-    if (!near_unit(dudx) || fabsf(dudy) > S2D_EPS || fabsf(dvdx) > S2D_EPS || !near_unit(dvdy))
+    /* The drift from a +/-1 map, summed over the bounding box, as for a sprite. */
+    float xmin = x[0], xmax = x[0], ymin = y[0], ymax = y[0];
+    for (int i = 1; i < 3; i++) {
+        xmin = fminf(xmin, x[i]); xmax = fmaxf(xmax, x[i]);
+        ymin = fminf(ymin, y[i]); ymax = fmaxf(ymax, y[i]);
+    }
+    const float bw = xmax - xmin, bh = ymax - ymin;
+    if (fabsf(fabsf(dudx) - 1.0f) * bw + fabsf(dudy) * bh > S2D_EPS ||
+        fabsf(dvdx) * bw + fabsf(fabsf(dvdy) - 1.0f) * bh > S2D_EPS)
         return 0;
-    /* u at the pixel corner (0, 0): an integer puts every pixel centre on a texel centre */
-    return near_int(tu[0] - dudx * x[0] - dudy * y[0]) && near_int(tv[0] - dvdx * x[0] - dvdy * y[0]);
+    /* u at the box's corner, taken back to x = 0 along the exact +/-1 map: an integer puts every
+     * pixel centre on a texel centre (the drift inside the box is bounded above) */
+    const float sx = dudx > 0.0f ? 1.0f : -1.0f, sy = dvdy > 0.0f ? 1.0f : -1.0f;
+    const float uc = tu[0] + dudx * (xmin - x[0]) + dudy * (ymin - y[0]);
+    const float vc = tv[0] + dvdx * (xmin - x[0]) + dvdy * (ymin - y[0]);
+    return near_int(uc - sx * xmin) && near_int(vc - sy * ymin);
 }

@@ -41,9 +41,12 @@ extern "C" {
 /* A scaled copy is at most this many texels on a side; a larger texture takes the largest
  * factor that fits, and none below 2. */
 #define NK_TEX_SCALE_MAX_DIM 2048
-/* Scaling jobs waiting or running at once; a texture that finds the queue full is drawn
- * unscaled and offered again on a later draw. */
+/* Scaling jobs waiting, running or finished at once; a texture that finds the queue full is
+ * drawn unscaled and offered again on a later draw. */
 #define NK_TEX_SCALE_QUEUE 64
+/* Host memory those jobs may hold, sources and results together (a 512x512 texture at 4x holds
+ * 17 MiB). A submit past it is refused like a full queue, except that one job is always taken. */
+#define NK_TEX_SCALE_HOST_MB 128u
 
 typedef struct NkTexScaleConfig {
     int factor;            /* 0 off, 2..6 */
@@ -64,6 +67,9 @@ const NkTexScaleConfig *nk_tex_scale_init_from_env(int enhanced);
  * outside section 11.2 admission. Writes it to `out` (without a newline) and returns its length
  * when either feature is on; returns 0 and writes an empty string when both are off. */
 size_t nk_tex_scale_admission_line(const NkTexScaleConfig *cfg, char *out, size_t cap);
+/* The lines the last nk_tex_scale_init_from_env printed, each ending in a newline ("" for
+ * none), for the self-test. */
+const char *nk_tex_scale_start_lines(void);
 /* Tests: set the configuration directly (no environment, no line). */
 void nk_tex_scale_configure(const NkTexScaleConfig *cfg);
 const NkTexScaleConfig *nk_tex_scale_config(void);
@@ -86,7 +92,7 @@ uint64_t nk_tex_scale_budget_used(void);
  * full or memory ran out (the texture is drawn unscaled). */
 int nk_tex_scale_submit(uint64_t serial, uint64_t hash, const uint32_t *rgba, int w, int h,
                         int factor, int clamp_u, int clamp_v);
-/* Whether a submit would be accepted now (queue room). */
+/* Whether a submit would be accepted now (queue room, and host memory under the cap). */
 int nk_tex_scale_can_submit(void);
 
 typedef struct NkTexScaleResult {

@@ -244,7 +244,9 @@ typedef struct {
         uint64_t made_serial, made_hash;   /* the content the scaled copy holds */
         int state;                         /* XS_NONE, XS_QUEUED, XS_READY */
         int factor;                        /* of the scaled image; 0 = none allocated */
-        int retry;                         /* the queue was full: offer it again on a hit */
+        int retry;                         /* XS_RETRY_*: offer it again on a later hit */
+        uint64_t retry_present;            /* XS_RETRY_BUDGET: the present it last tried in */
+        uint64_t last_bound;               /* the present the copy was last bound or stored in */
         int min_linear, mag_linear, clamp_u, clamp_v;   /* the entry's sampler, for the copy's */
         uint64_t bytes;                    /* budget the scaled image holds */
         VkImage img; VkDeviceMemory mem; VkImageView view; VkSampler smp;
@@ -382,6 +384,7 @@ static int s_xs_onetoone_plain = 1;
 static uint64_t s_cnt_xs_plain = 0;
 static int s_tex_noscale = 0;              /* tex_get for a render target read back: never scaled */
 static uint64_t s_cnt_xs_bound = 0, s_cnt_xs_uploads = 0, s_cnt_xs_stale = 0, s_cnt_smart2d = 0;
+static uint64_t s_cnt_xs_reclaimed = 0, s_cnt_xs_budget_short = 0, s_cnt_xs_upload_capped = 0;
 static uint32_t s_tex_pool_sets = 0;
 static GeState  *s_ge;
 static uint16_t *s_zbuf;
@@ -2765,6 +2768,18 @@ static uint64_t s_texlru = 1;
 /* ---- texture scaling: the scaled copy of a cache entry (tex_scale.h) --------------------- */
 
 enum { XS_NONE = 0, XS_QUEUED, XS_READY };
+/* Why an entry is offered again on a later hit: the job queue was full, or the copy did not fit
+ * the budget (tried again at most once per present, and only when it could fit). */
+enum { XS_RETRY_NONE = 0, XS_RETRY_QUEUE, XS_RETRY_BUDGET };
+/* A copy no draw has bound for this many presents (about a second) may be freed for another. */
+#define XS_IDLE_PRESENTS 60u
+/* Scaled copies stored per present: once this many bytes went up, the rest wait for the next
+ * present (the first copy of a present is always stored, so a 16 MiB copy lands). This bounds
+ * the renderer-thread cost of storing copies, which the guest's frame pacing sees. */
+#define XS_UPLOAD_BYTES_PER_PRESENT (8u << 20)
+
+/* The frame clock the copies age by: every present, GPU or CPU. */
+static uint64_t xs_now(void) { return (uint64_t)s_cnt_present_gpu + (uint64_t)s_cnt_present_cpu; }
 
 /* Free an entry's scaled image and give back its budget. The caller has drained every
  * command that could reference it (eviction, shutdown). */
@@ -2778,6 +2793,75 @@ static void tex_xs_free(TexEnt *e) {
     if (e->xs.mem) vkFreeMemory(s_dev, e->xs.mem, NULL);
     if (e->xs.bytes) nk_tex_scale_budget_give(e->xs.bytes);
     memset(&e->xs, 0, sizeof(e->xs));
+}
+
+/* Free entry `e`'s idle copy but keep its content generation; a later hit offers it again. */
+static void tex_xs_release(TexEnt *e) {
+    const uint64_t serial = e->xs.serial;
+    tex_xs_free(e);
+    e->xs.serial = serial;
+    e->xs.retry = XS_RETRY_BUDGET;
+}
+
+static int tex_xs_idle(const TexEnt *e, uint64_t now) {
+    return e->xs.factor && e->xs.state != XS_QUEUED && now - e->xs.last_bound >= XS_IDLE_PRESENTS;
+}
+
+/* Bytes the idle copies hold, an upper bound counted once per present: a copy bound later in
+ * the present stays counted, and tex_xs_reclaim checks again before it frees anything. */
+static uint64_t s_xs_idle_present = UINT64_MAX, s_xs_idle_bytes;
+static uint64_t tex_xs_idle_bytes(uint64_t now) {
+    if (s_xs_idle_present != now) {
+        s_xs_idle_bytes = 0;
+        for (int i = 0; i < s_tex_n; i++)
+            if (tex_xs_idle(&s_tex[i], now)) s_xs_idle_bytes += s_tex[i].xs.bytes;
+        s_xs_idle_present = now;
+    }
+    return s_xs_idle_bytes;
+}
+
+/* The budget is short of `need` bytes for entry `keep`'s copy: free idle copies, the longest
+ * idle first, until it fits with a quarter of the budget spare, so a change of scene pays one
+ * drain for many copies. A copy bound in the last XS_IDLE_PRESENTS presents is never freed: when
+ * the copies in use fill the budget, the new texture stays unscaled. Runs only inside tex_get,
+ * where the state template is being rebuilt, and drains the GE first, as tex_evict_lru does.
+ * Returns 1 when `need` fits. */
+static int tex_xs_reclaim(const TexEnt *keep, uint64_t need) {
+    const uint64_t budget = nk_tex_scale_config()->budget_bytes;
+    if (nk_tex_scale_budget_used() + need <= budget) return 1;
+    if (need > budget) return 0;
+    const uint64_t now = xs_now();
+    uint64_t idle = 0;
+    for (int i = 0; i < s_tex_n; i++)
+        if (&s_tex[i] != keep && tex_xs_idle(&s_tex[i], now)) idle += s_tex[i].xs.bytes;
+    if (nk_tex_scale_budget_used() + need > budget + idle) return 0;
+    if (!submit_pending() || !cmd_drain(GEGPU_BOUNDARY_LIFETIME)) return 0;
+    const uint64_t spare = budget / 4u, goal = budget - spare > need ? budget - spare - need : 0;
+    while (nk_tex_scale_budget_used() > goal) {
+        TexEnt *v = NULL;
+        for (int i = 0; i < s_tex_n; i++) {
+            TexEnt *e = &s_tex[i];
+            if (e != keep && tex_xs_idle(e, now) && (!v || e->xs.last_bound < v->xs.last_bound)) v = e;
+        }
+        if (!v) break;
+        tex_xs_release(v);
+        s_cnt_xs_reclaimed++;
+    }
+    s_xs_idle_present = UINT64_MAX;
+    return nk_tex_scale_budget_used() + need <= budget;
+}
+
+/* Bytes entry `e`'s copy takes at the configured factor. */
+static uint64_t tex_xs_need(const TexEnt *e) {
+    const uint64_t f = (uint64_t)nk_tex_scale_factor_for(s_xs_factor, e->w, e->h);
+    return (uint64_t)e->w * (uint64_t)e->h * f * f * 4u;
+}
+
+/* The copy did not fit: draw unscaled, and try again on a hit in a later present. */
+static void tex_xs_budget_wait(TexEnt *e) {
+    e->xs.retry = XS_RETRY_BUDGET;
+    e->xs.retry_present = xs_now();
+    s_cnt_xs_budget_short++;
 }
 
 /* Evict the least-recently-used quarter of the cache (the working set survives; the
@@ -3051,8 +3135,9 @@ static int tex_xs_eligible(const TexEnt *e, uint32_t levels) {
  * content generation and the same guest content hash. A texture the guest rewrote, or that a
  * CPU write invalidated and a decode replaced, is drawn unscaled until its own copy lands. */
 static int tex_xs_bindable(const TexEnt *e) {
-#if defined(SR_GPU_COHERENCE_SELFTEST) && defined(NK_TEX_SCALE_MUTANT_SKIP_HASH)
-    return e->xs.factor != 0;   /* the selftest's mutant: any copy that exists, stale or not */
+#if defined(SR_GPU_COHERENCE_SELFTEST) && defined(NK_TEX_SCALE_MUTANT_SKIP_CONTENT_CHECK)
+    /* the selftest's mutant: no state, serial or hash check, so any copy that exists, stale or not */
+    return e->xs.factor != 0;
 #else
     return e->xs.state == XS_READY && e->xs.made_serial == e->xs.serial &&
            e->xs.made_hash == e->hash;
@@ -3061,15 +3146,16 @@ static int tex_xs_bindable(const TexEnt *e) {
 
 /* Offer the content just decoded into s_texscratch (level 0 of entry `e`, hash `hash`) for
  * scaling. A full queue leaves the entry unscaled and marks it to be offered again on a later
- * hit; a texture that would not fit the budget stays unscaled. */
+ * hit. A copy that would not fit the budget first frees idle copies (tex_xs_reclaim); if it still
+ * does not fit, the entry is drawn unscaled and offered again in a later present. */
 static void tex_xs_offer(TexEnt *e, uint64_t hash, uint32_t levels) {
-    e->xs.retry = 0;
+    e->xs.retry = XS_RETRY_NONE;
     if (!tex_xs_eligible(e, levels)) return;
     const int f = nk_tex_scale_factor_for(s_xs_factor, e->w, e->h);
-    if (!e->xs.factor &&
-        nk_tex_scale_budget_used() + (uint64_t)e->w * (uint64_t)e->h * (uint64_t)(f * f) * 4u >
-            nk_tex_scale_config()->budget_bytes)
+    if (!e->xs.factor && !tex_xs_reclaim(e, tex_xs_need(e))) {
+        tex_xs_budget_wait(e);
         return;
+    }
     const unsigned filter = tex_filter_variant(s_ge->tex_filter);
     e->xs.min_linear = (filter & 2u) != 0;
     e->xs.mag_linear = (filter & 1u) != 0;
@@ -3077,7 +3163,7 @@ static void tex_xs_offer(TexEnt *e, uint64_t hash, uint32_t levels) {
     e->xs.clamp_v = (s_ge->tex_wrap >> 8) & 1;
     if (!nk_tex_scale_submit(e->xs.serial, hash, s_texscratch, e->w, e->h, f,
                              e->xs.clamp_u, e->xs.clamp_v)) {
-        e->xs.retry = 1;
+        e->xs.retry = XS_RETRY_QUEUE;
         return;
     }
     e->xs.state = XS_QUEUED;
@@ -3130,8 +3216,12 @@ static int tex_xs_store(TexEnt *e, const NkTexScaleResult *r) {
     const uint32_t sw = (uint32_t)(r->w * r->factor), sh = (uint32_t)(r->h * r->factor);
     if (e->xs.factor && e->xs.factor != r->factor) return 0;
     if (!e->xs.factor) {
+        /* Other copies may have taken the budget since the offer: free idle ones, or wait. */
         const uint64_t bytes = (uint64_t)sw * sh * 4u;
-        if (!nk_tex_scale_budget_take(bytes)) return 0;
+        if (!tex_xs_reclaim(e, bytes) || !nk_tex_scale_budget_take(bytes)) {
+            tex_xs_budget_wait(e);
+            return 0;
+        }
         e->xs.bytes = bytes;
         VkSamplerCreateInfo sci;
         TexMipKey none;
@@ -3158,22 +3248,39 @@ static int tex_xs_store(TexEnt *e, const NkTexScaleResult *r) {
     e->xs.made_serial = r->serial;
     e->xs.made_hash = r->hash;
     e->xs.state = XS_READY;
+    e->xs.last_bound = xs_now();
     s_cnt_xs_uploads++;
     return 1;
 }
 
-/* Take finished scales (a few per call, so a burst of new textures spreads its uploads) and
- * store each in the entry whose content it was made from. A result for content an entry no
- * longer holds, or for an evicted entry, is dropped. */
+/* Take finished scales (a few per call, and at most XS_UPLOAD_BYTES_PER_PRESENT per present, so
+ * a burst of new textures spreads its uploads) and store each in the entry whose content it was
+ * made from. A result for content an entry no longer holds, or for an evicted entry, is dropped.
+ * Results past the present's bytes wait in the job table, under its host-memory cap. */
+static uint64_t s_xs_upload_present = UINT64_MAX, s_xs_upload_bytes;
 static void tex_xs_collect(void) {
     if (!s_xs_factor) return;
+    const uint64_t now = xs_now();
+    if (s_xs_upload_present != now) {
+        s_xs_upload_present = now;
+        s_xs_upload_bytes = 0;
+    }
     NkTexScaleResult r;
-    for (int n = 0; n < 4 && nk_tex_scale_take(&r); n++) {
+    for (int n = 0; n < 4; n++) {
+        if (s_xs_upload_bytes >= XS_UPLOAD_BYTES_PER_PRESENT) {
+            if (s_xs_upload_bytes != UINT64_MAX) s_cnt_xs_upload_capped++;
+            s_xs_upload_bytes = UINT64_MAX;   /* counted once per present */
+            break;
+        }
+        if (!nk_tex_scale_take(&r)) break;
         TexEnt *e = NULL;
         for (int i = 0; i < s_tex_n && !e; i++)
             if (s_tex[i].xs.state == XS_QUEUED && s_tex[i].xs.serial == r.serial) e = &s_tex[i];
         if (e && e->w == r.w && e->h == r.h && e->hash == r.hash) {
-            if (!tex_xs_store(e, &r)) e->xs.state = XS_NONE;
+            if (tex_xs_store(e, &r))
+                s_xs_upload_bytes += (uint64_t)r.w * (uint64_t)r.h * (uint64_t)(r.factor * r.factor) * 4u;
+            else
+                e->xs.state = XS_NONE;
         }
         nk_tex_scale_release(&r);
     }
@@ -3206,14 +3313,25 @@ static VkDescriptorSet tex_bind_set(TexEnt *e, uint32_t levels) {
     }
     s_tex_plain_set = tex_entry_set(e);
     s_tex_bound_scale = e->xs.factor;
+    e->xs.last_bound = xs_now();
     s_cnt_xs_bound++;
     return set;
 }
 
-/* A hit on an entry whose offer found the queue full: offer it again once there is room. Its
- * content is unchanged (the hit checked it), so a fresh decode is that content. */
+/* A hit on an entry whose offer found the queue full, or the budget short, or whose idle copy
+ * was freed: offer it again once there is room. Its content is unchanged (the hit checked it),
+ * so a fresh decode is that content. A budget wait tries at most once per present, and decodes
+ * only when the copy could fit with the idle copies freed. */
 static void tex_xs_retry(TexEnt *e, uint32_t levels) {
-    if (!e->xs.retry || !nk_tex_scale_can_submit()) return;
+    if (e->xs.retry == XS_RETRY_NONE || !nk_tex_scale_can_submit()) return;
+    if (e->xs.retry == XS_RETRY_BUDGET) {
+        const uint64_t now = xs_now();
+        if (e->xs.retry_present == now) return;
+        e->xs.retry_present = now;
+        if (!e->xs.factor && nk_tex_scale_budget_used() + tex_xs_need(e) >
+                                 nk_tex_scale_config()->budget_bytes + tex_xs_idle_bytes(now))
+            return;
+    }
     ge_decode_tex_rgba(s_texscratch);
     tex_xs_offer(e, e->hash, levels);
 }
@@ -4992,10 +5110,11 @@ void gegpu_shutdown(void) {
     if (s_xs_factor || s_xs_smart2d) {
         nk_tex_scale_shutdown();
         fprintf(stderr, "TEX_SCALE: draws (scaled_binds=%llu, onetoone_unscaled=%llu, scaled_uploads=%llu, "
-                        "stale=%llu, smart2d=%llu)\n",
+                        "stale=%llu, smart2d=%llu, reclaimed=%llu, budget_short=%llu, upload_capped=%llu)\n",
                 (unsigned long long)s_cnt_xs_bound, (unsigned long long)s_cnt_xs_plain,
                 (unsigned long long)s_cnt_xs_uploads, (unsigned long long)s_cnt_xs_stale,
-                (unsigned long long)s_cnt_smart2d);
+                (unsigned long long)s_cnt_smart2d, (unsigned long long)s_cnt_xs_reclaimed,
+                (unsigned long long)s_cnt_xs_budget_short, (unsigned long long)s_cnt_xs_upload_capped);
         nk_tex_scale_report();
         s_xs_factor = s_xs_smart2d = 0;
     }

@@ -8,10 +8,14 @@
  *   large            a 512x512 texture at 4x (16 MiB) uploads in bands and draws the copy;
  *   not-ready        a texture whose scale has not finished draws unscaled, without waiting;
  *   rewrite          a texture the guest rewrites draws unscaled until its own copy lands, then
- *                    the new copy; never the old one (the NK_TEX_SCALE_MUTANT_SKIP_HASH build
- *                    binds any copy and must fail here, for that reason);
+ *                    the new copy; never the old one (the build with
+ *                    NK_TEX_SCALE_MUTANT_SKIP_CONTENT_CHECK binds any copy and must fail here,
+ *                    for that reason);
  *   clut             a CLUT texture is scaled after the palette lookup and again for a new
  *                    palette;
+ *   budget           with room for two copies, a third texture stays unscaled while both are
+ *                    in use; once they are idle it frees them and its copy lands, and a freed
+ *                    texture's copy comes back on a later draw;
  *   rtt              a render target sampled as a texture, bound directly or read back through
  *                    the cache, is never scaled, and its draws are byte-identical with
  *                    scaling on and off;
@@ -155,6 +159,7 @@ static void xst_reset(void) {
     NkTexScaleResult r;
     while (nk_tex_scale_take(&r)) nk_tex_scale_release(&r);
     xst_clear_fb();
+    s_cnt_present_cpu++;   /* a new present: the per-present upload bytes start again */
 }
 
 /* Read a target's whole device-resolution image (RGBA8, R in the low byte). */
@@ -455,6 +460,89 @@ static int xst_rtt_pass(int factor, int swizzle, uint8_t *out) {
     return ok;
 }
 
+/* With room for two copies: A and B are scaled and in use, so C stays unscaled and no copy in use
+ * is freed. Once A and B have been idle XS_IDLE_PRESENTS presents, C's next draw frees them and its
+ * copy lands; A, whose copy was freed, is scaled again on its next draws. */
+#define XST_TEX_B (XST_TEX + 0x1000u)
+#define XST_TEX_C (XST_TEX + 0x2000u)
+static int xst_budget_draw(uint32_t addr, const uint32_t *t, float x, int f, const char *what) {
+    uint32_t want[XST_W * XST_H];
+    xst_state(XST_BASE, addr, 3u, 1, 1);
+    s_tmpl_ok = 0;
+    if (!xst_draw(x, 230.0f)) {
+        fprintf(stderr, "gpu texscale selftest: FAIL budget: draw or readback failed\n");
+        return 0;
+    }
+    xst_expect(t, f, 1, want);
+    return xst_report("budget", (int)x, 230, want, what);
+}
+
+static int xst_cell_budget(int f) {
+    uint32_t ta[XST_W * XST_H], tb[XST_W * XST_H], tc[XST_W * XST_H];
+    xst_reset();
+    nk_tex_scale_set_sync(1);
+    const NkTexScaleConfig saved = *nk_tex_scale_config();
+    NkTexScaleConfig two = saved;
+    const uint64_t copy = (uint64_t)XST_W * XST_H * (uint64_t)(f * f) * 4u;
+    two.budget_bytes = 2u * copy;
+    nk_tex_scale_configure(&two);
+    xst_pattern(ta, 61u);
+    xst_pattern(tb, 67u);
+    xst_pattern(tc, 71u);
+    const uint32_t addr[3] = { XST_TEX, XST_TEX_B, XST_TEX_C };
+    const uint32_t *tex[3] = { ta, tb, tc };
+    for (int i = 0; i < 3; i++) {
+        memcpy(SR_HOST(addr[i]), tex[i], sizeof(uint32_t) * XST_W * XST_H);
+        sr_gpu_vram_dirty(addr[i], sizeof(uint32_t) * XST_W * XST_H);
+    }
+    const uint64_t short0 = s_cnt_xs_budget_short, reclaimed0 = s_cnt_xs_reclaimed;
+    /* A and B: decoded and scaled at the first draw, the copy at the second. */
+    int ok = xst_budget_draw(XST_TEX, ta, 20.0f, 0, "A's first draw is not the texture") &&
+             xst_budget_draw(XST_TEX, ta, 20.0f, f, "A's copy is not drawn") &&
+             xst_budget_draw(XST_TEX_B, tb, 60.0f, 0, "B's first draw is not the texture") &&
+             xst_budget_draw(XST_TEX_B, tb, 60.0f, f, "B's copy is not drawn");
+    if (ok && nk_tex_scale_budget_used() != 2u * copy) {
+        fprintf(stderr, "gpu texscale selftest: FAIL budget: %llu bytes held after two copies, want %llu\n",
+                (unsigned long long)nk_tex_scale_budget_used(), (unsigned long long)(2u * copy));
+        ok = 0;
+    }
+    /* C: the budget is full of copies in use, so C stays unscaled and A keeps its copy. */
+    ok = ok && xst_budget_draw(XST_TEX_C, tc, 100.0f, 0, "C, past the budget, is not drawn unscaled") &&
+         xst_budget_draw(XST_TEX_C, tc, 100.0f, 0, "C, past the budget, is not drawn unscaled the second time") &&
+         xst_budget_draw(XST_TEX, ta, 140.0f, f, "A's copy, in use, was freed for C");
+    const uint64_t short1 = s_cnt_xs_budget_short - short0, reclaimed1 = s_cnt_xs_reclaimed - reclaimed0;
+    if (ok && (short1 != 1u || reclaimed1 != 0u)) {
+        fprintf(stderr, "gpu texscale selftest: FAIL budget: with the copies in use, %llu budget waits (want 1, once "
+                        "per present) and %llu copies freed (want 0)\n",
+                (unsigned long long)short1, (unsigned long long)reclaimed1);
+        ok = 0;
+    }
+    /* A and B go idle; C's next draw frees both and offers C, whose copy the draw after shows. */
+    s_cnt_present_cpu += XS_IDLE_PRESENTS;
+    ok = ok && xst_budget_draw(XST_TEX_C, tc, 180.0f, 0, "C is not drawn unscaled while its copy is made") &&
+         xst_budget_draw(XST_TEX_C, tc, 220.0f, f, "C's copy did not land once the idle copies were freed");
+    const uint64_t reclaimed2 = s_cnt_xs_reclaimed - reclaimed0;
+    if (ok && (reclaimed2 != 2u || nk_tex_scale_budget_used() != copy)) {
+        fprintf(stderr, "gpu texscale selftest: FAIL budget: %llu idle copies freed (want 2), %llu bytes held (want "
+                        "%llu)\n", (unsigned long long)reclaimed2, (unsigned long long)nk_tex_scale_budget_used(),
+                (unsigned long long)copy);
+        ok = 0;
+    }
+    /* A, its copy freed, is offered again on its next draw and scaled. */
+    ok = ok && xst_budget_draw(XST_TEX, ta, 260.0f, 0, "A, its copy freed, is not drawn unscaled") &&
+         xst_budget_draw(XST_TEX, ta, 300.0f, f, "A's copy did not come back after it was freed");
+    if (ok && nk_tex_scale_budget_used() != 2u * copy) {
+        fprintf(stderr, "gpu texscale selftest: FAIL budget: %llu bytes held at the end, want %llu\n",
+                (unsigned long long)nk_tex_scale_budget_used(), (unsigned long long)(2u * copy));
+        ok = 0;
+    }
+    nk_tex_scale_configure(&saved);
+    if (!ok) return 0;
+    printf("gpu texscale selftest: PASS %-12s in-use copies kept, idle ones freed (%llu), a freed copy rescaled\n",
+           "budget", (unsigned long long)reclaimed2);
+    return 1;
+}
+
 static int xst_cell_rtt(int f) {
     const size_t bytes = XST_STRIDE * FB_H * 4u;
     uint8_t *on = (uint8_t *)malloc(bytes), *off = (uint8_t *)malloc(bytes);
@@ -678,8 +766,10 @@ int gegpu_texscale_selftest(void) {
     }
     int ok = 1;
     static int (*const cells[])(int) = { xst_cell_scaled_draw, xst_cell_large, xst_cell_not_ready,
-                                         xst_cell_rewrite, xst_cell_clut, xst_cell_rtt, xst_cell_onetoone };
-    static const char *const names[] = { "scaled-draw", "large", "not-ready", "rewrite", "clut", "rtt", "onetoone" };
+                                         xst_cell_rewrite, xst_cell_clut, xst_cell_budget, xst_cell_rtt,
+                                         xst_cell_onetoone };
+    static const char *const names[] = { "scaled-draw", "large", "not-ready", "rewrite", "clut", "budget", "rtt",
+                                         "onetoone" };
     /* The cells before onetoone check copies through 1:1 sprites, so they run with the 1:1 rule
      * off; onetoone turns it back on. */
     s_xs_onetoone_plain = 0;

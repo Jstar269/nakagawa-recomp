@@ -757,6 +757,22 @@ tex-scale-selftest:
 
 native-core-tests: tex-scale-selftest
 
+# tex-scale-gate-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_NO_ACE_GATE, which lets
+# an authentic start read SR_TEX_SCALE and SR_SMART_2D. It passes only when the settings cell fails
+# for that reason, so the Ace gate is under test (contract section 11.2, item 1).
+tex-scale-gate-mutant:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	@if [ -z "$(TEX_SCALE_SDL_READY)" ]; then echo "SKIP tex-scale-gate-mutant (SDL3 not found by build discovery)"; exit 0; fi; \
+	$(CC) $(CFLAGS) -O2 -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections -DNK_TEX_SCALE_MUTANT_NO_ACE_GATE \
+		-o $(BUILD_DIR)/tex_scale_gate_mutant$(EXE_EXT) \
+		src/rt/gpu_sdl3vk/tex_scale_selftest.c src/rt/gpu_sdl3vk/tex_scale.c third_party/xbrz/xbrz.c \
+		$(LIBS) -lm || exit 1; \
+	rc=0; $(BUILD_DIR)/tex_scale_gate_mutant$(EXE_EXT) > $(BUILD_DIR)/tex_scale_gate_mutant.log 2>&1 || rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "FAIL tex-scale-gate-mutant (the mutant passed: the Ace gate is untested)"; exit 1; \
+	elif ! grep -q "FAIL settings: SR_TEX_SCALE=4 SR_SMART_2D=on with Ace Mode off" $(BUILD_DIR)/tex_scale_gate_mutant.log; then \
+		cat $(BUILD_DIR)/tex_scale_gate_mutant.log; echo "FAIL tex-scale-gate-mutant (exit $$rc, but not from the gate check)"; exit 1; \
+	else grep "FAIL settings" $(BUILD_DIR)/tex_scale_gate_mutant.log; echo "PASS tex-scale-gate-mutant (killed by the gate check, exit $$rc)"; fi
+
 # gpu-texscale-selftest - texture scaling and the smart 2D filter on the Vulkan GE renderer's
 # production path (src/rt/gpu_sdl3vk/tex_scale_gpu_selftest.inc), at render scales 1 and 4: the
 # xBRZ copy is drawn on its own lattice, an unfinished scale draws unscaled, a rewritten or
@@ -774,12 +790,12 @@ gpu-texscale-selftest: shader-verify $(RT_GE_O)
 		elif [ $$rc -ne 0 ]; then echo "FAIL gpu-texscale-selftest $$args (exit $$rc)"; exit $$rc; fi; \
 	done
 
-# gpu-texscale-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_SKIP_HASH, which binds a
-# scaled copy without checking that it was made from the texture's current content. The rewrite
-# cell must fail, and for that reason: the build passes only when the run fails and prints that
-# the stale copy was drawn.
+# gpu-texscale-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_SKIP_CONTENT_CHECK, which
+# binds a scaled copy without its state, serial and hash checks, so without checking that it was
+# made from the texture's current content. The rewrite cell must fail, and for that reason: the
+# build passes only when the run fails and prints that the stale copy was drawn.
 gpu-texscale-mutant: shader-verify $(RT_GE_O)
-	$(GPU_TEXSCALE_BUILD) -DNK_TEX_SCALE_MUTANT_SKIP_HASH -o $(BUILD_DIR)/gpu_texscale_mutant.exe
+	$(GPU_TEXSCALE_BUILD) -DNK_TEX_SCALE_MUTANT_SKIP_CONTENT_CHECK -o $(BUILD_DIR)/gpu_texscale_mutant.exe
 	@rc=0; $(BUILD_DIR)/gpu_texscale_mutant.exe > $(BUILD_DIR)/gpu_texscale_mutant.log 2>&1 || rc=$$?; \
 	cat $(BUILD_DIR)/gpu_texscale_mutant.log; \
 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-texscale-mutant (exit 77; the reason is printed above)"; \

@@ -10,9 +10,12 @@
  *     a clamped one the middle of an edge-extended copy, and the R/B channel order is upstream's;
  *   - jobs: a queued job returns the same pixels with its serial and hash; a held queue keeps a
  *     job queued and a full one refuses the next; nothing waits for a worker;
- *   - settings, the per-size factor and the budget;
+ *   - settings, the per-size factor and the budget; with SR_TEX_SCALE and SR_SMART_2D set, an
+ *     authentic start keeps both off and prints only the "need Ace Mode" line (the
+ *     tex-scale-gate-mutant build, which removes that gate, must fail here);
  *   - the smart 2D classifier: 1:1 sprites and triangles (either direction) are pixel-mapped;
- *     magnified, offset, rotated and perspective draws are not.
+ *     magnified, offset, rotated and perspective draws are not, nor a wide draw whose map
+ *     drifts past the tolerance over its span, at the edge of that tolerance.
  */
 #include "tex_scale.h"
 #include "../../../third_party/xbrz/xbrz.h"
@@ -22,6 +25,18 @@
 #include <string.h>
 
 static int s_fail;
+
+/* Set (value) or remove (NULL) an environment variable for nk_tex_scale_init_from_env. */
+static void set_env(const char *name, const char *value) {
+#ifdef _WIN32
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%s=%s", name, value ? value : "");   /* "NAME=" removes it */
+    _putenv(buf);
+#else
+    if (value) setenv(name, value, 1);
+    else unsetenv(name);
+#endif
+}
 
 #define CHECK(cond, ...) do { if (!(cond)) { fprintf(stderr, "tex scale selftest: FAIL " __VA_ARGS__); \
                                               fputc('\n', stderr); s_fail = 1; } } while (0)
@@ -281,9 +296,34 @@ static void test_settings(void) {
     CHECK(!nk_tex_scale_parse("2", NULL, "0", &c, why, sizeof(why)) &&
           !nk_tex_scale_parse("2", NULL, "9000", &c, why, sizeof(why)) &&
           !nk_tex_scale_parse("2", NULL, "-5", &c, why, sizeof(why)), "settings: a bad budget accepted");
-    /* authentic: nothing is read */
+    /* Authentic, with both features asked for in the environment: neither takes, and the one
+     * line printed names the request without obeying it. */
+    set_env("SR_TEX_SCALE", "4");
+    set_env("SR_SMART_2D", "on");
+    set_env("SR_TEX_SCALE_BUDGET_MB", NULL);
     const NkTexScaleConfig *a = nk_tex_scale_init_from_env(0);
-    CHECK(a->factor == 0 && a->smart2d == 0, "settings: not enhanced, yet a feature is on");
+    const char *lines = nk_tex_scale_start_lines();
+    CHECK(a->factor == 0 && a->smart2d == 0 && nk_tex_scale_config()->factor == 0 &&
+          nk_tex_scale_config()->smart2d == 0,
+          "settings: SR_TEX_SCALE=4 SR_SMART_2D=on with Ace Mode off turned a feature on (factor %d, smart2d %d)",
+          a->factor, a->smart2d);
+    CHECK(strcmp(lines, "TEX_SCALE: off (texture scaling and the smart 2D filter need Ace Mode)\n") == 0,
+          "settings: with Ace Mode off the start lines are not the one need-Ace-Mode line: \"%s\"", lines);
+    /* The same environment with Ace Mode on takes, and says it is not admitted. */
+    a = nk_tex_scale_init_from_env(1);
+    lines = nk_tex_scale_start_lines();
+    CHECK(a->factor == 4 && a->smart2d == 1 && strstr(lines, "TEX_SCALE: on (xbrz=4, smart2d=on, budget_mb=512)\n") &&
+          strstr(lines, "not admitted"), "settings: SR_TEX_SCALE=4 SR_SMART_2D=on with Ace Mode on: \"%s\"", lines);
+    /* Unset, nothing at all is printed, in either mode. */
+    set_env("SR_TEX_SCALE", NULL);
+    set_env("SR_SMART_2D", NULL);
+    a = nk_tex_scale_init_from_env(0);
+    CHECK(a->factor == 0 && a->smart2d == 0 && nk_tex_scale_start_lines()[0] == '\0',
+          "settings: unset and authentic, something was printed or turned on");
+    a = nk_tex_scale_init_from_env(1);
+    CHECK(a->factor == 0 && a->smart2d == 0 && nk_tex_scale_start_lines()[0] == '\0',
+          "settings: unset with Ace Mode on, something was printed or turned on");
+    nk_tex_scale_configure(NULL);
     /* an item on through the environment is never silent about being outside 11.2 admission */
     {
         char line[192];
@@ -335,6 +375,15 @@ static void test_smart2d(void) {
     CHECK(!nk_smart2d_sprite(10, 10, 18, 18, 0, 0, 16, 16), "smart2d: a minified sprite is not 1:1");
     CHECK(!nk_smart2d_sprite(10, 10, 26, 26, 0.5f, 0, 16.5f, 16), "smart2d: a half-texel offset is not pixel-mapped");
     CHECK(!nk_smart2d_sprite(10, 10, 10, 26, 0, 0, 0, 16), "smart2d: an empty sprite");
+    /* The whole span, not the slope: 480 pixels over 487 texels is within 1/64 of 1:1 per pixel
+     * but 7 texels off at the far edge. The edge of the tolerance is pinned on both sides. */
+    CHECK(!nk_smart2d_sprite(0, 0, 480, 16, 0, 0, 487, 16), "smart2d: 480 pixels over 487 texels is not 1:1");
+    CHECK(!nk_smart2d_sprite(0, 0, 16, 480, 0, 0, 16, 487), "smart2d: 480 rows over 487 texels is not 1:1");
+    CHECK(!nk_smart2d_sprite(0, 0, 480, 16, 0, 0, 480.5f, 16), "smart2d: half a texel of drift over the span");
+    CHECK(!nk_smart2d_sprite(0, 0, 480, 16, 0, 0, 480.03125f, 16), "smart2d: 1/32 texel of drift over the span");
+    CHECK(nk_smart2d_sprite(0, 0, 480, 16, 0, 0, 480.0078125f, 16), "smart2d: 1/128 texel of drift is within it");
+    CHECK(nk_smart2d_sprite(0, 0, 480, 272, 0, 0, 480, 272), "smart2d: a full-screen 1:1 sprite");
+    CHECK(nk_smart2d_sprite(0, 0, 480, 16, 480, 0, 0, 16), "smart2d: a full-width sprite mirrored in u");
     /* triangles: a through-mode quad's halves */
     CHECK(tri(10, 10, 0, 0, 26, 10, 16, 0, 10, 26, 0, 16, 1, 1, 1) &&
           tri(26, 10, 16, 0, 26, 26, 16, 16, 10, 26, 0, 16, 1, 1, 1), "smart2d: 1:1 triangle pair");
@@ -348,6 +397,14 @@ static void test_smart2d(void) {
           "smart2d: a 3D triangle");
     CHECK(!tri(10, 10, 0.5f, 0, 26, 10, 16.5f, 0, 10, 26, 0.5f, 16, 1, 1, 1), "smart2d: a half-texel triangle");
     CHECK(!tri(10, 10, 0, 0, 26, 10, 16, 0, 26, 10, 16, 0, 1, 1, 1), "smart2d: a degenerate triangle");
+    /* The drift over the triangle's box: a full-width quad half over 487 texels, and the edge. */
+    CHECK(!tri(0, 0, 0, 0, 480, 0, 487, 0, 0, 272, 0, 272, 1, 1, 1), "smart2d: a 480-pixel triangle over 487 texels");
+    CHECK(!tri(0, 0, 0, 0, 480, 0, 480, 0, 0, 272, 0, 272.5f, 1, 1, 1), "smart2d: half a texel of drift in v");
+    CHECK(!tri(0, 0, 0, 0, 480, 0, 480, 4, 0, 272, 0, 272, 1, 1, 1), "smart2d: a shear of 4 texels across the box");
+    CHECK(tri(0, 0, 0, 0, 480, 0, 480, 0, 0, 272, 0, 272, 1, 1, 1) &&
+          tri(480, 0, 480, 0, 480, 272, 480, 272, 0, 272, 0, 272, 1, 1, 1), "smart2d: a full-screen 1:1 triangle pair");
+    CHECK(tri(300, 200, 40, 8, 316, 200, 56, 8, 300, 216, 40, 24, 1, 1, 1),
+          "smart2d: a 1:1 triangle far from the origin");
     if (!s_fail) printf("tex scale selftest: PASS smart2d sprites and triangles\n");
 }
 
