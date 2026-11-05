@@ -1737,12 +1737,11 @@ void sr_hle_test_psmf_av_report(void) { psmf_av_final("test"); }
 int s_psmf_av_test_queue;
 #endif
 
-extern int sr_audio_queued(int ch);
 int psmf_av_queue_frames(int ch) {
 #ifdef SR_MPEG_MEDIA_SELFTEST
     if (s_psmf_av_test_queue_set) return s_psmf_av_test_queue;
 #endif
-    return sr_audio_queued(ch);
+    return hle_audio_queued(ch);
 }
 
 /* FNV-1a of [addr, +bytes), 0 when the bytes are all zero or cannot be read: a silent block is

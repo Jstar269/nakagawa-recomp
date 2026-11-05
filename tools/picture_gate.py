@@ -69,6 +69,10 @@ PASS, FAIL, SKIP, NOT_RUN = "PASS", "FAIL", "SKIP", "NOT_RUN"
 ACCEPTED = "ACCEPTED"
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_NOT_PROVEN = 0, 1, 2, 3
 DEFAULT_WINDOW = 8
+# The deterministic clock's guest microseconds per scheduler boundary when a route does not set
+# SR_DETERMINISTIC_SLICE_US (src/rt/sched.c SCHED_DET_SLICE_US_DEFAULT). It decides guest
+# results, so a reference records it.
+DEFAULT_SLICE_US = 100
 MIN_ACCEPT_RUNS = 2
 MAX_RGB_DISTANCE = 442  # sqrt(3 * 255^2) rounded up
 DEFAULT_TIMEOUT_SECONDS = 600
@@ -240,7 +244,14 @@ def sidecar_path(reference: Path) -> Path:
     return Path(str(reference) + ".json")
 
 
-def accept(frame: Path, reference: Path, commit: str | None = None) -> dict:
+def slice_us_of(env: Mapping[str, str]) -> int:
+    """The deterministic-clock slice a run uses: the route's value, else the runtime default."""
+    value = env.get("SR_DETERMINISTIC_SLICE_US", "")
+    return int(value) if value.isdigit() else DEFAULT_SLICE_US
+
+
+def accept(frame: Path, reference: Path, commit: str | None = None,
+           slice_us: int = DEFAULT_SLICE_US) -> dict:
     """Store ``frame`` as the reference. Only an explicit command ever replaces one."""
     reference = Path(reference)
     if _inside_checkout(reference):
@@ -257,7 +268,7 @@ def accept(frame: Path, reference: Path, commit: str | None = None) -> dict:
     tmp.write_bytes(data)
     os.replace(tmp, reference)
     meta = {"commit": commit or _head_commit(), "width": got.width, "height": got.height,
-            "sha256": hashlib.sha256(data).hexdigest()}
+            "sha256": hashlib.sha256(data).hexdigest(), "slice_us": slice_us}
     sidecar_path(reference).write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return meta
 
@@ -272,6 +283,9 @@ def sandbox_env(base: Mapping[str, str], extra: Mapping[str, str], vblank: int |
         "SDL_VIDEO_DRIVER": "dummy", "SDL_VIDEODRIVER": "dummy",
         "SDL_AUDIO_DRIVER": "dummy", "SDL_AUDIODRIVER": "dummy",
         "SR_VIDEO": "offscreen",
+        # The gate compares frames, so guest time must not follow the host (#2037), and every
+        # present of the window must be published, as the showcase capture does.
+        "SR_DETERMINISTIC_CLOCK": "1", "SR_FPS_CAP": "0",
     })
     if vblank is not None:
         env["SR_FBSNAP_WINDOWS"] = f"{vblank}-{vblank + window - 1}"
@@ -303,6 +317,17 @@ def collect_frame(run_dir: Path, vblank: int | None) -> tuple[Path | None, str]:
         return None, "no-frame-captured"
     found.sort()
     return found[0][1], f"vblank={found[0][0]}"
+
+
+def _slice_note(reference: Path, run_slice: int) -> str:
+    """Say so when the reference was taken with another clock slice: guest time differs."""
+    try:
+        recorded = json.loads(sidecar_path(reference).read_text(encoding="utf-8")).get("slice_us")
+    except (OSError, ValueError):
+        return ""
+    if isinstance(recorded, int) and recorded != run_slice:
+        return f" slice-differs(reference={recorded} run={run_slice})"
+    return ""
 
 
 def capture_failure(how: str) -> Verdict:
@@ -439,12 +464,14 @@ def run_route(route_path: Path, runs: int = 1, work_root: Path | None = None,
                                           pct.over, pct.differing, pct.total, pct.max_delta)
         if accept_frame:
             try:
-                meta = accept(frames[0], reference)
+                meta = accept(frames[0], reference, slice_us=slice_us_of(env))
             except PictureError as exc:
                 return title, Verdict(NOT_RUN, f"accept-refused ({exc})")
             return title, Verdict(ACCEPTED, f"{meta['width']}x{meta['height']} "
                                             f"commit={meta['commit']} {how}")
         verdict = compare_files(reference, frames[0], threshold, max_percent)
+        if verdict.status == FAIL:
+            how += _slice_note(reference, slice_us_of(env))
         if verdict.status in (PASS, FAIL):
             verdict = Verdict(verdict.status, f"{verdict.detail} {how}", verdict.percent,
                               verdict.over, verdict.differing, verdict.total, verdict.max_delta)
