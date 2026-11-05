@@ -1174,8 +1174,11 @@ citations (PSP-B1-01, no-colon forms) need their own check.
 
         The split is the three public headers' prototype counts (22, 21 and 16). Network HLE
         stays fail-closed (AGENTS.md section 5): each one refuses with the runtime's documented
-        SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED, the sceNetInit code, not a measured result.
+        SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED (0x80010086), not a measured result. The one
+        exception is sceNetAdhocctlGetParameter, which answers as a PSP whose ad hoc control library
+        was never initialized (0x80410b08, h_NetAdhocctlGetParameter, #341); it still opens nothing.
         """
+        modelled = {"sceNetAdhocctlGetParameter": "h_NetAdhocctlGetParameter"}
         expected = pspsdk_adhoc_refusals()
         names = [name for name, _ in expected.values()]
         self.assertEqual(
@@ -1192,6 +1195,16 @@ citations (PSP-B1-01, no-colon forms) need their own check.
                 self.assertTrue(
                     nid in baseline, f"{nid} {name} is missing from tools/import_audit_baseline.json"
                 )
+                if name in modelled:
+                    self.assertEqual(
+                        {k: baseline[nid].get(k) for k in ("name", "classification", "handler")},
+                        {"name": name, "classification": "dedicated", "handler": modelled[name]},
+                    )
+                    reg = cast(dict[str, Any], self.regs.get(int(nid, 16)))
+                    self.assertEqual(
+                        (reg["handler"], reg["owner_file"]), (modelled[name], "src/rt/hle_network.c")
+                    )
+                    continue
                 self.assertEqual(
                     {k: baseline[nid].get(k) for k in ("name", "classification", "refusal_error", "status")},
                     {
@@ -1375,14 +1388,11 @@ static uint32_t h_SynthReal(CpuState *s) {
             {
                 "0x0282a3bd": ("sceHttpGetContentLength", "0x80010086"),
                 "0x03d9526f": ("sceHttpSetResolveRetry", "0x80010086"),
-                "0x0bf0a3ae": ("sceNetGetLocalEtherAddr", "0x80010086"),
                 "0x0c116e1b": ("sceAtracLowLevelDecode", "0x80630004"),
                 "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
                 "0x1f0fc3e3": ("sceHttpSetRecvTimeOut", "0x80010086"),
                 "0x2255551e": ("sceHttpGetNetworkPspError", "0x80010086"),
                 "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
-                # sceNetTerm: the cleanup a title runs after sceNetInit refused (offline).
-                "0x281928a9": ("sceNetTerm", "0x80010086"),
                 # The net stack's thread and pool bookkeeping and adhoc discovery stop (offline).
                 "0x50647530": ("sceNetFreeThreadinfo", "0x80010086"),
                 "0xcc393e48": ("sceNetGetMallocStat", "0x80010086"),
@@ -1391,7 +1401,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x011f03c1": ("sceRtcGetAccumulativeTime", "0x80020002"),
                 "0x191cdeff": ("sceSslEnd", "0x80010086"),
                 "0x5963991b": ("sceNetApctlDelHandler", "0x80010086"),
-                "0x39af39a6": ("sceNetInit", "0x80010086"),
                 "0xf9d8eb63": ("sceHttpsEnd", "0x80010086"),
                 "0x3a20a200": ("sceAudiocodecGetEDRAM", "0x80010086"),
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
