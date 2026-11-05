@@ -336,6 +336,17 @@ int player_ui_test_next_event(const char *script, size_t *cursor,
         event->user.windowID = target_mask;
         return 1;
     }
+    if (strncmp(token, "GAME_EXIT=", 10) == 0) {
+        /* The faked game ends with this exit code (0-255), and the launcher's own
+           monitor reaps it from the next frame on (#2002). */
+        uint64_t code = 0;
+        if (strcmp(token + 10, "0") != 0 &&
+            (!player_ui_test_parse_positive_u64(token + 10, &code) || code > 255)) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_GAME_EXIT;
+        event->user.windowID = (Uint32)code;
+        return 1;
+    }
     if (strcmp(token, "ASSERT_GAME_RUNNING") == 0) {
         event->type = SDL_EVENT_USER;
         event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING;
@@ -1405,6 +1416,25 @@ void player_ui_test_step_script(PlayerUiTest *t, PlayerApp *app, SDL_Renderer *r
                    matches ? "PASS" : "FAIL",
                    player_ui_test_view_name(app->active_view));
             if (!matches) {
+                t->failed = true;
+                t->quit_queued = true;
+                *running = false;
+            }
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_GAME_EXIT) {
+            /* Only the process is faked: from here player_app_monitor_game_session
+               sees a session that has ended and takes its real exit path. The run
+               lasted a second, so a code of 0 is a clean exit, not a premature one. */
+            uint64_t now = SDL_GetTicks();
+            bool ended = t->fake_game_running && app->is_game_running && now >= 1000u;
+            printf("[PLAYER_UI_TEST] game_exit code=%u result=%s\n",
+                   (unsigned)scripted_event.user.windowID, ended ? "PASS" : "FAIL");
+            if (ended) {
+                t->fake_game_running = false;
+                app->launch_session.is_running = false;
+                app->launch_session.exit_code = (int)scripted_event.user.windowID;
+                app->launch_time_ms = now - 1000u;
+            } else {
                 t->failed = true;
                 t->quit_queued = true;
                 *running = false;
