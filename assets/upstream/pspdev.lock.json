@@ -1,7 +1,7 @@
 {
   "components": {
     "psp_packages": {
-      "commit": "0b6dbdef034badf483d94fd8b788315daffaf4bb",
+      "commit": "7531e105c3c3af3ca689c7b59e1c3b5122bfeb12",
       "default_branch": "master",
       "license_expression": "NOASSERTION",
       "license_notes": "Each package recipe references separately licensed upstream source; package use requires per-package review.",
@@ -16,7 +16,7 @@
       "repository": "https://github.com/pspdev/psplinkusb"
     },
     "pspsdk": {
-      "commit": "314b2083f2e1eaf145fc5de342736336fe1f0148",
+      "commit": "687501d09733390ad75d855f73d69a0672b93a12",
       "default_branch": "master",
       "license_expression": "BSD-3-Clause",
       "license_notes": "Root license is a 3-clause BSD grant; tools/PrxEncrypter is separately GPL-3.0-only.",

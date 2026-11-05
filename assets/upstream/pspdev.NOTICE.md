@@ -10,11 +10,11 @@ binary distribution.
 | Component | Repository | Pin | License disposition |
 | --- | --- | --- | --- |
 | PSPDEV distribution metadata | <https://github.com/pspdev/pspdev> | `v20261101` / `99dee465c534679f16cc7e0d9fc6a5b92d759d7d` | MIT |
-| PSPSDK | <https://github.com/pspdev/pspsdk> | `314b2083f2e1eaf145fc5de342736336fe1f0148` | Root 3-clause BSD grant; `tools/PrxEncrypter` separately GPL-3.0-only |
+| PSPSDK | <https://github.com/pspdev/pspsdk> | `687501d09733390ad75d855f73d69a0672b93a12` | Root 3-clause BSD grant; `tools/PrxEncrypter` separately GPL-3.0-only |
 | PSP toolchain driver | <https://github.com/pspdev/psptoolchain> | `57a4fc650324dea4637ea5ef9dfc2fc292c004f8` | `NOASSERTION` pending component-level SBOM review |
 | Allegrex toolchain scripts | <https://github.com/pspdev/psptoolchain-allegrex> | `a95b7da838d9f506656092c3e0232dcf50389d89` | `NOASSERTION`; fetched compiler components retain their own licenses |
 | Extra toolchain scripts | <https://github.com/pspdev/psptoolchain-extra> | `b5f01b00e428a604832e0dfb4bfbb991d1397e3f` | `NOASSERTION` pending tool-level review |
-| PSP package recipes | <https://github.com/pspdev/psp-packages> | `0b6dbdef034badf483d94fd8b788315daffaf4bb` | Per-package upstream review required |
+| PSP package recipes | <https://github.com/pspdev/psp-packages> | `7531e105c3c3af3ca689c7b59e1c3b5122bfeb12` | Per-package upstream review required |
 | PSPLINK USB | <https://github.com/pspdev/psplinkusb> | `v3.2.1` / `32f2fa9bca0259d68770b9678994e7ad2fd637c3` | BSD-3-Clause |
 
 ## Rules
