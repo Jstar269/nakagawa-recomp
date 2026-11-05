@@ -263,8 +263,13 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None, site_id: st
         # The doubled bound, then the counter's parity: an odd count reads as false.
         if word_line is None:
             raise ValueError("a word_even rewrite needs its emitted word line")
+        # Under slti a negative count is below the bound in stock and stays true here;
+        # under sltiu it is a large unsigned value, false in both forms.
+        odd = "(_nk_count & 1u)"
+        if (rw["word"] >> 26) == 0x0A:
+            odd = "(_nk_count & 1u) && (int32_t)_nk_count >= 0"
         enh = (f"{{ uint32_t _nk_count = s->r[{rw['reg']}]; {word_line.strip()} "
-               f"if (_nk_count & 1u) {{ s->r[{rw['rt']}] = 0u; }} }}")
+               f"if ({odd}) {{ s->r[{rw['rt']}] = 0u; }} }}")
     elif kind == "gate":
         enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"
     elif kind == "scale_int_reg":
@@ -3837,14 +3842,19 @@ def _emit_jal(ctx, out, addr, w, ds, dsw):
         _call_stmt = "    " + emit_checked_dispatch_call(
             G(target), G((addr + 8) & 0xFFFFFFFF))
     if _jal_rw is not None:
-        # gate_30hz on a call (the only rewrite a call site plans): the delay
-        # slot above always runs; the call is gated while the toggle is on. A
-        # gate_30hz_hold call returns its float argument unchanged when skipped.
+        # A gate on a call (gate_30hz or gate_30hz_hold; no other rewrite plans a
+        # call site): the delay slot above always runs; the call is gated while the
+        # toggle is on. A gate_30hz_hold call returns its float argument unchanged
+        # when skipped. A site with ``requires`` makes the call every update, as
+        # stock, until each required site has applied (section 9.6).
         _held = ""
         if "hold_f" in _jal_rw:
             _held = f" else {{ s->fi[0] = s->fi[{_jal_rw['hold_f']}]; }}"
+        _ready = ""
+        if "requires" in _jal_rw:
+            _ready = f" || !nk_enh_ready({_jal_rw['site_index']}u)"
         out.append(
-            f"    if (!nk_enhancement_on() || nk_enhancement_gate_30hz()) {{\n"
+            f"    if (!nk_enhancement_on(){_ready} || nk_enhancement_gate_30hz()) {{\n"
             f"{_call_stmt}\n"
             f"    }}{_held}"
         )
