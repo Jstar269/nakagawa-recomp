@@ -793,6 +793,7 @@ _NATIVE_SERIAL_GATES = {
         "run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make CC=gcc player-ui-tests",
     "Verify lavapipe and run GPU capture selftest": "make CC=gcc gpu-capture-selftest",
     "Run GPU coherence selftest on lavapipe": "make CC=gcc gpu-coherence-selftest",
+    "Run GPU texture scaling selftest on lavapipe": "make CC=gcc gpu-texscale-selftest gpu-texscale-mutant",
     "Configure, build, and test CMake Linux player": 'ctest --test-dir "$player_build" --output-on-failure',
     "Build and run the Linux showcase headlessly": "make CC=gcc showcase-linux",
     "Smoke the CMake Linux player headlessly": '"$player_build/nakagawa_player" "--iso=$iso" --stage-only)',

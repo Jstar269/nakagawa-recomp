@@ -867,10 +867,10 @@ def prune_cache(
 
 # The source a title's runtime package is compiled from: the runtime, the shared core
 # it links, the pause overlay's UI library (RT_NK_UI_SRCS) and the third-party headers
-# those include (RT_NK_UI_FLAGS names clay; nk_ui_image.c includes stb_image.h and
-# nk_xb.c safe-math.h). The player (src/player) is not part of a package, so a change
-# there leaves every package as it is. tools/test_package_cache.py checks that every
-# third_party directory these sources include, or the runtime flags name, is listed.
+# those include (RT_NK_UI_FLAGS names clay; nk_ui_image.c includes stb_image.h,
+# nk_xb.c safe-math.h and the GPU's tex_scale.c xbrz.h). The player (src/player) is
+# not part of a package, so a change there leaves every package as it is.
+# tools/test_package_cache.py checks that every third_party directory these sources include, or the runtime flags name, is listed.
 RUNTIME_SOURCE_DIRECTORIES: tuple[str, ...] = (
     "src/rt",
     "src/core",
@@ -878,6 +878,7 @@ RUNTIME_SOURCE_DIRECTORIES: tuple[str, ...] = (
     "third_party/clay",
     "third_party/portable-snippets",
     "third_party/stb",
+    "third_party/xbrz",
 )
 # The build rules: the Makefile and the fragments it includes (mk/nk_ui.mk lists the
 # overlay's UI sources).
