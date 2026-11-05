@@ -3764,6 +3764,10 @@ static uint32_t submit_batch_prepare(const SubmitBatchShape *sh, uint32_t tex) {
 typedef struct SubmitBatchRun {
     unsigned long long ops, submits, waits, open, snapshots, uploads, wraps, fallbacks;
     unsigned long long snapshot_px;        /* device pixels the snapshot copies moved */
+    unsigned long long snapshot_barriers;  /* barrier commands the snapshot copies recorded */
+    /* s_snapbar_probe over the run: image barriers, those weaker than to_layout's, copy ops, and
+     * copy ops that left the target or the snapshot in another layout than its next user's */
+    unsigned long long image_barriers, weak_barriers, op_copies, op_target_bad, op_snapshot_bad;
     double submit_ms, wait_ms, wall_ms;
 } SubmitBatchRun;
 
@@ -3782,9 +3786,15 @@ static int submit_batch_run(const SubmitBatchShape *sh, uint32_t tex, uint32_t c
     GeGpuReplayStats before, after;
     unsigned long renders = s_cnt_submit;
     gegpu_replay_stats_get(&before);
+    const SnapbarProbe probe0 = s_snapbar_probe;
     uint64_t started = SDL_GetTicksNS();
     ge_run_list(list, 0);
     gegpu_replay_stats_get(&after);
+    out->image_barriers = s_snapbar_probe.image_barriers - probe0.image_barriers;
+    out->weak_barriers = s_snapbar_probe.weak_barriers - probe0.weak_barriers;
+    out->op_copies = s_snapbar_probe.op_copies - probe0.op_copies;
+    out->op_target_bad = s_snapbar_probe.op_target_not_attachment - probe0.op_target_not_attachment;
+    out->op_snapshot_bad = s_snapbar_probe.op_snapshot_not_sampled - probe0.op_snapshot_not_sampled;
     renders = s_cnt_submit - renders;        /* render ops recorded by the list itself */
     out->open = s_cmd_slot ? s_cmd_slot->recorded_ops : 0u;
     GeGpuFbDescriptor da = { 0x04000000u | SB_FBA_A, 3u, 512u, (uint32_t)DRAW_W, FB_H };
@@ -3795,6 +3805,7 @@ static int submit_batch_run(const SubmitBatchShape *sh, uint32_t tex, uint32_t c
 
     out->snapshots = after.snapshot_copies - before.snapshot_copies;
     out->snapshot_px = after.snapshot_copy_px - before.snapshot_copy_px;
+    out->snapshot_barriers = after.snapshot_barriers - before.snapshot_barriers;
     out->uploads = after.upload_ring_reservations - before.upload_ring_reservations;
     out->wraps = after.upload_ring_wraps - before.upload_ring_wraps;
     out->fallbacks = after.upload_ring_fallbacks - before.upload_ring_fallbacks;
@@ -3878,6 +3889,36 @@ static int coherence_run_submit_batch(void) {
             fprintf(stderr, "gpu coherence selftest [submit-batch]: cap=%u snapshot copies moved "
                             "%llu px for %llu copies of %llu px: no dirty-box copy\n",
                     cap, run.snapshot_px, run.snapshots, full_px);
+            ok = 0;
+            break;
+        }
+        /* Each copy records two barrier commands, one into the transfer layouts and one out of
+         * them, not one per image and direction. The second leaves the target as the colour
+         * attachment of the render op recorded next, and the frames above still equal ge.c. */
+        if (run.snapshot_barriers != 2u * run.snapshots) {
+            fprintf(stderr, "gpu coherence selftest [submit-batch]: cap=%u %llu snapshot copies "
+                            "recorded %llu barrier commands, want %llu\n",
+                    cap, run.snapshots, run.snapshot_barriers, 2u * run.snapshots);
+            ok = 0;
+            break;
+        }
+        /* Each copy moves both images into the transfer layouts and out again: four image
+         * barriers, every one as strong as to_layout's (the source's writes, the destination's
+         * reads and writes, all commands, every mip level). Every copy here is a copy op, which
+         * leaves the snapshot samplable and the target as the colour attachment of the render op
+         * submit_pending records next. */
+        if (run.weak_barriers != 0u || run.image_barriers != 4u * run.snapshots) {
+            fprintf(stderr, "gpu coherence selftest [submit-batch]: cap=%u %llu snapshot copies "
+                            "recorded %llu image barriers (want %llu), %llu weaker than to_layout's\n",
+                    cap, run.snapshots, run.image_barriers, 4u * run.snapshots, run.weak_barriers);
+            ok = 0;
+            break;
+        }
+        if (run.op_copies != run.snapshots || run.op_target_bad != 0u || run.op_snapshot_bad != 0u) {
+            fprintf(stderr, "gpu coherence selftest [submit-batch]: cap=%u %llu of %llu copy ops left "
+                            "the target outside COLOR_ATTACHMENT_OPTIMAL and %llu the snapshot outside "
+                            "SHADER_READ_ONLY_OPTIMAL (%llu copies)\n",
+                    cap, run.op_target_bad, run.op_copies, run.op_snapshot_bad, run.snapshots);
             ok = 0;
             break;
         }
@@ -5405,6 +5446,7 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "uv-edge-clamp") == 0) return coherence_run_uv_edge_clamp();
         if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
         if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
+        if (strcmp(only, "submit-batch") == 0) return coherence_run_submit_batch();   /* the snapbar mutants */
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }

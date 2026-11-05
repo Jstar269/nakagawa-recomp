@@ -339,7 +339,10 @@ sprite must show the PSP's texel in every device pixel and every other sprite mu
 each device pixel's own position, and so does its uv-edge-clamp case (also at scale 3), where the
 device pixels outside a screen-aligned strip's or sprite's first and last pixel centres must show
 that edge pixel's 1x sample, with linear and nearest filtering and with repeat and clamp wrapping,
-while a sheared strip stays unclamped. The job also runs
+while a sheared strip stays unclamped.
+Last, `gpu-coherence-selftest-snapbar-mutants` builds three broken variants of
+the destination-snapshot copy's barriers (`SR_GPU_SNAPBAR_MUTANT`), and the submit-batch case must
+fail each one with its own message. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by
