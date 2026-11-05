@@ -37,7 +37,7 @@ does not make this file stale. `--details` prints them to stdout.
 ## Summary
 
 - helpers: **457** (declared in `recomp.h`: 387)
-- reach class: emitter-reached 81, production-runtime-only 341, selftest-only 0, address-only 8, none 27
+- reach class: emitter-reached 80, production-runtime-only 342, selftest-only 0, address-only 8, none 27
 - provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 422
 
 ## Helpers
@@ -494,7 +494,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_w32` | `rt/recomp.h` | yes | emitter-reached (via `MEM_W32`) | `rt/recomp.h`: upstream_derived |
 | `sr_w32_pc` | `rt/recomp.h` | yes | emitter-reached (via `MEM_W32_PC`) | `rt/recomp.h`: upstream_derived |
 | `sr_w32_pc_slow` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
-| `sr_w8` | `rt/recomp.h` | yes | emitter-reached (via `MEM_W8`) | `rt/recomp.h`: upstream_derived |
+| `sr_w8` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_w8_pc` | `rt/recomp.h` | yes | emitter-reached (via `MEM_W8_PC`) | `rt/recomp.h`: upstream_derived |
 | `sr_w8_pc_slow` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_window_title_format` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
