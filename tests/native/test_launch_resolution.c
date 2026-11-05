@@ -668,6 +668,33 @@ static void test_no_iso_child_environment(const char *test_executable,
     snprintf(session.config.ace_spec, sizeof(session.config.ace_spec), "off");
     session.config.ace_report_path[0] = '\0';
 
+    /* Either an enhanced build or Ace Mode alone is enough to follow the upscale setting
+       (an enhancement package or Ace, not both): one launch with each. */
+    for (int only = 0; only < 2; only++) {
+        if (only == 0) {
+            snprintf(session.enhancement_package_id, sizeof(session.enhancement_package_id),
+                     "fixture-60hz");
+        } else {
+            snprintf(session.config.ace_spec, sizeof(session.config.ace_spec),
+                     "v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off");
+        }
+        assert(nk_launch_start(&session) == NK_OK);
+        child_exit = nk_launch_wait(&session, -1);
+        nk_launch_stop(&session);
+        assert(child_exit == 0);
+        report = fopen(report_path, "rb");
+        assert(report != NULL);
+        observed_size = fread(observed, 1, sizeof(observed) - 1, report);
+        observed[observed_size] = '\0';
+        assert(!ferror(report));
+        assert(fclose(report) == 0);
+        assert(strstr(observed, only == 0 ? "SR_ACE=off\n"
+                                          : "SR_ACE=v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off\n") != NULL);
+        assert(strstr(observed, "SR_PRESENT_UPSCALE=fsr1\n") != NULL);
+        session.enhancement_package_id[0] = '\0';
+        snprintf(session.config.ace_spec, sizeof(session.config.ace_spec), "off");
+    }
+
     restore_environment_value("SR_ACE", old_ace, had_ace);
     free(old_ace);
     restore_environment_value("SR_PRESENT_UPSCALE", old_upscale, had_upscale);

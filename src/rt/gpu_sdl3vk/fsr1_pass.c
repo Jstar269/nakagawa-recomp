@@ -125,14 +125,20 @@ static int img_make(Fsr1Pass *p, Img *im, int w, int h, VkImageUsageFlags usage)
     ii.samples = VK_SAMPLE_COUNT_1_BIT;
     ii.tiling = VK_IMAGE_TILING_OPTIMAL;
     ii.usage = usage;
-    if (p->CreateImage(p->dev, &ii, NULL, &im->image) != VK_SUCCESS) return 0;
+    /* Each handle is stored only once its create succeeded: Vulkan leaves a failed create's output
+       undefined, and img_free destroys whatever is stored. */
+    VkImage image = VK_NULL_HANDLE;
+    if (p->CreateImage(p->dev, &ii, NULL, &image) != VK_SUCCESS) return 0;
+    im->image = image;
     VkMemoryRequirements mr;
     p->GetImageMemoryRequirements(p->dev, im->image, &mr);
     VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size,
                                  memory_type(p, mr.memoryTypeBits) };
+    VkDeviceMemory memory = VK_NULL_HANDLE;
     if (mai.memoryTypeIndex == UINT32_MAX ||
-        p->AllocateMemory(p->dev, &mai, NULL, &im->memory) != VK_SUCCESS ||
-        p->BindImageMemory(p->dev, im->image, im->memory, 0) != VK_SUCCESS) return 0;
+        p->AllocateMemory(p->dev, &mai, NULL, &memory) != VK_SUCCESS) return 0;
+    im->memory = memory;
+    if (p->BindImageMemory(p->dev, im->image, im->memory, 0) != VK_SUCCESS) return 0;
     VkImageViewCreateInfo vi;
     memset(&vi, 0, sizeof(vi));
     vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -143,7 +149,10 @@ static int img_make(Fsr1Pass *p, Img *im, int w, int h, VkImageUsageFlags usage)
     vi.subresourceRange.levelCount = 1;
     vi.subresourceRange.layerCount = 1;
     im->layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    return p->CreateImageView(p->dev, &vi, NULL, &im->view) == VK_SUCCESS;
+    VkImageView view = VK_NULL_HANDLE;
+    if (p->CreateImageView(p->dev, &vi, NULL, &view) != VK_SUCCESS) return 0;
+    im->view = view;
+    return 1;
 }
 
 static void img_free(Fsr1Pass *p, Img *im) {
@@ -221,9 +230,14 @@ static void img_barrier(Fsr1Pass *p, VkCommandBuffer cmd, Img *im, VkImageLayout
 
 static void run_pass(Fsr1Pass *p, VkCommandBuffer cmd, VkPipeline pipe, VkDescriptorSet set,
                      const void *push, uint32_t push_bytes) {
+    /* Each pass sets the layout's whole push range, zero past its own constants, so no byte of the
+       range is left unset (EASU's constants are smaller than RCAS's). */
+    uint8_t all[PUSH_BYTES];
+    memset(all, 0, sizeof(all));
+    memcpy(all, push, push_bytes < sizeof(all) ? push_bytes : sizeof(all));
     p->CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
     p->CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p->layout, 0, 1, &set, 0, NULL);
-    p->CmdPushConstants(cmd, p->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push_bytes, push);
+    p->CmdPushConstants(cmd, p->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)sizeof(all), all);
     p->CmdDispatch(cmd, ((uint32_t)p->ow + 7u) / 8u, ((uint32_t)p->oh + 7u) / 8u, 1);
 }
 
@@ -326,9 +340,14 @@ static int fixed_make(Fsr1Pass *p) {
     si.magFilter = si.minFilter = VK_FILTER_LINEAR;
     si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    if (p->CreateSampler(p->dev, &si, NULL, &p->linear) != VK_SUCCESS) return 0;
+    /* As in img_make, a handle is stored only after its create succeeded. */
+    VkSampler sampler = VK_NULL_HANDLE;
+    if (p->CreateSampler(p->dev, &si, NULL, &sampler) != VK_SUCCESS) return 0;
+    p->linear = sampler;
     si.magFilter = si.minFilter = VK_FILTER_NEAREST;
-    if (p->CreateSampler(p->dev, &si, NULL, &p->nearest) != VK_SUCCESS) return 0;
+    sampler = VK_NULL_HANDLE;
+    if (p->CreateSampler(p->dev, &si, NULL, &sampler) != VK_SUCCESS) return 0;
+    p->nearest = sampler;
 
     VkDescriptorSetLayoutBinding b[2];
     memset(b, 0, sizeof(b));
@@ -344,7 +363,9 @@ static int fixed_make(Fsr1Pass *p) {
     dl.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     dl.bindingCount = 2;
     dl.pBindings = b;
-    if (p->CreateDescriptorSetLayout(p->dev, &dl, NULL, &p->dsl) != VK_SUCCESS) return 0;
+    VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+    if (p->CreateDescriptorSetLayout(p->dev, &dl, NULL, &dsl) != VK_SUCCESS) return 0;
+    p->dsl = dsl;
 
     VkDescriptorPoolSize sizes[2] = {
         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 },
@@ -356,7 +377,9 @@ static int fixed_make(Fsr1Pass *p) {
     dp.maxSets = 2;
     dp.poolSizeCount = 2;
     dp.pPoolSizes = sizes;
-    if (p->CreateDescriptorPool(p->dev, &dp, NULL, &p->pool) != VK_SUCCESS) return 0;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (p->CreateDescriptorPool(p->dev, &dp, NULL, &pool) != VK_SUCCESS) return 0;
+    p->pool = pool;
     VkDescriptorSetLayout layouts[2] = { p->dsl, p->dsl };
     VkDescriptorSet sets[2];
     VkDescriptorSetAllocateInfo ai;
@@ -377,7 +400,9 @@ static int fixed_make(Fsr1Pass *p) {
     pl.pSetLayouts = &p->dsl;
     pl.pushConstantRangeCount = 1;
     pl.pPushConstantRanges = &range;
-    if (p->CreatePipelineLayout(p->dev, &pl, NULL, &p->layout) != VK_SUCCESS) return 0;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    if (p->CreatePipelineLayout(p->dev, &pl, NULL, &layout) != VK_SUCCESS) return 0;
+    p->layout = layout;
     if (p->init.easu_spirv && p->init.easu_spirv_bytes)
         p->easu_mod = shader_make(p, p->init.easu_spirv, p->init.easu_spirv_bytes);
     else
@@ -406,10 +431,19 @@ Fsr1Pass *fsr1_create(const Fsr1Init *init, char *error, size_t error_size) {
         set_error(error, error_size, "the Vulkan loader is incomplete");
         return NULL;
     }
-    VkQueueFamilyProperties qf[32];
-    uint32_t nq = 32;
-    families(init->physical_device, &nq, qf);
-    if (init->queue_family >= nq || !(qf[init->queue_family].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
+    uint32_t nq = 0;
+    families(init->physical_device, &nq, NULL);
+    VkQueueFamilyProperties *qf =
+        nq ? (VkQueueFamilyProperties *)calloc(nq, sizeof(*qf)) : NULL;
+    if (nq && !qf) {
+        set_error(error, error_size, "out of memory");
+        return NULL;
+    }
+    if (qf) families(init->physical_device, &nq, qf);
+    int compute = qf && init->queue_family < nq &&
+                  (qf[init->queue_family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
+    free(qf);
+    if (!compute) {
         set_error(error, error_size, "this GPU's queue has no compute");
         return NULL;
     }
