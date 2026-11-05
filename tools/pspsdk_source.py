@@ -202,7 +202,7 @@ def _check_name(
     entry: dict[str, Any], seen_names: dict[tuple[str, str], dict[str, Any]]
 ) -> None:
     previous = seen_names.get((entry["library"], entry["symbol"]))
-    if previous is not None and previous is not entry:
+    if previous is not None and previous["nid"] != entry["nid"]:
         raise SyncError(
             f"upstream import {entry['library']} {entry['symbol']} has two NIDs: "
             f"{previous['nid']} at {previous['source_file']}:"
@@ -226,7 +226,8 @@ def scan_imports(root: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
       ``sceNand_driver_C478C1DE`` line;
     - any other pair of names fails closed with both locations.
 
-    One symbol with two NIDs in one library also fails closed with both locations.
+    One symbol with two NIDs in one library also fails closed with both locations, including a
+    placeholder that was dropped in favour of a real name.
     """
     functions: list[dict[str, Any]] = []
     libraries: dict[str, str] = {}
@@ -270,12 +271,13 @@ def scan_imports(root: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
                         f"{kept['source_file']}:{kept['source_line']}; kept {kept['symbol']}",
                         file=sys.stderr,
                     )
+                    # Both names stay in seen_names, so the dropped placeholder still
+                    # fails closed if it reappears under another NID.
+                    _check_name(entry, seen_names)
+                    seen_names.setdefault((entry["library"], entry["symbol"]), entry)
                     if kept is entry:
-                        _check_name(entry, seen_names)
-                        del seen_names[(previous["library"], previous["symbol"])]
                         functions[next(i for i, f in enumerate(functions) if f is previous)] = entry
                         seen[key] = entry
-                        seen_names[(entry["library"], entry["symbol"])] = entry
                     continue
                 raise SyncError(
                     f"duplicate upstream import {entry['library']} {entry['nid']}: "

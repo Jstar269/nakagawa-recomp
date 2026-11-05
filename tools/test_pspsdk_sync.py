@@ -172,11 +172,11 @@ class ImportParserTests(unittest.TestCase):
 
     NAND_START = 'IMPORT_START "sceNand_driver",0x00010000\n'
 
-    def _scan_nand(self, *names: str) -> tuple[list[dict[str, object]], str]:
+    def _scan_nand(self, *names: str, extra: str = "") -> tuple[list[dict[str, object]], str]:
         # The shape of PSPSDK 71fb45a's src/nand/sceNand_driver.S: one NID declared twice.
         source = self.NAND_START + "".join(
             f'IMPORT_FUNC "sceNand_driver",0xC478C1DE,{name}\n' for name in names
-        )
+        ) + extra
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "src" / "nand").mkdir(parents=True)
@@ -207,6 +207,21 @@ class ImportParserTests(unittest.TestCase):
                 self.assertIn(
                     f"sceNandReadPagesRawAll at src/nand/sceNand_driver.S:{lines[1]}", printed[0]
                 )
+
+    def test_dropped_placeholder_under_another_nid_still_fails(self) -> None:
+        # The placeholder that lost to the real name is still a name with one NID.
+        renumbered = 'IMPORT_FUNC "sceNand_driver",0x11111111,sceNand_driver_C478C1DE\n'
+        for names, line in (
+            (("sceNand_driver_C478C1DE", "sceNandReadPagesRawAll"), 2),
+            (("sceNandReadPagesRawAll", "sceNand_driver_C478C1DE"), 3),
+        ):
+            with self.subTest(order=names):
+                with self.assertRaises(pspsdk_source.SyncError) as ctx:
+                    self._scan_nand(*names, extra=renumbered)
+                message = str(ctx.exception)
+                self.assertIn("sceNand_driver sceNand_driver_C478C1DE has two NIDs", message)
+                self.assertIn(f"0xc478c1de at src/nand/sceNand_driver.S:{line}", message)
+                self.assertIn("0x11111111 at src/nand/sceNand_driver.S:4", message)
 
     def test_two_real_names_for_one_nid_still_fail(self) -> None:
         with self.assertRaises(pspsdk_source.SyncError) as ctx:
