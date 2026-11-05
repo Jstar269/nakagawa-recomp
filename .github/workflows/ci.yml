@@ -1326,6 +1326,55 @@ jobs:
           python tools/ppmdiff.py --threshold 3 build/verify/snap build/verify/gold
           python -c "import json; r=json.load(open('visual_regression_report.json')); exit(1 if r['summary']['failed_frames'] > 0 else 0)"
 
+  linux_gcc16:
+    name: Linux GCC 16 canary
+    # A released GCC 16.2 on Linux, beside native_tools (ubuntu-24.04, GCC 13.3), not instead of
+    # it. No hosted Ubuntu image ships GCC 16, so the job runs in Fedora 45 pinned by digest and
+    # installs from Fedora 45's GA repository only, which never changes after release. Every
+    # package it names is pinned to an exact version; their dependencies come from the same
+    # frozen repository, and the image digest fixes what is preinstalled. It is not required:
+    # ci_required does not need it, so a failure shows red on this job and on the run without
+    # blocking a merge (docs/CI.md, "GCC 16 canary", has the criteria for making it required).
+    # A hosted runner, not the nk-wsl pool: a container job needs Docker on the runner.
+    runs-on: ubuntu-26.04
+    container:
+      image: fedora@sha256:a7d72ba2745b100a3351087472e5ee7b2450af7cf331e7673007e3817612839c # fedora:45, 2026-11-02
+    permissions:
+      contents: read
+    needs: [classify, public_export]
+    if: >-
+      ${{ always() && needs.classify.result == 'success' &&
+          needs.public_export.result == 'success' &&
+          needs.classify.outputs.allow_substantive == 'true' &&
+          needs.classify.outputs.run_native == 'true' }}
+    timeout-minutes: 20
+    steps:
+      # git-core comes first so the checkout below is a real git checkout: the display smoke's
+      # flight step needs the commit as its build identity (mk/runtime_sources.mk).
+      - name: Install GCC 16.2 and the native test dependencies from Fedora 45's GA repository
+        timeout-minutes: 8
+        run: |
+          dnf -y --repo=fedora --setopt=install_weak_deps=False install \
+            gcc-16.2.1-2.fc45.1 libasan-16.2.1-2.fc45.1 libubsan-16.2.1-2.fc45.1 \
+            make-4.4.1-13.fc45 git-core-2.55.0-2.fc45 python3-3.15.0-1.fc45 \
+            pkgconf-pkg-config-2.5.1-2.fc45 SDL3-devel-3.4.18-1.fc45 SDL3_ttf-devel-3.2.2-5.fc45 \
+            vulkan-loader-devel-1.4.350.0-2.fc45 vulkan-headers-1.4.350.0-4.fc45 glslang-16.3.0-2.fc45 \
+            mesa-vulkan-drivers-26.2.3-1.fc45 tar-1.35-10.fc45 findutils-4.11.0-2.fc45 which-2.25-2.fc45
+          ln -sf /usr/bin/python3 /usr/local/bin/python
+          gcc --version | head -n 1
+          python --version
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run native core test suite with GCC 16.2
+        run: make -j2 CC=gcc native-core-tests
+
+      - name: Run the headless display smoke with GCC 16.2
+        run: make -j2 CC=gcc display-smoke-run
+
   windows_runtime:
     name: Windows runtime compile gate
     runs-on: windows-2022

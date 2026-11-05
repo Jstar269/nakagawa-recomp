@@ -1806,7 +1806,8 @@ def _on_block(text: str) -> list[str]:
 #: outputs (tools/ci_paths.py, docs/CI.md "Self-hosted Linux runners").
 SELF_HOSTED_RUNS_ON = """${{ fromJSON(needs.classify.outputs.linux_runner || '"ubuntu-24.04"') }}"""
 SELF_HOSTED_RUNS_ON_2604 = """${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}"""
-#: The jobs that read each: every Linux job of CI except classify, which decides.
+#: The jobs that read each: every Linux job of CI except classify, which decides, and
+#: linux_gcc16, a container job that needs Docker on a hosted runner.
 SELF_HOSTED_JOBS = frozenset({"native_tools", "python_tools"})
 SELF_HOSTED_JOBS_2604 = frozenset({"hygiene", "markdown", "public_export", "profile_zero_fixture", "main_smoke",
                                    "ci_required"})
@@ -1943,6 +1944,94 @@ class SelfHostedRunnerWiringTests(unittest.TestCase):
         for fact in ("`NK_SELF_HOSTED_LINUX`", "`NK_SELF_HOSTED_HEARTBEAT`", "`carry/pr-<N>`", "job-started hook",
                      "fork", "`linux_runner`", "The routing is not the security boundary",
                      "which is the boundary", "`all_external_contributors`", "`gh run rerun <run>`"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, section)
+
+
+class Gcc16CanaryWiringTests(unittest.TestCase):
+    """linux_gcc16 runs a released GCC 16 beside native_tools, fully pinned, and blocks nothing.
+
+    It stays out of ci_required's needs until it is promoted (docs/CI.md, "GCC 16 canary"), and
+    it has no continue-on-error, so a failure is red rather than reported green.
+    """
+
+    INSTALL_STEP = "Install GCC 16.2 and the native test dependencies from Fedora 45's GA repository"
+    #: An exact name-version-release from Fedora 45: the dist tag, optionally with a rebuild suffix.
+    PINNED = re.compile(r"^[A-Za-z0-9_+-]+-[0-9][A-Za-z0-9_.+]*-[0-9][A-Za-z0-9_.]*\.fc45(\.[0-9]+)?$")
+
+    def setUp(self) -> None:
+        self.blocks = _ci_job_blocks()
+        self.block = self.blocks["linux_gcc16"]
+        self.text = "\n".join(self.block)
+
+    def _install_packages(self) -> list[str]:
+        step = _ci_step(self.block, self.INSTALL_STEP)
+        self.assertIsNotNone(step, "linux_gcc16 lost its install step")
+        assert step is not None
+        command = " ".join(line.strip().rstrip("\\") for line in step)
+        self.assertIn("dnf -y --repo=fedora --setopt=install_weak_deps=False install ", command)
+        tail = command.split(" install ", 1)[1]
+        return tail.split(" ln -sf ", 1)[0].split()
+
+    def test_runs_in_a_digest_pinned_container_on_a_hosted_runner(self) -> None:
+        self.assertIn("    name: Linux GCC 16 canary", self.text)
+        self.assertIn("    runs-on: ubuntu-26.04", self.text)
+        self.assertRegex(self.text, r"(?m)^      image: fedora@sha256:[0-9a-f]{64} # fedora:45, ")
+        self.assertIn("    permissions:\n      contents: read\n    needs:", self.text)
+        self.assertNotIn("id-token", self.text)
+        self.assertNotIn("secrets.", self.text)
+
+    def test_runs_when_native_tools_does(self) -> None:
+        self.assertIn("    needs: [classify, public_export]", self.text)
+        self.assertIn("needs.classify.outputs.allow_substantive == 'true'", self.text)
+        self.assertIn("needs.classify.outputs.run_native == 'true'", self.text)
+
+    def test_every_named_package_is_pinned_from_the_ga_repository_only(self) -> None:
+        packages = self._install_packages()
+        for name in ("gcc-16.2.1-", "libasan-16.2.1-", "libubsan-16.2.1-", "git-core-", "python3-",
+                     "mesa-vulkan-drivers-"):
+            with self.subTest(package=name):
+                self.assertTrue(any(p.startswith(name) for p in packages))
+        for package in packages:
+            with self.subTest(package=package):
+                self.assertRegex(package, self.PINNED)
+        self.assertNotIn("updates", self.text)
+        self.assertNotIn("--enablerepo", self.text)
+
+    def test_git_is_installed_before_the_checkout(self) -> None:
+        # The flight smoke needs a real git checkout for its build identity.
+        self.assertIn("git-core-", " ".join(self._install_packages()))
+        self.assertLess(_ci_step_index(self.block, self.INSTALL_STEP),
+                        _ci_step_index(self.block, "Check out repository"))
+
+    def test_runs_the_core_suite_and_the_headless_display_smoke(self) -> None:
+        for name, command in (
+            ("Run native core test suite with GCC 16.2", "run: make -j2 CC=gcc native-core-tests"),
+            ("Run the headless display smoke with GCC 16.2", "run: make -j2 CC=gcc display-smoke-run"),
+        ):
+            with self.subTest(step=name):
+                step = _ci_step(self.block, name)
+                self.assertIsNotNone(step)
+                assert step is not None
+                self.assertIn(command, "\n".join(step))
+
+    def test_is_not_required_and_never_reports_a_failure_green(self) -> None:
+        # Until it is promoted, ci_required neither needs nor reads it.
+        required = "\n".join(self.blocks["ci_required"])
+        needs = re.search(r"(?m)^    needs: \[(.*)\]$", required)
+        self.assertIsNotNone(needs)
+        assert needs is not None
+        self.assertNotIn("linux_gcc16", [job.strip() for job in needs.group(1).split(",")])
+        self.assertNotIn("linux_gcc16", required)
+        self.assertNotIn("linux_gcc16", (ROOT / "tools" / "ci_required.py").read_text(encoding="utf-8"))
+        self.assertNotIn("continue-on-error", self.text)
+
+    def test_docs_describe_the_canary_and_its_promotion(self) -> None:
+        section = _markdown_section((ROOT / "docs" / "CI.md").read_text(encoding="utf-8"),
+                                    "### GCC 16 canary")
+        for fact in ("`linux_gcc16`", "--repo=fedora", "`gcc-16.2.1-2.fc45.1`", "Not required",
+                     "no `continue-on-error`", "steps locally against the new digest", "from any event",
+                     "conclusion, with none failed by the container", "libavutil/mem.c:272"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, section)
 

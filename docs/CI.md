@@ -356,6 +356,58 @@ the gate covers only that configuration: an optimized Release configuration fail
 job does not claim that configuration builds. Consumer ISO compatibility remains in the works
 (#306); these checks do not establish PSP hardware acceptance or interactive desktop presentation.
 
+### GCC 16 canary
+
+The `linux_gcc16` job ("Linux GCC 16 canary") builds and runs the native core suite
+(`native-core-tests`) and the headless display smoke (`display-smoke-run`) with a released
+GCC 16.2 on Linux. It runs beside `native_tools`, which stays on `ubuntu-24.04` with GCC 13.3,
+under the same condition (`run_native`). Windows already compiles with GCC 16.2: MSYS2 UCRT64
+ships it and `assets/prereq_manifest.json` pins it. This job adds GCC 16 against glibc.
+
+- **Image and packages.** No hosted Ubuntu image ships GCC 16, so the job runs in the
+  `fedora:45` container, pinned by digest, on a hosted `ubuntu-26.04` runner. A container job
+  needs Docker on the runner, so it does not use the self-hosted pool. `dnf --repo=fedora`
+  installs from Fedora 45's GA repository only. That repository never changes after release,
+  and the `updates` repository is never enabled.
+  - Every package the job names is pinned to an exact version: `gcc-16.2.1-2.fc45.1` (Red Hat's
+    GCC 16.2.1 20260819, the 16.2 release plus release-branch fixes), its `libasan` and
+    `libubsan` runtimes, and the build and test tools.
+  - Their dependencies come from the same frozen repository, and the image digest fixes what
+    is preinstalled.
+  - Fedora's SDL3 package (`SDL3-devel-3.4.18-1.fc45`) is deliberately not the pinned 3.4.20
+    that `native_tools` builds from source. This job tests the compiler, and `native_tools`
+    keeps the SDL pin.
+  - The job needs network access to the Docker registry and Fedora's mirrors. An
+    unauthenticated Docker Hub pull limit or a mirror outage can fail it without any code
+    change.
+- **Not required.** `ci_required` does not need the job, so `CI required`, the one required
+  context, never reads it. A failure shows red on this job and on the run without blocking a
+  merge. The job has no `continue-on-error`, so a failure is never reported green.
+  `tools/test_public_ci_wiring.py` (`Gcc16CanaryWiringTests`) pins all of this.
+- **Moving the pins.** Pins move only in a reviewed pull request. Before a digest bump, rerun
+  the job's steps locally against the new digest: the packages the image preinstalls must
+  match the GA repository's development packages, or the install fails on an exact-version
+  dependency. A newer GCC (16.3, or 17) means moving to the next Fedora release. Fedora 45 is
+  supported until 2027-12-08.
+- **Known GCC 16 warning.** `src/rt/atrac3p/libavutil/mem.c:272` gets `-Wdiscarded-qualifiers`
+  (`end = memchr(s, 0, len)`): GCC 15 and later default to `-std=gnu23`, where glibc 2.43 and
+  later declare the qualifier-preserving `memchr`. The file is a byte-identical FFmpeg import,
+  and FFmpeg n9.0.2 has the same line. The FFmpeg update work decides it; this job does not
+  silence it.
+
+**Making it required.** All of the following must hold, and the owner decides:
+
+1. At least 20 runs over at least 14 days, from any event, each green by the job's own
+   conclusion, with none failed by the container rather than the code (an image pull, a
+   mirror or dnf).
+2. A median job time of at most 6 minutes, and a 95th percentile of at most 10 minutes.
+3. A recorded decision on every warning only GCC 16 raises (today the `mem.c` line above).
+4. Any failure only GCC 16 shows, found in that window, is fixed at its source, not waived.
+
+Then one pull request adds `linux_gcc16` to `ci_required`'s `needs` and to
+`tools/ci_required.py`, under `RUN_NATIVE`, and changes the wiring tests to pin it as required.
+Branch protection does not change: `CI required` stays the one required context.
+
 ## Local readiness before opening a pull request
 
 Discover the available build and verification surfaces first:
