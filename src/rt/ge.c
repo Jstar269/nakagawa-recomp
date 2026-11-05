@@ -723,6 +723,11 @@ typedef struct {
 static GeSignalFrame s_sig_stack[GE_SIGNAL_STACK_CAPACITY];
 static uint32_t s_sig_sp = 0;
 static int s_hw_floor = 0;
+/* A SIGNAL whose END lies at or past the stall address waits for the resumed run: the driver's
+ * interrupt reads the SIGNAL and END words together once the END has run, so the pair holds
+ * across a stall (uofw _sceGeListInterrupt). */
+static int s_stalled_signal = 0;
+static uint32_t s_stalled_signal_op = 0;
 uint32_t g_ge_signal_stack_limit = 32u;
 static char s_ge_signal_fault[160];
 /* Result of the last BOUNDINGBOX, read by BJUMP (ge_bounding_box_visible). A list starts
@@ -1057,6 +1062,8 @@ void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     s_sp = 0;
     s_sig_sp = 0;
     s_hw_floor = 0;
+    s_stalled_signal = 0;
+    s_stalled_signal_op = 0;
     s_bbox_visible = 1;
     g_ge_stall_addr = 0;
 }
@@ -6707,6 +6714,8 @@ static int ge_signal_end(uint32_t signal_op, uint32_t end_data, uint32_t addr, u
     if (behavior == 0x13u || behavior == 0x14u) target = signal_pc + off;   /* from the SIGNAL */
     else if (behavior == 0x15u || behavior == 0x16u) target = ge.offset + off;  /* from ORIGIN */
     target &= 0x0FFFFFFFu;
+    /* uofw forms RJUMP/RCALL targets from off/4 words, so they can't misalign there; a
+     * relative offset that isn't a multiple of 4 is unmeasured on a PSP and fails closed. */
     if ((target & 3u) != 0u || !sr_guest_span_readable_current(target, 4u))
         return ge_signal_fail(name, signal_pc, "address error");
     if (behavior == 0x11u || behavior == 0x14u || behavior == 0x16u) {
@@ -6777,6 +6786,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
         s_sp = 0;
         s_sig_sp = 0;
         s_hw_floor = 0;
+        s_stalled_signal = 0;
         s_ge_signal_fault[0] = '\0';
         s_bbox_visible = 1;
     }
@@ -6786,8 +6796,9 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     ge_list_begin(list_addr, resume);
     extern unsigned long g_tex_nonzero; unsigned long start_nz=g_tex_nonzero;
     unsigned long sig=0; unsigned long prims=0;
-    int pending_signal=0;
-    uint32_t pending_signal_op=0;
+    int pending_signal=s_stalled_signal;
+    uint32_t pending_signal_op=s_stalled_signal ? s_stalled_signal_op : 0u;
+    s_stalled_signal=0;
     for (int guard=0; guard<(1<<20); guard++) {
         /* Compare 28-bit addresses. The list pointer and sceGeListUpdateStallAddr value may use
          * the uncached mirror (0x4xxxxxxx), while CALL/JUMP/RET targets are masked to 28 bits,
@@ -6802,6 +6813,8 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             /* A list streamed through stall updates reaches its END in a later run, which
              * counts only its own primitives: count these toward the capture now. */
             if (ge_capture_active()) s_capture_total_prims += prims;
+            s_stalled_signal = pending_signal;
+            s_stalled_signal_op = pending_signal_op;
             return addr;
         }
         /* An early stop is a stall the guest did not ask for, so nothing holds it apart from one:
@@ -6885,6 +6898,8 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 break;
         }
     }
+    s_stalled_signal = pending_signal;
+    s_stalled_signal_op = pending_signal_op;
     return addr;
 }
 
