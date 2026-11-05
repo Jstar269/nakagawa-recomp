@@ -330,7 +330,7 @@ HANDLER_METADATA = {
             "tests/native/hle_thread_selftest.c:test_net_core_without_network",
             "PSPAutotests tests/net (70e72391, recorded on a PSP): sceNetInit(0x20000, 0x20, 0x1000, 0x20, 0x1000) returns 0 in every net test with no access point connected, and again after sceNetTerm (net/adhoc/socketids)",
         ],
-        "limitation": "the library's state and its pool (from the user partition) only: no network stack, no socket and no host network API; the SceNetCallout and SceNetNetintr threads are not created; the pool-size and priority codes, the pool's placement, a second Init without Term (starts over, one pool) and Init failure codes follow PPSSPP (a behaviour reference, UNMEASURED)",
+        "limitation": "the library's state and its pool (from the user partition) only: no network stack, no socket and no host network API; the SceNetCallout and SceNetNetintr threads are not created; the PSP results were recorded with the WLAN switch on, and with the console profile's switch off sceNetInit still returns 0 (UNMEASURED; PPSSPP does not consult the switch either); the pool-size and priority codes, the pool's placement and the Init failure codes follow PPSSPP (a behaviour reference, UNMEASURED); a second Init without Term starts over with one pool, but checks its arguments before releasing the first pool, unlike PPSSPP (the PSP's order is UNMEASURED); a pool size whose 256-byte rounding passes 4 GB is refused with NO_MEMORY",
     },
     "h_NetTerm": {
         "status": "partial",

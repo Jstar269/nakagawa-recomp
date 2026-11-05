@@ -7354,20 +7354,23 @@ static void test_net_core_without_network(void) {
         POOL = 0x20000u,
     };
     extern void sr_hle_test_partition_reset(void);
-    extern void sr_hle_test_net_reset(void);
+    extern void hle_net_reset(void);
     extern int sr_hle_test_net_inited(void);
     extern uint32_t sr_hle_test_net_pool_uid(void);
     extern uint32_t block_addr(uint32_t uid);
+    extern uint32_t alloc_block(uint32_t size);
+    extern uint32_t free_block(uint32_t uid);
     const uint32_t loaded_end = s_fixture_loaded_end;
     reset_fixture();
     s_fixture_loaded_end = 0x08a00000u;   /* a main image in user RAM, as a game's is */
     sr_hle_test_partition_reset();
     sr_hle_init();
-    sr_hle_test_net_reset();
+    hle_net_reset();
 
     memset(SR_HOST(MAC_ADDR), 0xcc, 6u);
     expect(net_call(NID_NET_LOCAL_ETHER, MAC_ADDR, 0, 0, 0, 0) == 0x80410180u,
-           "sceNetGetLocalEtherAddr before sceNetInit: no local address (0x80410180)");
+           "sceNetGetLocalEtherAddr before sceNetInit: no local address (0x80410180; UNMEASURED before "
+           "Init, measured after it)");
 
     expect(net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0u,
            "sceNetInit(0x20000, 0x20, 0x1000, 0x20, 0x1000) returns 0, as on a PSP");
@@ -7410,7 +7413,39 @@ static void test_net_core_without_network(void) {
                net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x78u, 0x1000u) == 0x80020193u &&
                !sr_hle_test_net_inited(),
            "sceNetInit with a thread priority outside 0x08-0x77: ILLEGAL_PRIORITY (PPSSPP; UNMEASURED)");
-    sr_hle_test_net_reset();
+
+    /* A pool size within 255 of 4 GB has no 256-byte-rounded slot. With a small free block in the
+     * partition the rounding must not wrap to a 256-byte slot that the free block satisfies. */
+    const uint32_t hole = alloc_block(0x1000u), keep = alloc_block(0x1000u);
+    expect(hole != 0xffffffffu && keep != 0xffffffffu && free_block(hole) == 0u,
+           "a 0x1000-byte free block sits below an allocated one");
+    expect(alloc_block(0xffffff01u) == 0xffffffffu,
+           "alloc_block refuses a size whose 256-byte rounding passes 4 GB");
+    expect(net_call(NID_NET_INIT, 0xfffffff0u, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0x80020190u &&
+               !sr_hle_test_net_inited(),
+           "sceNetInit with a pool size near 4 GB: NO_MEMORY, nothing initialized");
+    free_block(keep);
+
+    /* The recordings were made with the WLAN switch on. With the profile's switch off sceNetInit
+     * still returns 0: the chosen behaviour for an UNMEASURED case (PPSSPP does not consult it). */
+    static const char switch_off[] =
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, "
+        "\"categories\": [], \"keys\": [], \"console\": {\"wlan_mac_hex\": \"00a1b2c3d4e5\", "
+        "\"open_psid_hex\": \"00112233445566778899aabbccddeeff\", \"wlan_switch\": 0}}";
+    sysreg_scratch_clean();
+    expect(sysreg_write_file(SYSREG_SCRATCH_FILE, switch_off, sizeof(switch_off) - 1u),
+           "the switch-off overlay is written");
+    sysreg_restart();
+    expect(profile_call(0xd7763699u, 0u) == 0u, "the profile's WLAN switch reads off");
+    expect(net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0u && sr_hle_test_net_inited(),
+           "sceNetInit with the WLAN switch off returns 0 (UNMEASURED; the switch-on result is kept)");
+    expect(net_call(NID_NET_LOCAL_ETHER, MAC_ADDR, 0, 0, 0, 0) == 0x80410180u &&
+               net_call(NID_NET_TERM, 0, 0, 0, 0, 0) == 0u,
+           "with the switch off there is still no local address, and sceNetTerm returns 0");
+    sysreg_scratch_clean();   /* the process-wide scratch overlay main() set stays selected */
+    sysreg_restart();
+
+    hle_net_reset();
     sr_hle_test_partition_reset();
     s_fixture_loaded_end = loaded_end;
 }

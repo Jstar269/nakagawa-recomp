@@ -1098,7 +1098,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_exit_request_deadline_us = 0u;
     memset(s_utility_module_loaded, 0, sizeof(s_utility_module_loaded));
     s_utility_usb_loaded = 0u;
-    sr_hle_test_net_reset();             /* the new program starts with sceNet uninitialized */
+    hle_net_reset();                     /* the new program starts with sceNet uninitialized */
     s_volatile_locked = 0;
     g_sdk_version = 0u;
     s_loadexec_boot_uid = 0u;

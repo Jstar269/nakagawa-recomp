@@ -62,10 +62,17 @@ static uint32_t h_NetEtherNtostr(CpuState *s) {
  *
  * So sceNetInit and sceNetTerm keep the library's state and its pool, and the calls that need a
  * network answer as a PSP with no group and no access point connection does. Nothing here reaches a
- * host network API. UNMEASURED, from PPSSPP Core/HLE/sceNet.cpp (193fd934, a behaviour reference):
- * the argument checks, the pool taken from the user partition, a second sceNetInit without Term
- * (PPSSPP starts over; the PSP is said to leak the first pool), and sceNetTerm before sceNetInit
- * (0). The library's two threads (SceNetCallout, SceNetNetintr) are not created. */
+ * host network API. UNMEASURED, from PPSSPP Core/HLE/sceNet.cpp (commit 3bc60270, a behaviour
+ * reference): the argument checks, the pool taken from the user partition, and sceNetTerm before
+ * sceNetInit (0). A second sceNetInit without Term starts over with one pool; PPSSPP terminates
+ * before it checks the arguments, while here the arguments are checked first, so an invalid second
+ * call leaves the first pool in place (the PSP's order is UNMEASURED). The library's two threads
+ * (SceNetCallout, SceNetNetintr) are not created.
+ *
+ * Every recording above was made with the WLAN switch on (pspautotests net/inet/offline: "The WLAN
+ * switch must be on"), which is the console profile's default. With the profile's switch off
+ * (sceWlanGetSwitchState 0) sceNetInit still returns 0 here: that case is UNMEASURED, and PPSSPP
+ * does not consult the switch either. */
 static struct {
     int inited;
     uint32_t pool_uid;  /* the user-partition block holding the pool */
@@ -118,7 +125,9 @@ static uint32_t h_NetAdhocctlGetParameter(CpuState *s) {
     return SCE_NET_ADHOCCTL_ERROR_NOT_INITIALIZED;
 }
 
-void sr_hle_test_net_reset(void) {
+/* A new program (LoadExec) starts with the library uninitialized. Its pool lives in the user
+ * partition, which the same reset rebuilds, so nothing is freed here. */
+void hle_net_reset(void) {
     s_netlib.inited = 0;
     s_netlib.pool_uid = NET_POOL_NONE;
 }

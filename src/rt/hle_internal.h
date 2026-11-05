@@ -1147,7 +1147,7 @@ __attribute__((format(printf, 2, 3))) uint32_t hle_unmodelled_stop(const char *i
 int guest_cstr(uint32_t addr, char *out, int max);
 uint32_t free_block(uint32_t uid);
 /* sceNet core library state (hle_network.c): reset at LoadExec and by the self-tests. */
-void sr_hle_test_net_reset(void);
+void hle_net_reset(void);
 int sr_hle_test_net_inited(void);
 uint32_t sr_hle_test_net_pool_uid(void);
 extern FplPool s_fpls[FPL_MAX];
