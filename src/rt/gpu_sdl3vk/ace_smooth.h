@@ -35,11 +35,35 @@ AceBetween *ace_smooth_create(const AceSmoothInit *init, char *error, size_t err
 /* Waits for the device to go idle, then frees everything. NULL is fine. */
 void ace_smooth_destroy(AceBetween *s);
 
+/* The HUD mask is one bit per guest pixel of the 480x272 display, row-major, bit (i & 31) of word
+ * i / 32: set where the frame's through-mode (2D) draws covered it. */
+#define ACE_SMOOTH_HUD_W 480
+#define ACE_SMOOTH_HUD_H 272
+#define ACE_SMOOTH_HUD_WORDS ((ACE_SMOOTH_HUD_W * ACE_SMOOTH_HUD_H) / 32)
+
+/* What the GE knows about a presented frame besides its pixels. Either part may be absent. */
+typedef struct {
+    /* ACE_SMOOTH_HUD_WORDS words, or NULL: no mask (the frame is matched as before). */
+    const uint32_t *hud_bits;
+    /* The frame's D16 depth image, in depth_layout, with the presented frame at its top-left at
+     * the same scale; VK_NULL_HANDLE when the frame wrote no depth. It is only read, and is left
+     * in depth_layout. It needs VK_IMAGE_USAGE_TRANSFER_SRC_BIT. */
+    VkImage depth;
+    VkImageLayout depth_layout;
+    int depth_w, depth_h;
+} AceSmoothAux;
+
 /* Copies `src` (w x h, in TRANSFER_SRC_OPTIMAL) into the private frames. With `between`, and a
  * previous frame of the same size, also records the in-between of the two and returns it in
  * TRANSFER_SRC_OPTIMAL; otherwise returns VK_NULL_HANDLE. `src` is only read. A size change
  * waits for the device and starts over. */
 VkImage ace_smooth_record(AceBetween *s, VkCommandBuffer cmd, VkImage src, int w, int h, int between);
+/* The same, with the frame's HUD mask and depth (`aux` may be NULL, which is ace_smooth_record).
+ * Masked pixels never steer the motion search and are never dragged by it; depth makes a vector
+ * that lands on one surface in both frames fit better than one that crosses an edge. The mask
+ * and depth are used only when both frames of the pair have them. */
+VkImage ace_smooth_record_aux(AceBetween *s, VkCommandBuffer cmd, VkImage src, int w, int h, int between,
+                              const AceSmoothAux *aux);
 /* Records the transition of the newest private frame to TRANSFER_SRC_OPTIMAL and returns it,
  * for the present that shows the held frame. VK_NULL_HANDLE when there is none. */
 VkImage ace_smooth_held(AceBetween *s, VkCommandBuffer cmd);

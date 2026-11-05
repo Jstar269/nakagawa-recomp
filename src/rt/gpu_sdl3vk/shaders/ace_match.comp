@@ -4,7 +4,14 @@
  * of a grid over the frame that is to be made, it finds the half-step d that best fits the old
  * frame at p - d to the new frame at p + d, so the in-between has no holes to fill. The coarsest
  * level searches widely; each finer level tries the vectors of the level above and refines them.
- * A still block wins ties, which keeps a HUD or a border in place. */
+ * A still block wins ties, which keeps a HUD or a border in place.
+ *
+ * With the pair's HUD masks (aux bit 1), a sample that lands on the HUD in either frame does not
+ * count, so the scene's motion is found behind the HUD; a block that is mostly HUD is still. Beside
+ * the HUD the scene's own vector puts most samples under it: a vector from the level above that
+ * this block cannot see keeps the cost the level above measured for it. With
+ * the pair's depth (aux bit 2), a vector whose two ends land at different depths fits worse: it
+ * joins two surfaces, not one surface that moved. */
 #version 450
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -13,6 +20,10 @@ layout(set = 0, binding = 1) uniform sampler2D new_frame;
 layout(set = 0, binding = 2) uniform sampler2D coarser;
 layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D field;
 layout(set = 0, binding = 5, std430) buffer Stats { uint bad_blocks; } stats;
+layout(set = 0, binding = 6, std430) readonly buffer OldHud { uint bits[]; } old_hud;
+layout(set = 0, binding = 7, std430) readonly buffer NewHud { uint bits[]; } new_hud;
+layout(set = 0, binding = 8) uniform sampler2D old_depth;
+layout(set = 0, binding = 9) uniform sampler2D new_depth;
 
 layout(push_constant) uniform Level {
     ivec2 grid;      /* blocks */
@@ -22,6 +33,7 @@ layout(push_constant) uniform Level {
     int range;       /* the search reaches this many samples either way */
     int first;       /* 1: the coarsest level: no level above */
     int count_bad;   /* 1: this level counts blocks for the cut rule */
+    int aux;         /* 1: HUD masks, 2: depth */
 } lv;
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
@@ -29,20 +41,43 @@ const float STILL_BIAS = 0.92;       /* a still block wins unless motion fits 8%
 const float SMOOTH_COST = 0.15;      /* cost per UV of leaving the vector the level above chose */
 const float BAD_BLOCK = 0.11;        /* mean luma difference no match should leave */
 const float TORN = 6.0;              /* samples between a block's vector and its neighbours' */
+const float DEPTH_COST = 1.0;        /* cost per unit of depth between a vector's two ends */
+const float MIN_SEEN = 0.25;         /* a block needs this share of samples off the HUD */
+const ivec2 HUD_SIZE = ivec2(480, 272);
+const float UNSURE = 1.0;            /* the cost stored for a block that is mostly HUD */
 
-float block_cost(vec2 centre, vec2 d) {
+bool on_hud(vec2 uv, bool newer) {
+    ivec2 g = ivec2(floor(uv * vec2(HUD_SIZE)));
+    if (any(lessThan(g, ivec2(0))) || any(greaterThanEqual(g, HUD_SIZE))) return false;
+    uint i = uint(g.y * HUD_SIZE.x + g.x);
+    uint word = newer ? new_hud.bits[i >> 5] : old_hud.bits[i >> 5];
+    return ((word >> (i & 31u)) & 1u) != 0u;
+}
+
+/* x: the mean cost over the samples that count; y: the share of samples that count. */
+vec2 block_cost(vec2 centre, vec2 d) {
     float cost = 0.0;
+    float seen = 0.0;
     float half_w = float(lv.window - 1) * 0.5;
+    bool hud = (lv.aux & 1) != 0;
+    bool depth = (lv.aux & 2) != 0;
     for (int y = 0; y < lv.window; y++) {
         for (int x = 0; x < lv.window; x++) {
             vec2 p = centre + (vec2(x, y) - half_w) * lv.texel;
+            if (hud && (on_hud(p - d, false) || on_hud(p + d, true))) continue;
             float a = dot(textureLod(old_frame, p - d, lv.lod).rgb, LUMA);
             float b = dot(textureLod(new_frame, p + d, lv.lod).rgb, LUMA);
-            cost += abs(a - b);
+            float c = abs(a - b);
+            if (depth)
+                c += DEPTH_COST * abs(textureLod(old_depth, p - d, 0.0).r - textureLod(new_depth, p + d, 0.0).r);
+            cost += c;
+            seen += 1.0;
         }
     }
-    return cost / float(lv.window * lv.window);
+    float n = float(lv.window * lv.window);
+    return vec2(seen > 0.0 ? cost / seen : 1e9, seen / n);
 }
+
 
 void main() {
     ivec2 cell = ivec2(gl_GlobalInvocationID.xy);
@@ -50,7 +85,14 @@ void main() {
     vec2 centre = (vec2(cell) + 0.5) / vec2(lv.grid);
 
     vec2 best = vec2(0.0);
-    float best_raw = block_cost(centre, best);
+    vec2 still = block_cost(centre, best);
+    if (still.y < MIN_SEEN) {
+        /* Mostly HUD: the block stays where it is, is no evidence of a cut, and is no
+         * evidence for the blocks beside it either. */
+        imageStore(field, cell, vec4(0.0, 0.0, UNSURE, 0.0));
+        return;
+    }
+    float best_raw = still.x;
     float best_cost = best_raw * STILL_BIAS;
     vec2 anchor = vec2(0.0);
     bool torn = false;
@@ -58,12 +100,15 @@ void main() {
         const ivec2 around[5] = ivec2[5](ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
         vec2 step_up = 1.0 / vec2(textureSize(coarser, 0));
         for (int i = 0; i < 5; i++) {
-            vec2 d = textureLod(coarser, centre + vec2(around[i]) * step_up, 0.0).xy;
+            vec4 up = textureLod(coarser, centre + vec2(around[i]) * step_up, 0.0);
+            vec2 d = up.xy;
             if (i == 0) anchor = d;
             /* Across a cut the search still finds something for each block, but a different
              * something: neighbours stop agreeing. Within one picture they mostly agree. */
             if (length((d - anchor) / lv.texel) > TORN) torn = true;
-            float raw = block_cost(centre, d);
+            vec2 c = block_cost(centre, d);
+            /* Too little of the scene seen here at this vector: the level above's cost for it. */
+            float raw = c.y < MIN_SEEN ? up.z : c.x;
             float cost = raw + SMOOTH_COST * length(d - anchor);
             if (cost < best_cost) { best_cost = cost; best_raw = raw; best = d; }
         }
@@ -73,7 +118,9 @@ void main() {
         for (int x = -lv.range; x <= lv.range; x++) {
             if (x == 0 && y == 0) continue;
             vec2 d = start + vec2(x, y) * lv.texel;
-            float raw = block_cost(centre, d);
+            vec2 c = block_cost(centre, d);
+            if (c.y < MIN_SEEN) continue;   /* cannot be judged, and nothing vouches for it */
+            float raw = c.x;
             float cost = raw + SMOOTH_COST * length(d - anchor);
             if (cost < best_cost) { best_cost = cost; best_raw = raw; best = d; }
         }

@@ -7,6 +7,10 @@
  * search over the mips fills three vector grids; the compose pass writes the in-between at the
  * frame's size. The grids are fixed, so the search costs the same at any render scale.
  *
+ * With ace_smooth_record_aux, each frame also keeps its HUD mask (a bit per guest pixel, carried
+ * in the command buffer) and a private R16 copy of its depth (D16 -> buffer -> R16). The passes
+ * read them only when both frames of the pair have them.
+ *
  * The images are reused by the frames in flight, on one queue: each pass's barriers order it
  * after the previous present's use, and nothing here waits for the GPU except a size change.
  */
@@ -39,16 +43,22 @@ static const struct { int cols, rows, down, window, range; } k_level[LEVELS] = {
 #define CUT_NUM 1
 #define CUT_DEN 3
 
+/* MatchPush.aux and ComposePush.aux: which of the pair's extra inputs the passes read. */
+#define AUX_HUD 1
+#define AUX_DEPTH 2
+
 typedef struct {
     int32_t grid[2];
     float texel[2];
     float lod;
     int32_t window, range, first, count_bad;
+    int32_t aux;
 } MatchPush;
 
 typedef struct {
     int32_t size[2];
     uint32_t cut_blocks;
+    uint32_t aux;
 } ComposePush;
 typedef char ace_push_fits[sizeof(ComposePush) <= sizeof(MatchPush) ? 1 : -1];
 
@@ -68,6 +78,14 @@ struct AceBetween {
     Img frame[2];
     Img field[LEVELS];
     Img out;
+    /* Per frame, like frame[]: the HUD mask and the depth copy, and whether the frame had them. */
+    VkBuffer mask[2];
+    VkDeviceMemory mask_memory[2];
+    int have_mask[2];
+    Img depth[2];
+    int have_depth[2];
+    VkBuffer zstage;               /* D16 texels on their way into depth[] */
+    VkDeviceMemory zstage_memory;
     VkBuffer stats;
     VkDeviceMemory stats_memory;
     VkSampler linear, nearest;
@@ -92,7 +110,8 @@ struct AceBetween {
     ACE_FN(DestroyPipeline); ACE_FN(DeviceWaitIdle);
     ACE_FN(CmdPipelineBarrier); ACE_FN(CmdBlitImage); ACE_FN(CmdBindPipeline);
     ACE_FN(CmdBindDescriptorSets); ACE_FN(CmdPushConstants); ACE_FN(CmdDispatch);
-    ACE_FN(CmdFillBuffer);
+    ACE_FN(CmdFillBuffer); ACE_FN(CmdUpdateBuffer); ACE_FN(CmdCopyImageToBuffer);
+    ACE_FN(CmdCopyBufferToImage);
 #undef ACE_FN
 };
 
@@ -154,10 +173,39 @@ static void img_free(AceBetween *s, Img *im) {
     memset(im, 0, sizeof(*im));
 }
 
+static int buf_make(AceBetween *s, VkBuffer *buf, VkDeviceMemory *mem, VkDeviceSize size,
+                    VkBufferUsageFlags usage) {
+    VkBufferCreateInfo bi;
+    memset(&bi, 0, sizeof(bi));
+    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size = size;
+    bi.usage = usage;
+    if (s->CreateBuffer(s->dev, &bi, NULL, buf) != VK_SUCCESS) return 0;
+    VkMemoryRequirements mr;
+    s->GetBufferMemoryRequirements(s->dev, *buf, &mr);
+    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size,
+                                 memory_type(s, mr.memoryTypeBits) };
+    return mai.memoryTypeIndex != UINT32_MAX &&
+           s->AllocateMemory(s->dev, &mai, NULL, mem) == VK_SUCCESS &&
+           s->BindBufferMemory(s->dev, *buf, *mem, 0) == VK_SUCCESS;
+}
+
+static void buf_free(AceBetween *s, VkBuffer *buf, VkDeviceMemory *mem) {
+    if (*buf) s->DestroyBuffer(s->dev, *buf, NULL);
+    if (*mem) s->FreeMemory(s->dev, *mem, NULL);
+    *buf = VK_NULL_HANDLE;
+    *mem = VK_NULL_HANDLE;
+}
+
 static void sized_free(AceBetween *s) {
-    for (int i = 0; i < 2; i++) { img_free(s, &s->frame[i]); s->have[i] = 0; }
+    for (int i = 0; i < 2; i++) {
+        img_free(s, &s->frame[i]);
+        img_free(s, &s->depth[i]);
+        s->have[i] = s->have_mask[i] = s->have_depth[i] = 0;
+    }
     for (int i = 0; i < LEVELS; i++) img_free(s, &s->field[i]);
     img_free(s, &s->out);
+    buf_free(s, &s->zstage, &s->zstage_memory);
     s->w = s->h = 0;
 }
 
@@ -175,24 +223,34 @@ static void write_sets(AceBetween *s) {
             VkDescriptorImageInfo up = { s->nearest, read->view, VK_IMAGE_LAYOUT_GENERAL };
             VkDescriptorImageInfo store = { VK_NULL_HANDLE, compose ? s->out.view : s->field[pass].view,
                                             VK_IMAGE_LAYOUT_GENERAL };
-            VkWriteDescriptorSet w[5];
+            VkDescriptorBufferInfo mask_a = { s->mask[old], 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo mask_b = { s->mask[!old], 0, VK_WHOLE_SIZE };
+            VkDescriptorImageInfo depth_a = { s->nearest, s->depth[old].view,
+                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo depth_b = { s->nearest, s->depth[!old].view,
+                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet w[9];
             memset(w, 0, sizeof(w));
-            static const uint32_t binding[4] = { 0, 1, 2, 5 };
-            for (int i = 0; i < 5; i++) {
+            static const uint32_t binding[9] = { 0, 1, 2, 5, 3, 6, 7, 8, 9 };
+            for (int i = 0; i < 9; i++) {
                 w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 w[i].dstSet = s->sets[old][pass];
                 w[i].descriptorCount = 1;
-                w[i].dstBinding = i < 4 ? binding[i] : (compose ? 4u : 3u);
-                w[i].descriptorType = i < 3 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
-                                    : i == 3 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
-                                             : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                w[i].dstBinding = (i == 4 && compose) ? 4u : binding[i];
+                w[i].descriptorType = (i < 3 || i >= 7) ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                                    : i == 4 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                                             : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             }
             w[0].pImageInfo = &a;
             w[1].pImageInfo = &b;
             w[2].pImageInfo = &up;
             w[3].pBufferInfo = &stats;
             w[4].pImageInfo = &store;
-            s->UpdateDescriptorSets(s->dev, 5, w, 0, NULL);
+            w[5].pBufferInfo = &mask_a;
+            w[6].pBufferInfo = &mask_b;
+            w[7].pImageInfo = &depth_a;
+            w[8].pImageInfo = &depth_b;
+            s->UpdateDescriptorSets(s->dev, 9, w, 0, NULL);
         }
     }
 }
@@ -213,6 +271,11 @@ static int sized_make(AceBetween *s, int w, int h) {
                       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) return 0;
     if (!img_make(s, &s->out, FRAME_FORMAT, w, h, 1,
                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) return 0;
+    for (int i = 0; i < 2; i++)
+        if (!img_make(s, &s->depth[i], VK_FORMAT_R16_UNORM, w, h, 1,
+                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) return 0;
+    if (!buf_make(s, &s->zstage, &s->zstage_memory, (VkDeviceSize)w * (VkDeviceSize)h * 2u,
+                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
     s->w = w;
     s->h = h;
     s->cur = 0;
@@ -324,7 +387,89 @@ static void stats_barrier(AceBetween *s, VkCommandBuffer cmd, VkAccessFlags from
                           0, NULL);
 }
 
+static void buffer_barrier(AceBetween *s, VkCommandBuffer cmd, VkBuffer buf, VkAccessFlags from,
+                           VkAccessFlags to, VkPipelineStageFlags from_stage, VkPipelineStageFlags to_stage) {
+    VkBufferMemoryBarrier b;
+    memset(&b, 0, sizeof(b));
+    b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    b.srcAccessMask = from;
+    b.dstAccessMask = to;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.buffer = buf;
+    b.size = VK_WHOLE_SIZE;
+    s->CmdPipelineBarrier(cmd, from_stage, to_stage, 0, 0, NULL, 1, &b, 0, NULL);
+}
+
+static void depth_barrier(AceBetween *s, VkCommandBuffer cmd, VkImage image, VkImageLayout from,
+                          VkImageLayout to, VkAccessFlags src_access, VkAccessFlags dst_access) {
+    VkImageMemoryBarrier b;
+    memset(&b, 0, sizeof(b));
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.srcAccessMask = src_access;
+    b.dstAccessMask = dst_access;
+    b.oldLayout = from;
+    b.newLayout = to;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.layerCount = 1;
+    s->CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                          0, NULL, 0, NULL, 1, &b);
+}
+
+/* Keeps the newest frame's mask and depth in mask[cur] and depth[cur]. The source depth image is
+ * read only and goes back to the layout it came in. */
+static void aux_store(AceBetween *s, VkCommandBuffer cmd, int cur, const AceSmoothAux *aux, int w, int h) {
+    /* The mask buffer was last read by a pass two frames ago. */
+    buffer_barrier(s, cmd, s->mask[cur], VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    s->have_mask[cur] = aux && aux->hud_bits;
+    if (s->have_mask[cur]) {
+        /* vkCmdUpdateBuffer carries the words in the command buffer, so they need no lifetime. */
+        s->CmdUpdateBuffer(cmd, s->mask[cur], 0, ACE_SMOOTH_HUD_WORDS * 4u, aux->hud_bits);
+    } else {
+        s->CmdFillBuffer(cmd, s->mask[cur], 0, VK_WHOLE_SIZE, 0u);
+    }
+    buffer_barrier(s, cmd, s->mask[cur], VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    s->have_depth[cur] = aux && aux->depth && aux->depth_layout != VK_IMAGE_LAYOUT_UNDEFINED &&
+                         aux->depth_w >= w && aux->depth_h >= h;
+    if (!s->have_depth[cur]) return;
+    VkBufferImageCopy c;
+    memset(&c, 0, sizeof(c));
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    c.imageSubresource.layerCount = 1;
+    c.imageExtent.width = (uint32_t)w;
+    c.imageExtent.height = (uint32_t)h;
+    c.imageExtent.depth = 1;
+    buffer_barrier(s, cmd, s->zstage, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    int moved = aux->depth_layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    if (moved)
+        depth_barrier(s, cmd, aux->depth, aux->depth_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    s->CmdCopyImageToBuffer(cmd, aux->depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s->zstage, 1, &c);
+    if (moved)
+        depth_barrier(s, cmd, aux->depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, aux->depth_layout,
+                      VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+    buffer_barrier(s, cmd, s->zstage, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    img_barrier(s, cmd, &s->depth[cur], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, 1);
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    s->CmdCopyBufferToImage(cmd, s->zstage, s->depth[cur].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    img_barrier(s, cmd, &s->depth[cur], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0);
+}
+
 VkImage ace_smooth_record(AceBetween *s, VkCommandBuffer cmd, VkImage src, int w, int h, int between) {
+    return ace_smooth_record_aux(s, cmd, src, w, h, between, NULL);
+}
+
+VkImage ace_smooth_record_aux(AceBetween *s, VkCommandBuffer cmd, VkImage src, int w, int h, int between,
+                              const AceSmoothAux *aux) {
     if (!s || !cmd || !src || w <= 0 || h <= 0) return VK_NULL_HANDLE;
     if ((w != s->w || h != s->h) && !sized_make(s, w, h)) {
         sized_free(s);
@@ -333,6 +478,7 @@ VkImage ace_smooth_record(AceBetween *s, VkCommandBuffer cmd, VkImage src, int w
     int old = s->cur;
     int cur = !old;
     copy_frame(s, cmd, src, w, h, &s->frame[cur]);
+    aux_store(s, cmd, cur, aux, w, h);
     s->cur = cur;
     int have_old = s->have[old];
     s->have[cur] = 1;
@@ -347,6 +493,13 @@ VkImage ace_smooth_record(AceBetween *s, VkCommandBuffer cmd, VkImage src, int w
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 1);
     img_barrier(s, cmd, &s->out, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 1);
+    /* Both depth copies are bound whatever the pair uses; one never written is only made valid. */
+    for (int i = 0; i < 2; i++)
+        if (s->depth[i].layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            img_barrier(s, cmd, &s->depth[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, s->depth[i].layout == VK_IMAGE_LAYOUT_UNDEFINED);
+    int32_t pair_aux = (s->have_mask[old] && s->have_mask[cur] ? AUX_HUD : 0) |
+                       (s->have_depth[old] && s->have_depth[cur] ? AUX_DEPTH : 0);
     s->CmdFillBuffer(cmd, s->stats, 0, VK_WHOLE_SIZE, 0u);
     stats_barrier(s, cmd, VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
@@ -368,6 +521,7 @@ VkImage ace_smooth_record(AceBetween *s, VkCommandBuffer cmd, VkImage src, int w
         p.range = k_level[l].range;
         p.first = l == 0;
         p.count_bad = l == CUT_LEVEL;
+        p.aux = pair_aux;
         s->CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s->layout, 0, 1,
                                  &s->sets[old][l], 0, NULL);
         s->CmdPushConstants(cmd, s->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(p), &p);
@@ -381,6 +535,7 @@ VkImage ace_smooth_record(AceBetween *s, VkCommandBuffer cmd, VkImage src, int w
     cp.size[0] = w;
     cp.size[1] = h;
     cp.cut_blocks = (uint32_t)(k_level[CUT_LEVEL].cols * k_level[CUT_LEVEL].rows) * CUT_NUM / CUT_DEN;
+    cp.aux = (uint32_t)pair_aux;
     s->CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s->compose);
     s->CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s->layout, 0, 1,
                              &s->sets[old][LEVELS], 0, NULL);
@@ -441,43 +596,37 @@ static int fixed_make(AceBetween *s) {
     si.magFilter = si.minFilter = VK_FILTER_NEAREST;
     if (s->CreateSampler(s->dev, &si, NULL, &s->nearest) != VK_SUCCESS) return 0;
 
-    VkBufferCreateInfo bi;
-    memset(&bi, 0, sizeof(bi));
-    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bi.size = 16;
-    bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    if (s->CreateBuffer(s->dev, &bi, NULL, &s->stats) != VK_SUCCESS) return 0;
-    VkMemoryRequirements mr;
-    s->GetBufferMemoryRequirements(s->dev, s->stats, &mr);
-    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size,
-                                 memory_type(s, mr.memoryTypeBits) };
-    if (mai.memoryTypeIndex == UINT32_MAX ||
-        s->AllocateMemory(s->dev, &mai, NULL, &s->stats_memory) != VK_SUCCESS ||
-        s->BindBufferMemory(s->dev, s->stats, s->stats_memory, 0) != VK_SUCCESS) return 0;
+    if (!buf_make(s, &s->stats, &s->stats_memory, 16,
+                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
+    for (int i = 0; i < 2; i++)
+        if (!buf_make(s, &s->mask[i], &s->mask_memory[i], ACE_SMOOTH_HUD_WORDS * 4u,
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
 
-    VkDescriptorSetLayoutBinding b[6];
+    /* 0-2 the frames and the coarser field, 3 or 4 the pass's output, 5 the cut count, 6-7 the
+     * two HUD masks, 8-9 the two depth copies. */
+    VkDescriptorSetLayoutBinding b[10];
     memset(b, 0, sizeof(b));
-    for (uint32_t i = 0; i < 6; i++) {
+    for (uint32_t i = 0; i < 10; i++) {
         b[i].binding = i;
         b[i].descriptorCount = 1;
         b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        b[i].descriptorType = i < 3 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
-                            : i == 5 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
-                                     : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[i].descriptorType = (i < 3 || i >= 8) ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                            : (i == 3 || i == 4) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                                                 : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     }
     /* A set writes binding 3 or 4, the one its pipeline reads; the other is never used. */
     VkDescriptorSetLayoutCreateInfo dl;
     memset(&dl, 0, sizeof(dl));
     dl.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dl.bindingCount = 6;
+    dl.bindingCount = 10;
     dl.pBindings = b;
     if (s->CreateDescriptorSetLayout(s->dev, &dl, NULL, &s->dsl) != VK_SUCCESS) return 0;
 
     uint32_t sets = 2u * (LEVELS + 1u);
     VkDescriptorPoolSize sizes[3] = {
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 3u },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 5u },
         { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 3u },
     };
     VkDescriptorPoolCreateInfo dp;
     memset(&dp, 0, sizeof(dp));
@@ -553,7 +702,8 @@ AceBetween *ace_smooth_create(const AceSmoothInit *init, char *error, size_t err
     DEV(DestroyPipelineLayout); DEV(CreateShaderModule); DEV(DestroyShaderModule);
     DEV(CreateComputePipelines); DEV(DestroyPipeline); DEV(DeviceWaitIdle);
     DEV(CmdPipelineBarrier); DEV(CmdBlitImage); DEV(CmdBindPipeline); DEV(CmdBindDescriptorSets);
-    DEV(CmdPushConstants); DEV(CmdDispatch); DEV(CmdFillBuffer);
+    DEV(CmdPushConstants); DEV(CmdDispatch); DEV(CmdFillBuffer); DEV(CmdUpdateBuffer);
+    DEV(CmdCopyImageToBuffer); DEV(CmdCopyBufferToImage);
 #undef DEV
     if (!fixed_make(s)) {
         set_error(error, error_size, "a Vulkan object could not be made");
@@ -574,8 +724,8 @@ void ace_smooth_destroy(AceBetween *s) {
     if (s->layout) s->DestroyPipelineLayout(s->dev, s->layout, NULL);
     if (s->pool) s->DestroyDescriptorPool(s->dev, s->pool, NULL);
     if (s->dsl) s->DestroyDescriptorSetLayout(s->dev, s->dsl, NULL);
-    if (s->stats) s->DestroyBuffer(s->dev, s->stats, NULL);
-    if (s->stats_memory) s->FreeMemory(s->dev, s->stats_memory, NULL);
+    buf_free(s, &s->stats, &s->stats_memory);
+    for (int i = 0; i < 2; i++) buf_free(s, &s->mask[i], &s->mask_memory[i]);
     if (s->linear) s->DestroySampler(s->dev, s->linear, NULL);
     if (s->nearest) s->DestroySampler(s->dev, s->nearest, NULL);
     free(s);

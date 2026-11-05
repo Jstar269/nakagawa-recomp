@@ -35,6 +35,7 @@
 #ifdef SR_SDL3VK
 #include "gpu_sdl3vk/ge_gpu.h"
 #include "gpu_sdl3vk/ace_smooth.h" /* Ace Mode's in-between frames */
+#include "gpu_sdl3vk/ace_hud.h"    /* ... and the HUD mask and depth they read */
 #endif
 #if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
 #include "nk_ui_theme.h"         /* the pause overlay's scrim token */
@@ -556,10 +557,13 @@ static void *gui_ace_show_pass(void *cmd, void *src, int *w, int *h) {
         s_ace_present_kind = ACE_PRESENT_HELD;
         return (void *)held;
     }
+    /* What the GPU GE published for this frame (its HUD boxes and depth), taken on every real
+     * present so it never outlives its frame; NULL for a CPU frame. */
+    const AceSmoothAux *aux = ace_hud_take();
     AceShow show = ace_smooth_take();
     if (show == ACE_SHOW_REAL) return NULL;
-    VkImage between = ace_smooth_record(s_ace_smooth, vk_cmd, (VkImage)src, *w, *h,
-                                        show == ACE_SHOW_BETWEEN);
+    VkImage between = ace_smooth_record_aux(s_ace_smooth, vk_cmd, (VkImage)src, *w, *h,
+                                            show == ACE_SHOW_BETWEEN, aux);
     if (!between) return NULL;
     ace_smooth_shown_between(SDL_GetTicksNS());
     s_ace_present_kind = ACE_PRESENT_BETWEEN;
@@ -587,11 +591,15 @@ static void gui_ace_smooth_init(void) {
         return;
     }
     sdl3vk_set_show_pass(gui_ace_show_pass);
+    /* The HUD mask and depth: on with smooth motion; SR_ACE_SMOOTH_HUD=0 and SR_ACE_SMOOTH_DEPTH=0
+     * turn each off (ace_hud.h), and with both off the in-betweens are today's, byte for byte. */
+    ace_hud_enable(1);
     ace_confirm(ACE_FEATURE_SMOOTH);
 }
 
 static void gui_ace_smooth_release(void) {
     if (s_ace_smooth) sdl3vk_set_show_pass(NULL);
+    ace_hud_enable(0);
     ace_smooth_destroy(s_ace_smooth);
     s_ace_smooth = NULL;
 }

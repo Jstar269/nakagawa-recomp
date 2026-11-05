@@ -89,6 +89,7 @@
  */
 #include "ge_gpu.h"
 #include "sdl3vk.h"
+#include "ace_hud.h"      /* Ace smooth motion: HUD boxes and depth per presented frame */
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "../recomp.h"
@@ -248,6 +249,7 @@ typedef struct {
     VkImageLayout layout;
     int cpu_dirty;                         /* software fallback changed s_zbuf */
     int guest_dirty;                        /* Vulkan depth is newer than guest VRAM */
+    uint32_t hud_zgen;                     /* batches that wrote it (Ace smooth motion, ace_hud.h) */
 } DepthEnt;
 
 /* CPU writes into a resident target are held as up to this many byte spans and applied
@@ -1702,7 +1704,7 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
      * a colour buffer, and writing the untouched surface back would overwrite those pixels. */
     int zwrite = 0;
     for (uint32_t i = b0; i < b1 && !zwrite; i++) zwrite = s_batch[i].key.zwrite;
-    if (t->dep && zwrite) t->dep->guest_dirty = 1;
+    if (t->dep && zwrite) { t->dep->guest_dirty = 1; t->dep->hud_zgen++; }
     sr_vram_mark_renderer_pending();
     s_cnt_submit++;
     if (s_stats) {
@@ -3762,6 +3764,23 @@ static struct {
     Batch batch;
 } s_tri_state;
 
+/* Ace smooth motion's HUD mask (ace_hud.h): a through-mode draw's box on the target it draws
+ * into, and whether it samples a render target (then it is a post effect, not HUD). Reads only. */
+static int batch_samples_target(VkDescriptorSet set) {
+    for (unsigned k = 0; k < TEX_FILTER_VARIANTS; k++)
+        if (set == s_snap_set[k]) return 1;
+    for (int i = 0; i < MAX_TGT; i++)
+        if (s_tgts[i].used)
+            for (unsigned k = 0; k < TEX_FILTER_VARIANTS; k++)
+                if (set == s_tgts[i].set[k]) return 1;
+    return 0;
+}
+
+static void ace_hud_draw(const Batch *b, float xa, float ya, float xb, float yb) {
+    if (!(s_ge->vtype & (1u << 23)) || s_ge->clear || !s_cur) return;
+    ace_hud_note((int)(s_cur - s_tgts), xa, ya, xb, yb, batch_samples_target(b->dset));
+}
+
 static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     if (!s_ready) return 0;
     cpu_profile_hook_enter();
@@ -3801,6 +3820,9 @@ static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     cpu_profile_vertex_done(vertex_started, 3);
     append(&b, first, 3);
     s_cnt_tri++;
+    if (g_ace_hud_on)
+        ace_hud_draw(&b, fminf(A->x, fminf(B->x, C->x)), fminf(A->y, fminf(B->y, C->y)),
+                     fmaxf(A->x, fmaxf(B->x, C->x)), fmaxf(A->y, fmaxf(B->y, C->y)));
     return cpu_profile_hook_leave(1);
 }
 
@@ -3931,6 +3953,7 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     cpu_profile_vertex_done(vertex_started, 6);
     append(&b, first, 6);
     s_cnt_spr++;
+    if (g_ace_hud_on) ace_hud_draw(&b, xa, ya, xb, yb);
     return cpu_profile_hook_leave(1);
 }
 
@@ -4314,6 +4337,10 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;
     s_cnt_present_gpu++;
     stats_tick();
+    if (g_ace_hud_on)
+        ace_hud_present((int)(t - s_tgts), t->dep ? t->dep->img : VK_NULL_HANDLE,
+                        t->dep ? t->dep->layout : VK_IMAGE_LAYOUT_UNDEFINED, (int)SCL_W, (int)SCL_H,
+                        t->dep ? t->dep->hud_zgen : 0u);
     int pr = sdl3vk_present_image_ex((void *)t->img, DRAW_W * s_scale, FB_H * s_scale);
     /* Only SDL's -1 is remapped: it is a present that failed after the target was prepared, so
      * the target's newest pixels may exist only in its image. SDL's 0 (user close) and 1 (shown)
