@@ -2995,8 +2995,12 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                         player->title_primary_refocus = true;
                         player->title_primary_fallback = 0u;
                     } else if (player->title_primary_refocus &&
-                               player->title_primary_fallback == 0u) {
-                        /* A page just opened still shows the library's focus for a
+                               player->title_primary_fallback == 0u &&
+                               !shown->primary_action_enabled) {
+                        /* Only an action that is off (STARTING...) pushes focus away,
+                           so only then is the next button the fallback; leaving STOP
+                           GAME, which stays on, is the user's own move (#2002).
+                           A page just opened still shows the library's focus for a
                            frame or two; the fallback is the page's own button. */
                         if (focused >= 0x2000u && focused < 0x3000u) {
                             player->title_primary_fallback = focused;
