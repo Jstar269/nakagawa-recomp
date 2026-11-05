@@ -703,9 +703,9 @@ static void edge_score(int w, int scale, int *wrong, int *total, int *hud_bad, i
 
 /* A HUD box over a panning scene. The scene right beside the HUD is found in only one frame at
  * any vector (the other end is under the HUD), so without the mask it keeps the old frame's
- * pixels; with the mask it takes the frame whose end is clear, and is then no worse than the same
- * rows far from the HUD (the search's own misses in this scene), and less than half as wrong as
- * without it. */
+ * pixels; with the mask it takes the frame whose end is clear: under 5% wrong, no worse than the
+ * same rows far from the HUD (the search's own misses in this scene), and less than half as wrong
+ * as without it. */
 static void cell_hud_edge(int scale) {
     int w = 480 * scale, h = 272 * scale;
     static uint32_t bits[ACE_SMOOTH_HUD_WORDS];
@@ -737,7 +737,7 @@ static void cell_hud_edge(int scale) {
     }
     printf("  hud-edge scale %d: beside the HUD %d of %d px wrong without the mask, %d with it;"
            " far from it %d and %d\n", scale, wrong[0], total, wrong[1], control[0], control[1]);
-    if (wrong[1] > control[1] || wrong[1] * 2 >= wrong[0]) {
+    if (wrong[1] * 20 >= total || wrong[1] > control[1] || wrong[1] * 2 >= wrong[0]) {
         /* Where it went wrong: wrong px per column, from EDGE_PAN left of the HUD to EDGE_PAN right. */
         for (int use = 0; use < 2; use++) {
             printf("    %s:", use ? "with" : "without");
@@ -747,6 +747,7 @@ static void cell_hud_edge(int scale) {
     }
     CHECK(hud_bad[0] == 0 && hud_bad[1] == 0, "hud-edge: HUD px changed (%d without, %d with)", hud_bad[0],
           hud_bad[1]);
+    CHECK(wrong[1] * 20 < total, "hud-edge: %d of %d px beside the HUD wrong with the mask", wrong[1], total);
     CHECK(wrong[1] <= control[1], "hud-edge: %d of %d px beside the HUD wrong with the mask, %d far from it",
           wrong[1], total, control[1]);
     CHECK(wrong[1] * 2 < wrong[0], "hud-edge: the mask did not help (%d -> %d)", wrong[0], wrong[1]);
