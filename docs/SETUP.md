@@ -13,13 +13,13 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
 
 1. **Windows 11 x64** with a Vulkan-capable GPU and its current graphics driver. The player loads the
    driver's `vulkan-1.dll`.
-2. **PowerShell 7.4+** (`pwsh`), the shell you type commands into. Windows PowerShell 5.1 is not
+2. **PowerShell 7.6+** (`pwsh`), the shell you type commands into. Windows PowerShell 5.1 is not
    supported for that.
 3. **MSYS2 UCRT64** with the packages in [section 1](#1-install-the-core-toolchain): GCC, GNU Make,
    SDL3, SDL3_ttf, and the Vulkan headers and loader.
 4. **CPython 3.15.x** (3.14.x is also accepted) on `PATH`. Read [PATH order](#path-order) before you install the Python tooling.
 5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
-   LunarG Vulkan SDK 1.4.363.0 is recommended for Windows development.
+   LunarG Vulkan SDK 1.4.363.1 is recommended for Windows development.
 6. **Git for Windows**, to clone the repository and fetch optional third-party source.
 7. **Your own copy of the game** as an `.iso`, or as a compressed `.cso`, `.zso` or `.chd`
    ([Compressed disc images](#compressed-disc-images)). If its executable is encrypted, the player decrypts it
@@ -32,7 +32,7 @@ For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v2026100
 The player's **BUILD PACKAGE** can download pinned build tools on first use. A consent card lists each
 download first ([details](#player-build-package-prerequisites)).
 
-**Which PowerShell.** Type the PowerShell commands in this guide into PowerShell 7.4+ (`pwsh`). The
+**Which PowerShell.** Type the PowerShell commands in this guide into PowerShell 7.6+ (`pwsh`). The
 build itself still calls the built-in Windows PowerShell 5.1 (`powershell.exe`) for one step,
 copying the build assets (`tools/copy_build_assets.ps1`, through `POWERSHELL` in the
 `Makefile`). That script supports 5.1, so you do not need to change or install anything for it.
@@ -193,8 +193,8 @@ consumer ISO compatibility and interactive Linux presentation remain in the work
 The supported and tested core development environment is:
 
 - Windows 11 x64. Older or unsupported Windows versions may work, but receive no compatibility guarantee.
-- PowerShell 7.4+ (`pwsh`) as the shell you type into. Windows PowerShell 5.1 is not supported for that.
-- CPython 3.15.x (3.14.x is also accepted, `>=3.14,<3.16`), with `python` resolving to that feature line. 3.15 is the default: hosted CI and the pinned prerequisite use 3.15.1.
+- PowerShell 7.6+ (`pwsh`) as the shell you type into. Windows PowerShell 5.1 is not supported for that.
+- CPython 3.15.x (3.14.x is also accepted, `>=3.14,<3.16`), with `python` resolving to that feature line. 3.15 is the default: the pinned prerequisite uses 3.15.2 and hosted CI uses 3.15.1.
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages. The release
   manifest's `toolchain_policy` records only the floors the code actually needs: a C11 compiler
   (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.15 (the manifest says `>=3.15,<3.16`; the tooling itself also accepts 3.14, see the first bullet). The rolling
@@ -202,13 +202,12 @@ The supported and tested core development environment is:
   candidate was really built with (#367).
 - A current Vulkan SDK and Vulkan-capable GPU.
 
-PowerShell 7.4 is the current floor and the oldest line Microsoft still supports;
-[issue #337](https://github.com/Jstar269/nakagawa-recomp/issues/337) records the
-source inventory and cross-version test evidence. Scripts treat empty and absent
-environment values alike so the supported 7.4/7.5/7.6 lines behave consistently.
-
-Microsoft ends support for both 7.4 and 7.5 on 2026-11-10. After that date the floor
-moves to 7.6 (LTS, supported until 2028-11-14).
+PowerShell 7.6 is the current floor: it is the LTS line Microsoft supports until 2028-11-14,
+and Microsoft ends support for both 7.4 and 7.5 on 2026-11-10.
+[Issue #337](https://github.com/Jstar269/nakagawa-recomp/issues/337) records the
+source inventory and the cross-version test evidence (every PowerShell-backed test passed on
+7.4, 7.5 and 7.6). Scripts treat empty and absent environment values alike. The doctor and each
+script's `#requires -Version 7.6` header refuse an older line.
 
 The environment doctor is the executable form of this contract:
 
@@ -837,15 +836,16 @@ automatically. Named error cards explain offline, redirect, size, hash, and disk
 errors and offer a retry.
 
 The pinned candidate download set is recorded in
-[`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.15.1
+[`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.15.2
 and 34 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3 and `SDL3_ttf` with the
 readable-font runtime closure — FreeType, HarfBuzz, Graphite2, libpng, bzip2,
 Brotli, GLib, and PCRE2 — Vulkan headers/loader, and their runtime dependencies),
-totaling 101,848,305 bytes. Package hashes and
+totaling 101,892,265 bytes. Package hashes and
 sizes come from the signed MSYS2 repository database; the Python hash is from
 python.org's release page. The manifest's `source_snapshot_date` dates the MSYS2
 package pins only, and a package re-pinned after that snapshot (Brotli 1.2.1 for
-CVE-2026-111497) records its own `sha256_source.retrieved_utc`; the locked developer-tool pins carry their own retrieval
+CVE-2026-111497; SDL3, the mingw-w64 CRT, headers and winpthreads, libiconv, libpng, tzdata and
+zlib on 2026-11-05) records its own `sha256_source.retrieved_utc`; the locked developer-tool pins carry their own retrieval
 date in `assets/pypi_tool_metadata_*.json`. `tools/requirements-lock.txt` contains developer and
 build-generation tools; the consumer `build-package` path needs no third-party
 Python packages, and `glslc` is only used by opt-in shader regeneration.

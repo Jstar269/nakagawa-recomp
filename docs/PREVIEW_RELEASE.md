@@ -53,7 +53,7 @@ This is the limitations section, not a footnote:
 The verified native host contract is the Windows contract in [`SETUP.md`](SETUP.md):
 
 - Windows 11 x64.
-- PowerShell 7.4 or newer; Windows PowerShell 5.1 is not supported.
+- PowerShell 7.6 or newer; Windows PowerShell 5.1 is not supported.
 - CPython 3.15.x (3.14.x is also accepted).
 - MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages.
 - Explicit SDL3 dependency discovery ([#331](https://github.com/Jstar269/nakagawa-recomp/issues/331)).
@@ -376,7 +376,7 @@ The policy agreed on [#1285](https://github.com/Jstar269/nakagawa-recomp/issues/
 - **Documentation.** The GFDL-licensed manuals in `share/doc`, `share/info` and `share/man` are not needed to build, so the staged tree does not carry them; the source archive holds the full upstream documentation. Every package's licence and copying files stay in `prereqs/notices`, including the ones a package keeps only under `share/doc`, such as MPFR's `COPYING.LESSER`. Five MSYS2 packages carry no licence file in their binary package (`cc-libs`, `gmp`, `isl`, `mpc`, `windows-default-manifest`): staging copies the licence files named in their `source_notices`, each pinned by member path, size and SHA-256, out of their pinned source packages into `prereqs/notices/<artifact>/sources/`. `windows-default-manifest` has no licence file at all; its PKGBUILD, which declares `license=('custom:Public Domain')`, is copied instead. `prereqs/notices/SOURCES.txt`, the same text as the archive's `SOURCES.txt`, names each artifact's source file with its size and SHA-256.
 - **Network.** Only these maintainer staging commands download: the binaries and MSYS2 sources from the hosts of the per-user download (`www.python.org`, `repo.msys2.org`), and the runtime libraries' sources from their official hosts (`github.com`, `www.sqlite.org`, `sourceware.org`, `www.bytereef.org`). The player never passes them, and a release with `prereqs/` makes no connection ([`SETUP.md`](SETUP.md#network-use)).
 
-The CPython 3.15.1 embeddable runtime contains third-party libraries besides CPython itself. Their versions come from CPython's `PCbuild/get_externals.bat` and were checked against the shipped binaries' version resources and strings:
+The CPython 3.15.2 embeddable runtime contains third-party libraries besides CPython itself. Their versions come from CPython's `PCbuild/get_externals.bat` and were checked against the shipped binaries' version resources and strings:
 
 | Library | Version | In the runtime | Source pinned from | Checked by |
 | --- | --- | --- | --- | --- |
