@@ -925,7 +925,9 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
     for (int vi = 0; vi < s_sas_max_voices; vi++) {
         SasVoice *v = &s_sasv[vi];
         if (!v->on || v->paused) continue;
-        for (int i = 0; i < n; i++) {
+        /* The key-on delay: the voice's first samples after a key-on are silent, with no
+         * envelope step and no source sample (sas_envelope.h). */
+        for (int i = sas_envelope_take_delay(&v->envelope, n); i < n; i++) {
             int samp = 0;
             if (!sas_next_sample(v, &samp)) { sas_voice_data_ended(v); break; }
             sas_advance_envelope(v);
@@ -1144,7 +1146,11 @@ static uint32_t h_SasSetKeyOn(CpuState *s) {
 static uint32_t h_SasSetKeyOff(CpuState *s) {
     SasVoice *v; uint32_t e = sas_voice_for(A0, A1, &v);
     if (e) return e;
-    if (v->on) sas_envelope_key_off(&v->envelope);
+    /* A voice that is not sounding (never keyed on, released to 0, or out of data) refuses
+     * the key off with 0x80420016 (PSP-3000 measurement, psp-oracle boot 118: KeyOff after an
+     * envelope has ended; one whose attack holds at height 0 still takes it). */
+    if (!v->on) return SAS_ERROR_INVALID_STATE;
+    sas_envelope_key_off(&v->envelope);
     return 0;
 }
 

@@ -30205,8 +30205,12 @@ static void test_impose_language_mode_pair(void) {
 #define SAS_ERROR_ADDRESS      0x80420005u
 #define SAS_ERROR_VOICE_INDEX  0x80420010u
 #define SAS_ERROR_ADSR_MODE    0x80420013u
+#define SAS_ERROR_INVALID_STATE 0x80420016u
 
 #define SAS_TEST_GRAIN 64u
+/* A voice's first 32 output samples after a key-on are silent (sas_envelope.h); its first
+ * audible sample is at this index of the first grain. */
+#define SAS_TEST_KEYON_DELAY 32u
 
 /* Interleaved stereo s16 helpers over the guest arena. */
 static void sas_write_pcm(uint32_t addr, const int16_t *lr, uint32_t frames) {
@@ -30421,7 +30425,9 @@ static void test_sas_state_contracts(void) {
     cpu.r[4] = CORE; cpu.r[5] = 3; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
     memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
     cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
-    expect((int16_t)MEM_R16(OUT) == 64,
+    expect(MEM_R16(OUT) == 0 && MEM_R16(OUT + (SAS_TEST_KEYON_DELAY - 1u) * 4u) == 0,
+           "the key-on delay keeps a voice's first 32 output samples silent");
+    expect((int16_t)MEM_R16(OUT + SAS_TEST_KEYON_DELAY * 4u) == 64,
            "__sceSasRevType does not mutate the selected voice's source type");
 
     /* SetNoise is independent of VAG/PCM source state and can be keyed on. */
@@ -30462,7 +30468,7 @@ static void test_sas_state_contracts(void) {
     cpu.r[4] = CORE; cpu.r[5] = 1; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
     memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
     cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
-    expect((int16_t)MEM_R16(OUT) != 0,
+    expect((int16_t)MEM_R16(OUT + SAS_TEST_KEYON_DELAY * 4u) != 0,
            "ADSRmode does not overwrite the selected voice's rate state");
 
     reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
@@ -30488,7 +30494,7 @@ static void test_sas_state_contracts(void) {
            "negative voice index is rejected rather than wrapped");
     memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
     cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
-    expect((int16_t)MEM_R16(OUT) != 0,
+    expect((int16_t)MEM_R16(OUT + SAS_TEST_KEYON_DELAY * 4u) != 0,
            "rejecting an invalid voice leaves voice 31 audible");
 
     /* A multichannel grain needs the complete 4-plane span.  The old stereo
@@ -30502,7 +30508,8 @@ static void test_sas_state_contracts(void) {
     expect(MEM_R32(OUT) == 0xdeadbeefu,
            "rejected output span leaves unrelated guest memory untouched");
 
-    /* Data loop markers cannot override a caller loop=0 request. */
+    /* Data loop markers cannot override a caller loop=0 request. Two blocks of data (56
+     * samples) end within the second grain: the first plays 32 after the key-on delay. */
     reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
     sas_test_vag(VAG, 3u, 7u);
     MEM_W8(VAG + 1u, 6u); MEM_W8(VAG + 16u + 1u, 3u);
@@ -30511,8 +30518,10 @@ static void test_sas_state_contracts(void) {
     cpu.r[4] = CORE; cpu.r[5] = 5; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
     cpu.r[8] = 0x1000; cpu.r[9] = 0x1000; (void)sr_syscall(&cpu, NID_SAS_SET_VOLUME);
     cpu.r[4] = CORE; cpu.r[5] = 5; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
-    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
-    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    for (int g = 0; g < 2; g++) {
+        memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+        cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    }
     cpu.r[4] = CORE;
     expect(sr_syscall(&cpu, NID_SAS_GET_END) & (1u << 5),
            "a non-looping VAG voice ends despite loop markers");
@@ -30522,8 +30531,9 @@ static void test_sas_state_contracts(void) {
  * called", and __sceSasCore "updates end/pause flags".  A voice keyed on between cycles
  * therefore still reads as ended until the next cycle runs, and a drained voice reads as
  * ended only after the cycle that exhausted it.  The synthetic VAG stream is 4 blocks (112
- * samples at native pitch): the first 64-sample grain leaves it playing, and the second
- * grain drains it at sample 48. */
+ * samples at native pitch): the first 64-sample grain plays 32 of them after the key-on
+ * delay and the second 64 more, so both leave it playing, and the third grain drains it at
+ * sample 16. */
 static void test_sas_end_flags_refresh_per_cycle(void) {
     CpuState cpu;
     const uint32_t CORE = 0x08030000u;
@@ -30555,6 +30565,12 @@ static void test_sas_end_flags_refresh_per_cycle(void) {
     memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
     cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
     cpu.r[4] = CORE;
+    expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) == 0,
+           "after two Cores (96 of 112 samples) the voice still reads as playing");
+
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    cpu.r[4] = CORE;
     expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) != 0,
            "a drained voice reads as ended after the cycle that exhausted it");
 
@@ -30581,15 +30597,14 @@ static void test_sas_end_flags_refresh_per_cycle(void) {
  * low 16 bits of the words as raw per-sample steps and the envelope ignored every curve, so a
  * SimpleADSR attack or release ran for the wrong length in every game that uses it.
  *
- * Expected heights come from PPSSPP's envelope model at the pin sas_envelope.h names, computed
- * independently of that header, not from PSP measurements; PSP-measured cells replace them when
- * they exist. They leave out two things PPSSPP also models, and so does this runtime: the
- * key-on delay (the first 32 output samples after a key-on are silent while the envelope steps
- * through its KEYON states, SasAudio.cpp MixVoice) and reading the height before each step
- * rather than after it. Both belong to the mixer and are a known follow-up (#1296); when they
- * land, these values move by those samples and are not a regression.
- * One envelope step per output sample: a 256-sample grain is 256 steps. The voice is a looping
- * PCM voice, so the source never ends and only the envelope decides the height. */
+ * Expected heights come from PPSSPP's envelope model at the pin sas_envelope.h names, with the
+ * four changes PSP-3000 measurement, psp-oracle boot 118, showed (a 32-sample key-on delay, a
+ * decay that stops at the sustain level, code 0 as 0x80000000, the exponential release floor),
+ * computed independently of that header. That model reproduces every cell the PSP recorded;
+ * test_sas_envelope_matches_psp_measurement checks some of those cells directly.
+ * One envelope step per output sample after the key-on delay: the first 256-sample grain after
+ * a key-on is 224 steps, later ones 256. The voice is a looping PCM voice, so the source never
+ * ends and only the envelope decides the height. */
 #define NID_SAS_GET_ENV_HEIGHT 0x74ae582au
 #define NID_SAS_GET_ALL_ENV_HEIGHTS 0x07f58c24u
 #define NID_SAS_SET_SL         0x5f9529f6u
@@ -30629,10 +30644,10 @@ static void test_sas_envelope_follows_its_rates_and_curves(void) {
             expect(sr_syscall(&cpu, NID_SAS_SET_SIMPLE) == 0, "SimpleADSR accepts 0x1FFF/0x5FCA");
             cpu.r[4] = core; cpu.r[5] = 0;
             expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "envelope cell: key on");
-            expect(sas_env_cell_grain(&cpu, core, out) == 0x20000000u,
-                   "SimpleADSR attack code 0x1F climbs 0x200000 per sample: half height after 256 samples");
-            expect(sas_env_cell_grain(&cpu, core, out) == 0x40000000u,
-                   "SimpleADSR attack code 0x1F reaches full height at sample 512");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x1C000000u,
+                   "SimpleADSR attack code 0x1F climbs 0x200000 per sample: 224 steps after the key-on delay");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x3C000000u,
+                   "SimpleADSR attack code 0x1F: 480 steps after two grains");
             expect(sas_env_cell_grain(&cpu, core, out) == 0x3FFFC000u,
                    "SimpleADSR decay code 0xF steps once below a full sustain level, then the held sustain keeps it");
             cpu.r[4] = core; cpu.r[5] = 0;
@@ -30647,7 +30662,7 @@ static void test_sas_envelope_follows_its_rates_and_curves(void) {
             cpu.r[4] = core; cpu.r[5] = 0;
             expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "envelope cell: key on");
             (void)sas_env_cell_grain(&cpu, core, out);
-            expect(sas_env_cell_grain(&cpu, core, out) == 0x34180000u,
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x33180000u,
                    "SimpleADSR bent attack slows to a quarter rate above three quarters of the height");
         } else {
             /* __sceSasSetADSRmode DIRECT (5) is a decreasing curve, so the PSP takes it for the
@@ -30694,17 +30709,18 @@ static void sas_env_cell_key(CpuState *cpu, uint32_t core, uint32_t nid) {
 }
 
 /* The curve paths one grain at a time, the per-phase curve check of __sceSasSetADSRmode, and
- * a voice whose sound data runs out (#2059 review). Expected heights: as above, from PPSSPP's
- * model computed independently of sas_envelope.h, without the key-on delay. */
+ * a voice whose sound data runs out (#2059 review). Expected heights: as above, from the
+ * PSP-measured model computed independently of sas_envelope.h. */
 static void test_sas_envelope_curve_paths_and_refusals(void) {
     CpuState cpu;
     const uint32_t core = 0x08030000u, out = 0x08010000u, pcm = 0x08040000u, heights = 0x08050000u;
     const uint32_t mode = NID_SAS_SET_ADSR_MODE, rates = NID_SAS_SET_ADSR;
 
     /* __sceSasSetADSRmode takes the increasing curves (0, 2, 4) for the attack, the decreasing
-     * ones (1, 3, 5) for the decay and release, and 0..5 for the sustain, and ignores each
-     * value's top bit (PPSSPP sceSas.cpp sceSasSetADSRMode; jpcsp checkADSRmode). A refused
-     * call returns 0x80420013 and changes no curve. */
+     * ones (1, 3, 5) for the decay and release, and 0..5 for the sustain, checks only the
+     * phases its mask selects, and ignores each value's top bit. A refused call returns
+     * 0x80420013 and changes no curve (PSP-3000 measurement, psp-oracle boot 118; PPSSPP
+     * sceSas.cpp sceSasSetADSRMode and jpcsp checkADSRmode agree). */
     sas_env_cell_begin(&cpu, core, pcm, 256u);
     expect(sas_env_cell_call(&cpu, mode, core, 1, 5, 1, 1, 1) == SAS_ERROR_ADSR_MODE,
            "ADSRmode refuses DIRECT (5) for the attack");
@@ -30731,13 +30747,13 @@ static void test_sas_envelope_curve_paths_and_refusals(void) {
     expect(sas_env_cell_call(&cpu, rates, core, 1, 0x00400000u, 0, 0, 0) == 0, "ADSR: attack rate");
     expect(sas_env_cell_call(&cpu, mode, core, 1, 4, 1, 1, 1) == 0, "ADSRmode: exponential attack");
     sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
-    expect(sas_env_cell_grain(&cpu, core, out) == 0x0E625606u,
-           "exponential attack after 256 samples");
-    expect(sas_env_cell_grain(&cpu, core, out) == 0x1995CAC5u,
-           "exponential attack after 512 samples");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x0CC6CFD1u,
+           "exponential attack after 224 steps (the PSP's value, psp-oracle boot 118)");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x185555F5u,
+           "exponential attack after 480 steps");
 
     /* Exponential decay with an odd rate, from full height down toward a sustain level of 0:
-     * 255 steps below the top, each taking the proportional part and ceil(rate / 4). */
+     * 223 steps below the top, each taking the proportional part and ceil(rate / 4). */
     sas_env_cell_begin(&cpu, core, pcm, 256u);
     expect(sas_env_cell_call(&cpu, rates, core, 3, 0x40000000u, 0x00012345u, 0, 0) == 0,
            "ADSR: one-step attack, odd decay rate");
@@ -30745,11 +30761,11 @@ static void test_sas_envelope_curve_paths_and_refusals(void) {
     cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0;
     expect(sr_syscall(&cpu, NID_SAS_SET_SL) == 0, "SL 0");
     sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
-    expect(sas_env_cell_grain(&cpu, core, out) == 0x3FB79F36u,
-           "exponential decay of rate 0x12345 for 255 samples below the top");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x3FC0AFE4u,
+           "exponential decay of rate 0x12345 for 223 steps below the top");
 
-    /* A linear decay that lands exactly on the sustain level stays in the decay for that step
-     * (the switch is height < level) and leaves on the next one: 0x1FF00000 is then held. */
+    /* A linear decay that lands exactly on the sustain level stops there (the switch is
+     * height <= level), and the held sustain keeps 0x20000000. */
     sas_env_cell_begin(&cpu, core, pcm, 256u);
     expect(sas_env_cell_call(&cpu, rates, core, 7, 0x40000000u, 0x00100000u, 0, 0) == 0,
            "ADSR: attack, decay 0x100000, sustain held");
@@ -30757,10 +30773,10 @@ static void test_sas_envelope_curve_paths_and_refusals(void) {
     cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0x20000000u;
     expect(sr_syscall(&cpu, NID_SAS_SET_SL) == 0, "SL 0x20000000");
     sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
-    expect(sas_env_cell_grain(&cpu, core, out) == 0x30100000u, "linear decay after 255 steps");
-    expect(sas_env_cell_grain(&cpu, core, out) == 0x20100000u, "linear decay after 511 steps");
-    expect(sas_env_cell_grain(&cpu, core, out) == 0x1FF00000u,
-           "the decay passes the sustain level by one step, then the sustain holds it");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x32100000u, "linear decay after 223 steps");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x22100000u, "linear decay after 479 steps");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x20000000u,
+           "the decay stops on the sustain level, and the held sustain keeps it");
 
     /* SimpleADSR with an exponential sustain (env2 bits 14-15 = 3) takes its rate from the
      * exponent table: code 0x20 is 0x70000, not the linear table's 0x1C0000. */
@@ -30768,8 +30784,8 @@ static void test_sas_envelope_curve_paths_and_refusals(void) {
     cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0x00FFu; cpu.r[7] = 0xC81Fu;
     expect(sr_syscall(&cpu, NID_SAS_SET_SIMPLE) == 0, "SimpleADSR 0x00FF/0xC81F");
     sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
-    expect(sas_env_cell_grain(&cpu, core, out) == 0x3E4C9D23u, "exponential sustain, first grain");
-    expect(sas_env_cell_grain(&cpu, core, out) == 0x3C9E6712u, "exponential sustain, second grain");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x3E8338DCu, "exponential sustain, first grain");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x3CD389B3u, "exponential sustain, second grain");
 
     /* SimpleADSR exponential release (env2 bit 5), code 16, over a full grain after key off. */
     sas_env_cell_begin(&cpu, core, pcm, 256u);
@@ -30801,16 +30817,17 @@ static void test_sas_envelope_curve_paths_and_refusals(void) {
     }
 
     /* The height read back is clamped at 0: with a 64-sample grain, a linear decay toward a
-     * sustain level of 0 overshoots below zero on the grain's last step (one attack step, then
-     * 63 decay steps of 0x1080000), and the getter reads 0, not the negative height. The next
-     * step zeroes it and the release ends the voice. */
+     * sustain level of 0 overshoots below zero on the second grain's last step (after the
+     * key-on delay, one attack step, then 31 + 64 decay steps of 0xAC8000), and the getter
+     * reads 0, not the negative height. The next step zeroes it and the release ends the voice. */
     sas_env_cell_begin(&cpu, core, pcm, 64u);
-    expect(sas_env_cell_call(&cpu, rates, core, 7, 0x40000000u, 0x01080000u, 0, 0) == 0,
-           "ADSR: attack, decay 0x1080000, sustain held");
+    expect(sas_env_cell_call(&cpu, rates, core, 7, 0x40000000u, 0x00AC8000u, 0, 0) == 0,
+           "ADSR: attack, decay 0xAC8000, sustain held");
     expect(sas_env_cell_call(&cpu, mode, core, 6, 0, 1, 1, 1) == 0, "ADSRmode: linear decay and sustain");
     cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0;
     expect(sr_syscall(&cpu, NID_SAS_SET_SL) == 0, "SL 0");
     sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x2B1C8000u, "31 decay steps after the key-on delay");
     expect(sas_env_cell_grain(&cpu, core, out) == 0u, "a height below zero reads as 0");
     expect(sas_env_cell_grain(&cpu, core, out) == 0u, "the voice then releases from 0");
     cpu.r[4] = core;
@@ -30830,6 +30847,103 @@ static void test_sas_envelope_curve_paths_and_refusals(void) {
     expect(MEM_R32(heights) == 0u, "GetAllEnvelopeHeights reads 0 for the ended voice");
     cpu.r[4] = core;
     expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) != 0, "the ended one-shot voice sets its end flag");
+}
+
+/* Cells measured on a PSP-3000 (psp-oracle boot 118, #1296): the same calls on a real console
+ * returned these values. There the voice was a looping VAG voice; here it is a looping PCM
+ * voice, which changes no envelope height. */
+static uint32_t sas_env_cell_run(CpuState *cpu, uint32_t core, uint32_t out, uint32_t grains) {
+    uint32_t h = 0;
+    for (uint32_t g = 0; g < grains; g++) h = sas_env_cell_grain(cpu, core, out);
+    return h;
+}
+
+static void sas_env_cell_simple(CpuState *cpu, uint32_t core, uint32_t env1, uint32_t env2) {
+    cpu->r[4] = core; cpu->r[5] = 0; cpu->r[6] = env1; cpu->r[7] = env2;
+    expect(sr_syscall(cpu, NID_SAS_SET_SIMPLE) == 0, "envelope cell: SimpleADSR");
+}
+
+static void test_sas_envelope_matches_psp_measurement(void) {
+    CpuState cpu;
+    const uint32_t core = 0x08030000u, out = 0x08010000u, pcm = 0x08040000u;
+    const uint32_t mode = NID_SAS_SET_ADSR_MODE, rates = NID_SAS_SET_ADSR;
+
+    /* The key-on delay is 32 samples: a 0x400000 attack reads 224 steps after the first
+     * 256-sample grain. A 0x100000 decay from the top then stops on a level it lands on
+     * (0x30000000) and one step below a level between steps (0x30080000). */
+    static const uint32_t level[] = {0x30000000u, 0x30080000u};
+    for (size_t i = 0; i < sizeof(level) / sizeof(level[0]); i++) {
+        sas_env_cell_begin(&cpu, core, pcm, 256u);
+        expect(sas_env_cell_call(&cpu, mode, core, 0xF, 0, 1, 1, 1) == 0, "PSP cell: linear curves");
+        expect(sas_env_cell_call(&cpu, rates, core, 0xF, 0x00400000u, 0x00100000u, 0, 0x00100000u) == 0,
+               "PSP cell: rates");
+        cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = level[i];
+        expect(sr_syscall(&cpu, NID_SAS_SET_SL) == 0, "PSP cell: sustain level");
+        cpu.r[4] = core; cpu.r[5] = 0;
+        expect(sr_syscall(&cpu, NID_SAS_GET_ENV_HEIGHT) == 0u, "PSP: the height is 0 before a key-on");
+        sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+        cpu.r[4] = core; cpu.r[5] = 0;
+        expect(sr_syscall(&cpu, NID_SAS_GET_ENV_HEIGHT) == 0u, "PSP: the height is 0 right after a key-on");
+        expect(sas_env_cell_grain(&cpu, core, out) == 0x38000000u,
+               "PSP: the first grain after a key-on holds 224 attack steps (a 32-sample delay)");
+        expect(sas_env_cell_grain(&cpu, core, out) == 0x32000000u, "PSP: 32 attack steps, then 224 of decay");
+        expect(sas_env_cell_run(&cpu, core, out, 2) == 0x30000000u,
+               "PSP: the decay stops at the first height at or below the sustain level");
+    }
+
+    /* At a 64-sample grain the delay is still 32 samples: SimpleADSR 0x30FB/0x102C (attack
+     * 0x1C000 per sample) reads 32 steps, then 96. */
+    sas_env_cell_begin(&cpu, core, pcm, 64u);
+    sas_env_cell_simple(&cpu, core, 0x30FBu, 0x102Cu);
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x00380000u, "PSP: grain 64, 32 steps after the delay");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x00A80000u, "PSP: grain 64, 96 steps");
+
+    /* SimpleADSR decay code 0 halves the height exactly (a rate of 0x80000000): 0xB800/0x5FDF
+     * (a slow bent attack that peaks after grain 255, then sustain level 0, 0x04000000, held)
+     * reads 0x04000000, not one below it. */
+    sas_env_cell_begin(&cpu, core, pcm, 256u);
+    sas_env_cell_simple(&cpu, core, 0xB800u, 0x5FDFu);
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_run(&cpu, core, out, 256) == 0x3FFC8C00u, "PSP: the bent attack's peak after grain 255");
+    expect(sas_env_cell_run(&cpu, core, out, 384) == 0x04000000u,
+           "PSP: decay code 0 lands exactly on the sustain level");
+
+    /* An exponential release ends below 0x4000: SimpleADSR 0x20A5/0x8C24, released at the top
+     * after 640 grains, reads 0x0004D655 after one grain and 0 after the next, and the voice
+     * has ended. */
+    sas_env_cell_begin(&cpu, core, pcm, 256u);
+    sas_env_cell_simple(&cpu, core, 0x20A5u, 0x8C24u);
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_run(&cpu, core, out, 640) == 0x40000000u, "PSP: held at the top");
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_OFF);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x0004D655u, "PSP: exponential release, one grain");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0u, "PSP: the exponential release ends below 0x4000");
+    cpu.r[4] = core;
+    expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) != 0, "PSP: and the voice has ended");
+
+    /* KeyOff refuses a voice whose envelope has ended with 0x80420016: a DIRECT decay to
+     * 0x100000, then the baseline's 0x4000 sustain fall, ends within 8 grains. An attack that
+     * holds at height 0 (SimpleADSR attack code 0x7F) still takes the key off. */
+    sas_env_cell_begin(&cpu, core, pcm, 256u);
+    expect(sas_env_cell_call(&cpu, mode, core, 0xF, 0, 1, 1, 1) == 0, "PSP cell: linear curves");
+    expect(sas_env_cell_call(&cpu, rates, core, 0xF, 0x00400000u, 0x00100000u, 0x00004000u, 0x00040000u) == 0,
+           "PSP cell: baseline rates");
+    cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0x20000000u;
+    expect(sr_syscall(&cpu, NID_SAS_SET_SL) == 0, "PSP cell: sustain level");
+    expect(sas_env_cell_call(&cpu, mode, core, 2, 4, 5, 3, 5) == 0, "PSP cell: DIRECT decay, mask 2");
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x38000000u, "PSP: grain 0 of the DIRECT-decay row");
+    expect(sas_env_cell_run(&cpu, core, out, 7) == 0u, "PSP: the envelope has ended by grain 7");
+    cpu.r[4] = core; cpu.r[5] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_KEY_OFF) == SAS_ERROR_INVALID_STATE,
+           "PSP: KeyOff on an ended voice returns 0x80420016");
+    sas_env_cell_begin(&cpu, core, pcm, 256u);
+    sas_env_cell_simple(&cpu, core, 0x7F0Fu, 0x002Cu);
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0u, "PSP: attack code 0x7F holds the height at 0");
+    cpu.r[4] = core; cpu.r[5] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_KEY_OFF) == 0, "PSP: KeyOff on a voice still in its attack returns 0");
 }
 
 static void test_sas_reinit_is_a_fresh_init(void) {
@@ -46958,6 +47072,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_reinit_is_a_fresh_init();
     test_sas_envelope_follows_its_rates_and_curves();
     test_sas_envelope_curve_paths_and_refusals();
+    test_sas_envelope_matches_psp_measurement();
     test_msgpipe_rendezvous();
     test_msgpipe_safety();
     test_msgpipe_blocking();
