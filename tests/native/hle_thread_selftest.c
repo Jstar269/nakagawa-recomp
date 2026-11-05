@@ -6924,12 +6924,10 @@ static void test_sysreg_write_model(void) {
 /* Persistence: a flush writes the overlay atomically, a restart loads it, a flush after reads
  * writes nothing, and values equal to their defaults are not recorded. */
 /* Named refusals for NIDs whose contract is not established from the sources in this tree.
- * Each one returns its named error and does not stop the title, so the run continues past it:
- *  - sceNetInit (0x39af39a6): the offline network policy (sceNetGetLocalEtherAddr's 0x80010086).
+ * Each one returns its named error and does not stop the title, so the run continues past it.
  * The test pins the codes, so a later measured handler has to replace them deliberately.
- * sceKernelReferSystemStatus is no longer refused: it is measured (test_refer_system_status). */
-#define NID_REFUSE_NET_INIT                0x39af39a6u
-#define NID_REFUSE_NET_TERM                0x281928a9u
+ * sceKernelReferSystemStatus is no longer refused: it is measured (test_refer_system_status), and
+ * neither are sceNetInit and sceNetTerm (test_net_core_without_network). */
 #define REFUSE_NET_CODE                    0x80010086u
 #define REFUSE_UNSUPPORTED_CODE            0x80020002u
 
@@ -6945,10 +6943,6 @@ static void test_named_refusals(void) {
     static const uint8_t mac[6] = {0x01u, 0x23u, 0x45u, 0x67u, 0x89u, 0xabu};
     reset_fixture();
     sr_hle_init();
-    expect(refuse_call(NID_REFUSE_NET_INIT) == REFUSE_NET_CODE,
-           "sceNetInit refuses with the offline network code 0x80010086");
-    expect(refuse_call(NID_REFUSE_NET_TERM) == REFUSE_NET_CODE,
-           "sceNetTerm has a named offline refusal instead of the unknown-NID stop");
     expect(refuse_call(0xf9d8eb63u) == REFUSE_NET_CODE,
            "sceHttpsEnd refuses with the offline HTTP code 0x80010086, as sceHttpEnd does");
     expect(refuse_call(0x011f03c1u) == REFUSE_UNSUPPORTED_CODE,
@@ -7337,6 +7331,86 @@ static void test_unregistered_batch_profiler_refer_null(void) {
     }
 }
 
+/* The sceNet core library with no network (hle_network.c, #341). A PSP's sceNetInit only takes the
+ * library's pool and returns 0, and so do sceNetTerm and Init again after Term (pspautotests
+ * 70e72391 tests/net: every net test, net/adhoc/socketids). The calls that need a network answer as
+ * a PSP with no group and no access point does: sceNetGetLocalEtherAddr 0x80410180 with the buffer
+ * untouched (net/adhoc/apctlinit), and sceNetAdhocctlGetParameter, with the ad hoc control library
+ * never initialized, 0x80410b08 (net/adhoc/adhocctl "Before init"). Before this, sceNetInit refused
+ * with 0x80010086, and LittleBigPlanet's "connect" then called through a network object it never
+ * set up. The argument codes are PPSSPP's (UNMEASURED). */
+static uint32_t net_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t t0) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3; cpu.r[8] = t0;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_net_core_without_network(void) {
+    enum {
+        NID_NET_INIT = 0x39af39a6u, NID_NET_TERM = 0x281928a9u,
+        NID_NET_LOCAL_ETHER = 0x0bf0a3aeu, NID_ADHOCCTL_GET_PARAMETER = 0xded9d28eu,
+        MAC_ADDR = 0x00281000u, PARAM_ADDR = 0x00281040u, PARAM_SIZE = 0x70u,
+        POOL = 0x20000u,
+    };
+    extern void sr_hle_test_partition_reset(void);
+    const uint32_t loaded_end = s_fixture_loaded_end;
+    reset_fixture();
+    s_fixture_loaded_end = 0x08a00000u;   /* a main image in user RAM, as a game's is */
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    sr_hle_test_net_reset();
+
+    memset(SR_HOST(MAC_ADDR), 0xcc, 6u);
+    expect(net_call(NID_NET_LOCAL_ETHER, MAC_ADDR, 0, 0, 0, 0) == 0x80410180u,
+           "sceNetGetLocalEtherAddr before sceNetInit: no local address (0x80410180)");
+
+    expect(net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0u,
+           "sceNetInit(0x20000, 0x20, 0x1000, 0x20, 0x1000) returns 0, as on a PSP");
+    const uint32_t pool_uid = sr_hle_test_net_pool_uid();
+    const uint32_t pool_addr = block_addr(pool_uid);
+    expect(sr_hle_test_net_inited() && pool_addr != 0u &&
+               pool_addr >= 0x08800000u && pool_addr + POOL <= 0x0a000000u,
+           "sceNetInit takes its pool from the user partition");
+
+    expect(net_call(NID_NET_LOCAL_ETHER, MAC_ADDR, 0, 0, 0, 0) == 0x80410180u,
+           "sceNetGetLocalEtherAddr with no group or access point: 0x80410180");
+    const uint8_t *mac = SR_HOST(MAC_ADDR);
+    int untouched = 1;
+    for (int i = 0; i < 6; i++) untouched &= mac[i] == 0xccu;
+    expect(untouched, "sceNetGetLocalEtherAddr leaves the buffer untouched");
+
+    memset(SR_HOST(PARAM_ADDR), 0xcc, PARAM_SIZE);
+    expect(net_call(NID_ADHOCCTL_GET_PARAMETER, PARAM_ADDR, 0, 0, 0, 0) == 0x80410b08u,
+           "sceNetAdhocctlGetParameter before sceNetAdhocctlInit: NOT_INITIALIZED (0x80410b08)");
+    const uint8_t *param = SR_HOST(PARAM_ADDR);
+    untouched = 1;
+    for (uint32_t i = 0; i < PARAM_SIZE; i++) untouched &= param[i] == 0xccu;
+    expect(untouched, "sceNetAdhocctlGetParameter writes nothing when it fails");
+
+    expect(net_call(NID_NET_TERM, 0, 0, 0, 0, 0) == 0u, "sceNetTerm returns 0");
+    expect(!sr_hle_test_net_inited() && block_addr(pool_uid) == 0u,
+           "sceNetTerm gives the pool back to the user partition");
+    expect(net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0u,
+           "sceNetInit again after sceNetTerm returns 0 (net/adhoc/socketids)");
+    const uint32_t second = sr_hle_test_net_pool_uid();
+    expect(net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0u &&
+               block_addr(second) == 0u && block_addr(sr_hle_test_net_pool_uid()) != 0u,
+           "a second sceNetInit without Term keeps one pool (PPSSPP; UNMEASURED)");
+    expect(net_call(NID_NET_TERM, 0, 0, 0, 0, 0) == 0u, "sceNetTerm after the second Init returns 0");
+
+    expect(net_call(NID_NET_INIT, 0u, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0x800201b7u &&
+               !sr_hle_test_net_inited(),
+           "sceNetInit with pool size 0: ILLEGAL_MEMSIZE, nothing initialized (PPSSPP; UNMEASURED)");
+    expect(net_call(NID_NET_INIT, POOL, 0x07u, 0x1000u, 0x20u, 0x1000u) == 0x80020193u &&
+               net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x78u, 0x1000u) == 0x80020193u &&
+               !sr_hle_test_net_inited(),
+           "sceNetInit with a thread priority outside 0x08-0x77: ILLEGAL_PRIORITY (PPSSPP; UNMEASURED)");
+    sr_hle_test_net_reset();
+    sr_hle_test_partition_reset();
+    s_fixture_loaded_end = loaded_end;
+}
+
 /* Imports that stopped titles on an unknown NID now resolve to a named refusal with the code
  * recorded in hle.c's unregistered-import batch. The two NIDs without a confirmed public name
  * must stay unregistered, so an unknown-NID trap still names them. */
@@ -7349,7 +7423,6 @@ static void test_unregistered_batch_refusals(void) {
         {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
         {0x72189c48u, 0x80010086u, "sceImposeSetUMDPopup"},
         {0x8c943191u, 0x80010086u, "sceImposeGetBatteryIconStatus"},
-        {0x0bf0a3aeu, 0x80010086u, "sceNetGetLocalEtherAddr"},
         {0x0282a3bdu, 0x80010086u, "sceHttpGetContentLength"},
         {0x03d9526fu, 0x80010086u, "sceHttpSetResolveRetry"},
         {0x1f0fc3e3u, 0x80010086u, "sceHttpSetRecvTimeOut"},
@@ -7380,7 +7453,7 @@ static void test_unregistered_batch_refusals(void) {
 
 /* #1139 phase 0: the public PSPSDK ad hoc surface (pspnet_adhoc.h 22, pspnet_adhocctl.h 21,
  * pspnet_adhocmatching.h 16 prototypes; NIDs are sha1(name)) is refused by name with the offline
- * network code sceNetInit uses. That code is the runtime's documented refusal, not a measured ad hoc
+ * network code 0x80010086. That code is the runtime's documented refusal, not a measured ad hoc
  * result. A NID missing from the registry would reach sr_syscall's unknown-NID stop, so membership is
  * checked before the call. */
 static void test_adhoc_named_refusals(void) {
@@ -7421,7 +7494,6 @@ static void test_adhoc_named_refusals(void) {
         {0x362cbe8fu, "sceNetAdhocctlGetAdhocId"},
         {0x5a014ce0u, "sceNetAdhocctlGetGameModeInfo"},
         {0x8916c003u, "sceNetAdhocctlGetNameByAddr"},
-        {0xded9d28eu, "sceNetAdhocctlGetParameter"},
         {0x8db83fdcu, "sceNetAdhocctlGetPeerInfo"},
         {0xe162cb14u, "sceNetAdhocctlGetPeerList"},
         {0x81aee1beu, "sceNetAdhocctlGetScanInfo"},
@@ -41693,9 +41765,9 @@ static void test_flight_recorder_trace(void) {
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL,
                          4u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "controlled unsupported producer returns its named error");
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "controlled unsupported producer remains stable on retry");
     sr_flight_snapshot(&snapshot);
     expect(snapshot.recorded == 4u && snapshot.trigger_count == 0u &&
@@ -41831,17 +41903,17 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     reset_fixture();
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL, 16u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "refused call returns its named error and the guest keeps running");
     expect(sr_syscall(&cpu, 0x011f03c1u /* sceRtcGetAccumulativeTime, a named refusal */) == 0x80020002u,
            "a second named refusal returns its own error and the guest keeps running");
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "a repeated refusal returns the same error");
     sr_flight_snapshot(&snapshot);
     expect(snapshot.trigger_count == 0u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_RUNNING,
            "named refusals do not end the record");
     expect(snapshot.refusal_count == 3u && snapshot.refusal_distinct == 2u &&
-               snapshot.refusal_first_nid == 0x39af39a6u && snapshot.refusal_first_sequence == 2u,
+               snapshot.refusal_first_nid == 0xe1d621d7u && snapshot.refusal_first_sequence == 2u,
            "refusals are counted, and the first refusal is kept in its own field");
     sr_flight_fatal(SR_FLIGHT_KIND_FATAL_RAW_SYSCALL, 0x08900100u, 0x0000000cu, 0u);
     sr_flight_snapshot(&snapshot);
@@ -41857,9 +41929,9 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
            "bundle terminal names the later fatal");
     expect(strstr(bundle, "\"refusals\": {\"count\": 3") != NULL,
            "bundle counts every refusal");
-    snprintf(needle, sizeof(needle), "\"first_nid\": %u", 0x39af39a6u);
+    snprintf(needle, sizeof(needle), "\"first_nid\": %u", 0xe1d621d7u);
     expect(strstr(bundle, needle) != NULL, "bundle keeps the first refused NID in its own field");
-    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x39af39a6u);
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0xe1d621d7u);
     expect(strstr(bundle, needle) != NULL, "bundle lists each refused NID with its count");
     snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", 0x011f03c1u);
     expect(strstr(bundle, needle) != NULL, "bundle lists the second refused NID");
@@ -41870,7 +41942,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     remove(output);
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED, 8u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "refusal before a clean exit returns its named error");
     sr_flight_exit(7u);
     sr_flight_snapshot(&snapshot);
@@ -41890,7 +41962,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     remove(output);
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED, 8u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "refusal before any terminal returns its named error");
     bundle_size = flight_refusal_read_bundle(output, bundle, sizeof(bundle));
     expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"running\"") != NULL &&
@@ -46452,6 +46524,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sysparam_nickname_string();
     test_ge_edram_addr_translation();
     test_named_refusals();
+    test_net_core_without_network();
     test_refer_system_status();
     test_ctrl_read_latch();
     test_ctrl_peek_latch_keeps_the_latch();
