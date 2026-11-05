@@ -146,7 +146,7 @@ int nk_tex_scale_image(const uint32_t *rgba, int w, int h, int factor, int clamp
  * edge and (u1, v1) at the right/bottom edge. */
 int nk_smart2d_sprite(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1);
 /* A triangle: three vertices, screen x/y and texel u/v, with their 1/w (rw). A 1:1 draw has
- * equal rw (no perspective) and an affine map of +/-1 texel per pixel on each axis. */
+ * the same rw at all three vertices, bit for bit (no perspective), and an affine map of +/-1 texel per pixel on each axis. */
 int nk_smart2d_triangle(const float x[3], const float y[3], const float u[3], const float v[3],
                         const float rw[3]);
 

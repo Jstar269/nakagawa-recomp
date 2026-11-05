@@ -458,13 +458,15 @@ void nk_tex_scale_report(void) {
  * so a centre even 1/4096 below takes 1/16 of the texel before, while nearest takes the texel
  * itself. The shader first rounds the coordinate to 1/4096, which lifts a value up to 1/8192
  * below a centre onto it. So every pixel centre's coordinate must lie in
- * [centre - S2D_BELOW, centre + S2D_ABOVE]: S2D_BELOW is half that rounding margin, left for a
- * host's interpolation error, and S2D_ABOVE stays well inside the 1/16 step. The map may also
- * drift at most S2D_EPS over the whole span: a bound on the slope alone would let a wide draw
- * drift by texels (480 pixels over 487 texels). The coordinate is linear across the draw, so the
- * first and last pixel centres bound every one between them. */
+ * [centre - S2D_BELOW, centre + S2D_ABOVE]. S2D_BELOW covers only this test's own float rounding,
+ * so the shader's whole 1/8192 rounding margin is left for a host's interpolation error (at
+ * u >= 512 one float step is already 1/16384, so a value accepted lower would leave the host one
+ * or two steps). S2D_ABOVE stays well inside the 1/16 step. The map may also drift at most
+ * S2D_EPS over the whole span: a bound on the slope alone would let a wide draw drift by texels
+ * (480 pixels over 487 texels). The coordinate is linear across the draw, so the first and last
+ * pixel centres bound every one between them. */
 #define S2D_EPS   (1.0f / 64.0f)
-#define S2D_BELOW (1.0f / 16384.0f)
+#define S2D_BELOW (1.0f / 65536.0f)
 #define S2D_ABOVE (1.0f / 32.0f)
 
 static int on_centre(float u) {
@@ -484,8 +486,12 @@ int nk_smart2d_sprite(float x0, float y0, float x1, float y1, float u0, float v0
 
 int nk_smart2d_triangle(const float x[3], const float y[3], const float u[3], const float v[3],
                         const float rw[3]) {
+    /* The same 1/w at all three vertices, bit for bit. The shader divides the interpolated u * rw
+     * by the interpolated rw at each pixel, so unequal values make the map projective: it bows
+     * between the vertices, where the checks below do not look (a 7.2e-7 difference over a
+     * 480-texel span moved 989 of 3,840 pixels off a texel). */
     for (int i = 0; i < 3; i++)
-        if (!(rw[i] != 0.0f) || fabsf(rw[i] - rw[0]) > 1e-6f * fabsf(rw[0])) return 0;
+        if (!(rw[i] != 0.0f) || rw[i] != rw[0]) return 0;
     float tu[3], tv[3];
     for (int i = 0; i < 3; i++) { tu[i] = u[i] / rw[i]; tv[i] = v[i] / rw[i]; }
     const float dx1 = x[1] - x[0], dx2 = x[2] - x[0];

@@ -406,10 +406,13 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
   without perspective and with its edge on a texel boundary, samples nearest: a HUD, a font or a sprite stays crisp
   at a render scale above 1x. The map may differ from 1:1 by 1/64 texel over the draw's whole span, and the
   coordinate every pixel centre samples must lie on a texel centre or at most 1/32 texel above it, never more than
-  1/16384 below. The PSP's linear rule floors to a 1/16 step, so a centre even slightly below takes part of the
-  texel before, while above it up to the next step reads the texel alone. At 1x every draw the test accepts reads
-  the same whole texel with either filter, so the frame is unchanged; `tex-scale-selftest` checks that against the
-  shader's two rules over offsets and drifts on both sides of the lattice, and refuses the draws just below it.
+  1/65536 below (the test's own float rounding). The PSP's linear rule floors to a 1/16 step, so a centre even
+  slightly below takes part of the texel before, while above it up to the next step reads the texel alone; the
+  shader's rounding to 1/4096 is left whole for the host's interpolation error. A triangle must carry the same 1/w
+  at all three vertices, bit for bit: the shader divides by the interpolated 1/w at each pixel, so any difference
+  bends the map between the vertices. At 1x every draw the test accepts reads the same whole texel with either
+  filter, so the frame is unchanged; `tex-scale-selftest` checks that against the shader's two rules, with its
+  per-pixel division, over offsets and drifts on both sides of the lattice, and refuses the draws just below it.
   Every other draw, a 3D one included, keeps the game's filter.
 - **Guest memory.** Neither feature writes guest memory, the CLUT or a texture source; texture readbacks and
   render-to-texture results are unchanged. What a present commits to guest VRAM does change, which makes both

@@ -430,6 +430,35 @@ static int s2d_span_differs(int n, float u0, float u1) {
     return d;
 }
 
+/* Pixels of a triangle where the rules differ, as the GPU draws it: x, y, texel u, v and 1/w per
+ * vertex. The vertex carries u * rw and rw, both interpolated without perspective, and the shader
+ * divides at each pixel centre the triangle covers. */
+static int s2d_tri_differs(const float x[3], const float y[3], const float u[3], const float v[3], const float rw[3],
+                           int *covered) {
+    float xmin = x[0], xmax = x[0], ymin = y[0], ymax = y[0];
+    for (int i = 1; i < 3; i++) {
+        xmin = fminf(xmin, x[i]); xmax = fmaxf(xmax, x[i]);
+        ymin = fminf(ymin, y[i]); ymax = fmaxf(ymax, y[i]);
+    }
+    const double det = (double)(x[1] - x[0]) * (y[2] - y[0]) - (double)(x[2] - x[0]) * (y[1] - y[0]);
+    int d = 0, n = 0;
+    for (int py = (int)floorf(ymin); py < (int)ceilf(ymax); py++)
+        for (int px = (int)floorf(xmin); px < (int)ceilf(xmax); px++) {
+            const double cx = px + 0.5, cy = py + 0.5;
+            const double l1 = ((cx - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (cy - y[0])) / det;
+            const double l2 = ((x[1] - x[0]) * (cy - y[0]) - (cx - x[0]) * (y[1] - y[0])) / det;
+            const double l0 = 1.0 - l1 - l2;
+            if (l0 < 0.0 || l1 < 0.0 || l2 < 0.0) continue;
+            const float w = (float)(l0 * rw[0] + l1 * rw[1] + l2 * rw[2]);
+            const float su = (float)(l0 * u[0] * rw[0] + l1 * u[1] * rw[1] + l2 * u[2] * rw[2]);
+            const float sv = (float)(l0 * v[0] * rw[0] + l1 * v[1] * rw[1] + l2 * v[2] * rw[2]);
+            n++;
+            if (!s2d_rules_agree(su / w) || !s2d_rules_agree(sv / w)) d++;
+        }
+    if (covered) *covered = n;
+    return d;
+}
+
 static void test_smart2d(void) {
     /* sprites */
     CHECK(nk_smart2d_sprite(10, 10, 26, 26, 0, 0, 16, 16), "smart2d: 1:1 sprite");
@@ -488,37 +517,90 @@ static void test_smart2d(void) {
     CHECK(nk_smart2d_sprite(0, 0, 16, 16, q, 0, 16 + q, 16), "smart2d: u0 1/128 above the lattice");
     CHECK(nk_smart2d_sprite(0, 0, 480, 16, s64, 0, 480 + 2 * s64, 16), "smart2d: 1/64 above, drifting 1/64 more");
     CHECK(tri(10, 10, q, 0, 26, 10, 16 + q, 0, 10, 26, q, 16, 1, 1, 1), "smart2d: a triangle 1/128 above in u");
+    /* The lower bound itself. The shader's rounding lifts at most 1/8192 onto a centre, and that
+     * margin is left whole for a host's interpolation error, so the test allows only its own float
+     * rounding below a centre (1/65536). -1/4096 would change every pixel at 1x; -1/16384 is inside
+     * the rounding but would leave a host at u >= 512 one or two float steps. Both refused, at the
+     * first and the last pixel centre, on both axes, mirrored and for a triangle. */
+    const float b4 = 1.0f / 4096.0f, b16 = 1.0f / 16384.0f, in = 1.0f / 131072.0f;
+    CHECK(!nk_smart2d_sprite(0, 0, 16, 16, -b4, 0, 16 - b4, 16), "smart2d: u0 1/4096 below the lattice");
+    CHECK(!nk_smart2d_sprite(0, 0, 16, 16, 0, -b4, 16, 16 - b4), "smart2d: v0 1/4096 below the lattice");
+    CHECK(!nk_smart2d_sprite(0, 0, 480, 16, 0, 0, 480 - b4, 16), "smart2d: the last centre about 1/4096 below");
+    CHECK(!nk_smart2d_sprite(0, 0, 16, 480, 0, 0, 16, 480 - b4), "smart2d: the last row about 1/4096 below");
+    CHECK(!nk_smart2d_sprite(0, 0, 16, 16, 16 - b4, 0, -b4, 16), "smart2d: mirrored, 1/4096 below");
+    CHECK(!tri(10, 10, -b4, 0, 26, 10, 16 - b4, 0, 10, 26, -b4, 16, 1, 1, 1), "smart2d: a triangle 1/4096 below in u");
+    CHECK(!tri(10, 10, 0, -b4, 26, 10, 16, -b4, 10, 26, 0, 16 - b4, 1, 1, 1), "smart2d: a triangle 1/4096 below in v");
+    CHECK(!nk_smart2d_sprite(0, 0, 16, 16, -b16, 0, 16 - b16, 16), "smart2d: u0 1/16384 below the lattice");
+    CHECK(!nk_smart2d_sprite(0, 0, 16, 16, 0, -b16, 16, 16 - b16), "smart2d: v0 1/16384 below the lattice");
+    CHECK(nk_smart2d_sprite(0, 0, 16, 16, -in, 0, 16 - in, 16) && s2d_span_differs(16, -in, 16 - in) == 0,
+          "smart2d: u0 1/131072 below (float rounding) is accepted and reads whole texels");
+    CHECK(s2d_span_differs(16, -b4, 16 - b4) == 16, "smart2d: the model does not see u0 1/4096 below change 16 pixels");
+    /* Transform mode: 1/w must be equal at all three vertices, bit for bit. The shader divides by
+     * the interpolated 1/w at each pixel, so a difference bows the map between the vertices, where
+     * the corner checks do not look: the reviewer's draw, 7.2e-7 apart over 480 texels and 3/65536
+     * below the lattice, changes pixels under the GPU's own per-pixel division. One float step
+     * apart is refused even on the lattice. */
+    {
+        const float o = -3.0f / 65536.0f, r1 = 1.0f + 6.0f * 0x1p-23f;
+        const float px[3] = { 0, 480, 0 }, py[3] = { 0, 0, 16 }, pu[3] = { 480 + o, o, 480 + o }, pv[3] = { 0, 0, 16 };
+        const float prw[3] = { 1, r1, 1 };
+        int cov = 0;
+        const int bow = s2d_tri_differs(px, py, pu, pv, prw, &cov);
+        CHECK(!tri(0, 0, 480 + o, 0, 480, 0, o, 0, 0, 16, 480 + o, 16, 1, r1, 1) && bow > 0,
+              "smart2d: the bowed transform-mode triangle (%d of %d pixels change) was accepted, or the model "
+              "sees no change", bow, cov);
+        const float step = nextafterf(1.0f, 2.0f);
+        CHECK(!tri(0, 0, 0, 0, 480, 0, 480, 0, 0, 16, 0, 16, 1, step, 1),
+              "smart2d: a triangle whose 1/w differ by one float step");
+        CHECK(!tri(0, 0, 0, 0, 480, 0, 480, 0, 0, 16, 0, 16, step, 1, 1),
+              "smart2d: a triangle whose first 1/w differs by one float step");
+        CHECK(tri(0, 0, 0, 0, 480, 0, 480, 0, 0, 16, 0, 16, 0.25f, 0.25f, 0.25f),
+              "smart2d: a triangle with equal 1/w of 0.25");
+    }
     /* The property, against the shader's own rules: across offsets and drifts on either side of the
      * lattice, both directions and both axes, every draw the classifier accepts reads the same texel
      * under both filters at every pixel. */
-    int accepted = 0, off_lattice = 0, bad = 0;
+    /* Two grids: offsets and drifts in steps of 1/512, and in steps of 1/65536 within 1/2048 of the
+     * lattice, where the lower bound decides. A triangle is checked with the GPU's per-pixel
+     * division (s2d_tri_differs), a sprite along its span. */
+    int accepted = 0, off_lattice = 0, below = 0, bad = 0;
     char first_bad[96] = "";
     static const int ns[] = { 16, 480 };
-    for (int ni = 0; ni < 2; ni++)
-        for (int ei = -32; ei <= 32; ei++)
-            for (int di = -16; di <= 16; di++)
-                for (int dir = 0; dir < 2; dir++)
-                    for (int kind = 0; kind < 3; kind++) {
-                        const int n = ns[ni];
-                        const float e = (float)ei / 512.0f, dd = (float)di / 512.0f, b = 10.0f;
-                        const float u0 = dir ? b + (float)n + e : b + e;
-                        const float u1 = dir ? b + e - dd : b + (float)n + e + dd;
-                        int ok;
-                        if (kind == 0) ok = nk_smart2d_sprite(0, 0, (float)n, 16, u0, 0, u1, 16);
-                        else if (kind == 1) ok = nk_smart2d_sprite(0, 0, 16, (float)n, 0, u0, 16, u1);
-                        else ok = tri(0, 0, u0, 0, (float)n, 0, u1, 0, 0, 16, u0, 16, 1, 1, 1);
-                        if (!ok) continue;
-                        accepted++;
-                        if (ei || di) off_lattice++;
-                        const int differ = s2d_span_differs(n, u0, u1);
-                        if (differ && !bad++)
-                            snprintf(first_bad, sizeof(first_bad), "kind %d n %d u %.6f..%.6f: %d pixels", kind, n,
-                                     (double)u0, (double)u1, differ);
-                    }
-    CHECK(bad == 0 && off_lattice > 0, "smart2d: %d accepted draws (%d off the lattice) change the frame at 1x; "
-          "first: %s", bad, off_lattice, first_bad);
-    if (!s_fail) printf("tex scale selftest: PASS smart2d sprites and triangles; %d accepted draws (%d off the lattice) "
-                        "read one texel per pixel under both filters\n", accepted, off_lattice);
+    for (int grid = 0; grid < 2; grid++)
+        for (int ni = 0; ni < 2; ni++)
+            for (int ei = -32; ei <= 32; ei++)
+                for (int di = -16; di <= 16; di++)
+                    for (int dir = 0; dir < 2; dir++)
+                        for (int kind = 0; kind < 3; kind++) {
+                            const int n = ns[ni];
+                            const float g = grid ? 65536.0f : 512.0f, b = grid ? 0.0f : 10.0f;
+                            const float e = (float)ei / g, dd = (float)di / g;
+                            const float u0 = dir ? b + (float)n + e : b + e;
+                            const float u1 = dir ? b + e - dd : b + (float)n + e + dd;
+                            int ok, differ;
+                            if (kind == 0) ok = nk_smart2d_sprite(0, 0, (float)n, 16, u0, 0, u1, 16);
+                            else if (kind == 1) ok = nk_smart2d_sprite(0, 0, 16, (float)n, 0, u0, 16, u1);
+                            else ok = tri(0, 0, u0, 0, (float)n, 0, u1, 0, 0, 16, u0, 16, 1, 1, 1);
+                            if (!ok) continue;
+                            if (kind < 2) {
+                                differ = s2d_span_differs(n, u0, u1);
+                            } else {
+                                const float tx[3] = { 0, (float)n, 0 }, ty[3] = { 0, 0, 16 };
+                                const float tu[3] = { u0, u1, u0 }, tv[3] = { 0, 0, 16 }, trw[3] = { 1, 1, 1 };
+                                differ = s2d_tri_differs(tx, ty, tu, tv, trw, NULL);
+                            }
+                            accepted++;
+                            if (ei || di) off_lattice++;
+                            if (e < 0.0f || (dir ? e - dd : e + dd) < 0.0f) below++;
+                            if (differ && !bad++)
+                                snprintf(first_bad, sizeof(first_bad), "kind %d n %d u %.7f..%.7f: %d pixels", kind,
+                                         n, (double)u0, (double)u1, differ);
+                        }
+    CHECK(bad == 0 && off_lattice > 0 && below > 0, "smart2d: %d accepted draws (%d off the lattice, %d with a centre "
+          "below it) change the frame at 1x; first: %s", bad, off_lattice, below, first_bad);
+    if (!s_fail) printf("tex scale selftest: PASS smart2d sprites and triangles; %d accepted draws (%d off the lattice, "
+                        "%d with an end just below it) read one texel per pixel under both filters\n", accepted,
+                        off_lattice, below);
 }
 
 int main(void) {
