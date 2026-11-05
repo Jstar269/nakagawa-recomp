@@ -55,6 +55,8 @@
     X("SR_DEBUG", "list", "unset (legacy per-subsystem variables decide)", "debug.h,hle.c", "Bitmask (strtoul, base 0) selecting debug log categories; 0x08 also enables GE display-list dumping.") \
     X("SR_DEBUG_THREAD_LOG", "flag-presence", "off", "hle_kernel_interrupt.c", "Diagnostic switch read in hle_kernel_interrupt.c for thread and interrupt logging.") \
     X("SR_DELAYLOG", "flag-presence", "off", "sched.c", "Logs scheduler thread-delay events; read once per process.") \
+    X("SR_DETERMINISTIC_CLOCK", "string", "empty (on for a scripted run, off for play)", "sched.c", "1 makes guest time follow the guest work, not the host clock; 0 keeps it paced; empty means on for a scripted run. 1 with SR_NOVBPACE=0 is rejected.") \
+    X("SR_DETERMINISTIC_SLICE_US", "number", "100", "sched.c", "Guest microseconds the deterministic clock charges per scheduler boundary; a value outside 1..100000 or not a number is rejected.") \
     X("SR_DEVELOPER_MODE", "flag-nonzero", "off", "gpu_sdl3vk/sdl3vk.c", "Marks a hand-started run as a developer run in the SDL3 Vulkan presenter.") \
     X("SR_DISC_ID", "string", "unset", "gui.c", "Disc identifier string shown in the in-game pause overlay, set by the launcher.") \
     X("SR_DISPLOG", "flag-presence", "off", "guest_interp.c,recomp.c", "Logs each guest dispatch with target, source pc and return address to stderr.") \
