@@ -9,7 +9,7 @@ binary distribution.
 
 | Component | Repository | Pin | License disposition |
 | --- | --- | --- | --- |
-| PSPDEV distribution metadata | <https://github.com/pspdev/pspdev> | `v20261001` / `99dee465c534679f16cc7e0d9fc6a5b92d759d7d` | MIT |
+| PSPDEV distribution metadata | <https://github.com/pspdev/pspdev> | `v20261101` / `99dee465c534679f16cc7e0d9fc6a5b92d759d7d` | MIT |
 | PSPSDK | <https://github.com/pspdev/pspsdk> | `314b2083f2e1eaf145fc5de342736336fe1f0148` | Root 3-clause BSD grant; `tools/PrxEncrypter` separately GPL-3.0-only |
 | PSP toolchain driver | <https://github.com/pspdev/psptoolchain> | `57a4fc650324dea4637ea5ef9dfc2fc292c004f8` | `NOASSERTION` pending component-level SBOM review |
 | Allegrex toolchain scripts | <https://github.com/pspdev/psptoolchain-allegrex> | `a95b7da838d9f506656092c3e0232dcf50389d89` | `NOASSERTION`; fetched compiler components retain their own licenses |
@@ -29,6 +29,13 @@ binary distribution.
   output hash, expected result, and redistribution disposition.
 - The unresolved `NOASSERTION` entries are deliberate. This notice does not
   claim that the broader publication/SBOM gates are complete.
+
+## Packaged license notices in v20261101
+
+The official `v20261101` Ubuntu x86_64 release archive adds, removes, and changes no license or notice file
+relative to `v20261001`: its `psp/share/licenses/` tree, and every `COPYING*`, `LICENSE*`, and `NOTICE*` file in
+the archive, is byte-identical to the `v20261001` archive's. The notices reproduced in the next section therefore
+remain the current set.
 
 ## Packaged license notices added or changed in v20261001
 
