@@ -4935,7 +4935,8 @@ static void coherence_reset_depths(void) {
 /* Depth newer than guest VRAM survives eviction. A draw that writes depth marks its surface
  * newer than VRAM (#1967); when a fifth depth surface arrives, depth_acquire evicts slot 0. The
  * evicted surface's values must reach guest VRAM first: a CPU read of that depth, or the surface's
- * next use (seeded from VRAM), must see what the GPU drew, not what VRAM held before. */
+ * next use (seeded from VRAM), must see what the GPU drew, not what VRAM held before. A surface no
+ * draw wrote depth to is not written back when it goes (checked with a sixth surface). */
 static int coherence_run_depth_evict_newer(void) {
     const char *name = "depth-evict-newer";
     const uint32_t base = 0x04100000u, stride = 512u;
@@ -4989,6 +4990,40 @@ static int coherence_run_depth_evict_newer(void) {
     if (kept != 0x1111u) {
         fprintf(stderr, "gpu coherence selftest [%s]: evicting a depth surface newer than guest VRAM "
                         "lost it: VRAM holds 0x%04x, the GPU drew 0x1111\n", name, kept);
+        coherence_reset_depths();
+        return 0;
+    }
+    /* A clean surface is not written back when it goes. Slot 0 now holds the fifth surface, which
+     * no draw wrote depth to. Its VRAM gets a marker behind the surface's back (as a colour target
+     * aliasing it would leave there, the #1967 hazard), and a sixth surface evicts it: the marker
+     * must survive. A writeback of every evicted surface would put the stale seed over it. */
+    const uint32_t clean_swizzled = (zb[4] + depth_offset) ^ 0x2040u;
+    uint16_t marker = 0u;
+    memcpy(&marker, SR_HOST_LINEAR(clean_swizzled), sizeof marker);
+    marker = (uint16_t)~marker;
+    memcpy(SR_HOST_LINEAR(clean_swizzled), &marker, sizeof marker);
+    memset(s_ge, 0, sizeof(*s_ge));
+    s_ge->fbp = base;
+    s_ge->fbw = stride;
+    s_ge->fbfmt = 3u;
+    s_ge->zbp = zb[0];                         /* free again since the first eviction */
+    s_ge->zbw = stride;
+    s_ge->scis_x2 = (int)FB_W - 1;
+    s_ge->scis_y2 = (int)FB_H - 1;
+    s_ge->maxz = 65535u;
+    {
+        GeVtx p0 = { 10.0f, 10.0f, (float)0x1111u, 1.0f, 0.0f, 0.0f, 1.0f, 0x40, 0x50, 0x60, 0xff };
+        GeVtx p1 = p0;
+        p1.x = 12.0f;
+        p1.y = 12.0f;
+        ok = hook_sprite(&p0, &p1, 0) && s_nbatch && submit_pending() &&
+             s_deps[0].used && s_deps[0].zba == (zb[0] & 0x00FFFFFFu);
+    }
+    uint16_t survived = 0u;
+    memcpy(&survived, SR_HOST_LINEAR(clean_swizzled), sizeof survived);
+    if (!ok || survived != marker) {
+        fprintf(stderr, "gpu coherence selftest [%s]: evicting a clean depth surface %s: VRAM holds 0x%04x, "
+                        "the marker was 0x%04x\n", name, ok ? "wrote it back" : "(setup failed)", survived, marker);
         coherence_reset_depths();
         return 0;
     }
@@ -5057,6 +5092,82 @@ static int coherence_run_depth_zbp_switch(void) {
     return ok;
 }
 
+/* A zbw change alone moves the depth buffer too: the same zbp read with another stride is another
+ * surface. The first draw writes 0x1111 at (10,10) with zbw 512, the second 0x2222 at (10,30) with
+ * zbw 256, colour target and zbp unchanged. Each surface's readback must hold its own draw: before
+ * the fast path keyed on zbw, the second draw landed in the 512-wide surface (row 30 there), and no
+ * 256-wide surface existed. */
+static int coherence_run_depth_zbw_switch(void) {
+    const char *name = "depth-zbw-switch";
+    const uint32_t base = 0x04100000u, stride = 512u, zb = 0x04000000u;
+    static const uint32_t zbw[2] = { 512u, 256u };
+    static const float row[2] = { 10.0f, 30.0f };
+    static const uint16_t z[2] = { 0x1111u, 0x2222u };
+    coherence_reset_depths();
+    g_sr_vram_read_pending = 0;
+    memset(SR_HOST(base), 0, stride * FB_H * 4u);
+    memset(SR_HOST(zb), 0, 0x44000u + 0x2040u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(zb, 0x44000u + 0x2040u);
+
+    int ok = 1;
+    for (int i = 0; ok && i < 2; i++) {
+        memset(s_ge, 0, sizeof(*s_ge));
+        s_ge->fbp = base;
+        s_ge->fbw = stride;
+        s_ge->fbfmt = 3u;
+        s_ge->zbp = zb;
+        s_ge->zbw = zbw[i];
+        s_ge->scis_x2 = (int)FB_W - 1;
+        s_ge->scis_y2 = (int)FB_H - 1;
+        s_ge->maxz = 65535u;
+        s_ge->ztest_enable = 1;
+        s_ge->ztest = 1u;                      /* ALWAYS */
+        s_ge->zwrite_disable = 0;
+        GeVtx p0 = { 10.0f, row[i], (float)z[i], 1.0f, 0.0f, 0.0f, 1.0f, 0x40, 0x50, 0x60, 0xff };
+        GeVtx p1 = p0;
+        p1.x = 12.0f;
+        p1.y = row[i] + 2.0f;
+        /* No submit between the draws: the second one arrives with the first still current. */
+        ok = hook_sprite(&p0, &p1, 0) && s_nbatch;
+    }
+    ok = ok && submit_pending();
+    if (!ok) {
+        fprintf(stderr, "gpu coherence selftest [%s]: setup failed\n", name);
+        coherence_reset_depths();
+        return 0;
+    }
+    /* The two surfaces share VRAM, so each is read back and checked on its own. */
+    for (int i = 0; ok && i < 2; i++) {
+        DepthEnt *d = NULL;
+        for (int k = 0; k < MAX_DEP; k++)
+            if (s_deps[k].used && s_deps[k].zba == vram_off(zb) && s_deps[k].zstride == zbw[i]) d = &s_deps[k];
+        if (!d) {
+            fprintf(stderr, "gpu coherence selftest [%s]: no depth surface for zbw %u: the draw with "
+                            "that zbw went to another surface\n", name, zbw[i]);
+            ok = 0;
+            break;
+        }
+        if (!depth_readback_to_guest(d)) {
+            fprintf(stderr, "gpu coherence selftest [%s]: readback of the zbw %u surface failed\n", name, zbw[i]);
+            ok = 0;
+            break;
+        }
+        const uint32_t off = ((uint32_t)row[i] * zbw[i] + 10u) * 2u;
+        uint16_t got = 0u;
+        memcpy(&got, SR_HOST_LINEAR((zb + off) ^ 0x2040u), sizeof got);
+        if (got != z[i]) {
+            fprintf(stderr, "gpu coherence selftest [%s]: zbw %u surface holds 0x%04x at (10,%d), its draw "
+                            "wrote 0x%04x\n", name, zbw[i], got, (int)row[i], z[i]);
+            ok = 0;
+        }
+    }
+    if (ok)
+        printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n", name, stride, s_scale);
+    coherence_reset_depths();
+    return ok;
+}
+
 int gegpu_coherence_selftest(void) {
     /* SR_GPU_COHERENCE_CASE=scaled-upload (the harness's --case) runs that case alone, as the
      * recipe does at render scales 2 and 4: the other fixtures expect 1x pixels (a filtered sample
@@ -5070,6 +5181,7 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
         if (strcmp(only, "depth-evict-newer") == 0) return coherence_run_depth_evict_newer();
         if (strcmp(only, "depth-zbp-switch") == 0) return coherence_run_depth_zbp_switch();
+        if (strcmp(only, "depth-zbw-switch") == 0) return coherence_run_depth_zbw_switch();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }
@@ -5135,6 +5247,7 @@ int gegpu_coherence_selftest(void) {
     /* Last: they free every depth surface the cases above share. */
     if (!coherence_run_depth_evict_newer()) ok = 0;
     if (!coherence_run_depth_zbp_switch()) ok = 0;
+    if (!coherence_run_depth_zbw_switch()) ok = 0;
     coherence_reset_targets();
     return ok;
 }
