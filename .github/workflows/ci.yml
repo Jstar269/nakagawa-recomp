@@ -1339,6 +1339,11 @@ jobs:
     runs-on: ubuntu-26.04
     container:
       image: fedora@sha256:a7d72ba2745b100a3351087472e5ee7b2450af7cf331e7673007e3817612839c # fedora:45, 2026-11-02
+      # A container job's PID 1 is otherwise `tail -f /dev/null`, which never reaps orphans: a
+      # process killed after its parent exits stays a zombie that kill(pid, 0) still finds, so
+      # test_posix_process's process-tree subtest fails. --init makes Docker's init PID 1 and
+      # reaps them, as systemd does on a hosted runner.
+      options: --init
     permissions:
       contents: read
     needs: [classify, public_export]

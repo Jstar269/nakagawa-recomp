@@ -377,6 +377,11 @@ ships it and `assets/prereq_manifest.json` pins it. This job adds GCC 16 against
   - Fedora's SDL3 package (`SDL3-devel-3.4.18-1.fc45`) is deliberately not the pinned 3.4.20
     that `native_tools` builds from source. This job tests the compiler, and `native_tools`
     keeps the SDL pin.
+  - The container runs with `--init`. Without it, PID 1 in a container job is
+    `tail -f /dev/null`, which never reaps orphans. A process killed after its parent exits
+    then stays a zombie that `kill(pid, 0)` still finds, and `test_posix_process`'s
+    process-tree subtest fails although the tree was terminated. On a hosted runner, systemd
+    reaps them.
   - The job needs network access to the Docker registry and Fedora's mirrors. An
     unauthenticated Docker Hub pull limit or a mirror outage can fail it without any code
     change.

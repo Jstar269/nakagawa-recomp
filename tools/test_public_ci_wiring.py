@@ -1981,6 +1981,11 @@ class Gcc16CanaryWiringTests(unittest.TestCase):
         self.assertNotIn("id-token", self.text)
         self.assertNotIn("secrets.", self.text)
 
+    def test_the_container_has_an_init_that_reaps_orphans(self) -> None:
+        # Without it PID 1 is `tail -f /dev/null`, and a killed grandchild stays a zombie that
+        # test_posix_process's process-tree subtest still sees.
+        self.assertIn("      options: --init\n    permissions:", self.text)
+
     def test_runs_when_native_tools_does(self) -> None:
         self.assertIn("    needs: [classify, public_export]", self.text)
         self.assertIn("needs.classify.outputs.allow_substantive == 'true'", self.text)
@@ -2029,7 +2034,7 @@ class Gcc16CanaryWiringTests(unittest.TestCase):
     def test_docs_describe_the_canary_and_its_promotion(self) -> None:
         section = _markdown_section((ROOT / "docs" / "CI.md").read_text(encoding="utf-8"),
                                     "### GCC 16 canary")
-        for fact in ("`linux_gcc16`", "--repo=fedora", "`gcc-16.2.1-2.fc45.1`", "Not required",
+        for fact in ("`linux_gcc16`", "--repo=fedora", "`gcc-16.2.1-2.fc45.1`", "`--init`", "Not required",
                      "no `continue-on-error`", "steps locally against the new digest", "from any event",
                      "conclusion, with none failed by the container", "libavutil/mem.c:272"):
             with self.subTest(fact=fact):
