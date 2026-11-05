@@ -969,6 +969,7 @@ typedef struct {
     uint32_t stall_addr;
     uint32_t cbid;
     uint32_t cbarg;
+    uint32_t signal_stacks; // SIGNAL CALLs it may nest: SceGeListArgs.numStacks or the SDK default
     int status; // GE_LIST_*
     int executed; // the GE ran this list to its END; a later stall address must not re-run it
     int busy; // the list has started; only sceGeDrawSync(0) or a reset clears it (uofw isBusy)
@@ -1144,6 +1145,7 @@ void sreg_note_placeholder_read(int node, const char *caller);
 extern uint32_t s_ctrl_sampling_mode;
 extern uint32_t s_ctrl_sampling_cycle;
 __attribute__((format(printf, 2, 3))) uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...);
+const char *hle_import_name(uint32_t nid);
 int guest_cstr(uint32_t addr, char *out, int max);
 uint32_t free_block(uint32_t uid);
 /* sceNet core library state (hle_network.c): reset at LoadExec and by the self-tests. */

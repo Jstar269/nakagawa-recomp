@@ -1861,6 +1861,11 @@ double   ge_timing_run_clk(void);
  * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
 void ge_transition_trace_check(const char *why, uint32_t vcount);
 extern uint32_t g_ge_stall_addr;
+/* SIGNAL list control (ge.c): how many SIGNAL CALLs the running list may nest (the numStacks
+ * its sceGeListEnQueue took), and the fault a SIGNAL JUMP, CALL or RET met in the last run,
+ * if any. A fault stops the list at that SIGNAL; ge_take_signal_fault names it once. */
+extern uint32_t g_ge_signal_stack_limit;
+int ge_take_signal_fault(char *detail, size_t size);
 /* Diagnostic counters the watchdog and statistics reports print (hle.c). The GE ones
  * are kept by ge.c, the MPEG ones by mpeg.c. */
 extern uint32_t g_frame_prims;
