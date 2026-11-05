@@ -9,6 +9,8 @@
  * boxes become one bit per guest pixel of the 480x272 display. A box that covers a quarter of
  * the screen or more, or that samples a render target, is a backdrop or a post effect, not HUD,
  * and is not kept. A frame with more boxes than the list holds has no mask (today's behaviour).
+ * Every box that is not kept, every frame without a mask or depth, and every pair that ran
+ * without them is counted (AceSmoothAuxStats) for the Ace report and its exit line.
  *
  * Everything here is host-only bookkeeping: it reads what the GE already computed and changes
  * nothing the guest, the authentic renderer or a capture sees. The list code is plain C and
@@ -20,6 +22,7 @@
 #include <stdint.h>
 
 #include "ace_smooth.h"
+#include "../ace.h"         /* AceSmoothAuxStats */
 
 #define ACE_HUD_MAX_BOXES 1024u
 /* A box this large or larger is not HUD: a quarter of the 480x272 screen. */
@@ -40,8 +43,21 @@ typedef struct {
     AceHudBox box[ACE_HUD_MAX_BOXES];
 } AceHudList;
 
+/* What became of a box. */
+typedef enum {
+    ACE_HUD_OUTSIDE,                /* nothing on screen: off the edge, empty, or not a number */
+    ACE_HUD_KEPT,
+    ACE_HUD_MERGED,                 /* the same box as the one before: a quad's second triangle */
+    ACE_HUD_LARGE,                  /* a quarter of the screen or more */
+    ACE_HUD_TARGET,                 /* the draw samples a render target */
+    ACE_HUD_FULL                    /* past ACE_HUD_MAX_BOXES or ACE_HUD_MAX_SCREENS: no mask */
+} AceHudWhy;
+
 void ace_hud_list_reset(AceHudList *l);
-/* Adds one draw's box (any corner order, guest pixels). Returns 1 if it is kept as HUD. */
+/* Adds one draw's box (any corner order, guest pixels). Returns 1 if it is kept as HUD (KEPT or
+ * MERGED), and says why in `why` when that is not NULL. */
+int ace_hud_list_add_why(AceHudList *l, float xa, float ya, float xb, float yb, int samples_target,
+                         AceHudWhy *why);
 int ace_hud_list_add(AceHudList *l, float xa, float ya, float xb, float yb, int samples_target);
 /* Writes ACE_SMOOTH_HUD_WORDS words: a bit for every guest pixel a kept box touches. Returns 0,
  * with the words cleared, when the list overflowed: that frame has no mask. */
@@ -56,13 +72,17 @@ extern int g_ace_hud_on;
 void ace_hud_enable(int on);
 /* ge_gpu.c: a through-mode draw's box on render-target slot `slot`. */
 void ace_hud_note(int slot, float xa, float ya, float xb, float yb, int samples_target);
-/* ge_gpu.c, just before a target is presented: its boxes since its last present, and its depth
- * image. `depth_gen` counts the depth writes to that image; depth is handed on only if it moved
- * since the slot's last present, so a frame that drew no depth gives none. */
-void ace_hud_present(int slot, VkImage depth, VkImageLayout depth_layout, int depth_w, int depth_h,
-                     uint32_t depth_gen);
-/* gui.c's show pass: what was published for the frame being shown, or NULL when nothing was
- * (a CPU frame, a held present, or the feature off). Valid until the next ace_hud_present. */
-const AceSmoothAux *ace_hud_take(void);
+/* ge_gpu.c, just before target image `src` is presented: its boxes since its last present, and
+ * its depth image. `depth_gen` counts the draws that wrote that depth image; depth is handed on
+ * only if one did since that depth image was last handed on (whichever target it was presented
+ * with), because otherwise it holds an older frame's depth, not this picture's. */
+void ace_hud_present(int slot, VkImage src, VkImage depth, VkImageLayout depth_layout, int depth_w,
+                     int depth_h, uint32_t depth_gen);
+/* gui.c's show pass, for the image `src` it is showing: what was published for that image, or
+ * NULL (a CPU frame, the feature off, or nothing published for it). It always clears what was
+ * published, so an aux never reaches another image. Valid until the next ace_hud_present. */
+const AceSmoothAux *ace_hud_take(VkImage src);
+/* The box and frame counts since ace_hud_enable (the pair counts are ace_smooth.c's). */
+void ace_hud_stats(AceSmoothAuxStats *out);
 
 #endif /* SR_ACE_HUD_H */

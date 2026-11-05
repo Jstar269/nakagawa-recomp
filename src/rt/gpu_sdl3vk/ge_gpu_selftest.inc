@@ -5048,6 +5048,240 @@ int gegpu_ace_af_selftest(void) {
     return ok;
 }
 
+/* Ace smooth motion's HUD mask and depth (ace_hud.h), through ge_gpu.c's own hooks and a real
+ * present: which draws ge_gpu.c notes as HUD (through mode, not clear mode, not sampling a
+ * render target), that a box is in guest pixels (the mask covers exactly the pixels the draw
+ * changed), that depth is handed on only after a draw wrote it (also when two display buffers
+ * share one depth buffer), and that a published mask reaches only the image it was published
+ * for. The show pass below stands in for gui.c's and takes what was published for each image. */
+static struct {
+    int calls, got;
+    VkImage src;
+    int have_bits;
+    VkImage depth;
+    uint32_t bits[ACE_SMOOTH_HUD_WORDS];
+} s_ahc;
+
+static void *ace_hud_cell_show(void *cmd, void *src, int *w, int *h) {
+    (void)cmd; (void)w; (void)h;
+    const AceSmoothAux *aux = ace_hud_take((VkImage)src);
+    s_ahc.calls++;
+    s_ahc.src = (VkImage)src;
+    s_ahc.got = aux != NULL;
+    s_ahc.have_bits = aux && aux->hud_bits;
+    s_ahc.depth = aux ? aux->depth : VK_NULL_HANDLE;
+    if (aux && aux->hud_bits) memcpy(s_ahc.bits, aux->hud_bits, sizeof(s_ahc.bits));
+    else memset(s_ahc.bits, 0, sizeof(s_ahc.bits));
+    return NULL;
+}
+
+static int ahc_bit(int x, int y) {
+    uint32_t k = (uint32_t)(y * ACE_SMOOTH_HUD_W + x);
+    return (int)((s_ahc.bits[k >> 5] >> (k & 31u)) & 1u);
+}
+
+static void ahc_state(uint32_t base, uint32_t zbp, int through) {
+    memset(s_ge, 0, sizeof(*s_ge));
+    s_ge->fbp = base;
+    s_ge->fbw = 512u;
+    s_ge->fbfmt = 3u;
+    s_ge->zbp = zbp;
+    s_ge->zbw = 512u;
+    s_ge->scis_x2 = (int)FB_W - 1;
+    s_ge->scis_y2 = (int)FB_H - 1;
+    s_ge->maxz = 65535u;
+    if (through) s_ge->vtype = 1u << 23;
+}
+
+static int ahc_sprite(float x0, float y0, float x1, float y1, uint32_t c) {
+    GeVtx p0, p1;
+    ge_state_note_external_write();   /* the cell writes GE state directly, as a command would */
+    wrap_vtx(&p0, x0, y0, c);
+    wrap_vtx(&p1, x1, y1, c);
+    p0.u = x0; p0.v = y0; p1.u = x1; p1.v = y1;
+    return hook_sprite(&p0, &p1, 0);
+}
+
+/* Presents `base` and returns 1 when the show pass saw that target's image. */
+static int ahc_present(uint32_t base, const char *step) {
+    Target *t = target_find_by_fba(base & 0x00FFFFFFu);
+    memset(&s_ahc, 0, sizeof(s_ahc));
+    int pr = gegpu_present(base, 3, 512u);
+    if (pr != GEGPU_PRESENT_SHOWN || !t || s_ahc.calls != 1 || s_ahc.src != t->img) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: %s: present %d, show pass calls %d, "
+                        "image %s\n", step, pr, s_ahc.calls, t && s_ahc.src == t->img ? "right" : "wrong");
+        return 0;
+    }
+    return 1;
+}
+
+static int coherence_run_ace_hud(void) {
+    const uint32_t base_a = 0x04000000u, zbp = 0x04088000u, base_b = 0x040CC000u, base_c = 0x04154000u;
+    const uint32_t hud = 0xFF332211u;
+    int ok = 1;
+    coherence_reset_targets();
+    memset(SR_HOST(base_a), 0, 0x165000u);
+    sr_gpu_vram_dirty(base_a, 0x165000u);
+    ace_hud_enable(1);
+    sdl3vk_set_show_pass(ace_hud_cell_show);
+    if (!g_ace_hud_on) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: the HUD mask is not on\n");
+        ok = 0;
+    }
+
+    /* A small render target the HUD frame will sample. */
+    ok = ok && coherence_queue_g1_batch(base_c, 64u, 3u) && submit_pending();
+
+    /* Frame 1 on A: a clear that fills depth, a through-mode sprite and triangle (HUD), a
+     * transform-mode sprite (scene), and a through-mode sprite that samples target C. */
+    ahc_state(base_a, zbp, 1);
+    s_ge->clear = 1;
+    s_ge->clear_mode = 0x501u;                  /* colour and depth */
+    ok = ok && ahc_sprite(0.0f, 0.0f, 480.0f, 272.0f, 0x00000000u);
+    s_ge->clear = 0;
+    s_ge->clear_mode = 0;
+    ok = ok && ahc_sprite(100.0f, 100.0f, 110.0f, 104.0f, hud);
+    GeVtx ta, tb, tc;
+    wrap_vtx(&ta, 40.0f, 40.0f, hud);
+    wrap_vtx(&tb, 50.0f, 40.0f, hud);
+    wrap_vtx(&tc, 40.0f, 50.0f, hud);
+    ge_state_note_external_write();
+    ok = ok && hook_tri(&ta, &tb, &tc, 0);
+    s_ge->vtype = 0;
+    ok = ok && ahc_sprite(200.0f, 50.0f, 210.0f, 60.0f, hud);
+    s_ge->vtype = 1u << 23;
+    s_ge->tex_enable = 1;
+    s_ge->tex_addr = base_c;
+    s_ge->tex_bufw = 64u;
+    s_ge->tex_fmt = 3;
+    s_ge->tex_w = 64;
+    s_ge->tex_h = 64;
+    s_ge->tex_func = 3;
+    {
+        /* The sprite binds target C's image directly (no readback): a post effect. */
+        uint64_t rtt = s_cnt_rtt;
+        ok = ok && ahc_sprite(300.0f, 200.0f, 320.0f, 210.0f, 0xFFFFFFFFu);
+        if (ok && s_cnt_rtt != rtt + 1u) {
+            fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: the sprite did not sample target C\n");
+            ok = 0;
+        }
+    }
+    s_ge->tex_enable = 0;
+    ok = ok && submit_pending();
+    Target *a = target_find_by_fba(base_a & 0x00FFFFFFu);
+    DepthEnt *z = a ? a->dep : NULL;
+    ok = ok && a && z && ahc_present(base_a, "frame 1");
+    if (ok) {
+        int wrong = 0;
+        for (int y = 0; y < ACE_SMOOTH_HUD_H; y++)
+            for (int x = 0; x < ACE_SMOOTH_HUD_W; x++) {
+                int want = (x >= 100 && x < 110 && y >= 100 && y < 104) ||
+                           (x >= 40 && x < 50 && y >= 40 && y < 50);
+                wrong += ahc_bit(x, y) != want;
+            }
+        if (!s_ahc.have_bits || wrong || s_ahc.depth != z->img) {
+            fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 1: mask %d, %d bits wrong "
+                            "(scene %d, post effect %d, clear %d), depth %s\n",
+                    s_ahc.have_bits, wrong, ahc_bit(205, 55), ahc_bit(310, 205), ahc_bit(0, 0),
+                    s_ahc.depth == z->img ? "handed on" : "missing");
+            ok = 0;
+        }
+    }
+    /* The box is in guest pixels: around the sprite, the mask is set exactly where it drew. */
+    if (ok && target_readback(a)) {
+        const uint32_t *px = (const uint32_t *)SR_HOST(base_a);
+        int wrong = 0;
+        for (int y = 90; y < 115; y++)
+            for (int x = 90; x < 125; x++)
+                wrong += ((px[y * 512 + x] & 0x00FFFFFFu) == (hud & 0x00FFFFFFu)) != ahc_bit(x, y);
+        if (wrong) {
+            fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: %d pixels around the HUD sprite differ "
+                            "between what it drew and its mask\n", wrong);
+            ok = 0;
+        }
+    } else if (ok) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: readback failed\n");
+        ok = 0;
+    }
+
+    /* Frame 2 on B, which shares A's depth buffer, writes no depth: the depth image still
+     * holds frame 1, so it is not handed on. */
+    ahc_state(base_b, zbp, 1);
+    ok = ok && ahc_sprite(10.0f, 10.0f, 20.0f, 20.0f, hud) && submit_pending();
+    Target *b = target_find_by_fba(base_b & 0x00FFFFFFu);
+    ok = ok && b && b->dep == z && ahc_present(base_b, "frame 2");
+    if (ok && (!s_ahc.have_bits || !ahc_bit(15, 15) || ahc_bit(105, 102) || s_ahc.depth != VK_NULL_HANDLE)) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 2: mask %d box %d stale box %d, "
+                        "depth %s\n", s_ahc.have_bits, ahc_bit(15, 15), ahc_bit(105, 102),
+                s_ahc.depth ? "handed on though no draw wrote it" : "withheld");
+        ok = 0;
+    }
+
+    /* Frame 3 on A: a transform-mode draw with depth writes; depth is handed on again. */
+    ahc_state(base_a, zbp, 0);
+    s_ge->ztest_enable = 1;
+    s_ge->ztest = 1;                            /* ALWAYS */
+    ok = ok && ahc_sprite(60.0f, 60.0f, 90.0f, 90.0f, hud) && submit_pending();
+    ok = ok && ahc_present(base_a, "frame 3");
+    if (ok && (s_ahc.depth != z->img || ahc_bit(70, 70))) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 3: depth %s, scene in mask %d\n",
+                s_ahc.depth == z->img ? "handed on" : "missing after a depth write", ahc_bit(70, 70));
+        ok = 0;
+    }
+
+    /* Frame 4 on A: its only depth write is a clear that clears depth. That is a write, so
+     * depth is handed on, and the clear is not a HUD box. */
+    ahc_state(base_a, zbp, 1);
+    s_ge->clear = 1;
+    s_ge->clear_mode = 0x401u;                  /* depth only */
+    ok = ok && ahc_sprite(0.0f, 0.0f, 480.0f, 272.0f, 0x00000000u) && submit_pending();
+    s_ge->clear = 0;
+    s_ge->clear_mode = 0;
+    ok = ok && ahc_present(base_a, "frame 4");
+    if (ok && (s_ahc.depth != z->img || !s_ahc.have_bits || ahc_bit(240, 136))) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 4: depth %s after a depth clear, mask %d, "
+                        "clear in mask %d\n", s_ahc.depth == z->img ? "handed on" : "missing",
+                s_ahc.have_bits, ahc_bit(240, 136));
+        ok = 0;
+    }
+
+    /* A frame published while no show pass took it, then a CPU frame: the CPU frame gets
+     * nothing, and the stale mask is counted, not carried over. */
+    ahc_state(base_a, zbp, 1);
+    ok = ok && ahc_sprite(100.0f, 100.0f, 110.0f, 104.0f, hud) && submit_pending();
+    sdl3vk_set_show_pass(NULL);
+    ok = ok && gegpu_present(base_a, 3, 512u) == GEGPU_PRESENT_SHOWN;
+    sdl3vk_set_show_pass(ace_hud_cell_show);
+    static uint32_t cpu_px[480 * 272];
+    memset(&s_ahc, 0, sizeof(s_ahc));
+    ok = ok && sdl3vk_present_rgba(cpu_px) == 1;
+    if (ok && (s_ahc.calls != 1 || s_ahc.got)) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: a CPU frame took a GPU frame's mask "
+                        "(calls %d, got %d)\n", s_ahc.calls, s_ahc.got);
+        ok = 0;
+    }
+
+    AceSmoothAuxStats st;
+    memset(&st, 0, sizeof(st));
+    ace_hud_stats(&st);
+    if (ok && (st.boxes_kept != 4u || st.boxes_target != 1u || st.boxes_large != 0u || st.boxes_full != 0u ||
+               st.frames_mask != 5u || st.frames_depth != 3u || st.frames_depth_unwritten != 2u ||
+               st.published_unshown != 1u)) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: counts kept=%llu target=%llu large=%llu "
+                        "full=%llu frames mask=%llu depth=%llu unwritten=%llu unshown=%llu\n",
+                (unsigned long long)st.boxes_kept, (unsigned long long)st.boxes_target,
+                (unsigned long long)st.boxes_large, (unsigned long long)st.boxes_full,
+                (unsigned long long)st.frames_mask, (unsigned long long)st.frames_depth,
+                (unsigned long long)st.frames_depth_unwritten, (unsigned long long)st.published_unshown);
+        ok = 0;
+    }
+    sdl3vk_set_show_pass(NULL);
+    ace_hud_enable(0);
+    coherence_reset_targets();
+    if (ok) printf("gpu snapshot sync selftest: ace_hud_mask_and_depth_from_the_ge\n");
+    return ok;
+}
+
 int gegpu_snapshot_sync_selftest(void) {
     const uint32_t fba = 0x00140000u;
     const uint32_t base = 0x04000000u | fba;
@@ -5228,5 +5462,5 @@ int gegpu_snapshot_sync_selftest(void) {
     }
     printf("gpu snapshot sync selftest: present_shown_stays_1\n");
     coherence_reset_targets();
-    return 1;
+    return coherence_run_ace_hud();
 }

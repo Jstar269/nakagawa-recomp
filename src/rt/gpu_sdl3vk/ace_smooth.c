@@ -84,6 +84,8 @@ struct AceBetween {
     int have_mask[2];
     Img depth[2];
     int have_depth[2];
+    /* What the pairs ran with (AceSmoothAuxStats' pair counts). */
+    uint64_t pairs, pairs_mask, pairs_depth, depth_refused;
     VkBuffer zstage;               /* D16 texels on their way into depth[] */
     VkDeviceMemory zstage_memory;
     VkBuffer stats;
@@ -436,6 +438,7 @@ static void aux_store(AceBetween *s, VkCommandBuffer cmd, int cur, const AceSmoo
 
     s->have_depth[cur] = aux && aux->depth && aux->depth_layout != VK_IMAGE_LAYOUT_UNDEFINED &&
                          aux->depth_w >= w && aux->depth_h >= h;
+    if (aux && aux->depth && !s->have_depth[cur]) s->depth_refused++;
     if (!s->have_depth[cur]) return;
     VkBufferImageCopy c;
     memset(&c, 0, sizeof(c));
@@ -500,6 +503,9 @@ VkImage ace_smooth_record_aux(AceBetween *s, VkCommandBuffer cmd, VkImage src, i
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, s->depth[i].layout == VK_IMAGE_LAYOUT_UNDEFINED);
     int32_t pair_aux = (s->have_mask[old] && s->have_mask[cur] ? AUX_HUD : 0) |
                        (s->have_depth[old] && s->have_depth[cur] ? AUX_DEPTH : 0);
+    s->pairs++;
+    if (pair_aux & AUX_HUD) s->pairs_mask++;
+    if (pair_aux & AUX_DEPTH) s->pairs_depth++;
     s->CmdFillBuffer(cmd, s->stats, 0, VK_WHOLE_SIZE, 0u);
     stats_barrier(s, cmd, VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
@@ -544,6 +550,14 @@ VkImage ace_smooth_record_aux(AceBetween *s, VkCommandBuffer cmd, VkImage src, i
     img_barrier(s, cmd, &s->out, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0);
     return s->out.image;
+}
+
+void ace_smooth_aux_stats(const AceBetween *s, AceSmoothAuxStats *out) {
+    if (!out) return;
+    out->pairs = s ? s->pairs : 0;
+    out->pairs_mask = s ? s->pairs_mask : 0;
+    out->pairs_depth = s ? s->pairs_depth : 0;
+    out->depth_refused = s ? s->depth_refused : 0;
 }
 
 VkImage ace_smooth_held(AceBetween *s, VkCommandBuffer cmd) {

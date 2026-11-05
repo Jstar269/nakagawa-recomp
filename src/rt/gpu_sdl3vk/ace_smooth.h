@@ -19,6 +19,8 @@
 #include <stdint.h>
 #include <vulkan/vulkan.h>
 
+#include "../ace.h"   /* AceSmoothAuxStats */
+
 typedef struct AceBetween AceBetween;
 
 typedef struct {
@@ -67,6 +69,9 @@ VkImage ace_smooth_record_aux(AceBetween *s, VkCommandBuffer cmd, VkImage src, i
 /* Records the transition of the newest private frame to TRANSFER_SRC_OPTIMAL and returns it,
  * for the present that shows the held frame. VK_NULL_HANDLE when there is none. */
 VkImage ace_smooth_held(AceBetween *s, VkCommandBuffer cmd);
+/* The pair counts (pairs, pairs_mask, pairs_depth, depth_refused) of AceSmoothAuxStats; the
+ * other fields are left as they are. */
+void ace_smooth_aux_stats(const AceBetween *s, AceSmoothAuxStats *out);
 /* The size of what ace_smooth_held returns. */
 void ace_smooth_size(const AceBetween *s, int *w, int *h);
 

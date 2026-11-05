@@ -618,33 +618,90 @@ static void cell_hud_list(void) {
     CHECK(l.overflow == 1, "hud-list: %u boxes did not overflow", ACE_HUD_MAX_BOXES + 1u);
     CHECK(ace_hud_list_bits(&l, bits) == 0 && bits[0] == 0u, "hud-list: an overflowed list gave a mask");
 
-    /* The runtime side: a present hands over its target's boxes once, and depth only when the
-     * target's depth moved since its last present. */
+    /* Why each box was left out. */
+    AceHudWhy why = ACE_HUD_KEPT;
+    ace_hud_list_reset(&l);
+    (void)ace_hud_list_add_why(&l, 0.0f, 0.0f, 240.0f, 136.0f, 0, &why);
+    CHECK(why == ACE_HUD_LARGE, "hud-list: a quarter-screen box is not LARGE (%d)", (int)why);
+    (void)ace_hud_list_add_why(&l, 50.0f, 50.0f, 60.0f, 60.0f, 1, &why);
+    CHECK(why == ACE_HUD_TARGET, "hud-list: a box sampling a target is not TARGET (%d)", (int)why);
+    (void)ace_hud_list_add_why(&l, 500.0f, 10.0f, 520.0f, 20.0f, 0, &why);
+    CHECK(why == ACE_HUD_OUTSIDE, "hud-list: a box off the screen is not OUTSIDE (%d)", (int)why);
+    (void)ace_hud_list_add_why(&l, 1.0f, 1.0f, 2.0f, 2.0f, 0, &why);
+    CHECK(why == ACE_HUD_KEPT, "hud-list: a small box is not KEPT (%d)", (int)why);
+    (void)ace_hud_list_add_why(&l, 2.0f, 2.0f, 1.0f, 1.0f, 0, &why);
+    CHECK(why == ACE_HUD_MERGED, "hud-list: the same box again is not MERGED (%d)", (int)why);
+
+    /* The runtime side: a present hands over its target's boxes once, to the image it presents,
+     * and depth only when a draw wrote that depth image since it was last handed on. */
     ace_hud_enable(1);
     CHECK(g_ace_hud_on == 1, "hud-runtime: not on");
     ace_hud_note(3, 100.0f, 100.0f, 110.0f, 104.0f, 0);
+    ace_hud_note(3, 0.0f, 0.0f, 480.0f, 272.0f, 0);          /* a backdrop: not HUD, counted */
+    ace_hud_note(3, 20.0f, 20.0f, 30.0f, 30.0f, 1);          /* a post effect: not HUD, counted */
     ace_hud_note(2, 0.0f, 0.0f, 8.0f, 8.0f, 0);
     VkImage fake = (VkImage)(uintptr_t)0x1234u;
-    ace_hud_present(3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 7u);
-    const AceSmoothAux *aux = ace_hud_take();
+    VkImage img3 = (VkImage)(uintptr_t)0x3000u, img4 = (VkImage)(uintptr_t)0x4000u;
+    VkImage cpu = (VkImage)(uintptr_t)0x5000u;
+    ace_hud_present(3, img3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 7u);
+    const AceSmoothAux *aux = ace_hud_take(img3);
     CHECK(aux && aux->hud_bits && aux->depth == fake, "hud-runtime: the first present gave no mask or depth");
     if (aux && aux->hud_bits) {
         uint32_t k = 102u * ACE_SMOOTH_HUD_W + 105u, k2 = 4u * ACE_SMOOTH_HUD_W + 4u;
         CHECK((aux->hud_bits[k >> 5] >> (k & 31u)) & 1u, "hud-runtime: slot 3's box is not in its mask");
         CHECK(!((aux->hud_bits[k2 >> 5] >> (k2 & 31u)) & 1u), "hud-runtime: slot 2's box is in slot 3's mask");
     }
-    CHECK(ace_hud_take() == NULL, "hud-runtime: a present was taken twice");
-    ace_hud_present(3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 7u);
-    aux = ace_hud_take();
+    CHECK(ace_hud_take(img3) == NULL, "hud-runtime: a present was taken twice");
+    ace_hud_present(3, img3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 7u);
+    aux = ace_hud_take(img3);
     CHECK(aux && aux->depth == VK_NULL_HANDLE, "hud-runtime: depth no batch wrote was handed on");
     if (aux && aux->hud_bits) {
         uint32_t k = 102u * ACE_SMOOTH_HUD_W + 105u;
         CHECK(!((aux->hud_bits[k >> 5] >> (k & 31u)) & 1u), "hud-runtime: last frame's box is still in the mask");
     }
+    /* Two display buffers that share one depth buffer: slot 4's frame wrote no depth, so the
+     * depth image still holds slot 3's frame and is not handed on with slot 4. */
+    ace_hud_present(3, img3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 9u);
+    aux = ace_hud_take(img3);
+    CHECK(aux && aux->depth == fake, "hud-runtime: depth written since the last hand-on was withheld");
+    ace_hud_present(4, img4, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 9u);
+    aux = ace_hud_take(img4);
+    CHECK(aux && aux->depth == VK_NULL_HANDLE,
+          "hud-runtime: the other buffer's depth was handed on with a frame that wrote none");
+    /* A published aux reaches only its own image: a present that never got to the show pass,
+     * then a CPU frame, gives the CPU frame nothing, and the stale aux is gone. */
+    ace_hud_note(3, 100.0f, 100.0f, 110.0f, 104.0f, 0);
+    ace_hud_present(3, img3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 10u);
+    CHECK(ace_hud_take(cpu) == NULL, "hud-runtime: a CPU frame took a GPU frame's mask and depth");
+    CHECK(ace_hud_take(img3) == NULL, "hud-runtime: a stale aux survived another image's present");
+    ace_hud_present(3, img3, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, 0, 0, 0u);
+    ace_hud_present(3, img3, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, 0, 0, 0u);   /* first one unshown */
+    (void)ace_hud_take(img3);
+    /* An overflowed frame: no mask, counted, and the boxes past the limit counted too. */
+    for (uint32_t i = 0; i <= ACE_HUD_MAX_BOXES; i++)
+        ace_hud_note(3, (float)(i % 400), (float)(i / 400), (float)(i % 400) + 1.0f, (float)(i / 400) + 1.0f, 0);
+    ace_hud_present(3, img3, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, 0, 0, 0u);
+    aux = ace_hud_take(img3);
+    CHECK(aux && !aux->hud_bits, "hud-runtime: an overflowed frame gave a mask");
+    AceSmoothAuxStats st;
+    memset(&st, 0, sizeof(st));
+    ace_hud_stats(&st);
+    CHECK(st.boxes_kept == 3u + ACE_HUD_MAX_BOXES && st.boxes_large == 1u && st.boxes_target == 1u &&
+          st.boxes_full == 1u && st.boxes_merged == 0u && st.boxes_outside == 0u,
+          "hud-runtime: box counts kept=%llu large=%llu target=%llu full=%llu merged=%llu outside=%llu",
+          (unsigned long long)st.boxes_kept, (unsigned long long)st.boxes_large,
+          (unsigned long long)st.boxes_target, (unsigned long long)st.boxes_full,
+          (unsigned long long)st.boxes_merged, (unsigned long long)st.boxes_outside);
+    CHECK(st.frames_mask == 7u && st.frames_overflow == 1u && st.frames_depth == 3u &&
+          st.frames_depth_unwritten == 2u && st.frames_depth_none == 3u && st.published_unshown == 2u,
+          "hud-runtime: frame counts mask=%llu overflow=%llu depth=%llu unwritten=%llu none=%llu unshown=%llu",
+          (unsigned long long)st.frames_mask, (unsigned long long)st.frames_overflow,
+          (unsigned long long)st.frames_depth, (unsigned long long)st.frames_depth_unwritten,
+          (unsigned long long)st.frames_depth_none, (unsigned long long)st.published_unshown);
     ace_hud_enable(0);
     ace_hud_note(3, 100.0f, 100.0f, 110.0f, 104.0f, 0);
-    ace_hud_present(3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 8u);
-    CHECK(ace_hud_take() == NULL, "hud-runtime: off, but a present was published");
+    ace_hud_present(3, img3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 8u);
+    CHECK(ace_hud_take(img3) == NULL, "hud-runtime: off, but a present was published");
 }
 
 #define EDGE_HUD_X 200
@@ -868,6 +925,14 @@ static void cell_aux_neutral(void) {
             else CHECK(memcmp(first, g.map, (size_t)w * (size_t)h * 4u) == 0,
                        "aux-neutral: an empty mask changed the in-between");
         }
+        /* The pair is counted, with a mask only when both frames had one, and no depth. */
+        AceSmoothAuxStats st;
+        memset(&st, 0, sizeof(st));
+        ace_smooth_aux_stats(s, &st);
+        CHECK(st.pairs == 1u && st.pairs_mask == (uint64_t)use && st.pairs_depth == 0u && st.depth_refused == 0u,
+              "aux-neutral: pair counts pairs=%llu mask=%llu depth=%llu refused=%llu (mask %s)",
+              (unsigned long long)st.pairs, (unsigned long long)st.pairs_mask,
+              (unsigned long long)st.pairs_depth, (unsigned long long)st.depth_refused, use ? "on" : "off");
         DeviceWaitIdle(g.device);
         ace_smooth_destroy(s);
     }

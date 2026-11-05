@@ -399,6 +399,32 @@ static void cell_report(const char *dir) {
     f = fopen(path, "rb");
     CHECK(f == NULL, "an off run wrote a report");
     if (f) fclose(f);
+
+    /* Smooth motion's inputs: what the HUD rule and the depth gate did is in the report. */
+    (void)ace_init_spec("v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2", NULL);
+    CHECK(ace_report_json(json, sizeof(json)) > 0 && strstr(json, "smooth_aux") == NULL,
+          "a smooth run reported inputs before the renderer counted any");
+    AceSmoothAuxStats st;
+    memset(&st, 0, sizeof(st));
+    st.pairs = 40; st.pairs_mask = 30; st.pairs_depth = 20; st.depth_refused = 1;
+    st.boxes_kept = 500; st.boxes_merged = 450; st.boxes_large = 7; st.boxes_target = 3;
+    st.boxes_outside = 2; st.boxes_full = 11;
+    st.frames_mask = 41; st.frames_overflow = 2; st.frames_depth = 30; st.frames_depth_unwritten = 9;
+    st.frames_depth_none = 4; st.published_unshown = 5;
+    ace_smooth_aux_report(&st);
+    len = ace_report_json(json, sizeof(json));
+    CHECK(len > 0 && strstr(json, "\"smooth_aux\": {\"pairs\": 40, \"pairs_mask\": 30, \"pairs_depth\": 20, "
+                                  "\"depth_refused\": 1,") &&
+          strstr(json, "\"boxes\": {\"kept\": 500, \"merged\": 450, \"large\": 7, \"target\": 3, "
+                       "\"outside\": 2, \"full\": 11}") &&
+          strstr(json, "\"frames\": {\"mask\": 41, \"overflow\": 2, \"depth\": 30, \"depth_unwritten\": 9, "
+                       "\"depth_none\": 4, \"unshown\": 5}}"),
+          "the report lacks smooth motion's input counts:\n%s", json);
+    /* A run without smooth motion reports none, whatever the renderer said. */
+    (void)ace_init_spec(k_good, NULL);
+    ace_smooth_aux_report(&st);
+    CHECK(ace_report_json(json, sizeof(json)) > 0 && strstr(json, "smooth_aux") == NULL,
+          "a run without smooth motion reported its inputs");
 }
 
 /* A 30 Hz title's frames: the flip shows the in-between, the next VBLANK the frame. */

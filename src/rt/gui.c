@@ -557,13 +557,20 @@ static void *gui_ace_show_pass(void *cmd, void *src, int *w, int *h) {
         s_ace_present_kind = ACE_PRESENT_HELD;
         return (void *)held;
     }
-    /* What the GPU GE published for this frame (its HUD boxes and depth), taken on every real
-     * present so it never outlives its frame; NULL for a CPU frame. */
-    const AceSmoothAux *aux = ace_hud_take();
+    /* What the GPU GE published for this image (its HUD boxes and depth), taken on every real
+     * present so it never outlives its frame; NULL for a CPU frame or another image. */
+    const AceSmoothAux *aux = ace_hud_take((VkImage)src);
     AceShow show = ace_smooth_take();
-    if (show == ACE_SHOW_REAL) return NULL;
-    VkImage between = ace_smooth_record_aux(s_ace_smooth, vk_cmd, (VkImage)src, *w, *h,
-                                            show == ACE_SHOW_BETWEEN, aux);
+    VkImage between = VK_NULL_HANDLE;
+    if (show != ACE_SHOW_REAL)
+        between = ace_smooth_record_aux(s_ace_smooth, vk_cmd, (VkImage)src, *w, *h,
+                                        show == ACE_SHOW_BETWEEN, aux);
+    /* The report's counts of boxes, frames and pairs with and without mask or depth. */
+    AceSmoothAuxStats st;
+    memset(&st, 0, sizeof(st));
+    ace_hud_stats(&st);
+    ace_smooth_aux_stats(s_ace_smooth, &st);
+    ace_smooth_aux_report(&st);
     if (!between) return NULL;
     ace_smooth_shown_between(SDL_GetTicksNS());
     s_ace_present_kind = ACE_PRESENT_BETWEEN;

@@ -4338,7 +4338,7 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     s_cnt_present_gpu++;
     stats_tick();
     if (g_ace_hud_on)
-        ace_hud_present((int)(t - s_tgts), t->dep ? t->dep->img : VK_NULL_HANDLE,
+        ace_hud_present((int)(t - s_tgts), t->img, t->dep ? t->dep->img : VK_NULL_HANDLE,
                         t->dep ? t->dep->layout : VK_IMAGE_LAYOUT_UNDEFINED, (int)SCL_W, (int)SCL_H,
                         t->dep ? t->dep->hud_zgen : 0u);
     int pr = sdl3vk_present_image_ex((void *)t->img, DRAW_W * s_scale, FB_H * s_scale);
