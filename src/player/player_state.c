@@ -4914,7 +4914,8 @@ void player_launch_work_run(PlayerLaunchWork *work) {
     {
         PlayerAceResolved ace;
         player_ace_resolve(&work->settings, game->disc_id, &ace);
-        /* The enhanced 60 FPS build and interpolation are refused together (#1272). */
+        /* This build interpolates only a 30 Hz source, so the enhanced 60 FPS build runs
+           without smooth motion (contract section 10.5). */
         player_ace_apply_logic_60(&ace, game->enhancement_package_id[0] != '\0');
         if (work->headless_accept_presented_frames > 0u) ace.on = false;
         if (!player_ace_launch_line(&ace, session->config.ace_spec,
