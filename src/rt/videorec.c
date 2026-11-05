@@ -642,18 +642,26 @@ static int vr_open_files(void) {
     return s_ring != NULL;
 }
 
-/* Whether guest time follows guest work. The runtime asks the scheduler, which parses
+/* Whether guest time follows guest work. The runtime's main() hands the recorder the
+ * scheduler's answer (sr_videorec_set_clock(sched_clock_deterministic)); the scheduler parses
  * SR_DETERMINISTIC_CLOCK once (pace_setup, which also rejects any value but 0 and 1 and the
- * SR_NOVBPACE=0 contradiction), so the recorder and the clock cannot disagree. The standalone
- * selftest links no scheduler and reads the key the same way. */
+ * SR_NOVBPACE=0 contradiction), so the recorder and the clock cannot disagree. The recorder links
+ * with the presenter (SDL3VK_SRCS), and programs that link the presenter without a scheduler
+ * (the GPU selftests, ge-replay) set no clock: there the recorder refuses, saying why. The
+ * standalone selftest links no scheduler and reads the key the same way. */
+static int (*s_clock_deterministic)(void);
+
+void sr_videorec_set_clock(int (*deterministic)(void)) { s_clock_deterministic = deterministic; }
+
 #ifdef SR_VIDEOREC_SELFTEST
 static int vr_clock_deterministic(void) {
     const char *det = getenv("SR_DETERMINISTIC_CLOCK");
     return det && strcmp(det, "1") == 0;
 }
 #else
-int sched_clock_deterministic(void); /* sched.c, declared in recomp.h */
-static int vr_clock_deterministic(void) { return sched_clock_deterministic(); }
+static int vr_clock_deterministic(void) {
+    return s_clock_deterministic ? s_clock_deterministic() : 0;
+}
 #endif
 
 /* Start a recording into dir, or refuse with the reason in record.json and on stderr.
@@ -672,6 +680,13 @@ static int vr_begin(const char *dir, const char *codec, int need_det_clock) {
      * record.json (REFUSED, so no earlier PASS stands) and leaves the earlier run's recording. */
     char why[1200];
     if (need_det_clock) {
+#ifndef SR_VIDEOREC_SELFTEST
+        if (!s_clock_deterministic) {
+            vr_refuse("this program runs no scheduler, so it has no deterministic guest clock "
+                      "to record on");
+            return 0;
+        }
+#endif
         if (!vr_clock_deterministic()) {
             vr_refuse("SR_VIDEOREC_DIR needs SR_DETERMINISTIC_CLOCK=1. On the paced clock the "
                       "frame readback, copy and encoder writes hold the guest thread, so the "

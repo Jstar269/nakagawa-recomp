@@ -5423,6 +5423,8 @@ static int videorec_audio_hooks(const char *dir, const char *which) {
     setenv("SR_VIDEOREC_CODEC", "raw", 1);
     setenv("SR_DETERMINISTIC_CLOCK", "1", 1);
 #endif
+    /* As the runtime's main() does: the recorder takes the scheduler's clock (videorec.h). */
+    sr_videorec_set_clock(sched_clock_deterministic);
     const int16_t left = src ? 5000 : output2 ? 4000 : 3000, right = (int16_t)-left;
     for (uint32_t i = 0; i < PB_FRAMES; i++) {
         MEM_W16(PB_AU_A + i * 4u, (uint16_t)left);

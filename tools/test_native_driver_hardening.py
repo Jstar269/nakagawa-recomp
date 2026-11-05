@@ -138,8 +138,8 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {{
     return 0x0a000010u;
 }}
 void sched_init(CpuState *cpu) {{ s_cpu = cpu; }}
-/* The scheduler's clock answer for the real run recorder (videorec.c, linked below): this
-   harness runs no scheduler, so the clock is the paced one, and the recorder refuses to record. */
+/* driver.c's main() hands the scheduler's clock to the real run recorder (videorec.c, linked
+   below). This harness runs no scheduler, so the clock is the paced one and the recorder refuses. */
 int sched_clock_deterministic(void) {{ return 0; }}
 void sched_preempt_timer_start(void) {{}}
 /* sceKernelLoadExec restart seam (driver.c --sched loop). This harness never queues a

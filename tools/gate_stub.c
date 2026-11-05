@@ -76,6 +76,9 @@ int     sr_sched_on = 0;
 atomic_int_least32_t sr_timeslice = 0;
 void    sr_yield(CpuState *s) { (void)s; }
 uint32_t sched_current_uid(void) { return 0u; }
+// driver.c's main() hands this to the run recorder (videorec.c, linked for its run-end report).
+// No scheduler runs here, so guest time is the paced clock and the recorder refuses.
+int      sched_clock_deterministic(void) { return 0; }
 /* The headless gate has no scheduler, so no thread role is ever captured. Reporting the
  * historical HST UIDs here would hand the gate a role identity it cannot have earned.
  * This file deliberately declares its own symbols instead of including recomp.h, so the

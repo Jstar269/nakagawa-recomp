@@ -245,12 +245,14 @@ class TestFatalStopsFinishRecording(unittest.TestCase):
         """Each stop finishes the recording with the status it exits with (record.json
         exit_status agrees with run_end and the process exit code)."""
         stops = []
-        for path in sorted(RT.glob("hle*.c")):
-            code = _without_comments(path.read_text(encoding="utf-8"))
+        # Every runtime HLE source, from the one list (tools/hle_sources.py, #307).
+        for relative, text in hle_sources.sources():
+            name = Path(relative).name
+            code = _without_comments(text)
             for match in FATAL_EXIT_RE.finditer(code):
                 line = code.count("\n", 0, match.start()) + 1
-                stops.append(f"{path.name}:{line}")
-                with self.subTest(stop=f"{path.name}:{line}"):
+                stops.append(f"{name}:{line}")
+                with self.subTest(stop=f"{name}:{line}"):
                     block = _enclosing_block(code, match.start())
                     finishes = FINISH_STATUS_RE.findall(block)
                     self.assertTrue(finishes, "the stop exits without finishing a recording "
@@ -264,8 +266,7 @@ class TestFatalStopsFinishRecording(unittest.TestCase):
 
     def test_exit_at_vblank_records_a_clean_end(self):
         """SR_EXIT_AT_VBLANK is the documented end of a showcase recording: exit status 0."""
-        src = (RT / "hle_display.c").read_text(encoding="utf-8")
-        self.assertIn('sr_videorec_finish_status("SR_EXIT_AT_VBLANK", 0)', src)
+        self.assertIn('sr_videorec_finish_status("SR_EXIT_AT_VBLANK", 0)', hle_sources.text())
 
     def test_finish_status_pattern(self):
         code = _without_comments('{ sr_videorec_finish_status("a, b", ROUTE_FAIL_EXIT); _Exit(ROUTE_FAIL_EXIT); }')

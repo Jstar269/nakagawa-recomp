@@ -2259,7 +2259,8 @@ unregistered NID, and so on). An `exit()` that no route named, such as one of th
 `exit(1)` paths, reaches only the recorder's `atexit` fallback: its `run_end` says no route named the
 end and its `exit_status` is `null`, so it never reads as a clean exit.
 
-A recording that cannot start is `REFUSED` with the reason: no deterministic clock, a codec it does
+A recording that cannot start is `REFUSED` with the reason: no deterministic clock (or, in a tool
+that links the presenter but runs no scheduler, such as the GPU selftests, no guest clock), a codec it does
 not know, an FFmpeg that is not an absolute path to an executable file, no FFmpeg on `PATH` for an
 encoded codec, or less than 4 GiB free in the folder, counting the previous run's files there as
 free, since the start removes them. A refusal names the setting at fault, never the user's FFmpeg

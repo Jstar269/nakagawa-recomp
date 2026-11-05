@@ -69,9 +69,6 @@ void sr_heap_note_bulk_write(uint32_t addr, uint32_t width, uint32_t pc) {
 }
 
 uint32_t sched_current_uid(void) { return 0; }
-/* No scheduler runs here, so guest time is never the deterministic clock. The presenter links the
- * run recorder (videorec.c), which asks this before it records and refuses on the paced clock. */
-int sched_clock_deterministic(void) { return 0; }
 uint32_t sr_get_ge_status(void) { return 0; }
 
 /* Host-mapped buffer memory selection (#1296), pure and device-free so it runs where Vulkan

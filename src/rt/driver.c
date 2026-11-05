@@ -507,6 +507,8 @@ int main(int argc, char **argv) {
     DriverExpectedU32 expectations[DRIVER_MAX_EXPECT_U32];
     memset(expectations, 0, sizeof(expectations));
     sr_flight_init();
+    /* The run recorder records only on the scheduler's deterministic clock (videorec.h). */
+    sr_videorec_set_clock(sched_clock_deterministic);
 
 #ifndef SR_SELFTEST_ONLY
 #ifdef _WIN32

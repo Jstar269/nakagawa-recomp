@@ -188,7 +188,10 @@ def build_traced_driver(elf, workdir, env, mutate=None):
     # cached branch) + the VFPU table loader
     # (vfpu_tables.c, which owns the table globals recomp.c references) +
     # driver + ace.c (the Ace Mode switch driver.c reads once at start; off
-    # unless SR_ACE says otherwise) + title_config.c + tools/gate_stub.c.
+    # unless SR_ACE says otherwise) + videorec.c (the run recorder driver.c
+    # tells how the run ended; it records only when SR_VIDEOREC_DIR is set, and
+    # refuses here, where the gate stub's clock is the paced one) +
+    # title_config.c + tools/gate_stub.c.
     # sched.c / sr_coro.c are intentionally omitted because the microtest never enters the scheduler
     # (no --sched / --gui flags), and those TUs would require SDL3 headers on a
     # headless Linux runner.  gate_stub.c provides the minimal dead-symbol
@@ -204,6 +207,7 @@ def build_traced_driver(elf, workdir, env, mutate=None):
             os.path.join(rt, "stale_code.c"),
             os.path.join(rt, "vfpu_tables.c"), os.path.join(rt, "driver.c"),
             os.path.join(rt, "ace.c"),
+            os.path.join(rt, "videorec.c"),
             os.path.join(rt, "title_config.c"),
             os.path.join(ROOT, "tools", "gate_stub.c"), *extra, "-lm"], env=env):
         return None

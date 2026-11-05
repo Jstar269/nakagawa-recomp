@@ -110,6 +110,8 @@ class TestGateStubLink(unittest.TestCase):
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
                 str(RT / "ace.c"),
+                # driver.c reports how the run ended to the real run recorder.
+                str(RT / "videorec.c"),
                 str(RT / "title_config.c"),
                 str(GATE_STUB),
                 "-lm",
