@@ -491,7 +491,8 @@ is as wide as the widest label, and the sentences go under the buttons when besi
 PLAY MODE closes the GAME card (the play modes, docs/ENHANCEMENT_CONTRACT.md section 10): its value is the library's
 default (AUTHENTIC: OPTIONS or ENHANCED: OPTIONS; Authentic for a new library), and it opens Settings > Enhanced, a
 dialog card in the same pattern: PLAY MODE, then one row per Enhanced part from the player's part table (TEXTURE
-FILTERING 16x, 8x, 4x, 2x, Off; CRISP SYSTEM TEXT; SPEED READOUT; GAME BADGE; SMOOTH MOTION), each beside a sentence
+FILTERING 16x, 8x, 4x, 2x, Off; CRISP SYSTEM TEXT; SPEED READOUT; GAME BADGE; SMOOTH MOTION; CLEAN PITCHED SOUND,
+off by default), each beside a sentence
 that says what it does and what it costs. A new part is a new row with no change to the page. While the mode is
 Authentic the part rows are disabled (`dim`, not focusable) and keep their values. The title page's ENHANCEMENTS
 card shows PLAY MODE for every game (LIBRARY DEFAULT, AUTHENTIC, ENHANCED, and ACE only for a game with a usable

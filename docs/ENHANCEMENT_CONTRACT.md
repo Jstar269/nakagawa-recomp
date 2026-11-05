@@ -272,7 +272,7 @@ The player offers three play modes per game (#2055):
 - **Authentic** is the standard: the game as released, recreating the PSP as closely as the project can. It is the
   default for a new library.
 - **Enhanced** turns on the project-authored improvements that work for any game: texture filtering, crisp system
-  text, the speed readout, the game badge and smooth motion today. Each one is a *part* that can be turned off for
+  text, the speed readout, the game badge, smooth motion and clean pitched sound (off by default) today. Each one is a *part* that can be turned off for
   the library or for a single game.
 - **Ace** is Enhanced plus the improvements made for that game alone. Today that is the title's 60 FPS game logic
   package (section 9). The player offers Ace only for a title with a usable package; its own parts can be turned off
@@ -496,7 +496,7 @@ No guest-visible item is admitted by this section alone. Each lands in its own p
 #### 11.3.1. Band-Limited SAS Resampling (`sas=sinc`)
 
 - **Key.** `sas=off` or `sas=sinc` on the launch line (section 10.1), a required key (#2054). A line without it, or
-  with any other value, is refused, and Ace is off for that run.
+  with any other value, is refused, and the run is Authentic.
 - **Tier and default.** Enhanced: it applies to every game, in Enhanced and Ace runs alike (section 10.5). The
   default is off. It is the part "Clean pitched sound" (`"sas"`, `sinc` or `off`) on the library's Settings >
   Enhanced page and on each game's own page (section 10.9), so the library and each title can turn it on or off

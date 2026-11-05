@@ -6399,6 +6399,92 @@ static void test_play_mode_settings_mapping(void) {
     free(back);
 }
 
+/* Clean pitched sound (contract 11.3.1, 11.2 item 2) at both levels: a library "sas" and a
+ * title's own "sas" are read, the title's wins either way, and both survive a save and a
+ * load; a file from before the play modes leaves it off. */
+static void test_play_mode_sas_settings(void) {
+    char sep = nk_platform_path_separator();
+    char cache_root[512], root[700], path[800];
+    char line[192];
+    PlayerPlayResolved r;
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(root, sizeof(root), "%s%cplay_mode_sas_probe", cache_root, sep);
+    assert(nk_platform_mkdir_p(root));
+    snprintf(path, sizeof(path), "%s%csettings.json", root, sep);
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    PlayerApp *back = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app && back);
+
+    /* The library on, one title off over it. */
+    write_text_file(path,
+        "{\"schema_version\": 2,"
+        " \"enhanced\": {\"default\": \"enhanced\", \"sas\": \"sinc\"},"
+        " \"title_play\": {\"TEST92001\": {\"mode\": \"library\", \"sas\": \"off\"}}}");
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings.enhanced.part[PLAYER_PART_SAS] == 1);
+    player_play_resolve(&app->settings, "TEST92001", &r);
+    assert(r.on && r.part[PLAYER_PART_SAS] == 0);
+    assert(player_play_launch_line(&r, line, sizeof(line)) && strstr(line, ";sas=off") != NULL);
+    player_play_resolve(&app->settings, "TEST92002", &r);       /* a title of its own follows */
+    assert(r.on && r.part[PLAYER_PART_SAS] == 1);
+    assert(player_play_launch_line(&r, line, sizeof(line)) && strstr(line, ";sas=sinc") != NULL);
+    assert(player_app_save_settings(app, path) == NK_OK);
+    {
+        char *saved = read_text_file(path);
+        assert(saved && strstr(saved, "\"smooth\": \"off\", \"sas\": \"sinc\"}") != NULL);
+        assert(strstr(saved, "\"TEST92001\": {\"mode\": \"library\", \"sas\": \"off\"}") != NULL);
+        free(saved);
+    }
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.enhanced.part[PLAYER_PART_SAS] == 1);
+    player_play_resolve(&back->settings, "TEST92001", &r);
+    assert(r.on && r.part[PLAYER_PART_SAS] == 0);
+
+    /* The library off, one title on over it. */
+    write_text_file(path,
+        "{\"schema_version\": 2,"
+        " \"enhanced\": {\"default\": \"enhanced\", \"sas\": \"off\"},"
+        " \"title_play\": {\"TEST92001\": {\"mode\": \"library\", \"sas\": \"sinc\"}}}");
+    memset(app, 0, sizeof(*app));
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings.enhanced.part[PLAYER_PART_SAS] == 0);
+    player_play_resolve(&app->settings, "TEST92001", &r);
+    assert(r.on && r.part[PLAYER_PART_SAS] == 1);
+    player_play_resolve(&app->settings, "TEST92002", &r);
+    assert(r.on && r.part[PLAYER_PART_SAS] == 0);
+    assert(player_app_save_settings(app, path) == NK_OK);
+    {
+        char *saved = read_text_file(path);
+        assert(saved && strstr(saved, "\"smooth\": \"off\", \"sas\": \"off\"}") != NULL);
+        assert(strstr(saved, "\"TEST92001\": {\"mode\": \"library\", \"sas\": \"sinc\"}") != NULL);
+        free(saved);
+    }
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    player_play_resolve(&back->settings, "TEST92001", &r);
+    assert(r.on && r.part[PLAYER_PART_SAS] == 1);
+    assert(player_play_launch_line(&r, line, sizeof(line)) && strstr(line, ";sas=sinc") != NULL);
+
+    /* The development builds' keys never carried sas: a word there is not read. */
+    write_text_file(path,
+        "{\"schema_version\": 2,"
+        " \"ace\": {\"enabled\": true, \"sas\": \"sinc\"},"
+        " \"ace_titles\": {\"TEST92001\": {\"mode\": \"ace\", \"sas\": \"sinc\"}}}");
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.enhanced.library == PLAYER_PLAY_ENHANCED);
+    assert(back->settings.enhanced.part[PLAYER_PART_SAS] == 0);
+    player_play_resolve(&back->settings, "TEST92001", &r);
+    assert(r.on && r.part[PLAYER_PART_SAS] == 0);
+
+    remove(path);
+    (void)test_rmdir(root);
+    free(back);
+    free(app);
+    printf("PASS: clean pitched sound is read, resolved and saved at both levels\n");
+}
+
 /* Smooth motion (#1272) as an Enhanced part: off by default, x2 on the launch line and never
  * match, and refused by the true 60 FPS game logic build whatever the settings say. */
 static void test_play_mode_smooth_motion(void) {
@@ -6876,6 +6962,7 @@ int main(int argc, char **argv) {
     test_play_mode_settings();
     test_play_mode_settings_mapping();
     test_play_mode_smooth_motion();
+    test_play_mode_sas_settings();
     test_play_mode_line_parses_in_runtime();
     test_play_mode_title_page();
     /* Saves a library file under the cache root, so it runs only once that
