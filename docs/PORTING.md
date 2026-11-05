@@ -470,7 +470,7 @@ disjointness so it cannot drift silently. `GENERIC_PSP_SEMANTIC` — retired for
 Retired. `tools/codegen.py` previously replaced the translated body at
 `0x00046d14` with an immediate `s->pc = s->r[31]` return plus a
 scheduler-gated trace. Private executable analysis has proven `0x00046d14`
-is an interior basic-block loop header `L_00046d14` inside `f_000468c8_real`
+is an interior basic-block loop header `L_00046d14` inside `f_000468c8` (the wrapper that renamed it is retired, #363)
 — not a callable entry, resume/continuation, `jal` or tail target, and not
 present in the current codegen entry catalog — and is reached via
 fall-through and loop back-edges. A clean A/B build removing only the
