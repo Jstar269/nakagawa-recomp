@@ -1516,11 +1516,19 @@ def fsr1_smoke(build_dir: Path) -> int:
         if first[0].read_bytes() != first[1].read_bytes():
             raise RuntimeError("FSR 1 changed the first presented guest frame")
 
+        # The upscaled run is stamped as enhanced, in its log and its bundle; the off run is not.
+        if "ACE_MODE: present upscale fsr1" not in fsr_log or "ACE_MODE:" in off_log:
+            raise RuntimeError("the fsr1 run's ACE_MODE stamp is missing, or the off run has one")
+        stamps = [runs[label][1]["runtime"].get("enhancements") for label in ("off", "fsr1")]
+        if stamps != [None, {"present_upscale": "fsr1"}]:
+            raise RuntimeError(f"flight bundle enhancements are {stamps}, not none and fsr1")
         paths = []
         for label in ("off", "fsr1"):
             target = root / f"{label}.projected.json"
-            target.write_text(json.dumps(_without_host_present_events(runs[label][1]), sort_keys=True),
-                              encoding="utf-8")
+            projected = _without_host_present_events(runs[label][1])
+            # Compared for the guest's events only: the stamp marks the window, not the guest.
+            projected["runtime"].pop("enhancements", None)
+            target.write_text(json.dumps(projected, sort_keys=True), encoding="utf-8")
             paths.append(target)
         match = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "flight_diff.py"), str(paths[0]), str(paths[1])],

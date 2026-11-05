@@ -629,6 +629,10 @@ static void gui_upscale_init(void) {
         return;
     }
     sdl3vk_set_upscale_pass(gui_upscale_pass);
+    /* Stamped like Ace Mode: the window is not the authentic picture (captures still are). */
+    sr_flight_set_present_upscale("fsr1");
+    fprintf(stderr, "ACE_MODE: present upscale fsr1 (the window only; captures hold the guest's "
+                    "frame)\n");
     fprintf(stderr, "sdl3vk: FSR 1 upscaling on (EASU + RCAS, presentation only)\n");
 }
 

@@ -46,6 +46,7 @@ PUBLIC_TARGETS := \
 	display-smoke-run \
 	display-smoke-picture-gate \
 	display-smoke-gui \
+	display-smoke-fsr1 \
 	display-smoke-quit \
 	display-smoke-player \
 	display-smoke-clean \
@@ -209,6 +210,7 @@ HELP_DESCRIPTION_display-smoke := build the display smoke fixture
 HELP_DESCRIPTION_display-smoke-run := run display smoke and compare its GE/present flight bundle
 HELP_DESCRIPTION_display-smoke-picture-gate := compare display smoke frames with an accepted reference (SKIP, PASS, FAIL)
 HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
+HELP_DESCRIPTION_display-smoke-fsr1 := compare the display smoke with the FSR 1 presentation upscaler off and on (needs a Vulkan device)
 HELP_DESCRIPTION_display-smoke-quit := close the display smoke window mid-run and check the orderly quit
 HELP_DESCRIPTION_display-smoke-player := build the player and run display smoke
 HELP_DESCRIPTION_display-smoke-clean := remove display smoke artifacts

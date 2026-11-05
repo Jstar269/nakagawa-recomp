@@ -280,6 +280,10 @@ void sr_flight_init(void);
  * "enhancements": {"ace": "<line>"}, and tools/flight_diff.py refuses to compare it. NULL or ""
  * clears it; an authentic run never calls this, so its bundle is unchanged. */
 void sr_flight_set_enhancements(const char *ace_line);
+/* Marks the run's window as upscaled (SR_PRESENT_UPSCALE, gpu_sdl3vk/fsr1_pass.h): the runtime
+ * block then carries "enhancements": {"present_upscale": "<mode>"} (beside "ace" when Ace Mode is
+ * on too), and tools/flight_diff.py refuses to compare it. NULL or "" clears it. */
+void sr_flight_set_present_upscale(const char *mode);
 int sr_flight_class_enabled(uint32_t event_class);
 void sr_flight_record(uint32_t event_class, uint32_t kind, uint32_t arg0, uint32_t arg1,
                       uint32_t arg2, uint32_t arg3);
@@ -351,6 +355,7 @@ static inline uint64_t sr_watch_match_count(void) { return 0u; }
 
 static inline void sr_flight_init(void) {}
 static inline void sr_flight_set_enhancements(const char *ace_line) { (void)ace_line; }
+static inline void sr_flight_set_present_upscale(const char *mode) { (void)mode; }
 static inline int sr_flight_class_enabled(uint32_t event_class) {
     (void)event_class;
     return 0;

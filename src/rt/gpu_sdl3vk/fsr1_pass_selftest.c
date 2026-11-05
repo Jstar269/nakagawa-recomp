@@ -370,12 +370,55 @@ static double step_error(int w, int h, int slant) {
     return n ? sum / (double)n : 0;
 }
 
+/* A soft vertical edge: LO to HI in a linear ramp over four source pixels around w/2, the edge a
+ * bilinear-scaled or already-soft picture has, which is what RCAS is there to sharpen. */
+static void paint_ramp(int w, int h) {
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int d = x - (w / 2 - 2);
+            uint32_t v = d <= 0 ? LO : d >= 4 ? HI : LO + (HI - LO) * (uint32_t)d / 4u;
+            g.map[y * w + x] = grey(v);
+        }
+}
+
+/* Mean over the middle rows of the steepest step between neighbouring pixels in the row: the
+ * edge's contrast, which sharpening raises. Also the lowest and highest value seen there. */
+static double edge_contrast(int w, int h, uint32_t *lo, uint32_t *hi) {
+    double sum = 0;
+    int rows = 0;
+    *lo = 255u;
+    *hi = 0u;
+    for (int y = h / 4; y < h * 3 / 4; y++) {
+        uint32_t steep = 0;
+        for (int x = 2; x < w - 2; x++) {
+            uint32_t a = g.map[y * w + x] & 0xFFu, b = g.map[y * w + x + 1] & 0xFFu;
+            uint32_t d = a > b ? a - b : b - a;
+            if (d > steep) steep = d;
+            if (a < *lo) *lo = a;
+            if (a > *hi) *hi = a;
+        }
+        sum += steep;
+        rows++;
+    }
+    return rows ? sum / rows : 0;
+}
+
 /* ---- cells -------------------------------------------------------------------------------------- */
 
 static int s_mutant;
 
+/* RCAS's gain in the steepest step of the soft edge (cell_rcas). Measured on an RTX 3080: x1.265
+ * at the default sharpness, x1.324 at the sharpest; an RCAS that copies its input gives x1.000 and
+ * FsrRcasCon one stop softer gives x1.088, both outside the bars. RCAS limits its gain to the
+ * neighbourhood, so it overshoots the edge's range by a few levels at most (4 and 6 measured). */
+#define RCAS_GAIN_DEFAULT_MIN 1.15
+#define RCAS_GAIN_DEFAULT_MAX 1.40
+#define RCAS_GAIN_SHARPEST_OVER_DEFAULT 1.02
+#define RCAS_OVERSHOOT_MAX 10u
+
 /* edge-adaptive: EASU alone at 2x keeps a step edge sharper than the presenter's bilinear blit,
- * by a measured margin, for a vertical and a slanted edge. RCAS keeps it at least as sharp. */
+ * by a measured margin, for a vertical and a slanted edge. RCAS does not widen its ramp (cell_rcas
+ * pins what RCAS itself does). */
 static void cell_edge(Fsr1Pass *p, int slant) {
     const int w = 96, h = 96, ow = 192, oh = 192;
     Source src;
@@ -399,7 +442,68 @@ static void cell_edge(Fsr1Pass *p, int slant) {
     CHECK(ee <= be * 0.8, "EASU is not sharper than bilinear on the %s edge (error %.2f vs %.2f)%s",
           slant ? "slanted" : "vertical", ee, be, s_mutant ? " [the mutant is caught]" : "");
     CHECK(ew <= bw, "EASU's ramp (%.2f px) is wider than bilinear's (%.2f px)", ew, bw);
-    CHECK(re <= ee + 0.5 && rw <= ew, "RCAS softened the edge (error %.2f vs %.2f)", re, ee);
+    CHECK(rw <= ew, "RCAS widened the edge's ramp (%.2f px vs EASU's %.2f px)", rw, ew);
+    image_free(&src);
+}
+
+/* rcas-contrast: on a soft edge at 2x, RCAS at AMD's default sharpness raises the edge's contrast
+ * over EASU alone by a measured factor, the sharpest setting (0 stops) raises it further, and
+ * neither overshoots the edge's range by more than RCAS_OVERSHOOT_MAX levels (no ringing).
+ * An RCAS that copies its input, or FsrRcasCon constants off by a stop, fails here. */
+static void cell_rcas(Fsr1Pass *p) {
+    const int w = 96, h = 96, ow = 192, oh = 192;
+    Source src;
+    memset(&src, 0, sizeof(src));
+    if (!image_make(&src, w, h, VK_FORMAT_R8G8B8A8_UNORM)) { CHECK(0, "source image"); return; }
+    paint_ramp(w, h);
+    source_fill(&src, w, h, 1);
+    uint32_t elo, ehi, dlo, dhi, mlo, mhi;
+    upscale(p, &src, w, h, ow, oh, FSR1_SHARPNESS_OFF);
+    double ce = edge_contrast(ow, oh, &elo, &ehi);
+    upscale(p, &src, w, h, ow, oh, FSR1_SHARPNESS_DEFAULT);
+    double cd = edge_contrast(ow, oh, &dlo, &dhi);
+    upscale(p, &src, w, h, ow, oh, 0.0f);
+    double cm = edge_contrast(ow, oh, &mlo, &mhi);
+    printf("fsr1-selftest: soft edge at 2x: steepest step EASU %.2f, EASU+RCAS default %.2f (x%.3f), "
+           "sharpest %.2f (x%.3f); range EASU %u..%u, RCAS %u..%u and %u..%u\n",
+           ce, cd, ce > 0 ? cd / ce : 0, cm, ce > 0 ? cm / ce : 0, elo, ehi, dlo, dhi, mlo, mhi);
+    CHECK(ce > 0 && cd >= ce * RCAS_GAIN_DEFAULT_MIN,
+          "RCAS at the default sharpness raised the edge contrast by x%.3f, under x%.2f%s",
+          ce > 0 ? cd / ce : 0, RCAS_GAIN_DEFAULT_MIN, s_mutant ? " [the mutant is caught]" : "");
+    CHECK(ce > 0 && cd <= ce * RCAS_GAIN_DEFAULT_MAX,
+          "RCAS at the default sharpness raised the edge contrast by x%.3f, over x%.2f%s",
+          ce > 0 ? cd / ce : 0, RCAS_GAIN_DEFAULT_MAX, s_mutant ? " [the mutant is caught]" : "");
+    CHECK(cm >= cd * RCAS_GAIN_SHARPEST_OVER_DEFAULT,
+          "the sharpest setting (%.2f) is not sharper than the default (%.2f) by x%.2f", cm, cd,
+          RCAS_GAIN_SHARPEST_OVER_DEFAULT);
+    CHECK(dlo + RCAS_OVERSHOOT_MAX >= LO && dhi <= HI + RCAS_OVERSHOOT_MAX &&
+          mlo + RCAS_OVERSHOOT_MAX >= LO && mhi <= HI + RCAS_OVERSHOOT_MAX,
+          "RCAS rang past the edge's range %u..%u by more than %u (default %u..%u, sharpest %u..%u)",
+          LO, HI, RCAS_OVERSHOOT_MAX, dlo, dhi, mlo, mhi);
+    image_free(&src);
+}
+
+/* size-fail: a size past the device's image limit gives no image, is said once, and is not tried
+ * again (no device wait on every later present); a size that fits still works after it. */
+static void cell_size_fail(Fsr1Pass *p) {
+    VkPhysicalDeviceProperties props;
+    GetPhysicalDeviceProperties(g.physical, &props);
+    const int w = 64, h = 48, big = (int)props.limits.maxImageDimension2D + 1;
+    Source src;
+    memset(&src, 0, sizeof(src));
+    if (!image_make(&src, w, h, VK_FORMAT_R8G8B8A8_UNORM)) { CHECK(0, "source image"); return; }
+    for (int i = 0; i < w * h; i++) g.map[i] = grey(128u);
+    source_fill(&src, w, h, 1);
+    unsigned before = fsr1_size_builds(p);
+    CHECK(upscale(p, &src, w, h, big, 96, FSR1_SHARPNESS_DEFAULT) == VK_NULL_HANDLE,
+          "a size past the device limit (%d) gave an image", big);
+    CHECK(upscale(p, &src, w, h, big, 96, FSR1_SHARPNESS_DEFAULT) == VK_NULL_HANDLE,
+          "the failed size gave an image the second time");
+    CHECK(fsr1_size_builds(p) == before + 1u,
+          "the failed size was rebuilt %u times, not once (a device wait per present)",
+          fsr1_size_builds(p) - before);
+    CHECK(upscale(p, &src, w, h, 128, 96, FSR1_SHARPNESS_DEFAULT) != VK_NULL_HANDLE,
+          "a size that fits failed after a size that did not");
     image_free(&src);
 }
 
@@ -515,10 +619,12 @@ int main(int argc, char **argv) {
     char why[160] = "";
     uint32_t *mutant = NULL;
     size_t mutant_bytes = 0;
-    if (argc >= 3 && strcmp(argv[1], "--easu-spv") == 0) {
+    int rcas_mutant = 0;
+    if (argc >= 3 && (strcmp(argv[1], "--easu-spv") == 0 || strcmp(argv[1], "--rcas-spv") == 0)) {
         mutant = read_spirv(argv[2], &mutant_bytes);
         if (!mutant) { printf("fsr1-selftest: cannot read %s\n", argv[2]); return 2; }
         s_mutant = 1;
+        rcas_mutant = strcmp(argv[1], "--rcas-spv") == 0;
     }
     int up = gpu_open(why, sizeof(why));
     if (up <= 0) {
@@ -534,8 +640,10 @@ int main(int argc, char **argv) {
     init.physical_device = g.physical;
     init.device = g.device;
     init.queue_family = g.family;
-    init.easu_spirv = mutant;
-    init.easu_spirv_bytes = mutant_bytes;
+    init.easu_spirv = rcas_mutant ? NULL : mutant;
+    init.easu_spirv_bytes = rcas_mutant ? 0 : mutant_bytes;
+    init.rcas_spirv = rcas_mutant ? mutant : NULL;
+    init.rcas_spirv_bytes = rcas_mutant ? mutant_bytes : 0;
     Fsr1Pass *p = fsr1_create(&init, why, sizeof(why));
     CHECK(p != NULL, "fsr1_create: %s", why);
     CHECK(fsr1_parse_mode(NULL) == 0 && fsr1_parse_mode("") == 0 && fsr1_parse_mode("off") == 0 &&
@@ -543,7 +651,9 @@ int main(int argc, char **argv) {
     if (p) {
         cell_edge(p, 0);
         cell_edge(p, 1);
+        cell_rcas(p);
         if (!s_mutant) {
+            cell_size_fail(p);
             cell_flat(p);
             cell_source(p);
             cell_cost(p);

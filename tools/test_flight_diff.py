@@ -330,12 +330,12 @@ class ComparabilityContractTests(unittest.TestCase):
         ace["runtime"]["enhancements"] = {"ace": self.ACE_LINE}
         with self.assertRaises(flight_diff.BundleIncomparable) as caught:
             flight_diff.diff_bundles(baseline, ace, "sequence")
-        self.assertTrue(any("Ace Mode run" in reason for reason in caught.exception.reasons))
+        self.assertTrue(any("enhanced run" in reason for reason in caught.exception.reasons))
         twin = copy.deepcopy(ace)
         with self.assertRaises(flight_diff.BundleIncomparable) as caught:
             flight_diff.diff_bundles(ace, twin, "sequence")
         self.assertEqual(
-            sum("Ace Mode run" in reason for reason in caught.exception.reasons), 2)
+            sum("enhanced run" in reason for reason in caught.exception.reasons), 2)
         result = self._run_cli(ace, twin)
         self.assertEqual(result.returncode, flight_diff.EXIT_INCOMPARABLE, result.stdout)
         self.assertIn("not authentic evidence", result.stdout)
@@ -345,7 +345,15 @@ class ComparabilityContractTests(unittest.TestCase):
         ace = copy.deepcopy(candidate)
         ace["runtime"]["enhancements"] = {"ace": self.ACE_LINE}
         flight_diff.validate_bundle(ace)
-        for bad in ({"ace": "off"}, {"ace": self.ACE_LINE, "extra": 1}, {}):
+        # The presentation upscaler's stamp, alone or beside Ace Mode's line (#1273).
+        for good in ({"present_upscale": "fsr1"}, {"ace": self.ACE_LINE, "present_upscale": "fsr1"}):
+            upscaled = copy.deepcopy(candidate)
+            upscaled["runtime"]["enhancements"] = good
+            flight_diff.validate_bundle(upscaled)
+            with self.assertRaises(flight_diff.BundleIncomparable):
+                flight_diff.diff_bundles(candidate, upscaled, "sequence")
+        for bad in ({"ace": "off"}, {"ace": self.ACE_LINE, "extra": 1}, {},
+                    {"present_upscale": "bilinear"}, {"present_upscale": "off"}):
             broken = copy.deepcopy(candidate)
             broken["runtime"]["enhancements"] = bad
             with self.assertRaises(ValueError):

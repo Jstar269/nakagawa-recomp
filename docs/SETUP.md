@@ -755,9 +755,13 @@ window with AMD FidelityFX Super Resolution 1: EASU, an edge-adaptive upscaler, 
 sharpening. `off`, the default, keeps the `SR_PRESENT_SCALING` filter. It runs only when the
 picture is enlarged, on game frames and CPU-presented movie frames alike. It is presentation only:
 the guest's frame, guest VRAM and captures are byte for byte what they are with it off
-(`display_smoke/generate.py fsr1`). Its cost is small: from 1920x1088 to 3840x2160, EASU and RCAS
-took 0.40 ms per present on an RTX 3080 (`fsr1-selftest`). An unknown value, or a device without
-compute, leaves it off with a line in the log.
+(`gpu-capture-selftest` and, with a Vulkan device and a display, `display-smoke-fsr1`). The pause
+overlay is drawn at the window's size on the CPU, so the paused picture is not upscaled and looks
+softer than the running one. Its cost is small: from 1920x1088 to 3840x2160, EASU and RCAS took
+0.40 ms per present on an RTX 3080 (`fsr1-selftest`). An unknown value, or a device without
+compute, leaves it off with a line in the log; so does a size whose images cannot be made, which
+is then not tried again. The launcher turns it off for an authentic session, and a run with it on
+is stamped as enhanced (`ACE_MODE: present upscale fsr1`).
 
 Runtime logs are written under `logs/`. Use `SR_DEBUG=0xFF` for all categories or consult [DEBUGGING.md](DEBUGGING.md) for targeted logging.
 On Windows, runtime output redirected to a file or pipe is buffered: a line reaches the log within 50 ms,

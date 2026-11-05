@@ -33,3 +33,8 @@ They are compiled into the native player as the opt-in presentation upscaler (`S
 
 None. Upstream ends some lines of both headers in spaces. The repository's `.gitattributes` exempts
 those two files from the trailing-space check, so the bytes stay identical to upstream.
+
+The embedded SPIR-V (`src/rt/gpu_sdl3vk/fsr1_easu_comp.inc`, `fsr1_rcas_comp.inc`) is compiled from
+the two `.comp` files, which include these headers. `shader_manifest.json` hashes the `.comp` sources
+only, so `tools/shader_embed.py verify` does not notice a header change: after any change to a
+header here, regenerate the embeddings with `tools/shader_embed.py`.

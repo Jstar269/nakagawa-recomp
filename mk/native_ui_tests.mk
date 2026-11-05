@@ -310,10 +310,13 @@ ace-smooth-selftest: shader-verify
 
 # fsr1-selftest - the presentation upscaler (src/rt/gpu_sdl3vk/fsr1_pass.c, AMD FSR 1 EASU + RCAS)
 # on a headless Vulkan device: EASU alone at 2x keeps a vertical and a slanted step edge sharper
-# than the presenter's bilinear blit by a measured margin, and RCAS keeps it at least as sharp; a
-# flat colour from a BGRA source stays exact at 480x272 to 1355x768; the source image is never
-# written. Linked from the pass, the C library and libm alone. No Vulkan headers, loader or device:
-# SKIP (exit 77), visible in the log; NK_UI_VK_REQUIRE=1 makes a skip fail.
+# than the presenter's bilinear blit by a measured margin; RCAS raises a soft edge's contrast over
+# EASU alone by a measured factor, more at the sharpest setting, and overshoots the edge's range by
+# 10 levels at most; a size past the device's image limit fails once and is not retried; a flat
+# colour from a BGRA source stays exact at 480x272 to 1355x768; the source image is never written.
+# --easu-spv and --rcas-spv load a mutant shader in place of the built-in one. Linked from the
+# pass, the C library and libm alone. No Vulkan headers, loader or device: SKIP (exit 77), visible
+# in the log; NK_UI_VK_REQUIRE=1 makes a skip fail.
 native-core-tests: fsr1-selftest
 .PHONY: fsr1-selftest
 fsr1-selftest: shader-verify

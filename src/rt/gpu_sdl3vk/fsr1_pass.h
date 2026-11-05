@@ -28,10 +28,12 @@ typedef struct {
     VkPhysicalDevice physical_device;
     VkDevice device;
     uint32_t queue_family;
-    /* Selftest seam: SPIR-V to use for EASU instead of the built-in shader (a mutant). NULL in
-     * the player. */
+    /* Selftest seam: SPIR-V to use for EASU or RCAS instead of the built-in shader (a mutant).
+     * NULL in the player. */
     const uint32_t *easu_spirv;
     size_t easu_spirv_bytes;
+    const uint32_t *rcas_spirv;
+    size_t rcas_spirv_bytes;
 } Fsr1Init;
 
 /* AMD's default sharpness, in stops below the maximum (0 is the sharpest). */
@@ -51,8 +53,13 @@ void fsr1_destroy(Fsr1Pass *p);
  * format a blit converts) to out_w x out_h into the command buffer, and returns the private
  * result in TRANSFER_SRC_OPTIMAL. `src` is only read. A sharpness at or below FSR1_SHARPNESS_OFF
  * skips RCAS. A size change waits for the device and rebuilds the images. VK_NULL_HANDLE when the
- * images cannot be made; the caller then shows `src` as it would without the pass. */
+ * images cannot be made (a size past the device's image limit, or no memory); the caller then
+ * shows `src` as it would without the pass. That failure is said once on stderr, and the same
+ * sizes are not tried again, so a failed size costs no device wait on later presents. */
 VkImage fsr1_record(Fsr1Pass *p, VkCommandBuffer cmd, VkImage src, int w, int h, int out_w,
                     int out_h, float sharpness);
+
+/* How many times the pass has built its images for a new size (a device wait each time). */
+unsigned fsr1_size_builds(const Fsr1Pass *p);
 
 #endif /* SR_FSR1_PASS_H */

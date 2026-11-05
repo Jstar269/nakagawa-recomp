@@ -43,6 +43,14 @@ enum {
     NK_PRESENT_SCALING_BILINEAR = 2, /* linear fit, as before issue #1129 */
 };
 
+/* The presentation upscaler (SR_PRESENT_UPSCALE, #1273). Always exported: "off" for an authentic
+   session whatever the setting, so neither the setting nor an inherited value can turn it on
+   there; an enhanced or Ace Mode session exports the setting. */
+enum {
+    NK_PRESENT_UPSCALE_OFF = 0,   /* SR_PRESENT_UPSCALE=off: the frame scaling alone */
+    NK_PRESENT_UPSCALE_FSR1 = 1,  /* SR_PRESENT_UPSCALE=fsr1: AMD FSR 1 EASU + RCAS */
+};
+
 /* The player's Reduce motion choice, as the runtime's in-game overlay is told it
    (SR_REDUCE_MOTION). SYSTEM, which prepare_session leaves, follows the system's own
    setting, as the launcher's Automatic does. */
@@ -56,6 +64,7 @@ enum {
 typedef struct {
     int resolution_scale;
     int present_scaling;  /* NK_PRESENT_SCALING_*; prepare_session defaults to SHARP */
+    int present_upscale;  /* NK_PRESENT_UPSCALE_*; prepare_session defaults to OFF */
     int fps_cap; /* -1 = PSP scanout pacing, 0 = uncapped host presentation */
     bool fullscreen;
     bool vsync;

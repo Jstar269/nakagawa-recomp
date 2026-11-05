@@ -60,6 +60,9 @@ struct Fsr1Pass {
     Fsr1Init init;
     VkDevice dev;
     int w, h, ow, oh;
+    uint32_t max_dim;                    /* the device's maxImageDimension2D */
+    int fail_w, fail_h, fail_ow, fail_oh; /* the sizes whose images could not be made */
+    unsigned size_builds;
     Img in, mid, out;
     VkSampler linear, nearest;
     VkDescriptorSetLayout dsl;
@@ -176,6 +179,10 @@ static void set_write(Fsr1Pass *p, VkDescriptorSet set, VkSampler sampler, const
 static int sized_make(Fsr1Pass *p, int w, int h, int ow, int oh) {
     p->DeviceWaitIdle(p->dev);
     sized_free(p);
+    p->size_builds++;
+    if ((uint32_t)w > p->max_dim || (uint32_t)h > p->max_dim || (uint32_t)ow > p->max_dim ||
+        (uint32_t)oh > p->max_dim)
+        return 0;
     if (!img_make(p, &p->in, w, h, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT) ||
         !img_make(p, &p->mid, ow, oh, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                                           VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
@@ -220,10 +227,21 @@ static void run_pass(Fsr1Pass *p, VkCommandBuffer cmd, VkPipeline pipe, VkDescri
 VkImage fsr1_record(Fsr1Pass *p, VkCommandBuffer cmd, VkImage src, int w, int h, int out_w,
                     int out_h, float sharpness) {
     if (!p || !cmd || !src || w <= 0 || h <= 0 || out_w <= 0 || out_h <= 0) return VK_NULL_HANDLE;
-    if ((w != p->w || h != p->h || out_w != p->ow || out_h != p->oh) &&
-        !sized_make(p, w, h, out_w, out_h)) {
-        sized_free(p);
-        return VK_NULL_HANDLE;
+    if (w != p->w || h != p->h || out_w != p->ow || out_h != p->oh) {
+        /* A size whose images could not be made is not tried again: no device wait per present. */
+        if (w == p->fail_w && h == p->fail_h && out_w == p->fail_ow && out_h == p->fail_oh)
+            return VK_NULL_HANDLE;
+        if (!sized_make(p, w, h, out_w, out_h)) {
+            sized_free(p);
+            p->fail_w = w;
+            p->fail_h = h;
+            p->fail_ow = out_w;
+            p->fail_oh = out_h;
+            fprintf(stderr, "sdl3vk: FSR 1 cannot make its images for %dx%d to %dx%d (the device's "
+                            "limit is %u); the window scales as before at this size\n",
+                    w, h, out_w, out_h, p->max_dim);
+            return VK_NULL_HANDLE;
+        }
     }
 
     /* The shown image, 1:1, into the private input. */
@@ -361,7 +379,10 @@ static int fixed_make(Fsr1Pass *p) {
         p->easu_mod = shader_make(p, p->init.easu_spirv, p->init.easu_spirv_bytes);
     else
         p->easu_mod = shader_make(p, k_easu_spv, sizeof(k_easu_spv));
-    p->rcas_mod = shader_make(p, k_rcas_spv, sizeof(k_rcas_spv));
+    if (p->init.rcas_spirv && p->init.rcas_spirv_bytes)
+        p->rcas_mod = shader_make(p, p->init.rcas_spirv, p->init.rcas_spirv_bytes);
+    else
+        p->rcas_mod = shader_make(p, k_rcas_spv, sizeof(k_rcas_spv));
     if (!p->easu_mod || !p->rcas_mod) return 0;
     p->easu = pipeline_make(p, p->easu_mod);
     p->rcas = pipeline_make(p, p->rcas_mod);
@@ -398,6 +419,14 @@ Fsr1Pass *fsr1_create(const Fsr1Init *init, char *error, size_t error_size) {
     p->dev = init->device;
     p->GetPhysicalDeviceMemoryProperties = (PFN_vkGetPhysicalDeviceMemoryProperties)
         init->get_instance_proc_addr(init->instance, "vkGetPhysicalDeviceMemoryProperties");
+    PFN_vkGetPhysicalDeviceProperties props_fn = (PFN_vkGetPhysicalDeviceProperties)
+        init->get_instance_proc_addr(init->instance, "vkGetPhysicalDeviceProperties");
+    if (props_fn) {
+        VkPhysicalDeviceProperties props;
+        props_fn(init->physical_device, &props);
+        p->max_dim = props.limits.maxImageDimension2D;
+    }
+    if (!p->max_dim) p->max_dim = 4096u;  /* Vulkan's required minimum */
 #define DEV(name) p->name = (PFN_vk##name)dev_addr(p->dev, "vk" #name)
     DEV(CreateImage); DEV(DestroyImage); DEV(GetImageMemoryRequirements); DEV(AllocateMemory);
     DEV(FreeMemory); DEV(BindImageMemory); DEV(CreateImageView); DEV(DestroyImageView);
@@ -416,6 +445,8 @@ Fsr1Pass *fsr1_create(const Fsr1Init *init, char *error, size_t error_size) {
     }
     return p;
 }
+
+unsigned fsr1_size_builds(const Fsr1Pass *p) { return p ? p->size_builds : 0u; }
 
 void fsr1_destroy(Fsr1Pass *p) {
     if (!p) return;
