@@ -10,8 +10,8 @@ These assertions guard the two properties a behavioral test cannot express:
 
 * complete valid spans must not be silently clamped to the old 0xC000
   allocator-boundary observation, and
-* the measured one-byte invalid-tail prefix is the only partial shape admitted
-  before a larger overrun is measured.
+* a span past the end of the guest arena is refused whole: no partial prefix is
+  copied, since the PSP's answer there is unmeasured (#303).
 
 The cross-thread BUSY result is modelled from the PSP-3000 measurement (#303):
 BUSY is returned only by a Try made while another thread's transfer is pending,
@@ -71,8 +71,8 @@ class TestDmacValidationOrder(unittest.TestCase):
         size_check = region.index("if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;")
         null_check = region.index("if (dst == 0u || src == 0u)")
         prefix = region.index("const uint32_t src_prefix = sr_guest_span_prefix(src, n);")
-        policy = region.index("n - src_prefix != 1u")
-        effective = region.index("uint32_t effective = src_prefix < dst_prefix ? src_prefix : dst_prefix;")
+        policy = region.index("if (src_prefix != n || dst_prefix != n) {")
+        effective = region.index("const uint32_t effective = n;")
         transfer = region.index("static uint32_t dmac_transfer(CpuState *s, int try_only) {")
         copy = region.index("dmac_copy(dst, src, effective);", transfer)
         helper = region.index("static void dmac_copy(uint32_t dst, uint32_t src, uint32_t n) {")
@@ -81,8 +81,8 @@ class TestDmacValidationOrder(unittest.TestCase):
 
         self.assertLess(size_check, null_check)
         self.assertLess(null_check, prefix)
-        self.assertLess(prefix, effective)
-        self.assertLess(effective, policy)
+        self.assertLess(prefix, policy)
+        self.assertLess(policy, effective, "a short span is refused before any length is chosen")
         self.assertLess(effective, copy, "the effective length must be selected before copying")
         self.assertLess(helper_copy, dirty, "the GPU is notified only after a real transfer")
         # Every write in the transfer goes through dmac_copy, after validation.
@@ -161,11 +161,12 @@ class TestDmacMeasuredBoundary(unittest.TestCase):
         for forbidden in ("sched_delay_current", "sched_preempt", "Sleep(", "usleep", "sr_yield"):
             self.assertNotIn(forbidden, code)
 
-    def test_measured_invalid_tail_policy_is_explicit(self) -> None:
+    def test_span_past_arena_is_refused_whole(self) -> None:
         region = _dmac_region()
-        self.assertIn("one-byte arena-end tail", region)
-        self.assertIn("larger or ambiguous overruns remain fail-closed", region)
-        self.assertIn("n - src_prefix != 1u", region)
+        self.assertIn("if (src_prefix != n || dst_prefix != n) {", region)
+        self.assertIn("refused whole", region)
+        self.assertNotIn("n - src_prefix != 1u", region)
+        self.assertNotIn("one-byte arena-end tail", region)
 
 
 class TestDmacExecutableCoverage(unittest.TestCase):
@@ -182,8 +183,8 @@ class TestDmacExecutableCoverage(unittest.TestCase):
             "PSP: zero size returns the illegal-size error",
             "PSP: a NULL destination returns the illegal-address error",
             "PSP: a NULL source returns the illegal-address error",
-            "PSP: a one-byte invalid destination tail returns success",
-            "PSP: a one-byte invalid source tail returns success",
+            "a destination span one byte past the arena is refused",
+            "a source span one byte past the arena is refused",
             "PSP: a same-pointer self copy leaves the buffer unchanged",
             "PSP: a forward-overlapping copy is memmove-correct across the span",
             "PSP: a backward-overlapping copy is memmove-correct across the span",
@@ -192,7 +193,7 @@ class TestDmacExecutableCoverage(unittest.TestCase):
             "VRAM-to-VRAM",
             "aliased VRAM destination",
             "PSP: a hardware-verified transfer size copies every byte",
-            "unmeasured multi-byte invalid tail remains fail-closed",
+            "a multi-byte tail past the arena is refused",
             "a Try made while another thread's transfer is pending returns BUSY",
             "a blocking call made while another thread's transfer is pending returns 0",
             "the blocking call waits and returns only after the first transfer",

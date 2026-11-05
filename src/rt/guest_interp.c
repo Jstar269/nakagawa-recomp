@@ -526,6 +526,12 @@ uint32_t sr_module_code_sync_overlays(uint32_t lo, uint32_t hi) {
     return changed;
 }
 
+int sr_module_code_capture_covers(uint32_t pc) {
+    const SrModuleBinding *binding = module_binding_for(pc);
+    return binding != NULL && binding->code->name != NULL &&
+           strncmp(binding->code->name, "code_capture_", 13u) == 0;
+}
+
 int sr_module_code_fetch_authority(uint32_t pc) {
     const SrModuleBinding *binding = module_binding_for(pc);
     if (!binding) return -1;

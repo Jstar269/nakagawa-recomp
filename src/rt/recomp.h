@@ -437,10 +437,10 @@ static inline int sr_guest_span_readable_current_at(uint32_t addr, uint32_t size
 
 /* Return the largest prefix of [addr, addr + size) that remains inside the
  * flat guest arena.  This is intentionally a prefix calculation, not a
- * validity predicate: the measured PSP DMAC path can complete a one-byte tail
- * request when the valid prefix ends at an allocation boundary.  Callers must
- * apply their own policy to larger or otherwise ambiguous overruns before
- * forming a host pointer. */
+ * validity predicate: a caller compares the prefix with the size it needs (the
+ * DMAC path refuses any span whose prefix is short) or bounds a scan with it.
+ * Callers must apply their own policy to an overrun before forming a host
+ * pointer. */
 static inline uint32_t sr_guest_span_prefix(uint32_t addr, uint32_t size) {
     if (size == 0u) return 0u;
     const uint32_t phys = (uint32_t)SR_PHYS(addr);
@@ -1537,6 +1537,9 @@ RecompFn sr_module_code_lookup(uint32_t pc, int *in_bound_image);
 /* Fetch authority: -1 when no bound image owns pc, else 1/0 for whether one of the
  * owning image's executable spans covers pc's complete fetch slot. */
 int  sr_module_code_fetch_authority(uint32_t pc);
+/* 1 when a bound image covers pc and that image is the translation of code captures (#1933):
+ * tools/code_capture.py names each such image code_capture_<load>_<fnv1a64>. */
+int  sr_module_code_capture_covers(uint32_t pc);
 void sr_module_code_reset(void);   /* drop every registration and binding (fixtures) */
 /* Instruction-cache maintenance over guest [lo, hi): unbind each code overlay there whose
  * identifying bytes are no longer in memory, then bind each one whose bytes are. Returns

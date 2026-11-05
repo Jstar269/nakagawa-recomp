@@ -180,6 +180,9 @@ ENHANCEMENT_STORE_SITES: list[dict] = []
 # Callable entries whose body loads $sp (guest_owns_entry_sp): no exit restores their entry
 # $sp, so the stack census leaves them unwrapped, as it leaves resume bodies.
 GUEST_SP_ENTRIES: set[int] = set()
+# The $sp loads of the body emit_function is emitting that carry their run-time verdict
+# (_sp_load_check, #1935); delay_slot_lines reads it, so its many call sites stay as they are.
+_BODY_SP_CHECKS: set[int] = set()
 
 
 def _enhancement_rewrite(addr: int) -> dict | None:
@@ -1174,8 +1177,15 @@ def guest_sp_exits(elf, start, insns, labels):
     return _sp_exit_walk(elf, start, insns, labels)[0]
 
 
+def _loads_foreign_sp(w, regs, slots):
+    """True when ``w`` loads $sp from anything but the frame's own slot (_frame_step's test)."""
+    return (w is not None and w >> 26 == 0x23 and rt(w) == 29
+            and _OWN_SP not in _frame_step(w, {**regs, _OWN_SP: 0}, slots)[0])
+
+
 def _sp_exit_walk(elf, start, insns, labels):
-    """(the exits of a body that leave $sp as the guest set it, all of its exits).
+    """(the exits of a body that leave $sp as the guest set it, all of its exits, the
+    addresses of the $sp loads that made them the guest's).
 
     A callable body owes its caller the entry $sp, and its exits restore it (F3E). A load of
     $sp from memory is a longjmp or a context switch: it moves into the frame whose $sp it
@@ -1195,12 +1205,13 @@ def _sp_exit_walk(elf, start, insns, labels):
     entry $sp: registers, including copies of $sp, and memory in the frame. A call keeps the
     call-saved registers and the frame; a store through a register not known here is taken
     to miss the frame. An exit is the address of a transfer that leaves the body, or the
-    address outside the body it falls into.
+    address outside the body it falls into. Whether such a load really left the frame is
+    known only when it runs: emit_function checks each one there (_sp_load_check).
     """
     if not any((read32(elf, addr) or 0) >> 26 == 0x23 and rt(read32(elf, addr)) == 29
                for addr in insns):
-        return frozenset(), frozenset()
-    states, work, guest, exits = {}, [], set(), set()
+        return frozenset(), frozenset(), frozenset()
+    states, work, guest, exits, foreign = {}, [], set(), set(), set()
 
     def leave(addr, regs):
         exits.add(addr)
@@ -1228,9 +1239,13 @@ def _sp_exit_walk(elf, start, insns, labels):
         if w is None or is_eret(w):
             continue
         if not is_control(w):
+            if _loads_foreign_sp(w, regs, slots):
+                foreign.add(addr)
             reach(addr + 4, *_frame_step(w, regs, slots))
             continue
         slot = read32(elf, addr + 4)
+        if _loads_foreign_sp(slot, regs, slots):
+            foreign.add(addr + 4)
         after = _frame_step(slot, regs, slots) if slot is not None else (regs, slots)
         op, fn = w >> 26, w & 0x3F
         if op == 2:
@@ -1246,7 +1261,7 @@ def _sp_exit_walk(elf, start, insns, labels):
         else:
             reach(branch_target(addr, w), *after, exit_at=addr)
             reach(addr + 8, *((regs, slots) if is_likely(w) else after))
-    return frozenset(guest), frozenset(exits)
+    return frozenset(guest), frozenset(exits), frozenset(foreign)
 
 
 def guest_owns_entry_sp(elf, start, insns, labels):
@@ -1267,22 +1282,47 @@ def emit_host_return(resumable, comment=None, stack_census=False):
     return "s->r[29] = _sp_entry; return;"
 
 
-def emit_tail_transfer(target_expr, fn_symbol, resumable, stack_census=False, comment=None):
+def emit_tail_transfer(target_expr, fn_symbol, resumable, stack_census=False, comment=None,
+                       sp_kept=False):
     """A guest TAIL transfer (#855): record it and leave; the invoker drains it.
 
     The transfer never nests a native call, so a guest loop of tail transfers runs in
     constant host stack. A callable body still owes its entry-SP restore; it travels with
     the transfer and the drain applies it once the chain completes, exactly where the
     nested native return used to apply it. A resume body owes none, and under the stack
-    census the wrapper restores after its own drain. ``fn_symbol`` keeps a known target's
+    census the wrapper restores after its own drain. ``sp_kept`` is an exit of a body that
+    loads $sp: it owes the restore only while every $sp load it ran stayed in its frame
+    (``_sp_kept``, _sp_load_check). ``fn_symbol`` keeps a known target's
     direct call (no dispatcher entry); ``None`` keeps a computed or unknown target's
     dispatch, which also keeps that path's timeslice tick and guards.
     """
     fn = fn_symbol if fn_symbol else "NULL"
     suffix = f" /* {comment} */" if comment else ""
+    if sp_kept and not stack_census:
+        return f"sr_tail_record(s, {target_expr}, {fn}, _sp_entry, _sp_kept); return;{suffix}"
     if resumable or stack_census:
         return f"sr_tail_record(s, {target_expr}, {fn}, 0u, 0u); return;{suffix}"
     return f"sr_tail_record(s, {target_expr}, {fn}, _sp_entry, 1u); return;{suffix}"
+
+
+def _sp_load_check(line, indent="    "):
+    """``line``, a $sp load the frame walk does not own, and the run-time verdict on it (#1935).
+
+    As the interpreter decides it (sp_load_leaves_frame): a load that leaves $sp between
+    where it was and the body's entry $sp frees only the body's own space, an alloca free.
+    Any other one moves to another frame, a longjmp or a context switch, and the body's
+    tail transfers then owe no restore.
+    """
+    return (f"{indent}{{ uint32_t _sp_load = s->r[29];\n{line}\n"
+            f"{indent}  if (s->r[29] < _sp_load || s->r[29] >= _sp_entry) _sp_kept = 0u; }}")
+
+
+def _is_tail_exit(elf, addr, insns, continuations):
+    """True when the body leaves through ``addr``, an exit of _sp_exit_walk, by a TAIL record."""
+    if addr not in insns:
+        return addr in set(continuations.values())
+    w = read32(elf, addr)
+    return w is not None and not (w >> 26 == 0 and w & 0x3F == 0x08 and rs(w) == 31)
 
 
 def emit_code_pointer_check(target_expr, transfer_pc):
@@ -3281,8 +3321,10 @@ def delay_slot_lines(ds, dsw, branch_pc, lle_cpu=False,
             f"{indent}sr_end(s, 0u, 0);",
             f"{indent}{_flow_return(resumable)}",
         ]
-    return [normal_line(ds, dsw, lle_cpu=lle_cpu,
-                        delay_branch_pc=branch_pc if lle_cpu else None)]
+    line = normal_line(ds, dsw, lle_cpu=lle_cpu,
+                       delay_branch_pc=branch_pc if lle_cpu else None)
+    # A $sp load the frame walk does not own carries its run-time verdict (#1935).
+    return [_sp_load_check(line, indent) if ds in _BODY_SP_CHECKS else line]
 
 # ---------------------------------------------------------------------------
 # Offline static verification trace simulation (--static-verify).
@@ -3521,6 +3563,8 @@ class _BodyContext:
     maps a control instruction to the word its inline delay slot lets control jump over, and
     ``resumable`` is the final answer, after a body that loads ``$sp`` has claimed every exit,
     and ``guest_exits`` are the exits of a body that claimed only some (#1935).
+    ``sp_kept`` is a body whose guest-owned TAIL exits record the entry $sp while every
+    $sp load it ran stayed in its frame, and ``sp_checks`` are those loads (_sp_load_check).
     """
     elf: object
     ranges: object
@@ -3536,6 +3580,8 @@ class _BodyContext:
     stack_census: bool
     start: int
     guest_exits: frozenset
+    sp_kept: bool = False
+    sp_checks: frozenset = frozenset()
 
 
 def _check_delay_slot_labels(elf, start, insns, labels, continuations, ranges):
@@ -3795,7 +3841,8 @@ def _emit_non_control_word(ctx, out, addr, w, sv_points):
     """One word that is not a control transfer, with its static checks and continuation edge."""
     continuations, lle_cpu = ctx.continuations, ctx.lle_cpu
     resumable = ctx.resumable
-    out.append(normal_line(addr, w, lle_cpu=lle_cpu))
+    line = normal_line(addr, w, lle_cpu=lle_cpu)
+    out.append(_sp_load_check(line) if addr in ctx.sp_checks else line)
     if _is_cop0_move(w):
         # MFC0/MTC0 can raise (privilege/reserved encoding): propagate
         # the resulting flow before any native continuation (spec 3.4).
@@ -3887,7 +3934,7 @@ def _emit_jalr(ctx, out, addr, w, ds, dsw):
         _emit_slot_exit(ctx, out, addr)
     else:
         out.append(
-            f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}"
+            f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census, sp_kept=ctx.sp_kept and addr in guest_exits)} }}"
         )
 
 
@@ -3937,7 +3984,7 @@ def _emit_jr(ctx, out, addr, w, ds, dsw):
         out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
         out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,
                                     indent="      "))
-        out.append(f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
+        out.append(f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census, sp_kept=ctx.sp_kept and addr in guest_exits)} }}")
 
 
 def _emit_unrelocated_j(ctx, out, addr, w, ds, dsw):
@@ -3949,7 +3996,7 @@ def _emit_unrelocated_j(ctx, out, addr, w, ds, dsw):
     out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); sr_end(s, 0u, 0);")
     out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
                                 resumable=resumable, indent="      "))
-    out.append(f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
+    out.append(f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census, sp_kept=ctx.sp_kept and addr in guest_exits)} }}")
 
 
 def _emit_j(ctx, out, addr, w, ds, dsw):
@@ -3972,12 +4019,12 @@ def _emit_j(ctx, out, addr, w, ds, dsw):
     elif (target in known or target in resume_owners) and not (
         target in resume_owners and target in labels
     ):
-        out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable or addr in guest_exits, stack_census)}")
+        out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable or addr in guest_exits, stack_census, sp_kept=ctx.sp_kept and addr in guest_exits)}")
     elif target in labels:
         y = f"SR_YIELD(s, {G(addr)}); " if target <= addr else ""   # backward j: loop edge
         out.append(f"    {y}goto L_{target:08x};")
     else:
-        out.append(f"    {{ uint32_t _t = {G(target)}; {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
+        out.append(f"    {{ uint32_t _t = {G(target)}; {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census, sp_kept=ctx.sp_kept and addr in guest_exits)} }}")
 
 
 def _emit_conditional_branch(ctx, out, addr, w, ds, dsw):
@@ -4037,7 +4084,8 @@ def _emit_conditional_branch(ctx, out, addr, w, ds, dsw):
         # transfer as `j` to that entry, after the delay slot (annulled on the
         # not-taken path of a likely branch).
         tail = emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners),
-                                  resumable or addr in guest_exits, stack_census)
+                                  resumable or addr in guest_exits, stack_census,
+                                  sp_kept=ctx.sp_kept and addr in guest_exits)
         if is_likely(w):
             out.append(f"      if (_c) {{ {_delay_inline} {tail} }} }}")
         else:
@@ -4045,10 +4093,10 @@ def _emit_conditional_branch(ctx, out, addr, w, ds, dsw):
             out.append(f"      if (_c) {{ {tail} }} }}")
     else:
         if is_likely(w):
-            out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable or addr in guest_exits, stack_census)} }} }} }}")
+            out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable or addr in guest_exits, stack_census, sp_kept=ctx.sp_kept and addr in guest_exits)} }} }} }}")
         else:
             out.extend("   " + line for line in _delay)
-            out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable or addr in guest_exits, stack_census)} }} }} }}")
+            out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable or addr in guest_exits, stack_census, sp_kept=ctx.sp_kept and addr in guest_exits)} }} }} }}")
     _emit_slot_exit(ctx, out, addr, "slot already ran inline (or was annulled)")
 
 
@@ -4092,10 +4140,10 @@ def _emit_continuation_blocks(ctx, out):
             # dispatch the guest target and then leave the current native body.
             out.append(
                 f"    {{ uint32_t _t = {G(target)}; "
-                f"{emit_tail_transfer('_t', None, resumable or target in guest_exits, stack_census)} }}"
+                f"{emit_tail_transfer('_t', None, resumable or target in guest_exits, stack_census, sp_kept=ctx.sp_kept and target in guest_exits)} }}"
             )
         else:
-            out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable or target in guest_exits, stack_census, 'synthetic boundary: the owning entry frame is restored after the chain')}")
+            out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable or target in guest_exits, stack_census, 'synthetic boundary: the owning entry frame is restored after the chain', sp_kept=ctx.sp_kept and target in guest_exits)}")
     out.append("  _sr_fallthrough_return: ;")
 
 
@@ -4165,8 +4213,14 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             dispatch_boundaries=dispatch_boundaries)
     insns, labels, continuations = flow
     # An exit that a load of $sp reaches leaves $sp to the guest, as a resume body's do.
-    guest_exits, exits = (frozenset(), frozenset()) if resumable else _sp_exit_walk(
-        elf, start, insns, labels)
+    guest_exits, exits, foreign_loads = (frozenset(), frozenset(), frozenset()) if resumable \
+        else _sp_exit_walk(elf, start, insns, labels)
+    # Whether a $sp load left the frame is known only when it runs (#1935): a body whose
+    # guest-owned exit is a TAIL keeps its entry $sp and checks each such load, so the
+    # record owes the restore exactly when every load it ran was an alloca free. The census
+    # records no restore at a TAIL, so it keeps the static verdict.
+    sp_kept = not stack_census and any(
+        _is_tail_exit(elf, addr, insns, continuations) for addr in guest_exits)
     if guest_exits:
         GUEST_SP_ENTRIES.add(start)
         if guest_exits == exits:
@@ -4190,14 +4244,19 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
     out.append(f"    SR_YIELD(s, {G(start)});")   # preemption point (no-op unless scheduler active)
     # Callable entries own an o32 frame contract. Resume entries begin with an
     # already-live owner frame, so the guest instructions alone own SP changes.
-    if not resumable:
+    if not resumable or sp_kept:
         out.append("    uint32_t _sp_entry = s->r[29]; (void)_sp_entry;")
+    if sp_kept:
+        out.append("    uint32_t _sp_kept = 1u; (void)_sp_kept;")
     if insns and start != min(insns):
         labels = set(labels)
         labels.add(start)
         out.append(f"    goto L_{start:08x};")
     ctx = _BodyContext(elf, ranges, known, resume_owners, dispatch_boundaries, labels, continuations,
-                       dup_slot_skips, hst_profile, lle_cpu, resumable, stack_census, start, guest_exits)
+                       dup_slot_skips, hst_profile, lle_cpu, resumable, stack_census, start, guest_exits,
+                       sp_kept, foreign_loads if sp_kept else frozenset())
+    _BODY_SP_CHECKS.clear()
+    _BODY_SP_CHECKS.update(ctx.sp_checks)
     consumed = set()
     promo = RegisterPromotion() if OPTIONS.promote_registers else None
     for addr in sorted(insns):
@@ -4213,7 +4272,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if promo is not None:
             promoted = None
             if (not is_control(w) and not _is_cop0_move(w) and addr not in sv_points
-                    and addr not in continuations and _enhancement_rewrite(addr) is None
+                    and addr not in continuations and addr not in ctx.sp_checks
+                    and _enhancement_rewrite(addr) is None
                     and not (hst_profile and addr in _HST_INLINE_SITES)):
                 promoted = promo.try_line(addr, w, lle_cpu=lle_cpu)
             if promoted is not None:
@@ -4251,6 +4311,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # dispatch-only bodies stay unchecked. Keyed on the CALL's own drain, so every
         # call form that uses emit_body_call is covered. See SR_HOST_STACK_CHECK in recomp.h.
         out.insert(1, emit_host_stack_check(G(start)))
+    _BODY_SP_CHECKS.clear()
     return out
 
 #: ``--extra-elf=<module>@runtime``: the module is placed by the runtime's guest
