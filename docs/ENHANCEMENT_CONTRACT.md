@@ -298,6 +298,9 @@ the samplers and the pool; `display-smoke` keeps its image hash.
   the filtered picture: the same class as a render scale above 1x, and the launcher says so. The launch notice, the
   speed readout and the crisp keyboard draw only on the swapchain image, never on the frame a capture reads, and so
   do Smooth motion's in-between frames (section 10.6).
+- **Sound:** with `sas=sinc` the SAS mixer writes band-limited sample values into the guest's SAS output buffer, so a
+  title that reads that buffer back (a level meter, its own effect chain) sees the changed values. Voice state, end
+  flags, envelope heights and the grain stay authentic (section 10.7).
 
 ### 10.4. Stamps and Evidence
 
@@ -345,24 +348,40 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
 With `sas=sinc`, SAS voices are resampled by a band-limited filter on the host (#2054). The code is in
 `src/rt/hle_audio.c`, next to the authentic mixer.
 
-- **The authentic path.** Without the feature the mixer does not interpolate (a zero-order hold). Each
-  output sample plays the decoded sample at the voice's whole position. A 12-bit fraction then advances by
-  the pitch (0x1000 is one source sample per output sample). Above 0x1000 the voice skips samples with no
-  low-pass filter, so it aliases. Below 0x1000 it repeats them, so it carries images of its source band.
-  This rule has been in the mixer since the initial public export. It is not a physical-PSP measurement of
-  the SAS core.
+- **The authentic path.** Without the feature the mixer does not interpolate (a zero-order hold). Each output sample
+  plays the decoded sample at the voice's whole position. A 12-bit fraction then advances by the pitch (0x1000 is one
+  source sample per output sample). Above 0x1000 the voice skips samples with no low-pass filter, so it aliases.
+  Below 0x1000 it repeats them, so it carries images of its source band. A step that runs past the end of a 28-sample
+  VAG block lands on the next block's first sample, dropping the overshoot. This rule has been in the mixer since the
+  initial public export. It is not a physical-PSP measurement of the SAS core.
 - **What changes.** A VAG voice's output samples are a Kaiser-windowed sinc (24 zero crossings, beta 7)
   evaluated at the voice's exact position. Above a pitch of 0x1000 the cutoff drops by the pitch ratio, so
   the source is low-passed below the output's Nyquist frequency before it is decimated. Samples ahead of
   the position come from a copy of the voice that decodes ahead. The voice itself never does.
 - **What never changes.** The voice runs the authentic statements in the authentic order: decode position,
   fraction, envelope, end of sample, end flags and the grain are the authentic ones, and only the mixed
-  sample values differ. PCM and noise voices, which ignore the pitch today, are mixed as before.
-- **Evidence.** `hle-thread-selftest` plays a VAG-encoded sine sweep at three pitches, off and on. It
-  asserts identical end flags, envelope heights and last audible sample in every grain. It also asserts
-  less energy above the sweep's output band: at least 20 dB at pitch 0x0B00 (measured 22.0 dB), 8 dB at
-  0x1800 (9.9 dB) and 5 dB at 0x2A00 (6.6 dB).
-- **Why the upward floors are lower.** The authentic stepping drops the step's overshoot at the end of
-  every 28-sample VAG block, so the position jumps there. Both paths keep that stepping. The jumps put
-  broadband error above the band that no filter removes. With the overshoot carried, the same filter
-  measures 28 dB at 0x1800 and 32 dB at 0x2A00. Whether the PSP drops the overshoot is not measured.
+  sample values differ. PCM and noise voices, which ignore the pitch today, are mixed as before. The mixed values
+  land in the guest's SAS output buffer, so a title that reads it back sees them (section 10.3).
+- **Reading ahead.** The copy decodes only as far as the filter reaches. Past the last block the authentic decoder
+  has read by the end of the same grain, it decodes at most 1 VAG block (16 bytes) at a pitch of 0x1000 or below,
+  rising to 4 blocks (64 bytes) at 0x4000. A title that streams VAG data into its buffer just in time may not have
+  written those blocks yet. The copy then mixes the stale bytes into the output samples at the end of the grain whose
+  filter window reaches them. Only the mixed values are affected. The copy is discarded, so voice state never changes.
+- **Evidence.** `hle-thread-selftest` plays synthetic VAG data through the guest calls, off and on.
+  - **Upward pitches.** A sweep lying wholly above the output's Nyquist frequency once pitched, so all of its
+    output is alias. At pitch 0x1800 the alias energy falls by 25.5 dB (floor 22), at 0x2A00 by 28.1 dB (floor 25)
+    and at 0x4000 by 29.8 dB (floor 26).
+  - **Downward pitches.** An in-band sweep, measuring the share of energy above the source's Nyquist frequency at
+    that pitch, where only images land. It falls by 78.4 dB at 0x0B00 (floor 75) and 80.7 dB at 0x0800 (floor 77).
+  - **Negative control.** A model of the authentic stepping replays the same stream. It matches the mixer within
+    0.5 dB. On that model, linear interpolation and a 4-tap cubic reach at most 2.9 dB upward and 20.9 dB downward,
+    so they fail every floor.
+  - **The authentic mix.** A two-voice run (a loop, a key-off, an end of data) matches a checksum taken from the
+    mixer before #2054.
+  - **Voice state.** End flags and envelope heights match authentic in every grain, and data that ends mid-grain
+    ends on the same sample.
+  - **Other cells.** A looped voice mixes the same samples as its data unrolled. A constant signal comes out
+    unchanged at three pitches. Two voices mix to the sum of each alone. A key-on mid-play restarts the voice like a
+    fresh one.
+  - **The read bound.** The lookahead's read count is checked against its bound. Stale data just past that bound
+    changes nothing, and data inside it reaches only the mixed values.

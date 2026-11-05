@@ -920,18 +920,30 @@ static int s_rs_env[SAS_GRAIN_MAX];
 static int16_t s_rs_out[SAS_GRAIN_MAX];
 
 /* Stream positions for one grain. Index 0 is the first sample the grain plays; base is the index
- * of the current block's first sample and next that of the block after it. */
-typedef struct { int32_t base, next; int played; } SasRsGrain;
+ * of the current block's first sample and next that of the block after it; decoded counts the
+ * blocks the voice decoded during the grain. */
+typedef struct { int32_t base, next; int played, decoded; } SasRsGrain;
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* The most blocks one grain's lookahead decoded past the blocks the voice itself decoded. */
+static int s_sas_rs_lead_max;
+int sr_hle_test_sas_lookahead_lead(void) {
+    int lead = s_sas_rs_lead_max;
+    s_sas_rs_lead_max = 0;
+    return lead;
+}
+#endif
 
 static void sas_rs_begin(const SasVoice *v, SasRsGrain *g) {
     g->base = -v->bufi;
     g->next = v->bufi < v->bufn ? v->bufn - v->bufi : 0;
     g->played = 0;
+    g->decoded = 0;
 }
 
 /* Output sample i played the voice's current sample; decoded says a new block was decoded for it. */
 static void sas_rs_note(const SasVoice *v, SasRsGrain *g, int i, int decoded) {
-    if (decoded) { g->base = g->next; g->next = g->base + v->bufn; }
+    if (decoded) { g->base = g->next; g->next = g->base + v->bufn; g->decoded++; }
     s_rs_k[i] = g->base + v->bufi;
     s_rs_frac[i] = (uint16_t)v->frac;
     s_rs_env[i] = v->env_level;
@@ -943,23 +955,29 @@ static void sas_mix_band_limited(SasVoice *v, const SasVoice *pre, const SasRsGr
                                  int32_t *mixr, int32_t *mixsl, int32_t *mixsr) {
     if (!g->played) return;
     int32_t k_next = v->bufi < v->bufn ? g->base + v->bufi : g->next;
-    int32_t end = s_rs_k[g->played - 1] + SAS_RS_REACH + 1;
+    /* One past the last source sample the last output's window can reach, plus one spare. */
+    int32_t end = s_rs_k[g->played - 1] + sas_rs_reach(v->pitch) + 2;
     if (end < k_next + 1) end = k_next + 1;
     if (end > SAS_RS_SRC_MAX - SAS_RS_REACH) end = SAS_RS_SRC_MAX - SAS_RS_REACH;
     int16_t *src = s_rs_src + SAS_RS_REACH;
     memcpy(s_rs_src, pre->rs_hist, sizeof(pre->rs_hist));
     SasVoice ahead = *pre;
-    int live = 1;
+    int live = 1, ahead_blocks = 0;
     for (int32_t j = 0; j < end; j++) {
         int samp = 0;
         if (live && ahead.bufi >= ahead.bufn) {
             s_sas_lookahead = 1;
             live = sas_vag_block(&ahead);
             s_sas_lookahead = 0;
+            ahead_blocks += live;
         }
         if (live) samp = ahead.buf[ahead.bufi++];
         src[j] = (int16_t)samp;
     }
+#ifdef SR_HLE_THREAD_SELFTEST
+    if (ahead_blocks - g->decoded > s_sas_rs_lead_max) s_sas_rs_lead_max = ahead_blocks - g->decoded;
+#endif
+    (void)ahead_blocks;
     sas_rs_render(src, end, s_rs_k, s_rs_frac, g->played, v->pitch, s_rs_out);
     for (int i = 0; i < g->played; i++) {
         int s_env = (int)(((int64_t)s_rs_out[i] * s_rs_env[i]) >> 30);

@@ -2,8 +2,8 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 /*
  * sas_resample.h - band-limited resampling of one SAS voice's decoded stream (Ace Mode's sas=sinc,
- * #2054, docs/ENHANCEMENT_CONTRACT.md section 10.7). Header-only: src/rt/hle_audio.c is its one
- * includer, and everything here is static.
+ * #2054, docs/ENHANCEMENT_CONTRACT.md section 10.7). Header-only and all static: src/rt/hle_audio.c
+ * mixes with it, and the hle-thread selftest includes it as the reference renderer of its model.
  *
  * The caller gives the decoded stream around the voice and, for each output sample, the stream
  * index the authentic mixer played and its 12-bit fraction. This file turns them into sample
@@ -55,13 +55,26 @@ static void sas_rs_kernel_init(void) {
     s_sas_rs_kernel_ready = 1;
 }
 
+/* The cutoff as a share of the source's Nyquist frequency: SAS_RS_CUTOFF, lowered by the pitch
+ * ratio above 0x1000 so it sits below the output's Nyquist frequency. */
+static double sas_rs_cutoff(int pitch) {
+    if (pitch <= 0) pitch = 0x1000;
+    return SAS_RS_CUTOFF * (pitch > 0x1000 ? 4096.0 / pitch : 1.0);
+}
+
+/* How many source samples the kernel reaches on one side of a position at this pitch, rounded
+ * up: from 27 at 0x1000 and below to 106 at 0x4000 (never above SAS_RS_REACH). An output sample at
+ * stream position k + frac reads no source sample past k + sas_rs_reach(pitch). */
+static int32_t sas_rs_reach(int pitch) {
+    return (int32_t)ceil(SAS_RS_ZEROS / sas_rs_cutoff(pitch));
+}
+
 /* Writes count samples to out. src[j] is stream index j for -SAS_RS_REACH <= j < src_end; k[i]
  * and frac[i] (0..0xFFF) are output sample i's position. pitch is the voice's (0x1000 = 1). */
 static void sas_rs_render(const int16_t *src, int32_t src_end, const int32_t *k, const uint16_t *frac,
                           int count, int pitch, int16_t *out) {
     sas_rs_kernel_init();
-    if (pitch <= 0) pitch = 0x1000;
-    double fc = SAS_RS_CUTOFF * (pitch > 0x1000 ? 4096.0 / pitch : 1.0);
+    double fc = sas_rs_cutoff(pitch);
     double reach = SAS_RS_ZEROS / fc, scale = fc * SAS_RS_STEPS;
     for (int i = 0; i < count; i++) {
         double p = (double)k[i] + (double)frac[i] / 4096.0;
