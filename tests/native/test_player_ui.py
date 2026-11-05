@@ -5150,6 +5150,48 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual([mode for _, mode in self.play_badges(run, "TEST00005")],
                          ["Library default"], "Play mode changes nothing while a game runs")
 
+    def smooth_at_60_run(self, title: dict[str, str],
+                         to_options: tuple[str, ...]) -> tuple[list[str], dict[str, str]]:
+        """The packaged TEST00006 with smooth motion on in the library and `title` as its own
+        play choice: its title page's play lines, then its Settings > Enhanced page, which
+        `to_options` reaches from the title page's first focus."""
+        settings = {"enhanced": {**self.LIBRARY_ENHANCED["enhanced"], "smooth": "x2"},
+                    "title_play": {"TEST00006": title}}
+        run = self.next_ui_run(
+            "ready", ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", *to_options,
+                      "KEY_RETURN", "WAIT_MS=300"),
+            post_build_ready=True, wait_background=True, settings=settings,
+            enhancement_packages={"TEST00006": "display-smoke-v1"})
+        trail = self.focus_trail(run)
+        self.assertIn(self.TITLE_PLAY_OPTIONS, trail, [hex(int(focus)) for focus in trail])
+        lines = re.findall(r"next_ui_title_play_line disc=TEST00006 line=(.+)",
+                           str(run["stdout"]))
+        pages = self.enhanced_pages(run)
+        self.assertTrue(lines and pages, run["stdout"])
+        self.assertEqual(pages[-1]["title"], "TEST00006", run["stdout"])
+        return lines, pages[-1]
+
+    def test_next_ui_smooth_motion_says_why_it_is_off_at_60_fps(self) -> None:
+        """Contract 10.5 (#2085; #2074 delta review B1): a game launched with its 60 FPS game
+        logic runs with smooth motion off, and its launch line says smooth=off. Its title page
+        and its Settings > Enhanced page say so and why, instead of showing smooth motion on;
+        with that logic off, both show the choice as it is."""
+        # The "ready" fixture does not read the saved Ace's package at start, so PLAY is
+        # disabled and the title page opens on Save folder; Down from there reaches the 60 FPS
+        # switch at the end of the ENHANCEMENTS row, and Left from it is Enhanced options.
+        lines, page = self.smooth_at_60_run({"mode": "ace"},
+                                            ("KEY_DOWN", "WAIT_MS=80", "KEY_LEFT", "WAIT_MS=80"))
+        self.assertIn("Ace for this game: 60 FPS game logic", lines[-1])
+        self.assertIn("Smooth motion is off while it runs at 60 FPS", lines[-1])
+        self.assertEqual(page["smooth"], "Off (this game runs at 60 FPS)")
+
+        lines, page = self.smooth_at_60_run({"mode": "ace", "logic_60": "off"},
+                                            (*self.DOWN_TO_PLAY_MODE, *self.TO_PLAY_OPTIONS))
+        self.assertNotIn("60 FPS game logic", lines[-1])
+        self.assertIn("smooth motion", lines[-1], "smooth motion is among the parts on")
+        self.assertNotIn("Smooth motion is off", lines[-1])
+        self.assertEqual(page["smooth"], "Library (On)")
+
     def test_compatibility_records_carry_a_player_tier(self) -> None:
         """#1297: every title record maps to a player tier; Hot Shots Tennis is Playable.
 

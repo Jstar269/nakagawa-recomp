@@ -134,7 +134,8 @@ struct PlayerUiNk {
     char settings_saves[NK_MAX_PATH];
     /* The play mode on the open title's page: what it turns on, and its last session, read
        at most every two seconds (the runtime writes the report when a game ends). */
-    char ace_line[200];
+    char ace_line[256];
+    char enhanced_smooth_sentence[160];  /* the Smooth motion row's words under 60 FPS logic */
     char ace_last_session[200];
     char ace_last_disc[NK_MAX_DISC_ID_LEN];
     double ace_last_read_s;
@@ -209,6 +210,7 @@ struct PlayerUiNk {
     char status_reported[PLAYER_UI_TITLE_CAP][32]; /* the status word last printed */
     char play_reported[PLAYER_UI_TITLE_CAP][16];   /* the play mode badge last printed */
     char enhanced_reported[512];                    /* Settings > Enhanced as last printed */
+    char ace_line_reported[256];                    /* the open title's play line last printed */
     int disc_reported_view;  /* the game-found card whose rows were printed, or -1 */
 #endif
     bool ready;
@@ -797,11 +799,16 @@ static void player_ui_fill_enhanced(PlayerUiNk *player, const PlayerApp *app,
     model->enhanced_mode = library_on ? "Enhanced" : "Authentic";
     model->enhanced_mode_sentence =
         "The default for every game; each game's page can choose its own.";
+    bool logic_60 = false;
     if (title >= 0) {
         const GameRecord *game = &app->games[title];
         PlayerPlayMode chosen = player_app_title_play_mode(app, title);
         PlayerPlayResolved play;
         player_play_resolve(settings, game->disc_id, &play);
+        /* What its launch runs (player_launch_work_run): with its 60 FPS game logic, smooth
+           motion is off. */
+        player_play_apply_logic_60(&play, player_app_title_60hz_on(app, title));
+        logic_60 = play.logic_60;
         snprintf(player->enhanced_title, sizeof(player->enhanced_title), "%s",
                  game->title_name[0] ? game->title_name : game->disc_id);
         model->enhanced_title = player->enhanced_title;
@@ -835,6 +842,18 @@ static void player_ui_fill_enhanced(PlayerUiNk *player, const PlayerApp *app,
             } else {
                 row->value = player_enhanced_part_label(p, own);
                 row->on = own != 0;
+            }
+            /* The launch line carries smooth=off while the game runs its 60 FPS game logic:
+               this build interpolates only a 30 Hz source (docs/ENHANCEMENT_CONTRACT.md 10.5).
+               The row says so, and keeps the choice it holds for when that logic is off. */
+            if (p == PLAYER_PART_SMOOTH && logic_60) {
+                snprintf(player->enhanced_smooth_sentence,
+                         sizeof(player->enhanced_smooth_sentence),
+                         "This build smooths only 30 FPS games. The choice here (%s) applies "
+                         "when this game's 60 FPS game logic is off.", row->value);
+                row->value = "Off (this game runs at 60 FPS)";
+                row->sentence = player->enhanced_smooth_sentence;
+                row->on = false;
             }
         }
     }
@@ -1888,6 +1907,7 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
     const GameRecord *game = &app->games[index];
     PlayerPlayResolved play;
     player_play_resolve(&app->settings, game->disc_id, &play);
+    bool smooth_wanted = play.on && play.part[PLAYER_PART_SMOOTH] != 0;
     player_play_apply_logic_60(&play, out->enhancement_on);
     out->ace_shown = !out->is_demo;
     out->ace_in_effect = play.on;
@@ -1959,12 +1979,25 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
             count++;
         }
         bool ace = play.mode == PLAYER_PLAY_ACE;
-        snprintf(player->ace_line, sizeof(player->ace_line), "%s for this game: %s%s%s.",
+        /* Smooth motion turned on, but off for this launch: the line says why (contract
+           10.5), as the launch line carries smooth=off. */
+        bool smooth_held = smooth_wanted && play.logic_60;
+        snprintf(player->ace_line, sizeof(player->ace_line), "%s for this game: %s%s%s.%s",
                  ace ? "Ace" : "Enhanced", ace && out->enhancement_on ? "60 FPS game logic" : "",
                  ace && out->enhancement_on && count ? ", " : "",
-                 count ? words : (ace && out->enhancement_on ? "" : "every part is off"));
+                 count ? words : (ace && out->enhancement_on ? "" : "every part is off"),
+                 smooth_held ? " Smooth motion is off while it runs at 60 FPS: this build "
+                               "smooths only 30 FPS games." : "");
         out->ace_line = player->ace_line;
     }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (strcmp(player->ace_line_reported, out->ace_line) != 0) {
+        snprintf(player->ace_line_reported, sizeof(player->ace_line_reported), "%s",
+                 out->ace_line);
+        printf("[PLAYER_UI_TEST] next_ui_title_play_line disc=%s line=%s\n", game->disc_id,
+               out->ace_line);
+    }
+#endif
     {
         double now_s = (double)SDL_GetTicksNS() / 1000000000.0;
         if (strcmp(player->ace_last_disc, game->disc_id) != 0 || now_s - player->ace_last_read_s >= 2.0) {

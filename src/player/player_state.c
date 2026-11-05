@@ -2913,6 +2913,10 @@ bool player_read_title_enhancement(const char *user_root, const GameRecord *game
     return out->available;
 }
 
+/* Section 11.2 item 5 of docs/ENHANCEMENT_CONTRACT.md, a per-title off switch carried in a
+   game's package, is not read here: the player reads only a package's id and target title
+   (player_read_title_enhancement), and no section 11 item is admitted yet. The first section
+   11.3 item lands that switch with it. */
 bool player_app_title_60hz_saved(const PlayerApp *app, const char *disc_id) {
     const PlayerTitlePlay *title = app ? player_settings_title_play(&app->settings, disc_id) : NULL;
     return title && title->mode == PLAYER_PLAY_ACE && title->logic_60 != 0;
@@ -3035,7 +3039,8 @@ void player_play_resolve(const PlayerSettings *settings, const char *disc_id,
 void player_play_apply_logic_60(PlayerPlayResolved *play, bool logic_60) {
     if (!play || !logic_60 || !play->on) return;
     /* A run with its 60 FPS game logic is Ace, also when the session flag turned it on for a
-       title on Enhanced; interpolation is refused with it (#1272). */
+       title on Enhanced. Smooth motion is off for it: the two may be stacked by contract
+       (docs/ENHANCEMENT_CONTRACT.md 10.5), but this build interpolates only a 30 Hz source. */
     play->mode = PLAYER_PLAY_ACE;
     play->logic_60 = true;
     play->part[PLAYER_PART_SMOOTH] = 0;
