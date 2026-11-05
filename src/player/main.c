@@ -333,7 +333,7 @@ static void trigger_font_folder_picker(SDL_Window *window, PlayerApp *app) {
 /* Saves > Add a save (#1883). SDL may call the folder picker's callback on another
    thread, so the folder waits here and player_frame_requests hands it to the
    Saves dialog on the main thread: 1 a folder was picked, 2 cancelled, 3 the
-   picker failed. */
+   picker failed, 4 the picked folder's path is too long to hold. */
 static char s_save_pick[NK_MAX_PATH];
 static char s_save_pick_error[256];
 static SDL_AtomicInt s_save_pick_state;
@@ -345,8 +345,10 @@ static void on_save_folder_dialog_callback(void *userdata, const char *const *fi
     if (!filelist) {
         (void)snprintf(s_save_pick_error, sizeof(s_save_pick_error), "%s", SDL_GetError());
         SDL_SetAtomicInt(&s_save_pick_state, 3);
-    } else if (!filelist[0] || strlen(filelist[0]) >= sizeof(s_save_pick)) {
+    } else if (!filelist[0]) {
         SDL_SetAtomicInt(&s_save_pick_state, 2);
+    } else if (strlen(filelist[0]) >= sizeof(s_save_pick)) {
+        SDL_SetAtomicInt(&s_save_pick_state, 4);
     } else {
         (void)snprintf(s_save_pick, sizeof(s_save_pick), "%s", filelist[0]);
         SDL_SetAtomicInt(&s_save_pick_state, 1);
@@ -374,6 +376,13 @@ static void player_take_save_folder_pick(PlayerApp *app) {
             "folder into PSP/SAVEDATA in the save folder yourself: Open save folder shows it.",
             s_save_pick_error, "Back", app->active_view == VIEW_ERROR ? VIEW_LIBRARY
                                                                      : app->active_view);
+    } else if (state == 4) {
+        player_app_set_error(
+            app, "SAVES_ADD_FAILED", "Save not added",
+            "The folder you picked is too deep in other folders for Nakagawa to read, so no "
+            "save was added. Copy it somewhere shorter, such as your Desktop, and add it from "
+            "there.",
+            "Back", app->active_view == VIEW_ERROR ? VIEW_LIBRARY : app->active_view);
     }
 }
 

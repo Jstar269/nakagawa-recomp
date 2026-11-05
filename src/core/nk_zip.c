@@ -92,6 +92,8 @@ static const struct {
                            "the same on Windows)."},
     {"ZIP_NAME_CONFLICT", "A file in it has the name of a folder in it."},
     {"ZIP_EXISTS", "A file it would write is there already."},
+    {"ZIP_LEFT_OUT", "A file or folder could not be put in the backup: a link, a junction, a "
+                     "cloud file that is not on this computer, or one that cannot be read."},
 };
 
 const char *nk_zip_status_code(NkZipStatus status) {
@@ -227,8 +229,11 @@ static bool zip_reserved_device(const char *seg, size_t n) {
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
         if (strcmp(stem, names[i]) == 0) return true;
     }
-    return len == 4 && (memcmp(stem, "COM", 3) == 0 || memcmp(stem, "LPT", 3) == 0) &&
-           stem[3] >= '1' && stem[3] <= '9';
+    if (memcmp(stem, "COM", 3) != 0 && memcmp(stem, "LPT", 3) != 0) return false;
+    if (len == 4) return stem[3] >= '1' && stem[3] <= '9';
+    /* COM¹-COM³ and LPT¹-LPT³ (U+00B9, U+00B2, U+00B3) are devices too. */
+    return len == 5 && (uint8_t)stem[3] == 0xC2u &&
+           ((uint8_t)stem[4] == 0xB9u || (uint8_t)stem[4] == 0xB2u || (uint8_t)stem[4] == 0xB3u);
 }
 
 NkZipStatus nk_zip_check_name(const char *name, size_t size, bool *is_folder) {
@@ -810,6 +815,84 @@ void nk_zip_reader_close(NkZipReader *reader) {
 
 #ifndef NK_ZIP_NO_HOST_IO
 
+/* ---- Host folders and the disk ---- */
+
+#if defined(NK_SAVES_TEST_SEAMS)
+static unsigned s_seam_calls[NK_ZIP_SEAM_COUNT];
+static unsigned s_seam_fail_at[NK_ZIP_SEAM_COUNT];
+
+void nk_zip_test_fail(NkZipSeam seam, unsigned nth) {
+    if ((unsigned)seam >= (unsigned)NK_ZIP_SEAM_COUNT) return;
+    s_seam_fail_at[seam] = nth;
+    s_seam_calls[seam] = 0;
+}
+
+unsigned nk_zip_test_calls(NkZipSeam seam) {
+    return (unsigned)seam < (unsigned)NK_ZIP_SEAM_COUNT ? s_seam_calls[seam] : 0u;
+}
+
+void nk_zip_test_reset(void) {
+    memset(s_seam_calls, 0, sizeof(s_seam_calls));
+    memset(s_seam_fail_at, 0, sizeof(s_seam_fail_at));
+}
+
+static bool zip_seam(NkZipSeam seam) {
+    unsigned n = ++s_seam_calls[seam];
+    return s_seam_fail_at[seam] == NK_ZIP_TEST_EVERY ||
+           (s_seam_fail_at[seam] != 0u && n == s_seam_fail_at[seam]);
+}
+#else
+#define zip_seam(seam) false
+#endif
+
+/* nk_platform_list_dir_counted: *skipped counts what a backup would leave out. */
+static bool zip_list_folder(const char *folder, NkDirEntryFn fn, void *ctx, size_t *skipped) {
+    *skipped = 0;
+    if (zip_seam(NK_ZIP_SEAM_LIST_FAIL)) return false;
+    if (!nk_platform_list_dir_counted(folder, fn, ctx, skipped)) return false;
+    if (zip_seam(NK_ZIP_SEAM_LIST_SKIP)) ++*skipped;
+    return true;
+}
+
+/* A written file's bytes on the disk, not only in a cache: a backup is kept,
+   and the saves it holds may be deleted, only once it is. */
+static bool zip_sync_file(FILE *f) {
+    if (zip_seam(NK_ZIP_SEAM_SYNC_FAIL)) return false;
+    return nk_platform_sync_file(f);
+}
+
+/* Each folder from path's own up to and including `top` keeps its new entry
+   on the disk (POSIX fsync on the folder; nothing to do on Win32). */
+static bool zip_sync_folders(const char *path, size_t top_length) {
+    char folder[NK_ZIP_MAX_NAME_BYTES + 4096];
+    size_t n = strlen(path);
+    char sep = nk_platform_path_separator();
+    if (n >= sizeof(folder)) return false;
+    memcpy(folder, path, n + 1u);
+    while (n > top_length) {
+        while (n > top_length && folder[n - 1u] != sep) --n;
+        if (n <= top_length) break;
+        folder[--n] = '\0';
+        if (!nk_platform_sync_dir(folder)) return false;
+    }
+    return true;
+}
+
+static bool zip_note_any(const char *name, bool is_dir, void *ctx) {
+    (void)name;
+    (void)is_dir;
+    *(bool *)ctx = true;
+    return false;
+}
+
+NkZipFolderState nk_zip_folder_state(const char *folder) {
+    bool any = false;
+    size_t skipped = 0;
+    if (!folder || !folder[0]) return NK_ZIP_FOLDER_UNREADABLE;
+    if (!zip_list_folder(folder, zip_note_any, &any, &skipped)) return NK_ZIP_FOLDER_UNREADABLE;
+    return (any || skipped > 0u) ? NK_ZIP_FOLDER_HAS_ENTRIES : NK_ZIP_FOLDER_EMPTY;
+}
+
 /* ---- Reader: files and extraction ---- */
 
 NkZipStatus nk_zip_reader_open_file(NkZipReader **out, const char *path, NkZipError *err) {
@@ -866,7 +949,9 @@ NkZipStatus nk_zip_reader_extract(NkZipReader *reader, const char *folder, NkZip
             return zip_fail(err, NK_ZIP_ERR_NAME_TOO_LONG, e->name, e->name_size);
         }
         if (e->folder) {
-            if (!nk_platform_mkdir_p(path)) return zip_fail(err, NK_ZIP_ERR_IO, e->name, e->name_size);
+            if (!nk_platform_mkdir_p(path) || !zip_sync_folders(path, strlen(folder))) {
+                return zip_fail(err, NK_ZIP_ERR_IO, e->name, e->name_size);
+            }
             continue;
         }
         cut = strrchr(path, nk_platform_path_separator());
@@ -882,7 +967,14 @@ NkZipStatus nk_zip_reader_extract(NkZipReader *reader, const char *folder, NkZip
         f = nk_fopen_utf8(path, "wb");
         if (!f) return zip_fail(err, NK_ZIP_ERR_IO, e->name, e->name_size);
         status = zip_stream_entry(reader, e, zip_file_sink, f, err);
+        if (status == NK_ZIP_OK &&
+            (zip_seam(NK_ZIP_SEAM_EXTRACT_FAIL) || !zip_sync_file(f))) {
+            status = zip_fail(err, NK_ZIP_ERR_IO, e->name, e->name_size);
+        }
         if (fclose(f) != 0 && status == NK_ZIP_OK) {
+            status = zip_fail(err, NK_ZIP_ERR_IO, e->name, e->name_size);
+        }
+        if (status == NK_ZIP_OK && !zip_sync_folders(path, strlen(folder))) {
             status = zip_fail(err, NK_ZIP_ERR_IO, e->name, e->name_size);
         }
         if (status != NK_ZIP_OK) return status;
@@ -1220,6 +1312,9 @@ NkZipStatus nk_zip_writer_finish(NkZipWriter *writer, NkZipError *err) {
             status = zip_fail(err, NK_ZIP_ERR_IO, NULL, 0);
         }
     }
+    if (status == NK_ZIP_OK && !zip_sync_file(writer->file)) {
+        status = zip_fail(err, NK_ZIP_ERR_IO, NULL, 0);
+    }
     if (status == NK_ZIP_OK) {
         int closed = fclose(writer->file);
         writer->file = NULL;
@@ -1290,10 +1385,17 @@ static NkZipStatus zip_write_tree(NkZipWriter *w, const char *host, const char *
     if (depth > NK_ZIP_MAX_DEPTH) {
         return zip_writer_fail(w, err, NK_ZIP_ERR_NAME_TOO_DEEP, relative, strlen(relative));
     }
-    if (!nk_platform_list_dir(host, zip_list_add, &list) || list.failed) {
+    size_t skipped = 0;
+    if (!zip_list_folder(host, zip_list_add, &list, &skipped) || list.failed) {
         zip_listing_free(&list);
         return zip_writer_fail(w, err, list.failed ? NK_ZIP_ERR_NO_MEMORY : NK_ZIP_ERR_IO,
                                relative, strlen(relative));
+    }
+    /* An entry the listing left out would be missing from the backup without a word,
+       and whatever deletes the folder after a backup would delete it unsaved. */
+    if (skipped > 0u) {
+        zip_listing_free(&list);
+        return zip_writer_fail(w, err, NK_ZIP_ERR_LEFT_OUT, relative, strlen(relative));
     }
     qsort(list.items, list.count, sizeof(list.items[0]), zip_listed_compare);
     for (size_t i = 0; i < list.count && status == NK_ZIP_OK; ++i) {

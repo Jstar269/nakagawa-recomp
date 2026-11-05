@@ -376,6 +376,10 @@ static void test_name_refusals(void) {
     expect_name("PSP/CON", 0, NK_ZIP_ERR_NAME_RESERVED, "a device name");
     expect_name("PSP/nul.txt", 0, NK_ZIP_ERR_NAME_RESERVED, "a device name with an extension");
     expect_name("PSP/COM1", 0, NK_ZIP_ERR_NAME_RESERVED, "COM1");
+    expect_name("PSP/COM\xC2\xB9", 0, NK_ZIP_ERR_NAME_RESERVED, "COM with a superscript 1");
+    expect_name("PSP/lpt\xC2\xB3.txt", 0, NK_ZIP_ERR_NAME_RESERVED,
+                "LPT with a superscript 3 and an extension");
+    expect_name("PSP/COM\xC2\xB4", 0, NK_ZIP_OK, "COM and an acute accent is a name");
     expect_name("PSP/a<b", 0, NK_ZIP_ERR_NAME_CHARACTER, "a < in a name");
     expect_name("PSP/file:stream", 0, NK_ZIP_ERR_NAME_CHARACTER, "an alternate data stream");
     expect_name("PSP/trailing.", 0, NK_ZIP_ERR_NAME_CHARACTER, "a trailing dot");
@@ -663,6 +667,24 @@ static void test_structure_refusals(const char *root) {
     printf("PASS: nk_zip refuses every damaged or unsupported archive with its own code\n");
 }
 
+/* nk_zip_folder_state: only a folder that lists whole with nothing in it is empty. */
+static void test_folder_state(const char *root) {
+    char folder[1200];
+    char file[1300];
+    snprintf(folder, sizeof(folder), "%s%cstate", root, nk_platform_path_separator());
+    CHECK(nk_zip_folder_state(folder) == NK_ZIP_FOLDER_UNREADABLE, "a missing folder is unreadable");
+    CHECK(nk_platform_mkdir_p(folder), "make the folder");
+    CHECK(nk_zip_folder_state(folder) == NK_ZIP_FOLDER_EMPTY, "an empty folder is empty");
+    snprintf(file, sizeof(file), "%s%cone.bin", folder, nk_platform_path_separator());
+    {
+        FILE *f = nk_fopen_utf8(file, "wb");
+        CHECK(f != NULL, "make a file");
+        if (f) fclose(f);
+    }
+    CHECK(nk_zip_folder_state(folder) == NK_ZIP_FOLDER_HAS_ENTRIES, "a file is an entry");
+    printf("PASS: nk_zip folder state: missing, empty, with an entry\n");
+}
+
 static void test_status_words(void) {
     for (int i = 0; i < (int)NK_ZIP_STATUS_COUNT; ++i) {
         const char *code = nk_zip_status_code((NkZipStatus)i);
@@ -690,6 +712,7 @@ int main(void) {
     test_name_refusals();
     test_duplicate_refusals();
     test_structure_refusals(root);
+    test_folder_state(root);
     if (g_failures) {
         fprintf(stderr, "%d of %d nk_zip checks failed\n", g_failures, g_checks);
         return 1;

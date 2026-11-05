@@ -5399,6 +5399,241 @@ static void test_saves_back_up_restore_and_add(void) {
     printf("PASS: saves back up, restore (and refuse a hostile backup), add and survive removal\n");
 }
 
+/* A symlink at `link` to the file `target`: false where this host does not let a test make
+   one (Windows without Developer Mode). */
+static bool saves_test_make_link(const char *link, const char *target) {
+#if defined(_WIN32) || defined(_WIN64)
+    wchar_t wlink[NK_MAX_PATH * 3];
+    wchar_t wtarget[NK_MAX_PATH * 3];
+    if (!MultiByteToWideChar(CP_UTF8, 0, link, -1, wlink, (int)(sizeof(wlink) / sizeof(wlink[0]))) ||
+        !MultiByteToWideChar(CP_UTF8, 0, target, -1, wtarget,
+                             (int)(sizeof(wtarget) / sizeof(wtarget[0])))) {
+        return false;
+    }
+    /* SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE */
+    return CreateSymbolicLinkW(wlink, wtarget, 0x2) != 0;
+#else
+    return symlink(target, link) == 0;
+#endif
+}
+
+/* #2098 review B1, with real entries: a link in the saves (a symlink, as a synced SAVEDATA
+   folder or a cloud placeholder would be) fails the backup by name, and Remove from library
+   then deletes nothing. On POSIX a folder the backup cannot read does the same. */
+static void test_saves_backup_refuses_what_it_cannot_hold(void) {
+    RemovalFixture f;
+    PlayerApp *app;
+    char error[NK_MAX_PATH + 512];
+    char backup[NK_MAX_PATH];
+    char save_dir[NK_MAX_PATH * 2];
+    char data_bin[NK_MAX_PATH * 3];
+    char link[NK_MAX_PATH * 3];
+    bool linked;
+    removal_fixture_make(&f, "SVL01883");
+    app = removal_test_app(&f, "SVL01883");
+    saves_test_make_save(f.saves, "linked bytes");
+    removal_test_path(save_dir, sizeof(save_dir), f.saves, "PSP", "SAVEDATA", "SVB01883DATA00");
+    removal_test_path(data_bin, sizeof(data_bin), save_dir, "DATA.BIN", NULL, NULL);
+    removal_test_path(link, sizeof(link), save_dir, "LINK.BIN", NULL, NULL);
+    linked = saves_test_make_link(link, data_bin);
+    if (linked) {
+        assert(player_app_back_up_saves(app, 0, "20261105-090000", PLAYER_SAVE_BACKUP_MANUAL,
+                                        backup, sizeof(backup), error, sizeof(error)) ==
+               PLAYER_SAVES_FAILED);
+        assert(backup[0] == '\0');
+        assert(strstr(error, nk_zip_status_message(NK_ZIP_ERR_LEFT_OUT)) != NULL);
+        assert(strstr(error, "PSP/SAVEDATA/SVB01883DATA00") != NULL);
+        assert(!player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error,
+                                                sizeof(error)));
+        assert(strstr(error, "could not be backed up first") != NULL);
+        assert(saves_test_has_text(data_bin, "linked bytes"));
+        assert(app->game_count == 2);
+        assert(remove(link) == 0);
+    } else {
+        printf("SKIP: this host does not let a test make a symlink; the seam test covers it\n");
+    }
+#if !defined(_WIN32) && !defined(_WIN64)
+    if (geteuid() != 0) {
+        char locked[NK_MAX_PATH * 3];
+        removal_test_path(locked, sizeof(locked), save_dir, "LOCKED", NULL, NULL);
+        assert(nk_platform_mkdir_p(locked));
+        assert(chmod(locked, 0) == 0);
+        assert(player_app_back_up_saves(app, 0, "20261105-090100", PLAYER_SAVE_BACKUP_MANUAL,
+                                        backup, sizeof(backup), error, sizeof(error)) ==
+               PLAYER_SAVES_FAILED);
+        assert(!player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error,
+                                                sizeof(error)));
+        assert(saves_test_has_text(data_bin, "linked bytes"));
+        assert(chmod(locked, 0700) == 0);
+        linked = true;
+    }
+#endif
+    remove(app->library.library_path);
+    free(app);
+    printf("PASS: a backup that cannot hold every entry fails, and Remove deletes nothing%s\n",
+           linked ? "" : " (link case skipped)");
+}
+
+#if defined(NK_SAVES_TEST_SEAMS)
+static size_t saves_test_backups(PlayerApp *app) {
+    PlayerSaveBackup list[16];
+    size_t total = 0;
+    (void)player_app_list_save_backups(app, 0, list, 16, &total);
+    return total;
+}
+
+/* #2098 review B1, S2 and S3, through the fault seams (NK_SAVES_TEST_SEAMS): nothing is
+   replaced or deleted without a backup that holds every entry and is on the disk; a
+   refused rename is undone; a restore that fails part way changes nothing. */
+static void test_saves_change_nothing_without_a_whole_backup(void) {
+    RemovalFixture f;
+    PlayerApp *app;
+    char error[NK_MAX_PATH + 512];
+    char good[NK_MAX_PATH];
+    char backup[NK_MAX_PATH];
+    char backups[NK_MAX_PATH];
+    char kept[NK_MAX_PATH];
+    char added[72];
+    char save_dir[NK_MAX_PATH * 2];
+    char data_bin[NK_MAX_PATH * 3];
+    char savedata[NK_MAX_PATH * 2];
+    char pick[NK_MAX_PATH * 2];
+    char pick_file[NK_MAX_PATH * 3];
+    char restore_prefix[64];
+    size_t before;
+    removal_fixture_make(&f, "SVR01883");
+    app = removal_test_app(&f, "SVR01883");
+    saves_test_make_save(f.saves, "original bytes");
+    removal_test_path(save_dir, sizeof(save_dir), f.saves, "PSP", "SAVEDATA", "SVB01883DATA00");
+    removal_test_path(data_bin, sizeof(data_bin), save_dir, "DATA.BIN", NULL, NULL);
+    removal_test_path(savedata, sizeof(savedata), f.saves, "PSP", "SAVEDATA", NULL);
+    snprintf(restore_prefix, sizeof(restore_prefix), ".%s-restore-", "SVR01883");
+    assert(player_app_save_backup_folder(&app->games[0], backups, sizeof(backups)));
+    nk_zip_test_reset();
+    player_saves_test_fail_rename(0u);
+    removal_test_path(pick, sizeof(pick), native_test_get_root(), "pickR1883", "SAVEDATA",
+                      "SVB01883DATA00");
+    assert(nk_platform_mkdir_p(pick));
+    removal_test_path(pick_file, sizeof(pick_file), pick, "PARAM.SFO", NULL, NULL);
+    write_text_file(pick_file, "PSF added save");
+    removal_test_path(pick_file, sizeof(pick_file), pick, "DATA.BIN", NULL, NULL);
+    write_text_file(pick_file, "added bytes");
+
+    /* A whole backup to restore from; then the saves change. */
+    assert(player_app_back_up_saves(app, 0, "20261105-100000", PLAYER_SAVE_BACKUP_MANUAL, good,
+                                    sizeof(good), error, sizeof(error)) == PLAYER_SAVES_DONE);
+    assert(nk_zip_test_calls(NK_ZIP_SEAM_SYNC_FAIL) == 1u);
+    write_text_file(data_bin, "changed bytes");
+    before = saves_test_backups(app);
+    assert(before == 1u);
+
+    /* S2: a backup that cannot be put on the disk is not kept, and Remove deletes nothing. */
+    nk_zip_test_fail(NK_ZIP_SEAM_SYNC_FAIL, 1u);
+    assert(player_app_back_up_saves(app, 0, "20261105-100100", PLAYER_SAVE_BACKUP_MANUAL,
+                                    backup, sizeof(backup), error, sizeof(error)) ==
+           PLAYER_SAVES_FAILED);
+    assert(nk_zip_test_calls(NK_ZIP_SEAM_SYNC_FAIL) == 1u);
+    assert(saves_test_backups(app) == before);
+    assert(saves_test_entries_containing(backups, ".part") == 0u);
+    nk_zip_test_fail(NK_ZIP_SEAM_SYNC_FAIL, 1u);
+    assert(!player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error,
+                                            sizeof(error)));
+    assert(strstr(error, "could not be backed up first") != NULL);
+    assert(saves_test_has_text(data_bin, "changed bytes") && app->game_count == 2);
+    nk_zip_test_fail(NK_ZIP_SEAM_SYNC_FAIL, 0u);
+
+    /* B1: an entry the backup would leave out (a link, a cloud placeholder) fails it by
+       name, and then Remove, Restore and Add-replace change nothing. */
+    nk_zip_test_fail(NK_ZIP_SEAM_LIST_SKIP, NK_ZIP_TEST_EVERY);
+    assert(player_app_back_up_saves(app, 0, "20261105-100200", PLAYER_SAVE_BACKUP_MANUAL,
+                                    backup, sizeof(backup), error, sizeof(error)) ==
+           PLAYER_SAVES_FAILED);
+    assert(strstr(error, nk_zip_status_message(NK_ZIP_ERR_LEFT_OUT)) != NULL);
+    assert(!player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error,
+                                            sizeof(error)));
+    assert(saves_test_has_text(data_bin, "changed bytes") && app->game_count == 2);
+    assert(player_app_restore_saves(app, 0, good, "20261105-100300", kept, sizeof(kept), error,
+                                    sizeof(error)) == PLAYER_SAVES_FAILED);
+    assert(strstr(error, "could not be backed up first") != NULL);
+    assert(saves_test_has_text(data_bin, "changed bytes"));
+    assert(saves_test_entries_named(f.saves_root, "SVR01883-backup-20261105-100300") == 0u);
+    assert(saves_test_entries_named(f.saves_root, restore_prefix) == 0u);
+    assert(player_app_add_save(app, 0, pick, true, "20261105-100400", added, sizeof(added),
+                               error, sizeof(error)) == PLAYER_SAVES_FAILED);
+    assert(strstr(error, "could not be backed up first") != NULL);
+    assert(saves_test_has_text(data_bin, "changed bytes"));
+    assert(saves_test_backups(app) == before);
+    nk_zip_test_fail(NK_ZIP_SEAM_LIST_SKIP, 0u);
+
+    /* B1: a save folder that cannot be listed is not empty. Restore backs it up first,
+       which fails, instead of deleting it unsaved; Remove deletes nothing. */
+    nk_zip_test_fail(NK_ZIP_SEAM_LIST_FAIL, NK_ZIP_TEST_EVERY);
+    assert(player_app_restore_saves(app, 0, good, "20261105-100500", kept, sizeof(kept), error,
+                                    sizeof(error)) == PLAYER_SAVES_FAILED);
+    assert(saves_test_has_text(data_bin, "changed bytes"));
+    assert(saves_test_entries_named(f.saves_root, "SVR01883-backup-20261105-100500") == 0u);
+    assert(saves_test_entries_named(f.saves_root, restore_prefix) == 0u);
+    assert(!player_app_remove_game_and_data(app, 0, PLAYER_REMOVE_ALSO_SAVES, error,
+                                            sizeof(error)));
+    assert(saves_test_has_text(data_bin, "changed bytes") && app->game_count == 2);
+    nk_zip_test_fail(NK_ZIP_SEAM_LIST_FAIL, 0u);
+
+    /* S3: the restored saves refused at the last rename (renames: the before-restore backup,
+       the saves aside, the restored folder in): the old saves go back. */
+    player_saves_test_fail_rename(3u);
+    assert(player_app_restore_saves(app, 0, good, "20261105-100600", kept, sizeof(kept), error,
+                                    sizeof(error)) == PLAYER_SAVES_FAILED);
+    assert(strstr(error, "Your saves are as they were") != NULL);
+    assert(kept[0] == '\0');
+    assert(saves_test_has_text(data_bin, "changed bytes"));
+    assert(saves_test_entries_named(f.saves_root, "SVR01883-backup-20261105-100600") == 0u);
+    assert(saves_test_entries_named(f.saves_root, restore_prefix) == 0u);
+    /* Refused at the move aside: nothing moved. */
+    player_saves_test_fail_rename(2u);
+    assert(player_app_restore_saves(app, 0, good, "20261105-100610", kept, sizeof(kept), error,
+                                    sizeof(error)) == PLAYER_SAVES_FAILED);
+    assert(strstr(error, "Nothing was restored") != NULL);
+    assert(saves_test_has_text(data_bin, "changed bytes"));
+    assert(saves_test_entries_named(f.saves_root, restore_prefix) == 0u);
+    /* Add-replace refused at the last rename (the before-add backup, the save there aside,
+       the copy in): the save there goes back. */
+    player_saves_test_fail_rename(3u);
+    assert(player_app_add_save(app, 0, pick, true, "20261105-100700", added, sizeof(added),
+                               error, sizeof(error)) == PLAYER_SAVES_FAILED);
+    assert(strstr(error, "Nothing was changed") != NULL);
+    assert(saves_test_has_text(data_bin, "changed bytes"));
+    assert(saves_test_entries_named(savedata, ".") == 0u);
+    player_saves_test_fail_rename(0u);
+
+    /* S3: a restore that fails part way through unpacking (the second file), or whose
+       unpacked file cannot be put on the disk, changes nothing and leaves no folder. */
+    nk_zip_test_fail(NK_ZIP_SEAM_EXTRACT_FAIL, 2u);
+    assert(player_app_restore_saves(app, 0, good, "20261105-100800", kept, sizeof(kept), error,
+                                    sizeof(error)) == PLAYER_SAVES_FAILED);
+    assert(nk_zip_test_calls(NK_ZIP_SEAM_EXTRACT_FAIL) == 2u);
+    assert(strstr(error, "could not be unpacked") != NULL);
+    assert(saves_test_has_text(data_bin, "changed bytes"));
+    assert(saves_test_entries_named(f.saves_root, "SVR01883-backup-20261105-100800") == 0u);
+    assert(saves_test_entries_named(f.saves_root, restore_prefix) == 0u);
+    nk_zip_test_fail(NK_ZIP_SEAM_EXTRACT_FAIL, 0u);
+    nk_zip_test_fail(NK_ZIP_SEAM_SYNC_FAIL, 2u);  /* 1: the before-restore backup */
+    assert(player_app_restore_saves(app, 0, good, "20261105-100900", kept, sizeof(kept), error,
+                                    sizeof(error)) == PLAYER_SAVES_FAILED);
+    assert(saves_test_has_text(data_bin, "changed bytes"));
+    assert(saves_test_entries_named(f.saves_root, restore_prefix) == 0u);
+    nk_zip_test_reset();
+
+    /* With every seam off, the same restore goes through. */
+    assert(player_app_restore_saves(app, 0, good, "20261105-101000", kept, sizeof(kept), error,
+                                    sizeof(error)) == PLAYER_SAVES_DONE);
+    assert(saves_test_has_text(data_bin, "original bytes"));
+    remove(app->library.library_path);
+    free(app);
+    printf("PASS: saves: no backup on the disk holding every entry, no change; refused renames "
+           "undone; a failed unpack changes nothing\n");
+}
+#endif /* NK_SAVES_TEST_SEAMS */
+
 static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     RemovalFixture f;
     PlayerRemovalPlan plan;
@@ -6833,6 +7068,10 @@ int main(int argc, char **argv) {
 #endif
     test_remove_from_library_deletes_what_nakagawa_built();
     test_saves_back_up_restore_and_add();
+    test_saves_backup_refuses_what_it_cannot_hold();
+#if defined(NK_SAVES_TEST_SEAMS)
+    test_saves_change_nothing_without_a_whole_backup();
+#endif
     test_single_instance_per_data_folder();
     test_build_identity_matches_the_python_digest();
     test_package_build_lifecycle(self_executable);

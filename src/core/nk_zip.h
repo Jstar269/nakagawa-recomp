@@ -90,6 +90,7 @@ typedef enum {
     NK_ZIP_ERR_NAME_DUPLICATE,    /* the same name as another entry, case ignored */
     NK_ZIP_ERR_NAME_CONFLICT,     /* a file whose name another entry uses as a folder */
     NK_ZIP_ERR_EXISTS,            /* extraction: the file is in the folder already */
+    NK_ZIP_ERR_LEFT_OUT,          /* writing a folder: an entry in it could not be archived */
     NK_ZIP_STATUS_COUNT
 } NkZipStatus;
 
@@ -172,13 +173,47 @@ NkZipStatus nk_zip_writer_finish(NkZipWriter *writer, NkZipError *err);
 /* Closes, deletes the partial file and frees. */
 void nk_zip_writer_discard(NkZipWriter *writer);
 
-/* Archives everything under `folder` (files and folders, in name order,
-   links and other reparse points skipped) with names relative to it, into a
-   new archive at zip_path. On failure no file is left at zip_path. When
+/* Archives everything under `folder` (files and folders, in name order) with
+   names relative to it, into a new archive at zip_path, and puts the archive
+   on the disk (nk_platform_sync_file) before it reports success. An entry it
+   cannot archive fails the whole archive, never leaves a gap: a link, a
+   junction or other reparse point (a cloud placeholder among them), a file a
+   cloud service keeps off this computer, an entry that cannot be read, and a
+   folder that cannot be listed whole (NK_ZIP_ERR_LEFT_OUT or NK_ZIP_ERR_IO,
+   with the folder it was in). On failure no file is left at zip_path. When
    given, *out_entries and *out_bytes say what went in. */
 NkZipStatus nk_zip_write_folder(const char *folder, const char *zip_path, uint16_t dos_date,
                                 uint16_t dos_time, size_t *out_entries, uint64_t *out_bytes,
                                 NkZipError *err);
+
+/* What a folder holds, by nk_zip_write_folder's rules: EMPTY only when it
+   lists whole with nothing in it, not even an entry the archive would leave
+   out; UNREADABLE when it cannot be listed whole. Only EMPTY is safe to
+   delete without a backup. */
+typedef enum {
+    NK_ZIP_FOLDER_EMPTY = 0,
+    NK_ZIP_FOLDER_HAS_ENTRIES,
+    NK_ZIP_FOLDER_UNREADABLE
+} NkZipFolderState;
+NkZipFolderState nk_zip_folder_state(const char *folder);
+
+#if defined(NK_SAVES_TEST_SEAMS)
+/* White-box seams for the saves tests (#1883), declared and defined only when
+   the test build defines NK_SAVES_TEST_SEAMS; production builds do not carry
+   them. Each seam counts its calls; nk_zip_test_fail makes the nth call from
+   now fail (NK_ZIP_TEST_EVERY: every call, 0: none) and resets the count. */
+typedef enum {
+    NK_ZIP_SEAM_LIST_FAIL = 0,  /* a folder listing fails */
+    NK_ZIP_SEAM_LIST_SKIP,      /* a folder listing leaves one entry out */
+    NK_ZIP_SEAM_SYNC_FAIL,      /* putting a written file on the disk fails */
+    NK_ZIP_SEAM_EXTRACT_FAIL,   /* writing an extracted file fails */
+    NK_ZIP_SEAM_COUNT
+} NkZipSeam;
+#define NK_ZIP_TEST_EVERY 0xFFFFFFFFu
+void nk_zip_test_fail(NkZipSeam seam, unsigned nth);
+unsigned nk_zip_test_calls(NkZipSeam seam);
+void nk_zip_test_reset(void);
+#endif
 #endif /* NK_ZIP_NO_HOST_IO */
 
 #ifdef __cplusplus

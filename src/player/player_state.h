@@ -1114,6 +1114,12 @@ typedef enum {
     PLAYER_SAVES_FAILED     /* error says what, in plain words */
 } PlayerSavesResult;
 
+#if defined(NK_SAVES_TEST_SEAMS)
+/* Test seam (player-state test build only): the nth rename the saves code makes from now
+   fails, as a rename refused by the system would; 0 turns it off. */
+void player_saves_test_fail_rename(unsigned nth);
+#endif
+
 /* The title's Memory Stick folder (not created): <saves>/<disc ID>, or the title ID or
  * "unidentified" for a record without one, as nk_launch.c chooses. */
 bool player_app_save_folder(const GameRecord *game, char *out, size_t out_size);
