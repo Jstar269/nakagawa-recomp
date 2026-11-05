@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 129)
+        self.assertEqual(len(routes), 130)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
-                         | {150, 151},
+                         | {150, 151, 153},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -9559,6 +9559,168 @@ class GeLightProbeTests(unittest.TestCase):
         self.assertEqual(counts["s-k1-draw"], 10)
         self.assertEqual(counts["k128-y16"], 16)
         self.assertEqual(counts["d-k128-r16"], 16)
+
+
+class GeOverlapProbeTests(unittest.TestCase):
+    """CASE=ge-overlap (153, PSP-GE-OVERLAP-001) in probe_ge_sample.c: the #2109 GE overlap
+    cells. Overlapping translucent layers in one PRIM and in one PRIM each, read back raw in
+    8888 and 5650 with and without dithering; the stream matches the registry, the list sets
+    the state the cells claim, and the layer colours make every overlap pixel decisive."""
+
+    probe: ClassVar[str]
+    makefile: ClassVar[str]
+    section: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_OVERLAP\n\n")
+        end = cls.probe.index("#endif /* GE_CASE_OVERLAP */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),ge-overlap)\nCASE_ID = 153\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),ge-overlap)\nTARGET = $(BUILD_DIR)/ge_overlap\n"
+                      "OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define GE_CASE_OVERLAP 153\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "ge-overlap"\n#define HLE_TEST_ID "PSP-GE-OVERLAP-001"\n'
+                      '#define HLE_LOG "host0:/ge_overlap_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "ge-overlap").name,
+                         "ge_overlap_log.txt")
+        self.assertEqual(_campaign_completeness_contract("ge-overlap"), "strict-golden-sequence")
+        self.assertNotIn("ge-overlap", CAMPAIGN_QUEUE_CASES)
+
+    def test_section_calls_only_the_ge_and_cache_imports_and_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
+            "sceGeEdramGetAddr", "sceGeListEnQueue", "sceGeListSync", "sceGeDrawSync",
+            "sceGeBreak", "sceKernelDcacheWritebackAll", "sceKernelDelayThread",
+            "sceKernelGetSystemTimeLow"})
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceGu", "sceDisplay", "sceIo"):
+            self.assertNotIn(banned, self.section)
+        self.assertEqual(self.section.count("i < GO_WAIT_POLLS; i++"), 2)
+        self.assertIn("#define GO_WAIT_POLLS 5000u", self.probe)
+        # The 8 KiB colour block at VRAM 0x100000 holds the 16x4 window.
+        self.assertIn("#define GO_FB_OFFSET 0x00100000u", self.probe)
+        self.assertIn("for (unsigned i = 0; i < GO_STRIDE * GO_ROWS; i++) {", self.section)
+        self.assertIn("#define GO_STRIDE 64u", self.probe)
+        self.assertIn("#define GO_ROWS 32u", self.probe)
+        body = _c_function_bodies(self.section)["go_draw"]
+        self.assertLess(body.index("hle_step(name);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceGeListEnQueue("), body.index("hle_record("))
+
+    def test_list_blends_untextured_layers_with_nothing_else_on(self) -> None:
+        body = _c_function_bodies(self.section)["go_list"]
+        # Texturing, dithering and blending are among the units the off loop clears.
+        units = re.search(r"off_units\[12\] = \{([^}]*)\}", self.section)
+        self.assertIsNotNone(units)
+        assert units is not None
+        cleared = {int(word.strip().rstrip("u"), 16) for word in units.group(1).split(",")}
+        self.assertEqual(cleared, {0x17, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24,
+                                   0x25, 0x27})
+        for word in ("GO_W(0x28, 0);", "GO_W(0xe7, 1);", "GO_W(0xde, 1);", "GO_W(0xd3, 0);",
+                     "GO_W(0xdf, 0x32u);", "GO_W(0x21, 1);", "GO_W(0x20, f->dither);",
+                     "GO_W(0xd2, f->psm);", "GO_W(0x12, 0x0080019cu);", "GO_W(0x50, 0);",
+                     "GO_W(0xe2, 0x1d0cu);", "GO_W(0xe3, 0xf3e2u);", "GO_W(0xe4, 0x0c1du);",
+                     "GO_W(0xe5, 0xe2f3u);"):
+            self.assertIn(word, body)
+        # Blending and the format's dither switch come after the loop that clears them.
+        self.assertLess(body.index("off_units[i]"), body.index("GO_W(0x21, 1);"))
+        self.assertLess(body.index("off_units[i]"), body.index("GO_W(0x20, f->dither);"))
+        # One PRIM for every layer, or one PRIM per layer at its own vertex address.
+        self.assertIn("GO_W(0x04, (prim << 16) | (per_layer * layers));", body)
+        self.assertIn("GO_W(0x01, vtx + i * per_layer * 16u);", body)
+        self.assertIn("GO_W(0x04, (prim << 16) | per_layer);", body)
+        self.assertIn("const uint32_t prim = s->tri ? 3u : 6u;", body)
+
+    def _layers(self) -> dict[str, tuple[int, int, int]]:
+        rows = re.findall(r"\{(\d+)u, (\d+)u, (0x[0-9a-f]{8})u\},", self.section)
+        self.assertEqual(len(rows), 3)
+        return {name: (int(x0), int(x1), int(col, 16)) for name, (x0, x1, col) in zip("ABC", rows, strict=True)}
+
+    def _shapes(self) -> list[tuple[str, str, int, int]]:
+        return [(name, layers, int(split), int(tri)) for name, layers, split, tri in
+                re.findall(r'\{"([a-z0-9-]+)", "([ABC]+)", (\d)u, (\d)u\},', self.section)]
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["ge-overlap"]
+        self.assertEqual(spec.test_id, "PSP-GE-OVERLAP-001")
+        self.assertEqual(spec.terminal_case, "ge-overlap-done")
+        shapes = tuple(name for name, _, _, _ in self._shapes())
+        formats = tuple(re.findall(r'\{"(8888|565d|565)", (\d)u, (\d)u\},', self.section))
+        self.assertEqual(shapes, parse_golden.GE_OVERLAP_SHAPES)
+        self.assertEqual(formats, (("8888", "3", "0"), ("565d", "0", "1"), ("565", "0", "0")))
+        self.assertEqual(tuple(name for name, _, _ in formats), parse_golden.GE_OVERLAP_FORMATS)
+        self.assertIn(f"#define GO_SHAPE_COUNT {len(shapes)}u", self.probe)
+        self.assertIn(f"#define GO_FORMAT_COUNT {len(formats)}u", self.probe)
+        # The shape loop is outside the format loop, as the registry nests them.
+        body = _c_function_bodies(self.section)["hle_run"]
+        self.assertLess(body.index("si < GO_SHAPE_COUNT"), body.index("fi < GO_FORMAT_COUNT"))
+        self.assertEqual(len(parse_golden.GE_OVERLAP_CASES), len(shapes) * len(formats) * 5)
+        self.assertEqual(spec.ordered_cases[:6], ("a-8888-draw", "a-8888-r0", "a-8888-r1",
+                                                  "a-8888-r2", "a-8888-r3", "a-565d-draw"))
+        self.assertEqual(spec.ordered_cases[-2:], ("tab-np-565-r3", "ge-overlap-done"))
+        self.assertEqual(counts["ab-1p-565d-draw"], 9)
+        self.assertEqual(counts["tab-np-565-r3"], 16)
+        # The vertex buffer holds the largest shape: three triangle-pair layers.
+        self.assertIn("#define GO_VTX_WORDS 96u", self.probe)
+        self.assertLessEqual(max(len(layers) * (6 if tri else 2) * 4
+                                 for _, layers, _, tri in self._shapes()), 96)
+
+    @staticmethod
+    def _dst(i: int) -> tuple[int, int, int]:
+        """go_dst()'s 5650 pixel i, expanded to 8 bits per channel."""
+        x = (i * 0x9E3779B9 + 0x7F4A7C15) & 0xFFFFFFFF
+        x ^= x >> 15
+        x = (x * 0x2C1B3C6D) & 0xFFFFFFFF
+        x ^= x >> 12
+        x = (x * 0x297A2D39) & 0xFFFFFFFF
+        x ^= x >> 15
+        r, g, b = x & 0x7F, 0x80 | ((x >> 8) & 0x7F), (x >> 16) & 0x7F
+        r5, g6, b5 = r >> 3, g >> 2, b >> 3
+        return ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
+
+    def test_overlap_pixels_separate_order_from_the_pre_prim_destination(self) -> None:
+        # Pins the C hash this test repeats.
+        for line in ("uint32_t x = i * 0x9e3779b9u + 0x7f4a7c15u;", "x *= 0x2c1b3c6du;",
+                     "x *= 0x297a2d39u;", "const uint32_t r = h & 0x7fu;",
+                     "const uint32_t g = 0x80u | ((h >> 8) & 0x7fu);",
+                     "const uint32_t b = (h >> 16) & 0x7fu;",
+                     "return (r >> 3) | ((g >> 2) << 5) | ((b >> 3) << 11);"):
+            self.assertIn(line, self.section)
+        layers = self._layers()
+
+        def blend(col: int, under: tuple[float, ...]) -> tuple[float, ...]:
+            a = (col >> 24) / 255.0
+            src = (col & 0xFF, (col >> 8) & 0xFF, (col >> 16) & 0xFF)
+            return tuple(a * s + (1.0 - a) * d for s, d in zip(src, under, strict=True))
+
+        def steps(p: tuple[float, ...], q: tuple[float, ...]) -> float:
+            # 5650 steps: 8 levels per red or blue step, 4 per green step.
+            return max(abs(p[0] - q[0]) / 8, abs(p[1] - q[1]) / 4, abs(p[2] - q[2]) / 8)
+
+        checked = 0
+        for name, order, _, _ in self._shapes():
+            for i in range(64):
+                x = i % 16
+                over = [layers[l] for l in order if layers[l][0] <= x < layers[l][1]]
+                if len(over) < 2:
+                    continue
+                d = tuple(float(v) for v in self._dst(i))
+                in_order = d
+                for _, _, col in over:
+                    in_order = blend(col, in_order)
+                pre_prim = blend(over[-1][2], d)
+                self.assertGreaterEqual(steps(in_order, pre_prim), 3.0, (name, i))
+                if order in ("AB", "BA"):
+                    other = blend(over[0][2], blend(over[1][2], d))
+                    self.assertGreaterEqual(steps(in_order, other), 3.0, (name, i))
+                checked += 1
+        self.assertGreater(checked, 0)
 
 
 class ModuleStartProbeTests(unittest.TestCase):

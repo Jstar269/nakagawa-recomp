@@ -234,6 +234,10 @@ CASE_ID = 126
 # powered-diffuse colour per specular coefficient, one flat-shaded quad per pixel.
 else ifeq ($(CASE),ge-light)
 CASE_ID = 139
+# 153: the GE overlap cells (probe_ge_sample.c, #2109): overlapping translucent layers in
+# one PRIM and in one PRIM each, in 8888 and in 5650 with and without dithering.
+else ifeq ($(CASE),ge-overlap)
+CASE_ID = 153
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -586,6 +590,10 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE lighting cells: the same source as the sample-point cells, case 139.
 else ifeq ($(CASE),ge-light)
 TARGET = $(BUILD_DIR)/ge_light
+OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
+# The GE overlap cells: the same source as the sample-point cells, case 153.
+else ifeq ($(CASE),ge-overlap)
+TARGET = $(BUILD_DIR)/ge_overlap
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The instruction trace: its own source, the single-step trampoline and the fixtures
 # header, with the same writer, ThreadManForUser block and module lifecycle as the HLE
