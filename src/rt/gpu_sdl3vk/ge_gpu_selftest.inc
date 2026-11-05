@@ -5168,6 +5168,94 @@ static int coherence_run_depth_zbw_switch(void) {
     return ok;
 }
 
+/* An eviction writeback that overlaps the new surface seeds it. Slot 0 holds zbp A at zbw 512, newer
+ * than VRAM (0x1111 at (10,10)); three more surfaces fill the slots; then a draw with zbp A at zbw 256
+ * evicts slot 0. The writeback puts 0x1111 in VRAM at the address that the 256-wide surface reads as
+ * (10,20), so the new surface must be seeded with it, not with the CPU depth view target_acquire
+ * loaded for zbw 256 before the writeback. depth_acquire reloads that view because a surface newer
+ * than VRAM keeps g_sr_vram_read_pending set (hook_vram_pending) until it is written back. That draw
+ * tests depth GREATER at z=0x0800: at (10,20) it must fail (the seed is 0x1111), and at (100,100),
+ * where nothing was drawn, it must pass. */
+static int coherence_run_depth_evict_overlap(void) {
+    const char *name = "depth-evict-overlap";
+    const uint32_t base = 0x04100000u, stride = 512u;
+    static const uint32_t zb[4] = { 0x04000000u, 0x04050000u, 0x040A0000u, 0x04190000u };
+    coherence_reset_depths();
+    g_sr_vram_read_pending = 0;
+    memset(SR_HOST(base), 0, stride * FB_H * 4u);
+    memset(SR_HOST(zb[0]), 0, 0x44000u + 0x2040u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(zb[0], 0x44000u + 0x2040u);
+
+    int ok = 1;
+    for (int i = 0; ok && i < 5; i++) {
+        memset(s_ge, 0, sizeof(*s_ge));
+        s_ge->fbp = base;
+        s_ge->fbw = stride;
+        s_ge->fbfmt = 3u;
+        s_ge->zbp = zb[i < 4 ? i : 0];
+        s_ge->zbw = i < 4 ? stride : 256u;
+        s_ge->scis_x2 = (int)FB_W - 1;
+        s_ge->scis_y2 = (int)FB_H - 1;
+        s_ge->maxz = 65535u;
+        if (i == 0) {                          /* the first draw writes depth 0x1111 */
+            s_ge->ztest_enable = 1;
+            s_ge->ztest = 1u;                  /* ALWAYS */
+            s_ge->zwrite_disable = 0;
+        } else if (i == 4) {                   /* the last one tests GREATER, without writing depth */
+            s_ge->ztest_enable = 1;
+            s_ge->ztest = 6u;
+            s_ge->zwrite_disable = 1;
+        }
+        if (i < 4) {
+            GeVtx p0 = { 10.0f, 10.0f, (float)0x1111u, 1.0f, 0.0f, 0.0f, 1.0f, 0x40, 0x50, 0x60, 0xff };
+            GeVtx p1 = p0;
+            p1.x = 12.0f;
+            p1.y = 12.0f;
+            ok = hook_sprite(&p0, &p1, 0) && s_nbatch && submit_pending();
+            if (ok && i == 0) ok = s_deps[0].used && s_deps[0].guest_dirty;
+            continue;
+        }
+        static const float at[2][2] = { { 10.0f, 20.0f }, { 100.0f, 100.0f } };
+        for (int k = 0; ok && k < 2; k++) {
+            GeVtx p0 = { at[k][0], at[k][1], (float)0x0800u, 1.0f, 0.0f, 0.0f, 1.0f, 0xa0, 0xb0, 0xc0, 0xff };
+            GeVtx p1 = p0;
+            p1.x = at[k][0] + 2.0f;
+            p1.y = at[k][1] + 2.0f;
+            ok = hook_sprite(&p0, &p1, 0) && s_nbatch;
+        }
+        ok = ok && submit_pending();
+    }
+    /* The zbw 256 surface took slot 0. */
+    ok = ok && s_deps[0].used && s_deps[0].zba == vram_off(zb[0]) && s_deps[0].zstride == 256u;
+    Target *t = ok ? target_find_by_fba(base & 0x00FFFFFFu) : NULL;
+    ok = ok && t && target_readback(t);
+    if (!ok) {
+        fprintf(stderr, "gpu coherence selftest [%s]: setup failed (slot 0 zba=0x%06x zstride=%u)\n",
+                name, s_deps[0].zba, s_deps[0].zstride);
+        coherence_reset_depths();
+        return 0;
+    }
+    uint32_t seeded = 0u, open = 0u;
+    memcpy(&seeded, SR_HOST(base + (20u * stride + 10u) * 4u), sizeof seeded);
+    memcpy(&open, SR_HOST(base + (100u * stride + 100u) * 4u), sizeof open);
+    if ((open & 0x00FFFFFFu) != 0x00c0b0a0u) {
+        fprintf(stderr, "gpu coherence selftest [%s]: the control draw at (100,100) did not land: 0x%08x\n",
+                name, open);
+        ok = 0;
+    }
+    if ((seeded & 0x00FFFFFFu) != 0u) {
+        fprintf(stderr, "gpu coherence selftest [%s]: the draw at (10,20) passed GREATER against the new "
+                        "surface (colour 0x%08x): it was seeded from the CPU depth view loaded before the "
+                        "eviction wrote 0x1111 there\n", name, seeded);
+        ok = 0;
+    }
+    if (ok)
+        printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n", name, stride, s_scale);
+    coherence_reset_depths();
+    return ok;
+}
+
 int gegpu_coherence_selftest(void) {
     /* SR_GPU_COHERENCE_CASE=scaled-upload (the harness's --case) runs that case alone, as the
      * recipe does at render scales 2 and 4: the other fixtures expect 1x pixels (a filtered sample
@@ -5182,6 +5270,7 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "depth-evict-newer") == 0) return coherence_run_depth_evict_newer();
         if (strcmp(only, "depth-zbp-switch") == 0) return coherence_run_depth_zbp_switch();
         if (strcmp(only, "depth-zbw-switch") == 0) return coherence_run_depth_zbw_switch();
+        if (strcmp(only, "depth-evict-overlap") == 0) return coherence_run_depth_evict_overlap();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }
@@ -5248,6 +5337,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_depth_evict_newer()) ok = 0;
     if (!coherence_run_depth_zbp_switch()) ok = 0;
     if (!coherence_run_depth_zbw_switch()) ok = 0;
+    if (!coherence_run_depth_evict_overlap()) ok = 0;
     coherence_reset_targets();
     return ok;
 }
