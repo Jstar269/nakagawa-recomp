@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 from typing import Any, Callable
 
 import pspdev_lock
@@ -32,6 +33,13 @@ IMPORT_FUNC_RE = re.compile(
     r'^\s*IMPORT_FUNC\s+"(?P<library>[^"\\]+)"\s*,\s*'
     r'(?P<nid>0x[0-9A-Fa-f]{8})\s*,\s*'
     r'(?P<symbol>[A-Za-z_][A-Za-z0-9_]*)\s*$'
+)
+# pspimport.s's IMPORT_FUNC_WITH_ALIAS emits one stub under two global names.
+IMPORT_FUNC_WITH_ALIAS_RE = re.compile(
+    r'^\s*IMPORT_FUNC_WITH_ALIAS\s+"(?P<library>[^"\\]+)"\s*,\s*'
+    r'(?P<nid>0x[0-9A-Fa-f]{8})\s*,\s*'
+    r'(?P<symbol>[A-Za-z_][A-Za-z0-9_]*)\s*,\s*'
+    r'(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*$'
 )
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 IDENT_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -127,16 +135,23 @@ def parse_import_assembly(
                 )
             libraries[library] = flags
         if "IMPORT_FUNC" in line:
-            match = IMPORT_FUNC_RE.fullmatch(raw_line)
+            aliased = "IMPORT_FUNC_WITH_ALIAS" in line
+            match = (IMPORT_FUNC_WITH_ALIAS_RE if aliased else IMPORT_FUNC_RE).fullmatch(raw_line)
             if not match:
+                kind = "IMPORT_FUNC_WITH_ALIAS" if aliased else "IMPORT_FUNC"
                 raise SyncError(
-                    f"{source_file}:{line_number}: unrecognized IMPORT_FUNC: {line!r}"
+                    f"{source_file}:{line_number}: unrecognized {kind}: {line!r}"
                 )
+            entry: dict[str, Any] = {
+                "library": match.group("library"),
+                "nid": f"0x{int(match.group('nid'), 16):08x}",
+                "symbol": match.group("symbol"),
+            }
+            if aliased:
+                entry["alias"] = match.group("alias")
             functions.append(
                 {
-                    "library": match.group("library"),
-                    "nid": f"0x{int(match.group('nid'), 16):08x}",
-                    "symbol": match.group("symbol"),
+                    **entry,
                     "source_file": source_file,
                     "source_line": line_number,
                 }
@@ -173,10 +188,16 @@ def _source_files(root: Path, suffix: str) -> list[Path]:
     return paths
 
 
+def _same_import(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True when two declarations name the same library, NID, symbol and alias."""
+    return all(a.get(k) == b.get(k) for k in ("library", "nid", "symbol", "alias"))
+
+
 def scan_imports(root: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
     functions: list[dict[str, Any]] = []
     libraries: dict[str, str] = {}
     seen: dict[tuple[str, str], dict[str, Any]] = {}
+    seen_names: dict[tuple[str, str], dict[str, Any]] = {}
     for path in _source_files(root, ".S"):
         relative = path.relative_to(root).as_posix()
         if relative == "src/base/pspimport.s":
@@ -196,13 +217,33 @@ def scan_imports(root: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
             key = (entry["library"], entry["nid"])
             if key in seen:
                 previous = seen[key]
+                if _same_import(previous, entry):
+                    # The same stub declared twice links to one import: keep the first.
+                    print(
+                        f"pspsdk_sync: duplicate upstream import {entry['library']} "
+                        f"{entry['nid']} {entry['symbol']} at {previous['source_file']}:"
+                        f"{previous['source_line']} and {entry['source_file']}:"
+                        f"{entry['source_line']}; kept once",
+                        file=sys.stderr,
+                    )
+                    continue
                 raise SyncError(
                     f"duplicate upstream import {entry['library']} {entry['nid']}: "
                     f"{previous['symbol']} at {previous['source_file']}:"
                     f"{previous['source_line']} and {entry['symbol']} at "
                     f"{entry['source_file']}:{entry['source_line']}"
                 )
+            name_key = (entry["library"], entry["symbol"])
+            if name_key in seen_names:
+                previous = seen_names[name_key]
+                raise SyncError(
+                    f"upstream import {entry['library']} {entry['symbol']} has two NIDs: "
+                    f"{previous['nid']} at {previous['source_file']}:"
+                    f"{previous['source_line']} and {entry['nid']} at "
+                    f"{entry['source_file']}:{entry['source_line']}"
+                )
             seen[key] = entry
+            seen_names[name_key] = entry
             functions.append(entry)
             if len(functions) > MAX_IMPORTS:
                 raise SyncError(f"upstream import count exceeds cap {MAX_IMPORTS}")
