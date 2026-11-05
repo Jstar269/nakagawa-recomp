@@ -327,7 +327,7 @@ reports the result. The runtime's environment switches are in [`DEBUGGING.md`](D
 | `fonts import <folder> [--choose SLOT=FILE] [--json]` | `.pgf` font files you dumped from your own PSP | Copies them into the player data for the `japanese`, `latin` and `korean` slots |
 | `fonts status [--project-root DIR] [--json]` | The player data and project `font/` folder | The source of each font slot |
 | `fonts remove (--slot SLOT \| --all)` | The player data | Removes fonts this tool imported |
-| `bringup <iso> --work-dir DIR --report FILE [--launch-timeout S] [--instruction-trace]` | A PSP `.iso` | Runs a time-limited bring-up in a private work folder and writes a JSON report that is safe to share |
+| `bringup <iso> --work-dir DIR --report FILE [--launch-timeout S] [--instruction-trace] [--capture-rounds N]` | A PSP `.iso` | Runs a time-limited bring-up in a private work folder and writes a JSON report that is safe to share; when the run stops at code the game installed at run time, builds again with it, up to `N` rounds ([code capture](DEBUGGING.md)) |
 | `vram <image> --addr A --width W --height H --format F [...] --output PNG` | A 2 MiB raw VRAM capture | Decodes one surface to PNG; `--from-sidecar FILE --out-dir DIR` exports every surface a runtime capture describes |
 
 ### Privacy boundary

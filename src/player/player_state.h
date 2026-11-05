@@ -1513,8 +1513,10 @@ void player_play_resolve(const PlayerSettings *settings, const char *disc_id,
 /* A title that launches its enhanced 60 FPS build (GameRecord.enhancement_package_id set) calls
  * this with logic_60 true. An Enhanced or Ace launch then runs as Ace with its 60 FPS game logic
  * (the session flag on a title on Enhanced included), and smooth motion is off for it whatever
- * the settings say: true 60 Hz game logic and interpolation are refused together, not stacked
- * (#1272). The other parts are untouched, and an Authentic resolution stays off. */
+ * the settings say. The two may be stacked by contract (docs/ENHANCEMENT_CONTRACT.md section
+ * 10.5), but this build's smooth motion interpolates only a 30 Hz source (section 10.6); the item
+ * that adds interpolation above 30 Hz removes this limit. The other parts are untouched, and an
+ * Authentic resolution stays off. */
 void player_play_apply_logic_60(PlayerPlayResolved *play, bool logic_60);
 /* The SR_ACE line for a resolution: "off", or "v1;tier=enhanced;af=16;text=on;readout=off;
  * notice=on;wide=off;smooth=off" (tier=ace for Ace; wide is always off, and smooth=match is

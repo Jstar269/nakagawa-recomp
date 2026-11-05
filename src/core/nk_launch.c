@@ -67,6 +67,28 @@ static bool launch_join_path(const char *base, const char *relative,
     return written >= 0 && (size_t)written < out_size;
 }
 
+/* The title's code-capture folder (#1933), <user_data_root>/cache/bringup/<DISC>/captures, the
+   folder `nk_cli.py bringup` reads (bringup_capture_dir). False, with `out_path` empty, when the
+   session has no per-user data directory or no PSP disc ID, or the path does not fit. */
+static bool launch_code_capture_dir(const NkLaunchSession *session, char *out_path,
+                                    size_t out_size) {
+    if (!out_path || out_size == 0u) return false;
+    out_path[0] = '\0';
+    char disc[NK_MAX_DISC_ID_LEN + 8];
+    if (!session->user_data_root[0] ||
+        !nk_title_manifest_package_dir_name(session->disc_id, NULL, disc, sizeof(disc))) {
+        return false;
+    }
+    char sep = nk_platform_path_separator();
+    int written = snprintf(out_path, out_size, "%s%ccache%cbringup%c%s%ccaptures",
+                           session->user_data_root, sep, sep, sep, disc, sep);
+    if (written < 0 || (size_t)written >= out_size) {
+        out_path[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
 /* Build the UMD ISO route's disc path; Memory Stick launches need their own
    route-specific path and must not reuse this synthesized prefix. */
 static bool launch_boot_path_env(const char *selected_executable,
@@ -1454,6 +1476,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_modules[NK_MAX_PATH * 2 + 32];
     char env_tables[64];
     char env_boot_event[NK_MAX_PATH + 32];
+    char env_code_capture[NK_MAX_PATH + 64];
     char env_fullscreen[32];
     char env_volume[32];
     char env_input_profile[NK_MAX_PATH + 32];
@@ -1679,6 +1702,25 @@ NkResult nk_launch_start(NkLaunchSession *session) {
                          "SR_BOOT_EVENT_FILE=%s", boot_event_path);
         if (w > 0 && (size_t)w < sizeof(env_boot_event)) {
             envp[env_count++] = env_boot_event;
+        }
+    }
+    /* Code the game installs at run time (#1933): a call into it stops, and the runtime writes a
+       capture of it to SR_CODE_CAPTURE. The title's folder is the one `nk_cli.py bringup`
+       translates on its next build (cache/bringup/<DISC>/captures under the per-user data
+       directory, removed with the title's build cache). The runtime writes into the folder and
+       does not create it, so it is created here; a folder that cannot be created is still named,
+       and the runtime then names the capture it could not write. A value the user set is kept
+       (an empty one turns the capture off). */
+    {
+        char capture_dir[NK_MAX_PATH];
+        if (!getenv("SR_CODE_CAPTURE") &&
+            launch_code_capture_dir(session, capture_dir, sizeof(capture_dir))) {
+            int w = snprintf(env_code_capture, sizeof(env_code_capture), "SR_CODE_CAPTURE=%s",
+                             capture_dir);
+            if (w > 0 && (size_t)w < sizeof(env_code_capture)) {
+                (void)nk_platform_mkdir_p_private(capture_dir);
+                envp[env_count++] = env_code_capture;
+            }
         }
     }
     /* Every entry above is one of a fixed set, so this holds by construction; it is checked

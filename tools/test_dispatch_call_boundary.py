@@ -758,6 +758,7 @@ def _call_into_a_live_frame_tail() -> tuple[int, ...]:
 
 
 _S0 = 16
+_CENSUS = ("--stack-census",)
 # 94c278ec9's rule: a transfer that leaves $sp at the recording body's entry owes no restore.
 _SIBCALL_RECORDS_NOTHING = {"recomp.h": (
     "    sr_tail_transfer.has_restore = owes_restore ? 1u : 0u;",
@@ -794,6 +795,24 @@ def _native_head_into_an_alloca_tail_end(*, crossing: str, frame: int = _FP) -> 
         _jal(tail), _NOP, _jal(f), _NOP,                     # both are entries
     ])
     assert len(words) == (tail + 0x24 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
+def _switch_to_a_lower_stack() -> tuple[int, ...]:
+    """F loads $sp from memory, below where it was, and hands on to T there by `j`.
+
+    The shape of a context switch: the load leaves F's frame, as the interpreter decides it
+    (sp_load_leaves_frame), so F owes no restore. T, an entry of its own, returns to F's
+    caller on the stack F switched to: v0 = 0x5A, v1 = _PROBE_SP - 0x60.
+    """
+    t = 0x1024
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x20), _addiu(_T8, _SP, -0x40),    # 0x1010 F
+        _sw(_T8, 0x10, _SP), _j(t), _lw(_SP, 0x10, _SP),     # 0x1018 switch in the slot
+        _addiu(_V0, 0, 0x5A), _jr(_RA), _NOP,                # 0x1024 T
+        _jal(t), _NOP,                                       # T is an entry
+    ])
+    assert len(words) == (t + 0x14 - _PROBE_BASE) // 4, "the fixture's labels moved"
     return words
 
 
@@ -1697,34 +1716,75 @@ class GeneratedCallDepthTests(unittest.TestCase):
         )
 
     def test_a_sibcall_into_a_guest_sp_body_keeps_the_callers_sp(self):
-        # F frees its alloca through $s0, so it records nothing. On 9832da426 H's sibcall
-        # at its entry $sp recorded nothing either, and natively TAIL's lowered entry $sp
-        # reached H's caller (v1=0x09efffe0); interpreted, F owed it. By a linked call F
-        # interpreted owes its caller's $sp; BASE_SHA lost it there as well. Native F, by a
-        # linked call, is the open limit (#1935): its callee owns the restore, F has none.
+        # F frees its alloca through $s0, a $sp load the frame walk does not own. On
+        # 9832da426 H's sibcall at its entry $sp recorded nothing, and natively TAIL's
+        # lowered entry $sp reached H's caller (v1=0x09efffe0); interpreted, F owed it. By a
+        # linked call F interpreted owes its caller's $sp; BASE_SHA lost it there as well.
+        # Before (#1935): native F took every exit as the guest's and recorded nothing, so by
+        # a linked call TAIL's write-back of F's lowered $sp reached H, which returned through
+        # a null $ra; with H interpreted, for either crossing, H's caller went on at that $sp
+        # (v1=0x09efffe0 by a sibcall). Now F checks the load when it runs, as the interpreter
+        # does (sp_load_leaves_frame): it stayed in F's frame, so F's record owes its entry
+        # $sp and the drain raises TAIL's write-back to it.
         for crossing in ("tail", "call"):
             words = _native_head_into_an_alloca_tail_end(crossing=crossing, frame=_S0)
             f = 0x1010 + (8 if crossing == "tail" else 0x1C)
-            tiers = ((), (f"--omit-aot=0x{f:08x}",)) if crossing == "tail" else (
-                (f"--omit-aot=0x{f:08x}",),)
-            for codegen_args in tiers:
-                with self.subTest(crossing=crossing, interpreted=bool(codegen_args)):
-                    _generated, results = self._probe(words, (0,), codegen_args=codegen_args)
+            for omitted in (None, 0x1010, f):
+                codegen_args = () if omitted is None else (f"--omit-aot=0x{omitted:08x}",)
+                with self.subTest(crossing=crossing, omitted=omitted):
+                    generated, results = self._probe(words, (0,), codegen_args=codegen_args)
                     rc, output, fields = results[0]
                     self.assertEqual(rc, 0, output)
                     self.assertEqual(fields.get("v0"), 0x57, output)
                     self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+                    if omitted != f:
+                        body = generated[generated.index(f"void f_{f:08x}(CpuState *s) {{"):]
+                        body = body[:body.index("\n}")]
+                        self.assertIn("_sp_entry, _sp_kept); return;", body, "F's record")
+        # K2: every checked $sp load counts as leaving the frame: F records nothing again.
+        self._assert_mutant_fails(
+            "K2-a-checked-sp-load-always-leaves-the-frame",
+            _native_head_into_an_alloca_tail_end(crossing="call", frame=_S0), (0,),
+            {"codegen.py": ("if (s->r[29] < _sp_load || s->r[29] >= _sp_entry) _sp_kept = 0u;",
+                            "_sp_kept = 0u;")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+        )
+        # A1: H's sibcall at its entry $sp records nothing. Native F's own record now gives
+        # the same $sp back, so only interpreted F, which hands TAIL on unrecorded, tells.
         self._assert_mutant_fails(
             "A1-a-sibcall-at-the-entry-sp-records-nothing",
             _native_head_into_an_alloca_tail_end(crossing="tail", frame=_S0), (0,),
             _SIBCALL_RECORDS_NOTHING,
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+            codegen_args=("--omit-aot=0x00001018",),
+        )
+
+    def test_a_switch_to_a_lower_stack_keeps_the_stack_it_loaded(self):
+        # F's $sp load leaves its frame downwards, as a context switch does, so F owes no
+        # restore: T returns to F's caller on the stack F loaded, in every tier.
+        for codegen_args in ((), ("--omit-aot=0x00001010",), ("--omit-aot=0x00001024",)):
+            with self.subTest(omitted=codegen_args):
+                _generated, results = self._probe(
+                    _switch_to_a_lower_stack(), (0,), codegen_args=codegen_args)
+                rc, output, fields = results[0]
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v0"), 0x5A, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP - 0x60, output)
+        # K1: the check never clears the verdict: F's record raises $sp back to its entry.
+        self._assert_mutant_fails(
+            "K1-a-checked-sp-load-never-leaves-the-frame", _switch_to_a_lower_stack(), (0,),
+            {"codegen.py": ("if (s->r[29] < _sp_load || s->r[29] >= _sp_entry) _sp_kept = 0u;",
+                            "(void)_sp_load;")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP - 0x60,
         )
 
     def test_a_piece_that_releases_its_frame_keeps_the_released_sp(self):
         # P records its lowered entry $sp, and the chain ends above it at F's entry $sp.
         # Before (BASE_SHA, 9832da426): natively the drain lowered $sp to P's record. On
         # 9832da426, interpreted, P's run owed the $sp it started at and wrote it back.
+        # F's load stays in its frame, so since #1935 F's record of its entry $sp comes
+        # first and is the chain's restore: R1 (the drain lowers $sp to its restore) no longer
+        # changes this chain in any tier, and the plain longjmp tail-call below kills it.
         for codegen_args in ((), ("--omit-aot=0x00001030",)):
             with self.subTest(interpreted=bool(codegen_args)):
                 _generated, results = self._probe(
@@ -1733,14 +1793,6 @@ class GeneratedCallDepthTests(unittest.TestCase):
                 self.assertEqual(rc, 0, output)
                 self.assertEqual(fields.get("v0"), 0x58, output)
                 self.assertEqual(fields.get("v1"), _PROBE_SP, output)
-        # R1 again: the drain lowers $sp to its restore.
-        self._assert_mutant_fails(
-            "R1-the-drain-lowers-sp", _a_piece_that_releases_a_guest_bodys_frame(), (0,),
-            {"guest_interp.c": (
-                "    if (chain_restores && s->r[29] < chain_sp) s->r[29] = chain_sp;",
-                "    if (chain_restores) s->r[29] = chain_sp;")},
-            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
-        )
 
     def test_a_call_site_drains_before_the_caller_goes_on(self):
         _generated, results = self._probe(_call_into_a_live_frame_tail(), (0,))
@@ -1912,12 +1964,20 @@ class GeneratedCallDepthTests(unittest.TestCase):
             "if rt(w) == 29 and (rs(w) != 30 or offset not in slots):", "if rt(w) == 29:")}
         # CASE in the switch chain hands on at the $sp it was entered at and records
         # nothing (sr_tail_record), so the pieces that return for F are the ones that tell.
-        for name, fixture, iteration in (
-                ("S1-own-slot-is-foreign-tail-end", _alloca_tail_end(), 0),
-                ("S1-own-slot-is-foreign-scoped-arrays", _scoped_arrays_function(), 2)):
+        # The tail end's only exit is a TAIL, where the run-time check of a load the walk
+        # gives the guest owes the same restore (#1935); the stack census keeps the walk's
+        # verdict there (it wraps F only when the walk owns its exits), so it is that tier.
+        _generated, results = self._probe(_alloca_tail_end(), (0,), codegen_args=_CENSUS)
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        for name, fixture, iteration, codegen_args in (
+                ("S1-own-slot-is-foreign-tail-end", _alloca_tail_end(), 0, _CENSUS),
+                ("S1-own-slot-is-foreign-scoped-arrays", _scoped_arrays_function(), 2, ())):
             self._assert_mutant_fails(
                 name, fixture, (iteration,), loads_are_foreign,
                 lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+                codegen_args=codegen_args,
             )
 
     def test_scoped_arrays_keep_the_callers_sp_on_both_ways_out(self):
@@ -1945,17 +2005,22 @@ class GeneratedCallDepthTests(unittest.TestCase):
         )
 
     def test_a_save_through_a_register_copy_is_the_frames_own(self):
-        # `move t8, sp; sw t8, n(fp)` saves the same value as `sw sp, n(fp)`.
-        _generated, results = self._probe(_alloca_tail_end(saved_through_a_copy=True), (0,))
-        rc, output, fields = results[0]
-        self.assertEqual(rc, 0, output)
-        self.assertEqual(fields.get("v0"), 0x57, output)
-        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        # `move t8, sp; sw t8, n(fp)` saves the same value as `sw sp, n(fp)`. F2 shows under
+        # the stack census, which keeps the walk's verdict at a TAIL (see S1).
+        for codegen_args in ((), _CENSUS):
+            with self.subTest(census=bool(codegen_args)):
+                _generated, results = self._probe(
+                    _alloca_tail_end(saved_through_a_copy=True), (0,), codegen_args=codegen_args)
+                rc, output, fields = results[0]
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v0"), 0x57, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP, output)
         self._assert_mutant_fails(
             "F2-copy-is-not-followed", _alloca_tail_end(saved_through_a_copy=True), (0,),
             {"codegen.py": ("if op == 0x2B and rt(w) in regs:",
                             "if op == 0x2B and rt(w) == 29 and rt(w) in regs:")},
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+            codegen_args=_CENSUS,
         )
 
     def test_a_switch_that_rebinds_fp_stays_with_the_guest(self):

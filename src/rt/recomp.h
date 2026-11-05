@@ -1527,6 +1527,9 @@ RecompFn sr_module_code_lookup(uint32_t pc, int *in_bound_image);
 /* Fetch authority: -1 when no bound image owns pc, else 1/0 for whether one of the
  * owning image's executable spans covers pc's complete fetch slot. */
 int  sr_module_code_fetch_authority(uint32_t pc);
+/* 1 when a bound image covers pc and that image is the translation of code captures (#1933):
+ * tools/code_capture.py names each such image code_capture_<load>_<fnv1a64>. */
+int  sr_module_code_capture_covers(uint32_t pc);
 void sr_module_code_reset(void);   /* drop every registration and binding (fixtures) */
 /* Instruction-cache maintenance over guest [lo, hi): unbind each code overlay there whose
  * identifying bytes are no longer in memory, then bind each one whose bytes are. Returns
@@ -2201,6 +2204,9 @@ void sr_yield(CpuState *s);
  * force a premature slice expiry when the recomp-emitted yield cadence is too sparse to
  * keep the engine vblank callback chain alive (e.g. during a busy-wait on a guest latch). */
 int sr_vblank_quantum_due(void);
+/* True when guest time is deterministic (SR_DETERMINISTIC_CLOCK, #2037): a function of the guest's
+ * own work, never of the host clock. The RTC then starts at a fixed date. */
+int sched_clock_deterministic(void);
 /* f_00065c60 field-writer intercept: the container walker reads count from
  * r18+0x04 but f_0005a500's control block init puts count at r18+0x00 and
  * cursor at r18+0x04.  Since both functions are called directly (not via
