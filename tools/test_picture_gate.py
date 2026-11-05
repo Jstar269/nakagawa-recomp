@@ -175,6 +175,7 @@ class AcceptTests(Base):
         self.assertEqual(ref.read_bytes(), src.read_bytes())
         side = json.loads(pg.sidecar_path(ref).read_text())
         self.assertEqual((side["commit"], side["width"], side["height"]), ("abc123", W, H))
+        self.assertEqual(side["slice_us"], pg.DEFAULT_SLICE_US)
         self.assertEqual(side["sha256"], meta["sha256"])
         self.assertEqual(pg.compare_files(ref, src).status, pg.PASS)
 
@@ -369,8 +370,30 @@ class RouteTests(Base):
         self.assertEqual(Path(seen["SR_PADSCRIPT"]), pad)
         self.assertEqual(seen["SR_NOVBPACE"], "1")
         self.assertEqual(seen["SR_KEEP"], "yes")
+        # a gate that compares frames pins guest time to the guest (#2037) and publishes every
+        # present of the window (as the showcase capture does), whatever the host environment says
+        self.assertEqual(seen["SR_DETERMINISTIC_CLOCK"], "1")
+        self.assertEqual(seen["SR_FPS_CAP"], "0")
         for gone in ("SR_FBSNAP", "SR_FLIGHT", "SR_DATAROOT"):
             self.assertNotIn(gone, seen)
+
+    def test_the_clock_slice_is_recorded_with_the_reference(self):
+        route = self.route(env={"SR_DETERMINISTIC_SLICE_US": "250"})
+        self.assertEqual(self.check(route).status, pg.SKIP)
+        self.assertEqual(pg.run_route(route, 2, self.dir / "work", accept_frame=True)[1].status, pg.ACCEPTED)
+        side = json.loads(pg.sidecar_path(self.dir / "priv" / "ref.ppm").read_text())
+        self.assertEqual(side["slice_us"], 250)
+
+    def test_a_reference_taken_with_another_slice_says_so_when_it_differs(self):
+        ref = self.dir / "priv" / "ref.ppm"
+        pg.accept(self.ppm("seed.ppm", frame(9)), ref, commit="c", slice_us=50)
+        v = self.check(self.route(fill=5))   # the default slice, 100
+        self.assertEqual(v.status, pg.FAIL)
+        self.assertIn("slice-differs(reference=50 run=100)", v.detail)
+        v = pg.run_route(self.route(fill=5, env={"SR_DETERMINISTIC_SLICE_US": "50"}), 1,
+                         self.dir / "work2")[1]
+        self.assertEqual(v.status, pg.FAIL)
+        self.assertNotIn("slice-differs", v.detail)
 
     def test_repeated_runs_that_differ_are_reported_not_masked(self):
         flaky = self.dir / "flaky.py"
