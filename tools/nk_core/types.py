@@ -125,7 +125,7 @@ class IsoMetadata:
     size_bytes: int = 0
     matched_profile: Optional[TitleProfile] = None
     param_sfo_facts: Mapping[str, str] = field(default_factory=dict)
-    container_metadata: Mapping[str, Any] = field(default_factory=dict)
+    container_metadata: dict[str, Any] = field(default_factory=dict)
     qualification_error: str = ""
     # The DISC_ID exactly as the disc's PARAM.SFO carries it. For a retail disc
     # disc_id is its normalised form; for a non-retail disc (a beta, a prototype,
