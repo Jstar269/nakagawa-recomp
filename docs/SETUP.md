@@ -68,7 +68,7 @@ Measured on a Windows 11 x64 PC building and running Hot Shots Tennis with the p
 - **Texture scaling (Ace Mode, development only).** It is reachable only through the `SR_TEX_SCALE` and
   `SR_SMART_2D` environment variables, has no setting in the player, and is not admitted as an Enhanced or Ace
   item yet, because it changes the frames the game can read back
-  ([section 11.3.1](ENHANCEMENT_CONTRACT.md#1131-texture-scaling-and-the-smart-2d-filter-not-yet-admitted)).
+  ([section 11.3.2](ENHANCEMENT_CONTRACT.md#1132-texture-scaling-and-the-smart-2d-filter-not-yet-admitted)).
   Each texture a game uploads is scaled once on two worker threads, off the game's thread: on the development PC (`-O2`, one thread) a 256x256 texture took about 2.0 ms at 2x, 2.8 ms at 4x
   and 4.6 ms at 6x, so a scene change that uploads many textures shows some of them unscaled for a moment. Each
   copy costs factor x factor times the texture's GPU memory (a 256x256 texture at 4x is 4 MB), up to a budget of
@@ -76,7 +76,7 @@ Measured on a Windows 11 x64 PC building and running Hot Shots Tennis with the p
   copies in use fill it, new textures are drawn unscaled. Storing copies costs the game's thread up to 8 MB of
   uploads per frame, which can make a busy game drop frames. The scaler builds no lookup table, so it adds no fixed
   memory cost. The rules are in
-  [`ENHANCEMENT_CONTRACT.md`](ENHANCEMENT_CONTRACT.md#107-texture-scaling-and-the-smart-2d-filter).
+  [`ENHANCEMENT_CONTRACT.md`](ENHANCEMENT_CONTRACT.md#108-texture-scaling-and-the-smart-2d-filter).
 - **Where your data lives.** Imported discs, built games, saves and settings are in the per-user data
   folder (`%LOCALAPPDATA%\Nakagawa\data`, [below](#2-supply-local-game-inputs)), never inside the unpacked
   release. An update unpacks into a new folder and leaves the data folder alone, so deleting an old release

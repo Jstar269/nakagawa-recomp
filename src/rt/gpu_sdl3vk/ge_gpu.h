@@ -199,6 +199,7 @@ typedef struct GeGpuReplayStats {
     unsigned long long snapshot_requests;
     unsigned long long snapshot_copies;
     unsigned long long snapshot_copy_px;   /* device pixels those copies moved */
+    unsigned long long snapshot_barriers;  /* pipeline-barrier commands those copies recorded */
     /* Primitives drawn by ge.c's software rasterizer inside the GPU path, and the
      * fallbacks that took a GPU-valid colour target back to guest VRAM (a synchronous
      * colour and depth readback each), by reason: GEGPU_FALLBACK_*. */

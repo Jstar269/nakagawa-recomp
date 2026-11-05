@@ -984,6 +984,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                 encoding="utf-8",
             )
             exe = tmp / "drops.exe"
+            assert GCC is not None
             subprocess.run([GCC, "-std=c11", "-Wall", "-Werror", "-Wno-unused-function",
                             "-o", str(exe), str(harness)], check=True, capture_output=True)
             out = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout
@@ -1054,7 +1055,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                     capture_output=True, text=True)
                 self.assertEqual(checked.returncode, 0, checked.stderr[-2000:])
 
-            refusals = (
+            refusals: tuple[tuple[str, dict[str, str] | None, list[str] | None, str], ...] = (
                 ("no-data-root", None, [], "need --enhancement-data-root"),
                 ("code-as-data", {"symbol": "synth_code_as_data"}, None, "initialised data"),
                 ("data-digest", {"stock_digest": "0" * 64}, None, "Stock data digest mismatch"),
@@ -1106,8 +1107,9 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         """Each (transform, instruction) pair has one defined rewrite; anything else refuses."""
         from enhancement_package import EnhancementPackageError, plan_site_rewrite
 
-        def plan(transform: str, word: int) -> dict:
-            return plan_site_rewrite({"id": "S", "transform": transform}, word)
+        def plan(transform: str, word: int) -> dict[str, Any]:
+            planned: dict[str, Any] = plan_site_rewrite({"id": "S", "transform": transform}, word)
+            return planned
 
         self.assertEqual(plan("count_x2", 0x2404001E), {"kind": "word", "word": 0x2404003C})
         self.assertEqual(plan("step_x0.5", 0x3C053F80), {"kind": "word", "word": 0x3C053F00})
@@ -1506,7 +1508,7 @@ class TestEnhancementDataTransforms(unittest.TestCase):
 
     def test_data_sites_resolve_fail_closed(self) -> None:
         stock = struct.pack("<2i", 15, 45)
-        pkg = {
+        pkg: dict[str, Any] = {
             "schema_version": 1, "id": "synth.data", "display_name": "Synthetic data", "version": "1.0.0",
             "category": "timing_frame_presentation", "target_title_id": "synthetic-allegrex-v1",
             "game_version": "1.00", "executable_sha256": "a" * 64, "capabilities": ["count_x2"],
@@ -1596,18 +1598,19 @@ class TestEnhancementDataTransforms(unittest.TestCase):
 
 
 def _f32_of(bits: int) -> float:
-    return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
+    return float(struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0])
 
 
 def _bits_of(value: float) -> int:
-    return struct.unpack("<I", struct.pack("<f", value))[0]
+    return int(struct.unpack("<I", struct.pack("<f", value))[0])
 
 
 class TestEnhancementPhysicsAndOffsetTransforms(unittest.TestCase):
     """offset_x2, window_start_x2, accel_x0.25, launch_velocity_x0.5 and f64_high."""
 
     def _plan(self, transform: str, word: int, **extra: Any) -> dict[str, Any]:
-        return plan_site_rewrite(dict({"id": "S", "transform": transform}, **extra), word)
+        planned: dict[str, Any] = plan_site_rewrite(dict({"id": "S", "transform": transform}, **extra), word)
+        return planned
 
     def test_offsets_and_windows(self) -> None:
         # addiu v0,v0,2 (a lookahead D + 2): offset_x2 doubles the term even though rt == rs.
@@ -1723,7 +1726,7 @@ class TestEnhancementPhysicsAndOffsetTransforms(unittest.TestCase):
             0x1000: 0x3C02BE99, 0x1004: 0x3442999A,       # lui/ori v0 = v0
             0x1100: 0x3C023D05, 0x1140: 0x3442CD7C,       # lui ... ori (not adjacent) = g
         }
-        pkg = {
+        pkg: dict[str, Any] = {
             "schema_version": 1, "id": "synth.jump", "display_name": "Synthetic jump", "version": "1.0.0",
             "category": "timing_frame_presentation", "target_title_id": "synthetic-allegrex-v1",
             "game_version": "1.00", "executable_sha256": "a" * 64, "capabilities": ["count_x2"],

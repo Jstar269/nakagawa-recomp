@@ -33,6 +33,22 @@ class LedgerTests(unittest.TestCase):
         cls.sources = hle_manifest.runtime_hle_sources()
         cls.registered = {r["handler"] for r in cls.manifest["registrations"]}
 
+    def test_every_unverified_vfpu_form_has_a_word_pattern_and_no_other_form_does(self) -> None:
+        masks = self.ledger["vfpu_unverified_masks"]
+        self.assertTrue(masks)
+        unverified = {r["form_id"]: int(r["canonical_word"], 16) for r in self.ledger["vfpu"] if r["class"] == "unverified"}
+        listed = {form for entry in masks for form in entry["forms"]}
+        self.assertEqual(listed, set(unverified))
+        for entry in masks:
+            self.assertEqual(entry["match"] & ~entry["mask"], 0)
+            for form in entry["forms"]:
+                self.assertEqual(unverified[form] & entry["mask"], entry["match"], form)
+        for row in self.ledger["vfpu"]:
+            if row["class"] != "unverified":
+                word = int(row["canonical_word"], 16)
+                for entry in masks:
+                    self.assertNotEqual(word & entry["mask"], entry["match"], row["form_id"])
+
     def test_committed_outputs_are_current(self) -> None:
         for path, text in (
             (ledger_mod.DOC, ledger_mod.render_markdown(self.ledger)),
@@ -75,7 +91,7 @@ class LedgerTests(unittest.TestCase):
 
     def test_header_lists_exactly_the_unverified_nids_sorted(self) -> None:
         text = ledger_mod.HEADER.read_text(encoding="utf-8")
-        body = text.split("sr_hle_unverified_nids[", 1)[1]
+        body = text.split("sr_hle_unverified_nids[", 1)[1].split("};", 1)[0]  # the NID table only
         listed = [int(tok[:-2], 16) for tok in body.split() if tok.startswith("0x") and tok.endswith("u,")]
         expected = sorted(int(r["nid"], 16) for r in self.ledger["hle"] if r["class"] == "unverified")
         self.assertEqual(listed, expected)
@@ -175,6 +191,43 @@ class RuntimeLogTests(unittest.TestCase):
         }]}
         with self.assertRaisesRegex(ledger_mod.LedgerError, "tier H with no semantic"):
             ledger_mod.classify_vfpu(census, ("no_such_kernel",))
+
+    def test_an_unverified_form_with_no_visited_word_is_refused(self) -> None:
+        rows = [
+            {"form_id": "vfpu-32-c8000000-aaaaaaaaaaaa", "class": "unverified"},
+            {"form_id": "vfpu-32-c8200000-aaaaaaaaaaaa", "class": "synthetic"},
+        ]
+        with self.assertRaisesRegex(ledger_mod.LedgerError, "no visited word"):
+            ledger_mod.vfpu_unverified_masks(rows)
+
+    def test_the_header_table_round_trips_through_codegens_reader(self) -> None:
+        import tempfile
+
+        import codegen
+
+        fake = {
+            "hle": [{"nid": "0x00000001", "class": "unverified"}],
+            "vfpu_unverified_masks": [
+                {"mask": 0xFFE0FE6F, "match": 0xC8000000, "forms": ["vfpu-32-a", "vfpu-32-b"]},
+                {"mask": 0xFFFFFFFF, "match": 0xFC000000, "forms": ["vfpu-3f-c"]},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            header = Path(tmp) / "hle_evidence.h"
+            header.write_text(ledger_mod.render_header(fake), encoding="utf-8")
+            self.assertEqual(
+                codegen.unverified_vfpu_patterns(str(header)),
+                [
+                    (0xFFE0FE6F, 0xC8000000, "lv.s [vfpu-32-a vfpu-32-b]"),
+                    (0xFFFFFFFF, 0xFC000000, "VFPU opcode 0x3f [vfpu-3f-c]"),
+                ],
+            )
+
+    def test_the_floor_and_the_build_log_unverified_vfpu_forms_from_the_generated_table(self) -> None:
+        interp = (ROOT / "src" / "rt" / "guest_interp.c").read_text(encoding="utf-8")
+        self.assertIn("VFPU: unverified: first use of %s", interp)
+        self.assertIn("VFPU: unverified: translated code uses %s", interp)
+        self.assertIn("sr_vfpu_note_unverified(opcode, pc);", interp)
 
     def test_dispatch_logs_unverified_nids_once_from_the_generated_table(self) -> None:
         source = hle_sources.text()

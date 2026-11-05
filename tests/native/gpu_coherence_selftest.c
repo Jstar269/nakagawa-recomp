@@ -122,7 +122,7 @@ int main(int argc, char **argv) {
     sr_perf_init();
 #ifdef SR_GPU_ACE_SELFTEST
     /* Ace Mode with 16x texture filtering, read before the device is made (src/rt/ace.h). */
-    if (!ace_init_spec("v1;af=16;text=off;readout=off;notice=off;wide=off;smooth=off", NULL)) {
+    if (!ace_init_spec("v1;af=16;text=off;readout=off;notice=off;wide=off;smooth=off;sas=off", NULL)) {
         fprintf(stderr, "gpu ace selftest: FAIL the Ace line was refused\n");
         free(arena);
         return 1;
