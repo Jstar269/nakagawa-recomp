@@ -45,11 +45,14 @@ typedef struct {
  * project PGF, or a legacy file as a last fallback when the project PGF is absent. served_index
  * is 0..15 for an indexed cache file, -1 for the project PGF, -2 for the legacy unindexed cache
  * entry, and -3 when no source exists. project_file names the served file for the project PGF, and
- * is NULL otherwise. */
+ * is NULL otherwise. project_style_index is the Latin index whose family and style that project
+ * file carries: the requested index when its own project face served it, the regular sans-serif
+ * index of a size group (0 or 8) when that face stood in, and -1 when no project file served. */
 typedef struct {
     NkFontSource source;
     int served_index;
     const char *project_file;
+    int project_style_index;
 } NkFontLatinResolution;
 
 typedef struct {
@@ -119,6 +122,9 @@ NkFontSlotCheck nk_font_check_cache_slot_file(const char *user_data_root, NkFont
  * those sixteen files. */
 const char *nk_font_latin_index_filename(int index);
 int nk_font_latin_index_from_filename(const char *name);
+/* The project font file of a Latin index's own family and style (nkltn.pgf for index 0,
+ * nkltns.pgf for 8, nkltnN.pgf for the others), or NULL outside 0..15. */
+const char *nk_font_project_latin_index_file(int index);
 /* The file name a PSP keeps the Japanese or Korean system font under in flash0:/font
  * (jpn0.pgf, kr0.pgf), which the slot's served name stands for. NULL for the Latin slot, whose
  * sixteen files nk_font_latin_index_filename names, and for any other value. */

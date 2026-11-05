@@ -94,13 +94,16 @@ scaling.
 | `codepoints-unsorted` | A `--codepoints` file repeats a code or is not in ascending order. |
 | `empty-codepoint-set` | A `--codepoints` file lists no code point. |
 | `japanese-codec-unavailable` / `japanese-mapping-invalid` | A built-in ASCII/EUC-JP codec or its pinned Japanese mapping is unavailable or has changed. |
+| `latin-mapping-invalid` | A built-in Latin mapping has changed from its pinned digest or count. |
 | `ppem-out-of-range` | Size outside 1..128. |
 | `embolden-out-of-range` | `--embolden-x`, `--embolden-y`, or `--embolden-advance` outside 0..8 sub-samples. |
 | `baseline-ellipsis-unavailable` | `--baseline-ellipsis` without U+2026 in the code set, or without an outline for U+2026 or U+002E. |
+| `tracking-out-of-range` | `--tracking` outside -8..16 sub-samples. |
+| `digit-advance-out-of-range` / `digit-advance-unavailable` | `--digit-advance` outside 64..`MAX_EDGE * 64` (26.6), or without all of the digits 0-9 in the code set. |
 | `glyph-too-large` | A raster exceeds the writer's 7-bit record fields (127 px). |
 | `composite-too-deep` / `composite-too-many-components` | Composite expansion bounds. |
 | `metric-targets-invalid` / `metric-target-unreachable` | Policy document is malformed / no size satisfies it. |
-| `conflicting-parameters` | `--ppem` together with `--metric-targets`. (`--codes`, `--codepoints`, `--jis-x-0208-japanese`, `--latin-1-text`, and `--ks-x-1001-korean` are mutually exclusive at the CLI.) |
+| `conflicting-parameters` | `--ppem` together with `--metric-targets`. (`--codes`, `--codepoints`, `--jis-x-0208-japanese`, `--latin-1-text`, `--latin-cyrillic-text`, and `--ks-x-1001-korean` are mutually exclusive at the CLI.) |
 | `pin-invalid` / `pin-digest-mismatch` / `pin-size-mismatch` / `pin-license-mismatch` | Source pin does not bind the exact input and licence bytes. |
 | `reserved-font-name` / `camouflage-font-name` | Output name policy violation (section 6). |
 | writer reasons (`font-field-invalid`, `nominal-size-out-of-range`, `metric-table-overflow`, ...) | Re-raised unchanged from `pgf_writer.py`. |
@@ -128,6 +131,14 @@ Supplement U+00A0-U+00FF (96), Latin Extended-A U+0100-U+017F (128), and the
 assigned punctuation and symbols U+2010-U+2027, U+2030, U+2039-U+203A, U+20AC,
 and U+2122 (29). The set contains 348 unique points with canonical SHA-256
 `7fbcaac92248acdb1c2704c3fef2181e7bc49f2b0e9d0f970cd029fb58057340`.
+
+`--latin-cyrillic-text` (#2005) is the `--latin-1-text` set without U+2011,
+U+2023, U+2024, U+2025 and U+2027, plus 111 more: the WGL4 Cyrillic letters
+U+0401-040C, U+040E-044F, U+0451-045C, U+045E-045F and U+0490-0491 and U+04C0
+(95); U+0192, U+02C6 and U+02DC; the combining accents U+0301, U+0306, U+0308
+and U+0338; and U+2116, U+2206, U+2219, U+221A, U+221E, U+2248, U+2260, U+2264
+and U+2265. The set contains 454 unique points with canonical SHA-256
+`6b8511988b7ce6199c99a45ab3a00ee498986067343117205c22031e2b8b330d`.
 
 `--ks-x-1001-korean` decodes assigned cells in KS X 1001 rows 1-4 and 6-9
 through Python's standard `euc_kr` codec, adds ASCII, and includes every modern
@@ -171,8 +182,13 @@ manifest in memory first and writes only after every stage succeeds.
    so shared contour vertices can never double-count a sample.
 6. **Coverage rounding.** `floor((count * 15 + 32) / 64)` with `count` in
    0..64, mapping to the writer's 4-bit samples.
-7. **Advances.** `hmtx` advance scaled by rule 1, plus `--embolden-advance * 8`
-   26.6 units; `advance_y` is 0.
+7. **Advances.** `hmtx` advance scaled by rule 1, plus
+   `(--embolden-advance + --tracking) * 8` 26.6 units; `advance_y` is 0.
+   `--tracking K` (-8..16 sub-samples, default 0) spaces every glyph alike.
+   `--digit-advance D` (26.6) replaces the scaled advance of each digit 0-9 with
+   `D` before that addition (tabular figures), and shifts that digit's outline
+   right by `floor((D - natural) / 2)` 26.6 units, `natural` being its scaled
+   `hmtx` advance, so its ink stays centred in the new width.
 8. **Iteration order.** Codes ascend; the writer sorts glyphs, metric tables,
    and map entries itself; manifest JSON uses sorted keys, 2-space indent,
    ASCII, and a trailing newline.
@@ -305,7 +321,7 @@ Generated PGFs are fixtures, never an authenticity claim.
 | `code_points` | For `--codepoints`: the file's leaf name, count, and SHA-256; `null` for a range. |
 | `glyphs` | Count, zero-area codes, maximum pixel dimensions. |
 | `metric_targets` | The policy, the chosen ppem, and achieved 26.6 values - or `null`. |
-| `parameters` | ppem, nominal em size (26.6), resolution (26.6), any header ascender and descender given, whether the ellipsis was set on the baseline, supersample, coverage bits, rounding formulas, hinting mode, and the `embolden` strengths (x, y, advance, in sub-samples). |
+| `parameters` | ppem, nominal em size (26.6), resolution (26.6), any header ascender and descender given, whether the ellipsis was set on the baseline, supersample, coverage bits, rounding formulas, hinting mode, and the `embolden` strengths (x, y, advance, in sub-samples); `tracking_sub_samples` and `digit_advance_26_6` only when given. |
 | `license` | SPDX id, copyright line, reserved font names, the **full licence text**, its digest, and the source pin's provenance record - or `null` without a pin. |
 
 ## 8. Independence and provenance record
@@ -352,4 +368,7 @@ Generated PGFs are fixtures, never an authenticity claim.
 | Code-point set converts only the listed codes, sparse map, digest in manifest, nominal size | `CodePointSetTests` |
 | Sparse code-point set reads back through the reader; absent codes are misses | `ReaderRoundTripTests` |
 | Every named refusal writes nothing | `RefusalTests`, `CompositeRefusalTests` |
+| Tracking and tabular digits: effect, manifest record and refusals | `SpacingOptionTests` |
+| Built-in Latin, Japanese and Korean sets and the pinned fonts' coverage of them | `ProjectCodePointCoverageTests`, `JapaneseCodePointCoverageTests` |
+| Project Latin faces: one per console index, line widths, class widths and ink | `ProjectLatinStrikeTests` |
 | Independent structural validation | `nk_core.fonts.validate_pgf_data` on the output |
