@@ -5433,6 +5433,7 @@ static int package_source_compare(const void *left, const void *right) {
 static bool package_runtime_source_digest(const char *source_root, char out_hex[65]) {
     /* RUNTIME_SOURCE_DIRECTORIES and RUNTIME_BUILD_RULE_GLOBS (the Makefile and mk/<name>.mk). */
     static const char * const source_dirs[] = {"src/rt", "src/core", "src/ui", "third_party/clay",
+                                               "third_party/fidelityfx_fsr1",
                                                "third_party/portable-snippets",
                                                "third_party/stb", NULL};
     static const uint8_t nul = 0;
