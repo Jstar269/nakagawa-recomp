@@ -10697,6 +10697,135 @@ static uint32_t audio_dispatch(CpuState *cpu, uint32_t nid,
     return sr_syscall(cpu, nid);
 }
 
+/* Under the deterministic clock (#2037) the audio queue the guest paces against drains in guest
+ * time, not in the host mixer's: a run that is faster than real time must not see a queue that
+ * never empties (every blocking output would then wait out the same lead again and guest time
+ * would race ahead of the work). 44100 frames a second of guest time, from the first push.
+ *
+ * MUTANT: return the host queue depth under the deterministic clock -- the guest sees the
+ *   host's 100000 frames and the drain checks fail. */
+static void test_audio_queue_drains_in_guest_time_under_the_deterministic_clock(void) {
+    extern int hle_audio_queued(int ch);
+    const uint32_t STEREO_BUF = 0x08a00000u;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 0u) == 0u,
+           "drain fixture reserves the regular channel");
+    s_det_clock = 1;
+    s_audio_queue_result = 0;
+    s_vtime_us = 1000u;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING, 0u, 0x80008000u,
+                          STEREO_BUF) == 64u, "the 64-frame output returns");
+    expect(hle_audio_queued(0) == 64, "the guest sees the 64 frames it just pushed");
+    s_vtime_us += 1000u;   /* 1 ms of guest time plays 44.1 frames */
+    expect(hle_audio_queued(0) == 20, "a millisecond of guest time drains 44 of them");
+    s_vtime_us += 1000u;
+    expect(hle_audio_queued(0) == 0, "the second millisecond empties the queue, carry kept");
+    s_audio_queue_result = 100000;   /* the host mixer is far behind: the guest must not see it */
+    expect(hle_audio_queued(0) == 0, "the host mixer's backlog is not what the guest sees");
+    s_audio_queue_result = -1;
+    expect(hle_audio_queued(0) == -1, "no host output stays no host output");
+    s_det_clock = 0;
+    s_audio_queue_result = 100000;
+    expect(hle_audio_queued(0) == 100000, "without the deterministic clock the host depth is reported");
+    s_audio_queue_result = 0;
+    reset_fixture();
+}
+
+/* Every call that paces a guest against the audio queue reads the model under the deterministic
+ * clock (#2037): the blocking output's wait loop, the channel rest length, and the Output2 rest
+ * and release. A host mixer that is far behind (a run faster than real time never lets it drain)
+ * must not reach the guest through any of them. The host stub reports 100000 frames throughout;
+ * on a path that still reads it, the blocking output waits it out (the stub's sequence ends in 0,
+ * so it is counted, not hung on), RestLen and Output2Rest report it, and the release is refused.
+ *
+ * MUTANT: audio_output's wait loop calls sr_audio_queued -- the output consumes the host's whole
+ *   sequence (4+ reads) instead of two.
+ * MUTANT: h_AudioRestLen, h_AudioOutput2Rest or h_AudioOutput2Release calls sr_audio_queued --
+ *   the guest sees the host's 100000 frames and the release is refused. */
+static void test_audio_calls_read_the_guest_queue_under_the_deterministic_clock(void) {
+    const uint32_t STEREO_BUF = 0x08a00000u;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_CH_RESERVE, 0u, 64u, 0u) == 0u,
+           "the regular channel reserves 64 frames");
+    s_det_clock = 1;
+    s_vtime_us = 1000u;
+    s_audio_queue_seq[0] = 100000;
+    s_audio_queue_seq[1] = 100000;
+    s_audio_queue_seq[2] = 100000;
+    s_audio_queue_seq[3] = 0;
+    s_audio_queue_seq_len = 4;
+    s_audio_queue_calls = 0;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT_BLOCKING, 0u, 0x80008000u, STEREO_BUF) == 64u,
+           "the blocking output returns its frame count");
+    expect(s_audio_queue_calls <= 2u,
+           "the blocking output did not wait out the host mixer's backlog: its lead is the model's 64 frames");
+    s_audio_queue_seq_len = 0;
+    s_audio_queue_result = 100000;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH, 0u, 0u, 0u) == 64u,
+           "GetChannelRestLength reports the model's 64 frames, not the host's 100000");
+    s_vtime_us += 2000u;   /* the 64 frames have played in guest time */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH, 0u, 0u, 0u) == 0u,
+           "and 2 ms of guest time later the model is empty whatever the host holds");
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 64u, 0u, 0u) == 0u,
+           "Output2 reserves a 64-sample channel");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_REST_SAMPLE, 0u, 0u, 0u) == 0u,
+           "Output2 rest sample is the model's, empty, not the host's 100000");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
+           "Output2 release is not refused for a backlog only the host mixer holds");
+    s_det_clock = 0;
+    s_audio_queue_result = 0;
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    reset_fixture();
+}
+
+/* The SRC output pushes its converted frames into the guest-time model, and the PSMF player reads
+ * the lead from it, under the deterministic clock (#2037). The host stub reports 100000 frames
+ * throughout: the guest must see the frames the SRC output pushed, not the host's backlog.
+ *
+ * MUTANT: delete audio_vq_pushed in the resampling branch of audio_src_output -- the model
+ *   stays empty and the first model check fails.
+ * MUTANT: psmf_av_queue_frames returns sr_audio_queued(ch) (extern int sr_audio_queued(int ch);
+ *   in the function) -- it reports the host's 100000 and the second check fails. */
+static void test_src_push_and_psmf_lead_read_the_guest_queue_under_the_deterministic_clock(void) {
+    extern int hle_audio_queued(int ch);
+    extern int psmf_av_queue_frames(int ch);
+    enum { SRC_BUF = 0x08a00000u, SRC_SLOT = 8 };
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    s_det_clock = 1;
+    s_vtime_us = 1000u;
+    s_audio_queue_result = 100000;
+    /* 48000 Hz: a 44100 Hz SRC output is a plain audio_output and is covered above; only a
+     * converted rate takes the resampler path that pushes into the model itself. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 48000u, 2u) == 0u,
+           "the SRC channel reserves 1024 samples at 48000 Hz");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, SRC_BUF, 0u) == 0x400u,
+           "the SRC output returns the reserved sample count");
+    expect(s_audio_push_calls == 1u && s_audio_push_frames > 0,
+           "the SRC output pushed converted frames to the host mixer");
+    expect(hle_audio_queued(SRC_SLOT) == s_audio_push_frames,
+           "the guest-time model holds exactly the frames the SRC output pushed, not the host's 100000");
+    expect(psmf_av_queue_frames(SRC_SLOT) == s_audio_push_frames,
+           "the PSMF audio lead is the model's, not the host's 100000");
+    s_vtime_us += 100000u;   /* 100 ms of guest time plays everything the SRC pushed */
+    expect(psmf_av_queue_frames(SRC_SLOT) == 0,
+           "and the lead is empty once the guest time has played it");
+    s_det_clock = 0;
+    s_audio_queue_result = 0;
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    reset_fixture();
+}
+
 /* Media telemetry truthfulness on the production audio hand-off.
  *
  * audio_output_calls / audio_output_frames used to be raised only inside the SDL3 host
@@ -12797,6 +12926,37 @@ static void delay_coro_body(void *arg) {
     s_delay_ret = sr_syscall(&cpu, s_delay_nid);
     s_delay_done = 1;
     selftest_park_on_scheduler();
+}
+
+/* A deterministic run (#2037) starts the RTC at a fixed date, not the host's calendar, so two
+ * identical runs see the same time of day; any other run starts from the host's.
+ *
+ * MUTANT: drop the sched_clock_deterministic() branch in rtc_now_tick -- the deterministic ticks
+ *   follow the host calendar and the fixed-date check fails. */
+static void test_rtc_epoch_is_fixed_in_a_deterministic_run(void) {
+    extern uint64_t rtc_now_tick(void);
+    const uint64_t unix_epoch_tick = 62135596800000000ull;   /* 1970-01-01 in the PSP RTC's microseconds */
+    const uint64_t fixed = unix_epoch_tick + 1325376000ull * 1000000ull;   /* 2012-01-01 UTC */
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    uint64_t tick[2];
+    for (int run = 0; run < 2; run++) {
+        s_det_clock = 1;
+        sr_hle_test_reset_rtc_epoch();
+        s_vtime_us = 1234u;
+        tick[run] = rtc_now_tick();   /* the epoch is anchored at guest time zero: the first read is the date */
+    }
+    expect(tick[0] == tick[1] && tick[0] == fixed,
+           "deterministic clock: the RTC starts at the fixed date");
+    s_vtime_us += 5000u;
+    expect(rtc_now_tick() == fixed + 5000u, "the fixed-date RTC then follows guest time");
+    s_det_clock = 0;
+    sr_hle_test_reset_rtc_epoch();
+    s_vtime_us = 1234u;
+    expect(rtc_now_tick() > fixed + 365ull * 86400ull * 1000000ull,
+           "without the deterministic clock the RTC starts from the host's calendar");
+    sr_hle_test_reset_rtc_epoch();
 }
 
 /* Production-path clock regression: a controlled scheduler delay advances the
@@ -27965,10 +28125,10 @@ static void test_bulk_guest_span_atomicity(void) {
     expect(MEM_R8(0x0bfffff0u) == 0x3cu && MEM_R8(0x0bfffff0u + 15u) == 0x3cu,
            "rejected memset performs no partial guest mutation");
     for (uint32_t i = 0; i < 16u; i++) MEM_W8(0x0bfffff0u + i, 0x2au);
-    expect(bulk_call(NID_SCE_DMAC_MEMCPY, 0x0bfffff0u, src, 17u) == 0u,
-           "production DMA reports success for a measured one-byte tail");
-    expect(MEM_R8(0x0bfffff0u) == 0x30u && MEM_R8(0x0bfffff0u + 15u) == 0x3fu,
-           "measured one-byte DMA tail copies the valid prefix");
+    expect(bulk_call(NID_SCE_DMAC_MEMCPY, 0x0bfffff0u, src, 17u) == 0x80000103u,
+           "production DMA refuses a one-byte tail past the arena");
+    expect(MEM_R8(0x0bfffff0u) == 0x2au && MEM_R8(0x0bfffff0u + 15u) == 0x2au,
+           "a refused DMA tail performs no partial guest mutation");
 }
 
 /* ---- sceDmacMemcpy / sceDmacTryMemcpy hardware regressions ------------------
@@ -27980,8 +28140,9 @@ static void test_bulk_guest_span_atomicity(void) {
  * The expected values come from the source-owned PSP-3000 / 6.61-ARK
  * measurements; private capture details are intentionally not part of this
  * public-safe tree. Fully valid spans are complete copies through 1 MiB. A
- * one-byte tail past a proven prefix is copied through that prefix; larger
- * or wrapped overruns remain fail-closed until separately measured. */
+ * span past the end of the guest arena, of any length, or a wrapped one is
+ * refused whole: a runtime safety boundary, since the PSP's answer there is
+ * unmeasured (#303). */
 
 /* The probe's source pattern: byte i of the source buffer is 0x10 + (i & 0x3F).
  * Reusing the exact fill makes the expected bytes below the same literals the
@@ -28052,37 +28213,28 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
     expect(dmac_span_is(dst, 256u, 0xa5u),
            "PSP: a NULL-pointer request modifies no destination byte");
 
-    /* Checked span arithmetic. The arena ends at guest physical 0x0c000000.
-     * The one-byte boundary shape is the newly measured partial-tail control;
-     * the complete prefix is copied and the byte past it is untouched. */
+    /* Checked span arithmetic. The arena ends at guest physical 0x0c000000. A
+     * span one byte past it is refused whole, from either side: nothing is copied
+     * and the GPU is not told. Runtime safety boundary, not a PSP measurement. */
     dmac_fill(src, 17u);
     dmac_clear(0x0bfffff0u, 16u, 0x3bu);
     gpu_dirty_reset();
-    expect(bulk_call(nid, 0x0bfffff0u, src, 17u) == 0u,
-           "PSP: a one-byte invalid destination tail returns success");
-    expect(dmac_span_matches(0x0bfffff0u, 16u, 0u),
-           "PSP: a one-byte invalid destination tail copies only the prefix");
-    expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == 0x0bfffff0u &&
-               s_gpu_dirty_bytes == 16u,
-           "PSP: a partial destination tail dirties only the valid prefix");
+    expect(bulk_call(nid, 0x0bfffff0u, src, 17u) == SCE_DMAC_ILLEGAL_ADDR,
+           "a destination span one byte past the arena is refused");
+    expect(dmac_span_is(0x0bfffff0u, 16u, 0x3bu),
+           "a refused one-byte destination tail copies nothing");
 
     dmac_fill(0x0bfffff0u, 16u);
     dmac_clear(dst, 17u, 0x4bu);
-    gpu_dirty_reset();
-    expect(bulk_call(nid, dst, 0x0bfffff0u, 17u) == 0u,
-           "PSP: a one-byte invalid source tail returns success");
-    expect(dmac_span_matches(dst, 16u, 0u),
-           "PSP: a one-byte invalid source tail copies only the prefix");
-    expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == dst &&
-               s_gpu_dirty_bytes == 16u,
-           "PSP: a partial source tail dirties only the valid prefix");
+    expect(bulk_call(nid, dst, 0x0bfffff0u, 17u) == SCE_DMAC_ILLEGAL_ADDR,
+           "a source span one byte past the arena is refused");
+    expect(dmac_span_is(dst, 17u, 0x4bu),
+           "a refused one-byte source tail copies nothing");
 
-    /* Larger tails and uint32 wrap are still deliberately conservative: no
-     * partial host pointer is formed for an unmeasured shape. */
+    /* Larger tails and uint32 wrap: no partial host pointer is formed. */
     dmac_clear(0x0bff1000u, 0xc000u, 0x3bu);
-    gpu_dirty_reset();
     expect(bulk_call(nid, 0x0bff1000u, src, 0x10000u) == SCE_DMAC_ILLEGAL_ADDR,
-           "unmeasured multi-byte invalid tail remains fail-closed");
+           "a multi-byte tail past the arena is refused");
     expect(bulk_call(nid, 0x0bffff00u, src, 0xFFFFFF00u) == SCE_DMAC_ILLEGAL_ADDR,
            "PSP class: a destination span that wraps uint32_t is rejected");
     expect(bulk_call(nid, dst, 0x0bffff00u, 0xFFFFFF00u) == SCE_DMAC_ILLEGAL_ADDR,
@@ -30594,7 +30746,7 @@ static void test_sas_state_contracts(void) {
     cpu.r[8] = 0; cpu.r[9] = 0; cpu.r[10] = 0;
     expect(sr_syscall(&cpu, NID_SAS_SET_ADSR) == 0,
            "__sceSasSetADSR updates the selected attack rate");
-    cpu.r[4] = CORE; cpu.r[5] = 1; cpu.r[6] = 1; cpu.r[7] = 5;
+    cpu.r[4] = CORE; cpu.r[5] = 1; cpu.r[6] = 1; cpu.r[7] = 4;
     cpu.r[8] = 5; cpu.r[9] = 5; cpu.r[10] = 5;
     expect(sr_syscall(&cpu, NID_SAS_SET_ADSR_MODE) == 0,
            "__sceSasSetADSRmode updates the selected curve only");
@@ -30720,6 +30872,262 @@ static void test_sas_end_flags_refresh_per_cycle(void) {
  * is still refused with the address error after an init. */
 #define NID_SAS_GET_GRAIN      0xbd11b7c2u
 #define NID_SAS_GET_OUTPUTMODE 0xe175ef66u
+/* SAS envelopes (#1296). __sceSasSetSimpleADSR packs rates, curves and the sustain level into
+ * two 16-bit words, and __sceSasSetADSRmode picks each phase's curve. The handler stored the
+ * low 16 bits of the words as raw per-sample steps and the envelope ignored every curve, so a
+ * SimpleADSR attack or release ran for the wrong length in every game that uses it.
+ *
+ * Expected heights come from PPSSPP's envelope model at the pin sas_envelope.h names, computed
+ * independently of that header, not from PSP measurements; PSP-measured cells replace them when
+ * they exist. They leave out two things PPSSPP also models, and so does this runtime: the
+ * key-on delay (the first 32 output samples after a key-on are silent while the envelope steps
+ * through its KEYON states, SasAudio.cpp MixVoice) and reading the height before each step
+ * rather than after it. Both belong to the mixer and are a known follow-up (#1296); when they
+ * land, these values move by those samples and are not a regression.
+ * One envelope step per output sample: a 256-sample grain is 256 steps. The voice is a looping
+ * PCM voice, so the source never ends and only the envelope decides the height. */
+#define NID_SAS_GET_ENV_HEIGHT 0x74ae582au
+#define NID_SAS_GET_ALL_ENV_HEIGHTS 0x07f58c24u
+#define NID_SAS_SET_SL         0x5f9529f6u
+static void sas_env_cell_voice(CpuState *cpu, uint32_t core, uint32_t pcm) {
+    cpu->r[4] = core; cpu->r[5] = 0; cpu->r[6] = pcm; cpu->r[7] = 256; cpu->r[8] = 0;
+    expect(sr_syscall(cpu, NID_SAS_SET_VOICE_PCM) == 0, "envelope cell: looping PCM voice set");
+    cpu->r[4] = core; cpu->r[5] = 0; cpu->r[6] = 0x1000; cpu->r[7] = 0x1000; cpu->r[8] = 0; cpu->r[9] = 0;
+    expect(sr_syscall(cpu, NID_SAS_SET_VOLUME) == 0, "envelope cell: volume set");
+}
+
+static uint32_t sas_env_cell_grain(CpuState *cpu, uint32_t core, uint32_t out) {
+    cpu->r[4] = core; cpu->r[5] = out;
+    (void)sr_syscall(cpu, NID_SAS_CORE);
+    cpu->r[4] = core; cpu->r[5] = 0;
+    return sr_syscall(cpu, NID_SAS_GET_ENV_HEIGHT);
+}
+
+static void test_sas_envelope_follows_its_rates_and_curves(void) {
+    CpuState cpu;
+    const uint32_t core = 0x08030000u, out = 0x08010000u, pcm = 0x08040000u;
+    const uint32_t grain = 256u;
+
+    for (int cell = 0; cell < 3; cell++) {
+        reset_fixture(); sr_hle_init(); sr_hle_test_sas_reset();
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[29] = 0x09012000u;
+        cpu.r[4] = core; cpu.r[5] = grain; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+        expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "envelope cell: __sceSasInit with a 256-sample grain");
+        for (uint32_t i = 0; i < 256u; i++) MEM_W16(pcm + i * 2u, 0x4000u);
+        sas_env_cell_voice(&cpu, core, pcm);
+
+        if (cell == 0) {
+            /* env1 0x1FFF: linear attack, rate code 0x1F (0x200000 per step); decay code 0xF
+             * (exponential); sustain level 0xF (full). env2 0x5FCA: linear-decrease sustain with
+             * rate code 0x7F (held); linear release, rate code 0x0A (0x40000 per step). */
+            cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0x1FFFu; cpu.r[7] = 0x5FCAu;
+            expect(sr_syscall(&cpu, NID_SAS_SET_SIMPLE) == 0, "SimpleADSR accepts 0x1FFF/0x5FCA");
+            cpu.r[4] = core; cpu.r[5] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "envelope cell: key on");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x20000000u,
+                   "SimpleADSR attack code 0x1F climbs 0x200000 per sample: half height after 256 samples");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x40000000u,
+                   "SimpleADSR attack code 0x1F reaches full height at sample 512");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x3FFFC000u,
+                   "SimpleADSR decay code 0xF steps once below a full sustain level, then the held sustain keeps it");
+            cpu.r[4] = core; cpu.r[5] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_KEY_OFF) == 0, "envelope cell: key off");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x3BFFC000u,
+                   "SimpleADSR linear release code 0x0A falls 0x40000 per sample");
+        } else if (cell == 1) {
+            /* env1 0x9FFF: as cell 0 with the bent attack curve (bit 15): full rate up to three
+             * quarters of the height, a quarter of it above. */
+            cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0x9FFFu; cpu.r[7] = 0x5FCAu;
+            expect(sr_syscall(&cpu, NID_SAS_SET_SIMPLE) == 0, "SimpleADSR accepts 0x9FFF/0x5FCA");
+            cpu.r[4] = core; cpu.r[5] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "envelope cell: key on");
+            (void)sas_env_cell_grain(&cpu, core, out);
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x34180000u,
+                   "SimpleADSR bent attack slows to a quarter rate above three quarters of the height");
+        } else {
+            /* __sceSasSetADSRmode DIRECT (5) is a decreasing curve, so the PSP takes it for the
+             * decay (and release), not the attack. A one-step attack reaches the top, then the
+             * DIRECT decay sets the height to the decay rate on every step; with a sustain level
+             * of 0 it never leaves the decay. */
+            cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 3; cpu.r[7] = 0x40000000u;
+            cpu.r[8] = 0x12345678u; cpu.r[9] = 0; cpu.r[10] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_ADSR) == 0, "ADSR sets the attack and decay rates");
+            cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 2; cpu.r[7] = 0;
+            cpu.r[8] = 5; cpu.r[9] = 0; cpu.r[10] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_ADSR_MODE) == 0, "ADSRmode sets the decay curve to DIRECT");
+            cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_SL) == 0, "envelope cell: sustain level 0");
+            cpu.r[4] = core; cpu.r[5] = 0;
+            expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "envelope cell: key on");
+            expect(sas_env_cell_grain(&cpu, core, out) == 0x12345678u,
+                   "ADSRmode DIRECT decay holds the height at the decay rate");
+        }
+    }
+}
+
+/* One fresh core and looping PCM voice 0 for an envelope cell, with grain `grain`. */
+static void sas_env_cell_begin(CpuState *cpu, uint32_t core, uint32_t pcm, uint32_t grain) {
+    reset_fixture(); sr_hle_init(); sr_hle_test_sas_reset();
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[29] = 0x09012000u;
+    cpu->r[4] = core; cpu->r[5] = grain; cpu->r[6] = 32; cpu->r[7] = 0; cpu->r[8] = 44100;
+    expect(sr_syscall(cpu, NID_SAS_INIT) == 0, "envelope cell: __sceSasInit");
+    for (uint32_t i = 0; i < 256u; i++) MEM_W16(pcm + i * 2u, 0x4000u);
+    sas_env_cell_voice(cpu, core, pcm);
+}
+
+static uint32_t sas_env_cell_call(CpuState *cpu, uint32_t nid, uint32_t core, uint32_t mask,
+                                  uint32_t a, uint32_t d, uint32_t s, uint32_t r) {
+    cpu->r[4] = core; cpu->r[5] = 0; cpu->r[6] = mask; cpu->r[7] = a;
+    cpu->r[8] = d; cpu->r[9] = s; cpu->r[10] = r;
+    return sr_syscall(cpu, nid);
+}
+
+static void sas_env_cell_key(CpuState *cpu, uint32_t core, uint32_t nid) {
+    cpu->r[4] = core; cpu->r[5] = 0;
+    expect(sr_syscall(cpu, nid) == 0, "envelope cell: key on or off");
+}
+
+/* The curve paths one grain at a time, the per-phase curve check of __sceSasSetADSRmode, and
+ * a voice whose sound data runs out (#2059 review). Expected heights: as above, from PPSSPP's
+ * model computed independently of sas_envelope.h, without the key-on delay. */
+static void test_sas_envelope_curve_paths_and_refusals(void) {
+    CpuState cpu;
+    const uint32_t core = 0x08030000u, out = 0x08010000u, pcm = 0x08040000u, heights = 0x08050000u;
+    const uint32_t mode = NID_SAS_SET_ADSR_MODE, rates = NID_SAS_SET_ADSR;
+
+    /* __sceSasSetADSRmode takes the increasing curves (0, 2, 4) for the attack, the decreasing
+     * ones (1, 3, 5) for the decay and release, and 0..5 for the sustain, and ignores each
+     * value's top bit (PPSSPP sceSas.cpp sceSasSetADSRMode; jpcsp checkADSRmode). A refused
+     * call returns 0x80420013 and changes no curve. */
+    sas_env_cell_begin(&cpu, core, pcm, 256u);
+    expect(sas_env_cell_call(&cpu, mode, core, 1, 5, 1, 1, 1) == SAS_ERROR_ADSR_MODE,
+           "ADSRmode refuses DIRECT (5) for the attack");
+    expect(sas_env_cell_call(&cpu, mode, core, 1, 1, 1, 1, 1) == SAS_ERROR_ADSR_MODE,
+           "ADSRmode refuses a decreasing curve (1) for the attack");
+    expect(sas_env_cell_call(&cpu, mode, core, 2, 0, 0, 0, 1) == SAS_ERROR_ADSR_MODE,
+           "ADSRmode refuses an increasing curve (0) for the decay");
+    expect(sas_env_cell_call(&cpu, mode, core, 8, 0, 1, 0, 4) == SAS_ERROR_ADSR_MODE,
+           "ADSRmode refuses an increasing curve (4) for the release");
+    expect(sas_env_cell_call(&cpu, mode, core, 4, 0, 1, 6, 1) == SAS_ERROR_ADSR_MODE,
+           "ADSRmode refuses a sustain curve above 5");
+    expect(sas_env_cell_call(&cpu, mode, core, 0xF, 5, 5, 5, 5) == SAS_ERROR_ADSR_MODE,
+           "ADSRmode refuses 5,5,5,5 for all four phases");
+    expect(sas_env_cell_call(&cpu, mode, core, 1, 0, 0, 0, 0) == 0,
+           "ADSRmode checks only the phases its mask selects");
+    expect(sas_env_cell_call(&cpu, mode, core, 1, 0x80000000u, 5, 5, 5) == 0,
+           "ADSRmode ignores the top bit of each value");
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x40000000u,
+           "refused ADSRmode calls leave the voice's default linear attack in place");
+
+    /* Exponential increase attack (mode 4) at 0x400000 per step: two grains on the curve. */
+    sas_env_cell_begin(&cpu, core, pcm, 256u);
+    expect(sas_env_cell_call(&cpu, rates, core, 1, 0x00400000u, 0, 0, 0) == 0, "ADSR: attack rate");
+    expect(sas_env_cell_call(&cpu, mode, core, 1, 4, 1, 1, 1) == 0, "ADSRmode: exponential attack");
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x0E625606u,
+           "exponential attack after 256 samples");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x1995CAC5u,
+           "exponential attack after 512 samples");
+
+    /* Exponential decay with an odd rate, from full height down toward a sustain level of 0:
+     * 255 steps below the top, each taking the proportional part and ceil(rate / 4). */
+    sas_env_cell_begin(&cpu, core, pcm, 256u);
+    expect(sas_env_cell_call(&cpu, rates, core, 3, 0x40000000u, 0x00012345u, 0, 0) == 0,
+           "ADSR: one-step attack, odd decay rate");
+    expect(sas_env_cell_call(&cpu, mode, core, 2, 0, 3, 1, 1) == 0, "ADSRmode: exponential decay");
+    cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_SL) == 0, "SL 0");
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x3FB79F36u,
+           "exponential decay of rate 0x12345 for 255 samples below the top");
+
+    /* A linear decay that lands exactly on the sustain level stays in the decay for that step
+     * (the switch is height < level) and leaves on the next one: 0x1FF00000 is then held. */
+    sas_env_cell_begin(&cpu, core, pcm, 256u);
+    expect(sas_env_cell_call(&cpu, rates, core, 7, 0x40000000u, 0x00100000u, 0, 0) == 0,
+           "ADSR: attack, decay 0x100000, sustain held");
+    expect(sas_env_cell_call(&cpu, mode, core, 6, 0, 1, 1, 1) == 0, "ADSRmode: linear decay and sustain");
+    cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0x20000000u;
+    expect(sr_syscall(&cpu, NID_SAS_SET_SL) == 0, "SL 0x20000000");
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x30100000u, "linear decay after 255 steps");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x20100000u, "linear decay after 511 steps");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x1FF00000u,
+           "the decay passes the sustain level by one step, then the sustain holds it");
+
+    /* SimpleADSR with an exponential sustain (env2 bits 14-15 = 3) takes its rate from the
+     * exponent table: code 0x20 is 0x70000, not the linear table's 0x1C0000. */
+    sas_env_cell_begin(&cpu, core, pcm, 256u);
+    cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0x00FFu; cpu.r[7] = 0xC81Fu;
+    expect(sr_syscall(&cpu, NID_SAS_SET_SIMPLE) == 0, "SimpleADSR 0x00FF/0xC81F");
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x3E4C9D23u, "exponential sustain, first grain");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x3C9E6712u, "exponential sustain, second grain");
+
+    /* SimpleADSR exponential release (env2 bit 5), code 16, over a full grain after key off. */
+    sas_env_cell_begin(&cpu, core, pcm, 256u);
+    cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0x00FFu; cpu.r[7] = 0x5FF0u;
+    expect(sr_syscall(&cpu, NID_SAS_SET_SIMPLE) == 0, "SimpleADSR 0x00FF/0x5FF0");
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x3FFFC000u, "held sustain before the release");
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_OFF);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0x3FDFC791u, "exponential release code 16, one grain");
+
+    /* SimpleADSR linear release codes 30 (one step to 0: the voice ends and its end flag
+     * sets), 31 (held) and 29 (one per step). */
+    static const struct { uint32_t env2, after; int ends; const char *what; } rel[] = {
+        {0x5FDEu, 0x00000000u, 1, "release code 30 falls to 0 in one step and ends the voice"},
+        {0x5FDFu, 0x3FFFC000u, 0, "release code 31 holds the height"},
+        {0x5FDDu, 0x3FFFBF00u, 0, "release code 29 falls 1 per sample"},
+    };
+    for (size_t i = 0; i < sizeof(rel) / sizeof(rel[0]); i++) {
+        sas_env_cell_begin(&cpu, core, pcm, 256u);
+        cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0x00FFu; cpu.r[7] = rel[i].env2;
+        expect(sr_syscall(&cpu, NID_SAS_SET_SIMPLE) == 0, "SimpleADSR with a linear release code");
+        sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+        (void)sas_env_cell_grain(&cpu, core, out);
+        sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_OFF);
+        expect(sas_env_cell_grain(&cpu, core, out) == rel[i].after, rel[i].what);
+        cpu.r[4] = core;
+        expect(((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) != 0) == rel[i].ends,
+               "the end flag sets only when the release reaches 0");
+    }
+
+    /* The height read back is clamped at 0: with a 64-sample grain, a linear decay toward a
+     * sustain level of 0 overshoots below zero on the grain's last step (one attack step, then
+     * 63 decay steps of 0x1080000), and the getter reads 0, not the negative height. The next
+     * step zeroes it and the release ends the voice. */
+    sas_env_cell_begin(&cpu, core, pcm, 64u);
+    expect(sas_env_cell_call(&cpu, rates, core, 7, 0x40000000u, 0x01080000u, 0, 0) == 0,
+           "ADSR: attack, decay 0x1080000, sustain held");
+    expect(sas_env_cell_call(&cpu, mode, core, 6, 0, 1, 1, 1) == 0, "ADSRmode: linear decay and sustain");
+    cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_SL) == 0, "SL 0");
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0u, "a height below zero reads as 0");
+    expect(sas_env_cell_grain(&cpu, core, out) == 0u, "the voice then releases from 0");
+    cpu.r[4] = core;
+    expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) != 0, "and ends");
+
+    /* A one-shot PCM voice whose data runs out mid-grain ends its envelope, so both height
+     * getters read 0 rather than the last height (PPSSPP calls End() when the samples end). */
+    sas_env_cell_begin(&cpu, core, pcm, 256u);
+    cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = pcm; cpu.r[7] = 100; cpu.r[8] = 0xFFFFFFFFu;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOICE_PCM) == 0, "a 100-sample one-shot PCM voice");
+    sas_env_cell_key(&cpu, core, NID_SAS_SET_KEY_ON);
+    expect(sas_env_cell_grain(&cpu, core, out) == 0u,
+           "GetEnvelopeHeight reads 0 once the voice's data has run out");
+    for (uint32_t i = 0; i < 32u; i++) MEM_W32(heights + i * 4u, 0xDEADBEEFu);
+    cpu.r[4] = core; cpu.r[5] = heights;
+    expect(sr_syscall(&cpu, NID_SAS_GET_ALL_ENV_HEIGHTS) == 0, "GetAllEnvelopeHeights");
+    expect(MEM_R32(heights) == 0u, "GetAllEnvelopeHeights reads 0 for the ended voice");
+    cpu.r[4] = core;
+    expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) != 0, "the ended one-shot voice sets its end flag");
+}
+
 static void test_sas_reinit_is_a_fresh_init(void) {
     CpuState cpu;
     const uint32_t CORE = 0x08030000u;
@@ -46678,6 +47086,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vaudio_plays_through_the_src_slot();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
+    test_audio_queue_drains_in_guest_time_under_the_deterministic_clock();
+    test_audio_calls_read_the_guest_queue_under_the_deterministic_clock();
+    test_src_push_and_psmf_lead_read_the_guest_queue_under_the_deterministic_clock();
     test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_pulse_never_synthesises_start_in_a_real_window();
     test_ctrl_read_buffer_contract();
@@ -46749,6 +47160,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ctrl_sampling_mode_cycle_matrix();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
+    test_rtc_epoch_is_fixed_in_a_deterministic_run();
     test_delay_zero_probe_semantics();
     test_delay_thread_zero_loop_still_preempts_at_timeslice();
     test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
@@ -46844,6 +47256,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_state_contracts();
     test_sas_end_flags_refresh_per_cycle();
     test_sas_reinit_is_a_fresh_init();
+    test_sas_envelope_follows_its_rates_and_curves();
+    test_sas_envelope_curve_paths_and_refusals();
     test_msgpipe_rendezvous();
     test_msgpipe_safety();
     test_msgpipe_blocking();

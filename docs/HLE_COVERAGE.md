@@ -26,9 +26,9 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 26 |
 | `ppsspp-derived` | 119 | 89 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 349 | 226 |
-| `unverified` | 155 | 22 |
-| total | 687 | 363 |
+| `synthetic` | 351 | 226 |
+| `unverified` | 151 | 22 |
+| total | 685 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -73,7 +73,7 @@ belongs to without the census's own grouping.
 | `0x05db22ce` | `sceGeUnsetCallback` | ge | `synthetic` | HLE selftest dispatch; note |
 | `0x06a70004` | `sceIoMkdir` | io | `unverified` | no recorded evidence |
 | `0x07ec321a` | `sceMp3ReserveMp3Handle` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
-| `0x07f58c24` | `__sceSasGetAllEnvelopeHeights` | audio | `unverified` | no recorded evidence |
+| `0x07f58c24` | `__sceSasGetAllEnvelopeHeights` | audio | `synthetic` | HLE selftest dispatch |
 | `0x0840e808` | `sceMp3ResetPlayPositionByFrame` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x08d98894` | `sceNpDrmEdataSetupKey` | npdrm | `unverified` | no recorded evidence |
 | `0x08fff7a0` | `sceNetAdhocctlScan` | network | `unverified` | no recorded evidence |
@@ -321,7 +321,7 @@ belongs to without the census's own grouping.
 | `0x5ec81c55` | `sceAudioChReserve` | audio | `synthetic` | HLE selftest dispatch; note |
 | `0x5f10d406` | `sceKernelCpuResumeIntr` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
 | `0x5f32beaa` | `sceKernelReferVTimerStatus` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-001, PSP-HLE-VTIMER-002 |
-| `0x5f9529f6` | `__sceSasSetSL` | audio | `unverified` | no recorded evidence |
+| `0x5f9529f6` | `__sceSasSetSL` | audio | `synthetic` | HLE selftest dispatch |
 | `0x5fb86ab0` | `sceGeListDeQueue` | ge | `hardware-measured` | PSP oracle PSP-GE-CONTROL-001 |
 | `0x60107536` | `sceKernelDeleteLwMutex` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x606a4649` | `sceMpegDelete` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
@@ -358,7 +358,6 @@ belongs to without the census's own grouping.
 | `0x6af9b50a` | `sceUmdCancelWaitDriveStat` | umd | `ppsspp-derived` | handler comment names PPSSPP; registry notes name PPSSPP |
 | `0x6b30100f` | `sceKernelUnlockMutex` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x6b4a146c` | `sceUmdGetDriveStat` | umd | `synthetic` | HLE selftest dispatch; note |
-| `0x6d08a871` | `sceIoUnassign` | io | `synthetic` | HLE selftest dispatch |
 | `0x6d212bac` | `sceKernelWaitSemaCB` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch |
 | `0x6f92741b` | `sceNetAdhocPdpCreate` | network | `unverified` | no recorded evidence |
 | `0x6fc46853` | `sceAudioChRelease` | audio | `synthetic` | HLE selftest dispatch; note |
@@ -378,7 +377,7 @@ belongs to without the census's own grouping.
 | `0x74829b76` | `sceKernelReceiveMsgPipe` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x748cbed9` | `sceKernelQueryModuleInfo` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0x7497ea85` | `__sceSasConcatenateATRAC3` | audio | `unverified` | no recorded evidence |
-| `0x74ae582a` | `__sceSasGetEnvelopeHeight` | audio | `unverified` | no recorded evidence |
+| `0x74ae582a` | `__sceSasGetEnvelopeHeight` | audio | `synthetic` | HLE selftest dispatch |
 | `0x74b21701` | `sceFontPixelToPointH` | font | `unverified` | no recorded evidence |
 | `0x75156e8f` | `sceKernelResumeThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x7591c7db` | `sceKernelSetCompiledSdkVersion` | kernel_memory | `synthetic` | registry evidence `tools/test_sdkver_c.py` |
@@ -495,7 +494,7 @@ belongs to without the census's own grouping.
 | `0xa089eca4` | `sceKernelMemset` | kernel_utils | `synthetic` | HLE selftest dispatch |
 | `0xa0b5a7c2` | `sceIoReadAsync` | io | `synthetic` | HLE selftest dispatch |
 | `0xa0b8ca55` | `scePsmfPlayerUpdate` | mpeg | `synthetic` | HLE selftest dispatch |
-| `0xa0cf2fa4` | `__sceSasSetKeyOff` | audio | `unverified` | no recorded evidence |
+| `0xa0cf2fa4` | `__sceSasSetKeyOff` | audio | `synthetic` | HLE selftest dispatch |
 | `0xa11c7026` | `sceMpegAvcDecodeMode` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0xa12a0514` | `sceIoSetAsyncCallback` | io | `unverified` | no recorded evidence |
 | `0xa1336091` | `sceNpDrmSetLicenseeKey` | npdrm | `ppsspp-derived` | registry notes name PPSSPP |
@@ -538,7 +537,6 @@ belongs to without the census's own grouping.
 | `0xb287bd61` | `sceGeDrawSync` | ge | `hardware-measured` | PSP oracle PSP-GE-CONTROL-001, PSP-VRAM-MIRROR-001 |
 | `0xb293727f` | `sceIoChangeAsyncPriority` | io | `unverified` | no recorded evidence |
 | `0xb29ddf9c` | `sceIoDopen` | io | `synthetic` | HLE selftest dispatch; note |
-| `0xb2a628c1` | `sceIoAssign` | io | `synthetic` | HLE selftest dispatch |
 | `0xb3a59970` | `sceKernelGetVTimerBase` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-002 |
 | `0xb3b5d042` | `sceAtracGetOutputChannel` | audio_codec | `unverified` | generic success handler; performs none of the API contract |
 | `0xb435dec5` | `sceKernelDcacheWritebackInvalidateAll` | cache_dma | `unverified` | no recorded evidence |
