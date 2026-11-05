@@ -50,7 +50,7 @@ float fsr3_halton(int32_t index, int32_t base) {
 }
 
 int fsr3_jitter_offset(float *x, float *y, int32_t index, int32_t phase_count) {
-    if (!x || !y || phase_count <= 0 || index < 0) return -1;
+    if (!x || !y || phase_count <= 0) return -1;
     *x = fsr3_halton((index % phase_count) + 1, 2) - 0.5f;
     *y = fsr3_halton((index % phase_count) + 1, 3) - 0.5f;
     return 0;

@@ -157,6 +157,21 @@ ace-selftest:
 		-o $(BUILD_DIR)/ace_selftest$(EXE_EXT) tests/native/ace_selftest.c src/rt/ace.c
 	$(BUILD_DIR)/ace_selftest$(EXE_EXT) $(BUILD_DIR)
 
+# fsr3-host-selftest - FSR 3's CPU side (src/rt/fsr3_host.c, src/rt/fsr3_jitter.c) against the record
+# of AMD's own host code (tests/native/fsr3_host_oracle.md): every clear, discard and dispatch, the
+# resource behind each binding, the staged constants, the jitter and the f16 and RCAS helpers. Pure C,
+# no GPU and no game data. fsr3-mutants then requires 16 semantic defects in copies of the port to
+# build and fail it on the line each one changes.
+native-core-tests: fsr3-host-selftest fsr3-mutants
+.PHONY: fsr3-host-selftest fsr3-mutants
+fsr3-host-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-Ithird_party/fidelityfx_sdk/upscalers/fsr3/include/gpu -o $(BUILD_DIR)/fsr3_host_selftest$(EXE_EXT) \
+		tests/native/fsr3_host_selftest.c src/rt/fsr3_host.c src/rt/fsr3_jitter.c -lm
+	$(BUILD_DIR)/fsr3_host_selftest$(EXE_EXT) tests/native/fsr3_host_oracle.txt
+fsr3-mutants: fsr3-host-selftest
+	"$(PYTHON)" tools/fsr3_mutants.py --build-dir $(BUILD_DIR)/fsr3-mutants --cc "$(CC)"
+
 # osk-overlay-selftest - the in-window on-screen keyboard's state machine (src/rt/osk_overlay.c):
 # navigation, typing, the guest's length bound with UTF-16 pairs, backspace, confirm and cancel,
 # the UTF-16 answer, the inputtype rules, edge-based pad input and the session the HLE keyboard

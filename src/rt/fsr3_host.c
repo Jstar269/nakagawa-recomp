@@ -41,22 +41,7 @@ typedef char fsr3_constants_size_is_amds[sizeof(Fsr3Constants) == 148 ? 1 : -1];
 
 #define FSR3_MAX_QUEUED_FRAMES 16u /* FSR3UPSCALER_MAX_QUEUED_FRAMES; must be even */
 
-/* --- lanczos2, ffxSpdSetup, FsrRcasCon, ffxF32ToF16 ---------------------------------------- */
-
-static float lanczos2(float value) {
-    /* AMD: abs(value) < FFX_EPSILON ? 1 : sinc(x) * sinc(x / 2), with <cmath>'s float abs. */
-    const float pi = 3.141592653589793238462643383279502884197169399375105820974944592307816406286f;
-    if (fabsf(value) < 1e-06f) return 1.0f;
-    return (sinf(pi * value) / (pi * value)) * (sinf(0.5f * pi * value) / (0.5f * pi * value));
-}
-
-void fsr3_lanczos2_lut(int16_t out[128]) {
-    /* getInternalResourceDescriptions: x = 2 * i / (128 - 1), weight = int16_t(roundf(y * 32767)). */
-    for (uint32_t i = 0; i < 128; i++) {
-        const float x = 2.0f * (float)i / (float)(128 - 1);
-        out[i] = (int16_t)roundf(lanczos2(x) * 32767.0f);
-    }
-}
+/* --- ffxSpdSetup, FsrRcasCon, ffxF32ToF16 --------------------------------------------------- */
 
 void fsr3_spd_setup(uint32_t dispatch_groups[2], uint32_t work_group_offset[2],
                     uint32_t num_work_groups_and_mips[2], const uint32_t rect[4]) {
@@ -280,10 +265,10 @@ int fsr3_host_dispatch(Fsr3Host *h, const Fsr3HostDispatch *d) {
     c->maxRenderSize[0] = (int32_t)h->desc.max_render_width;
     c->maxRenderSize[1] = (int32_t)h->desc.max_render_height;
 
-    /* The horizontal FOV from the vertical one. AMD calls the double atan and tan here. */
+    /* The horizontal FOV from the vertical one. AMD writes atan(tan(fov / 2) * aspectRatio) * 2 on
+     * floats; its reference build (MSVC) takes <cmath>'s float overloads, atanf and tanf. */
     const float aspect_ratio = (float)d->render_width / (float)d->render_height;
-    const float camera_angle_horizontal =
-        (float)(atan(tan((double)(d->camera_fov_angle_vertical / 2)) * (double)aspect_ratio) * 2);
+    const float camera_angle_horizontal = atanf(tanf(d->camera_fov_angle_vertical / 2.0f) * aspect_ratio) * 2.0f;
     c->tanHalfFOV = tanf(camera_angle_horizontal * 0.5f);
     c->viewSpaceToMetersFactor = d->view_space_to_meters_factor > 0.0f ? d->view_space_to_meters_factor : 1.0f;
 
@@ -387,4 +372,126 @@ int fsr3_host_dispatch(Fsr3Host *h, const Fsr3HostDispatch *d) {
 
     h->resource_frame_index = (h->resource_frame_index + 1) % FSR3_MAX_QUEUED_FRAMES;
     return 0;
+}
+
+/* --- pass layouts and scheduleDispatch's lookup --------------------------------------------- */
+
+#define R(x) FFX_FSR3UPSCALER_RESOURCE_IDENTIFIER_##x
+#define CB_MAIN FFX_FSR3UPSCALER_CONSTANTBUFFER_IDENTIFIER_FSR3UPSCALER
+#define CB_SPD FFX_FSR3UPSCALER_CONSTANTBUFFER_IDENTIFIER_SPD
+#define CB_RCAS FFX_FSR3UPSCALER_CONSTANTBUFFER_IDENTIFIER_RCAS
+#define LINEAR_CLAMP 1u /* createPipelineStates' samplers: 0 point clamp, 1 linear clamp */
+
+static const Fsr3Binding prepare_inputs[] = {
+    { 0, FSR3_BIND_CBV, CB_MAIN, "cbFSR3Upscaler" },
+    { 8, FSR3_BIND_SRV, R(INPUT_MOTION_VECTORS), "r_input_motion_vectors" },
+    { 9, FSR3_BIND_SRV, R(INPUT_DEPTH), "r_input_depth" },
+    { 10, FSR3_BIND_SRV, R(INPUT_COLOR), "r_input_color_jittered" },
+    { 40, FSR3_BIND_UAV, R(DILATED_MOTION_VECTORS), "rw_dilated_motion_vectors" },
+    { 41, FSR3_BIND_UAV, R(DILATED_DEPTH), "rw_dilated_depth" },
+    { 42, FSR3_BIND_UAV, R(RECONSTRUCTED_PREVIOUS_NEAREST_DEPTH), "rw_reconstructed_previous_nearest_depth" },
+    { 43, FSR3_BIND_UAV, R(FARTHEST_DEPTH), "rw_farthest_depth" },
+    { 44, FSR3_BIND_UAV, R(CURRENT_LUMA), "rw_current_luma" },
+};
+static const Fsr3Binding luma_pyramid[] = {
+    { 0, FSR3_BIND_CBV, CB_MAIN, "cbFSR3Upscaler" },
+    { 1, FSR3_BIND_CBV, CB_SPD, "cbSPD" },
+    { 8, FSR3_BIND_SRV, R(CURRENT_LUMA), "r_current_luma" },
+    { 9, FSR3_BIND_SRV, R(FARTHEST_DEPTH), "r_farthest_depth" },
+    { 40, FSR3_BIND_UAV, R(SPD_ATOMIC_COUNT), "rw_spd_global_atomic" },
+    { 41, FSR3_BIND_UAV, R(FRAME_INFO), "rw_frame_info" },
+    { 47, FSR3_BIND_UAV, R(SPD_MIPS_LEVEL_5), "rw_spd_mip5" },
+    { 48, FSR3_BIND_UAV, R(FARTHEST_DEPTH_MIP1), "rw_farthest_depth_mip1" },
+};
+static const Fsr3Binding shading_change_pyramid[] = {
+    { 0, FSR3_BIND_CBV, CB_MAIN, "cbFSR3Upscaler" },
+    { 1, FSR3_BIND_CBV, CB_SPD, "cbSPD" },
+    { 8, FSR3_BIND_SRV, R(CURRENT_LUMA), "r_current_luma" },
+    { 9, FSR3_BIND_SRV, R(PREVIOUS_LUMA), "r_previous_luma" },
+    { 10, FSR3_BIND_SRV, R(DILATED_MOTION_VECTORS), "r_dilated_motion_vectors" },
+    { 11, FSR3_BIND_SRV, R(INPUT_EXPOSURE), "r_input_exposure" },
+    { 40, FSR3_BIND_UAV, R(SPD_ATOMIC_COUNT), "rw_spd_global_atomic" },
+    { 41, FSR3_BIND_UAV, R(SPD_MIPS_LEVEL_0), "rw_spd_mip0" },
+    { 42, FSR3_BIND_UAV, R(SPD_MIPS_LEVEL_1), "rw_spd_mip1" },
+    { 43, FSR3_BIND_UAV, R(SPD_MIPS_LEVEL_2), "rw_spd_mip2" },
+    { 44, FSR3_BIND_UAV, R(SPD_MIPS_LEVEL_3), "rw_spd_mip3" },
+    { 45, FSR3_BIND_UAV, R(SPD_MIPS_LEVEL_4), "rw_spd_mip4" },
+    { 46, FSR3_BIND_UAV, R(SPD_MIPS_LEVEL_5), "rw_spd_mip5" },
+};
+static const Fsr3Binding shading_change[] = {
+    { 0, FSR3_BIND_CBV, CB_MAIN, "cbFSR3Upscaler" },
+    { 5, FSR3_BIND_SAMPLER, LINEAR_CLAMP, "s_LinearClamp" },
+    { 8, FSR3_BIND_SRV, R(SPD_MIPS), "r_spd_mips" },
+    { 40, FSR3_BIND_UAV, R(SHADING_CHANGE), "rw_shading_change" },
+};
+static const Fsr3Binding prepare_reactivity[] = {
+    { 0, FSR3_BIND_CBV, CB_MAIN, "cbFSR3Upscaler" },
+    { 5, FSR3_BIND_SAMPLER, LINEAR_CLAMP, "s_LinearClamp" },
+    { 8, FSR3_BIND_SRV, R(RECONSTRUCTED_PREVIOUS_NEAREST_DEPTH), "r_reconstructed_previous_nearest_depth" },
+    { 9, FSR3_BIND_SRV, R(DILATED_MOTION_VECTORS), "r_dilated_motion_vectors" },
+    { 10, FSR3_BIND_SRV, R(DILATED_DEPTH), "r_dilated_depth" },
+    { 11, FSR3_BIND_SRV, R(INPUT_REACTIVE_MASK), "r_reactive_mask" },
+    { 12, FSR3_BIND_SRV, R(INPUT_TRANSPARENCY_AND_COMPOSITION_MASK), "r_transparency_and_composition_mask" },
+    { 13, FSR3_BIND_SRV, R(ACCUMULATION), "r_accumulation" },
+    { 14, FSR3_BIND_SRV, R(SHADING_CHANGE), "r_shading_change" },
+    { 15, FSR3_BIND_SRV, R(CURRENT_LUMA), "r_current_luma" },
+    { 16, FSR3_BIND_SRV, R(INPUT_EXPOSURE), "r_input_exposure" },
+    { 40, FSR3_BIND_UAV, R(DILATED_REACTIVE_MASKS), "rw_dilated_reactive_masks" },
+    { 41, FSR3_BIND_UAV, R(NEW_LOCKS), "rw_new_locks" },
+    { 42, FSR3_BIND_UAV, R(ACCUMULATION), "rw_accumulation" },
+};
+static const Fsr3Binding luma_instability[] = {
+    { 0, FSR3_BIND_CBV, CB_MAIN, "cbFSR3Upscaler" },
+    { 5, FSR3_BIND_SAMPLER, LINEAR_CLAMP, "s_LinearClamp" },
+    { 8, FSR3_BIND_SRV, R(INPUT_EXPOSURE), "r_input_exposure" },
+    { 9, FSR3_BIND_SRV, R(DILATED_REACTIVE_MASKS), "r_dilated_reactive_masks" },
+    { 10, FSR3_BIND_SRV, R(DILATED_MOTION_VECTORS), "r_dilated_motion_vectors" },
+    { 12, FSR3_BIND_SRV, R(LUMA_HISTORY), "r_luma_history" },
+    { 14, FSR3_BIND_SRV, R(CURRENT_LUMA), "r_current_luma" },
+    { 40, FSR3_BIND_UAV, R(LUMA_HISTORY), "rw_luma_history" },
+    { 41, FSR3_BIND_UAV, R(LUMA_INSTABILITY), "rw_luma_instability" },
+};
+static const Fsr3Binding accumulate[] = {
+    { 0, FSR3_BIND_CBV, CB_MAIN, "cbFSR3Upscaler" },
+    { 5, FSR3_BIND_SAMPLER, LINEAR_CLAMP, "s_LinearClamp" },
+    { 8, FSR3_BIND_SRV, R(INPUT_EXPOSURE), "r_input_exposure" },
+    { 9, FSR3_BIND_SRV, R(DILATED_REACTIVE_MASKS), "r_dilated_reactive_masks" },
+    { 10, FSR3_BIND_SRV, R(DILATED_MOTION_VECTORS), "r_dilated_motion_vectors" },
+    { 11, FSR3_BIND_SRV, R(INTERNAL_UPSCALED_COLOR), "r_internal_upscaled_color" },
+    { 13, FSR3_BIND_SRV, R(FARTHEST_DEPTH_MIP1), "r_farthest_depth_mip1" },
+    { 15, FSR3_BIND_SRV, R(LUMA_INSTABILITY), "r_luma_instability" },
+    { 16, FSR3_BIND_SRV, R(INPUT_COLOR), "r_input_color_jittered" },
+    { 40, FSR3_BIND_UAV, R(INTERNAL_UPSCALED_COLOR), "rw_internal_upscaled_color" },
+    { 41, FSR3_BIND_UAV, R(UPSCALED_OUTPUT), "rw_upscaled_output" },
+    { 42, FSR3_BIND_UAV, R(NEW_LOCKS), "rw_new_locks" },
+};
+static const Fsr3Binding rcas[] = {
+    { 1, FSR3_BIND_CBV, CB_RCAS, "cbRCAS" },
+    { 8, FSR3_BIND_SRV, R(INPUT_EXPOSURE), "r_input_exposure" },
+    { 9, FSR3_BIND_SRV, R(RCAS_INPUT), "r_rcas_input" },
+    { 40, FSR3_BIND_UAV, R(UPSCALED_OUTPUT), "rw_upscaled_output" },
+};
+
+#define LAYOUT(label, x, y, table) { label, x, y, (uint32_t)(sizeof(table) / sizeof((table)[0])), table }
+const Fsr3PassLayout fsr3_pass_layout[FSR3_PASS_COUNT] = {
+    LAYOUT("FSR3-PREPARE-INPUTS", 8, 8, prepare_inputs),
+    LAYOUT("FSR3-LUMA-PYRAMID", 256, 1, luma_pyramid),
+    LAYOUT("FSR3-SHADING-CHANGE-PYRAMID", 256, 1, shading_change_pyramid),
+    LAYOUT("FSR3-SHADING-CHANGE", 8, 8, shading_change),
+    LAYOUT("FSR3-PREPARE-REACTIVITY", 8, 8, prepare_reactivity),
+    LAYOUT("FSR3-LUMA-INSTABILITY", 8, 8, luma_instability),
+    LAYOUT("FSR3-ACCUMULATE", 8, 8, accumulate),
+    LAYOUT("FSR3-RCAS", 64, 1, rcas),
+};
+
+void fsr3_host_resolve(const Fsr3Host *h, const Fsr3Binding *b, uint32_t *resource, uint32_t *mip) {
+    *mip = 0;
+    if (b->kind == FSR3_BIND_SRV) {
+        *resource = h->srv[b->id];
+    } else if (b->id >= R(SPD_MIPS_LEVEL_0) && b->id <= R(SPD_MIPS_LEVEL_5)) {
+        *resource = h->uav[R(SPD_MIPS)];
+        *mip = b->id - R(SPD_MIPS_LEVEL_0);
+    } else {
+        *resource = h->uav[b->id];
+    }
 }

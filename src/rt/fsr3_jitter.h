@@ -47,7 +47,8 @@ int32_t fsr3_jitter_phase_count(int32_t render_width, int32_t display_width);
 float fsr3_halton(int32_t index, int32_t base);
 
 /* ffxFsr3UpscalerGetJitterOffset: halton((index % phase_count) + 1, 2 and 3) - 0.5. Returns 0, or
- * -1 (outputs untouched) when phase_count is not positive or index is negative. */
+ * -1 (outputs untouched) when phase_count is not positive. As in AMD's code, a negative index is
+ * accepted: halton of an index below 1 is 0, so the offset is (-0.5, -0.5). */
 int fsr3_jitter_offset(float *x, float *y, int32_t index, int32_t phase_count);
 
 /* The context's jitterPhaseCount constant for the next dispatch: the target on a reset or first

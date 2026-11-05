@@ -135,6 +135,8 @@ PUBLIC_TARGETS := \
 	osk-text-entry-selftest \
 	osk-overlay-selftest \
 	ace-selftest \
+	fsr3-host-selftest \
+	fsr3-mutants \
 	ace-smooth-selftest \
 	ace-ui-selftest \
 	osk-overlay-paint-selftest \
@@ -301,6 +303,8 @@ HELP_DESCRIPTION_fbcap-selftest := run the presenter-neutral frame capture selft
 HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blocking text-entry selftest
 HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-machine selftest (pure C)
 HELP_DESCRIPTION_ace-selftest := run Ace Mode's CPU-only selftest (launch line, 30 Hz detector, readout, report; pure C)
+HELP_DESCRIPTION_fsr3-host-selftest := run FSR 3's host selftest against the record of AMD's host code (pure C)
+HELP_DESCRIPTION_fsr3-mutants := run the FSR 3 host mutation campaign (each defect must build and fail the selftest)
 HELP_DESCRIPTION_ace-smooth-selftest := run Ace Mode's in-between frames selftest on a headless Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_ace-ui-selftest := run Ace Mode's in-game UI selftest (layout, then a headless Vulkan render; SKIPs the GPU leg without Vulkan)
 HELP_DESCRIPTION_osk-overlay-paint-selftest := run the in-window keyboard painter's exact-pixel selftest

@@ -164,8 +164,29 @@ void fsr3_host_init(Fsr3Host *h, const Fsr3HostDesc *desc);
 /* fsr3upscalerDispatch's CPU work for one frame. 0, or -1 for sizes of zero or above the maximum. */
 int fsr3_host_dispatch(Fsr3Host *h, const Fsr3HostDispatch *d);
 
-/* The 128-entry Lanczos-2 table AMD uploads (R16_SNORM), and its kernel. */
-void fsr3_lanczos2_lut(int16_t out[128]);
+/* One descriptor in a pass's set 0, as the project's SPIR-V declares it (binding number and name),
+ * with what AMD's binding tables resolve that name to. */
+typedef enum { FSR3_BIND_CBV, FSR3_BIND_SAMPLER, FSR3_BIND_SRV, FSR3_BIND_UAV } Fsr3BindKind;
+typedef struct {
+    uint32_t binding;
+    Fsr3BindKind kind;
+    uint32_t id; /* SRV, UAV: AMD resource id; CBV: AMD constant buffer id; SAMPLER: AMD's sampler index */
+    const char *name;
+} Fsr3Binding;
+
+typedef struct {
+    const char *label;         /* AMD's pipeline name */
+    uint32_t local_x, local_y; /* numthreads */
+    uint32_t count;
+    const Fsr3Binding *bindings;
+} Fsr3PassLayout;
+
+extern const Fsr3PassLayout fsr3_pass_layout[FSR3_PASS_COUNT];
+
+/* scheduleDispatch's lookup: the physical resource, and for a UAV the mip level, that an SRV or UAV
+ * binding uses in the frame fsr3_host_dispatch last planned. A UAV naming an SPD mip level is the
+ * SPD mip chain at that level. */
+void fsr3_host_resolve(const Fsr3Host *h, const Fsr3Binding *b, uint32_t *resource, uint32_t *mip);
 
 /* ffxSpdSetup with mips = -1. */
 void fsr3_spd_setup(uint32_t dispatch_groups[2], uint32_t work_group_offset[2],
