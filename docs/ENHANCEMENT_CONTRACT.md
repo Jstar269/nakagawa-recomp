@@ -291,7 +291,8 @@ the samplers and the pool; `display-smoke` keeps its image hash.
 
 - **Never, for a host-only feature:** guest logic, the instruction trace, the generated code and the package key
   (`SR_ACE` is not a codegen option), the guest timing model (VBLANK schedule, GE timing, input sampling, media
-  clocks). Every feature in this section is host-only unless section 11 admits it as a guest-visible item.
+  clocks). Every feature in this section is host-only except texture filtering (the "Pixels" bullet), which section
+  11.1 names as already guest-visible; the other items are host-only unless section 11 admits them.
 - **Host work:** the detector and the readout count flips, draws and host waits; their cost runs on the scheduler
   thread like any renderer cost.
 - **Pixels:** texture filtering (anisotropic, for transformed draws with linear minification) changes framebuffer
@@ -317,14 +318,16 @@ A title's 60 FPS game logic and smooth motion may be on together (owner decision
 rule that refused the pair, #1272): the package keeps the game's logic at 60 Hz, and interpolation presents
 in-between frames above that rate. The two are separate switches. Smooth motion keeps its own key (`smooth`) and its
 own library and title settings, is off by default, and stays off by default until the "nothing worse" evidence of
-section 11.2, item 4 exists for the stack. The 60 FPS package's own switch does not turn it on or off.
+section 11.2, item 4 exists for the 60 FPS package together with the 60 Hz interpolator. The 60 FPS
+package's own switch does not turn it on or off.
 
 What stays refused is a second interpolator: one interpolation mode runs at a time, so `smooth=match` and `smooth=x2`
 are never both on, and a launch line that names a mode this build does not carry is refused whole (section 10.1).
 
 This build does not yet interpolate above 30 Hz. Smooth motion acts only on a title the detector holds at 30 (section
 10.6); a title running 60 FPS game logic is presented frame by frame as it comes, as without the feature. The
-interpolator for a 60 Hz source is its own item under section 11, with its own key, entry and evidence. Until it
+interpolator for a 60 Hz source is its own item, with its own key, entry and evidence: a host-only feature under
+section 10.6 unless it changes something section 11.1 lists, in which case it is a section 11 item. Until it
 lands, the player still turns smooth motion off for a launch of the enhanced 60 FPS build, and the title page says
 so. That is a limit of this build, not a rule of the contract; the item that lands the interpolator removes it and
 updates the tests that pin it.
@@ -343,8 +346,8 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
   guest made it, so a frame is never predicted. The cost is one VBLANK of added delay (about 17 ms), reported in the
   run's report as `added_delay_ms`. A flip that arrives first replaces the held frame.
 - **Only at 30.** Every other detector class, a pause and a static picture show each frame as it comes, as without
-  the feature. A title that runs 60 FPS game logic is such a class
-  in this build (section 10.5). The detector enters 30 Hz after a second of agreement and leaves after half a second of disagreement.
+  the feature. A title that runs 60 FPS game logic is such a class in this build (section 10.5). The detector enters
+  30 Hz after a second of agreement and leaves after half a second of disagreement.
 - **UI.** A pixel that did not change between the two frames is copied, so a HUD stays exact while the scene moves
   behind it.
 - **Cuts.** When a third of the blocks fit nothing or disagree with their neighbours, the two frames are different
@@ -363,7 +366,9 @@ Authentic: a change that improves a game without making anything worse is allowe
 it. This section is the class for those changes. It adds to the classes above and removes none of them.
 
 "Enhanced" here is the library-wide tier and "Ace" the per-title tier of #2055. In builds before that rename the
-library-wide tier is the Ace Mode of section 10, and the identifiers keep `ace`.
+library-wide tier is the Ace Mode of section 10, and the identifiers keep `ace`. Enhanced applies to every game and
+may offer switches to turn parts off; Ace is Enhanced plus extras for one title, overrides the library's Enhanced
+choice when selected, and may also offer switches.
 
 ### 11.1. What Makes an Item Guest-Visible
 
@@ -377,8 +382,8 @@ An item is guest-visible when, with it on, any of the following differs from the
 The item's contract entry (section 11.2) names each of these that applies. An item that changes none of them is
 host-only and follows sections 10.2 to 10.6, not this section. One existing feature already sits on this line:
 texture filtering changes the frame that every present commits to guest VRAM, so a game that copies its screen keeps
-the filtered picture (the "Pixels" bullet of section 10.3). It keeps that entry; a new item is not admitted by
-analogy with it.
+the filtered picture (the "Pixels" bullet of section 10.3). It keeps that entry, and is not held to items 2 to 5 of
+section 11.2 retroactively; a change to it is. A new item is not admitted by analogy with it.
 
 ### 11.2. What an Item Must Have
 
@@ -393,7 +398,8 @@ analogy with it.
 3. **A contract entry that says what the guest can observe.** Each item is listed in this document, in its own
    subsection, with: its key; what it changes; for each of VRAM bytes, readbacks, timing and I/O speed, either
    "unchanged" or exactly what differs and by how much; the tier it belongs to (Enhanced for every game, or Ace for
-   one title); and its default. An item without an entry is not admitted.
+   one title); and its default. An Ace-tier item is on only for a title whose Ace is selected, and Ace keeps every
+   Enhanced off switch. An item without an entry is not admitted.
 4. **"Nothing worse" is shown before it is on by default.** Until the evidence below exists, the item is off by
    default and a player may turn it on. To be on by default in Enhanced or Ace it needs all of:
    - a test that pins the new behaviour, in this repository, that fails without the item and passes with it;
@@ -405,7 +411,7 @@ analogy with it.
    The comparison runs are non-authentic evidence (section 3): they show the item made nothing worse and are not
    cited for PSP conformance. The pull request lists each run with its result and says which could not be run.
 5. **A title where it breaks gets a per-title off switch in its package.** The switch is data in that title's own
-   package or title profile (section 5), which the generic code reads as "this item is off here". Generic files
+   package (section 5), which the generic code reads as "this item is off here". Generic files
    contain no title ID, no address and no branch for it. When a regression is found for a title, the item stays
    admitted and the title's switch goes in with the fix; the item is not made title-aware.
 6. **The evidence tools keep their answers.** An Enhanced or Ace run is stamped, labelled and refused as section 10.4
