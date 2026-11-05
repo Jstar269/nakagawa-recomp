@@ -1104,7 +1104,13 @@ static uint32_t h_MpegFinish(CpuState *s) { (void)s; return mpeg_finish(); }
  * 0x10000 for lib version >= 0x0105, which ACX uses). The earlier wrapper wrote it to a pointer and
  * returned 0, so the game allocated a 0-byte mpeg buffer and sceMpegCreate failed with NO_MEMORY. */
 static uint32_t h_MpegQueryMemSize(CpuState *s) { (void)s; return 0x10000u; }
+/* sceMpegCreate refuses an interrupt handler with 0x80618008 and creates nothing: measured by
+ * pspautotests tests/intr/delays (delays.expected:24, with valid arguments). PPSSPP 177244863 added
+ * the same check, first, and names the value SCE_MPEG_ERROR_IN_INTERRUPT; that name is not from
+ * the SDK. Its order against the argument checks is not measured. */
+#define SCE_MPEG_ERROR_IN_INTERRUPT 0x80618008u
 static uint32_t h_MpegCreate(CpuState *s) {
+    if (sched_is_intr_context()) return SCE_MPEG_ERROR_IN_INTERRUPT;
     uint32_t r = mpeg_create(A0, A1, A2, A3, stack_arg(s, 0), stack_arg(s, 1), stack_arg(s, 2));
     if (getenv("SR_MPEGLOG")) fprintf(stderr, "MpegCreate mpegAddr=0x%x data=0x%x size=0x%x ring=0x%x fw=%u -> 0x%x\n",
         A0, A1, A2, A3, stack_arg(s,0), r);
@@ -1303,6 +1309,17 @@ static void hle_register_mpeg_ring_handlers(void) {
     sr_hle_register(0xb240a59e, "sceMpegRingbufferPut", h_MpegRingbufferPut);
     sr_hle_register(0xb5f6dc87, "sceMpegRingbufferAvailableSize", h_MpegRingbufferAvailable);
     sr_hle_register(0xfe246728, "sceMpegGetAvcAu", h_MpegGetAvcAu);
+}
+#endif
+#ifdef SR_HLE_THREAD_SELFTEST
+/* sr_hle_init() leaves sceMpeg out of the thread selftest. Its interrupt-context check of
+ * sceMpegCreate (hle_thread_selftest.c) registers these production handlers itself, so the call
+ * goes through sr_syscall and the real sub-interrupt delivery path. */
+void sr_hle_test_register_mpeg_create_handlers(void) {
+    sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
+    sr_hle_register(0x874624d6, "sceMpegFinish", h_MpegFinish);
+    sr_hle_register(0xd8c5f121, "sceMpegCreate", h_MpegCreate);
+    sr_hle_register(0x606a4649, "sceMpegDelete", h_MpegDelete);
 }
 #endif
 #ifdef SR_MPEG_MEDIA_SELFTEST
