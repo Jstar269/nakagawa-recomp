@@ -359,8 +359,37 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
 `src/rt/gpu_sdl3vk/ace_smooth.c`, its shaders and the pure pacing rule in `src/rt/ace.c`.
 
 - **How a frame is made.** Block-matched motion between two private copies of consecutive presented frames, in a
-  compute pass on the present's command buffer. It reads nothing of the GE, so it does not need #318, and it treats
-  a GPU target and a CPU frame (a movie) alike.
+  compute pass on the present's command buffer. It does not need #318, and it treats a GPU target and a CPU frame (a
+  movie) alike.
+- **What it reads of the GE.** For a GPU target, two host-only inputs (`src/rt/gpu_sdl3vk/ace_hud.c`):
+  - **A HUD mask.** The boxes of the frame's through-mode (2D) draws onto that target, as one bit per guest pixel.
+    A box that covers a quarter of the screen or more, or that samples a render target, is a backdrop or a post
+    effect and is left out. A frame with more than 1024 boxes, or boxes covering more than two screens, has no mask.
+    Masked pixels never steer the motion search. Beside the HUD, where the scene's own vector puts most of a block
+    under it, the block keeps the cost the coarser search level measured for that vector. A vector whose end lands
+    on the HUD in one frame takes only the other frame's side, judged by its block's cost, so the HUD is never
+    dragged into the scene. A changed pixel on the HUD keeps the old frame's side.
+  - **Depth.** A private R16 copy of the target's depth, taken only when a batch wrote that depth image since it
+    was last handed on. A clear that clears depth counts as a write. Freshness belongs to the depth image, not to
+    the colour target: when two display buffers share one depth buffer and a frame writes no depth, the depth still
+    holds the other buffer's frame and is withheld. A frame without fresh depth has none, so its pair matches on
+    colour alone. A vector whose two ends land at different depths fits worse: it joins two surfaces, not one that
+    moved. The GE's depth image is only read and keeps its layout.
+
+  Both are used only when both frames of a pair have them. Each present hands its inputs to the image it presents
+  and to no other, and the show pass takes them once: a CPU frame (a movie) never gets a GPU frame's mask or depth,
+  and inputs no show pass took are dropped and counted. `SR_ACE_SMOOTH_HUD=0` and `SR_ACE_SMOOTH_DEPTH=0` turn each
+  off. There is no per-title switch yet. With both off, the in-betweens are the same bytes as without these inputs.
+  The boxes are noted in the GPU GE's draw hooks after the draw is recorded, and the depth copy is recorded in the
+  present's command buffer. So neither changes what the guest, the authentic renderer or a capture sees.
+
+  Nothing is dropped silently. The report's `smooth_aux` block counts the pairs that used each input (`pairs`,
+  `pairs_mask`, `pairs_depth`) and the depth copies refused (`depth_refused`). It counts the boxes kept, merged or
+  left out, by reason (`boxes`: `kept`, `merged`, `large`, `target`, `outside`, `full`). It also counts frames:
+  those with a mask, those that overflowed it, and those with depth, with unwritten depth or with no depth buffer.
+  The last count is inputs no show pass took (`frames`: `mask`, `overflow`, `depth`, `depth_unwritten`,
+  `depth_none`, `unshown`). The run's exit prints the same counts on one `ACE_MODE: smooth inputs` line. The first
+  frame to overflow the mask prints a warning.
 - **When.** The flip of frame B shows the in-between of A and B; the next VBLANK shows B. Nothing is shown before the
   guest made it, so a frame is never predicted. The cost is one VBLANK of added delay (about 17 ms), reported in the
   run's report as `added_delay_ms`. A flip that arrives first replaces the held frame.
