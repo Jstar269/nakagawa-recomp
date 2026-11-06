@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from tools.format_portability_check import (
     check_format_portability,
@@ -128,6 +130,16 @@ class TestFormatPortabilityCheck(unittest.TestCase):
         self.assertEqual(narrow_long_flags(8), ["-m32"])
         self.assertEqual(narrow_long_flags(4), [])
         self.assertIn(host_long_width(resolve_compiler("gcc")), (4, 8))
+
+    def test_compiler_resolution_honors_msys_path(self) -> None:
+        ucrt_bin = self.test_root / "custom-ucrt64" / "bin"
+        ucrt_bin.mkdir(parents=True)
+        gcc = ucrt_bin / "gcc.exe"
+        gcc.write_bytes(b"synthetic executable path marker")
+        with mock.patch.dict(os.environ, {"MSYS_PATH": str(ucrt_bin)}), \
+                mock.patch("tools.format_portability_check.sys.platform", "win32"), \
+                mock.patch("tools.format_portability_check.shutil.which", return_value=None):
+            self.assertEqual(resolve_compiler("gcc"), str(gcc))
 
 
 if __name__ == "__main__":

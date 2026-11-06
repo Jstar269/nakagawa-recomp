@@ -210,13 +210,18 @@ class TestProjectFontAssetCopy(unittest.TestCase):
         "nkkr.pgf", "nkkr.json", "nkkr-OFL.txt",
     )
 
-    def _run_copy(self, build_dir: Path) -> subprocess.CompletedProcess[str]:
+    def _run_copy(
+        self,
+        build_dir: Path,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         assert POWERSHELL is not None
         return subprocess.run(
             [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
              str(ROOT / "tools" / "copy_build_assets.ps1"), "-BuildDir", str(build_dir),
              "-ExcludeOptionalFonts"],
             cwd=build_dir.parent,
+            env=env,
             capture_output=True,
             text=True,
             check=False,
@@ -239,6 +244,27 @@ class TestProjectFontAssetCopy(unittest.TestCase):
                 {name: (runtime / name).read_bytes() for name in self.OUTPUTS},
                 expected,
             )
+
+    def test_explicit_msys_path_supplies_sdl3_when_gcc_is_not_on_path(self):
+        with tempfile.TemporaryDirectory(prefix="project-font-msys-path-") as tmp:
+            root = Path(tmp)
+            build = root / "build"
+            generated = build / "project-font"
+            generated.mkdir(parents=True)
+            for name in self.OUTPUTS:
+                (generated / name).write_bytes(f"synthetic project asset: {name}\n".encode("ascii"))
+
+            msys_bin = root / "custom-ucrt64" / "bin"
+            msys_bin.mkdir(parents=True)
+            sdl = msys_bin / "SDL3.dll"
+            sdl.write_bytes(b"synthetic SDL3 runtime")
+            env = os.environ.copy()
+            env["MSYS_PATH"] = str(msys_bin)
+            env["PATH"] = os.pathsep.join([str(root / "empty-path"), str(Path(sys.executable).parent)])
+
+            result = self._run_copy(build, env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((build / "SDL3.dll").read_bytes(), sdl.read_bytes())
 
     def test_missing_project_slot_output_fails_by_name(self):
         with tempfile.TemporaryDirectory(prefix="project-font-missing-") as tmp:
