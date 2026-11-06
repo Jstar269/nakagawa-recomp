@@ -13,6 +13,7 @@
 #include "videorec.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
+#include <io.h>
 #else
 #include <signal.h>
 #include <spawn.h>
@@ -154,6 +156,7 @@ static int s_test_free_set;
 static uint64_t s_test_free;
 static int s_test_audio_write_fails;
 static const char *s_test_clear_fail_at; /* an output name whose move aside fails */
+static const char *s_test_plant_after_clear; /* an output name another program creates after the clear */
 #endif
 
 /* Free bytes on the drive holding s_dir. Returns 0 when it cannot be read. */
@@ -189,13 +192,38 @@ static int vr_json_str(FILE *f, const char *s) {
     return fputc('"', f) != EOF;
 }
 
+/* Create NAME in s_dir as a new file and return it open for writing (text: newline translation on
+ * Windows). The create is exclusive (O_CREAT|O_EXCL): when anything already holds the name, a
+ * file another program created after the clear, a folder or a link, this fails instead of
+ * truncating or following it, and every later write goes to the file this call created. */
+static FILE *vr_create_new(const char *name, int text) {
+    char p[1024];
+    vr_path(p, sizeof p, name);
+#ifdef _WIN32
+    int fd = _open(p, _O_WRONLY | _O_CREAT | _O_EXCL | (text ? _O_TEXT : _O_BINARY),
+                   _S_IREAD | _S_IWRITE);
+    if (fd < 0) return NULL;
+    FILE *f = _fdopen(fd, text ? "w" : "wb");
+    if (!f) _close(fd);
+#else
+    (void)text;
+    int fd = open(p, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+    if (fd < 0) return NULL;
+    FILE *f = fdopen(fd, "w");
+    if (!f) close(fd);
+#endif
+    return f;
+}
+
 /* Replace record.json with what `fill` writes, through record.json.tmp, so a reader never sees a
  * half-written summary. Returns 0 and says so on stderr when it could not be written. */
 static int vr_replace_record(int (*fill)(FILE *, const void *), const void *ctx) {
     char tmp[1024], p[1024];
     vr_path(tmp, sizeof tmp, "record.json.tmp");
     vr_path(p, sizeof p, "record.json");
-    FILE *j = fopen(tmp, "w");
+    /* The temporary is the recorder's own: a leftover goes, then the new one is created exclusively. */
+    (void)remove(tmp);
+    FILE *j = vr_create_new("record.json.tmp", 1);
     int ok = j != NULL && fill(j, ctx);
     if (j && (ferror(j) | fclose(j))) ok = 0;
 #ifdef _WIN32
@@ -246,40 +274,63 @@ static uint64_t vr_outputs_bytes(void) {
     return total;
 }
 
+/* Whether what the clear just moved aside is a regular file, read from the moved object through
+ * an open handle, not from a second look at a name that could have changed in between. A folder
+ * cannot be opened for reading on Windows; on POSIX it opens and fstat says what it is. */
+static int vr_moved_is_file(const char *aside) {
+#ifdef _WIN32
+    int fd = _open(aside, _O_RDONLY | _O_BINARY);
+    if (fd < 0) return 0;
+    struct _stat64 st;
+    int ok = _fstat64(fd, &st) == 0 && (st.st_mode & _S_IFMT) == _S_IFREG;
+    _close(fd);
+#else
+    int fd = open(aside, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return 0;
+    struct stat st;
+    int ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode);
+    close(fd);
+#endif
+    return ok;
+}
+
 /* Remove what an earlier run left in s_dir, so nothing there can pass for this run's output, all
  * or nothing: every file is first renamed aside (NAME.videorec-old), and only when all of them
- * moved are the moved files deleted. A file that cannot be moved (open in another program, or a
- * folder where a file belongs) puts back the ones already moved and returns 0, so a start that
- * cannot clear the folder leaves the earlier recording whole. A leftover aside file from an earlier
- * clear is removed first; one that cannot be deleted at the end stays, named as aside, and is
- * never read as output. */
-static int vr_clear_outputs(void) {
-    int moved = 0;
+ * moved are the moved files deleted. The rename is the only look at each name (a missing one is
+ * ENOENT, nothing to clear), and what moved is checked through a handle on it. A name that cannot
+ * be moved (open in another program), or that held a folder where a file belongs, puts back
+ * every file this clear moved and returns 0, so a start that cannot clear the folder leaves the
+ * earlier recording whole. A leftover aside file from an earlier clear is removed first; one that
+ * cannot be deleted at the end stays, named as aside, and is never read as output. */
+static int vr_clear_outputs(const char **failed) {
+    unsigned char moved[sizeof k_vr_outputs / sizeof k_vr_outputs[0]] = { 0 };
+    int any = 0;
     for (int i = 0; k_vr_outputs[i]; i++) {
         char p[1024], aside[1100];
         vr_path(p, sizeof p, k_vr_outputs[i]);
         snprintf(aside, sizeof aside, "%s" VR_ASIDE_SUFFIX, p);
         (void)remove(aside);
-        struct stat st;
-        int ok = 1;
-        if (stat(p, &st) == 0) {
-            ok = S_ISREG(st.st_mode) && rename(p, aside) == 0;
+        int ok;
+        if (rename(p, aside) == 0) {
+            moved[i] = 1;
+            any = 1;
+            ok = vr_moved_is_file(aside);
 #ifdef SR_VIDEOREC_SELFTEST
-            if (ok && s_test_clear_fail_at && strcmp(s_test_clear_fail_at, k_vr_outputs[i]) == 0) {
-                (void)rename(aside, p);
+            if (ok && s_test_clear_fail_at && strcmp(s_test_clear_fail_at, k_vr_outputs[i]) == 0)
                 ok = 0;
-            }
 #endif
         } else {
-            continue;
+            ok = errno == ENOENT;
         }
         if (!ok) {
-            /* Put back what moved, in reverse. */
-            for (int j = i - 1; j >= 0; j--) {
+            *failed = k_vr_outputs[i];
+            /* Put back what this clear moved, in reverse, this name included. */
+            for (int j = i; j >= 0; j--) {
+                if (!moved[j]) continue;
                 char q[1024], qa[1100];
                 vr_path(q, sizeof q, k_vr_outputs[j]);
                 snprintf(qa, sizeof qa, "%s" VR_ASIDE_SUFFIX, q);
-                if (stat(qa, &st) == 0 && rename(qa, q) != 0) {
+                if (rename(qa, q) != 0) {
                     fprintf(stderr, "VIDEOREC: %s could not be put back from %s" VR_ASIDE_SUFFIX
                                     " in SR_VIDEOREC_DIR\n", k_vr_outputs[j], k_vr_outputs[j]);
                     fflush(stderr);
@@ -287,9 +338,9 @@ static int vr_clear_outputs(void) {
             }
             return 0;
         }
-        moved++;
     }
-    for (int i = 0; moved && k_vr_outputs[i]; i++) {
+    for (int i = 0; any && k_vr_outputs[i]; i++) {
+        if (!moved[i]) continue;
         char p[1024], aside[1100];
         vr_path(p, sizeof p, k_vr_outputs[i]);
         snprintf(aside, sizeof aside, "%s" VR_ASIDE_SUFFIX, p);
@@ -573,7 +624,7 @@ static int vr_start_encoder(void) {
     argv[n++] = "-hide_banner";
     argv[n++] = "-loglevel";
     argv[n++] = "error";
-    argv[n++] = "-y";
+    argv[n++] = "-n";
     argv[n++] = "-f";
     argv[n++] = "rawvideo";
     argv[n++] = "-pix_fmt";
@@ -625,19 +676,22 @@ static int vr_make_dir(const char *dir) {
     return 0;
 }
 
-static int vr_open_files(void) {
-    char p[1024];
-    vr_path(p, sizeof p, "audio.wav");
-    s_wav = fopen(p, "wb");
-    vr_path(p, sizeof p, "frames.csv");
-    s_csv = fopen(p, "w");
-    vr_path(p, sizeof p, "logic.srt");
-    s_srt = fopen(p, "w");
-    if (!s_wav || !s_csv || !s_srt) return 0;
+/* Create the recording's own files, each as a new file (vr_create_new). *failed names the one
+ * that could not be created or written. */
+static int vr_open_files(const char **failed) {
+    *failed = "audio.wav";
+    if (!(s_wav = vr_create_new("audio.wav", 0))) return 0;
+    *failed = "frames.csv";
+    if (!(s_csv = vr_create_new("frames.csv", 1))) return 0;
+    *failed = "logic.srt";
+    if (!(s_srt = vr_create_new("logic.srt", 1))) return 0;
+    *failed = "audio.wav";
     uint8_t h[44];
     vr_wav_header(h, 0);
     if (fwrite(h, 1, sizeof h, s_wav) != sizeof h) return 0;
+    *failed = "frames.csv";
     if (fputs("frame,vcount,guest_us,kind,guest_flips\n", s_csv) < 0) return 0;
+    *failed = "the audio ring";
     s_ring = (int32_t *)calloc((size_t)VR_RING_FRAMES * 2u, sizeof *s_ring);
     return s_ring != NULL;
 }
@@ -729,21 +783,36 @@ static int vr_begin(const char *dir, const char *codec, int need_det_clock) {
      * place, as REFUSED when record.json can be replaced. When record.json itself is the file that
      * cannot be replaced (open in another program), no record can say so: stderr does, and the
      * earlier record stays. */
-    if (!vr_clear_outputs()) {
-        vr_refuse("an earlier run's files in SR_VIDEOREC_DIR cannot be removed (one is open in "
-                  "another program, or is a folder); none was removed");
+    const char *blocked = "";
+    if (!vr_clear_outputs(&blocked)) {
+        snprintf(why, sizeof why, "an earlier run's %s in SR_VIDEOREC_DIR cannot be removed (it is "
+                                  "open in another program, or is a folder); none was removed",
+                 blocked);
+        vr_refuse(why);
         return 0;
     }
+#ifdef SR_VIDEOREC_SELFTEST
+    if (s_test_plant_after_clear) {
+        char planted[1024];
+        vr_path(planted, sizeof planted, s_test_plant_after_clear);
+        FILE *f = fopen(planted, "wb");
+        if (f) { fputs("planted", f); fclose(f); }
+    }
+#endif
     /* Until the finish rewrites it, the summary says the recording is not finished. */
     if (!vr_write_short_record("INCOMPLETE", "the run ended before the recording was finished")) {
         fprintf(stderr, "VIDEOREC: not recording: record.json cannot be written\n");
         return 0;
     }
-    if (!vr_open_files()) {
+    const char *unmade = "";
+    if (!vr_open_files(&unmade)) {
         FILE **open_files[] = { &s_wav, &s_csv, &s_srt };
         for (size_t i = 0; i < sizeof open_files / sizeof open_files[0]; i++)
             if (*open_files[i]) { fclose(*open_files[i]); *open_files[i] = NULL; }
-        vr_refuse("the recording files cannot be created in SR_VIDEOREC_DIR");
+        snprintf(why, sizeof why, "%s cannot be created as a new file in SR_VIDEOREC_DIR (another "
+                                  "program created that name after the clear, or it cannot be "
+                                  "written)", unmade);
+        vr_refuse(why);
         return 0;
     }
     fprintf(stderr, "VIDEOREC: recording every VBLANK at 60000/1001 fps, audio 44100 Hz, "
@@ -961,10 +1030,8 @@ void sr_videorec_vblank(uint32_t vcount, uint64_t guest_us) {
         s_started = 1;
         s_vcount0 = vcount;
         if (strcmp(s_codec, "raw") == 0) {
-            char p[1024];
-            vr_path(p, sizeof p, "video.bgr0");
-            s_raw = fopen(p, "wb");
-            if (!s_raw) vr_fail("cannot create video.bgr0");
+            s_raw = vr_create_new("video.bgr0", 0);
+            if (!s_raw) vr_fail("cannot create video.bgr0 as a new file");
         } else if (!vr_start_encoder()) {
             vr_fail("FFmpeg did not start");
         }
@@ -1046,7 +1113,7 @@ static int vr_mux(void) {
     vr_url(out, sizeof out, "recording.mkv");
     vr_url(srt, sizeof srt, "logic.srt");
     /* The logic-rate subtitles go in as a track that is off by default. */
-    const char *argv[] = { "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+    const char *argv[] = { "ffmpeg", "-hide_banner", "-loglevel", "error", "-n",
                            "-i", video, "-i", audio, "-i", srt,
                            "-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0",
                            "-c", "copy", "-metadata:s:s:0", "title=Game frame rate",
@@ -1201,6 +1268,8 @@ void sr_videorec_test_fail_audio_writes(int on) { s_test_audio_write_fails = on;
 
 void sr_videorec_test_fail_clear_at(const char *name) { s_test_clear_fail_at = name; }
 
+void sr_videorec_test_plant_after_clear(const char *name) { s_test_plant_after_clear = name; }
+
 void sr_videorec_test_stats(SrVideoRecStats *out) {
     memset(out, 0, sizeof *out);
     out->frames = s_frames;
@@ -1239,6 +1308,7 @@ void sr_videorec_test_reset(void) {
     s_test_free = (uint64_t)1u << 40;
     s_test_audio_write_fails = 0;
     s_test_clear_fail_at = NULL;
+    s_test_plant_after_clear = NULL;
     s_cur = NULL;
     s_ring = NULL;
     s_wav = s_csv = s_raw = s_srt = NULL;

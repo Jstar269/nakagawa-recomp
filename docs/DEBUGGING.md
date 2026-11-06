@@ -2277,9 +2277,12 @@ path. Every check runs before the folder is touched, so a refused start replaces
 (with `REFUSED`, so no earlier `PASS` stands) and leaves the previous run's recording where it was.
 A start that does record first removes the recorder's files a previous run left in the folder, all or
 nothing: it moves each aside, and if one cannot be moved (open in another program, or a folder with
-that name) it puts the others back and refuses, so the previous recording stays whole. When
-`record.json` itself is the file that cannot be replaced, only stderr can say so, and the previous
-record stays. An encoded recording is `PASS` only when the encoder and the mux both exited 0, so
+that name) it puts the others back and refuses, naming that file, so the previous recording stays
+whole. When `record.json` itself is the file that cannot be replaced, only stderr can say so, and
+the previous record stays. The recording's own files are then created as new files, never reused:
+if another program creates one of those names after the clear, the start is refused (or, for
+`video.bgr0`, made at the first picture, the recording is `FAIL`), naming the file, and that
+program's file is left as it was. FFmpeg runs with `-n` for the same reason. An encoded recording is `PASS` only when the encoder and the mux both exited 0, so
 `PASS` always comes with `"muxed": true`. Under 1 GiB free during the run the recorder stops writing
 video and the recording is `FAIL`; so is any write that fails.
 

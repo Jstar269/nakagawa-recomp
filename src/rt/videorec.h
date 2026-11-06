@@ -121,6 +121,9 @@ void sr_videorec_test_set_free_bytes(uint64_t bytes);
 void sr_videorec_test_fail_audio_writes(int on);
 /* Make the clear's move aside of one output file (by name, e.g. "audio.wav") fail; NULL clears. */
 void sr_videorec_test_fail_clear_at(const char *name);
+/* Create one output name (e.g. "audio.wav") right after the clear, as another program could;
+ * NULL clears. */
+void sr_videorec_test_plant_after_clear(const char *name);
 #endif
 
 #endif /* SR_VIDEOREC_H */

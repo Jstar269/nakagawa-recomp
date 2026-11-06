@@ -18,7 +18,8 @@
 //   - with FFmpeg on PATH, the FFV1 encode and the mux finish with status PASS (SKIP otherwise);
 //   - recording only on the deterministic clock; a named encoder, FFmpeg or codec that cannot
 //     run refuses the recording (never raw frames in its place); free space under 4 GiB
-//     refuses it and under 1 GiB stops it; a used folder keeps no earlier PASS; and an encoder
+//     refuses it and under 1 GiB stops it; a used folder keeps no earlier PASS; an output name
+//     another program takes after the clear is refused by name and left as it was; and an encoder
 //     that fails, a mux that fails or crashes, audio far ahead and audio that never reached
 //     audio.wav each FAIL the recording with its reason (a fake FFmpeg: this binary);
 //   - a fatal stop (_Exit, no atexit) after sr_videorec_finish_at leaves PASS naming the stop,
@@ -687,6 +688,8 @@ static void test_stale_folder(const char *root) {
     CHECK(!sr_videorec_test_start_from_env(), "a folder named video.bgr0 refuses the start");
     CHECK(file_size(p2) == 3, "and the earlier recording.mkv is put back");
     CHECK(record_says(dir2, "REFUSED", "cannot be removed"), "and record.json says why");
+    CHECK(record_says(dir2, "REFUSED", "video.bgr0"), "naming the file it could not clear");
+    CHECK(file_size(inner) == 1, "and the folder in the way keeps what it holds");
 
     /* The earlier run's files count as free space, since the clear frees them: 2 bytes short of
      * 4 GiB free with a 3-byte earlier recording starts, and removes it. */
@@ -708,6 +711,49 @@ static void test_stale_folder(const char *root) {
           "record.json says INCOMPLETE until the finish");
     sr_videorec_test_reset();
     CHECK(record_says(dir, "INCOMPLETE", NULL), "a run that never finishes stays INCOMPLETE");
+}
+
+/* An output name another program takes after the clear is never truncated or reused: each of the
+ * recording's own files is created as a new file, and a name already taken fails by its name. */
+static void test_name_taken(const char *root) {
+    char dir[600], wav[700];
+    snprintf(dir, sizeof dir, "%s/name-taken", root);
+    make_dir(dir);
+    path_in(wav, sizeof wav, dir, "audio.wav");
+    (void)remove(wav);
+    set_env("SR_VIDEOREC_DIR", dir);
+    set_env("SR_VIDEOREC_CODEC", "raw");
+    set_env("SR_DETERMINISTIC_CLOCK", "1");
+    sr_videorec_test_reset();
+    sr_videorec_test_plant_after_clear("audio.wav");
+    CHECK(!sr_videorec_active(), "an audio.wav created after the clear refuses the start");
+    CHECK(file_size(wav) == 7, "and the file another program created keeps its bytes");
+    CHECK(record_says(dir, "REFUSED", "audio.wav cannot be created as a new file"),
+          "and record.json names audio.wav");
+    sr_videorec_test_reset();
+    set_env("SR_VIDEOREC_DIR", NULL);
+    set_env("SR_VIDEOREC_CODEC", NULL);
+    set_env("SR_DETERMINISTIC_CLOCK", NULL);
+    (void)remove(wav);
+
+    /* The raw video is created at the first picture: a video.bgr0 that appears between the start
+     * and then fails the recording, and is left as it was. */
+    char raw[700];
+    snprintf(dir, sizeof dir, "%s/name-taken-raw", root);
+    path_in(raw, sizeof raw, dir, "video.bgr0");
+    CHECK(sr_videorec_test_start(dir, "raw"), "a raw recording starts");
+    FILE *f = fopen(raw, "wb");
+    if (f) { fputs("planted", f); fclose(f); }
+    static uint32_t px[W * H];
+    fill(px, 0x00405060u);
+    sr_videorec_frame(px, W, H, W * 4u, SR_CAP_ORDER_BGRX);
+    sr_videorec_vblank(1, vtime(1));
+    sr_videorec_vblank(2, vtime(2));
+    CHECK(sr_videorec_finish() == 0, "a video.bgr0 that appeared after the start fails the recording");
+    CHECK(file_size(raw) == 7, "and keeps the bytes another program wrote");
+    CHECK(record_says(dir, "FAIL", "video.bgr0"), "and record.json names video.bgr0");
+    sr_videorec_test_reset();
+    (void)remove(raw);
 }
 
 /* Encoder and mux failures through a fake FFmpeg: every one is FAIL, never PASS. */
@@ -872,6 +918,7 @@ int main(int argc, char **argv) {
     test_refusals(root);
     test_disk_space(root);
     test_stale_folder(root);
+    test_name_taken(root);
     test_audio_failures(root);
     char self[1024];
     CHECK(self_path(self, sizeof self), "the selftest finds its own path for the fake FFmpeg");
