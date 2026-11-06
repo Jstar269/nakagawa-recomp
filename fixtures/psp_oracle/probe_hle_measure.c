@@ -2311,8 +2311,8 @@ static int hle_run(void)
    two blocks ahead; this case measures what the console does.
 
    For each channel size F of 1024, 2048 and 4096 frames, one stereo channel is reserved with
-   sceAudioChReserve(-1, F, PSP_AUDIO_FORMAT_STEREO) and fed HLE_AREST_BLOCKS blocking outputs
-   of the same F-frame buffer at volume 0x8000. Right after each return the probe reads
+   sceAudioChReserve (channel -1, F frames, PSP_AUDIO_FORMAT_STEREO) and fed HLE_AREST_BLOCKS
+   blocking outputs of the same F-frame buffer at volume 0x8000. Right after each return the probe reads
    sceAudioGetChannelRestLen and sceAudioGetChannelRestLength and the system time. Nothing is
    written to host0 between the outputs (a host0 write can take longer than a block and would
    starve the channel): the values are kept in arrays and the records follow the run. After the
@@ -2416,9 +2416,8 @@ static void hle_arest_size(uint32_t idx, uint32_t frames)
     int release_rc = 0;
     if (ch >= 0) {
         rest = sceAudioGetChannelRestLen(ch);
-        while (rest > 0 && polls < HLE_AREST_DRAIN_POLLS) {
+        for (; rest > 0 && polls < HLE_AREST_DRAIN_POLLS; polls++) {
             sceKernelDelayThread(HLE_AREST_DRAIN_POLL_US);
-            polls++;
             rest = sceAudioGetChannelRestLen(ch);
         }
         drain_us = sceKernelGetSystemTimeLow() - prev;
