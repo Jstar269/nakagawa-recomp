@@ -20,11 +20,9 @@ def _results(**overrides: str) -> dict[str, str]:
         "classify": "success",
         "hygiene": "success",
         "public-export": "success",
-        "markdown": "skipped",
         "python-tools": "skipped",
         "native-tools": "skipped",
         "windows-runtime": "skipped",
-        "main-smoke": "skipped",
     }
     values.update(overrides)
     return values
@@ -88,16 +86,12 @@ class CiRequiredTests(unittest.TestCase):
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
             "PUBLIC_EXPORT_RESULT": "success",
-            "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
-            "MAIN_SMOKE_RESULT": "skipped",
-            "RUN_MARKDOWN": "false",
             "RUN_PYTHON": "true",
             "RUN_NATIVE": "true",
             "RUN_WINDOWS": "true",
-            "RUN_MAIN_SMOKE": "false",
             "ALLOW_SUBSTANTIVE": "false",
             "DRAFT": "true",
         }
@@ -141,30 +135,43 @@ class CiRequiredTests(unittest.TestCase):
         self.assertIn("DRAFT: ${{ needs.classify.outputs.draft }}", workflow)
 
     def test_main_smoke_remains_required_when_substantive_jobs_are_suppressed(self) -> None:
-        results = _results(**{"main-smoke": "failure"})
+        # The main smoke is a step of the hygiene job, so its failure is hygiene's.
+        results = _results(hygiene="failure")
         self.assertFalse(
             required_gate_passes(
                 results,
-                {"python-tools": True, "main-smoke": True},
+                {"python-tools": True},
                 allow_substantive=False,
             )
         )
+
+    def test_folded_jobs_are_no_separate_inputs(self) -> None:
+        """Markdown, main smoke and the profile-zero fixture are steps of required jobs.
+
+        They reach the aggregate through hygiene and public-export, which must succeed on
+        every event; the workflow no longer passes a result or run flag of their own.
+        """
+        workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        for variable in ("MARKDOWN_RESULT", "MAIN_SMOKE_RESULT", "RUN_MARKDOWN", "RUN_MAIN_SMOKE"):
+            with self.subTest(variable=variable):
+                self.assertNotIn(variable, workflow)
+        for name in ("markdown", "main-smoke"):
+            with self.subTest(name=name):
+                self.assertFalse(required_gate_passes(_results(hygiene="failure", **{name: "success"}), {}))
 
     def test_environment_mapping_matches_workflow_contract(self) -> None:
         env = {
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
             "PUBLIC_EXPORT_RESULT": "success",
-            "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
-            "MAIN_SMOKE_RESULT": "skipped",
-            "RUN_MARKDOWN": "false",
             "RUN_PYTHON": "true",
             "RUN_NATIVE": "false",
             "RUN_WINDOWS": "false",
-            "RUN_MAIN_SMOKE": "false",
             "ALLOW_SUBSTANTIVE": "true",
             "DRAFT": "false",
         }
@@ -185,18 +192,14 @@ class AllowSubstantiveParsingTests(unittest.TestCase):
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
             "PUBLIC_EXPORT_RESULT": "success",
-            "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
-            "MAIN_SMOKE_RESULT": "skipped",
-            "RUN_MARKDOWN": "false",
             "RUN_PYTHON": "false",
             # Applicable, but the job was skipped -- this must fail unless
             # suppression was explicitly requested.
             "RUN_NATIVE": "true",
             "RUN_WINDOWS": "false",
-            "RUN_MAIN_SMOKE": "false",
             # This fixture models the intentional main-push suppression, not a
             # draft PR. Draft-specific suppression is tested separately below.
             "DRAFT": "false",
@@ -230,27 +233,21 @@ class ApplicabilityParsingTests(unittest.TestCase):
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
             "PUBLIC_EXPORT_RESULT": "success",
-            "MARKDOWN_RESULT": "success",
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "success",
             "WINDOWS_RESULT": "success",
-            "MAIN_SMOKE_RESULT": "success",
-            "RUN_MARKDOWN": "false",
             "RUN_PYTHON": "false",
             "RUN_NATIVE": "false",
             "RUN_WINDOWS": "false",
-            "RUN_MAIN_SMOKE": "false",
             "ALLOW_SUBSTANTIVE": "true",
             "DRAFT": "false",
         }
 
     def test_every_run_variable_requires_a_boolean(self) -> None:
         for run_key in (
-            "RUN_MARKDOWN",
             "RUN_PYTHON",
             "RUN_NATIVE",
             "RUN_WINDOWS",
-            "RUN_MAIN_SMOKE",
         ):
             for value in (None, "", "   ", "garbage", "0", "no"):
                 with self.subTest(run_key=run_key, value=value):
@@ -263,11 +260,9 @@ class ApplicabilityParsingTests(unittest.TestCase):
 
     def test_run_variables_accept_case_and_surrounding_whitespace(self) -> None:
         for run_key in (
-            "RUN_MARKDOWN",
             "RUN_PYTHON",
             "RUN_NATIVE",
             "RUN_WINDOWS",
-            "RUN_MAIN_SMOKE",
         ):
             with self.subTest(run_key=run_key):
                 env = self._env()

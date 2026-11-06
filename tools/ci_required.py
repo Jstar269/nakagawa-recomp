@@ -10,12 +10,14 @@ import sys
 from typing import Mapping
 
 
+# The path-gated jobs. The Markdown lint and the main smoke are steps of the
+# always-required hygiene job, and the profile-zero fixture build is a step of the
+# always-required public-export job (.github/workflows/ci.yml), so their results
+# reach this aggregate through those two jobs.
 _GATES = (
-    ("markdown", "MARKDOWN_RESULT", "RUN_MARKDOWN"),
     ("python-tools", "PYTHON_RESULT", "RUN_PYTHON"),
     ("native-tools", "NATIVE_RESULT", "RUN_NATIVE"),
     ("windows-runtime", "WINDOWS_RESULT", "RUN_WINDOWS"),
-    ("main-smoke", "MAIN_SMOKE_RESULT", "RUN_MAIN_SMOKE"),
 )
 
 _SUBSTANTIVE_GATES = frozenset(
