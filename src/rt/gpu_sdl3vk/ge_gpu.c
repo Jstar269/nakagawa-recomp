@@ -81,14 +81,20 @@
  *    explicit diagnostic (sr_parse_render_scale in ge_gpu.h). Targets/depth/snapshot images are
  *    allocated at scale x the 512x272 canvas and the viewport/scissor scale with them;
  *    vertices map through the same NDC transform, so higher scales are pure
- *    magnification of the PSP raster grid. Guest VRAM traffic stays at native
- *    resolution (readback samples the top-left subpixel of each guest pixel; upload
- *    replicates), and the ordered-dither pattern stays keyed to GUEST pixels.
- *    Bit-exact VRAM round-trips hold at scale 1 (readback(upload(x)) == x by
- *    construction); higher scales trade that for resolution, like any upscaler.
+ *    magnification of the PSP raster grid, and every device pixel samples its texture at
+ *    its own centre, clamped on an axis-aligned through-mode primitive to the range its 1x
+ *    pixel centres sample (uv_edge_axis), so its edge pixels show the PSP's edge sample.
+ *    Guest VRAM traffic stays at native resolution (readback keeps the
+ *    top-left device pixel of each guest pixel; upload replicates), and the ordered-dither
+ *    pattern stays keyed to GUEST pixels. Bit-exact VRAM round-trips hold at scale 1
+ *    (readback(upload(x)) == x by construction); higher scales trade that for
+ *    resolution, like any upscaler: a readback returns the PSP's value where the device
+ *    image holds it (a nearest-filtered 1:1 sprite, hook_sprite) and the top-left device
+ *    sample elsewhere (ENHANCEMENT_CONTRACT.md, section 10.3).
  */
 #include "ge_gpu.h"
 #include "sdl3vk.h"
+#include "ace_hud.h"      /* Ace smooth motion: HUD boxes and depth per presented frame */
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "../recomp.h"
@@ -166,7 +172,9 @@ _Static_assert(sizeof(GeTnlParams) == 247u * 4u, "psp_tnl.vert P_WORDS");
 _Static_assert(sizeof(GeTnlVtx) == 72u, "psp_tnl.vert vertex layout");
 
 /* ---- captured vertex (must match psp.vert input layout) ------------------------------ */
-typedef struct { float x, y, z, rw, u, v, fog; uint32_t rgba; } GpuVert;
+/* box: the texture coordinates (u0, v0, u1, v1) a primitive's 1x pixel centres sample, for the
+ * edge clamp above 1x (uv_edge_box); an axis whose low end exceeds its high end is free. */
+typedef struct { float x, y, z, rw, u, v, fog; uint32_t rgba; float box[4]; } GpuVert;
 
 /* fragment push constants (must match psp.frag PC block; 128 bytes = the guaranteed
  * VK minimum maxPushConstantsSize) */
@@ -248,6 +256,7 @@ typedef struct {
     VkImageLayout layout;
     int cpu_dirty;                         /* software fallback changed s_zbuf */
     int guest_dirty;                        /* Vulkan depth is newer than guest VRAM */
+    uint32_t hud_zgen;                     /* batches that wrote it (Ace smooth motion, ace_hud.h) */
 } DepthEnt;
 
 /* CPU writes into a resident target are held as up to this many byte spans and applied
@@ -1441,11 +1450,12 @@ static VkPipeline pipe_create(const PipeKey *k) {
     st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = s_fs; st[1].pName = "main";
 
     VkVertexInputBindingDescription bind = { 0, sizeof(GpuVert), VK_VERTEX_INPUT_RATE_VERTEX };
-    VkVertexInputAttributeDescription at[4] = {
+    VkVertexInputAttributeDescription at[5] = {
         { 0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },
         { 1, 0, VK_FORMAT_R32G32_SFLOAT,       16 },
         { 2, 0, VK_FORMAT_R32_SFLOAT,          24 },
         { 3, 0, VK_FORMAT_R8G8B8A8_UNORM,      28 },
+        { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(GpuVert, box) },
     };
     /* GeTnlVtx for psp_tnl.vert */
     VkVertexInputBindingDescription tbind = { 0, sizeof(GeTnlVtx), VK_VERTEX_INPUT_RATE_VERTEX };
@@ -1461,7 +1471,7 @@ static VkPipeline pipe_create(const PipeKey *k) {
     VkPipelineVertexInputStateCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
     vi.vertexBindingDescriptionCount = 1;
     vi.pVertexBindingDescriptions = k->tnl ? &tbind : &bind;
-    vi.vertexAttributeDescriptionCount = k->tnl ? 7u : 4u;
+    vi.vertexAttributeDescriptionCount = k->tnl ? 7u : 5u;
     vi.pVertexAttributeDescriptions = k->tnl ? tat : at;
 
     VkPipelineInputAssemblyStateCreateInfo ia = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
@@ -1955,7 +1965,7 @@ static int submit_range(Target *t, const Batch *arr, uint32_t b0, uint32_t b1) {
      * a colour buffer, and writing the untouched surface back would overwrite those pixels. */
     int zwrite = 0;
     for (uint32_t i = b0; i < b1 && !zwrite; i++) zwrite = arr[i].key.zwrite;
-    if (t->dep && zwrite) t->dep->guest_dirty = 1;
+    if (t->dep && zwrite) { t->dep->guest_dirty = 1; t->dep->hud_zgen++; }
     sr_vram_mark_renderer_pending();
     s_cnt_submit++;
     if (s_stats) {
@@ -3367,11 +3377,73 @@ static VkDescriptorSet tex_get(void) {
 
 static float snap16(float v) { return floorf(v * 16.0f + 0.375f) * (1.0f / 16.0f); }
 
+/* ---- edge clamp above 1x -------------------------------------------------------------------
+ * The PSP samples a primitive's texture coordinate at the centre of each pixel it covers
+ * (PSP-GE-SAMPLE-001). Above 1x each device pixel samples at its own centre, so the outer half of
+ * an edge pixel samples past that pixel's centre: at 4x the first device row of a rectangle lies
+ * 0.375 of a pixel further out than the PSP's sample. With linear filtering and repeat wrapping
+ * that reaches texels the PSP never reads there, such as the opposite edge of the texture, and
+ * draws a line along the edge that the PSP image does not have (LittleBigPlanet's loading screen).
+ * A through-mode primitive whose u depends on x alone and v on y alone (sprites, and the
+ * triangles of a screen-aligned rectangle) therefore carries the range its 1x pixel centres
+ * sample, and psp.frag clamps each device sample to it: the outer band shows the edge pixel's own
+ * sample, as the PSP's edge pixel does, and every sample inside the range is unchanged. At 1x the
+ * device samples are those centres, so no primitive carries a range there and the picture stays
+ * exactly as before. Rotated and transform-mode primitives carry none. */
+static const float k_uv_box_free[4] = { 1.0f, 1.0f, 0.0f, 0.0f };
+static float s_uv_box[4] = { 1.0f, 1.0f, 0.0f, 0.0f };
+
+/* One axis: an edge from e0 to e1 (guest pixels, e0 < e1) with coordinate c0 at e0 and c1 at e1.
+ * The pixel centres k + 0.5 it covers follow the rasteriser's top-left rule: a centre on the
+ * left or top edge is covered, one on the right or bottom edge is not. *lo > *hi: none covered. */
+static void uv_edge_axis(double e0, double e1, double c0, double c1, float *lo, float *hi) {
+    const double first = ceil(e0 - 0.5) + 0.5, last = ceil(e1 - 0.5) - 0.5;
+    if (!(e1 > e0) || last < first) { *lo = 1.0f; *hi = 0.0f; return; }
+    const double slope = (c1 - c0) / (e1 - e0);
+    const double a = c0 + (first - e0) * slope, b = c0 + (last - e0) * slope;
+    *lo = (float)(a < b ? a : b);
+    *hi = (float)(a < b ? b : a);
+}
+
+/* Whether a primitive gets a range: textured, through mode, above 1x. */
+static int uv_edge_applies(int persp) {
+    return s_scale > 1 && !persp && s_ge->tex_enable && !s_ge->clear;
+}
+
+/* A triangle with a horizontal and a vertical leg (at its snapped, rasterised positions) whose u
+ * is constant along the vertical leg and v along the horizontal one has u a function of x alone
+ * and v of y alone, as each half of a screen-aligned rectangle does, flipped or not. Its range
+ * comes from its bounding box, which is the rectangle's, so both halves get the same range and a
+ * device sample by their shared diagonal is clamped alike whichever half covers it. Any other
+ * triangle keeps the free box. Sets s_uv_box for the next put_vert calls. */
+static void tri_uv_edge_box(const GeVtx *A, const GeVtx *B, const GeVtx *C) {
+    const GeVtx *p[3] = { A, B, C };
+    float x[3], y[3];
+    for (int i = 0; i < 3; i++) { x[i] = snap16(p[i]->x); y[i] = snap16(p[i]->y); }
+    int hz = -1, vt = -1;   /* the legs, as edges i -> i + 1 */
+    for (int i = 0; i < 3; i++) {
+        const int j = (i + 1) % 3;
+        if (y[i] == y[j] && x[i] != x[j] && p[i]->v == p[j]->v) hz = i;
+        if (x[i] == x[j] && y[i] != y[j] && p[i]->u == p[j]->u) vt = i;
+    }
+    if (hz < 0 || vt < 0) return;
+    const int h1 = (hz + 1) % 3, v1 = (vt + 1) % 3;
+    const double xmin = fminf(x[0], fminf(x[1], x[2])), xmax = fmaxf(x[0], fmaxf(x[1], x[2]));
+    const double ymin = fminf(y[0], fminf(y[1], y[2])), ymax = fmaxf(y[0], fmaxf(y[1], y[2]));
+    const double du = ((double)p[h1]->u - p[hz]->u) / ((double)x[h1] - x[hz]);
+    const double dv = ((double)p[v1]->v - p[vt]->v) / ((double)y[v1] - y[vt]);
+    uv_edge_axis(xmin, xmax, p[hz]->u + (xmin - x[hz]) * du, p[hz]->u + (xmax - x[hz]) * du,
+                 &s_uv_box[0], &s_uv_box[2]);
+    uv_edge_axis(ymin, ymax, p[vt]->v + (ymin - y[vt]) * dv, p[vt]->v + (ymax - y[vt]) * dv,
+                 &s_uv_box[1], &s_uv_box[3]);
+}
+
 static void put_vert(float x, float y, float z, float rw, float u, float v, float fog,
                      int r, int g, int b, int a) {
     GpuVert *o = &s_vcpu[s_nverts++];
     o->x = snap16(x); o->y = snap16(y); o->z = z; o->rw = rw;
     o->u = u; o->v = v; o->fog = fog;
+    memcpy(o->box, s_uv_box, sizeof o->box);
     uint32_t cr = (uint32_t)(r < 0 ? 0 : r > 255 ? 255 : r);
     uint32_t cg = (uint32_t)(g < 0 ? 0 : g > 255 ? 255 : g);
     uint32_t cb = (uint32_t)(b < 0 ? 0 : b > 255 ? 255 : b);
@@ -4072,6 +4144,23 @@ static struct {
     Batch batch;
 } s_tri_state;
 
+/* Ace smooth motion's HUD mask (ace_hud.h): a through-mode draw's box on the target it draws
+ * into, and whether it samples a render target (then it is a post effect, not HUD). Reads only. */
+static int batch_samples_target(VkDescriptorSet set) {
+    for (unsigned k = 0; k < TEX_FILTER_VARIANTS; k++)
+        if (set == s_snap_set[k]) return 1;
+    for (int i = 0; i < MAX_TGT; i++)
+        if (s_tgts[i].used)
+            for (unsigned k = 0; k < TEX_FILTER_VARIANTS; k++)
+                if (set == s_tgts[i].set[k]) return 1;
+    return 0;
+}
+
+static void ace_hud_draw(const Batch *b, float xa, float ya, float xb, float yb) {
+    if (!(s_ge->vtype & (1u << 23)) || s_ge->clear || !s_cur) return;
+    ace_hud_note((int)(s_cur - s_tgts), xa, ya, xb, yb, batch_samples_target(b->dset));
+}
+
 /* ---- widescreen Fill: wing canvases (#1881) ------------------------------------------------ */
 
 static void wing_release(WingEnt *w) {
@@ -4239,12 +4328,19 @@ static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     int flat = !s_ge->shade_gouraud || s_ge->clear;
     const GeVtx *ca = flat ? C : A;
     const GeVtx *cb = flat ? C : B;
+    if (uv_edge_applies(persp)) tri_uv_edge_box(A, B, C);
     put_vert(A->x, A->y, A->z, A->rw, A->u, A->v, A->fog, ca->r, ca->g, ca->b, ca->a);
     put_vert(B->x, B->y, B->z, B->rw, B->u, B->v, B->fog, cb->r, cb->g, cb->b, cb->a);
     put_vert(C->x, C->y, C->z, C->rw, C->u, C->v, C->fog, C->r, C->g, C->b, C->a);
+    memcpy(s_uv_box, k_uv_box_free, sizeof s_uv_box);
     cpu_profile_vertex_done(vertex_started, 3);
     append(&b, first, 3);
-    if (!s_wing_dst) s_cnt_tri++;
+    if (!s_wing_dst) {   /* a wing canvas draw is not the target's: no count, no HUD box */
+        s_cnt_tri++;
+        if (g_ace_hud_on)
+            ace_hud_draw(&b, fminf(A->x, fminf(B->x, C->x)), fminf(A->y, fminf(B->y, C->y)),
+                         fmaxf(A->x, fmaxf(B->x, C->x)), fmaxf(A->y, fmaxf(B->y, C->y)));
+    }
     return cpu_profile_hook_leave(1);
 }
 
@@ -4328,6 +4424,21 @@ static int hook_tnl_prim(const GeTnlPrim *p) {
     return cpu_profile_hook_leave(1);
 }
 
+/* One axis of a nearest-filtered sprite above 1x, from coordinate *a at its first pixel edge to
+ * *b at its last, over `span` pixels. At one texel per pixel, either direction, the PSP samples
+ * texel T = floor(a + 0.5 * w) at the first pixel's centre and T + k * w at pixel k
+ * (PSP-GE-SAMPLE-001). Moving the origin to T + 0.5 - 0.5 * w puts every device sample of
+ * pixel k inside that texel, so each guest pixel shows its PSP texel as a whole block and the
+ * readback (the top-left device sample) returns it. An origin already on a texel edge does not
+ * move. Any other mapping keeps its coordinates: its device samples fall where they are. */
+static void sprite_nearest_axis(float *a, float *b, float span) {
+    const float w = (*b - *a) / span;
+    if (fabsf(fabsf(w) - 1.0f) > 1.0f / 1024.0f) return;
+    const float origin = floorf(*a + 0.5f * w) + 0.5f - 0.5f * w;
+    *b = origin + (*b - *a);
+    *a = origin;
+}
+
 static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     if (!s_ready) return 0;
     cpu_profile_hook_enter();
@@ -4355,14 +4466,19 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     /* The coordinate is linear across the rectangle, from the u of the vertex on the left
      * edge to the u of the one on the right (likewise v), and the PSP samples it at each
      * pixel's centre (PSP-GE-SAMPLE-001), which is where Vulkan samples a fragment at 1x.
-     * Readback keeps the top-left device sample of each scaled guest pixel, at guest
-     * offset 0.5 / scale; shift the endpoints so that sample sees the pixel-centre value. */
+     * Above 1x each device pixel samples at its own centre, as a triangle's do (sprite-scaled).
+     * Shifting the endpoints so that readback's top-left device sample saw the guest
+     * pixel-centre value moved every other device sample too: by 0.375 of a texel at 4x,
+     * which split each texel's block and read the neighbouring atlas texels at a sprite's far
+     * edges. A nearest-filtered 1:1 axis instead shows the PSP's own texel in every device
+     * pixel (sprite_nearest_axis), so its readback stays exact whatever its origin. */
     float ul = (p0->x <= p1->x) ? u0 : u1, ur = (p0->x <= p1->x) ? u1 : u0;
     float vt = (p0->y <= p1->y) ? v0 : v1, vbm = (p0->y <= p1->y) ? v1 : v0;
-    float uw = (ur - ul) / (xb - xa), vw = (vbm - vt) / (yb - ya);
-    float centre_shift = 0.5f - 0.5f / (float)s_scale;
-    float ua = ul + centre_shift * uw, ub = ur + centre_shift * uw;
-    float va = vt + centre_shift * vw, vb = vbm + centre_shift * vw;
+    float ua = ul, ub = ur, va = vt, vb = vbm;
+    if (s_scale > 1 && s_ge->tex_enable && !(s_ge->tex_filter & 0x100u)) {   /* nearest mag */
+        sprite_nearest_axis(&ua, &ub, xb - xa);
+        sprite_nearest_axis(&va, &vb, yb - ya);
+    }
 
     float z = p1->z, fog = p1->fog;
     int r = p1->r, g = p1->g, bb_ = p1->b, a = p1->a;
@@ -4370,15 +4486,23 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     ensure_room(6);
     uint64_t vertex_started = cpu_profile_now();
     uint32_t first = s_nverts;
+    if (uv_edge_applies(persp)) {   /* the centres xa + 0.5 .. xb - 0.5 and ya + 0.5 .. yb - 0.5 */
+        uv_edge_axis(xa, xb, ua, ub, &s_uv_box[0], &s_uv_box[2]);
+        uv_edge_axis(ya, yb, va, vb, &s_uv_box[1], &s_uv_box[3]);
+    }
     put_vert(xa, ya, z, 1.0f, ua, va, fog, r, g, bb_, a);
     put_vert(xb, ya, z, 1.0f, ub, va, fog, r, g, bb_, a);
     put_vert(xa, yb, z, 1.0f, ua, vb, fog, r, g, bb_, a);
     put_vert(xb, ya, z, 1.0f, ub, va, fog, r, g, bb_, a);
     put_vert(xb, yb, z, 1.0f, ub, vb, fog, r, g, bb_, a);
     put_vert(xa, yb, z, 1.0f, ua, vb, fog, r, g, bb_, a);
+    memcpy(s_uv_box, k_uv_box_free, sizeof s_uv_box);
     cpu_profile_vertex_done(vertex_started, 6);
     append(&b, first, 6);
-    if (!s_wing_dst) s_cnt_spr++;
+    if (!s_wing_dst) {
+        s_cnt_spr++;
+        if (g_ace_hud_on) ace_hud_draw(&b, xa, ya, xb, yb);
+    }
     return cpu_profile_hook_leave(1);
 }
 
@@ -4763,6 +4887,10 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     s_cnt_present_gpu++;
     ts_note_present();
     stats_tick();
+    if (g_ace_hud_on)
+        ace_hud_present((int)(t - s_tgts), t->img, t->dep ? t->dep->img : VK_NULL_HANDLE,
+                        t->dep ? t->dep->layout : VK_IMAGE_LAYOUT_UNDEFINED, (int)SCL_W, (int)SCL_H,
+                        t->dep ? t->dep->hud_zgen : 0u);
     int pr = sdl3vk_present_image_ex((void *)t->img, DRAW_W * s_scale, FB_H * s_scale);
     /* Only SDL's -1 is remapped: it is a present that failed after the target was prepared, so
      * the target's newest pixels may exist only in its image. SDL's 0 (user close) and 1 (shown)

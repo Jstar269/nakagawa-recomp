@@ -15,11 +15,13 @@ layout(location = 0) in vec4 in_pos;    /* x px, y px, z 0..65535, rw */
 layout(location = 1) in vec2 in_uv;     /* u*rw, v*rw texel coords (raw u,v in through mode) */
 layout(location = 2) in float in_fog;   /* per-vertex fog factor, 1 = no fog */
 layout(location = 3) in vec4 in_color;  /* UNORM8 RGBA */
+layout(location = 4) in vec4 in_box;    /* edge clamp range (u0, v0, u1, v1); u0 > u1 or v0 > v1: free */
 
 layout(location = 0) noperspective out vec2  v_uv;
 layout(location = 1) noperspective out float v_rw;
 layout(location = 2) noperspective out float v_fog;
 layout(location = 3) noperspective out vec4  v_color;
+layout(location = 4) flat out vec4 v_uvbox;
 
 /* No contraction of y * (1/136) - 1 into a fused multiply-add: psp_tnl.vert computes the same
  * position and has to round it the same way on every driver (#318). */
@@ -34,4 +36,5 @@ void main() {
     v_rw    = in_pos.w;
     v_fog   = in_fog;
     v_color = in_color;
+    v_uvbox = in_box;
 }

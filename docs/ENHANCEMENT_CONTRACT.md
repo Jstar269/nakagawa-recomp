@@ -359,8 +359,37 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
 `src/rt/gpu_sdl3vk/ace_smooth.c`, its shaders and the pure pacing rule in `src/rt/ace.c`.
 
 - **How a frame is made.** Block-matched motion between two private copies of consecutive presented frames, in a
-  compute pass on the present's command buffer. It reads nothing of the GE, so it does not need #318, and it treats
-  a GPU target and a CPU frame (a movie) alike.
+  compute pass on the present's command buffer. It does not need #318, and it treats a GPU target and a CPU frame (a
+  movie) alike.
+- **What it reads of the GE.** For a GPU target, two host-only inputs (`src/rt/gpu_sdl3vk/ace_hud.c`):
+  - **A HUD mask.** The boxes of the frame's through-mode (2D) draws onto that target, as one bit per guest pixel.
+    A box that covers a quarter of the screen or more, or that samples a render target, is a backdrop or a post
+    effect and is left out. A frame with more than 1024 boxes, or boxes covering more than two screens, has no mask.
+    Masked pixels never steer the motion search. Beside the HUD, where the scene's own vector puts most of a block
+    under it, the block keeps the cost the coarser search level measured for that vector. A vector whose end lands
+    on the HUD in one frame takes only the other frame's side, judged by its block's cost, so the HUD is never
+    dragged into the scene. A changed pixel on the HUD keeps the old frame's side.
+  - **Depth.** A private R16 copy of the target's depth, taken only when a batch wrote that depth image since it
+    was last handed on. A clear that clears depth counts as a write. Freshness belongs to the depth image, not to
+    the colour target: when two display buffers share one depth buffer and a frame writes no depth, the depth still
+    holds the other buffer's frame and is withheld. A frame without fresh depth has none, so its pair matches on
+    colour alone. A vector whose two ends land at different depths fits worse: it joins two surfaces, not one that
+    moved. The GE's depth image is only read and keeps its layout.
+
+  Both are used only when both frames of a pair have them. Each present hands its inputs to the image it presents
+  and to no other, and the show pass takes them once: a CPU frame (a movie) never gets a GPU frame's mask or depth,
+  and inputs no show pass took are dropped and counted. `SR_ACE_SMOOTH_HUD=0` and `SR_ACE_SMOOTH_DEPTH=0` turn each
+  off. There is no per-title switch yet. With both off, the in-betweens are the same bytes as without these inputs.
+  The boxes are noted in the GPU GE's draw hooks after the draw is recorded, and the depth copy is recorded in the
+  present's command buffer. So neither changes what the guest, the authentic renderer or a capture sees.
+
+  Nothing is dropped silently. The report's `smooth_aux` block counts the pairs that used each input (`pairs`,
+  `pairs_mask`, `pairs_depth`) and the depth copies refused (`depth_refused`). It counts the boxes kept, merged or
+  left out, by reason (`boxes`: `kept`, `merged`, `large`, `target`, `outside`, `full`). It also counts frames:
+  those with a mask, those that overflowed it, and those with depth, with unwritten depth or with no depth buffer.
+  The last count is inputs no show pass took (`frames`: `mask`, `overflow`, `depth`, `depth_unwritten`,
+  `depth_none`, `unshown`). The run's exit prints the same counts on one `ACE_MODE: smooth inputs` line. The first
+  frame to overflow the mask prints a warning.
 - **When.** The flip of frame B shows the in-between of A and B; the next VBLANK shows B. Nothing is shown before the
   guest made it, so a frame is never predicted. The cost is one VBLANK of added delay (about 17 ms), reported in the
   run's report as `added_delay_ms`. A flip that arrives first replaces the held frame.
@@ -459,7 +488,44 @@ The item's contract entry (section 11.2) names each of these that applies. An it
 host-only and follows sections 10.2 to 10.6 and 10.8, not this section. One existing feature already sits on this line:
 texture filtering changes the frame that every present commits to guest VRAM, so a game that copies its screen keeps
 the filtered picture (the "Pixels" bullet of section 10.3). It keeps that entry, and is not held to items 2 to 5 of
-section 11.2 retroactively; a change to it is. A new item is not admitted by analogy with it.
+section 11.2 retroactively; a change to it is. A new item is not admitted by analogy with it. Render scale, below,
+is the other existing feature on this line, with its own rule for changes.
+
+A render scale above 1x (the player's Internal Render Resolution, not an Enhanced or Ace item) sits on the same line.
+Its off switch is 1x, where the picture and every readback are the PSP's values. A change to how the renderer draws
+above 1x is part of this render-scale item, not a new item or a new class, when it keeps 1x byte-identical and above
+1x moves the picture toward the 1x picture. That is a claim about the picture, not about every pixel: the change's
+pull request traces each device pixel that ends farther from its own 1x value and says why it does. Items 2 to 5 of
+section 11.2 do not apply to such a change; its pull request still carries a test that fails without it and the
+comparison runs that show it. A readback keeps the
+top-left device pixel of each guest pixel, so the guest reads what the device drew there:
+
+- Where the device image holds the PSP's own value, the readback returns it. That covers a target uploaded from
+  guest memory, and a sprite sampled nearest at one texel per pixel in either direction, whatever its origin. Every
+  device pixel of such a sprite shows the PSP's texel (`sprite-scaled` in `gpu-coherence-selftest`).
+- Every other draw samples at each device pixel's own position. The readback returns the top-left device sample,
+  which sits 0.5 - 0.5 / scale of a pixel before the PSP's pixel centre. At 4x that is 0.375 of a pixel: for a 1:1
+  linear sprite or triangle the value moves by up to 0.375 of the step between neighbouring texels, and a minified
+  nearest sprite can return a different texel. The exception is the left and top edge pixels of a clamped primitive
+  (next bullet): there the top-left device sample lies in the clamped band, so the readback returns the PSP's value.
+- At the edges of an axis-aligned through-mode primitive (a sprite, or a strip or quad drawn as screen-aligned
+  rectangles, flipped or not), no device pixel samples outside the texture range the primitive's 1x pixel centres
+  cover. Those centres follow the rasteriser's top-left rule. A device pixel in the outer part of an edge pixel shows
+  that pixel's own sample, as the PSP does, instead of reaching past it (with repeat wrapping, into the texture's
+  opposite edge), and is filtered with the primitive's own footprint. This change is part of the render-scale item
+  above: 1x stays byte-identical, and above 1x it removes the edge bleed, moving the picture toward the 1x picture
+  (`uv-edge-clamp` in `gpu-coherence-selftest`). A pixel that ends farther from its own 1x value comes from
+  interpolation on the axis the clamp leaves free, or from content beneath the primitive; #2104 traces each one on
+  its captures.
+  What it does not do:
+  - Rotated and sheared primitives, a strip half without both a horizontal and a vertical leg (a trapezoid), and
+    transform-mode (3D) geometry are not clamped.
+  - Where two clamped primitives meet with continuous texture coordinates, each keeps its edge pixel's sample over
+    its outer band, so the seam shows the 1x step instead of a smooth upscaled blend across it.
+  - A sprite that samples a render target at device resolution (a screen copy) is clamped the same way, so the copy's
+    one-pixel border shows the guest-pixel sample instead of the upscaled detail.
+
+At 1x the readback is the PSP's value.
 
 ### 11.2. What an Item Must Have
 

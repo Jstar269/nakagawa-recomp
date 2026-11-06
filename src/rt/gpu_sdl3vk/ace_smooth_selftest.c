@@ -11,10 +11,18 @@
  *   source-unread   the pass never writes the source image, and its result is another image
  *   no-predecessor  the first frame gives no in-between
  *   scales          the same scene at 2x render scale
+ *   hud-list        the HUD box rules: small 2D boxes are HUD; a quarter screen, a box that samples
+ *                   a render target, or too many boxes are not; a present hands its boxes on once
+ *   hud-edge        the scene right beside a HUD box is right with the mask (it is wrong without:
+ *                   one end of every vector there is under the HUD), and the HUD keeps every byte
+ *   depth-band      a band that matches the scene behind it in the old frame: only depth tells the
+ *                   band's vector from the scene's at its edge; the depth image is only read
+ *   aux-neutral     an empty mask gives the same bytes as no mask
  *
  * Exit 77 (SKIP) without a Vulkan loader or device.
  */
 #include "ace_smooth.h"
+#include "ace_hud.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -474,6 +482,465 @@ static void cell_pan(void) {
     FreeMemory(g.device, src.memory, NULL);
 }
 
+/* ---- the HUD mask and depth (ace_hud.h, AceSmoothAux) ----------------------------------------- */
+
+#define BAND_X 200
+#define BAND_W 64
+#define BAND_STEP 16
+#define DEPTH_NEAR 16384u   /* 0.25 */
+#define DEPTH_FAR 49152u    /* 0.75 */
+
+typedef struct { VkImage image; VkDeviceMemory memory; int w, h; } Depth;
+
+static void depth_barrier(VkImage image, VkImageLayout from, VkImageLayout to) {
+    VkImageMemoryBarrier b;
+    memset(&b, 0, sizeof(b));
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    b.oldLayout = from;
+    b.newLayout = to;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.layerCount = 1;
+    CmdPipelineBarrier(g.cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                       0, 0, NULL, 0, NULL, 1, &b);
+}
+
+/* A D16 image like the GE's: wider than the presented frame, with the frame at its top-left. */
+static int depth_make(Depth *d, int w, int h) {
+    VkImageCreateInfo ii;
+    memset(&ii, 0, sizeof(ii));
+    ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ii.imageType = VK_IMAGE_TYPE_2D;
+    ii.format = VK_FORMAT_D16_UNORM;
+    ii.extent.width = (uint32_t)w;
+    ii.extent.height = (uint32_t)h;
+    ii.extent.depth = 1;
+    ii.mipLevels = 1;
+    ii.arrayLayers = 1;
+    ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (CreateImage(g.device, &ii, NULL, &d->image) != VK_SUCCESS) return 0;
+    VkMemoryRequirements mr;
+    GetImageMemoryRequirements(g.device, d->image, &mr);
+    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size,
+                                 memory_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) };
+    if (mai.memoryTypeIndex == UINT32_MAX || AllocateMemory(g.device, &mai, NULL, &d->memory) != VK_SUCCESS ||
+        BindImageMemory(g.device, d->image, d->memory, 0) != VK_SUCCESS) return 0;
+    d->w = w;
+    d->h = h;
+    return 1;
+}
+
+static void depth_free(Depth *d) {
+    if (d->image) DestroyImage(g.device, d->image, NULL);
+    if (d->memory) FreeMemory(g.device, d->memory, NULL);
+    memset(d, 0, sizeof(*d));
+}
+
+/* g.map, read as d->w x d->h 16-bit values, into the image, which is left the way the GE leaves
+ * a depth buffer: DEPTH_STENCIL_ATTACHMENT_OPTIMAL. */
+static void depth_fill(const Depth *d, int fresh) {
+    VkBufferImageCopy c;
+    memset(&c, 0, sizeof(c));
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    c.imageSubresource.layerCount = 1;
+    c.imageExtent.width = (uint32_t)d->w;
+    c.imageExtent.height = (uint32_t)d->h;
+    c.imageExtent.depth = 1;
+    cmd_begin();
+    depth_barrier(d->image, fresh ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    CmdCopyBufferToImage(g.cb, g.xfer, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    depth_barrier(d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    cmd_end();
+}
+
+static void depth_read(const Depth *d) {
+    VkBufferImageCopy c;
+    memset(&c, 0, sizeof(c));
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    c.imageSubresource.layerCount = 1;
+    c.imageExtent.width = (uint32_t)d->w;
+    c.imageExtent.height = (uint32_t)d->h;
+    c.imageExtent.depth = 1;
+    cmd_begin();
+    depth_barrier(d->image, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    CmdCopyImageToBuffer(g.cb, d->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g.xfer, 1, &c);
+    depth_barrier(d->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    cmd_end();
+}
+
+static VkImage feed_aux(AceBetween *s, const Source *src, int w, int h, int between, const AceSmoothAux *aux) {
+    cmd_begin();
+    VkImage out = ace_smooth_record_aux(s, g.cb, src->image, w, h, between, aux);
+    cmd_end();
+    return out;
+}
+
+static int luma_off(uint32_t got, uint32_t want) {
+    return abs((int)(got & 255u) - (int)(want & 255u)) > 12;
+}
+
+/* The list rules, on the CPU: what is HUD and what is not. */
+static void cell_hud_list(void) {
+    static AceHudList l;
+    static uint32_t bits[ACE_SMOOTH_HUD_WORDS];
+    ace_hud_list_reset(&l);
+    CHECK(ace_hud_list_add(&l, 20.2f, 30.0f, 10.5f, 34.0f, 0) == 1, "hud-list: a small box is not kept");
+    CHECK(ace_hud_list_add(&l, 10.5f, 30.0f, 20.2f, 34.0f, 0) == 1 && l.count == 1,
+          "hud-list: the second triangle of a quad added a box (%u)", l.count);
+    CHECK(ace_hud_list_add(&l, 0.0f, 0.0f, 240.0f, 136.0f, 0) == 0, "hud-list: a quarter-screen box is kept");
+    CHECK(ace_hud_list_add(&l, 0.0f, 0.0f, 480.0f, 272.0f, 0) == 0, "hud-list: a full-screen box is kept");
+    CHECK(ace_hud_list_add(&l, 50.0f, 50.0f, 60.0f, 60.0f, 1) == 0, "hud-list: a box sampling a target is kept");
+    CHECK(ace_hud_list_add(&l, -40.0f, 260.0f, 4.0f, 300.0f, 0) == 1, "hud-list: a box off the edge is not clipped");
+    CHECK(ace_hud_list_bits(&l, bits) == 1, "hud-list: no mask");
+    int set = 0, wrong = 0;
+    for (int y = 0; y < ACE_SMOOTH_HUD_H; y++) {
+        for (int x = 0; x < ACE_SMOOTH_HUD_W; x++) {
+            uint32_t k = (uint32_t)(y * ACE_SMOOTH_HUD_W + x);
+            int bit = (int)((bits[k >> 5] >> (k & 31u)) & 1u);
+            int want = (x >= 10 && x < 21 && y >= 30 && y < 34) || (x < 4 && y >= 260);
+            set += bit;
+            wrong += bit != want;
+        }
+    }
+    CHECK(wrong == 0 && set == 11 * 4 + 4 * 12, "hud-list: %d bits wrong, %d set", wrong, set);
+    ace_hud_list_reset(&l);
+    for (uint32_t i = 0; i <= ACE_HUD_MAX_BOXES; i++)
+        (void)ace_hud_list_add(&l, (float)(i % 400), (float)(i / 400), (float)(i % 400) + 1.0f,
+                               (float)(i / 400) + 1.0f, 0);
+    CHECK(l.overflow == 1, "hud-list: %u boxes did not overflow", ACE_HUD_MAX_BOXES + 1u);
+    CHECK(ace_hud_list_bits(&l, bits) == 0 && bits[0] == 0u, "hud-list: an overflowed list gave a mask");
+
+    /* Why each box was left out. */
+    AceHudWhy why = ACE_HUD_KEPT;
+    ace_hud_list_reset(&l);
+    (void)ace_hud_list_add_why(&l, 0.0f, 0.0f, 240.0f, 136.0f, 0, &why);
+    CHECK(why == ACE_HUD_LARGE, "hud-list: a quarter-screen box is not LARGE (%d)", (int)why);
+    (void)ace_hud_list_add_why(&l, 50.0f, 50.0f, 60.0f, 60.0f, 1, &why);
+    CHECK(why == ACE_HUD_TARGET, "hud-list: a box sampling a target is not TARGET (%d)", (int)why);
+    (void)ace_hud_list_add_why(&l, 500.0f, 10.0f, 520.0f, 20.0f, 0, &why);
+    CHECK(why == ACE_HUD_OUTSIDE, "hud-list: a box off the screen is not OUTSIDE (%d)", (int)why);
+    (void)ace_hud_list_add_why(&l, 1.0f, 1.0f, 2.0f, 2.0f, 0, &why);
+    CHECK(why == ACE_HUD_KEPT, "hud-list: a small box is not KEPT (%d)", (int)why);
+    (void)ace_hud_list_add_why(&l, 2.0f, 2.0f, 1.0f, 1.0f, 0, &why);
+    CHECK(why == ACE_HUD_MERGED, "hud-list: the same box again is not MERGED (%d)", (int)why);
+
+    /* The runtime side: a present hands over its target's boxes once, to the image it presents,
+     * and depth only when a draw wrote that depth image since it was last handed on. */
+    ace_hud_enable(1);
+    CHECK(g_ace_hud_on == 1, "hud-runtime: not on");
+    ace_hud_note(3, 100.0f, 100.0f, 110.0f, 104.0f, 0);
+    ace_hud_note(3, 0.0f, 0.0f, 480.0f, 272.0f, 0);          /* a backdrop: not HUD, counted */
+    ace_hud_note(3, 20.0f, 20.0f, 30.0f, 30.0f, 1);          /* a post effect: not HUD, counted */
+    ace_hud_note(2, 0.0f, 0.0f, 8.0f, 8.0f, 0);
+    VkImage fake = (VkImage)(uintptr_t)0x1234u;
+    VkImage img3 = (VkImage)(uintptr_t)0x3000u, img4 = (VkImage)(uintptr_t)0x4000u;
+    VkImage cpu = (VkImage)(uintptr_t)0x5000u;
+    ace_hud_present(3, img3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 7u);
+    const AceSmoothAux *aux = ace_hud_take(img3);
+    CHECK(aux && aux->hud_bits && aux->depth == fake, "hud-runtime: the first present gave no mask or depth");
+    if (aux && aux->hud_bits) {
+        uint32_t k = 102u * ACE_SMOOTH_HUD_W + 105u, k2 = 4u * ACE_SMOOTH_HUD_W + 4u;
+        CHECK((aux->hud_bits[k >> 5] >> (k & 31u)) & 1u, "hud-runtime: slot 3's box is not in its mask");
+        CHECK(!((aux->hud_bits[k2 >> 5] >> (k2 & 31u)) & 1u), "hud-runtime: slot 2's box is in slot 3's mask");
+    }
+    CHECK(ace_hud_take(img3) == NULL, "hud-runtime: a present was taken twice");
+    ace_hud_present(3, img3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 7u);
+    aux = ace_hud_take(img3);
+    CHECK(aux && aux->depth == VK_NULL_HANDLE, "hud-runtime: depth no batch wrote was handed on");
+    if (aux && aux->hud_bits) {
+        uint32_t k = 102u * ACE_SMOOTH_HUD_W + 105u;
+        CHECK(!((aux->hud_bits[k >> 5] >> (k & 31u)) & 1u), "hud-runtime: last frame's box is still in the mask");
+    }
+    /* Two display buffers that share one depth buffer: slot 4's frame wrote no depth, so the
+     * depth image still holds slot 3's frame and is not handed on with slot 4. */
+    ace_hud_present(3, img3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 9u);
+    aux = ace_hud_take(img3);
+    CHECK(aux && aux->depth == fake, "hud-runtime: depth written since the last hand-on was withheld");
+    ace_hud_present(4, img4, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 9u);
+    aux = ace_hud_take(img4);
+    CHECK(aux && aux->depth == VK_NULL_HANDLE,
+          "hud-runtime: the other buffer's depth was handed on with a frame that wrote none");
+    /* A published aux reaches only its own image: a present that never got to the show pass,
+     * then a CPU frame, gives the CPU frame nothing, and the stale aux is gone. */
+    ace_hud_note(3, 100.0f, 100.0f, 110.0f, 104.0f, 0);
+    ace_hud_present(3, img3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 10u);
+    CHECK(ace_hud_take(cpu) == NULL, "hud-runtime: a CPU frame took a GPU frame's mask and depth");
+    CHECK(ace_hud_take(img3) == NULL, "hud-runtime: a stale aux survived another image's present");
+    ace_hud_present(3, img3, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, 0, 0, 0u);
+    ace_hud_present(3, img3, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, 0, 0, 0u);   /* first one unshown */
+    (void)ace_hud_take(img3);
+    /* An overflowed frame: no mask, counted, and the boxes past the limit counted too. */
+    for (uint32_t i = 0; i <= ACE_HUD_MAX_BOXES; i++)
+        ace_hud_note(3, (float)(i % 400), (float)(i / 400), (float)(i % 400) + 1.0f, (float)(i / 400) + 1.0f, 0);
+    ace_hud_present(3, img3, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, 0, 0, 0u);
+    aux = ace_hud_take(img3);
+    CHECK(aux && !aux->hud_bits, "hud-runtime: an overflowed frame gave a mask");
+    AceSmoothAuxStats st;
+    memset(&st, 0, sizeof(st));
+    ace_hud_stats(&st);
+    CHECK(st.boxes_kept == 3u + ACE_HUD_MAX_BOXES && st.boxes_large == 1u && st.boxes_target == 1u &&
+          st.boxes_full == 1u && st.boxes_merged == 0u && st.boxes_outside == 0u,
+          "hud-runtime: box counts kept=%llu large=%llu target=%llu full=%llu merged=%llu outside=%llu",
+          (unsigned long long)st.boxes_kept, (unsigned long long)st.boxes_large,
+          (unsigned long long)st.boxes_target, (unsigned long long)st.boxes_full,
+          (unsigned long long)st.boxes_merged, (unsigned long long)st.boxes_outside);
+    CHECK(st.frames_mask == 7u && st.frames_overflow == 1u && st.frames_depth == 3u &&
+          st.frames_depth_unwritten == 2u && st.frames_depth_none == 3u && st.published_unshown == 2u,
+          "hud-runtime: frame counts mask=%llu overflow=%llu depth=%llu unwritten=%llu none=%llu unshown=%llu",
+          (unsigned long long)st.frames_mask, (unsigned long long)st.frames_overflow,
+          (unsigned long long)st.frames_depth, (unsigned long long)st.frames_depth_unwritten,
+          (unsigned long long)st.frames_depth_none, (unsigned long long)st.published_unshown);
+    ace_hud_enable(0);
+    ace_hud_note(3, 100.0f, 100.0f, 110.0f, 104.0f, 0);
+    ace_hud_present(3, img3, fake, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 512, 272, 8u);
+    CHECK(ace_hud_take(img3) == NULL, "hud-runtime: off, but a present was published");
+}
+
+#define EDGE_HUD_X 200
+#define EDGE_HUD_Y 112
+#define EDGE_HUD_W 64
+#define EDGE_HUD_H 40
+#define EDGE_PAN 16
+
+static void paint_edge(int w, int h, int scale, int pan) {
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int gx = x / scale, gy = y / scale;
+            uint32_t v = floor_px(gx + pan, gy, 0);
+            if (gx >= EDGE_HUD_X && gx < EDGE_HUD_X + EDGE_HUD_W && gy >= EDGE_HUD_Y && gy < EDGE_HUD_Y + EDGE_HUD_H)
+                v = HUD_PX;
+            g.map[y * w + x] = v;
+        }
+}
+
+static void edge_bits(uint32_t *bits) {
+    memset(bits, 0, ACE_SMOOTH_HUD_WORDS * 4u);
+    for (int y = EDGE_HUD_Y; y < EDGE_HUD_Y + EDGE_HUD_H; y++)
+        for (int x = EDGE_HUD_X; x < EDGE_HUD_X + EDGE_HUD_W; x++) {
+            uint32_t k = (uint32_t)(y * ACE_SMOOTH_HUD_W + x);
+            bits[k >> 5] |= 1u << (k & 31u);
+        }
+}
+
+/* Wrong px beside the HUD (in its rows, within a pan of its sides), and changed HUD px; by_col
+ * counts the wrong px in each of the 2 * EDGE_PAN columns, left strip first. control counts the
+ * wrong px in as many columns of the same rows far from the HUD: what the search gets wrong in
+ * this scene anyway. */
+#define EDGE_CONTROL_A 40
+#define EDGE_CONTROL_B 400
+static void edge_score(int w, int scale, int *wrong, int *total, int *hud_bad, int *by_col, int *control) {
+    *wrong = *total = *hud_bad = *control = 0;
+    memset(by_col, 0, 2 * EDGE_PAN * sizeof(int));
+    for (int gy = EDGE_HUD_Y; gy < EDGE_HUD_Y + EDGE_HUD_H; gy++) {
+        for (int i = 0; i < 2 * EDGE_PAN; i++) {
+            int gx = i < EDGE_PAN ? EDGE_CONTROL_A + i : EDGE_CONTROL_B + i - EDGE_PAN;
+            *control += luma_off(g.map[(gy * scale) * w + gx * scale], floor_px(gx + EDGE_PAN / 2, gy, 0));
+        }
+        for (int gx = EDGE_HUD_X - EDGE_PAN; gx < EDGE_HUD_X + EDGE_HUD_W + EDGE_PAN; gx++) {
+            uint32_t got = g.map[(gy * scale) * w + gx * scale];
+            if (gx >= EDGE_HUD_X && gx < EDGE_HUD_X + EDGE_HUD_W) {
+                *hud_bad += got != HUD_PX;
+                continue;
+            }
+            int bad = luma_off(got, floor_px(gx + EDGE_PAN / 2, gy, 0));
+            *wrong += bad;
+            by_col[gx < EDGE_HUD_X ? gx - (EDGE_HUD_X - EDGE_PAN) : gx - (EDGE_HUD_X + EDGE_HUD_W) + EDGE_PAN] += bad;
+            (*total)++;
+        }
+    }
+}
+
+/* A HUD box over a panning scene. The scene right beside the HUD is found in only one frame at
+ * any vector (the other end is under the HUD), so without the mask it keeps the old frame's
+ * pixels; with the mask it takes the frame whose end is clear: under 5% wrong, no worse than the
+ * same rows far from the HUD (the search's own misses in this scene), and less than half as wrong
+ * as without it. */
+static void cell_hud_edge(int scale) {
+    int w = 480 * scale, h = 272 * scale;
+    static uint32_t bits[ACE_SMOOTH_HUD_WORDS];
+    edge_bits(bits);
+    AceSmoothAux aux;
+    memset(&aux, 0, sizeof(aux));
+    aux.hud_bits = bits;
+    Source src;
+    memset(&src, 0, sizeof(src));
+    if (!source_make(&src, w, h)) { CHECK(0, "hud-edge setup failed"); return; }
+    int wrong[2] = { 0, 0 }, total = 0, hud_bad[2] = { 0, 0 }, by_col[2][2 * EDGE_PAN] = { { 0 } };
+    int control[2] = { 0, 0 };
+    for (int use = 0; use < 2; use++) {
+        AceBetween *s = smooth_new();
+        if (!s) break;
+        paint_edge(w, h, scale, 0);
+        source_fill(&src, w, h, use == 0);
+        (void)feed_aux(s, &src, w, h, 0, use ? &aux : NULL);
+        paint_edge(w, h, scale, EDGE_PAN);
+        source_fill(&src, w, h, 0);
+        VkImage mid = feed_aux(s, &src, w, h, 1, use ? &aux : NULL);
+        CHECK(mid != VK_NULL_HANDLE, "hud-edge: no in-between");
+        if (mid) {
+            image_read(mid, w, h);
+            edge_score(w, scale, &wrong[use], &total, &hud_bad[use], by_col[use], &control[use]);
+        }
+        DeviceWaitIdle(g.device);
+        ace_smooth_destroy(s);
+    }
+    printf("  hud-edge scale %d: beside the HUD %d of %d px wrong without the mask, %d with it;"
+           " far from it %d and %d\n", scale, wrong[0], total, wrong[1], control[0], control[1]);
+    if (wrong[1] * 20 >= total || wrong[1] > control[1] || wrong[1] * 2 >= wrong[0]) {
+        /* Where it went wrong: wrong px per column, from EDGE_PAN left of the HUD to EDGE_PAN right. */
+        for (int use = 0; use < 2; use++) {
+            printf("    %s:", use ? "with" : "without");
+            for (int i = 0; i < 2 * EDGE_PAN; i++) printf("%s %d", i == EDGE_PAN ? " |" : "", by_col[use][i]);
+            printf("\n");
+        }
+    }
+    CHECK(hud_bad[0] == 0 && hud_bad[1] == 0, "hud-edge: HUD px changed (%d without, %d with)", hud_bad[0],
+          hud_bad[1]);
+    CHECK(wrong[1] * 20 < total, "hud-edge: %d of %d px beside the HUD wrong with the mask", wrong[1], total);
+    CHECK(wrong[1] <= control[1], "hud-edge: %d of %d px beside the HUD wrong with the mask, %d far from it",
+          wrong[1], total, control[1]);
+    CHECK(wrong[1] * 2 < wrong[0], "hud-edge: the mask did not help (%d -> %d)", wrong[0], wrong[1]);
+    DestroyImage(g.device, src.image, NULL);
+    FreeMemory(g.device, src.memory, NULL);
+}
+
+/* A camouflaged band: in the old frame it shows exactly the scene behind it, so the old frame
+ * alone cannot tell it from the scene. Then the band moves right while the scene pans left. For
+ * band pixels near its left edge, the scene's vector fits the colours as well as the band's own,
+ * and only depth says which one joins one surface: the band is near, the scene far. */
+static void paint_band(int w, int h, int scale, int half_steps, uint16_t *depth, int dw) {
+    /* half_steps: 0 the old frame, 2 the new one, 1 the true in-between */
+    int bx = BAND_X + half_steps * BAND_STEP / 2;
+    int pan = half_steps * BAND_STEP / 2;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int gx = x / scale, gy = y / scale;
+            int in_band = gx >= bx && gx < bx + BAND_W;
+            uint32_t v = in_band ? floor_px(gx - pan, gy, 0)   /* the band carries the old scene */
+                                 : floor_px(gx + pan, gy, 0);
+            g.map[y * w + x] = v;
+            if (depth) depth[y * dw + x] = (uint16_t)(in_band ? DEPTH_NEAR : DEPTH_FAR);
+        }
+}
+
+static void cell_depth_band(int scale) {
+    int w = 480 * scale, h = 272 * scale;
+    int dw = 512 * scale;
+    Source src;
+    Depth dep;
+    memset(&src, 0, sizeof(src));
+    memset(&dep, 0, sizeof(dep));
+    uint32_t *truth = (uint32_t *)malloc((size_t)w * (size_t)h * 4u);
+    uint16_t *zbuf = (uint16_t *)malloc((size_t)dw * (size_t)h * 2u);
+    if (!truth || !zbuf || !source_make(&src, w, h) || !depth_make(&dep, dw, h)) {
+        CHECK(0, "depth-band setup failed");
+        free(truth); free(zbuf);
+        return;
+    }
+    paint_band(w, h, scale, 1, NULL, 0);
+    memcpy(truth, g.map, (size_t)w * (size_t)h * 4u);
+    int wrong[2] = { 0, 0 }, total = 0;
+    for (int use = 0; use < 2; use++) {
+        AceBetween *s = smooth_new();
+        if (!s) break;
+        AceSmoothAux aux;
+        memset(&aux, 0, sizeof(aux));
+        aux.depth = dep.image;
+        aux.depth_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        aux.depth_w = dw;
+        aux.depth_h = h;
+        for (int f = 0; f < 2; f++) {
+            paint_band(w, h, scale, 2 * f, zbuf, dw);
+            source_fill(&src, w, h, use == 0 && f == 0);
+            memcpy(g.map, zbuf, (size_t)dw * (size_t)h * 2u);
+            depth_fill(&dep, use == 0 && f == 0);
+            VkImage mid = feed_aux(s, &src, w, h, f, use ? &aux : NULL);
+            if (f == 0) continue;
+            CHECK(mid != VK_NULL_HANDLE, "depth-band: no in-between");
+            if (!mid) break;
+            image_read(mid, w, h);
+            /* The band's pixels near its edges in the true in-between, where both frames see them. */
+            int bx = BAND_X + BAND_STEP / 2, n = 0, bad = 0;
+            for (int gy = 40; gy < 232; gy++)
+                for (int gx = bx; gx < bx + BAND_W; gx++) {
+                    if (gx >= bx + BAND_STEP && gx < bx + BAND_W - BAND_STEP) continue;
+                    size_t i = (size_t)(gy * scale) * (size_t)w + (size_t)(gx * scale);
+                    bad += luma_off(g.map[i], truth[i]);
+                    n++;
+                }
+            wrong[use] = bad;
+            total = n;
+        }
+        if (use) {
+            /* The depth image is only read, and is left as it came. */
+            depth_read(&dep);
+            CHECK(memcmp(g.map, zbuf, (size_t)dw * (size_t)h * 2u) == 0, "depth-band: the depth image changed");
+        }
+        DeviceWaitIdle(g.device);
+        ace_smooth_destroy(s);
+    }
+    printf("  depth-band scale %d: band edge %d of %d px wrong without depth, %d with it\n", scale, wrong[0],
+           total, wrong[1]);
+    CHECK(wrong[1] * 10 < total, "depth-band: %d of %d band px wrong with depth", wrong[1], total);
+    CHECK(wrong[1] * 2 < wrong[0], "depth-band: depth did not help (%d -> %d)", wrong[0], wrong[1]);
+    depth_free(&dep);
+    DestroyImage(g.device, src.image, NULL);
+    FreeMemory(g.device, src.memory, NULL);
+    free(truth);
+    free(zbuf);
+}
+
+/* An empty mask and no depth change nothing: the in-between is byte for byte the one without. */
+static void cell_aux_neutral(void) {
+    int w = 480, h = 272;
+    static uint32_t zero[ACE_SMOOTH_HUD_WORDS];
+    AceSmoothAux aux;
+    memset(&aux, 0, sizeof(aux));
+    aux.hud_bits = zero;
+    Source src;
+    memset(&src, 0, sizeof(src));
+    uint32_t *first = (uint32_t *)malloc((size_t)w * (size_t)h * 4u);
+    if (!first || !source_make(&src, w, h)) { CHECK(0, "aux-neutral setup failed"); free(first); return; }
+    for (int use = 0; use < 2; use++) {
+        AceBetween *s = smooth_new();
+        if (!s) break;
+        paint(w, h, 1, 0, 200, 1);
+        source_fill(&src, w, h, use == 0);
+        (void)feed_aux(s, &src, w, h, 0, use ? &aux : NULL);
+        paint(w, h, 1, 12, 216, 1);
+        source_fill(&src, w, h, 0);
+        VkImage mid = feed_aux(s, &src, w, h, 1, use ? &aux : NULL);
+        CHECK(mid != VK_NULL_HANDLE, "aux-neutral: no in-between");
+        if (mid) {
+            image_read(mid, w, h);
+            if (!use) memcpy(first, g.map, (size_t)w * (size_t)h * 4u);
+            else CHECK(memcmp(first, g.map, (size_t)w * (size_t)h * 4u) == 0,
+                       "aux-neutral: an empty mask changed the in-between");
+        }
+        /* The pair is counted, with a mask only when both frames had one, and no depth. */
+        AceSmoothAuxStats st;
+        memset(&st, 0, sizeof(st));
+        ace_smooth_aux_stats(s, &st);
+        CHECK(st.pairs == 1u && st.pairs_mask == (uint64_t)use && st.pairs_depth == 0u && st.depth_refused == 0u,
+              "aux-neutral: pair counts pairs=%llu mask=%llu depth=%llu refused=%llu (mask %s)",
+              (unsigned long long)st.pairs, (unsigned long long)st.pairs_mask,
+              (unsigned long long)st.pairs_depth, (unsigned long long)st.depth_refused, use ? "on" : "off");
+        DeviceWaitIdle(g.device);
+        ace_smooth_destroy(s);
+    }
+    DestroyImage(g.device, src.image, NULL);
+    FreeMemory(g.device, src.memory, NULL);
+    free(first);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     char why[128] = "";
@@ -486,6 +953,12 @@ int main(int argc, char **argv) {
     cell_scene(1);
     cell_scene(2);
     cell_pan();
+    cell_hud_list();
+    cell_hud_edge(1);
+    cell_hud_edge(2);
+    cell_depth_band(1);
+    cell_depth_band(2);
+    cell_aux_neutral();
     gpu_close();
     printf(s_fail ? "ace-smooth-selftest: FAIL\n" : "ace-smooth-selftest: PASS\n");
     return s_fail ? 1 : 0;

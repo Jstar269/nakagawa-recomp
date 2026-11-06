@@ -388,7 +388,13 @@ every device pixel of an uploaded target must hold its guest pixel, and so does 
 where the shader's per-fragment mip level must not change with the render scale, and so does its
 readback-rows case, where guest memory must get the top-left device pixel of each cell while the
 rows it does not keep stay out of the staging buffer, then once more on the `SR_GPU_READBACK_FULL`
-reference path. Last, `gpu-coherence-selftest-snapbar-mutants` builds three broken variants of
+reference path, and so does its sprite-scaled case (also at scale 3), where a nearest 1:1
+sprite must show the PSP's texel in every device pixel and every other sprite must sample at
+each device pixel's own position, and so does its uv-edge-clamp case (also at scale 3), where the
+device pixels outside a screen-aligned strip's or sprite's first and last pixel centres must show
+that edge pixel's 1x sample, with linear and nearest filtering and with repeat and clamp wrapping,
+while a sheared strip stays unclamped.
+Last, `gpu-coherence-selftest-snapbar-mutants` builds three broken variants of
 the destination-snapshot copy's barriers (`SR_GPU_SNAPBAR_MUTANT`), and the submit-batch case must
 fail each one with its own message. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and

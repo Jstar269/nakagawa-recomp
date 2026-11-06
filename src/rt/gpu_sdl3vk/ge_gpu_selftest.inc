@@ -1647,6 +1647,480 @@ static int coherence_run_psp_sample_points(void) {
     return ok;
 }
 
+/* Textured sprites at render scale 1 to 4, over a 16x16 gradient texture (clamped).
+ * - A nearest-filtered sprite at one texel per pixel, either direction, shows the PSP's texel
+ *   for each guest pixel (PSP-GE-SAMPLE-001: floor of the coordinate at the pixel centre) in
+ *   every device pixel of that pixel, whatever its origin: on a texel edge, half a texel off
+ *   (+0.5, PSP-GE-SAMPLE-001's "+0.5-texel" mapping) or a quarter off. Guest VRAM gets that
+ *   texel at every scale.
+ * - Every other sprite samples at each device pixel's own centre, as a triangle does, except
+ *   that a sample in an edge pixel's outer half takes that pixel's centre (uv-edge-clamp): a
+ *   minified nearest one, and linear ones (exact within 2 of the filtered value). Guest VRAM
+ *   gets the top-left device sample.
+ * Before this case hook_sprite shifted every sprite's coordinate by 0.5 - 0.5 / scale of a
+ * texel for every device sample. That put a texel boundary inside each block of a 1:1 sprite
+ * (HST's button text at 4x), and without it a half-texel nearest origin read one texel low.
+ * At scale 1 every cell is the PSP's own sampling. gpu-coherence-selftest also runs this case
+ * alone at render scales 2, 3 and 4. */
+static int coherence_read_device(VkImage img, VkImageAspectFlags aspect, VkImageLayout *layout,
+                                 VkImageLayout after, uint32_t bpp, void *out);
+
+typedef struct { float a0, w; } SprAxis;      /* coordinate at the first pixel edge, per pixel */
+
+/* The 0-255 channel a device sample at device index d of a sprite axis of n pixels shows. Above
+ * 1x a sample in an edge pixel's outer half takes that pixel's centre coordinate (the edge clamp,
+ * uv-edge-clamp); at 1x every sample is a centre. */
+static float coherence_spr_expect(SprAxis ax, int nearest, uint32_t d, uint32_t s, uint32_t n) {
+    float at = ((float)d + 0.5f) / (float)s;
+    if (s > 1u) at = fminf(fmaxf(at, 0.5f), (float)n - 0.5f);
+    const float pos = ax.a0 + at * ax.w;
+    if (!nearest) return 16.0f * (pos - 0.5f);
+    if (fabsf(fabsf(ax.w) - 1.0f) < 1e-6f) {                   /* 1:1: the PSP's texel */
+        const uint32_t g = d / s;
+        return 16.0f * floorf(ax.a0 + ((float)g + 0.5f) * ax.w);
+    }
+    return 16.0f * floorf(pos);
+}
+
+static int coherence_run_sprite_scaled(void) {
+    const uint32_t fba = 0x00160000u, base = 0x04000000u | fba, stride = 512u;
+    const size_t bytes = (size_t)stride * FB_H * 4u;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    uint32_t *tex = (uint32_t *)SR_HOST(COH_SAMPLE_TEX);
+    for (unsigned v = 0; v < 16u; v++)
+        for (unsigned u = 0; u < 16u; u++) tex[v * 16u + u] = 0xFF000000u | ((16u * v) << 8) | (16u * u);
+    sr_gpu_vram_dirty(COH_SAMPLE_TEX, 16u * 16u * 4u);
+
+    /* Every sample stays inside texels 0..15, so clamping never decides a value. */
+    static const struct { int x, n; uint32_t tflt; float u0, u1, v0, v1; const char *name; } cells[] = {
+        { 100, 12, 0x000u, 2.0f, 14.0f, 2.0f, 14.0f, "nearest-1to1" },
+        { 120, 12, 0x000u, 2.5f, 14.5f, 2.5f, 14.5f, "nearest-half-origin" },
+        { 140, 12, 0x000u, 2.25f, 14.25f, 2.75f, 14.75f, "nearest-quarter-origin" },
+        { 160, 12, 0x000u, 2.0f, 14.0f, 14.5f, 2.5f, "nearest-flipped-v" },
+        { 180, 6, 0x000u, 2.25f, 14.25f, 2.25f, 14.25f, "nearest-minified" },
+        { 200, 12, 0x101u, 2.0f, 14.0f, 2.0f, 14.0f, "linear-1to1" },
+        { 220, 12, 0x101u, 2.5f, 14.5f, 2.5f, 14.5f, "linear-half-origin" },
+        { 240, 12, 0x101u, 2.0f, 14.0f, 14.5f, 2.5f, "linear-flipped-v" },
+    };
+    const int ncells = (int)(sizeof(cells) / sizeof(cells[0])), y0 = 10;
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(COH_SAMPLE_VERTS);
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_SAMPLE_LIST);
+    int p = 0, nv = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x9C, fba);
+    DL_EMIT(0x9D, stride | (0x04000000u >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x4C, 0);
+    DL_EMIT(0x4D, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0x15, 0);
+    DL_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, COH_SAMPLE_TEX & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 16u | ((COH_SAMPLE_TEX & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (4u << 8) | 4u);
+    DL_EMIT(0xC2, 0);
+    DL_EMIT(0xC8, 0);
+    DL_EMIT(0xC0, 0);
+    DL_EMIT(0xC3, 3);
+    DL_EMIT(0xC7, (1u << 8) | 1u);                         /* clamp u and v */
+    DL_EMIT(0xC9, 3u | (1u << 8));                         /* replace, RGBA */
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3u << 0) | (3u << 7) | (1u << 23));     /* float UV and position, through */
+    for (int c = 0; c < ncells; c++) {
+        uint32_t first = COH_SAMPLE_VERTS + (uint32_t)nv * (uint32_t)sizeof(RawSpriteVtx);
+        DL_EMIT(0xC6, cells[c].tflt);
+        DL_EMIT(0xCB, 0);                                  /* TEXFLUSH */
+        vtx[nv++] = (RawSpriteVtx){ cells[c].u0, cells[c].v0, (float)cells[c].x, (float)y0, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ cells[c].u1, cells[c].v1, (float)(cells[c].x + cells[c].n),
+                                    (float)(y0 + cells[c].n), 0.0f };
+        DL_EMIT(0x01, first & 0x00FFFFFFu);
+        DL_EMIT(0x04, (6u << 16) | 2u);
+    }
+    DL_EMIT(0xC6, 0);
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+
+    const uint32_t s = (uint32_t)s_scale;
+    uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
+    if (!dev) return 0;
+    coherence_reset_targets();
+    memset(fb, 0, bytes);
+    sr_gpu_vram_dirty(base, (uint32_t)bytes);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(COH_SAMPLE_LIST, 0);
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                               .width = 480, .height = 272 };
+    int ok = gegpu_sync_guest_fb(&desc);
+    Target *t = ok ? target_find_by_fba(fba) : NULL;
+    ok = t != NULL && coherence_read_device(t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+                                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 4u, dev);
+    if (!ok) fprintf(stderr, "gpu coherence selftest [sprite-scaled]: draw or device read failed\n");
+    int bad = 0;
+    for (int c = 0; ok && c < ncells; c++) {
+        const int nearest = cells[c].tflt == 0u;
+        const float n = (float)cells[c].n;
+        const SprAxis ax = { cells[c].u0, (cells[c].u1 - cells[c].u0) / n };
+        const SprAxis ay = { cells[c].v0, (cells[c].v1 - cells[c].v0) / n };
+        const int exact_readback = nearest && fabsf(fabsf(ax.w) - 1.0f) < 1e-6f &&
+                                   fabsf(fabsf(ay.w) - 1.0f) < 1e-6f;
+        /* Linear: the filter's weight and rounding are within 2 of the exact value; the old
+         * shift moved it by 16 * (0.5 - 0.5 / scale), 4 at scale 2 and 6 at 4. */
+        const float tol = nearest ? 0.0f : 2.0f;
+        for (uint32_t dy = 0; dy < (uint32_t)cells[c].n * s; dy++) {
+            for (uint32_t dx = 0; dx < (uint32_t)cells[c].n * s; dx++) {
+                const float wr = coherence_spr_expect(ax, nearest, dx, s, (uint32_t)cells[c].n);
+                const float wg = coherence_spr_expect(ay, nearest, dy, s, (uint32_t)cells[c].n);
+                const uint32_t X = (uint32_t)cells[c].x * s + dx, Y = (uint32_t)y0 * s + dy;
+                const uint32_t got = dev[(size_t)Y * SCL_W + X];
+                const float er = fabsf((float)(got & 0xFFu) - wr);
+                const float eg = fabsf((float)((got >> 8) & 0xFFu) - wg);
+                if ((er > tol || eg > tol) && bad++ < 8)
+                    fprintf(stderr, "gpu coherence selftest [sprite-scaled/%s]: scale=%u device pixel "
+                            "(%u,%u) r=%u g=%u, want %.2f %.2f\n", cells[c].name, s, dx, dy,
+                            got & 0xFFu, (got >> 8) & 0xFFu, wr, wg);
+            }
+        }
+        /* Guest VRAM: the PSP's texel where the device image holds it in every device pixel,
+         * otherwise the top-left device sample of each pixel. At scale 1 both are the PSP's. */
+        for (uint32_t gy = 0; gy < (uint32_t)cells[c].n; gy++) {
+            for (uint32_t gx = 0; gx < (uint32_t)cells[c].n; gx++) {
+                const uint32_t got = fb[(size_t)(y0 + gy) * stride + (size_t)cells[c].x + gx] & 0x00FFFFFFu;
+                uint32_t want;
+                if (exact_readback) {
+                    const uint32_t r = (uint32_t)floorf(ax.a0 + ((float)gx + 0.5f) * ax.w);
+                    const uint32_t g = (uint32_t)floorf(ay.a0 + ((float)gy + 0.5f) * ay.w);
+                    want = ((16u * g) << 8) | (16u * r);
+                } else {
+                    const uint32_t X = ((uint32_t)cells[c].x + gx) * s, Y = ((uint32_t)y0 + gy) * s;
+                    want = dev[(size_t)Y * SCL_W + X] & 0x00FFFFFFu;
+                }
+                if (got != want && bad++ < 16)
+                    fprintf(stderr, "gpu coherence selftest [sprite-scaled/%s/guest]: scale=%u pixel "
+                            "(%u,%u) = %06x, want %06x\n", cells[c].name, s, gx, gy, got, want);
+            }
+        }
+    }
+    if (bad) {
+        fprintf(stderr, "gpu coherence selftest [sprite-scaled]: %d pixel(s) differ at scale %u\n", bad, s);
+        ok = 0;
+    }
+    free(dev);
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS %-22s %d cells scale=%u\n", "sprite-scaled", ncells, s);
+    return ok;
+}
+
+/* uv-edge-clamp: through-mode rectangles whose texture coordinate reaches the texture's edge at
+ * the rectangle's edge, at 16 texels over 12 pixels, as LittleBigPlanet's loading screen draws its
+ * planet (a 128x64 texture over 220x52 pixels, flipped, linear, repeat). The texture's red channel
+ * follows its row and green its column: 0 in texel 0, 255 in texel 15, 128 between. At 1x each edge
+ * pixel's centre samples inside the edge texel (the PSP's own picture). Above 1x the outer device
+ * samples of an edge pixel lie past that centre, and with linear filtering and repeat wrapping they
+ * blended in the texture's opposite edge, a line along the rectangle's edge. Every device sample of
+ * every cell must show the model below: the coordinate at that device sample's position, clamped
+ * above 1x to the coordinates the 1x pixel centres sample, filtered the way psp.frag filters (weights
+ * in 1/16), within 2.
+ * - strips (two triangles each) and a sprite, flipped and not, linear with repeat and clamp
+ *   wrapping, and nearest with repeat;
+ * - a strip whose u also changes with y (as a rotated rectangle's does) keeps every device sample
+ *   where it falls: it gets no clamp;
+ * - strips with fractional edges (n + 0.5, a pixel centre on the edge, and n + 0.25 and n + 0.75),
+ *   flipped in v or u, linear and nearest: the range follows the PSP's top-left rule, which covers
+ *   a centre on the left or top edge and not one on the right or bottom edge, so a rule that
+ *   breaks the tie the other way moves the range by a pixel and fails. These are checked over a
+ *   ring one guest pixel wide around them too: device pixels the strip does not cover at this
+ *   scale must keep the cleared target.
+ * At 1x no primitive carries a clamp range at all (checked on the vertices hook_sprite writes), so
+ * the 1x picture is exactly the one before the clamp existed. */
+typedef struct { int sprite; uint32_t tflt, wrap; float ul, ur, vt, vb, shear; const char *name; } EdgeCell;
+
+static float coh_edge_texel(int i, int clampwrap) {
+    if (clampwrap) i = i < 0 ? 0 : i > 15 ? 15 : i;
+    else i &= 15;
+    return i == 0 ? 0.0f : i == 15 ? 255.0f : (float)(16 * i);   /* a ramp between the dark and bright edges */
+}
+
+/* One channel at coordinate c (texels), as psp.frag samples it: rounded to 1/4096, then nearest
+ * takes texel floor(c) and linear blends floor(c - 0.5) and the next texel by a weight truncated
+ * to 1/16. */
+static float coh_edge_sample(double c, int nearest, int clampwrap) {
+    c = floor(c * 4096.0 + 0.5) / 4096.0;
+    if (nearest) return coh_edge_texel((int)floor(c), clampwrap);
+    const double f = c - 0.5, i0 = floor(f), w = floor((f - i0) * 16.0) / 16.0;
+    return (float)((1.0 - w) * coh_edge_texel((int)i0, clampwrap) + w * coh_edge_texel((int)i0 + 1, clampwrap));
+}
+
+/* The coordinate along one axis of n pixels from c0 at its first edge to c1 at its last, at
+ * device index d of render scale s; above 1x clamped to the first and last pixel centres'. */
+static double coh_edge_coord(double c0, double c1, uint32_t n, uint32_t d, uint32_t s, int clamp_it) {
+    const double per = (c1 - c0) / (double)n;
+    const double at = ((double)d + 0.5) / (double)s;
+    double c = c0 + at * per;
+    if (clamp_it && s > 1u) {
+        const double a = (double)(float)(c0 + 0.5 * per), b = (double)(float)(c1 - 0.5 * per);
+        const double lo = a < b ? a : b, hi = a < b ? b : a;
+        c = c < lo ? lo : c > hi ? hi : c;
+    }
+    return c;
+}
+
+typedef struct { float x0, x1, y0, y1; uint32_t tflt; float ul, ur, vt, vb; const char *name; } FracCell;
+
+/* The coordinate at guest position q on an axis from e0 (coordinate c0) to e1 (c1), above 1x
+ * clamped to the coordinates of the first and last pixel centres k + 0.5 the PSP covers there:
+ * e0 <= k + 0.5 < e1, a centre on the first edge covered and one on the last not. The centres
+ * are counted one by one here, independently of the renderer's closed form. */
+static double coh_frac_coord(double e0, double e1, double c0, double c1, double q, uint32_t s) {
+    const double slope = (c1 - c0) / (e1 - e0);
+    double c = c0 + (q - e0) * slope;
+    if (s > 1u) {
+        double first = 0.0, last = -1.0;
+        int any = 0;
+        for (int k = (int)floor(e0) - 1; k <= (int)ceil(e1) + 1; k++) {
+            const double ck = (double)k + 0.5;
+            if (ck >= e0 && ck < e1) {
+                if (!any) first = ck;
+                last = ck;
+                any = 1;
+            }
+        }
+        if (any) {
+            const double a = (double)(float)(c0 + (first - e0) * slope);
+            const double b = (double)(float)(c0 + (last - e0) * slope);
+            const double lo = a < b ? a : b, hi = a < b ? b : a;
+            c = c < lo ? lo : c > hi ? hi : c;
+        }
+    }
+    return c;
+}
+
+static int coherence_run_uv_edge_clamp(void) {
+    const char *name = "uv-edge-clamp";
+    const uint32_t fba = 0x00160000u, base = 0x04000000u | fba, stride = 512u;
+    const size_t bytes = (size_t)stride * FB_H * 4u;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    uint32_t *tex = (uint32_t *)SR_HOST(COH_SAMPLE_TEX);
+    for (unsigned v = 0; v < 16u; v++)
+        for (unsigned u = 0; u < 16u; u++)
+            tex[v * 16u + u] = 0xFF000000u | ((uint32_t)coh_edge_texel((int)u, 0) << 8) |
+                               (uint32_t)coh_edge_texel((int)v, 0);
+    sr_gpu_vram_dirty(COH_SAMPLE_TEX, 16u * 16u * 4u);
+
+    static const EdgeCell cells[] = {
+        { 0, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "strip-linear-repeat-flipped-v" },
+        { 0, 0x101u, 0x000u, 16.0f, 0.0f, 0.0f, 16.0f, 0.0f, "strip-linear-repeat-flipped-u" },
+        { 0, 0x101u, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "strip-linear-clamp" },
+        { 0, 0x000u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "strip-nearest-repeat" },
+        { 1, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "sprite-linear-repeat" },
+        { 0, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 3.0f, "strip-sheared-u-free" },
+        /* Linear minification and nearest magnification, so the filter shows the footprint. 64
+         * texels over 12 pixels in u stay minified at every scale up to 4; 32 over 12 is minified
+         * at 1x and 2x (2.67 and 1.33 texels per device pixel) and magnified at 3x and 4x. The
+         * clamped bands must filter as the rest of the primitive does: at 2x a half-clamped quad
+         * whose footprint came from the clamped coordinate would drop to 0.67 and magnify. */
+        { 0, 0x001u, 0x000u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f, "strip-minified-u" },
+        { 0, 0x001u, 0x000u, 0.0f, 32.0f, 16.0f, 0.0f, 0.0f, "strip-minified-u-to-2x" },
+    };
+    const int ncells = (int)(sizeof(cells) / sizeof(cells[0]));
+    /* Strips with fractional edges, 16 texels over 12 pixels, linear unless named nearest. An edge
+     * on n + 0.5 puts a pixel centre exactly on it (the top-left rule's tie); n + 0.25 and n + 0.75
+     * put the first and last covered centres a quarter and three quarters of a pixel inside. */
+    static const FracCell fcells[] = {
+        { 20.5f, 32.5f, 70.5f, 82.5f, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-ties-flipped-v" },
+        { 40.25f, 52.25f, 70.75f, 82.75f, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-quarter-edges" },
+        { 60.75f, 72.75f, 70.25f, 82.25f, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-three-quarter-edges" },
+        { 80.5f, 92.5f, 70.5f, 82.5f, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-ties-nearest" },
+        { 100.5f, 112.5f, 70.5f, 82.5f, 0x101u, 16.0f, 0.0f, 0.0f, 16.0f, "strip-ties-flipped-u" },
+    };
+    const int nfrac = (int)(sizeof(fcells) / sizeof(fcells[0]));
+    const int y0 = 40, n = 12;
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(COH_SAMPLE_VERTS);
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_SAMPLE_LIST);
+    int p = 0, nv = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x9C, fba);
+    DL_EMIT(0x9D, stride | (0x04000000u >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x4C, 0);
+    DL_EMIT(0x4D, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0x15, 0);
+    DL_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, COH_SAMPLE_TEX & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 16u | ((COH_SAMPLE_TEX & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (4u << 8) | 4u);
+    DL_EMIT(0xC2, 0);
+    DL_EMIT(0xC8, 0);
+    DL_EMIT(0xC0, 0);
+    DL_EMIT(0xC3, 3);
+    DL_EMIT(0xC9, 3u | (1u << 8));                         /* replace, RGBA */
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3u << 0) | (3u << 7) | (1u << 23));     /* float UV and position, through */
+    for (int c = 0; c < ncells; c++) {
+        const EdgeCell *e = &cells[c];
+        const float x0 = (float)(20 + 20 * c), x1 = x0 + (float)n, ya = (float)y0, yb = ya + (float)n;
+        uint32_t first = COH_SAMPLE_VERTS + (uint32_t)nv * (uint32_t)sizeof(RawSpriteVtx);
+        DL_EMIT(0xC6, e->tflt);
+        DL_EMIT(0xC7, e->wrap);
+        DL_EMIT(0xCB, 0);                                  /* TEXFLUSH */
+        if (e->sprite) {
+            vtx[nv++] = (RawSpriteVtx){ e->ul, e->vt, x0, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ur, e->vb, x1, yb, 0.0f };
+            DL_EMIT(0x01, first & 0x00FFFFFFu);
+            DL_EMIT(0x04, (6u << 16) | 2u);
+        } else {   /* bottom-left, bottom-right, top-left, top-right, as LittleBigPlanet orders them */
+            vtx[nv++] = (RawSpriteVtx){ e->ul + e->shear, e->vb, x0, yb, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ur + e->shear, e->vb, x1, yb, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ul, e->vt, x0, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ur, e->vt, x1, ya, 0.0f };
+            DL_EMIT(0x01, first & 0x00FFFFFFu);
+            DL_EMIT(0x04, (4u << 16) | 4u);
+        }
+    }
+    DL_EMIT(0xC7, 0);   /* the fractional cells: repeat wrapping */
+    for (int c = 0; c < nfrac; c++) {
+        const FracCell *f = &fcells[c];
+        uint32_t first = COH_SAMPLE_VERTS + (uint32_t)nv * (uint32_t)sizeof(RawSpriteVtx);
+        DL_EMIT(0xC6, f->tflt);
+        DL_EMIT(0xCB, 0);
+        vtx[nv++] = (RawSpriteVtx){ f->ul, f->vb, f->x0, f->y1, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ f->ur, f->vb, f->x1, f->y1, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ f->ul, f->vt, f->x0, f->y0, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ f->ur, f->vt, f->x1, f->y0, 0.0f };
+        DL_EMIT(0x01, first & 0x00FFFFFFu);
+        DL_EMIT(0x04, (4u << 16) | 4u);
+    }
+    DL_EMIT(0xC6, 0);
+    DL_EMIT(0xC7, 0);
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+
+    const uint32_t s = (uint32_t)s_scale;
+    uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
+    if (!dev) return 0;
+    coherence_reset_targets();
+    memset(fb, 0, bytes);
+    sr_gpu_vram_dirty(base, (uint32_t)bytes);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(COH_SAMPLE_LIST, 0);
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                               .width = 480, .height = 272 };
+    int ok = gegpu_sync_guest_fb(&desc);
+    Target *t = ok ? target_find_by_fba(fba) : NULL;
+    ok = t != NULL && coherence_read_device(t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+                                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 4u, dev);
+    if (!ok) fprintf(stderr, "gpu coherence selftest [%s]: draw or device read failed\n", name);
+    int bad = 0;
+    for (int c = 0; ok && c < ncells; c++) {
+        const EdgeCell *e = &cells[c];
+        /* The filter the sampler picks from the primitive's footprint: texels per device pixel on
+         * its steeper axis, minification above 1 (TEXFILTER bits 0-2), magnification otherwise
+         * (bits 8-10). Every other cell uses one filter for both. */
+        const double rho = fmax(fabs((double)e->ur - e->ul), fabs((double)e->vb - e->vt)) / ((double)n * s);
+        const uint32_t filt = rho > 1.0 ? (e->tflt & 7u) : ((e->tflt >> 8) & 7u);
+        const int nearest = filt == 0u, clampwrap = e->wrap != 0u, separable = e->shear == 0.0f;
+        int cell_bad = 0;
+        for (uint32_t dy = 0; dy < (uint32_t)n * s; dy++) {
+            for (uint32_t dx = 0; dx < (uint32_t)n * s; dx++) {
+                double u = coh_edge_coord(e->ul, e->ur, (uint32_t)n, dx, s, separable);
+                const double v = coh_edge_coord(e->vt, e->vb, (uint32_t)n, dy, s, separable);
+                if (!separable) u += (((double)dy + 0.5) / (double)s) * (double)e->shear / (double)n;
+                const float wr = coh_edge_sample(v, nearest, clampwrap);   /* red: the row */
+                const float wg = coh_edge_sample(u, nearest, clampwrap);   /* green: the column */
+                const uint32_t X = (uint32_t)(20 + 20 * c) * s + dx, Y = (uint32_t)y0 * s + dy;
+                const uint32_t got = dev[(size_t)Y * SCL_W + X];
+                const float er = fabsf((float)(got & 0xFFu) - wr);
+                const float eg = fabsf((float)((got >> 8) & 0xFFu) - wg);
+                if (er > 2.0f || eg > 2.0f) {
+                    if (cell_bad++ < 4)
+                        fprintf(stderr, "gpu coherence selftest [%s/%s]: scale=%u device pixel (%u,%u) "
+                                "r=%u g=%u, want %.2f %.2f (u=%.4f v=%.4f)\n", name, e->name, s, dx, dy,
+                                got & 0xFFu, (got >> 8) & 0xFFu, wr, wg, u, v);
+                }
+            }
+        }
+        bad += cell_bad;
+    }
+    /* The fractional cells, over their box and one guest pixel around it: a device pixel the strip
+     * covers at this scale shows the model, any other the cleared target. A device pixel centre
+     * exactly on an edge at this scale is skipped: which side covers it is the device rasteriser's
+     * own tie rule, not the PSP's. */
+    for (int c = 0; ok && c < nfrac; c++) {
+        const FracCell *f = &fcells[c];
+        const int nearest = f->tflt == 0u;
+        int cell_bad = 0;
+        const int gx0 = (int)floor(f->x0) - 1, gx1 = (int)ceil(f->x1) + 1;
+        const int gy0 = (int)floor(f->y0) - 1, gy1 = (int)ceil(f->y1) + 1;
+        for (uint32_t Y = (uint32_t)gy0 * s; Y < (uint32_t)gy1 * s; Y++) {
+            const double py = ((double)Y + 0.5) / (double)s;
+            if (py == f->y0 || py == f->y1) continue;
+            for (uint32_t X = (uint32_t)gx0 * s; X < (uint32_t)gx1 * s; X++) {
+                const double qx = ((double)X + 0.5) / (double)s;
+                if (qx == f->x0 || qx == f->x1) continue;
+                const uint32_t got = dev[(size_t)Y * SCL_W + X];
+                const int covered = qx >= f->x0 && qx < f->x1 && py >= f->y0 && py < f->y1;
+                float wr = 0.0f, wg = 0.0f;
+                int fail;
+                if (covered) {
+                    const double u = coh_frac_coord(f->x0, f->x1, f->ul, f->ur, qx, s);
+                    const double v = coh_frac_coord(f->y0, f->y1, f->vt, f->vb, py, s);
+                    wr = coh_edge_sample(v, nearest, 0);
+                    wg = coh_edge_sample(u, nearest, 0);
+                    fail = fabsf((float)(got & 0xFFu) - wr) > 2.0f ||
+                           fabsf((float)((got >> 8) & 0xFFu) - wg) > 2.0f;
+                } else {
+                    fail = got != 0u;
+                }
+                if (fail && cell_bad++ < 4)
+                    fprintf(stderr, "gpu coherence selftest [%s/%s]: scale=%u device pixel (%u,%u) "
+                            "(guest %.3f,%.3f) %s r=%u g=%u, want %s %.2f %.2f\n", name, f->name, s, X, Y,
+                            qx, py, covered ? "covered" : "outside", got & 0xFFu, (got >> 8) & 0xFFu,
+                            covered ? "" : "the cleared target, not", wr, wg);
+            }
+        }
+        bad += cell_bad;
+    }
+    /* At 1x a primitive carries no clamp range; above 1x a through-mode textured sprite does. */
+    if (ok) {
+        s_ge->tex_enable = 1;
+        GeVtx p0 = { 300.0f, 40.0f, 0.0f, 1.0f, 0.0f, 16.0f, 1.0f, 0xff, 0xff, 0xff, 0xff };
+        GeVtx p1 = p0;
+        p1.x = 312.0f; p1.y = 52.0f; p1.u = 16.0f; p1.v = 0.0f;
+        ok = hook_sprite(&p0, &p1, 0) && s_nverts > 0u;
+        const float *box = ok ? s_vcpu[s_nverts - 1u].box : NULL;
+        const int free_box = box && box[0] > box[2] && box[1] > box[3];
+        if (ok && (s == 1u) != free_box) {
+            fprintf(stderr, "gpu coherence selftest [%s]: scale=%u the sprite's clamp range is "
+                    "(%.4f,%.4f)-(%.4f,%.4f): want %s\n", name, s, box[0], box[1], box[2], box[3],
+                    s == 1u ? "none at 1x" : "a range above 1x");
+            ok = 0;
+        }
+        if (ok) ok = submit_pending();
+    }
+    if (bad) {
+        fprintf(stderr, "gpu coherence selftest [%s]: %d device pixel(s) differ at scale %u\n", name, bad, s);
+        ok = 0;
+    }
+    free(dev);
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS %-22s %d cells scale=%u\n", name, ncells + nfrac, s);
+    return ok;
+}
+
 /* Put TEXMODE, TEXLEVEL and TEXFILTER back to level 0 only through the list path, so the
  * later fixtures start from the state they assume and the state serial moves with it. */
 static void coherence_mip_reset_state(void) {
@@ -5841,6 +6315,8 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "scaled-upload") == 0) return coherence_run_scaled_upload();
         if (strcmp(only, "mip-lod") == 0) return coherence_run_mip_lod();
         if (strcmp(only, "readback-rows") == 0) return coherence_run_readback_rows();
+        if (strcmp(only, "sprite-scaled") == 0) return coherence_run_sprite_scaled();
+        if (strcmp(only, "uv-edge-clamp") == 0) return coherence_run_uv_edge_clamp();
         if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
         if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
         if (strcmp(only, "wide-fill") == 0) return coherence_run_wide_fill();
@@ -5905,6 +6381,8 @@ int gegpu_coherence_selftest(void) {
      * ones before them leave. */
     if (!coherence_run_mip_levels()) ok = 0;
     if (!coherence_run_psp_sample_points()) ok = 0;
+    if (!coherence_run_sprite_scaled()) ok = 0;
+    if (!coherence_run_uv_edge_clamp()) ok = 0;
     /* After the mip fixtures: it rewrites the depth buffer they start from. */
     if (!coherence_run_stencil_parity()) ok = 0;
     if (!coherence_run_stencil_constant()) ok = 0;
@@ -5973,6 +6451,240 @@ int gegpu_ace_af_selftest(void) {
     }
     if (ok) printf("gpu ace selftest: PASS af=%d through-mode exact, transformed linear filtered, "
                    "nearest kept\n", s_ace_af);
+    return ok;
+}
+
+/* Ace smooth motion's HUD mask and depth (ace_hud.h), through ge_gpu.c's own hooks and a real
+ * present: which draws ge_gpu.c notes as HUD (through mode, not clear mode, not sampling a
+ * render target), that a box is in guest pixels (the mask covers exactly the pixels the draw
+ * changed), that depth is handed on only after a draw wrote it (also when two display buffers
+ * share one depth buffer), and that a published mask reaches only the image it was published
+ * for. The show pass below stands in for gui.c's and takes what was published for each image. */
+static struct {
+    int calls, got;
+    VkImage src;
+    int have_bits;
+    VkImage depth;
+    uint32_t bits[ACE_SMOOTH_HUD_WORDS];
+} s_ahc;
+
+static void *ace_hud_cell_show(void *cmd, void *src, int *w, int *h) {
+    (void)cmd; (void)w; (void)h;
+    const AceSmoothAux *aux = ace_hud_take((VkImage)src);
+    s_ahc.calls++;
+    s_ahc.src = (VkImage)src;
+    s_ahc.got = aux != NULL;
+    s_ahc.have_bits = aux && aux->hud_bits;
+    s_ahc.depth = aux ? aux->depth : VK_NULL_HANDLE;
+    if (aux && aux->hud_bits) memcpy(s_ahc.bits, aux->hud_bits, sizeof(s_ahc.bits));
+    else memset(s_ahc.bits, 0, sizeof(s_ahc.bits));
+    return NULL;
+}
+
+static int ahc_bit(int x, int y) {
+    uint32_t k = (uint32_t)(y * ACE_SMOOTH_HUD_W + x);
+    return (int)((s_ahc.bits[k >> 5] >> (k & 31u)) & 1u);
+}
+
+static void ahc_state(uint32_t base, uint32_t zbp, int through) {
+    memset(s_ge, 0, sizeof(*s_ge));
+    s_ge->fbp = base;
+    s_ge->fbw = 512u;
+    s_ge->fbfmt = 3u;
+    s_ge->zbp = zbp;
+    s_ge->zbw = 512u;
+    s_ge->scis_x2 = (int)FB_W - 1;
+    s_ge->scis_y2 = (int)FB_H - 1;
+    s_ge->maxz = 65535u;
+    if (through) s_ge->vtype = 1u << 23;
+}
+
+static int ahc_sprite(float x0, float y0, float x1, float y1, uint32_t c) {
+    GeVtx p0, p1;
+    ge_state_note_external_write();   /* the cell writes GE state directly, as a command would */
+    wrap_vtx(&p0, x0, y0, c);
+    wrap_vtx(&p1, x1, y1, c);
+    p0.u = x0; p0.v = y0; p1.u = x1; p1.v = y1;
+    return hook_sprite(&p0, &p1, 0);
+}
+
+/* Presents `base` and returns 1 when the show pass saw that target's image. */
+static int ahc_present(uint32_t base, const char *step) {
+    Target *t = target_find_by_fba(base & 0x00FFFFFFu);
+    memset(&s_ahc, 0, sizeof(s_ahc));
+    int pr = gegpu_present(base, 3, 512u);
+    if (pr != GEGPU_PRESENT_SHOWN || !t || s_ahc.calls != 1 || s_ahc.src != t->img) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: %s: present %d, show pass calls %d, "
+                        "image %s\n", step, pr, s_ahc.calls, t && s_ahc.src == t->img ? "right" : "wrong");
+        return 0;
+    }
+    return 1;
+}
+
+static int coherence_run_ace_hud(void) {
+    const uint32_t base_a = 0x04000000u, zbp = 0x04088000u, base_b = 0x040CC000u, base_c = 0x04154000u;
+    const uint32_t hud = 0xFF332211u;
+    int ok = 1;
+    coherence_reset_targets();
+    memset(SR_HOST(base_a), 0, 0x165000u);
+    sr_gpu_vram_dirty(base_a, 0x165000u);
+    ace_hud_enable(1);
+    sdl3vk_set_show_pass(ace_hud_cell_show);
+    if (!g_ace_hud_on) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: the HUD mask is not on\n");
+        ok = 0;
+    }
+
+    /* A small render target the HUD frame will sample. */
+    ok = ok && coherence_queue_g1_batch(base_c, 64u, 3u) && submit_pending();
+
+    /* Frame 1 on A: a clear that fills depth, a through-mode sprite and triangle (HUD), a
+     * transform-mode sprite (scene), and a through-mode sprite that samples target C. */
+    ahc_state(base_a, zbp, 1);
+    s_ge->clear = 1;
+    s_ge->clear_mode = 0x501u;                  /* colour and depth */
+    ok = ok && ahc_sprite(0.0f, 0.0f, 480.0f, 272.0f, 0x00000000u);
+    s_ge->clear = 0;
+    s_ge->clear_mode = 0;
+    ok = ok && ahc_sprite(100.0f, 100.0f, 110.0f, 104.0f, hud);
+    GeVtx ta, tb, tc;
+    wrap_vtx(&ta, 40.0f, 40.0f, hud);
+    wrap_vtx(&tb, 50.0f, 40.0f, hud);
+    wrap_vtx(&tc, 40.0f, 50.0f, hud);
+    ge_state_note_external_write();
+    ok = ok && hook_tri(&ta, &tb, &tc, 0);
+    s_ge->vtype = 0;
+    ok = ok && ahc_sprite(200.0f, 50.0f, 210.0f, 60.0f, hud);
+    s_ge->vtype = 1u << 23;
+    s_ge->tex_enable = 1;
+    s_ge->tex_addr = base_c;
+    s_ge->tex_bufw = 64u;
+    s_ge->tex_fmt = 3;
+    s_ge->tex_w = 64;
+    s_ge->tex_h = 64;
+    s_ge->tex_func = 3;
+    {
+        /* The sprite binds target C's image directly (no readback): a post effect. */
+        uint64_t rtt = s_cnt_rtt;
+        ok = ok && ahc_sprite(300.0f, 200.0f, 320.0f, 210.0f, 0xFFFFFFFFu);
+        if (ok && s_cnt_rtt != rtt + 1u) {
+            fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: the sprite did not sample target C\n");
+            ok = 0;
+        }
+    }
+    s_ge->tex_enable = 0;
+    ok = ok && submit_pending();
+    Target *a = target_find_by_fba(base_a & 0x00FFFFFFu);
+    DepthEnt *z = a ? a->dep : NULL;
+    ok = ok && a && z && ahc_present(base_a, "frame 1");
+    if (ok) {
+        int wrong = 0;
+        for (int y = 0; y < ACE_SMOOTH_HUD_H; y++)
+            for (int x = 0; x < ACE_SMOOTH_HUD_W; x++) {
+                int want = (x >= 100 && x < 110 && y >= 100 && y < 104) ||
+                           (x >= 40 && x < 50 && y >= 40 && y < 50);
+                wrong += ahc_bit(x, y) != want;
+            }
+        if (!s_ahc.have_bits || wrong || s_ahc.depth != z->img) {
+            fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 1: mask %d, %d bits wrong "
+                            "(scene %d, post effect %d, clear %d), depth %s\n",
+                    s_ahc.have_bits, wrong, ahc_bit(205, 55), ahc_bit(310, 205), ahc_bit(0, 0),
+                    s_ahc.depth == z->img ? "handed on" : "missing");
+            ok = 0;
+        }
+    }
+    /* The box is in guest pixels: around the sprite, the mask is set exactly where it drew. */
+    if (ok && target_readback(a)) {
+        const uint32_t *px = (const uint32_t *)SR_HOST(base_a);
+        int wrong = 0;
+        for (int y = 90; y < 115; y++)
+            for (int x = 90; x < 125; x++)
+                wrong += ((px[y * 512 + x] & 0x00FFFFFFu) == (hud & 0x00FFFFFFu)) != ahc_bit(x, y);
+        if (wrong) {
+            fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: %d pixels around the HUD sprite differ "
+                            "between what it drew and its mask\n", wrong);
+            ok = 0;
+        }
+    } else if (ok) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: readback failed\n");
+        ok = 0;
+    }
+
+    /* Frame 2 on B, which shares A's depth buffer, writes no depth: the depth image still
+     * holds frame 1, so it is not handed on. */
+    ahc_state(base_b, zbp, 1);
+    ok = ok && ahc_sprite(10.0f, 10.0f, 20.0f, 20.0f, hud) && submit_pending();
+    Target *b = target_find_by_fba(base_b & 0x00FFFFFFu);
+    ok = ok && b && b->dep == z && ahc_present(base_b, "frame 2");
+    if (ok && (!s_ahc.have_bits || !ahc_bit(15, 15) || ahc_bit(105, 102) || s_ahc.depth != VK_NULL_HANDLE)) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 2: mask %d box %d stale box %d, "
+                        "depth %s\n", s_ahc.have_bits, ahc_bit(15, 15), ahc_bit(105, 102),
+                s_ahc.depth ? "handed on though no draw wrote it" : "withheld");
+        ok = 0;
+    }
+
+    /* Frame 3 on A: a transform-mode draw with depth writes; depth is handed on again. */
+    ahc_state(base_a, zbp, 0);
+    s_ge->ztest_enable = 1;
+    s_ge->ztest = 1;                            /* ALWAYS */
+    ok = ok && ahc_sprite(60.0f, 60.0f, 90.0f, 90.0f, hud) && submit_pending();
+    ok = ok && ahc_present(base_a, "frame 3");
+    if (ok && (s_ahc.depth != z->img || ahc_bit(70, 70))) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 3: depth %s, scene in mask %d\n",
+                s_ahc.depth == z->img ? "handed on" : "missing after a depth write", ahc_bit(70, 70));
+        ok = 0;
+    }
+
+    /* Frame 4 on A: its only depth write is a clear that clears depth. That is a write, so
+     * depth is handed on, and the clear is not a HUD box. */
+    ahc_state(base_a, zbp, 1);
+    s_ge->clear = 1;
+    s_ge->clear_mode = 0x401u;                  /* depth only */
+    ok = ok && ahc_sprite(0.0f, 0.0f, 480.0f, 272.0f, 0x00000000u) && submit_pending();
+    s_ge->clear = 0;
+    s_ge->clear_mode = 0;
+    ok = ok && ahc_present(base_a, "frame 4");
+    if (ok && (s_ahc.depth != z->img || !s_ahc.have_bits || ahc_bit(240, 136))) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 4: depth %s after a depth clear, mask %d, "
+                        "clear in mask %d\n", s_ahc.depth == z->img ? "handed on" : "missing",
+                s_ahc.have_bits, ahc_bit(240, 136));
+        ok = 0;
+    }
+
+    /* A frame published while no show pass took it, then a CPU frame: the CPU frame gets
+     * nothing, and the stale mask is counted, not carried over. */
+    ahc_state(base_a, zbp, 1);
+    ok = ok && ahc_sprite(100.0f, 100.0f, 110.0f, 104.0f, hud) && submit_pending();
+    sdl3vk_set_show_pass(NULL);
+    ok = ok && gegpu_present(base_a, 3, 512u) == GEGPU_PRESENT_SHOWN;
+    sdl3vk_set_show_pass(ace_hud_cell_show);
+    static uint32_t cpu_px[480 * 272];
+    memset(&s_ahc, 0, sizeof(s_ahc));
+    ok = ok && sdl3vk_present_rgba(cpu_px) == 1;
+    if (ok && (s_ahc.calls != 1 || s_ahc.got)) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: a CPU frame took a GPU frame's mask "
+                        "(calls %d, got %d)\n", s_ahc.calls, s_ahc.got);
+        ok = 0;
+    }
+
+    AceSmoothAuxStats st;
+    memset(&st, 0, sizeof(st));
+    ace_hud_stats(&st);
+    if (ok && (st.boxes_kept != 4u || st.boxes_target != 1u || st.boxes_large != 0u || st.boxes_full != 0u ||
+               st.frames_mask != 5u || st.frames_depth != 3u || st.frames_depth_unwritten != 2u ||
+               st.published_unshown != 1u)) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: counts kept=%llu target=%llu large=%llu "
+                        "full=%llu frames mask=%llu depth=%llu unwritten=%llu unshown=%llu\n",
+                (unsigned long long)st.boxes_kept, (unsigned long long)st.boxes_target,
+                (unsigned long long)st.boxes_large, (unsigned long long)st.boxes_full,
+                (unsigned long long)st.frames_mask, (unsigned long long)st.frames_depth,
+                (unsigned long long)st.frames_depth_unwritten, (unsigned long long)st.published_unshown);
+        ok = 0;
+    }
+    sdl3vk_set_show_pass(NULL);
+    ace_hud_enable(0);
+    coherence_reset_targets();
+    if (ok) printf("gpu snapshot sync selftest: ace_hud_mask_and_depth_from_the_ge\n");
     return ok;
 }
 
@@ -6156,5 +6868,5 @@ int gegpu_snapshot_sync_selftest(void) {
     }
     printf("gpu snapshot sync selftest: present_shown_stays_1\n");
     coherence_reset_targets();
-    return 1;
+    return coherence_run_ace_hud();
 }
