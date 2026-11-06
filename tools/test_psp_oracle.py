@@ -2536,8 +2536,36 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                      "__sceSasSetSimpleADSR(", "sas_adsr_init_grain(", "{0xfu, 5u, 5u, 5u, 5u}",
                      "SAS_ADSR_TOP | 2u", '"g64-p1", 64u', '"expatk", 256u'):
             self.assertIn(call, section)
-        self.assertIn('"sas-adsr-done", sascore_ok ? "RC" : "SKIP"', section)
-        self.assertNotIn('"PASS"', section)
+        self.assertIn('"sas-adsr-done", sascore_ok ? "PASS" : "SKIP"', section)
+        self.assertNotIn('"RC"', section)
+        # The registered stream follows the source tables: 9 pairs of 1024 grains, 32 mode rows
+        # and the explicit runs in order, 695 records before the done record, held to a strict
+        # golden sequence.
+        spec, counts = CAMPAIGN_PROBE_CASES["sas-adsr"]
+        self.assertEqual(spec.test_id, "PSP-SAS-002")
+        self.assertEqual(len(spec.semantic_cases), 695)
+        self.assertEqual(spec.terminal_case, "sas-adsr-done")
+        self.assertEqual(_campaign_completeness_contract("sas-adsr"), "strict-golden-sequence")
+        pairs_body = section[section.index("k_sas_adsr_pairs[][2] = {"):]
+        pairs = re.findall(r"\{0x[0-9a-f]+u, 0x[0-9a-f]+u\}", pairs_body[:pairs_body.index("};")])
+        self.assertEqual(len(pairs), 9)
+        self.assertIn("#define SAS_ADSR_ON_GRAINS 640u", section)
+        self.assertIn("#define SAS_ADSR_OFF_GRAINS 384u", section)
+        rows_body = section[section.index("k_sas_adsr_mode_rows[] = {"):]
+        rows = re.findall(r"\{0x[0-9a-f]+u, [^{}]+\}", rows_body[:rows_body.index("};")])
+        self.assertEqual(len(rows), 32)
+        runs_body = section[section.index("k_sas_adsr_runs[] = {"):]
+        runs = re.findall(r'\{"([a-z0-9-]+)",[^}]*?(\d+)u, (\d+)u\}', runs_body[:runs_body.index("};")])
+        registered = [case[len("sas-adsr-"):-len("-calls")] for case in spec.semantic_cases
+                      if case.endswith("-calls") and not re.fullmatch(r"sas-adsr-[pm]\d+-calls", case)]
+        self.assertEqual([name for name, _on, _off in runs], registered)
+        for name, on, off in runs:
+            last = (int(on) + int(off)) // 16 - 1
+            self.assertEqual(counts[f"sas-adsr-{name}-h{last:02x}"], 16)
+            self.assertNotIn(f"sas-adsr-{name}-h{last + 1:02x}", counts)
+        self.assertEqual(counts["sas-adsr-p0-calls"], 11)
+        self.assertEqual(counts["sas-adsr-m00-calls"], 16)
+        self.assertEqual(counts["sas-adsr-load"], 4)
 
     def test_sas_mix_case_links_sascore_and_records_every_cell(self) -> None:
         # The case's own LIBS block links the SAS and utility stubs (#2135, #2054).

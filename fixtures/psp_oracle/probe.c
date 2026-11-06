@@ -11648,8 +11648,9 @@ static void run_sas_init(int emulated) {
    31). The field layout is PPSSPP's (Core/HW/SasAudio.cpp, a behaviour reference); the PSP's
    answer is what this case records.
 
-   Records (test_id PSP-SAS-002, status RC, or SKIP with the same shape when SASCORE does not
-   load). Every status is RC ("the calls ran; here are their answers"), never a verdict:
+   Records (test_id PSP-SAS-002, status PASS, or SKIP with the same shape when SASCORE does not
+   load). PASS means the calls ran and their answers are recorded; nothing is compared on the
+   console. The runner's protocol has no RC status, and parse_golden registers this stream:
    - sas-adsr-load (4 words: AVCODEC load, SASCORE load, init, grain).
    - Per SimpleADSR pair N: sas-adsr-pN-calls (11 words: env1, env2, init, SetVoice, SetVolume,
      SetSimpleADSR, KeyOn, the height before the first __sceSasCore, KeyOff, the end flag after
@@ -11666,7 +11667,7 @@ static void run_sas_init(int emulated) {
      (16 words: grain, init, SetVoice, SetVolume, SetSimpleADSR or SetADSRmode, SetADSR, SetSL,
      KeyOn, the height after KeyOn, KeyOff, the end flag, the height before KeyOn, the grains on
      and off, 0, 0), then sas-adsr-<name>-hKK, 16 heights each.
-   - sas-adsr-done (out0: the record count before it), status RC: the run completed.
+   - sas-adsr-done (out0: the record count before it), status PASS: the run completed.
    Heights are buffered and written after each run's last grain, so the host0 writes never fall
    between two grains. Synthetic VAG data only. Ends in the normal teardown. */
 #define SAS_ADSR_GRAIN 256
@@ -11844,7 +11845,7 @@ static void sas_adsr_pair(int emulated, uint32_t pair, int sascore_ok) {
         }
         calls[9] = (uint32_t)__sceSasGetEndFlag(&s_sas_adsr_core);
     }
-    const char *status = sascore_ok ? "RC" : "SKIP";
+    const char *status = sascore_ok ? "PASS" : "SKIP";
     (void)snprintf(case_id, sizeof(case_id), "sas-adsr-p%u-calls", (unsigned int)pair);
     sas_adsr_record(emulated, case_id, status, calls, SAS_ADSR_CALL_WORDS);
     for (uint32_t row = 0; row < SAS_ADSR_ROWS; row++) {
@@ -11899,7 +11900,7 @@ static void sas_adsr_mode_row(int emulated, uint32_t idx, int sascore_ok) {
             heights[g] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_adsr_core, 0);
         }
     }
-    const char *status = sascore_ok ? "RC" : "SKIP";
+    const char *status = sascore_ok ? "PASS" : "SKIP";
     (void)snprintf(case_id, sizeof(case_id), "sas-adsr-m%02u-calls", (unsigned int)idx);
     sas_adsr_record(emulated, case_id, status, calls, SAS_ADSR_WIDE_WORDS);
     (void)snprintf(case_id, sizeof(case_id), "sas-adsr-m%02u-h", (unsigned int)idx);
@@ -11915,7 +11916,7 @@ static void sas_adsr_curve_run(int emulated, uint32_t idx, int sascore_ok) {
         /* A table entry outside the height buffer: say so instead of skipping it silently. */
         const uint32_t bad[2] = {run->on, run->off};
         (void)snprintf(case_id, sizeof(case_id), "sas-adsr-%s-calls", run->name);
-        sas_adsr_record(emulated, case_id, "BAD", bad, 2u);
+        sas_adsr_record(emulated, case_id, "ERROR", bad, 2u);
         return;
     }
     for (uint32_t i = 0; i < SAS_ADSR_WIDE_WORDS; i++) calls[i] = 0u;
@@ -11953,7 +11954,7 @@ static void sas_adsr_curve_run(int emulated, uint32_t idx, int sascore_ok) {
         }
         calls[10] = (uint32_t)__sceSasGetEndFlag(&s_sas_adsr_core);
     }
-    const char *status = sascore_ok ? "RC" : "SKIP";
+    const char *status = sascore_ok ? "PASS" : "SKIP";
     (void)snprintf(case_id, sizeof(case_id), "sas-adsr-%s-calls", run->name);
     sas_adsr_record(emulated, case_id, status, calls, SAS_ADSR_WIDE_WORDS);
     for (uint32_t row = 0; row < grains / SAS_ADSR_ROW_WORDS; row++) {
@@ -11984,7 +11985,7 @@ static void run_sas_adsr(int emulated) {
         load[2] = (uint32_t)sas_adsr_init();
         load[3] = (uint32_t)__sceSasGetGrain(&s_sas_adsr_core);
     }
-    sas_adsr_record(emulated, "sas-adsr-load", "RC", load, 4u);
+    sas_adsr_record(emulated, "sas-adsr-load", "PASS", load, 4u);
     for (uint32_t pair = 0; pair < SAS_ADSR_PAIRS; pair++) {
         sas_adsr_pair(emulated, pair, sascore_ok);
     }
@@ -11995,8 +11996,8 @@ static void run_sas_adsr(int emulated) {
         sas_adsr_curve_run(emulated, run, sascore_ok);
     }
     const uint32_t done[1] = {s_sas_adsr_records};
-    /* RC: the run completed. It is not a correctness verdict; nothing here is compared. */
-    sas_adsr_record(emulated, "sas-adsr-done", sascore_ok ? "RC" : "SKIP", done, 1u);
+    /* PASS: the run completed. It is not a correctness verdict; nothing here is compared. */
+    sas_adsr_record(emulated, "sas-adsr-done", sascore_ok ? "PASS" : "SKIP", done, 1u);
     probe_step(emulated, "sas-adsr", "park");
     /* Normal teardown: parks until PSPLink modstop. The AV modules stay loaded, as in sas-init. */
     probe_teardown(emulated);

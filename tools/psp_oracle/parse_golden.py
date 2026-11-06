@@ -2364,6 +2364,31 @@ _register_campaign_probe(
     {case: (4 if case == "sas-mix-load" else 16) for case in SAS_MIX_CASES},
 )
 
+# sas-adsr (152, probe.c): the #1296 envelope heights. probe.c's k_sas_adsr_pairs (9 SimpleADSR
+# pairs, 1024 grains each), k_sas_adsr_mode_rows (32 SetADSRmode rows, 16 grains each) and
+# k_sas_adsr_runs (name and on + off grains), in order; heights are 16 per record.
+SAS_ADSR_PAIR_COUNT = 9
+SAS_ADSR_PAIR_GRAINS = 1024
+SAS_ADSR_MODE_ROW_COUNT = 32
+SAS_ADSR_RUNS = (("expatk", 80), ("expatk-g64", 160), ("bound", 32), ("bound-half", 32),
+                 ("g64-p1", 160), ("g64-p2", 160))
+SAS_ADSR_CASES = (
+    "sas-adsr-load",
+    *(case for pair in range(SAS_ADSR_PAIR_COUNT)
+      for case in (f"sas-adsr-p{pair}-calls",
+                   *(f"sas-adsr-p{pair}-h{row:02x}" for row in range(SAS_ADSR_PAIR_GRAINS // 16)))),
+    *(case for row in range(SAS_ADSR_MODE_ROW_COUNT)
+      for case in (f"sas-adsr-m{row:02d}-calls", f"sas-adsr-m{row:02d}-h")),
+    *(case for name, grains in SAS_ADSR_RUNS
+      for case in (f"sas-adsr-{name}-calls", *(f"sas-adsr-{name}-h{row:02x}" for row in range(grains // 16)))),
+)
+_register_campaign_probe(
+    "sas-adsr", "PSP-SAS-002", SAS_ADSR_CASES,
+    {case: (4 if case == "sas-adsr-load" else 11
+            if case.startswith("sas-adsr-p") and case.endswith("-calls") else 16)
+     for case in SAS_ADSR_CASES},
+)
+
 # ge-weight (157, probe_ge_sample.c): the #343 weighted-vertex cells. Per cell of the gw_cells
 # table, in order: one `-draw` record (10 words: the GE wait outcome, the list length, the vertex
 # type, the vertex size and the weight count) and seventeen `-rN` window rows.
