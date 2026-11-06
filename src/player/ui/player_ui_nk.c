@@ -133,6 +133,8 @@ struct PlayerUiNk {
     char input_summary[128];
     char title_input_summary[128];
     char settings_controller[160];
+    /* The graphics preset's note on the main Settings page (#2150). */
+    char settings_preset_note[192];
     char settings_interface_size[16];
     char settings_saves[NK_MAX_PATH];
     /* The play mode on the open title's page: what it turns on, and its last session, read
@@ -235,6 +237,7 @@ struct PlayerUiNk {
     char play_reported[PLAYER_UI_TITLE_CAP][16];   /* the play mode badge last printed */
     char enhanced_reported[512];                    /* Settings > Enhanced as last printed */
     char ace_line_reported[256];                    /* the open title's play line last printed */
+    char preset_note_reported[200];                 /* the main Settings page's preset note */
     int disc_reported_view;  /* the game-found card whose rows were printed, or -1 */
 #endif
     bool ready;
@@ -1003,6 +1006,29 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     if (app->settings_newer_schema && app->settings_notice[0] != '\0') {
         model.notice = app->settings_notice;
     }
+    /* The graphics preset (#2150) says on the main page, where its row is, that it is used
+       in Enhanced and Ace only and what it could not set. It is derived from the choice, so
+       it goes with Custom and is back after a restart. */
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_MAIN &&
+        player_app_graphics_preset_note(app, player->settings_preset_note,
+                                        sizeof(player->settings_preset_note),
+                                        &model.preset_notice_warns)) {
+        model.preset_notice = player->settings_preset_note;
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_MAIN) {
+        /* The preset row and note the main page draws; printed on change. */
+        char line[sizeof(player->preset_note_reported)];
+        snprintf(line, sizeof(line), "value=%s|warns=%d|note=%s", model.preset,
+                 model.preset_notice_warns ? 1 : 0,
+                 model.preset_notice != NULL ? model.preset_notice : "");
+        if (strcmp(line, player->preset_note_reported) != 0) {
+            snprintf(player->preset_note_reported, sizeof(player->preset_note_reported), "%s",
+                     line);
+            printf("[PLAYER_UI_TEST] next_ui_settings_preset %s\n", line);
+        }
+    }
+#endif
     for (size_t i = 0u; i < app->prerequisites.items.count &&
                         model.tool_count < PLAYER_UI_SETTINGS_TOOLS; ++i) {
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];

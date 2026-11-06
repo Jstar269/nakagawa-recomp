@@ -276,8 +276,8 @@ typedef struct {
     bool fullscreen;
     bool launcher_fullscreen;
     bool vsync;
-    /* PLAYER_PRESET_*: the graphics preset last chosen (#2150). It reads as Custom once
-       a setting it set no longer holds its value (player_app_graphics_preset). */
+    /* PLAYER_PRESET_*: the graphics preset chosen (#2150), for Enhanced and Ace sessions
+       only. Editing a row it sets makes it Custom. */
     int graphics_preset;
     int fps_cap;          /* -1 = PSP scanout, 0 = uncapped host presentation */
     int master_volume;    /* 0..100 */
@@ -912,7 +912,6 @@ struct PlayerApp {
        no longer lists the game closes the page. */
     char enhanced_page_disc[PLAYER_DISC_ID_KEY_LEN];
     char settings_notice[128];
-    bool settings_notice_preset; /* settings_notice is a graphics preset's note */
     /* The operating system's display preferences, as player_app_read_system_preferences
        last read them: what an AUTO accessibility choice follows. */
     bool system_reduced_motion;
@@ -1485,11 +1484,14 @@ void player_app_cycle_present_scaling(PlayerApp *app, int direction);
 const char *player_present_scaling_label(int scaling);
 
 /* Graphics presets (#2150): a named set of values for display settings that already
-   exist, in one table (k_graphics_presets in player_state.c). Choosing one writes
-   those settings, which stay ordinary settings the user can change; the settings file
-   keeps each of them, so a file from before presets loads as it did. A preset adds no
-   rendering feature and changes nothing a game can observe: resolution scale and
-   presentation leave guest frames and VRAM unchanged, and the play mode, the Enhanced
+   exist, in one table (k_graphics_presets in player_state.c). A preset is an overlay, not
+   a writer: choosing one sets only PlayerSettings.graphics_preset, and an Enhanced or Ace
+   session takes the preset's values in place of the Resolution, Scaling, VSync and Game
+   fullscreen rows (player_session_apply_graphics_preset). An Authentic session always
+   uses the rows as the user set them, whatever the preset: a render scale above 1x is
+   guest-visible (every present commits to VRAM, docs/ENHANCEMENT_CONTRACT.md), so a
+   preset must not reach Authentic launch output. Editing one of the rows a preset sets
+   makes it Custom, which means the rows apply everywhere. The play mode, the Enhanced
    parts and the launch line are not in the table. */
 typedef enum {
     PLAYER_PRESET_CUSTOM = 0,
@@ -1503,7 +1505,8 @@ typedef enum {
 
 typedef struct {
     const char *word;     /* settings.json "graphics_preset" */
-    const char *label;    /* the Settings button */
+    const char *label;    /* the preset's name, as the Settings notice line says it */
+    const char *value;    /* the Settings row's value: the name, and anything not set */
     int resolution_scale;
     int present_scaling;  /* NK_PRESENT_SCALING_* */
     bool vsync;
@@ -1513,15 +1516,26 @@ typedef struct {
 
 /* The preset's row; NULL for Custom or a value out of range. */
 const PlayerGraphicsPresetRow *player_graphics_preset_row(int preset);
-/* The chosen preset while every value it set still holds, else PLAYER_PRESET_CUSTOM. */
+/* The chosen preset, or PLAYER_PRESET_CUSTOM (also for a value out of range). */
 int player_app_graphics_preset(const PlayerApp *app);
-/* "Low", ..., "Handheld", or "Custom". */
+/* The Settings row's value: "Low", ..., "Ultra (no upscaler)", "Handheld", or "Custom". */
 const char *player_app_graphics_preset_label(const PlayerApp *app);
-/* Writes the preset's values. A value it cannot set is named in settings_notice,
-   never shown as applied; a preset with nothing to report clears its own earlier note. */
+/* The main Settings page's notice line while a preset is chosen: where it applies, and a
+   value it asks for that Settings cannot set. Returns false, with out empty, for Custom.
+   *warns is set when the note names a value that is not set. Derived from the choice, so
+   it goes when the preset becomes Custom and comes back with a saved preset. */
+bool player_app_graphics_preset_note(const PlayerApp *app, char *out, size_t cap,
+                                     bool *warns);
+/* Chooses the preset. The rows keep their values: only Enhanced and Ace sessions use the
+   preset's. */
 void player_app_apply_graphics_preset(PlayerApp *app, int preset);
 /* The next (or, with a negative direction, previous) preset, Custom stepping to Low. */
 void player_app_cycle_graphics_preset(PlayerApp *app, int direction);
+/* The overlay: for an Enhanced or Ace session (`enhanced`, the SR_ACE line not "off"), the
+   chosen preset's values replace the rows player_app_apply_settings_to_session copied. An
+   Authentic session, or Custom, leaves `config` as it is. */
+void player_session_apply_graphics_preset(const PlayerSettings *settings, bool enhanced,
+                                          NkRuntimeConfig *config);
 void player_app_set_fps_cap(PlayerApp *app, int cap);
 void player_app_cycle_fps_cap(PlayerApp *app, int direction);
 void player_app_toggle_fullscreen(PlayerApp *app);
@@ -1820,6 +1834,8 @@ void player_app_request_launch(PlayerApp *app, int game_index);
 
 /* Copy the launch-relevant player settings into a prepared session's runtime
  * configuration (resolution, frame cap, vsync, fullscreen, master volume).
+ * These are the user's own rows, what an Authentic session runs with; an Enhanced or Ace
+ * session then takes the graphics preset's values (player_session_apply_graphics_preset).
  * The accessibility settings and ui_sounds are launcher-UI state and deliberately not copied. Kept as a
  * named seam so tests can pin the settings -> session mapping without
  * spawning a child. */

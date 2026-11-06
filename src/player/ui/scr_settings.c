@@ -152,12 +152,18 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                 nk_ui_text_role(ui, SET_ID_TEXT + 0u, "SETTINGS", NK_UI_TYPE_DISPLAY,
                                 theme->paper);
             }
+            /* A notice (a failed save) comes first, then the graphics preset's note
+               (#2150), then the page's own line. */
+            bool has_notice = model->notice != NULL && model->notice[0] != '\0';
+            bool has_preset = !has_notice && model->preset_notice != NULL &&
+                              model->preset_notice[0] != '\0';
             nk_ui_text_role(ui, SET_ID_TEXT + 1u,
-                            safe_text(model->notice,
-                                      "Changes are saved as you make them. Game settings apply "
-                                      "the next time a game starts."),
+                            has_notice ? model->notice
+                            : has_preset ? model->preset_notice
+                                         : "Changes are saved as you make them. Game settings "
+                                           "apply the next time a game starts.",
                             NK_UI_TYPE_BODY_S,
-                            model->notice != NULL && model->notice[0] != '\0'
+                            has_notice || (has_preset && model->preset_notice_warns)
                                 ? theme->warning : theme->muted);
             if (advisory[0] != '\0') {
                 nk_ui_text_role(ui, SET_ID_TEXT + 2u, advisory, NK_UI_TYPE_BODY_S,
@@ -199,9 +205,10 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                              model->enhanced_library_on, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_OPEN_ACE);
             }
-            /* A graphics preset (#2150) sets the rows above it in one choice; changing one of
-               them afterwards makes it Custom. Last on the card, so the rows above keep their
-               places beside the LAUNCHER AND SOUND rows. */
+            /* A graphics preset (#2150) stands in for the display rows above it in Enhanced
+               and Ace sessions; Authentic keeps those rows, and editing one makes the preset
+               Custom. Last on the card, so the rows above keep their places beside the
+               LAUNCHER AND SOUND rows. */
             if (settings_row(ui, 13u, PLAYER_UI_ID_SETTINGS_PRESET, "Graphics preset",
                              safe_text(model->preset, "Custom"), false, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_PRESET);

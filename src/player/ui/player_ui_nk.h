@@ -645,6 +645,11 @@ typedef struct {
     const char *controller_line;    /* "Keyboard ready" or the pad's name */
     const char *saves_folder;
     const char *notice;             /* a settings notice (a failed save), or NULL */
+    /* The main page's graphics preset note (#2150): where the preset applies, or NULL for
+       Custom. Drawn when there is no notice; in the warning colour when it names a value
+       the preset could not set. */
+    const char *preset_notice;
+    bool preset_notice_warns;
     /* Build tools and cache: builds share compiled system libraries (#1306) */
     bool share_system_libraries;
     /* Updates (VIEW_UPDATES): what the last step found, in words */
