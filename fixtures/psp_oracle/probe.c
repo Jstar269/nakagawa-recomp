@@ -11132,8 +11132,10 @@ static void run_at3_delay_sweep(int emulated) {
    bytes InitYCbCr writes, the sceMpegAvcDecodeYCbCr results up to the first picture, the raw YCbCr buffer
    of that picture, sceMpegAvcDecodeDetail's words, sceMpegAvcCsc of the buffer as decoded, with its plane
    bytes overwritten, and with its first 128 bytes cleared (whether CSC reads guest memory), CSC range and
-   stride refusals, and one direct sceMpegAvcDecode for comparison. The picture bytes go to private host0
-   files only. Every call is preceded by a durable step marker; loops are bounded. Ends in the normal
+   stride refusals, and one direct sceMpegAvcDecode for comparison. After those, for YCbCr modes 2 and 3
+   (mpy_ycbcr_mode): the size query, InitYCbCr, decode calls up to the first picture, that buffer from its
+   header through the queried size, one full-picture CSC of it and the stop. The picture bytes go to private
+   host0 files only. Every call is preceded by a durable step marker; loops are bounded. Ends in the normal
    teardown with the AV modules unloaded. */
 /* PSPSDK's libpspmpeg.a has no YCbCr, CSC or decode-detail stubs, so this case links one complete sceMpeg
    import block of its own instead (libpspmpeg.a is not linked: two blocks for one library leave the stubs out
@@ -11206,6 +11208,9 @@ SceInt32 sceMpegAvcCsc(SceMpeg *mpeg, void *ycbcr, SceInt32 *range, SceInt32 fra
 #define MPY_RING_CAP (640u << 10)
 #define MPY_MPEG_CAP (256u << 10)
 #define MPY_YCBCR_CAP (256u << 10)
+/* Modes 2 and 3 have no measured size yet: their buffer is larger than mode 1's. */
+#define MPY_YCBCR_X_CAP (1024u << 10)
+#define MPY_MODE_MAX_CALLS 8
 #define MPY_W 480
 #define MPY_H 272
 #define MPY_STRIDE 512
@@ -11218,6 +11223,7 @@ static unsigned char s_mpy_ring[MPY_RING_CAP] __attribute__((aligned(64)));
 static unsigned char s_mpy_mpeg[MPY_MPEG_CAP] __attribute__((aligned(64)));
 static unsigned char s_mpy_ycbcr[MPY_YCBCR_CAP] __attribute__((aligned(64)));
 static unsigned char s_mpy_ycbcr_copy[MPY_YCBCR_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_ycbcr_x[MPY_YCBCR_X_CAP] __attribute__((aligned(64)));
 static unsigned char s_mpy_dest[MPY_DEST_BYTES] __attribute__((aligned(64)));
 static uint32_t s_mpy_detail[32] __attribute__((aligned(64)));
 static uint32_t s_mpy_file_bytes;
@@ -11260,20 +11266,139 @@ static SceInt32 mpy_ring_cb(ScePVoid data, SceInt32 packets, ScePVoid param) {
     return done;
 }
 
-static void mpy_csc(int emulated, SceMpeg *mpeg, const char *name, SceInt32 x, SceInt32 y, SceInt32 w, SceInt32 h,
-                    SceInt32 frame_width, int dump) {
+static void mpy_csc_buf(int emulated, SceMpeg *mpeg, void *ycbcr, const char *name, SceInt32 x, SceInt32 y,
+                        SceInt32 w, SceInt32 h, SceInt32 frame_width, int dump) {
     SceInt32 range[4] __attribute__((aligned(16))) = {x, y, w, h};
     char step[48], extra[96];
     memset(s_mpy_dest, 0x5a, sizeof(s_mpy_dest));
     sceKernelDcacheWritebackInvalidateAll();
     (void)snprintf(step, sizeof(step), "csc-%s", name);
     probe_step(emulated, "mpeg-ycbcr", step);
-    const int rc = sceMpegAvcCsc(mpeg, s_mpy_ycbcr, range, frame_width, s_mpy_dest);
+    const int rc = sceMpegAvcCsc(mpeg, ycbcr, range, frame_width, s_mpy_dest);
     sceKernelDcacheWritebackInvalidateAll();
     (void)snprintf(extra, sizeof(extra), "x=%d y=%d w=%d h=%d fw=%d", (int)x, (int)y, (int)w, (int)h,
                    (int)frame_width);
     mpy_rc(emulated, step, rc, extra);
     if (dump && rc == 0) mpy_dump(emulated, name, s_mpy_dest, MPY_DEST_BYTES);
+}
+
+static void mpy_csc(int emulated, SceMpeg *mpeg, const char *name, SceInt32 x, SceInt32 y, SceInt32 w, SceInt32 h,
+                    SceInt32 frame_width, int dump) {
+    mpy_csc_buf(emulated, mpeg, s_mpy_ycbcr, name, x, y, w, h, frame_width, dump);
+}
+
+/* A call that was not made because an earlier call of the same mode was refused or its result unusable. The
+   record still exists and carries that earlier call's return value (-1 when the probe itself held the call
+   back, which no PSP return value is). */
+static void mpy_not_called(int emulated, const char *step, int rc, const char *why) {
+    char extra[64];
+    (void)snprintf(extra, sizeof(extra), "not-called=%s", why);
+    mpy_rc(emulated, step, rc, extra);
+}
+
+/* One YCbCr mode beyond mode 1 (#302): size query at the stream's geometry, InitYCbCr, decode calls up to
+   the first picture (the decoder runs one unit behind, so the second call yields it), the buffer from its
+   header through the queried size plus 64 bytes (as mode 1's dump), one full-picture CSC of it into the 8888
+   destination, and the stop. A refusal keeps its own return value in every later record of the mode. */
+static void mpy_ycbcr_mode(int emulated, SceMpeg *mpeg, SceMpegStream *stream, SceInt32 mode, SceInt32 pic_w,
+                           SceInt32 pic_h) {
+    char step[48], name[32], extra[200];
+    unsigned char *const buf = s_mpy_ycbcr_x;
+    SceInt32 size = -1;
+    (void)snprintf(step, sizeof(step), "m%d-qsize", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    int rc = sceMpegAvcQueryYCbCrSize(mpeg, mode, MPY_W, MPY_H, &size);
+    (void)snprintf(extra, sizeof(extra), "size=%d w=%d h=%d", (int)size, MPY_W, MPY_H);
+    mpy_rc(emulated, step, rc, extra);
+    const int size_ok = rc == 0 && size > 0 && (uint32_t)size + 64u <= MPY_YCBCR_X_CAP;
+    int carried = rc != 0 ? rc : -1; /* the return value the records of calls not made carry */
+    const char *why = rc != 0 ? "query-refused" : "size-unusable";
+    int inited = 0;
+
+    (void)snprintf(step, sizeof(step), "m%d-init", (int)mode);
+    if (size_ok) {
+        memset(buf, 0xa5, MPY_YCBCR_X_CAP);
+        sceKernelDcacheWritebackInvalidateAll();
+        probe_step(emulated, "mpeg-ycbcr", step);
+        rc = sceMpegAvcInitYCbCr(mpeg, mode, MPY_W, MPY_H, buf);
+        sceKernelDcacheWritebackInvalidateAll();
+        (void)snprintf(extra, sizeof(extra), "size=%d", (int)size);
+        mpy_rc(emulated, step, rc, extra);
+        inited = 1;
+        if (rc != 0) {
+            carried = rc;
+            why = "init-refused";
+        }
+    } else {
+        mpy_not_called(emulated, step, carried, why);
+    }
+    const int init_ok = inited && rc == 0;
+
+    SceInt32 init = 0;
+    void *ptr = buf;
+    int calls = 0, last_rc = -1;
+    if (init_ok) {
+        for (int iter = 0; iter < 8 * MPY_MODE_MAX_CALLS && calls < MPY_MODE_MAX_CALLS && init == 0; iter++) {
+            const SceInt32 avail = sceMpegRingbufferAvailableSize(&s_mpy_rb);
+            if (avail > 0) (void)sceMpegRingbufferPut(&s_mpy_rb, avail, avail);
+            SceInt32 attr = -1;
+            if (sceMpegGetAvcAu(mpeg, stream, &s_mpy_au, &attr) != 0) {
+                if (s_mpy_cursor + 2048u > s_mpy_file_bytes && avail <= 0) break;
+                continue;
+            }
+            (void)snprintf(step, sizeof(step), "m%d-decode%d", (int)mode, calls);
+            probe_step(emulated, "mpeg-ycbcr", step);
+            last_rc = sceMpegAvcDecodeYCbCr(mpeg, &s_mpy_au, &ptr, &init);
+            (void)snprintf(extra, sizeof(extra), "init=%d pts=0x%08x%08x au_size=%u", (int)init,
+                           (unsigned int)s_mpy_au.iPtsMSB, (unsigned int)s_mpy_au.iPts,
+                           (unsigned int)s_mpy_au.iAuSize);
+            mpy_rc(emulated, step, last_rc, extra);
+            calls++;
+            if (last_rc != 0) break;
+        }
+        sceKernelDcacheWritebackInvalidateAll();
+        if (last_rc != 0) {
+            carried = last_rc;
+            why = calls ? "decode-refused" : "no-access-unit";
+        } else if (init == 0) {
+            carried = -1;
+            why = "no-picture";
+        }
+        (void)snprintf(step, sizeof(step), "m%d-decode-end", (int)mode);
+        (void)snprintf(extra, sizeof(extra), "init=%d calls=%d", (int)init, calls);
+        mpy_rc(emulated, step, calls ? last_rc : -1, extra);
+    } else {
+        (void)snprintf(step, sizeof(step), "m%d-decode-end", (int)mode);
+        mpy_not_called(emulated, step, carried, why);
+    }
+    const int picture = init_ok && last_rc == 0 && init != 0;
+
+    (void)snprintf(name, sizeof(name), "ycbcr-m%d-picture", (int)mode);
+    if (inited) {
+        mpy_dump(emulated, name, buf, (uint32_t)size + 64u);
+    } else {
+        (void)snprintf(step, sizeof(step), "dump-%s", name);
+        mpy_not_called(emulated, step, carried, why);
+    }
+
+    (void)snprintf(name, sizeof(name), "m%d-full", (int)mode);
+    if (picture) {
+        mpy_csc_buf(emulated, mpeg, buf, name, 0, 0, pic_w, pic_h, MPY_STRIDE, 1);
+    } else {
+        (void)snprintf(step, sizeof(step), "csc-%s", name);
+        mpy_not_called(emulated, step, carried, why);
+    }
+
+    (void)snprintf(step, sizeof(step), "m%d-decode-stop", (int)mode);
+    if (init_ok) {
+        SceInt32 status = -1;
+        probe_step(emulated, "mpeg-ycbcr", step);
+        rc = sceMpegAvcDecodeStopYCbCr(mpeg, &ptr, &status);
+        (void)snprintf(extra, sizeof(extra), "status=%d", (int)status);
+        mpy_rc(emulated, step, rc, extra);
+    } else {
+        mpy_not_called(emulated, step, carried, why);
+    }
 }
 
 static void run_mpeg_ycbcr(int emulated) {
@@ -11520,6 +11645,11 @@ static void run_mpeg_ycbcr(int emulated) {
         rc = sceMpegAvcDecodeStop(&mpeg, MPY_STRIDE, &dest_ptr, &status);
         (void)snprintf(extra, sizeof(extra), "status=%d", (int)status);
         mpy_rc(emulated, "decode-stop", rc, extra);
+
+        /* YCbCr modes 2 and 3, after every mode 1 cell so their order and content are unchanged. The
+           stream, ringbuffer and AV modules are released below as before. */
+        for (SceInt32 ycbcr_mode = 2; ycbcr_mode <= 3; ycbcr_mode++)
+            mpy_ycbcr_mode(emulated, &mpeg, stream, ycbcr_mode, pic_w, pic_h);
 free_es:
         probe_step(emulated, "mpeg-ycbcr", "free-es");
         sceMpegFreeAvcEsBuf(&mpeg, es);

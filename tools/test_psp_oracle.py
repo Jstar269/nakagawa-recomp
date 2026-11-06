@@ -2518,6 +2518,26 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(routes.get("sas-adsr"), "152")
         self.assertEqual(routes.get("sas-mix"), "155")
 
+    def test_mpeg_ycbcr_modes_2_and_3_cells_follow_the_mode_1_cells(self) -> None:
+        # #302: the mode 2 and 3 cells come after every mode 1 cell, keep a record for a refused
+        # call, and leave the teardown (free-es .. unload-avcodec) after them.
+        probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        start = probe.index("static void run_mpeg_ycbcr(int emulated)")
+        run = probe[start:probe.index("#endif\n", start)]
+        order = [run.index(marker) for marker in (
+            '"sub-h-odd"', '"decode-mode-f%d"', '"avc-decode%d"', 'mpy_rc(emulated, "decode-stop"',
+            "mpy_ycbcr_mode(emulated", "free_es:", "unregist:", "delete_mpeg:", "ring_destruct:",
+            "sceMpegFinish();", '"unload-avcodec"')]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("ycbcr_mode = 2; ycbcr_mode <= 3", run)
+        helper = probe[probe.index("static void mpy_ycbcr_mode("):start]
+        for call in ("sceMpegAvcQueryYCbCrSize(", "sceMpegAvcInitYCbCr(", "sceMpegAvcDecodeYCbCr(",
+                     "mpy_csc_buf(", "sceMpegAvcDecodeStopYCbCr(", '"m%d-qsize"', '"m%d-init"',
+                     '"m%d-decode-end"', '"ycbcr-m%d-picture"', '"m%d-full"', '"m%d-decode-stop"'):
+            self.assertIn(call, helper)
+        # A refusal never drops a record: every skipped call is still written with the return value.
+        self.assertGreaterEqual(helper.count("mpy_not_called("), 5)
+
     def test_sas_adsr_case_links_sascore_and_covers_the_adsr_calls(self) -> None:
         # The case's own LIBS block links the SAS and utility stubs; without them the PRX
         # fails to link (#1296).
