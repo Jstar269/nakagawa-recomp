@@ -164,7 +164,7 @@ class DomainSourcesTests(unittest.TestCase):
         self.assertIn("return sr_import_call_cosim(s, nid, stub_pc);", text)
         body = text.split("static int sr_import_call_cosim(", 1)[1]
         body = body.split("\nint sr_import_call(", 1)[0]
-        guest = body.index("rc = dispatch_call_try(s, guest_addr, stub_pc);")
+        guest = body.index("rc = sr_import_call_guest(s, nid, stub_pc, 1);")
         restore = body.index("*s = input;")
         hle = body.index("ret = sr_syscall(s, nid);")
         self.assertLess(guest, restore)

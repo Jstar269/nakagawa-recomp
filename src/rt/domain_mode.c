@@ -268,16 +268,20 @@ static int sr_import_fatal(
 /* Run a registered guest export through the production linked-call boundary
  * (explicit target plus resume PC; live $ra is not a resume descriptor).
  * A dispatch rejection fails closed like a missing export: falling through
- * to HLE after a partially executed guest body could double-apply effects. */
-static int sr_import_call_guest(CpuState *s, uint32_t nid, uint32_t stub_pc) {
+ * to HLE after a partially executed guest body could double-apply effects.
+ * The COSIM guest lane (cosim_lane != 0) takes the same entry but reports a
+ * missing export or a rejection to its caller instead: the caller restores
+ * the input state and records the call as NOT_COMPARED, and the run goes on
+ * with the HLE lane. */
+static int sr_import_call_guest(CpuState *s, uint32_t nid, uint32_t stub_pc, int cosim_lane) {
     uint32_t guest_addr;
     int rc;
     if (sr_import_lookup_export(nid, &guest_addr) != 0) {
-        return sr_import_fatal(s, nid, stub_pc, "no registered guest export");
+        return cosim_lane ? -1 : sr_import_fatal(s, nid, stub_pc, "no registered guest export");
     }
     rc = dispatch_call_try(s, guest_addr, stub_pc);
     if (rc < 0) {
-        return sr_import_fatal(s, nid, stub_pc, "guest export dispatch rejected");
+        return cosim_lane ? rc : sr_import_fatal(s, nid, stub_pc, "guest export dispatch rejected");
     }
     return 0;
 }
@@ -574,7 +578,6 @@ static void sr_cosim_report(void) {
 static int sr_import_call_cosim(CpuState *s, uint32_t nid, uint32_t stub_pc) {
     CpuState input;
     CpuState guest;
-    uint32_t guest_addr;
     uint32_t ret;
     int rc;
     unsigned i;
@@ -589,7 +592,7 @@ static int sr_import_call_cosim(CpuState *s, uint32_t nid, uint32_t stub_pc) {
         return (int)sr_syscall(s, nid);
     }
     sr_cosim_begin_result(s, nid, stub_pc);
-    if (sr_import_lookup_export(nid, &guest_addr) != 0) {
+    if (sr_import_lookup_export(nid, NULL) != 0) {
         sr_cosim_not_compared(SR_COSIM_REASON_UNPAIRED);
         return (int)sr_syscall(s, nid);
     }
@@ -606,7 +609,7 @@ static int sr_import_call_cosim(CpuState *s, uint32_t nid, uint32_t stub_pc) {
     input = *s;
     s_cosim_nested_nid = 0u;
     s_cosim_guest_active = 1;
-    rc = dispatch_call_try(s, guest_addr, stub_pc);
+    rc = sr_import_call_guest(s, nid, stub_pc, 1);
     s_cosim_guest_active = 0;
     guest = *s;
     int kept = sr_cosim_capture_guest_and_restore();
@@ -689,11 +692,11 @@ int sr_import_call(CpuState *s, uint32_t nid, uint32_t stub_pc) {
              * running HLE. */
             return sr_import_fatal(s, nid, stub_pc, "NID has no domain binding");
         }
-        return sr_import_call_guest(s, nid, stub_pc);
+        return sr_import_call_guest(s, nid, stub_pc, 0);
     case SR_MODE_LLE_FALLBACK_HLE:
         if (domain < SR_DOMAIN_COUNT &&
             sr_import_lookup_export(nid, NULL) == 0) {
-            return sr_import_call_guest(s, nid, stub_pc);
+            return sr_import_call_guest(s, nid, stub_pc, 0);
         }
         s_fallback_count++;
         s_last_fallback_nid = nid;
