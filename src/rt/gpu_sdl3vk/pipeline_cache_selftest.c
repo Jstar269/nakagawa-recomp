@@ -194,10 +194,10 @@ int main(int argc, char **argv) {
     {
         char root[64];
 #ifdef _WIN32
-        const char *abs_utf8 = "D:\\Games\\" "Jos\xc3\xa9\\NK \xf0\x9f\x8e\xae";   /* a non-BMP code point too */
+        const char *abs_utf8 = "C:\\path\\" "Jos\xc3\xa9\\NK \xf0\x9f\x8e\xae";   /* a non-BMP code point too */
         int ok = _wputenv_s(L"SR_USER_DATA_ROOT", L"") == 0 && nk_pcache_user_data_root(root, sizeof root) == 0;
         ok = ok && _wputenv_s(L"SR_USER_DATA_ROOT", L"data\\nk") == 0 && nk_pcache_user_data_root(root, sizeof root) == -1;
-        ok = ok && _wputenv_s(L"SR_USER_DATA_ROOT", L"D:\\Games\\" L"Jos\u00e9\\NK \U0001F3AE") == 0 &&
+        ok = ok && _wputenv_s(L"SR_USER_DATA_ROOT", L"C:\\path\\" L"Jos\u00e9\\NK \U0001F3AE") == 0 &&
              nk_pcache_user_data_root(root, sizeof root) == 1 && strcmp(root, abs_utf8) == 0;
         ok = ok && nk_pcache_user_data_root(root, 12) == -1;
         (void)_wputenv_s(L"SR_USER_DATA_ROOT", L"");
