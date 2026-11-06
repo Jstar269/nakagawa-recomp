@@ -12013,8 +12013,9 @@ static void run_sas_adsr(int emulated) {
    (the top in one sample), the sustain level 0x40000000, sustain rate 0. Voice 0 plays one of
    three synthetic sources: a looping VAG whose every sample is 0x0700 (filter 0, shift 4, nibble
    7), a looping VAG whose block b holds the one value ((b % 15) - 7) << 8 in all 28 samples, or a
-   16-bit PCM ramp, sample i = 8 i. Cells ask what the PSP answers; status RC, or SKIP with the
-   same shape when SASCORE does not load.
+   16-bit PCM ramp, sample i = 8 i. Cells ask what the PSP answers; status PASS means the cell's
+   calls ran and were recorded (nothing is compared on the console), SKIP the same shape when
+   SASCORE does not load. The stream is the fixed sequence parse_golden registers for sas-mix.
 
    Records (test_id PSP-SAS-003):
    - sas-mix-load (4 words: AVCODEC load, SASCORE load, init, grain).
@@ -12028,7 +12029,7 @@ static void run_sas_adsr(int emulated) {
      half first). The buffer holds the ramp (short)((i - 256) * 97) for i < 512 before the call.
    - Pitch cells sas-mix-p-<name>-calls and the left channel of the first grains after KeyOn,
      sas-mix-p-<name>-gGG, 16 words (32 left samples, two per word) each.
-   - sas-mix-done (out0: the record count before it), status RC.
+   - sas-mix-done (out0: the record count before it), status PASS.
    Every output is buffered and written after the cell's last __sceSasCore, so the host0 writes
    never fall between two grains. Synthetic data only. Ends in the normal teardown. */
 #define SAS_MIX_GRAIN 256
@@ -12197,7 +12198,7 @@ static void sas_mix_volume_cell(int emulated, uint32_t idx, int sascore_ok) {
         calls[n++] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_mix_core, 0);
         sas_mix_summary((int)c->raw, summary);
     }
-    const char *status = sascore_ok ? "RC" : "SKIP";
+    const char *status = sascore_ok ? "PASS" : "SKIP";
     (void)snprintf(case_id, sizeof(case_id), "sas-mix-v-%s-calls", c->name);
     sas_mix_record(emulated, case_id, status, calls, SAS_MIX_WORDS);
     (void)snprintf(case_id, sizeof(case_id), "sas-mix-v-%s-out", c->name);
@@ -12252,7 +12253,7 @@ static void sas_mix_withmix_cell(int emulated, uint32_t idx, int sascore_ok) {
         }
         calls[n++] = (uint32_t)__sceSasCoreWithMix(&s_sas_mix_core, s_sas_mix_out, c->l, c->r);
     }
-    const char *status = sascore_ok ? "RC" : "SKIP";
+    const char *status = sascore_ok ? "PASS" : "SKIP";
     (void)snprintf(case_id, sizeof(case_id), "sas-mix-w-%s-calls", c->name);
     sas_mix_record(emulated, case_id, status, calls, SAS_MIX_WORDS);
     for (uint32_t w = 0; w < 3u; w++) {
@@ -12322,7 +12323,7 @@ static void sas_mix_pitch_cell(int emulated, uint32_t idx, int sascore_ok) {
         calls[n++] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_mix_core, 0);
         calls[n++] = (uint32_t)__sceSasGetEndFlag(&s_sas_mix_core);
     }
-    const char *status = sascore_ok ? "RC" : "SKIP";
+    const char *status = sascore_ok ? "PASS" : "SKIP";
     (void)snprintf(case_id, sizeof(case_id), "sas-mix-p-%s-calls", c->name);
     sas_mix_record(emulated, case_id, status, calls, SAS_MIX_WORDS);
     for (uint32_t r = 0; r < grains * (uint32_t)SAS_MIX_GRAIN / 32u; r++) {
@@ -12368,13 +12369,13 @@ static void run_sas_mix(int emulated) {
                                          PSP_SAS_SAMPLE_RATE);
         load[3] = (uint32_t)__sceSasGetGrain(&s_sas_mix_core);
     }
-    sas_mix_record(emulated, "sas-mix-load", "RC", load, 4u);
+    sas_mix_record(emulated, "sas-mix-load", "PASS", load, 4u);
     for (uint32_t i = 0; i < SAS_MIX_VOLUME_CELLS; i++) sas_mix_volume_cell(emulated, i, sascore_ok);
     for (uint32_t i = 0; i < SAS_MIX_WITHMIX_CELLS; i++) sas_mix_withmix_cell(emulated, i, sascore_ok);
     for (uint32_t i = 0; i < SAS_MIX_PITCH_CELLS; i++) sas_mix_pitch_cell(emulated, i, sascore_ok);
     const uint32_t done[1] = {s_sas_mix_records};
-    /* RC: the run completed. It is not a correctness verdict; nothing here is compared. */
-    sas_mix_record(emulated, "sas-mix-done", sascore_ok ? "RC" : "SKIP", done, 1u);
+    /* PASS: the run completed. It is not a correctness verdict; nothing here is compared. */
+    sas_mix_record(emulated, "sas-mix-done", sascore_ok ? "PASS" : "SKIP", done, 1u);
     probe_step(emulated, "sas-mix", "park");
     probe_teardown(emulated);
 }

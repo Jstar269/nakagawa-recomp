@@ -2322,6 +2322,32 @@ _register_campaign_probe(
     {case: (9 if case.endswith("-draw") else 16) for case in GE_CLUT_MIP_CASES},
 )
 
+# sas-mix (155, probe.c): the #2135 and #2054 SAS volume, WithMix and pitch cells, every record
+# 16 words except the 4-word load record. The cell names and grain counts are probe.c's
+# k_sas_mix_volume, k_sas_mix_withmix and k_sas_mix_pitch tables, in order; a pitch cell writes
+# eight 32-sample left-channel records per grain.
+SAS_MIX_VOLUME_CELLS = ("def-m0", "def-m1", "zero", "half", "full-m1", "send-only-m1",
+                        *(f"e-{side}-{edge}" for edge in ("m1000", "1001", "m1001")
+                          for side in ("l", "r", "sl", "sr")),
+                        "reinit")
+SAS_MIX_WITHMIX_CELLS = ("unity", "half", "zero-neg", "over", "extreme", "keyed-zero",
+                         "keyed-unity", "raw-unity")
+SAS_MIX_PITCH_CELLS = (("vag-1000", 4), ("vag-1800", 4), ("vag-2a00", 4), ("pcm-2000", 2),
+                       ("pcm-0800", 2))
+SAS_MIX_CASES = (
+    "sas-mix-load",
+    *(f"sas-mix-v-{cell}-{part}" for cell in SAS_MIX_VOLUME_CELLS for part in ("calls", "out")),
+    *(f"sas-mix-w-{cell}-{part}" for cell in SAS_MIX_WITHMIX_CELLS
+      for part in ("calls", "s0", "s1", "s2")),
+    *(case for cell, grains in SAS_MIX_PITCH_CELLS
+      for case in (f"sas-mix-p-{cell}-calls",
+                   *(f"sas-mix-p-{cell}-g{r:02x}" for r in range(8 * grains)))),
+)
+_register_campaign_probe(
+    "sas-mix", "PSP-SAS-003", SAS_MIX_CASES,
+    {case: (4 if case == "sas-mix-load" else 16) for case in SAS_MIX_CASES},
+)
+
 # module-start (124, probe_module_start.c): the module_start thread cell. A fixed-shape
 # stream of raw words: module_start's own sceKernelReferThreadStatus (return code and the
 # 26-word SceKernelThreadInfo), the user-partition free sizes before and after the helper

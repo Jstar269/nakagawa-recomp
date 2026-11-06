@@ -2564,8 +2564,28 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         edges = re.findall(r'\{"e-(l|r|sl|sr)-(m1000|1001|m1001)", [01]u, 2u,', section)
         self.assertEqual(len(edges), 12)
         self.assertEqual(len(set(edges)), 12)
-        self.assertIn('"sas-mix-done", sascore_ok ? "RC" : "SKIP"', section)
-        self.assertNotIn('"PASS"', section)
+        self.assertIn('"sas-mix-done", sascore_ok ? "PASS" : "SKIP"', section)
+        self.assertNotIn('"RC"', section)
+        # The registered stream follows the source tables: their names in order, 204 records
+        # before the done record, which the runner holds to a strict golden sequence.
+        spec, counts = CAMPAIGN_PROBE_CASES["sas-mix"]
+        self.assertEqual(spec.test_id, "PSP-SAS-003")
+        self.assertEqual(len(spec.semantic_cases), 204)
+        self.assertEqual(spec.terminal_case, "sas-mix-done")
+        self.assertEqual(_campaign_completeness_contract("sas-mix"), "strict-golden-sequence")
+        for table, kind in (("k_sas_mix_volume", "v"), ("k_sas_mix_withmix", "w"),
+                            ("k_sas_mix_pitch", "p")):
+            body = section[section.index(f"{table}[] = {{"):]
+            names = re.findall(r'\{"([a-z0-9-]+)",', body[:body.index("};")])
+            registered = [case[len(f"sas-mix-{kind}-"):-len("-calls")]
+                          for case in spec.semantic_cases
+                          if case.startswith(f"sas-mix-{kind}-") and case.endswith("-calls")]
+            self.assertEqual(names, registered, table)
+        pitch = re.findall(r'\{"([a-z0-9-]+)", [01]u, 0x[0-9a-f]+, (\d)u\}', section)
+        self.assertEqual(len(pitch), 5)
+        for cell, grains in pitch:
+            self.assertEqual(counts[f"sas-mix-p-{cell}-g{8 * int(grains) - 1:02x}"], 16)
+            self.assertNotIn(f"sas-mix-p-{cell}-g{8 * int(grains):02x}", counts)
         # Raw mode writes four planar grains; the buffer holds twice that, filled with the sentinel.
         self.assertIn("#define SAS_MIX_OUT_SHORTS (SAS_MIX_GRAIN * 8)", section)
 
