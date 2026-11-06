@@ -200,6 +200,7 @@
     X("SR_SAMPLE_SPEC", "path", "unset (no state sampling)", "hle_route.c", "Path of a spec file listing guest state samples to take.") \
     X("SR_SASLOG", "flag-presence", "off", "hle_audio.c", "Enables SAS audio diagnostic logging.") \
     X("SR_SAVEDATA_LIST_SELECT", "string", "unset: the user picks from the list", "savedata.c", "Save name to choose automatically in the savedata list dialog; CANCEL cancels it.") \
+    X("SR_SMART_2D", "string", "off", "gpu_sdl3vk/tex_scale.c", "on samples nearest for a textured draw that maps one texel to one pixel (HUD, text) at a render scale above 1x; Ace Mode only.") \
     X("SR_STALE_DETECT", "flag-nonzero", "off", "stale_code.c", "When nonzero, enables stale translated-code detection.") \
     X("SR_STATLOG", "flag-presence", "off", "debug.h,hle_io.c", "Logs memory stick Getstat results to stderr.") \
     X("SR_STORE_CONTEXT_LIMIT", "number", "1", "debug.c", "Number of store-context entries kept, accepted from 1 to 1024.") \
@@ -214,6 +215,8 @@
     X("SR_TEST_GUEST_MODULE_LOAD", "string", "unset: the test returns immediately", "hle_thread_selftest.c", "Selects the mode of the guest-module-load binding self-test.") \
     X("SR_TEXDUMP", "flag-presence", "off", "ge.c", "When set, enables texture dumping.") \
     X("SR_TEXDUMP_AFTER", "number", "0", "ge.c", "First GE frame from which textures are dumped when SR_TEXDUMP is set.") \
+    X("SR_TEX_SCALE", "string", "off", "gpu_sdl3vk/tex_scale.c", "off or 2-6: the xBRZ factor host copies of guest textures are scaled by in the Vulkan GE texture cache; Ace Mode only.") \
+    X("SR_TEX_SCALE_BUDGET_MB", "number", "512", "gpu_sdl3vk/tex_scale.c", "GPU memory, in MiB, the scaled texture copies may use; past it a texture is drawn unscaled.") \
     X("SR_THLOG", "flag-presence", "off", "debug.h,sched.c", "Enables scheduler and thread logging, including the sched debug class.") \
     X("SR_TRACE", "path", "logs/trace_window.txt", "flight_recorder.c", "Output file for the PC trace window; used only when SR_TRACE_PC is set.") \
     X("SR_TRACE_F", "list", "unset", "flight_recorder.c", "Comma list of frame indices (each below 128) that open the trace window.") \
