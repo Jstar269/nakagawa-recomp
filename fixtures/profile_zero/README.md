@@ -8,7 +8,7 @@ profile-zero manifests (`assets/titles/synthetic.json` and
 `assets/titles/synthetic-title2.json`). The repository commits only the digests
 of the PSPDEV build output (`prebuilt/SHA256SUMS`), not the generated executables
 themselves (#1100). Hosted CI builds them from this source in the
-`profile_zero_fixture` job, checks them against the digests and hands them to the
+`public_export` job, checks them against the digests and hands them to the
 jobs that run `mingw32-make profile-zero-e2e`, the whole manifest -> ProgramImage
 -> AOT package -> production-runtime route; a host with PSPDEV rebuilds them
 itself.
@@ -52,7 +52,7 @@ absolute (as shown). Both digests must equal the entries in `prebuilt/SHA256SUMS
 `profile-zero-e2e` runs exactly this rebuild-and-compare whenever PSPDEV is
 present and fails on byte drift; on hosts without PSPDEV it runs the same
 seven-case route on bytes already staged in `prebuilt/` (in hosted CI, the
-`profile_zero_fixture` artifact), checked against the digests, and reports
+`profile-zero-fixture` artifact), checked against the digests, and reports
 `NOT_RUN` when no bytes are staged (a failure instead when `NK_PROFILE_ZERO_REQUIRED=1`,
 as in hosted CI). The rebuild is a make of its own: it drops the calling make's
 `MAKEFLAGS`, so `make CC=gcc profile-zero-e2e` cannot replace PSPSDK's `psp-gcc`.
