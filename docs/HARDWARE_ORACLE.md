@@ -1297,6 +1297,45 @@ One console is one data point; see §11. Nothing here closes issue #70
     sprite over the same rectangle, in one PRIM and in two (`tab-1p-*` against `ab-1p-*`, `tab-np-*` against
     `ab-np-*`), so the shared diagonal is drawn once.
 
+- **PSP-3000 single-case runs of the `ge-light` and `ge-clut-mip` probes (2026-11-06)**: system software
+  6.61, ARK-5.1.0 (owner); `pspver` 6.6.0, the firmware declared to the runner. PSPLink 3.2.1, operator-declared
+  model PSP-3000, XMB context. `ge-light` (case 139) of `b55f6cd3` on boot 133 and `ge-clut-mip` (case 154) of
+  `2795f150` on boot 134, each in `fixtures/psp_oracle/probe_ge_sample.c` and each after the `transport-write`
+  preflight (PSP-TRANSPORT-001 is not re-cited). All four envelopes are acceptance-eligible with 0 blockers:
+  evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict golden
+  sequence (`ge-light` 700 records and the done record, `ge-clut-mip` 94 and the done record), all PASS; every
+  list reached GE idle. An earlier `ge-light` launch on boot 132 was not eligible (the runner's checkout was
+  dirty) and gave the same normal and pixel records. The raw envelopes and host0 logs stay in the private
+  campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-06) |
+  | --- | --- | --- | --- |
+  | `PSP-GE-LIGHT-001` | `k1-*`, `k2-*`, `k3p5-*`, `k8-*`, `k10-*`, `k16-*`, `k31-*`, `k64-*`, `k100-*`, `k128-*`, `s-*`, `d-*`, `ge-light-done` (`b55f6cd3`, boot 133) | the power function's formula, other light types, colours or several lights, the wait timings | MEASURED (`ge-light`) |
+  | `PSP-GE-MIP-002` | `t8-off-*`, `t8-on-*`, `t8-on-b40-*`, `t4-off-*`, `t4-on-*`, `t4-on-small-*`, `c16-t4-on-*`, `c16-t8-on-*`, `t4-on-csa1-*`, `t8-on-mask1f-*`, `t16-on-*`, `cap32-csa16-b20-*`, `cap32-csa16-b40-*`, `cap16-csa16-b20-*`, `ge-clut-mip-done` (`2795f150`, boot 134) | the CLUT index shift, computed levels, linear mip filtering, what a 0x40-block load does, the wait timings | MEASURED (`ge-clut-mip`) |
+
+  `ge-light` (#1732): per specular coefficient k, one flat-shaded quad per pixel of a 16x17 window, lit by one
+  directional light along (0, 0, 1), with the normal's z spread over 0..1; family s uses light component 1 and
+  white specular colours, family d component 2 and white diffuse colours. What the cells establish, for these
+  exact states only:
+  - *The two families agree.* Every pixel has R = G = B and alpha 0, and s and d give the same pixel for every
+    normal and every k.
+  - *k = 1 is exact.* Each of the 272 pixels is round(255 z).
+  - *k >= 2 is an approximation.* The pixel never decreases as z rises, is at most 0.5 above 255 z^k (computed
+    on the host in double precision) and up to 16 (k 2) to 30 (k 128) below it, so the GE does not compute a
+    correctly rounded power.
+
+  `ge-clut-mip` (#2031): a four-level indexed texture whose level-L texel in column x holds index
+  base + 4 L + (x & 3), drawn at a constant level, through a CLUT whose entry k names k and the load it came
+  from. With t the texel index:
+  - *TEXMODE bit 8 clear:* every level reads entry t.
+  - *Bit 8 set:* a T4 level reads t + 16 L, in an 8888 and a 4444 CLUT; a T8 level reads t + 256 L wrapped in
+    CLUT RAM, which holds 512 4444 entries (level 2 reads t) or 256 8888 entries (every level reads t); T16
+    reads t. The start offset (CLUTFORMAT bits 16-20) adds to the per-level offset, and a level past a
+    16-entry load reads what an earlier load left in CLUT RAM.
+  - *Unexplained:* a LOADCLUT of 0x40 blocks leaves every pixel a grey ramp (`0x00d6d6d6` to `0x00d9d9d9`) that
+    matches neither table.
+  - Pixel x of level L reads texel x >> L, as `ge-mip` measured.
+
 - **PSP-3000 single-case run of the `insn-trace` probe on commit `84568280` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000, case 119 in `fixtures/psp_oracle/probe_insn_trace.c` with
   `insn_trace_tramp.S` and `insn_trace_fixtures.h`. One launch on its own boot after the `transport-write`

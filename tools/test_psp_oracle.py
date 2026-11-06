@@ -3268,6 +3268,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 # 66940d76.
                 "PSP-GE-MIP-001", "PSP-GE-SYNC-001",
                 "PSP-GE-OVERLAP-001",
+                # The 2026-11-06 acceptance-eligible ge-light (#1732, boot 133) and ge-clut-mip
+                # (#2031, boot 134) runs.
+                "PSP-GE-LIGHT-001", "PSP-GE-MIP-002",
             },
         )
         self.assertEqual(
