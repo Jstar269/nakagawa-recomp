@@ -1245,6 +1245,12 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
    screen still moves (a drag's momentum, a ring, rule or fill easing), until
    the waves' next 30 Hz step while they play, else idle_ms. */
 uint32_t player_ui_nk_wait_ms(const PlayerUiNk *player, uint32_t idle_ms);
+/* Draws every later frame at now_s instead of the time since SDL started, so
+   whatever moves with time (the waves, the progress sweeps, fades) is drawn
+   the same way on every run. --screenshot holds it (#2124): two captures of
+   one view from one build are then byte-identical. A NULL player or a
+   non-finite time is ignored. */
+void player_ui_nk_hold_clock(PlayerUiNk *player, double now_s);
 /* True when the launcher draws this view. Every PlayerView is drawn by it: the
    shipped player has no other launcher. */
 bool player_ui_nk_draws_view(int view);

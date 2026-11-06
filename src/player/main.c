@@ -4846,6 +4846,10 @@ static int player_open_window(PlayerRun *run) {
         run->next_ui = player_ui_nk_create(run->renderer, run->window, app,
                                       ui_error, sizeof(ui_error));
         player_ui_test_set_next_ui(run->next_ui);
+        /* A capture is a still picture: drawn at a held time, the waves and
+           sweeps come out the same on every run (#2124). 37 s is the phase
+           nk_ui holds them at for Reduce motion. */
+        if (run->screenshot_path != NULL) player_ui_nk_hold_clock(run->next_ui, 37.0);
         if (run->next_ui == NULL) {
             /* There is no other launcher to fall back to: say why, once, and
                stop. A build without the launcher's support needs building

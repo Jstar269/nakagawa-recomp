@@ -5885,6 +5885,59 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ScreenshotDeterminismTests(unittest.TestCase):
+    """#2124: two --screenshot captures of one view from one build are the same bytes.
+
+    Failing-before: the launcher drew its one captured frame at the time since SDL
+    started, so the background waves (which step with that clock) and any progress
+    sweep came out a little different on every run, and a byte comparison of two
+    captures could not tell a real change from that noise. --screenshot now draws at
+    a held time. Both runs use the same, freshly emptied data folder, because the
+    Settings page prints that folder's path."""
+
+    VIEWS = ("library", "settings", "developer-log", "accessibility-settings", "psp-fonts",
+             "updates", "wizard", "building", "empty")
+
+    def capture(self, scratch: Path, view: str, run: int) -> bytes:
+        data = scratch / "data"
+        shutil.rmtree(data, ignore_errors=True)
+        profile = data / "profile"
+        for folder in (data / "appdata", data / "localappdata", profile):
+            folder.mkdir(parents=True)
+        env = os.environ.copy()
+        env.update({
+            "SDL_VIDEODRIVER": "dummy", "SDL_RENDER_DRIVER": "software", "SDL_AUDIODRIVER": "dummy",
+            "APPDATA": str(data / "appdata"), "LOCALAPPDATA": str(data / "localappdata"),
+            "USERPROFILE": str(profile), "HOME": str(profile),
+            "XDG_CONFIG_HOME": str(profile / "config"), "XDG_DATA_HOME": str(profile / "data"),
+            "XDG_CACHE_HOME": str(profile / "cache"),
+        })
+        shot = scratch / f"{view}-{run}.bmp"
+        completed = subprocess.run(
+            [str(PLAYER_EXE), f"--view={view}", f"--screenshot={shot}", "--width=1280",
+             "--height=720", f"--user-data-root={data / 'user'}", f"--runtime-root={data / 'runtime'}"],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120, check=False,
+        )
+        if "[PLAYER] Screenshot saved" not in completed.stdout:
+            if "UI_NEXT_ACTIVE" not in completed.stdout:
+                self.skipTest("the next UI could not start here (no UI fonts)")
+            self.fail(f"--view={view} saved no screenshot:\n{completed.stdout}\n{completed.stderr}")
+        return shot.read_bytes()
+
+    def test_two_captures_of_each_view_are_the_same_bytes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".screenshot-twice-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            for view in self.VIEWS:
+                with self.subTest(view=view):
+                    first = self.capture(scratch, view, 1)
+                    second = self.capture(scratch, view, 2)
+                    if first != second:
+                        _, _, _, a = read_bmp(scratch / f"{view}-1.bmp")
+                        _, _, _, b = read_bmp(scratch / f"{view}-2.bmp")
+                        changed = sum(1 for x, y in zip(a, b, strict=False) if x != y)
+                        self.fail(f"--view={view}: the two captures differ in {changed} bytes")
+
+
 class PlayerVersionIdentityTests(unittest.TestCase):
     """The About page's build date comes from SOURCE_DATE_EPOCH when it is set.
 
