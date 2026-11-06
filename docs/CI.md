@@ -44,10 +44,10 @@ of 2026-11-02, whole history, hosted runners):
 
 | Workflow | Per push before | Now | Measured cost |
 | --- | --- | --- | --- |
-| `CodeQL wake` then `Trusted CodeQL` | 1 wake + prepare + 3 analyses + upload (6 jobs) | 6 jobs when the diff touches C/C++, Python or workflow files; otherwise 3 (wake, prepare, upload) | `codeql.yml` is 38.5k hosted minutes over 2,732 runs, about 14 minutes a run |
+| `CodeQL wake` then `Trusted CodeQL` | 1 wake + prepare + 3 analyses + upload (6 jobs) | none on a pull request head that is not a `batch/` branch of this repository; on a batch head, 6 jobs when the diff touches C/C++, Python or workflow files, otherwise 3 (wake, prepare, upload) | `codeql.yml` is 38.5k hosted minutes over 2,732 runs, about 14 minutes a run |
 | `ClusterFuzzLite` | 1 job, every pull request | 1 job only when the fuzz target's inputs change; none otherwise | 6.8k minutes over 1,767 runs, about 3.8 minutes a run |
 | `OSV-Scanner`, `Dependency Review`, `Provenance attestation` | 1 job each | unchanged | cheap per run (4.5-5.6k runs) but supply-chain controls |
-| `Trusted CI verdict` | about 4 runs, 1 job each | unchanged | 16 s average run |
+| `Trusted CI verdict` | about 4 runs, 1 job each | 2 runs (a new head, CI's completion); none for a superseded head's cancelled CI or for `ready_for_review` | 16 s average run |
 
 #### Tests-only changes
 
@@ -73,10 +73,31 @@ flags (`build_system`, `python_tools`, ...) are unchanged; only `run_native` and
 
 `Trusted CodeQL` is the producer of the required `CodeQL` status: GitHub's code scanning
 creates that check only when a SARIF upload for the pull request's merge commit is
-processed, and no job of ours can post it. A pull request that is never analysed would
-therefore wait for it forever. The workflow keeps its `prepare` and `upload` jobs on every
-pull request and decides in `prepare`, from the default branch's `tools/ci_paths.py
---codeql-scope BASE MERGE`, whether the diff can change a result:
+processed, and no job of ours can post it.
+
+**Batch heads only.** A pull request wake is analysed only when the head is a branch of this
+repository whose name starts with `batch/`. Those are the batch pull requests the
+maintainer lands through. Hosted Actions runs about 20 jobs at once, and an analysis takes
+13 to 75 minutes, so analysing every push of every pull request and then the batch that
+carries it spent the runner budget twice. Each change is now analysed once in its batch,
+and again on the push to `main`. The rule is the `prepare` job's `if:` in the default
+branch's `codeql.yml`; `github.event.workflow_run.head_repository` and `head_branch` come
+from GitHub's run record, not from the candidate. A fork head named `batch/...`, a missing
+head repository and any other branch all skip `prepare`, and with it `analyze` and
+`upload`. Such a head has no `CodeQL` check, not an empty or neutral one, so it cannot be
+merged directly. That rests on the `main-minimal` ruleset requiring `CodeQL` and keeping its
+`bypass_actors` list empty (both read from the ruleset on 2026-11-05;
+[`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md#maintainer-configuration)).
+
+For an early scan of any open pull request, or before landing one outside a batch, run
+`gh workflow run codeql.yml -f pull_request_number=<n>`. That run is titled
+`Trusted CodeQL (PR #<n>)`, so a dispatch can be matched to its pull request; every other
+run is titled `Trusted CodeQL`. A merge-queue group, a push to
+`main`, the weekly schedule and a dispatch always run `prepare`.
+
+On a batch head or a dispatched pull request, `prepare` and `upload` always run, and
+`prepare` decides, from the default branch's `tools/ci_paths.py --codeql-scope BASE
+MERGE`, whether the diff can change a result:
 
 - **Analysed in full:** any added, changed, deleted or renamed C/C++ source or header, Python
   file, workflow, action or `.github/codeql/` file; an unreadable diff or any name that cannot
@@ -91,9 +112,12 @@ pull request and decides in `prepare`, from the default branch's `tools/ci_paths
   real result. The required `CodeQL` check reports on the exact merge commit as before.
 
 The decision is made by the default branch's copy of the workflow and classifier, from git
-objects, so a pull request cannot widen or narrow its own scan. `codeql-wake.yml` is
-unchanged: it is a signal with no path filter, because a candidate-controlled `paths` list
-could drop a pull request's wake and leave its required check missing.
+objects, so a pull request cannot widen or narrow its own scan. `codeql-wake.yml` has no
+path filter. Its `wake` job runs only for a merge group or for a pull request from a
+`batch/` branch of this repository, the same heads `prepare` accepts, so other pushes use
+no runner. That file is candidate-controlled: a pull request that edits the filter can drop
+only its own wake, which leaves its required check missing, and a wake it adds back is still
+refused by `prepare`.
 
 If an empty upload is ever refused, `gh workflow run codeql.yml -f pull_request_number=N
 -f force_scan=true` analyses that pull request in full.
@@ -113,7 +137,37 @@ historical 531 s average is therefore the runner limit (about 20 concurrent jobs
 a property of the workflow: the verdict job is created when a producer finishes, which is
 when the repository's own matrix has most jobs queued, and it waits in the same queue as
 the Windows and Python legs. The way to shorten it is to start fewer jobs per push, which
-is what the path gates above do. No change to `ci-trust-verdict.yml` is made or needed.
+is what the path gates above do. The verdict no longer runs on `ready_for_review`: the
+verifier never reads the draft state, so that event could only repeat the same verdict. Every
+label event still re-judges, whatever the label. A newer run for a head replaces that head's
+pending run, so a run that judged nothing could leave a verdict standing that a withdrawn
+approval should have changed.
+
+#### Why the verdict waited over an hour (2026-11-05)
+
+On 2026-11-05 the account ran at its ceiling of 20 hosted jobs for 196 of the 320 minutes
+from 14:30 to 19:50 UTC, on every label at once (`ubuntu-24.04`, `ubuntu-26.04`,
+`windows-2022`). CI used about 7,600 of the 8,350 runner-minutes and the verdict jobs 74,
+yet 206 verdict jobs waited a median of 43 minutes for a runner (90th percentile 91). The
+verdict is a victim of that queue, not its cause, but it added to it in two ways:
+
+- **Pending-only runs.** CI finished last on all 181 heads whose three `pull_request`
+  producers passed on 2026-11-04 and 2026-11-05. A run started when `OSV-Scanner` or
+  `Dependency Review` finished could only re-post `pending`, which the `pull_request_target`
+  run had already posted, and it held the head's concurrency group, so the run CI's
+  completion started waited for it to get a runner first. Of 31 `workflow_run` verdicts
+  queued at 19:35 UTC, 14 were of that kind.
+- **Superseded heads.** `CI` cancels a pull request's run when a newer head arrives. The
+  cancelled run's completion started a verdict for a head no pull request still had, which
+  the verifier answers by posting nothing. Seven of the 31 were of that kind.
+
+The workflow therefore re-triggers on `CI` alone, and its verdict job skips (no runner) when
+the triggering run is a cancelled first attempt. Both are fail-closed: a skipped run leaves
+the head at `pending`, never `success`. If the current head's CI is cancelled, a re-run
+(attempt 2 or later) is judged as usual; if `OSV-Scanner`, `Dependency Review` or the
+provenance attestation finishes after `CI`, dispatch the verdict (see "Re-running" under
+[Trusted CI verdict](#trusted-ci-verdict)). Together they would have removed 21 of those 31 queued runs.
+They do not change the ceiling: verdict latency still follows the CI queue.
 
 ### Draft pull requests
 
@@ -131,8 +185,8 @@ a ready pull request. No `Ready for review` transition or manual
 `opened`, `synchronize` and `reopened` - the events that can carry a new head -
 so a `Ready for review` (or back-to-draft) transition, which cannot change the
 head, does not start a second run over a tree that already carries its
-validation. `ci-trust-verdict.yml` and `provenance-attestation.yml` do list
-`ready_for_review`, so marking a pull request Ready re-runs only those two. `ci.yml` still cancels superseded runs, and docs-only or other
+validation. `provenance-attestation.yml` lists `ready_for_review`, so marking a pull
+request Ready re-runs only that workflow. `ci.yml` still cancels superseded runs, and docs-only or other
 irrelevant jobs remain skipped by the classifier. `workflow_dispatch` remains
 available when a maintainer deliberately wants the complete matrix regardless of
 changed paths.
@@ -334,7 +388,9 @@ every device pixel of an uploaded target must hold its guest pixel, and so does 
 where the shader's per-fragment mip level must not change with the render scale, and so does its
 readback-rows case, where guest memory must get the top-left device pixel of each cell while the
 rows it does not keep stay out of the staging buffer, then once more on the `SR_GPU_READBACK_FULL`
-reference path. The job also runs
+reference path. Last, `gpu-coherence-selftest-snapbar-mutants` builds three broken variants of
+the destination-snapshot copy's barriers (`SR_GPU_SNAPBAR_MUTANT`), and the submit-batch case must
+fail each one with its own message. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by
@@ -355,6 +411,66 @@ the gate covers only that configuration: an optimized Release configuration fail
 `-Werror` on existing truncation warnings in `src/core/nk_launch.c`, a separate defect, and this
 job does not claim that configuration builds. Consumer ISO compatibility remains in the works
 (#306); these checks do not establish PSP hardware acceptance or interactive desktop presentation.
+
+### GCC 16 canary
+
+The `linux_gcc16` job ("Linux GCC 16 canary") builds and runs the native core suite
+(`native-core-tests`) and the headless display smoke (`display-smoke-run`) with a released
+GCC 16.2 on Linux. It runs beside `native_tools`, which stays on `ubuntu-24.04` with GCC 13.3,
+under the same condition (`run_native`). Windows already compiles with GCC 16.2: MSYS2 UCRT64
+ships it and `assets/prereq_manifest.json` pins it. This job adds GCC 16 against glibc.
+
+- **Image and packages.** No hosted Ubuntu image ships GCC 16, so the job runs in the
+  `fedora:45` container, pinned by digest, on a hosted `ubuntu-26.04` runner. A container job
+  needs Docker on the runner, so it does not use the self-hosted pool. `dnf --repo=fedora`
+  installs from Fedora 45's GA repository only. That repository never changes after release,
+  and the `updates` repository is never enabled.
+  - Every package the job names is pinned to an exact version: `gcc-16.2.1-2.fc45.1` (Red Hat's
+    GCC 16.2.1 20260819, the 16.2 release plus release-branch fixes), its `libasan` and
+    `libubsan` runtimes, and the build and test tools.
+  - Their dependencies come from the same frozen repository, and the image digest fixes what
+    is preinstalled.
+  - Fedora's SDL3 package (`SDL3-devel-3.4.18-1.fc45`) is deliberately not the pinned 3.4.20
+    that `native_tools` builds from source. This job tests the compiler, and `native_tools`
+    keeps the SDL pin.
+  - The container runs with `--init`. Without it, PID 1 in a container job is
+    `tail -f /dev/null`, which never reaps orphans. A process killed after its parent exits
+    then stays a zombie that `kill(pid, 0)` still finds, and `test_posix_process`'s
+    process-tree subtest fails although the tree was terminated. On a hosted runner, systemd
+    reaps them.
+  - The job sets `SR_SOURCE_COMMIT` to the checked-out revision, as `windows_runtime` does.
+    It runs as root in the container and the checkout belongs to the runner's user, so git
+    refuses the repository and the display smoke's flight step would have no build identity.
+  - The job needs network access to the Docker registry and Fedora's mirrors. An
+    unauthenticated Docker Hub pull limit or a mirror outage can fail it without any code
+    change.
+- **Not required.** `ci_required` does not need the job, so `CI required`, the one required
+  context, never reads it. A failure shows red on this job and on the run without blocking a
+  merge. The job has no `continue-on-error`, so a failure is never reported green.
+  `tools/test_public_ci_wiring.py` (`Gcc16CanaryWiringTests`) pins all of this.
+- **Moving the pins.** Pins move only in a reviewed pull request. Before a digest bump, rerun
+  the job's steps locally against the new digest: the packages the image preinstalls must
+  match the GA repository's development packages, or the install fails on an exact-version
+  dependency. A newer GCC (16.3, or 17) means moving to the next Fedora release. Fedora 45 is
+  supported until 2027-12-08.
+- **Known GCC 16 warning.** `src/rt/atrac3p/libavutil/mem.c:272` gets `-Wdiscarded-qualifiers`
+  (`end = memchr(s, 0, len)`): GCC 15 and later default to `-std=gnu23`, where glibc 2.43 and
+  later declare the qualifier-preserving `memchr`. The file is a byte-identical FFmpeg import,
+  and FFmpeg n9.0.2 has the same line. The FFmpeg update work decides it; this job does not
+  silence it.
+
+**Making it required.** All of the following must hold, and the owner decides:
+
+1. At least 20 runs over at least 14 days, from any event, each green by the job's own
+   conclusion, with none failed by the container rather than the code (an image pull, a
+   mirror or dnf).
+2. A median job time of at most 6 minutes, and a 95th percentile of at most 10 minutes.
+3. A recorded decision on every warning only GCC 16 raises (today the `mem.c` line above).
+4. Any failure only GCC 16 shows, found in that window, is fixed at its source, not waived.
+
+Then one pull request adds `linux_gcc16` to `ci_required`'s `needs` and to
+`tools/ci_required.py`, under `RUN_NATIVE`, and changes the wiring tests to pin it as required.
+Branch protection does not change: `CI required` stays the one required context.
 
 ## Local readiness before opening a pull request
 
@@ -561,7 +677,7 @@ path.write_bytes(canonical_bytes)                        # already-canonical byt
 `CanonicalWriterTests` asserts this for the canonical writers, so the rule
 cannot quietly regress.
 
-**PowerShell.** Use PowerShell 7.4+, which the project already requires: in
+**PowerShell.** Use PowerShell 7.6+, which the project already requires: in
 Windows PowerShell 5.1 `-Encoding utf8` means UTF-8 **with** BOM, and in 7+ it
 means without. `Set-Content` and `Out-File` also join with the host newline. For
 anything byte-exact, bypass the text pipeline entirely:
@@ -948,9 +1064,9 @@ integration, and every Actions job is integration 15368. A name alone cannot tel
 intended job from a candidate's.
 
 **The gate.** The workflow runs only the default branch's copy: `pull_request_target`
-(opened, synchronize, reopened, ready for review, labeled, unlabeled), a `workflow_run` when
-`CI`, `OSV-Scanner` or `Dependency Review` completes, and a manual `workflow_dispatch`
-naming a pull request. It checks out the default branch, fetches `refs/pull/<n>/head` as
+(opened, synchronize, reopened, labeled, unlabeled), a `workflow_run` when
+`CI` completes (CI finishes last; a cancelled first attempt, a superseded head, starts no
+verdict job), and a manual `workflow_dispatch` naming a pull request. It checks out the default branch, fetches `refs/pull/<n>/head` as
 objects only, and never checks out or runs candidate files. The verdict job has `actions`,
 `checks`, `contents`, `issues` and `pull-requests` read, and `statuses: write`; a separate
 job, with `pull-requests: write` and no way to post a status, records, carries or withdraws
@@ -1056,10 +1172,13 @@ so can a labeling run that a newer pending run replaced (the workflow's concurre
 keeps one pending run per head). Both fail closed: re-apply the label after reviewing the
 head. A merge of `main` that changes a protected file also changes the digest; re-review it.
 
-**Re-running.** Every run reads GitHub's state afresh. The provenance workflow is not a
-`workflow_run` trigger, because its verifier refuses any other workflow that names its
-context. When the provenance attestation finishes after the other three workflows (for
-example a re-run after an admission), run:
+**Re-running.** Every run reads GitHub's state afresh. Only `CI` is a `workflow_run`
+trigger. The provenance workflow cannot be one, because its verifier refuses any other
+workflow that names its context, and `OSV-Scanner` and `Dependency Review` are not, because
+they finish before `CI` (see
+[Why the verdict waited over an hour](#why-the-verdict-waited-over-an-hour-2026-11-05)).
+When one of them finishes after `CI` (for example a re-run, or the provenance attestation
+after an admission), the verdict stays `pending`; run:
 
 ```bash
 gh workflow run ci-trust-verdict.yml -f pull_request_number=<n>
@@ -1106,12 +1225,10 @@ Record the run links in #373.
 
 ## Windows hosted runner policy
 
-The Windows job intentionally remains on `windows-2022`. Hosted execution is
-active, but that floating label is a GitHub-hosted Windows Server image rather
-than an end-user support promise; the supported developer platform is Windows 11
-x64 as documented in [SETUP.md](SETUP.md). A `windows-2025` migration is a
-separate hosted-validation decision. Consult the current
-[Windows 2022 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)
+The Windows jobs run on `windows-2025`. That label is a GitHub-hosted Windows
+Server image rather than an end-user support promise; the supported developer
+platform is Windows 11 x64 as documented in [SETUP.md](SETUP.md). Consult the current
+[Windows 2025 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md)
 instead of treating a dated image version or tool inventory as an evergreen
 repository guarantee.
 
@@ -1201,7 +1318,7 @@ WSL distro and every runner container; a fine-grained token scoped to this repos
 with only those permissions is the intended form.
 
 The pool's image matches what the hosted Ubuntu 24.04 jobs rely on (the native apt
-packages, Python 3.15.1 in the tool cache, CMake 3.31.6 so the SDL3 caches match, and
+packages, Python 3.15.2 in the tool cache, CMake 3.31.6 so the SDL3 caches match, and
 the CodeQL bundle the pinned CodeQL action uses). Its
 build files and supervisor are kept in the maintainer's workspace, not in this
 repository, because nobody else can run them.
@@ -1213,11 +1330,11 @@ first on `PATH` (#294). The contract is explicit:
 
 | Job / environment | Python running `tools/*` and the fixture generators |
 | --- | --- |
-| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.15.1 |
-| `windows_runtime` (MSYS2 UCRT64 shell) | Windows CPython 3.15.1 from `actions/setup-python`, passed through `PYTHON`; MSYS2's UCRT64 Python 3.14.8 is not used for repository tools |
+| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.15.2 |
+| `windows_runtime` (MSYS2 UCRT64 shell) | Windows CPython 3.15.2 from `actions/setup-python`, passed through `PYTHON`; MSYS2's UCRT64 Python 3.14.8 is not used for repository tools |
 | Local Windows runs | Windows CPython 3.15.x from the python.org installer; set `PYTHON` explicitly when MSYS2 comes first on `PATH` |
 
-Stages that invoke the repository's PowerShell 7.4 asset-copy script opt into
+Stages that invoke the repository's PowerShell asset-copy script opt into
 the runner's Windows `PATH` explicitly with `MSYS2_PATH_TYPE: inherit` and assert
 `command -v pwsh` themselves. Under `inherit` the MSYS2 UCRT64 directories still
 precede the inherited Windows `PATH`; `windows_runtime` passes Windows CPython's

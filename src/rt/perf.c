@@ -80,6 +80,15 @@ static const char s_frames_header[] =
     "readback_waits,vk_submit_ms,vk_wait_ms,vk_readback_ms,vk_pipeline_ms,vk_pipeline_creations,"
     "texture_decode_ms,texture_decodes,storage_ms,atrac_ms,h264_ms,audio_mix_ms,present_ms,"
     "sched_switches\n";
+/* With SR_GPU_TIMESTAMPS set, the header ends with these instead of its newline, and every row with
+ * seven more fields. Without it, the file is the same as before the switch existed. */
+static const char s_frames_gpu_header[] =
+    ",gpu_ms,gpu_render_ms,gpu_snapshot_ms,gpu_upload_ms,gpu_readback_ms,gpu_other_ms,gpu_present_ms\n";
+
+/* SR_GPU_TIMESTAMPS reached the GPU backend and its queries exist (sr_perf_gpu_timestamps_on). */
+static int s_gpu_timestamps;
+/* SR_GPU_TIMESTAMPS was set when the SR_PERF_FRAMES file was opened: its gpu_* columns exist. */
+static int s_frames_gpu_columns;
 
 
 typedef struct SrPerfMetrics {
@@ -175,6 +184,8 @@ typedef struct SrPerfMetrics {
     uint64_t audio_queue_min_frames[SR_PERF_AUDIO_CHANNELS];
     uint64_t audio_queue_max_frames[SR_PERF_AUDIO_CHANNELS];
     uint64_t gpu_replay[SR_PERF_GPU_REPLAY_COUNT];
+    uint64_t gpu_ns[SR_PERF_GE_REASON_COUNT];   /* SR_GPU_TIMESTAMPS, by GE submit reason */
+    uint64_t gpu_present_ns;                    /* SR_GPU_TIMESTAMPS, the presentation blit */
 } SrPerfMetrics;
 
 typedef struct SrPerfTransitionEntry {
@@ -1414,7 +1425,15 @@ void sr_perf_init(void) {
         snprintf(s_perf.json_path, sizeof(s_perf.json_path), "%s", json_path);
     if (frames_path && frames_path[0]) {
         s_perf.frames = fopen(frames_path, "w");
-        if (s_perf.frames) fputs(s_frames_header, s_perf.frames);
+        s_frames_gpu_columns = sr_perf_gpu_timestamps_requested();
+        if (s_perf.frames) {
+            if (s_frames_gpu_columns) {
+                fwrite(s_frames_header, 1, sizeof s_frames_header - 2u, s_perf.frames);
+                fputs(s_frames_gpu_header, s_perf.frames);
+            } else {
+                fputs(s_frames_header, s_perf.frames);
+            }
+        }
         else fprintf(stderr, "PERF: cannot open SR_PERF_FRAMES output\n");
     }
     static int exit_hooked;
@@ -1664,6 +1683,20 @@ void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) {
     sr_perf_phase_report(0);
 }
 
+int sr_perf_gpu_timestamps_requested(void) { return env_on("SR_GPU_TIMESTAMPS"); }
+
+void sr_perf_gpu_timestamps_on(void) { s_gpu_timestamps = 1; }
+
+void sr_perf_gpu_time(SrPerfGeReason reason, uint64_t ns) {
+    if (!s_perf.enabled || s_perf.shutdown || (unsigned)reason >= SR_PERF_GE_REASON_COUNT) return;
+    ADD_ARRAY(gpu_ns, (unsigned)reason, ns);
+}
+
+void sr_perf_gpu_present_time(uint64_t ns) {
+    if (!s_perf.enabled || s_perf.shutdown) return;
+    ADD(gpu_present_ns, ns);
+}
+
 void sr_perf_ge_submit(SrPerfGeReason reason) {
     if (!s_perf.enabled || s_perf.shutdown) return;
     ADD(ge_submits, 1);
@@ -1730,13 +1763,28 @@ static void frames_row(uint32_t vcount, uint32_t vblanks, int work_valid, uint64
     if (work_valid) fprintf(s_perf.frames, "%.3f", ms(work_ns));
     fprintf(s_perf.frames,
             ",%.3f,%.3f,%.3f,%.3f,%.3f,%llu,%.3f,%llu,%llu,%.3f,%.3f,%.3f,%.3f,%llu,%.3f,%llu,%.3f,%.3f,"
-            "%.3f,%.3f,%.3f,%llu\n",
+            "%.3f,%.3f,%.3f,%llu",
             ms(wall_ns), DMS(guest_ns), DMS(aot_ns), DMS(interp_ns), DMS(ge_cpu_ns),
             (unsigned long long)D(ge_cpu_calls), DMS(ge_wait_ns), (unsigned long long)D(ge_waits),
             (unsigned long long)D(readback_waits), DMS(vk_submit_ns), DMS(vk_wait_ns),
             DMS(vk_readback_ns), DMS(vk_pipeline_ns), (unsigned long long)D(vk_pipeline_creations),
             DMS(texture_decode_ns), (unsigned long long)D(texture_decodes), ms(storage), DMS(atrac_ns),
             DMS(h264_ns), DMS(audio_mix_ns), DMS(present_ns), (unsigned long long)D(sched_switches));
+    if (!s_frames_gpu_columns) {
+        fputc('\n', s_perf.frames);
+    } else if (s_gpu_timestamps) {
+        uint64_t gpu[SR_PERF_GE_REASON_COUNT], all = 0;
+        for (unsigned i = 0; i < SR_PERF_GE_REASON_COUNT; i++) all += gpu[i] = D(gpu_ns[i]);
+        const uint64_t render = gpu[SR_PERF_GE_RENDER_BATCH], snapshot = gpu[SR_PERF_GE_SNAPSHOT_COPY];
+        const uint64_t upload = gpu[SR_PERF_GE_TEXTURE_UPLOAD] + gpu[SR_PERF_GE_TARGET_UPLOAD] +
+                                gpu[SR_PERF_GE_DEPTH_UPLOAD];
+        const uint64_t readback = gpu[SR_PERF_GE_DEPTH_READBACK] + gpu[SR_PERF_GE_TARGET_READBACK_TRANSITION];
+        fprintf(s_perf.frames, ",%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n", ms(all), ms(render), ms(snapshot),
+                ms(upload), ms(readback), ms(all - render - snapshot - upload - readback),
+                DMS(gpu_present_ns));
+    } else {
+        fputs(",,,,,,,\n", s_perf.frames);   /* switch set, but the GPU has no timestamp queries */
+    }
 #undef DMS
 #undef D
 }

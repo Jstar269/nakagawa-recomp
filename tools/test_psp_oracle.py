@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 130)
+        self.assertEqual(len(routes), 131)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
-                         | {150, 151, 153},
+                         | {150, 151, 152, 153},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -2515,6 +2515,28 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(routes.get("sas-init"), "117")
         self.assertEqual(routes.get("at3-delay-sweep"), "150")
         self.assertEqual(routes.get("mpeg-ycbcr"), "151")
+        self.assertEqual(routes.get("sas-adsr"), "152")
+
+    def test_sas_adsr_case_links_sascore_and_covers_the_adsr_calls(self) -> None:
+        # The case's own LIBS block links the SAS and utility stubs; without them the PRX
+        # fails to link (#1296).
+        block = re.search(r"(?ms)^ifeq \(\$\(CASE\),sas-adsr\)\n(.*?)^endif$", self.makefile)
+        if block is None:
+            self.fail("fixtures/psp_oracle/Makefile has no sas-adsr LIBS block")
+        self.assertIn("-lpspsascore", block.group(1))
+        self.assertIn("-lpsputility", block.group(1))
+        probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        self.assertIn("#define PSP_ORACLE_CASE_SAS_ADSR 152", probe)
+        start = probe.index("#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_ADSR\n#include <pspsascore.h>")
+        section = probe[start:probe.index("#endif\n", probe.index("static void run_sas_adsr", start))]
+        # The #2059 review's cells: the SetADSRmode refusal table, explicit curves, a sustain
+        # level and a second grain size, and the done record as a completion marker.
+        for call in ("__sceSasSetADSRmode(", "__sceSasSetADSR(", "__sceSasSetSL(",
+                     "__sceSasSetSimpleADSR(", "sas_adsr_init_grain(", "{0xfu, 5u, 5u, 5u, 5u}",
+                     "SAS_ADSR_TOP | 2u", '"g64-p1", 64u', '"expatk", 256u'):
+            self.assertIn(call, section)
+        self.assertIn('"sas-adsr-done", sascore_ok ? "RC" : "SKIP"', section)
+        self.assertNotIn('"PASS"', section)
 
     def test_thread_k0_block_route_has_its_own_case_id(self) -> None:
         routes = dict(re.findall(

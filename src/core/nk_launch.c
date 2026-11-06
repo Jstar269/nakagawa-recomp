@@ -1096,6 +1096,7 @@ NkResult nk_launch_prepare_session(
 
     session->config.resolution_scale = 1;
     session->config.present_scaling = NK_PRESENT_SCALING_SHARP;
+    session->config.present_upscale = NK_PRESENT_UPSCALE_OFF;
     session->config.fps_cap = -1;
     session->config.fullscreen = false;
     session->config.vsync = true;
@@ -1528,6 +1529,15 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     envp[env_count++] = env_ge;
     envp[env_count++] = env_scale;
     envp[env_count++] = env_present_scaling;
+    /* The presentation upscaler is set from the chosen mode, never inherited: an authentic session
+       (no enhanced build, Ace Mode off) always runs it off (docs/ENHANCEMENT_CONTRACT.md section
+       10.1); an enhanced or Ace Mode session follows the setting. */
+    {
+        const char *ace_line = session->config.ace_spec[0] ? session->config.ace_spec : "off";
+        bool authentic = !session->enhancement_package_id[0] && strcmp(ace_line, "off") == 0;
+        envp[env_count++] = !authentic && session->config.present_upscale == NK_PRESENT_UPSCALE_FSR1
+                                ? "SR_PRESENT_UPSCALE=fsr1" : "SR_PRESENT_UPSCALE=off";
+    }
     envp[env_count++] = env_vsync;
     envp[env_count++] = env_fs;
     envp[env_count++] = env_fullscreen;

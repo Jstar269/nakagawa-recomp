@@ -23,7 +23,7 @@ native-core-objects-player:
 
 # Test-binary recipes, shared by the standalone *-test-bin targets and native-core-tests.
 define PLAYER_STATE_TEST_BIN_CMD
-$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -DNK_SAVES_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 	$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c src/player/setup_staging.c \
 	tests/native/native_test_isolation.c tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_player_state$(EXE_EXT)
 endef
@@ -308,6 +308,32 @@ ace-smooth-selftest: shader-verify
 	elif [ $$rc -eq 77 ]; then echo "SKIP ace-smooth-selftest (exit 77)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL ace-smooth-selftest (exit $$rc)"; exit $$rc; fi
 
+# fsr1-selftest - the presentation upscaler (src/rt/gpu_sdl3vk/fsr1_pass.c, AMD FSR 1 EASU + RCAS)
+# on a headless Vulkan device: EASU alone at 2x keeps a vertical and a slanted step edge sharper
+# than the presenter's bilinear blit by a measured margin; RCAS raises a soft edge's contrast over
+# EASU alone by a measured factor, more at the sharpest setting, and overshoots the edge's range by
+# 10 levels at most; a size past the device's image limit fails once and is not retried; a flat
+# colour from a BGRA source stays exact at 480x272 to 1355x768; the source image is never written.
+# --easu-spv and --rcas-spv load a mutant shader in place of the built-in one. Linked from the
+# pass, the C library and libm alone. No Vulkan headers, loader or device: SKIP (exit 77), visible
+# in the log; NK_UI_VK_REQUIRE=1 makes a skip fail.
+native-core-tests: fsr1-selftest
+.PHONY: fsr1-selftest
+fsr1-selftest: shader-verify
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@if ! printf '%s\n' '#include <vulkan/vulkan.h>' | $(CC) -E -x c $(VULKAN_INC_FLAGS) - >/dev/null 2>&1; then \
+		echo "SKIP fsr1-selftest (the Vulkan headers were not found)"; \
+		if [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then exit 1; fi; exit 0; \
+	fi; \
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -Isrc/rt/gpu_sdl3vk $(VULKAN_INC_FLAGS) \
+		src/rt/gpu_sdl3vk/fsr1_pass.c src/rt/gpu_sdl3vk/fsr1_pass_selftest.c \
+		$(NK_UI_VK_SELFTEST_LIBS) -lm -o $(BUILD_ROOT)/fsr1_selftest$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_ROOT_RUN)/fsr1_selftest$(EXE_EXT) || rc=$$?; \
+	if [ $$rc -eq 77 ] && [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then \
+		echo "FAIL fsr1-selftest (skipped, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
+	elif [ $$rc -eq 77 ]; then echo "SKIP fsr1-selftest (exit 77)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL fsr1-selftest (exit $$rc)"; exit $$rc; fi
+
 # ace-ui-selftest - Ace Mode's in-game UI (src/rt/gpu_sdl3vk/ace_ui.c): the readout, the launch
 # notice and the crisp keyboard laid out at the overlay's sizes and two ultrawide windows (inside
 # the 16 px safe area, apart from each other), then drawn on a headless Vulkan device over a
@@ -393,6 +419,9 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 	$(BUILD_ROOT_RUN)/test_disc_expand$(EXE_EXT)
 	$(CC) $(NC_CFLAGS_CORE) -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) 		tests/native/native_test_isolation.c tests/native/test_disc_verify.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_disc_verify$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_disc_verify$(EXE_EXT)
+	$(CC) $(NC_CFLAGS_CORE) -Wpedantic -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
+		tests/native/native_test_isolation.c tests/native/test_nk_zip.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_nk_zip$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_nk_zip$(EXE_EXT)
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" tests/native/test_safe_math.c \
 		-o $(BUILD_ROOT)/test_safe_math$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_safe_math$(EXE_EXT)

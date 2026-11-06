@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
-#requires -Version 7.4
+#requires -Version 7.6
 #
 # tools/sign_release_binaries.ps1 - Authenticode-sign the project's own Windows binaries in a
 # staged release folder, on the maintainer's machine (#1284). docs/RELEASE_SIGNING.md has the

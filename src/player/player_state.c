@@ -29,6 +29,7 @@
 #include "iso_reader.h"
 #include "nk_title_manifest.h"
 #include "nk_user_data_schema.h"
+#include "nk_zip.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -2893,7 +2894,7 @@ bool player_ace_launch_line(const PlayerAceResolved *ace, char *out, size_t cap)
     if (!ace || !ace->on) {
         n = snprintf(out, cap, "off");
     } else {
-        n = snprintf(out, cap, "v1;af=%d;text=%s;readout=%s;notice=%s;wide=off;smooth=%s",
+        n = snprintf(out, cap, "v1;af=%d;text=%s;readout=%s;notice=%s;wide=off;smooth=%s;sas=off",
                      ace_af_valid(ace->af) ? ace->af : 0, ace->text ? "on" : "off",
                      ace->readout ? "on" : "off", ace->notice ? "on" : "off",
                      ace->smooth == 1 ? "x2" : "off");
@@ -3563,6 +3564,13 @@ static PlayerLibraryFileImages player_library_file_other_image(const GameRecord 
     return found;
 }
 
+/* Backs up one saves folder of the title before it is deleted (#1883); defined with the
+   other saves code below. */
+static PlayerSavesResult player_saves_zip(PlayerApp *app, const GameRecord *game,
+                                          const char *folder, const char *stamp,
+                                          PlayerSaveBackupKind kind, char *out_path,
+                                          size_t out_size, char *error, size_t error_size);
+
 bool player_app_remove_game_and_data(PlayerApp *app, int game_index, unsigned also,
                                      char *error, size_t error_size) {
     bool delete_saves = (also & PLAYER_REMOVE_ALSO_SAVES) != 0u;
@@ -3609,6 +3617,27 @@ bool player_app_remove_game_and_data(PlayerApp *app, int game_index, unsigned al
         if (images == PLAYER_LIBRARY_FILE_OTHER_IMAGE) {
             plan.path_count = 0;
             plan.files_shared = true;
+        }
+    }
+    /* Saves that go are backed up first (#1883), into the title's backup folder, which a
+       removal leaves alone: adding the game again lists them under Saves. Without a backup
+       nothing is deleted. */
+    if (delete_saves && plan.path_count > 0) {
+        char stamp[24];
+        char reason[PLAYER_ERROR_DETAILS_MAX];
+        player_app_save_stamp_now(stamp, sizeof(stamp));
+        for (size_t i = 0; i < plan.path_count; ++i) {
+            if (!plan.paths[i].saves) continue;
+            if (player_saves_zip(app, &app->games[game_index], plan.paths[i].path, stamp,
+                                 PLAYER_SAVE_BACKUP_BEFORE_REMOVE, NULL, 0, reason,
+                                 sizeof(reason)) == PLAYER_SAVES_FAILED) {
+                if (error && error_size) {
+                    snprintf(error, error_size, "Your saves could not be backed up first, so "
+                             "nothing was removed. %s", reason);
+                }
+                if (locked) nk_platform_file_lock_release(&lock);
+                return false;
+            }
         }
     }
     /* Saves first when they go, so a kept Memory Stick folder never holds up
@@ -3983,6 +4012,10 @@ static const struct { const char *code; const char *badge; } k_error_badges[] = 
     {"TOOLS_IN_USE", "Build tools busy"},
     {"TOOLS_REMOVE_FAILED", "Not removed"},
     {"REMOVE_FAILED", "Not removed"},
+    {"SAVES_ADD_FAILED", "Save not added"},
+    {"SAVES_BACKUP_FAILED", "Not backed up"},
+    {"SAVES_PICKER_FAILED", "Picker not shown"},
+    {"SAVES_RESTORE_FAILED", "Not restored"},
     {"LAUNCH_DETAILS_UNAVAILABLE", "Game not started"},
     {"ENHANCEMENT_UNAVAILABLE", "Enhancement unavailable"},
     {"PACKAGE_REBUILD_NOT_INCOMPATIBLE", "Rebuild not needed"},
@@ -6170,6 +6203,846 @@ bool player_app_factory_reset(PlayerApp *app, const char *stamp) {
     app->factory_reset_done = true;
     app->should_quit = true;
     return true;
+}
+
+/* ---- Saves: back up, restore, add a save (#1883; player_state.h) ---- */
+
+static const char *const k_save_backup_suffix[PLAYER_SAVE_BACKUP_KIND_COUNT] = {
+    "", "-before-restore", "-before-add", "-before-remove"
+};
+
+static void player_saves_error(char *error, size_t error_size, const char *format, ...) {
+    va_list args;
+    if (!error || error_size == 0) return;
+    va_start(args, format);
+    (void)vsnprintf(error, error_size, format, args);
+    va_end(args);
+}
+
+/* "<lead> <what nk_zip refused> The file: <name>." */
+static void player_saves_zip_error(char *error, size_t error_size, const char *lead,
+                                   const NkZipError *zerr) {
+    if (zerr->entry[0]) {
+        player_saves_error(error, error_size, "%s %s The file: %s.", lead,
+                           nk_zip_status_message(zerr->status), zerr->entry);
+    } else {
+        player_saves_error(error, error_size, "%s %s", lead, nk_zip_status_message(zerr->status));
+    }
+}
+
+/* Every rename and folder sync the saves code makes, through the test seams. */
+#if defined(NK_SAVES_TEST_SEAMS)
+static unsigned s_saves_rename_calls;
+static unsigned s_saves_rename_fail_at;
+
+void player_saves_test_fail_rename(unsigned nth) {
+    s_saves_rename_fail_at = nth;
+    s_saves_rename_calls = 0;
+}
+
+static int player_saves_rename(const char *from, const char *to) {
+    if (s_saves_rename_fail_at != 0u && ++s_saves_rename_calls == s_saves_rename_fail_at) {
+        return -1;
+    }
+    return nk_rename_utf8(from, to);
+}
+
+static unsigned s_saves_sync_dir_calls;
+static unsigned s_saves_sync_dir_fail_at;
+
+void player_saves_test_fail_sync_dir(unsigned nth) {
+    s_saves_sync_dir_fail_at = nth;
+    s_saves_sync_dir_calls = 0;
+}
+
+static bool player_saves_sync_dir(const char *path) {
+    if (s_saves_sync_dir_fail_at != 0u && ++s_saves_sync_dir_calls == s_saves_sync_dir_fail_at) {
+        return false;
+    }
+    return nk_platform_sync_dir(path);
+}
+#else
+#define player_saves_rename nk_rename_utf8
+#define player_saves_sync_dir nk_platform_sync_dir
+#endif
+
+bool player_app_save_folder(const GameRecord *game, char *out, size_t out_size) {
+    char saves_root[NK_MAX_PATH];
+    const char *slot;
+    int written;
+    if (!game || !out || out_size == 0) return false;
+    out[0] = '\0';
+    if (!nk_platform_get_path(NK_PATH_SAVES, saves_root, sizeof(saves_root))) return false;
+    slot = game->disc_id[0] ? game->disc_id
+         : (game->title_id[0] ? game->title_id : "unidentified");
+    written = snprintf(out, out_size, "%s%c%s", saves_root, nk_platform_path_separator(), slot);
+    if (written <= 0 || (size_t)written >= out_size) {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+bool player_app_save_backup_folder(const GameRecord *game, char *out, size_t out_size) {
+    char data[NK_MAX_PATH];
+    char sep = nk_platform_path_separator();
+    int written;
+    if (!game || !out || out_size == 0) return false;
+    out[0] = '\0';
+    if (!player_removal_disc_id_ok(game->disc_id) ||
+        !nk_platform_get_path(NK_PATH_DATA, data, sizeof(data))) {
+        return false;
+    }
+    written = snprintf(out, out_size, "%s%ctitles%c%s%csave-backups", data, sep, sep,
+                       game->disc_id, sep);
+    if (written <= 0 || (size_t)written >= out_size) {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+const char *player_app_saves_blocker(const PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) {
+        return "The game is not in the library.";
+    }
+    if (!player_removal_disc_id_ok(app->games[game_index].disc_id)) {
+        return "This game's disc ID cannot name a folder.";
+    }
+    if (app->is_game_running || app->launch_pending) {
+        return "Stop the game first: it uses its save folder while it runs.";
+    }
+    return NULL;
+}
+
+void player_app_save_stamp_now(char *out, size_t out_size) {
+    time_t now = time(NULL);
+    struct tm *local = localtime(&now);
+    if (!out || out_size == 0) return;
+    if (!local || strftime(out, out_size, "%Y%m%d-%H%M%S", local) == 0) {
+        snprintf(out, out_size, "19800101-000000");
+    }
+}
+
+static bool player_saves_stamp_ok(const char *stamp) {
+    if (!stamp || strlen(stamp) != 15u || stamp[8] != '-') return false;
+    for (size_t i = 0; i < 15u; ++i) {
+        if (i != 8u && (stamp[i] < '0' || stamp[i] > '9')) return false;
+    }
+    return true;
+}
+
+static int player_saves_digits(const char *s, size_t count) {
+    int value = 0;
+    for (size_t i = 0; i < count; ++i) value = value * 10 + (s[i] - '0');
+    return value;
+}
+
+/* The stamp as an MS-DOS date and time, for every entry of the backup. */
+static void player_saves_dos_time(const char *stamp, uint16_t *dos_date, uint16_t *dos_time) {
+    int year = player_saves_digits(stamp, 4);
+    int month = player_saves_digits(stamp + 4, 2);
+    int day = player_saves_digits(stamp + 6, 2);
+    int hour = player_saves_digits(stamp + 9, 2);
+    int minute = player_saves_digits(stamp + 11, 2);
+    int second = player_saves_digits(stamp + 13, 2);
+    if (year < 1980 || year > 2107 || month < 1 || month > 12 || day < 1 || day > 31 ||
+        hour > 23 || minute > 59 || second > 59) {
+        *dos_date = (uint16_t)((1 << 5) | 1);   /* 1980-01-01 */
+        *dos_time = 0;
+        return;
+    }
+    *dos_date = (uint16_t)(((year - 1980) << 9) | (month << 5) | day);
+    *dos_time = (uint16_t)((hour << 11) | (minute << 5) | (second / 2));
+}
+
+/* A backup's file name for this disc, read back into its parts. */
+static bool player_saves_parse_backup(const char *disc_id, const char *name,
+                                      PlayerSaveBackup *out) {
+    size_t disc_length = strlen(disc_id);
+    size_t length = strlen(name);
+    const char *at;
+    const char *end;
+    PlayerSaveBackupKind kind = PLAYER_SAVE_BACKUP_MANUAL;
+    unsigned sequence = 1;
+    if (length < 4 || length >= sizeof(out->name) || strcmp(name + length - 4, ".zip") != 0 ||
+        strncmp(name, disc_id, disc_length) != 0 ||
+        strncmp(name + disc_length, "-saves-", 7) != 0) {
+        return false;
+    }
+    at = name + disc_length + 7;
+    end = name + length - 4;
+    if (end - at < 15) return false;
+    memcpy(out->stamp, at, 15);
+    out->stamp[15] = '\0';
+    if (!player_saves_stamp_ok(out->stamp)) return false;
+    at += 15;
+    for (int k = 1; k < PLAYER_SAVE_BACKUP_KIND_COUNT; ++k) {
+        size_t n = strlen(k_save_backup_suffix[k]);
+        if ((size_t)(end - at) >= n && strncmp(at, k_save_backup_suffix[k], n) == 0) {
+            kind = (PlayerSaveBackupKind)k;
+            at += n;
+            break;
+        }
+    }
+    if (at < end) {
+        if (*at != '-' || end - at < 2) return false;
+        sequence = 0;
+        for (++at; at < end; ++at) {
+            if (*at < '0' || *at > '9' || sequence > 99u) return false;
+            sequence = sequence * 10u + (unsigned)(*at - '0');
+        }
+        if (sequence < 2u) return false;
+    }
+    snprintf(out->name, sizeof(out->name), "%s", name);
+    out->kind = kind;
+    out->sequence = sequence;
+    return true;
+}
+
+/* Newest first: the later stamp, then the later of one second's backups. */
+static int player_saves_backup_newer(const PlayerSaveBackup *a, const PlayerSaveBackup *b) {
+    int by_stamp = strcmp(a->stamp, b->stamp);
+    if (by_stamp != 0) return by_stamp;
+    if (a->sequence != b->sequence) return a->sequence > b->sequence ? 1 : -1;
+    return strcmp(a->name, b->name);
+}
+
+typedef struct {
+    const char *disc_id;
+    const char *folder;
+    PlayerSaveBackup *out;
+    size_t cap;
+    size_t count;
+    size_t total;
+} PlayerSavesListing;
+
+static bool player_saves_list_one(const char *name, void *ctx) {
+    PlayerSavesListing *list = (PlayerSavesListing *)ctx;
+    PlayerSaveBackup found;
+    size_t at;
+    memset(&found, 0, sizeof(found));
+    if (!player_saves_parse_backup(list->disc_id, name, &found)) return true;
+    list->total++;
+    if (list->cap == 0) return true;
+    /* Keep the `cap` newest, in order. */
+    if (list->count == list->cap &&
+        player_saves_backup_newer(&found, &list->out[list->count - 1]) <= 0) {
+        return true;
+    }
+    if (list->count < list->cap) list->count++;
+    at = list->count - 1;
+    while (at > 0 && player_saves_backup_newer(&found, &list->out[at - 1]) > 0) {
+        list->out[at] = list->out[at - 1];
+        --at;
+    }
+    if (snprintf(found.path, sizeof(found.path), "%s%c%s", list->folder,
+                 nk_platform_path_separator(), name) >= (int)sizeof(found.path)) {
+        found.path[0] = '\0';
+    }
+    {
+        int64_t bytes = nk_platform_get_file_size(found.path);
+        found.bytes = bytes > 0 ? (uint64_t)bytes : 0u;
+    }
+    list->out[at] = found;
+    return true;
+}
+
+size_t player_app_list_save_backups(const PlayerApp *app, int game_index, PlayerSaveBackup *out,
+                                    size_t cap, size_t *out_total) {
+    char folder[NK_MAX_PATH];
+    PlayerSavesListing list;
+    if (out_total) *out_total = 0;
+    if (!app || game_index < 0 || game_index >= app->game_count ||
+        !player_app_save_backup_folder(&app->games[game_index], folder, sizeof(folder)) ||
+        !nk_platform_dir_exists(folder)) {
+        return 0;
+    }
+    memset(&list, 0, sizeof(list));
+    list.disc_id = app->games[game_index].disc_id;
+    list.folder = folder;
+    list.out = out;
+    list.cap = out ? cap : 0;
+    (void)nk_platform_list_files(folder, player_saves_list_one, &list);
+    if (out_total) *out_total = list.total;
+    return list.count;
+}
+
+/* Whether the folder may hold anything: true unless it lists whole with nothing in it.
+   A folder that cannot be listed, or that holds only entries a backup would leave out
+   (a link, a cloud placeholder), is not empty: it is backed up first, and that backup
+   fails visibly, before anything replaces or deletes it. */
+static bool player_saves_folder_has_entries(const char *folder) {
+    return nk_zip_folder_state(folder) != NK_ZIP_FOLDER_EMPTY;
+}
+
+/* base + ext, or base-2 + ext and on, whichever is free. */
+static bool player_saves_free_path(char *out, size_t out_size, const char *base,
+                                   const char *ext) {
+    for (int n = 1; n < 100; ++n) {
+        int written = n == 1 ? snprintf(out, out_size, "%s%s", base, ext)
+                             : snprintf(out, out_size, "%s-%d%s", base, n, ext);
+        if (written <= 0 || (size_t)written >= out_size) return false;
+        if (nk_platform_path_missing(out)) return true;
+    }
+    return false;
+}
+
+/* Backs up `folder` (the title's save folder, or the Memory Stick folder of its copied disc
+   files) into the title's backup folder. */
+static PlayerSavesResult player_saves_zip(PlayerApp *app, const GameRecord *game,
+                                          const char *folder, const char *stamp,
+                                          PlayerSaveBackupKind kind, char *out_path,
+                                          size_t out_size, char *error, size_t error_size) {
+    char backups[NK_MAX_PATH];
+    char base[NK_MAX_PATH + 96];
+    char path[NK_MAX_PATH + 128];
+    char part[NK_MAX_PATH + 160];
+    NkZipError zerr;
+    NkZipReader *check = NULL;
+    NkZipStatus status;
+    uint16_t dos_date = 0;
+    uint16_t dos_time = 0;
+    size_t entries = 0;
+    uint64_t bytes = 0;
+    if (out_path && out_size) out_path[0] = '\0';
+    if (!nk_platform_dir_exists(folder) || !player_saves_folder_has_entries(folder)) {
+        return PLAYER_SAVES_NOTHING;
+    }
+    if (!player_app_save_backup_folder(game, backups, sizeof(backups)) ||
+        !nk_platform_mkdir_p_private(backups)) {
+        player_saves_error(error, error_size, "The backup folder %s could not be made.",
+                           backups[0] ? backups : "for this game");
+        return PLAYER_SAVES_FAILED;
+    }
+    snprintf(base, sizeof(base), "%s%c%s-saves-%s%s", backups, nk_platform_path_separator(),
+             game->disc_id, stamp, k_save_backup_suffix[kind]);
+    if (!player_saves_free_path(path, sizeof(path), base, ".zip")) {
+        player_saves_error(error, error_size, "No free name for a backup in %s.", backups);
+        return PLAYER_SAVES_FAILED;
+    }
+    snprintf(part, sizeof(part), "%s.part", path);
+    (void)nk_remove_utf8(part);
+    player_saves_dos_time(stamp, &dos_date, &dos_time);
+    status = nk_zip_write_folder(folder, part, dos_date, dos_time, &entries, &bytes, &zerr);
+    if (status != NK_ZIP_OK) {
+        player_saves_zip_error(error, error_size, "The saves could not be backed up.", &zerr);
+        player_dev_log_add(app, "saves", "backup of %s refused: %s %s", folder,
+                           nk_zip_status_code(status), zerr.entry);
+        return PLAYER_SAVES_FAILED;
+    }
+    /* Read back whole: a backup that is kept is one that restores. */
+    status = nk_zip_reader_open_file(&check, part, &zerr);
+    if (status == NK_ZIP_OK) {
+        status = nk_zip_reader_verify(check, &zerr);
+        nk_zip_reader_close(check);
+    }
+    if (status != NK_ZIP_OK) {
+        (void)nk_remove_utf8(part);
+        player_saves_zip_error(error, error_size, "The backup did not read back whole.", &zerr);
+        return PLAYER_SAVES_FAILED;
+    }
+    if (player_saves_rename(part, path) != 0) {
+        (void)nk_remove_utf8(part);
+        player_saves_error(error, error_size, "The backup could not be saved as %s.", path);
+        return PLAYER_SAVES_FAILED;
+    }
+    /* The archive's bytes are on the disk (nk_zip_write_folder); so is its name before
+       anything that trusts the backup deletes or replaces the saves. */
+    if (!player_saves_sync_dir(backups)) {
+        player_saves_error(error, error_size,
+                           "The backup %s was written, but could not be confirmed on the disk.",
+                           path);
+        player_dev_log_add(app, "saves", "backup %s: folder sync failed", path);
+        return PLAYER_SAVES_FAILED;
+    }
+    player_dev_log_add(app, "saves", "backed up %s to %s (%lu entries, %llu bytes)", folder, path,
+                       (unsigned long)entries, (unsigned long long)bytes);
+    if (out_path && out_size) snprintf(out_path, out_size, "%s", path);
+    return PLAYER_SAVES_DONE;
+}
+
+PlayerSavesResult player_app_back_up_saves(PlayerApp *app, int game_index, const char *stamp,
+                                           PlayerSaveBackupKind kind, char *out_path,
+                                           size_t out_path_size, char *error,
+                                           size_t error_size) {
+    char folder[NK_MAX_PATH];
+    const char *blocker = player_app_saves_blocker(app, game_index);
+    if (error && error_size) error[0] = '\0';
+    if (out_path && out_path_size) out_path[0] = '\0';
+    if (blocker) {
+        player_saves_error(error, error_size, "%s", blocker);
+        return PLAYER_SAVES_FAILED;
+    }
+    if (!player_saves_stamp_ok(stamp) || (int)kind < 0 ||
+        (int)kind >= PLAYER_SAVE_BACKUP_KIND_COUNT) {
+        player_saves_error(error, error_size, "The backup could not be named.");
+        return PLAYER_SAVES_FAILED;
+    }
+    if (!player_app_save_folder(&app->games[game_index], folder, sizeof(folder))) {
+        player_saves_error(error, error_size, "The save folder could not be found.");
+        return PLAYER_SAVES_FAILED;
+    }
+    return player_saves_zip(app, &app->games[game_index], folder, stamp, kind, out_path,
+                            out_path_size, error, error_size);
+}
+
+PlayerSavesResult player_app_restore_saves(PlayerApp *app, int game_index,
+                                           const char *backup_path, const char *stamp,
+                                           char *kept, size_t kept_size, char *error,
+                                           size_t error_size) {
+    char backups[NK_MAX_PATH];
+    char folder[NK_MAX_PATH];
+    char parent[NK_MAX_PATH];
+    char base[NK_MAX_PATH + 96];
+    char temp[NK_MAX_PATH + 128];
+    char aside[NK_MAX_PATH + 128];
+    char sub[PLAYER_ERROR_DETAILS_MAX];
+    char reason[160] = "";
+    PlayerSaveBackup parsed;
+    NkZipReader *reader = NULL;
+    NkZipError zerr;
+    NkZipStatus status;
+    const GameRecord *game;
+    const char *blocker = player_app_saves_blocker(app, game_index);
+    const char *name;
+    bool had;
+    bool full;
+    if (error && error_size) error[0] = '\0';
+    if (kept && kept_size) kept[0] = '\0';
+    if (blocker) {
+        player_saves_error(error, error_size, "%s Nothing was restored.", blocker);
+        return PLAYER_SAVES_FAILED;
+    }
+    if (!player_saves_stamp_ok(stamp)) {
+        player_saves_error(error, error_size, "The restore could not be named. Nothing was restored.");
+        return PLAYER_SAVES_FAILED;
+    }
+    game = &app->games[game_index];
+    /* Only a backup of this title, straight from its backup folder. */
+    name = backup_path ? backup_path + strlen(backup_path) : NULL;
+    while (name && name > backup_path && name[-1] != '/' && name[-1] != '\\') --name;
+    memset(&parsed, 0, sizeof(parsed));
+    if (!backup_path || !player_app_save_backup_folder(game, backups, sizeof(backups)) ||
+        !player_path_within(backup_path, backups) ||
+        (size_t)(name - backup_path) != strlen(backups) + 1u ||
+        !player_saves_parse_backup(game->disc_id, name, &parsed)) {
+        player_saves_error(error, error_size,
+                           "That file is not one of this game's backups. Nothing was restored.");
+        return PLAYER_SAVES_FAILED;
+    }
+    if (!nk_platform_file_exists(backup_path)) {
+        player_saves_error(error, error_size, "The backup %s is gone. Nothing was restored.", name);
+        return PLAYER_SAVES_FAILED;
+    }
+    /* The whole archive is checked before anything moves. */
+    status = nk_zip_reader_open_file(&reader, backup_path, &zerr);
+    if (status == NK_ZIP_OK) status = nk_zip_reader_verify(reader, &zerr);
+    if (status != NK_ZIP_OK) {
+        nk_zip_reader_close(reader);
+        snprintf(sub, sizeof(sub), "Nothing was restored: the backup %s was refused.", name);
+        player_saves_zip_error(error, error_size, sub, &zerr);
+        player_dev_log_add(app, "saves", "restore of %s refused: %s %s", backup_path,
+                           nk_zip_status_code(status), zerr.entry);
+        return PLAYER_SAVES_FAILED;
+    }
+    if (!player_app_save_folder(game, folder, sizeof(folder)) ||
+        !player_path_parent_folder(folder, parent, sizeof(parent))) {
+        nk_zip_reader_close(reader);
+        player_saves_error(error, error_size,
+                           "The save folder could not be found. Nothing was restored.");
+        return PLAYER_SAVES_FAILED;
+    }
+    had = nk_platform_dir_exists(folder);
+    full = had && player_saves_folder_has_entries(folder);
+    if (full &&
+        player_saves_zip(app, game, folder, stamp, PLAYER_SAVE_BACKUP_BEFORE_RESTORE, NULL, 0,
+                         sub, sizeof(sub)) == PLAYER_SAVES_FAILED) {
+        nk_zip_reader_close(reader);
+        player_saves_error(error, error_size,
+                           "Your saves could not be backed up first, so nothing was restored. %s",
+                           sub);
+        return PLAYER_SAVES_FAILED;
+    }
+    /* A new folder beside the save folder, on the same disk, so the swap is two renames. */
+    snprintf(base, sizeof(base), "%s%c.%s-restore-%s", parent, nk_platform_path_separator(),
+             game->disc_id, stamp);
+    if (!player_saves_free_path(temp, sizeof(temp), base, "") || !nk_platform_mkdir_p(temp)) {
+        nk_zip_reader_close(reader);
+        player_saves_error(error, error_size,
+                           "A folder for the restore could not be made in %s. Nothing was "
+                           "restored.", parent);
+        return PLAYER_SAVES_FAILED;
+    }
+    status = nk_zip_reader_extract(reader, temp, &zerr);
+    nk_zip_reader_close(reader);
+    if (status != NK_ZIP_OK) {
+        (void)nk_platform_remove_tree(temp, NULL);
+        snprintf(sub, sizeof(sub), "Nothing was restored: the backup %s could not be unpacked.",
+                 name);
+        player_saves_zip_error(error, error_size, sub, &zerr);
+        return PLAYER_SAVES_FAILED;
+    }
+    aside[0] = '\0';
+    if (had && !full) {
+        /* An empty save folder holds nothing to keep. */
+        if (!nk_platform_remove_tree(folder, NULL)) {
+            (void)nk_platform_remove_tree(temp, NULL);
+            player_saves_error(error, error_size,
+                               "The empty save folder %s could not be replaced. Nothing was "
+                               "restored.", folder);
+            return PLAYER_SAVES_FAILED;
+        }
+        had = false;
+    }
+    if (had) {
+        snprintf(base, sizeof(base), "%s-backup-%s", folder, stamp);
+        if (!player_saves_free_path(aside, sizeof(aside), base, "") ||
+            player_saves_rename(folder, aside) != 0) {
+            (void)nk_platform_describe_os_error(nk_platform_last_os_error(), reason,
+                                                sizeof(reason));
+            (void)nk_platform_remove_tree(temp, NULL);
+            player_saves_error(error, error_size,
+                               "Your save folder could not be moved aside%s%s. A program may be "
+                               "using a file in it: close it and try again. Nothing was restored.",
+                               reason[0] ? ": " : "", reason);
+            return PLAYER_SAVES_FAILED;
+        }
+    }
+    if (player_saves_rename(temp, folder) != 0) {
+        bool back;
+        (void)nk_platform_describe_os_error(nk_platform_last_os_error(), reason, sizeof(reason));
+        back = !had || player_saves_rename(aside, folder) == 0;
+        (void)nk_platform_remove_tree(temp, NULL);
+        if (back) {
+            player_saves_error(error, error_size,
+                               "The restored saves could not be put in place%s%s. Your saves "
+                               "are as they were.", reason[0] ? ": " : "", reason);
+        } else {
+            player_saves_error(error, error_size,
+                               "The restored saves could not be put in place%s%s, and your "
+                               "saves could not be moved back: they are in %s.",
+                               reason[0] ? ": " : "", reason, aside);
+        }
+        player_dev_log_add(app, "saves", "restore swap failed for %s (%s)", folder,
+                           back ? "put back" : "left aside");
+        return PLAYER_SAVES_FAILED;
+    }
+    /* The restored files are on the disk (nk_zip_reader_extract); so is the swap. A swap that
+       cannot be confirmed is still done (the saves are restored, and the old ones kept aside),
+       and the user is told. */
+    if (!player_saves_sync_dir(parent)) {
+        player_saves_error(error, error_size,
+                           "The change could not be confirmed on the disk%s.",
+                           had ? ", so keep the folder of your saves from before" : "");
+        player_dev_log_add(app, "saves", "restore of %s: folder sync failed", folder);
+    }
+    if (kept && kept_size && had) snprintf(kept, kept_size, "%s", aside);
+    player_dev_log_add(app, "saves", "restored %s into %s%s%s", backup_path, folder,
+                       had ? "; the old saves are in " : "", had ? aside : "");
+    return PLAYER_SAVES_DONE;
+}
+
+/* A PSP save folder's name: the game's ID and the save's name, letters, digits, '_' and '-'. */
+static bool player_saves_folder_name_ok(const char *name) {
+    size_t length = strlen(name);
+    if (length == 0 || length > 64u) return false;
+    for (size_t i = 0; i < length; ++i) {
+        char c = name[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+              c == '_' || c == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+typedef struct {
+    char *name;
+    bool folder;
+} PlayerSavesListed;
+
+typedef struct {
+    PlayerSavesListed *items;
+    size_t count;
+    size_t capacity;
+    bool failed;
+} PlayerSavesFolderList;
+
+static bool player_saves_list_add(const char *name, bool is_dir, void *ctx) {
+    PlayerSavesFolderList *list = (PlayerSavesFolderList *)ctx;
+    size_t size = strlen(name) + 1u;
+    if (list->count == list->capacity) {
+        size_t capacity = list->capacity ? list->capacity * 2u : 16u;
+        PlayerSavesListed *grown =
+            (PlayerSavesListed *)realloc(list->items, capacity * sizeof(*grown));
+        if (!grown) {
+            list->failed = true;
+            return false;
+        }
+        list->items = grown;
+        list->capacity = capacity;
+    }
+    list->items[list->count].name = (char *)malloc(size);
+    if (!list->items[list->count].name) {
+        list->failed = true;
+        return false;
+    }
+    memcpy(list->items[list->count].name, name, size);
+    list->items[list->count].folder = is_dir;
+    list->count++;
+    return true;
+}
+
+typedef struct {
+    size_t entries;
+    uint64_t bytes;
+    char problem[NK_MAX_PATH + 320];  /* a target path (NK_MAX_PATH + 256) and words */
+} PlayerSavesCopy;
+
+static bool player_saves_copy_file(const char *from, const char *to, PlayerSavesCopy *copy) {
+    unsigned char buffer[16384];
+    FILE *in = nk_fopen_utf8(from, "rb");
+    FILE *out;
+    bool ok = true;
+    if (!in) {
+        snprintf(copy->problem, sizeof(copy->problem), "%s could not be read.", from);
+        return false;
+    }
+    out = nk_fopen_utf8(to, "wb");
+    if (!out) {
+        fclose(in);
+        snprintf(copy->problem, sizeof(copy->problem), "%s could not be written.", to);
+        return false;
+    }
+    for (;;) {
+        size_t got = fread(buffer, 1, sizeof(buffer), in);
+        if (got == 0) break;
+        copy->bytes += got;
+        if (copy->bytes > NK_ZIP_MAX_TOTAL_BYTES) {
+            snprintf(copy->problem, sizeof(copy->problem),
+                     "The save is larger than 512 MiB, more than a save can be.");
+            ok = false;
+            break;
+        }
+        if (fwrite(buffer, 1, got, out) != got) {
+            snprintf(copy->problem, sizeof(copy->problem), "%s could not be written.", to);
+            ok = false;
+            break;
+        }
+    }
+    if (ok && ferror(in)) {
+        snprintf(copy->problem, sizeof(copy->problem), "%s could not be read.", from);
+        ok = false;
+    }
+    if (ok && !nk_platform_sync_file(out)) {
+        snprintf(copy->problem, sizeof(copy->problem), "%s could not be written to the disk.", to);
+        ok = false;
+    }
+    fclose(in);
+    if (fclose(out) != 0 && ok) {
+        snprintf(copy->problem, sizeof(copy->problem), "%s could not be written.", to);
+        ok = false;
+    }
+    return ok;
+}
+
+/* Copies a picked save folder's files and folders within the backup caps, each on the disk
+   before the copy is put in place. A save holding an entry the copy would leave out (a link,
+   a junction, a cloud file that is not on this computer) is refused, not copied in part. */
+static bool player_saves_copy_tree(const char *from, const char *to, unsigned depth,
+                                   PlayerSavesCopy *copy) {
+    PlayerSavesFolderList list;
+    bool ok = true;
+    char sep = nk_platform_path_separator();
+    memset(&list, 0, sizeof(list));
+    if (depth > NK_ZIP_MAX_DEPTH) {
+        snprintf(copy->problem, sizeof(copy->problem), "The save has too many folders inside "
+                 "folders.");
+        return false;
+    }
+    size_t skipped = 0;
+    if (!nk_platform_list_dir_counted(from, player_saves_list_add, &list, &skipped) ||
+        list.failed) {
+        snprintf(copy->problem, sizeof(copy->problem), "%s could not be read.", from);
+        ok = false;
+    } else if (skipped > 0u) {
+        snprintf(copy->problem, sizeof(copy->problem),
+                 "%s holds a link, a junction or a cloud file that is not on this computer, "
+                 "which a save copy would leave out.", from);
+        ok = false;
+    }
+    for (size_t i = 0; ok && i < list.count; ++i) {
+        char source[NK_MAX_PATH + 256];
+        char target[NK_MAX_PATH + 256];
+        int a = snprintf(source, sizeof(source), "%s%c%s", from, sep, list.items[i].name);
+        int b = snprintf(target, sizeof(target), "%s%c%s", to, sep, list.items[i].name);
+        if (a <= 0 || (size_t)a >= sizeof(source) || b <= 0 || (size_t)b >= sizeof(target)) {
+            snprintf(copy->problem, sizeof(copy->problem), "A path in the save is too long.");
+            ok = false;
+        } else if (++copy->entries > NK_ZIP_MAX_ENTRIES) {
+            snprintf(copy->problem, sizeof(copy->problem),
+                     "The save holds more than 4096 files and folders.");
+            ok = false;
+        } else if (list.items[i].folder) {
+            ok = nk_platform_mkdir_p(target);
+            if (!ok) {
+                snprintf(copy->problem, sizeof(copy->problem), "%s could not be made.", target);
+            } else {
+                ok = player_saves_copy_tree(source, target, depth + 1u, copy);
+            }
+        } else {
+            ok = player_saves_copy_file(source, target, copy);
+        }
+    }
+    if (ok && !player_saves_sync_dir(to)) {
+        snprintf(copy->problem, sizeof(copy->problem), "%s could not be written to the disk.", to);
+        ok = false;
+    }
+    for (size_t i = 0; i < list.count; ++i) free(list.items[i].name);
+    free(list.items);
+    return ok;
+}
+
+PlayerSavesResult player_app_add_save(PlayerApp *app, int game_index, const char *picked_folder,
+                                      bool replace, const char *stamp, char *added,
+                                      size_t added_size, char *error, size_t error_size) {
+    char picked[NK_MAX_PATH];
+    char folder[NK_MAX_PATH];
+    char savedata[NK_MAX_PATH + 32];
+    char target[NK_MAX_PATH + 128];
+    char param[NK_MAX_PATH + 32];
+    char base[NK_MAX_PATH + 160];
+    char temp[NK_MAX_PATH + 192];
+    char old[NK_MAX_PATH + 192];
+    char sub[PLAYER_ERROR_DETAILS_MAX];
+    char reason[160] = "";
+    const char *blocker = player_app_saves_blocker(app, game_index);
+    const GameRecord *game;
+    const char *name;
+    char sep = nk_platform_path_separator();
+    size_t length;
+    bool exists;
+    PlayerSavesCopy copy;
+    if (error && error_size) error[0] = '\0';
+    if (added && added_size) added[0] = '\0';
+    if (blocker) {
+        player_saves_error(error, error_size, "%s No save was added.", blocker);
+        return PLAYER_SAVES_FAILED;
+    }
+    if (!player_saves_stamp_ok(stamp)) {
+        player_saves_error(error, error_size, "The save could not be added.");
+        return PLAYER_SAVES_FAILED;
+    }
+    game = &app->games[game_index];
+    if (!picked_folder || !picked_folder[0] || strlen(picked_folder) >= sizeof(picked) ||
+        !nk_platform_dir_exists(picked_folder)) {
+        player_saves_error(error, error_size, "The folder you picked could not be read. No "
+                           "save was added.");
+        return PLAYER_SAVES_FAILED;
+    }
+    snprintf(picked, sizeof(picked), "%s", picked_folder);
+    length = strlen(picked);
+    while (length > 1 && (picked[length - 1] == '/' || picked[length - 1] == '\\')) {
+        picked[--length] = '\0';
+    }
+    name = picked + length;
+    while (name > picked && name[-1] != '/' && name[-1] != '\\') --name;
+    if (added && added_size) snprintf(added, added_size, "%s", name);
+    if (!player_saves_folder_name_ok(name)) {
+        player_saves_error(error, error_size,
+                           "Pick one save's own folder inside a SAVEDATA folder. Its name is a "
+                           "game ID and a save name, such as ULUS10000SAVE00; \"%s\" is not.",
+                           name);
+        return PLAYER_SAVES_FAILED;
+    }
+    snprintf(param, sizeof(param), "%s%cPARAM.SFO", picked, sep);
+    if (!nk_platform_file_exists(param)) {
+        player_saves_error(error, error_size,
+                           "\"%s\" has no PARAM.SFO, so it is not a PSP save. Pick a save's own "
+                           "folder inside SAVEDATA.", name);
+        return PLAYER_SAVES_FAILED;
+    }
+    if (!player_app_save_folder(game, folder, sizeof(folder))) {
+        player_saves_error(error, error_size, "The save folder could not be found. No save was "
+                           "added.");
+        return PLAYER_SAVES_FAILED;
+    }
+    if (player_path_within(picked, folder)) {
+        player_saves_error(error, error_size, "\"%s\" is already in this game's save folder.",
+                           name);
+        return PLAYER_SAVES_FAILED;
+    }
+    snprintf(savedata, sizeof(savedata), "%s%cPSP%cSAVEDATA", folder, sep, sep);
+    snprintf(target, sizeof(target), "%s%c%s", savedata, sep, name);
+    exists = !nk_platform_path_missing(target);
+    if (exists && !replace) return PLAYER_SAVES_EXISTS;
+    if (!nk_platform_mkdir_p(savedata)) {
+        player_saves_error(error, error_size, "%s could not be made. No save was added.",
+                           savedata);
+        return PLAYER_SAVES_FAILED;
+    }
+    if (exists &&
+        player_saves_zip(app, game, folder, stamp, PLAYER_SAVE_BACKUP_BEFORE_ADD, NULL, 0, sub,
+                         sizeof(sub)) == PLAYER_SAVES_FAILED) {
+        player_saves_error(error, error_size,
+                           "Your saves could not be backed up first, so \"%s\" was not "
+                           "replaced. %s", name, sub);
+        return PLAYER_SAVES_FAILED;
+    }
+    snprintf(base, sizeof(base), "%s%c.%s-add-%s", savedata, sep, name, stamp);
+    if (!player_saves_free_path(temp, sizeof(temp), base, "") || !nk_platform_mkdir_p(temp)) {
+        player_saves_error(error, error_size, "A folder for the copy could not be made in %s. "
+                           "No save was added.", savedata);
+        return PLAYER_SAVES_FAILED;
+    }
+    memset(&copy, 0, sizeof(copy));
+    if (!player_saves_copy_tree(picked, temp, 1u, &copy)) {
+        (void)nk_platform_remove_tree(temp, NULL);
+        player_saves_error(error, error_size, "\"%s\" could not be copied: %s No save was added.",
+                           name, copy.problem);
+        return PLAYER_SAVES_FAILED;
+    }
+    old[0] = '\0';
+    if (exists) {
+        snprintf(base, sizeof(base), "%s%c.%s-replaced-%s", savedata, sep, name, stamp);
+        if (!player_saves_free_path(old, sizeof(old), base, "") ||
+            player_saves_rename(target, old) != 0) {
+            (void)nk_platform_describe_os_error(nk_platform_last_os_error(), reason,
+                                                sizeof(reason));
+            (void)nk_platform_remove_tree(temp, NULL);
+            player_saves_error(error, error_size,
+                               "The save \"%s\" already there could not be moved aside%s%s. "
+                               "Nothing was changed.", name, reason[0] ? ": " : "", reason);
+            return PLAYER_SAVES_FAILED;
+        }
+    }
+    if (player_saves_rename(temp, target) != 0) {
+        bool back;
+        (void)nk_platform_describe_os_error(nk_platform_last_os_error(), reason, sizeof(reason));
+        back = !exists || player_saves_rename(old, target) == 0;
+        (void)nk_platform_remove_tree(temp, NULL);
+        player_saves_error(error, error_size,
+                           back ? "\"%s\" could not be put in place%s%s. Nothing was changed."
+                                : "\"%s\" could not be put in place%s%s, and the save there "
+                                  "could not be moved back: it is in %s.",
+                           name, reason[0] ? ": " : "", reason, old);
+        return PLAYER_SAVES_FAILED;
+    }
+    /* The swap on the disk before the copy it replaced goes. */
+    if (exists && !player_saves_sync_dir(savedata)) {
+        player_saves_error(error, error_size,
+                           "\"%s\" is in place, but the change could not be confirmed on the "
+                           "disk, so the copy it replaced was kept: it is in %s.", name, old);
+    } else if (exists && !nk_platform_remove_tree(old, NULL)) {
+        /* The save is in place; the copy it replaced is also in the backup taken first. */
+        player_saves_error(error, error_size,
+                           "The old copy of \"%s\" could not be deleted: it is in %s.", name, old);
+    }
+    player_dev_log_add(app, "saves", "added save %s from %s (%lu entries, %llu bytes)%s", name,
+                       picked, (unsigned long)copy.entries, (unsigned long long)copy.bytes,
+                       exists ? ", replacing the one there" : "");
+    return PLAYER_SAVES_DONE;
 }
 
 void player_app_clear_shared_library_cache(PlayerApp *app) {

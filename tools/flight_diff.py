@@ -10,7 +10,7 @@ import re
 import sys
 from itertools import zip_longest
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "assets" / "flight_recorder_schema.json"
@@ -92,7 +92,7 @@ class BundleIncomparable(FlightDiffError):
         self.reasons = list(reasons)
 
 
-def _fail(path: str, message: str) -> None:
+def _fail(path: str, message: str) -> NoReturn:
     raise FlightDiffError(f"{path}: {message}")
 
 
@@ -151,6 +151,8 @@ def _validate_schema(value: Any, schema: dict[str, Any], path: str = "$") -> Non
             for index, item in enumerate(value):
                 _validate_schema(item, item_schema, f"{path}[{index}]")
     if isinstance(value, dict):
+        if len(value) < schema.get("minProperties", 0):
+            _fail(path, f"fewer than {schema['minProperties']} properties")
         for key in schema.get("required", ()):
             if key not in value:
                 _fail(path, f"missing required property {key!r}")
@@ -578,7 +580,7 @@ def _comparability_reasons(baseline: dict[str, Any], candidate: dict[str, Any]) 
     for side, bundle in (("baseline", baseline), ("candidate", candidate)):
         if "enhancements" in bundle["runtime"]:
             reasons.append(
-                f"the {side} is an Ace Mode run ({bundle['runtime']['enhancements']}); an "
+                f"the {side} is an enhanced run ({bundle['runtime']['enhancements']}); an "
                 "enhanced run is not authentic evidence and is never compared"
             )
     if baseline["runtime"] != candidate["runtime"]:

@@ -11,6 +11,11 @@ name: CodeQL wake
 # A merge-queue group gets the same kind of signal (merge_group). Its run is also
 # candidate-controlled in what it executes, and it is equally unevidenced: codeql.yml checks
 # that the queue ref names the group commit, and it reads the tree itself.
+# The wake job runs only for a merge group or for a pull request from one of this
+# repository's batch/ branches, the only pull request heads codeql.yml analyses from a wake.
+# That filter only saves a runner per push. codeql.yml's own prepare guard stays the
+# authority: a candidate that edits this filter can drop its own wake, which leaves its
+# required "CodeQL" check missing, but a wake it adds back is still refused there.
 # Do not add steps that build, test, read repository files or use secrets; codeql.yml's
 # workflow_run name ("CodeQL wake") must match this workflow's name exactly.
 on:
@@ -30,6 +35,10 @@ permissions: {}
 jobs:
   wake:
     name: CodeQL wake signal
+    if: >-
+      ${{ github.event_name == 'merge_group' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+           startsWith(github.head_ref, 'batch/')) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 2
     steps:
