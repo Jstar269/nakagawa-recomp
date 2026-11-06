@@ -182,7 +182,8 @@ motion-match-selftest:
 # of AMD's own host code (tests/native/fsr3_host_oracle.md): every clear, discard and dispatch, the
 # resource behind each binding, the staged constants, the jitter and the f16 and RCAS helpers. Pure C,
 # no GPU and no game data. fsr3-mutants then requires 19 semantic defects in copies of the port to
-# build and fail it on the line each one changes.
+# build and fail it on the line each one changes; the one inside libm's last unit runs only against
+# a C library the selftest compares exactly (UCRT) and is NOT_RUN elsewhere.
 native-core-tests: fsr3-host-selftest fsr3-mutants
 .PHONY: fsr3-host-selftest fsr3-mutants
 fsr3-host-selftest:

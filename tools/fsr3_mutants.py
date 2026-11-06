@@ -47,6 +47,12 @@ JITTER = "src/rt/fsr3_jitter.c"
 SELFTEST = "tests/native/fsr3_host_selftest.c"
 RECORD = "tests/native/fsr3_host_oracle.txt"
 CFLAGS = ["-std=c99", "-O2", "-Wall", "-Wextra", "-Wpedantic", "-Werror"]
+# The host selftest compares five words that come from <math.h> float functions exactly against a UCRT
+# build (AMD's record is MSVC's) and within one unit in the last place elsewhere, because glibc rounds
+# tanHalfFOV the other way in some frames. This mutant changes tanHalfFOV by less than that unit, so only
+# an exact comparison can see it; with the one-unit bound it is NOT_RUN, printed, and not counted.
+LIBM_MUTANT = "tanHalfFOV in double"
+LIBM_EXACT = "(bound 0)"
 INCLUDES = ["-Isrc/rt", "-Ithird_party/fidelityfx_sdk/upscalers/fsr3/include/gpu"]
 
 # (name, file, old text, new text, text the failure output must contain)
@@ -87,7 +93,7 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
      "const float lo = 1.0f < v ? 1.0f : v;",
      "const float lo = v;",
      "AMD:  stage 0"),
-    ("tanHalfFOV in double", HOST,
+    (LIBM_MUTANT, HOST,
      "const float camera_angle_horizontal = atanf(tanf(d->camera_fov_angle_vertical / 2.0f) * aspect_ratio) * 2.0f;",
      "const float camera_angle_horizontal = (float)(atan(tan((double)(d->camera_fov_angle_vertical / 2)) * "
      "(double)aspect_ratio) * 2);",
@@ -654,8 +660,15 @@ def main() -> int:
         print(f"FAIL fsr3-mutants: the unmutated cell does not pass ({status}, exit {rc})\n{out}")
         return 1
 
+    exact_libm = LIBM_EXACT in out
     failures = 0
+    not_run = 0
     for index, (name, path, old, new, expect) in enumerate(MUTANTS):
+        if name == LIBM_MUTANT and not exact_libm:
+            print(f"NOT_RUN {name}: this C library's float functions are compared within one unit in the last "
+                  "place, and the defect stays inside it (it runs against a UCRT build)")
+            not_run += 1
+            continue
         source = (ROOT / path).read_text(encoding="utf-8")
         if source.count(old) != 1:
             print(f"INVALID {name}: the text to change appears {source.count(old)} times in {path}")
@@ -680,7 +693,9 @@ def main() -> int:
             failures += 1
         else:
             print(f"KILLED {name}")
-    print(f"fsr3-mutants: {len(MUTANTS) - failures} of {len(MUTANTS)} killed for the stated reason")
+    count = len(MUTANTS) - not_run
+    scope = f" ({not_run} NOT_RUN on this C library)" if not_run else ""
+    print(f"fsr3-mutants: {count - failures} of {count} killed for the stated reason{scope}")
     return 1 if failures else 0
 
 
