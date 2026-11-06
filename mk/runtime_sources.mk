@@ -133,7 +133,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/videorec.c \
               src/rt/ge_capture.c \
               src/rt/vfpu_interp.c \
-              $(HLE_SRCS) src/rt/audio_resample.c src/rt/flash0_font.c \
+              $(HLE_SRCS) src/rt/import_diff.c src/rt/audio_resample.c src/rt/flash0_font.c \
               src/rt/mp3_bridge.c \
               src/core/nk_xb.c \
               src/rt/prx_loader.c \

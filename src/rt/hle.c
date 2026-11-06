@@ -36,6 +36,7 @@
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
 #define SR_EVIDENCE_NO_VFPU /* this file reads the NID table only */
 #include "hle_evidence.h" /* generated: NIDs with no recorded evidence (docs/HLE_COVERAGE.md) */
+#include "import_diff.h"     /* SR_HLE_DIFF: HLE handler vs the disc module's export (#2148) */
 int sr_thread_has_pending_callbacks(uint32_t thread_uid);
 int sr_thread_dispatch_callbacks(void);    /* internal pump count; public CheckCallback is Boolean */
 void sr_callback_unregister_owner(uint32_t thread_uid);
@@ -3977,10 +3978,22 @@ void sr_hle_init(void) {
  * scePsmfPlayer* -> libpsmfplayer.prx), exactly as the kernel links the importer's stub to the
  * export. Returns 1 when the call was linked (result in v0); the host handler then only serves
  * NIDs no started module exports. */
+typedef struct LinkGuestCall { RecompFn fn; uint32_t target; } LinkGuestCall;
+
+static void link_run_guest(CpuState *s, void *ctx) {
+    const LinkGuestCall *call = (const LinkGuestCall *)ctx;
+    if (sr_perf_enabled) sr_perf_aot_begin(call->target);
+    int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
+    sr_call_body(call->fn, s);   /* completes the export's tail chain inside its span (#855) */
+    sr_exec_leave(exec_previous);
+    if (sr_perf_enabled) sr_perf_aot_end();
+}
+
 static int link_started_export(CpuState *s, uint32_t nid) {
     uint32_t target = started_module_export(nid);
     RecompFn gfn = target ? sr_lookup(target) : NULL;
     if (!gfn) return 0;
+    LinkGuestCall call = {gfn, target};
     /* Log each linked NID once. */
     static uint32_t s_linked_seen[256];
     static unsigned s_linked_n = 0;
@@ -3991,11 +4004,21 @@ static int link_started_export(CpuState *s, uint32_t nid) {
         const char *nm = sr_nid_name(nid);
         fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n", nm ? nm : "?", nid, target);
     }
-    if (sr_perf_enabled) sr_perf_aot_begin(target);
-    int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
-    sr_call_body(gfn, s);   /* completes the export's tail chain inside its span (#855) */
-    sr_exec_leave(exec_previous);
-    if (sr_perf_enabled) sr_perf_aot_end();
+    /* SR_HLE_DIFF=1 (#2148): when the NID also has an HLE handler, run that handler on a copy
+     * of guest memory and compare it with the export's run, which is the one kept. The stack
+     * below the caller's sp is the export's own scratch, dead once it returns. */
+    HleEntry *paired = import_diff_active() ? hle_find(nid) : NULL;
+    if (paired) {
+        uint32_t stack_base = 0u, stack_size = 0u;
+        int have_stack = sched_current_thread_stack_range(&stack_base, &stack_size);
+        ImportDiffResult diff;
+        (void)import_diff_call(s, nid, paired->name, paired->unsupported_error ? NULL : paired->fn,
+                               paired->unsupported_error, link_run_guest, &call,
+                               have_stack ? stack_base : 0u, have_stack ? s->r[29] : 0u, &diff);
+        import_diff_report(&diff);
+        return 1;
+    }
+    link_run_guest(s, &call);
     return 1;
 }
 
@@ -4046,6 +4069,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
 #endif
     sr_tail_assert_empty("tail-transfer-live-at-syscall");
     sr_hle_init();
+    import_diff_note_syscall();   /* counts a nested import while an SR_HLE_DIFF comparison runs */
 #ifdef SR_HLE_THREAD_SELFTEST
     /* Direct white-box calls have no current TCB. Route module stop/self-stop
      * through the production handlers inside the real scheduler; nested calls

@@ -140,6 +140,7 @@
     X("SR_HEAP_WATCH", "flag-presence", "off", "recomp.c", "Tracks first writes to freed allocator headers and reports them to stderr.") \
     X("SR_HLELOG", "flag-presence", "off", "debug.h,hle.c", "Enables general HLE call logging.") \
     X("SR_HLE_DIAGNOSTICS", "flag-presence", "off", "title_config.c", "When set, enables HLE diagnostics if the title config has a valid diagnostics profile.") \
+    X("SR_HLE_DIFF", "flag-nonzero", "off: no comparison runs", "import_diff.c", "1 also runs the HLE handler of a started disc-module export on a copy of guest memory and prints HLE_DIFF lines; the export's result is kept.") \
     X("SR_HOST_TIME_ZONE", "string", "unset (time zone keeps its seed)", "hle.c", "Host time zone as <minutes>,<0|1> (offset and daylight flag); invalid values are ignored with a message.") \
     X("SR_HUD", "flag-nonzero", "off", "gpu_sdl3vk/sdl3vk.c,perf.c", "Enables the developer HUD and performance counters when set to a non-empty value other than 0.") \
     X("SR_INLOG", "flag-presence", "off", "debug.h,gpu_sdl3vk/sdl3vk.c,hle_input.c", "Logs controller input: published button changes in the SDL backend and HLE input calls.") \
