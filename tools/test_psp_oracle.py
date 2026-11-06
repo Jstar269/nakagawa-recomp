@@ -5162,14 +5162,15 @@ class HleMeasureProbeTests(unittest.TestCase):
     TABLE_FAMILIES = (
         ("hle-utility-none", 140, "hle_utility_none", "hle_utility_imports.S",
          "HLE_CASE_UTILITY_NONE", "PSP-HLE-UTILITY-NONE-001"),
+        # #279: 102 records named in a literal table, k_hle_arest_names.
+        ("hle-audio-rest", 159, "hle_audio_rest", None,
+         "HLE_CASE_AUDIO_REST", "PSP-HLE-AUDIO-REST-001"),
     )
     # Families added after the 2026-10-15 single-launch set, with literal record calls; the
     # single-launch class pins only cases 97-104.
     LATER_FAMILIES = (
         ("hle-std-handles", 156, "hle_std_handles", None,
          "HLE_CASE_STD_HANDLES", "PSP-HLE-STDIO-001"),
-        ("hle-audio-rest", 159, "hle_audio_rest", None,
-         "HLE_CASE_AUDIO_REST", "PSP-HLE-AUDIO-REST-001"),
     )
     ALL_FAMILIES = FAMILIES + SINGLE_LAUNCH_FAMILIES + TABLE_FAMILIES + LATER_FAMILIES
     # Every family block: file -> (library, version word, {function: NID}). The
@@ -5741,6 +5742,27 @@ class HleMeasureProbeTests(unittest.TestCase):
                                                         + self.LATER_FAMILIES):
             with self.subTest(case=case):
                 self.assertEqual(_out_count_mismatches(self.probe, case, macro), [])
+
+    def test_audio_rest_table_follows_the_registry(self) -> None:
+        """hle-audio-rest names its records in k_hle_arest_names: the table is the registry's
+        order, and the reserve, block and drain records carry 3, 5 and 4 out words."""
+        section = self._section("HLE_CASE_AUDIO_REST")
+        table = section[section.index("k_hle_arest_names[3][HLE_AREST_BLOCKS + 2u] = {"):]
+        names = re.findall(r'"(audio-rest-[a-z0-9-]+)"', table[:table.index("};")])
+        spec, counts = CAMPAIGN_PROBE_CASES["hle-audio-rest"]
+        self.assertEqual(names, list(spec.semantic_cases))
+        self.assertEqual(len(names), 102)
+        self.assertIn("#define HLE_AREST_BLOCKS 32u", section)
+        for call, words in (('hle_record(names[0], ch < 0 ? "FAIL" : "PASS", (uint32_t)ch, reserve, 3);', 3),
+                            ('hle_record(names[1u + b], "PASS", s_hle_arest_rc[b], out, 5);', 5),
+                            ('hle_skip(names[1u + b], 5);', 5),
+                            ('hle_record(names[1u + HLE_AREST_BLOCKS], "PASS", (uint32_t)release_rc, drain, 4);', 4),
+                            ('hle_skip(names[1u + HLE_AREST_BLOCKS], 4);', 4)):
+            with self.subTest(call=call):
+                self.assertIn(call, section)
+        for name in names:
+            expected = 3 if name.endswith("-reserve") else 4 if name.endswith("-drain") else 5
+            self.assertEqual(counts[name], expected, name)
 
     def test_a_count_mutant_is_refused_by_the_same_comparison(self) -> None:
         """Mutant: the no-slot create record declares one out word where it writes two."""

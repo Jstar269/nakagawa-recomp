@@ -2330,6 +2330,37 @@ static int hle_run(void)
 #define HLE_AREST_DRAIN_POLLS 500u
 #define HLE_AREST_DRAIN_POLL_US 1000u
 
+/* Every record name, literal, in record order: per F, the reserve, b00..b31 and the drain. */
+static const char *const k_hle_arest_names[3][HLE_AREST_BLOCKS + 2u] = {
+    {"audio-rest-1024-reserve", "audio-rest-1024-b00", "audio-rest-1024-b01",
+     "audio-rest-1024-b02", "audio-rest-1024-b03", "audio-rest-1024-b04", "audio-rest-1024-b05",
+     "audio-rest-1024-b06", "audio-rest-1024-b07", "audio-rest-1024-b08", "audio-rest-1024-b09",
+     "audio-rest-1024-b10", "audio-rest-1024-b11", "audio-rest-1024-b12", "audio-rest-1024-b13",
+     "audio-rest-1024-b14", "audio-rest-1024-b15", "audio-rest-1024-b16", "audio-rest-1024-b17",
+     "audio-rest-1024-b18", "audio-rest-1024-b19", "audio-rest-1024-b20", "audio-rest-1024-b21",
+     "audio-rest-1024-b22", "audio-rest-1024-b23", "audio-rest-1024-b24", "audio-rest-1024-b25",
+     "audio-rest-1024-b26", "audio-rest-1024-b27", "audio-rest-1024-b28", "audio-rest-1024-b29",
+     "audio-rest-1024-b30", "audio-rest-1024-b31", "audio-rest-1024-drain"},
+    {"audio-rest-2048-reserve", "audio-rest-2048-b00", "audio-rest-2048-b01",
+     "audio-rest-2048-b02", "audio-rest-2048-b03", "audio-rest-2048-b04", "audio-rest-2048-b05",
+     "audio-rest-2048-b06", "audio-rest-2048-b07", "audio-rest-2048-b08", "audio-rest-2048-b09",
+     "audio-rest-2048-b10", "audio-rest-2048-b11", "audio-rest-2048-b12", "audio-rest-2048-b13",
+     "audio-rest-2048-b14", "audio-rest-2048-b15", "audio-rest-2048-b16", "audio-rest-2048-b17",
+     "audio-rest-2048-b18", "audio-rest-2048-b19", "audio-rest-2048-b20", "audio-rest-2048-b21",
+     "audio-rest-2048-b22", "audio-rest-2048-b23", "audio-rest-2048-b24", "audio-rest-2048-b25",
+     "audio-rest-2048-b26", "audio-rest-2048-b27", "audio-rest-2048-b28", "audio-rest-2048-b29",
+     "audio-rest-2048-b30", "audio-rest-2048-b31", "audio-rest-2048-drain"},
+    {"audio-rest-4096-reserve", "audio-rest-4096-b00", "audio-rest-4096-b01",
+     "audio-rest-4096-b02", "audio-rest-4096-b03", "audio-rest-4096-b04", "audio-rest-4096-b05",
+     "audio-rest-4096-b06", "audio-rest-4096-b07", "audio-rest-4096-b08", "audio-rest-4096-b09",
+     "audio-rest-4096-b10", "audio-rest-4096-b11", "audio-rest-4096-b12", "audio-rest-4096-b13",
+     "audio-rest-4096-b14", "audio-rest-4096-b15", "audio-rest-4096-b16", "audio-rest-4096-b17",
+     "audio-rest-4096-b18", "audio-rest-4096-b19", "audio-rest-4096-b20", "audio-rest-4096-b21",
+     "audio-rest-4096-b22", "audio-rest-4096-b23", "audio-rest-4096-b24", "audio-rest-4096-b25",
+     "audio-rest-4096-b26", "audio-rest-4096-b27", "audio-rest-4096-b28", "audio-rest-4096-b29",
+     "audio-rest-4096-b30", "audio-rest-4096-b31", "audio-rest-4096-drain"},
+};
+
 static int16_t s_hle_arest_ramp[HLE_AREST_MAX_FRAMES * 2u] __attribute__((aligned(64)));
 static uint32_t s_hle_arest_rc[HLE_AREST_BLOCKS];
 static uint32_t s_hle_arest_call_us[HLE_AREST_BLOCKS];
@@ -2350,9 +2381,9 @@ static void hle_arest_fill(void)
     }
 }
 
-static void hle_arest_size(uint32_t frames)
+static void hle_arest_size(uint32_t idx, uint32_t frames)
 {
-    static char name[48];
+    const char *const *names = k_hle_arest_names[idx];
     static char step[48];
     snprintf(step, sizeof(step), "audio-rest-%u-run", (unsigned int)frames);
     hle_step(step);
@@ -2387,33 +2418,30 @@ static void hle_arest_size(uint32_t frames)
         release_rc = sceAudioChRelease(ch);
     }
 
-    snprintf(name, sizeof(name), "audio-rest-%u-reserve", (unsigned int)frames);
-    hle_record(name, ch < 0 ? "FAIL" : "PASS", (uint32_t)ch, reserve, 3);
+    hle_record(names[0], ch < 0 ? "FAIL" : "PASS", (uint32_t)ch, reserve, 3);
     for (uint32_t b = 0; b < HLE_AREST_BLOCKS; b++) {
-        snprintf(name, sizeof(name), "audio-rest-%u-b%02u", (unsigned int)frames, (unsigned int)b);
         if (ch < 0) {
-            hle_skip(name, 5);
+            hle_skip(names[1u + b], 5);
             continue;
         }
         const uint32_t out[5] = {s_hle_arest_call_us[b], s_hle_arest_gap_us[b], s_hle_arest_len[b],
                                  s_hle_arest_length[b], (uint32_t)ch};
-        hle_record(name, "PASS", s_hle_arest_rc[b], out, 5);
+        hle_record(names[1u + b], "PASS", s_hle_arest_rc[b], out, 5);
     }
-    snprintf(name, sizeof(name), "audio-rest-%u-drain", (unsigned int)frames);
     if (ch < 0) {
-        hle_skip(name, 4);
+        hle_skip(names[1u + HLE_AREST_BLOCKS], 4);
         return;
     }
     const uint32_t drain[4] = {polls, (uint32_t)rest, drain_us, (uint32_t)release_rc};
-    hle_record(name, "PASS", (uint32_t)release_rc, drain, 4);
+    hle_record(names[1u + HLE_AREST_BLOCKS], "PASS", (uint32_t)release_rc, drain, 4);
 }
 
 static int hle_run(void)
 {
     hle_arest_fill();
-    hle_arest_size(1024u);
-    hle_arest_size(2048u);
-    hle_arest_size(4096u);
+    hle_arest_size(0u, 1024u);
+    hle_arest_size(1u, 2048u);
+    hle_arest_size(2u, 4096u);
     return 1;
 }
 
