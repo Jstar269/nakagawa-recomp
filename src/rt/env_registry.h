@@ -193,6 +193,8 @@
     X("SR_QUIET", "flag-nonzero", "off", "driver.c", "When nonzero, redirects stdout and stderr to the null device.") \
     X("SR_REAL_MODULE_START", "string", "unset (module_start runs for libfont only)", "hle_kernel_module.c,hle_thread_selftest.c", "1 lets module_start run for any module, 0 for none; other values are ignored with a warning.") \
     X("SR_REDUCE_MOTION", "string", "Automatic (system setting)", "gui.c,overlay/overlay_host.c", "Player's Reduce motion choice for the overlay, falling back to the platform preference.") \
+    X("SR_REPLAY_CHECKPOINTS", "path", "unset (no checkpoints)", "replay_checkpoint.c", "Writes digests of the threads, scheduler, VRAM and RAM every N vblanks to this file; tools/nkstate.py ckpt-diff names where two runs split.") \
+    X("SR_REPLAY_CHECKPOINT_EVERY", "number", "60", "replay_checkpoint.c", "Vblanks between SR_REPLAY_CHECKPOINTS checkpoints, 1..100000; another value stops the run.") \
     X("SR_RESOLUTION_SCALE", "number", "1", "gpu_sdl3vk/ge_gpu.c", "Internal render scale for the Vulkan GE backend; SR_GPU_SCALE is read first as the other spelling.") \
     X("SR_ROUTE_LEARN", "flag-presence", "off", "hle_route.c", "When set, enables route learning mode in the input route code.") \
     X("SR_ROUTE_NO_EXIT", "flag-presence", "off (route failure exits the process)", "hle_route.c", "Keeps the process running instead of exiting after a route failure report.") \

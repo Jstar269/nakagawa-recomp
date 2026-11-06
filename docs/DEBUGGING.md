@@ -1374,6 +1374,80 @@ a capture window alone does not turn it on, so existing routes keep their paced 
 archive reset, completeness verdict); `tools/test_visual_oracle.py` exercises them against real
 processes and directories.
 
+#### Finding where two runs split (replay checkpoints)
+
+When two runs of the same route end differently, `SR_REPLAY_CHECKPOINTS=<file>` (#2147) names the
+first VBLANK, and the part of the guest state, where they stopped agreeing. Every
+`SR_REPLAY_CHECKPOINT_EVERY` vblanks (default 60, 1..100000) the runtime writes one line of SHA-256
+digests. It digests the guest state, never the guest bytes:
+
+| Digest | What it covers |
+| --- | --- |
+| `cpu.<uid>` | one guest thread's `CpuState`; the running thread's live registers |
+| `sched` | each thread's uid, state, priority and wait object, plus the guest clock |
+| `vram.<addr>` | VRAM in 1 MiB chunks |
+| `ram.<addr>` | main RAM in 1 MiB chunks, named by guest address |
+
+```powershell
+$env:SR_DETERMINISTIC_CLOCK = "1"
+$env:SR_REPLAY_CHECKPOINTS = "logs/run-a.ckpt"   # then run again with logs/run-b.ckpt
+python tools/nkstate.py ckpt-diff logs/run-a.ckpt logs/run-b.ckpt
+```
+
+`ckpt-diff` prints one line:
+
+- `MATCH checkpoints=<n>`, exit 0;
+- `MISMATCH frame=<vcount> index=<k> kind=<frame|names|digest> digest=<name>`, exit 1. `names` means a
+  thread or region appeared or went; `frame` means the runs reached the checkpoint on different
+  vblanks;
+- `NOT_RUN ...`, exit 3: the runs used another cadence or clock (`different-settings`), one stopped
+  before the other (`ended-early`), a line is `malformed`, or there are `no-checkpoints`. `NOT_RUN` is
+  never a match.
+
+Use the deterministic clock. Under the paced clock, guest time follows the host, so `sched` differs
+from the first checkpoint on by design. To narrow a mismatch:
+
+- a `ram.<addr>` chunk: set a memory watch on that MiB;
+- a `cpu.<uid>` thread: arm `SR_FLIGHT_TRIGGER` near the mismatching vblank on the next run.
+
+Hashing all of RAM takes a noticeable fraction of a second per checkpoint, so raise
+`SR_REPLAY_CHECKPOINT_EVERY` on long runs. A checkpoint file holds no game bytes, but it describes a
+private run, so keep it in your logs folder and do not attach it to a public report.
+
+How this differs from the other tools:
+
+- `SR_INLOG` and `SR_PADSCRIPT` (above) repeat a run's *input*; they do not say where two runs split.
+- `ROUTE_SIG` is a signature of one frame's picture, not of the guest state.
+- `tools/flight_diff.py` compares two flight-recorder event bundles. Its `checkpoint:` trigger
+  counts events; it does not compare state.
+
+#### Save states (#2146)
+
+A save state is an `nkstate` file (`src/rt/nkstate.h`; `python tools/nkstate.py info <file>` prints
+it). It holds:
+
+- a header binding it to one build: the `CpuState` ABI version and size, the executable identity,
+  the runtime build identity (`SR_BUILD_ID`) and the disc ID;
+- one segment per subsystem, each with its own version and SHA-256.
+
+A load refuses another build, a changed segment or a changed header, and names the field that
+differs. It loads nothing until the whole file has been checked. After loading, it checks that each
+subsystem saves back to the exact bytes it was given. A capture is refused, naming the subsystem,
+when a required subsystem has no save and load, or when a subsystem is busy (for example a display
+list in flight). There is no best-effort state.
+
+A state holds game memory, so it stays in the user's private folder like saves. It is never
+committed, uploaded or attached to a report.
+
+What a state cannot capture yet: a guest thread parked inside native code. Every guest thread runs on
+its own host coroutine, and a thread waiting in an import or at a loop back-edge is in the middle of
+native frames that its `CpuState` does not describe. So #2146 builds save states first as a verified
+deterministic replay: the run is replayed from boot under `SR_DETERMINISTIC_CLOCK=1`, and its
+checkpoints are compared on the way. Today the container, its refusals and the checkpoints exist;
+replay loading and the player's save and load keys are still to come. Direct states and fast rewind
+need the runtime to resume a thread at a guest PC with no host frames, which is tracked as its own
+issue.
+
 #### Running on a disposable Memory Stick
 
 A soak or title route writes to whichever Memory Stick the session resolves.

@@ -31,6 +31,7 @@
 #include "nested_frames.h"  /* reserved region for nested host->guest call frames */
 #include "flight_recorder.h"
 #include "ace.h"            /* Ace Mode observation counters (Ace on only) */
+#include "replay_checkpoint.h" /* sched_for_each_thread_cpu (#2147) */
 
 /* Test-only scheduler liveness instrumentation (#290). Declared here, not in recomp.h, so the
  * CPU-state ABI header (and every title's generated-code build profile) stays unchanged. */
@@ -810,6 +811,17 @@ void sched_init(CpuState *cpu) {
 }
 
 uint32_t sched_current_uid(void) { return s_cur >= 0 ? s_tcb[s_cur].uid : 0; }
+
+/* Replay checkpoints (#2147, replay_checkpoint.h): a read-only visit of every live thread in
+ * table order. The running thread's registers are the live s_cpu, not its last save. */
+void sched_for_each_thread_cpu(SrSchedThreadVisit visit, void *ctx) {
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (t->deleted) continue;
+        const CpuState *cpu = (i == s_cur && s_cpu) ? s_cpu : &t->saved;
+        visit(ctx, t->uid, t->state, t->priority, t->wait_obj, cpu);
+    }
+}
 
 int sched_guest_thread_running(void) {
     return s_cur >= 0 && s_sched_coro && sr_coro_current() != s_sched_coro;

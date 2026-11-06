@@ -36,6 +36,7 @@ _SCRATCH = Path(_SCRATCH_ROOT.name).as_posix()
 _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/cpu_lle_selftest",
     "build/mygame/domain_mode_selftest",
+    "build/mygame/nkstate_selftest",
     "build/mygame/clay_layout_selftest",
     "build/test_nk_ui_core",
     "build/test_player_screens",

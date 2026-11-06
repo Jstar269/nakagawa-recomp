@@ -11,6 +11,7 @@
  * 2026-10-31 (#307). */
 
 #include "hle_internal.h"
+#include "replay_checkpoint.h" /* SR_REPLAY_CHECKPOINTS (#2147) */
 
 #ifdef _WIN32
 uint64_t sr_host_monotonic_ms(void) { return GetTickCount64(); }
@@ -971,6 +972,9 @@ void sr_vblank_tick(void) {
         sr_profile_dump();
     }
     ge_set_frame(s_vcount);
+    /* SR_REPLAY_CHECKPOINTS (replay_checkpoint.h): digests of the guest state at this VBLANK,
+     * before the controller sample is latched. Reads only; off, it returns at once. */
+    sr_replay_checkpoint_vblank(s_vcount);
 
     /* Issue #64: advance the state-qualified route before the controller sample is
      * latched, so a checkpoint observed on this vblank releases its press on this vblank
