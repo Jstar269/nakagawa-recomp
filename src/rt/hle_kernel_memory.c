@@ -610,6 +610,11 @@ static uint32_t h_ReferFplStatus(CpuState *s) {
 /* UNMEASURED: no VPL exhausted code is recorded; this is the pre-measurement value, not the FPL
  * code. */
 #define VPL_EXHAUSTED 0x800200d9u
+/* pspautotests tests/threads/vpl/try.expected ("More than remaining", "All remaining", "1 byte
+ * (none left)"): a request that no free block can hold answers SCE_KERNEL_ERROR_NO_MEMORY. The
+ * point where a pool runs out still differs, because the PSP's per-block header accounting
+ * (poolSize 0xFFE0 for a 0x10000 pool) is not modelled. */
+#define VPL_NO_SPACE 0x80020190u
 /* pspautotests tests/threads/vpl/allocate.expected and try.expected: a request of 0 bytes, of
  * -1 bytes, or larger than the pool answers 0x800201B7 from Allocate, AllocateCB (with and
  * without timeout) and TryAllocate. */
@@ -718,7 +723,7 @@ static uint32_t vpl_try_allocate_internal(VplPool *p, uint32_t request, uint32_t
             return 0;
         }
     }
-    return VPL_EXHAUSTED;
+    return VPL_NO_SPACE;
 }
 
 static uint32_t h_TryAllocateVpl(CpuState *s) {
