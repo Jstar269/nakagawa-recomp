@@ -137,6 +137,17 @@ PUBLIC_TARGETS := \
 	osk-text-entry-selftest \
 	osk-overlay-selftest \
 	ace-selftest \
+	fsr3-host-selftest \
+	fsr3-mutants \
+	fsr3-fg-host-selftest \
+	fsr3-fg-state-selftest \
+	fsr3-fg-mutants \
+	fsr3-shader-verify \
+	fsr3-shader-repro-verify \
+	fsr3-pass-selftest \
+	fsr3-pass-mutants \
+	fsr3-fg-pass-selftest \
+	fsr3-fg-pass-mutants \
 	ace-smooth-selftest \
 	fsr1-selftest \
 	ace-ui-selftest \
@@ -313,6 +324,17 @@ HELP_DESCRIPTION_videorec-selftest := run the run-recorder (video and audio capt
 HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blocking text-entry selftest
 HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-machine selftest (pure C)
 HELP_DESCRIPTION_ace-selftest := run Ace Mode's CPU-only selftest (launch line, 30 Hz detector, readout, report; pure C)
+HELP_DESCRIPTION_fsr3-host-selftest := run FSR 3's host selftest against the record of AMD's host code (pure C)
+HELP_DESCRIPTION_fsr3-mutants := run the FSR 3 host mutation campaign (each defect must build and fail the selftest)
+HELP_DESCRIPTION_fsr3-fg-host-selftest := run FSR 3 frame generation's host selftest against the record of AMD's host code (pure C)
+HELP_DESCRIPTION_fsr3-fg-state-selftest := run FSR 3 frame generation's state machine against the G-S table (pure C)
+HELP_DESCRIPTION_fsr3-fg-mutants := run the FSR 3 frame generation mutation campaign, host and state machine (each defect must build and fail its cell)
+HELP_DESCRIPTION_fsr3-shader-verify := verify the FSR 3 upscaler and frame-generation shader sets against their schema 2 manifests
+HELP_DESCRIPTION_fsr3-shader-repro-verify := recompile both FSR 3 shader sets with the pinned DXC (DXC=...) and compare bytes
+HELP_DESCRIPTION_fsr3-pass-selftest := run FSR 3's passes on a headless Vulkan device against synthetic scenes
+HELP_DESCRIPTION_fsr3-pass-mutants := run the FSR 3 pass mutation campaign on a Vulkan device (each defect must fail its cell)
+HELP_DESCRIPTION_fsr3-fg-pass-selftest := run FSR 3 frame generation's passes on a headless Vulkan device against synthetic scenes
+HELP_DESCRIPTION_fsr3-fg-pass-mutants := run the FSR 3 frame generation pass mutation campaign on a Vulkan device (each defect must fail its cell)
 HELP_DESCRIPTION_ace-smooth-selftest := run Ace Mode's in-between frames selftest on a headless Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_fsr1-selftest := run the FSR 1 presentation upscaler selftest on a headless Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_ace-ui-selftest := run Ace Mode's in-game UI selftest (layout, then a headless Vulkan render; SKIPs the GPU leg without Vulkan)

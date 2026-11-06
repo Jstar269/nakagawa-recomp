@@ -39,6 +39,14 @@ Nakagawa has since substantially extended and modified that codebase. This repos
 - **xBRZ 1.9 — Zenju** — GPL-3.0, with the author's linking exception kept unchanged. The pixel-art scaler behind
   Ace Mode's texture scaling, translated from C++ to C (a LOCAL DELTA, checked against the upstream release's output)
   in [`third_party/xbrz/`](third_party/xbrz/PROVENANCE.md).
+- **AMD FidelityFX SDK (FSR 3) — Advanced Micro Devices, Inc.** — MIT. The FSR 3.1.6 upscaler's eight compute passes,
+  frame generation's seventeen (frame interpolation and optical flow) and the headers they include, from FidelityFX
+  SDK v2.4.0 (commit `7539ae8b6568ad29ed78a753404351daf3b5cca7`), in
+  [`third_party/fidelityfx_sdk/`](third_party/fidelityfx_sdk/PROVENANCE.md): each file is on the SDK's MIT list, which
+  [`LICENSE-AMD.md`](third_party/fidelityfx_sdk/LICENSE-AMD.md) carries, and is imported byte-identical, except three
+  headers with recorded local changes. The C host in `src/rt/fsr3_host.c`, `src/rt/fsr3_jitter.c`,
+  `src/rt/fsr3_fg_host.c`, `src/rt/gpu_sdl3vk/fsr3_pass.c` and `src/rt/gpu_sdl3vk/fsr3_fg_pass.c` is translated from
+  the SDK's C++ and keeps AMD's notice.
 - **Monocypher 4.0.3 — Loup Vaillant, Michael Savage, Fabio Scotoni and contributors** — dual BSD-2-Clause or
   CC0-1.0; the project uses it under CC0-1.0. The Ed25519 signature check in
   [`third_party/monocypher/`](third_party/monocypher/).
