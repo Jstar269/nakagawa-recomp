@@ -1,21 +1,21 @@
 {
   "archive": {
     "asset_name": "pspdev-ubuntu-latest-x86_64.tar.gz",
-    "download_url": "https://github.com/pspdev/pspdev/releases/download/v20261001/pspdev-ubuntu-latest-x86_64.tar.gz",
-    "github_asset_digest": "sha256:a86efe624e770005290919617859e9df24bd8fcd3e364f4587f23ec7364b0acd",
-    "local_sha256": "a86efe624e770005290919617859e9df24bd8fcd3e364f4587f23ec7364b0acd",
-    "size": 172980272,
+    "download_url": "https://github.com/pspdev/pspdev/releases/download/v20261101/pspdev-ubuntu-latest-x86_64.tar.gz",
+    "github_asset_digest": "sha256:5dc9d785a5fd490ee9d5204b90f715efb6c46940ba3944036bbef9c993c17713",
+    "local_sha256": "5dc9d785a5fd490ee9d5204b90f715efb6c46940ba3944036bbef9c993c17713",
+    "size": 172966346,
     "verified": true
   },
   "container": {
     "architecture": "amd64",
-    "created_at": "2026-10-01T21:34:52.858302642Z",
-    "digest": "sha256:54895e6f5afb71b8f4f6915ee6d5023e1e087ca7afdf2dcb1d7a694a5233e45f",
+    "created_at": "2026-11-01T20:58:19.087535133Z",
+    "digest": "sha256:ee385df3aa783189d5a033af5eb1d4a9cdd93718fb8bf652ec7bb48e54038a8b",
     "operating_system": "linux",
-    "reference": "docker.io/pspdev/pspdev:v20261001",
+    "reference": "docker.io/pspdev/pspdev:v20261101",
     "verified_pull": true
   },
-  "release": "v20261001",
+  "release": "v20261101",
   "schema": 1,
   "tools": [
     {
@@ -121,7 +121,7 @@
         "--help"
       ],
       "name": "pspsh",
-      "sha256": "401b6161f30f265c3b9253b75d5896409bc66a1b7e52129512ed42aa296ef0e1",
+      "sha256": "611ceaeedfc5d4a09a2b50998e031c5acd1fecfaad7c593b7cb6b7ac509599ac",
       "size": 176168
     },
     {
@@ -130,9 +130,9 @@
         "--help"
       ],
       "name": "usbhostfs_pc",
-      "sha256": "284c5bc5eb64f95c9fd565f067b5cbf74a597be0753f70b680a3f4fffa529730",
-      "size": 175848
+      "sha256": "6b055a7c19dc7d843045d22478d082e1162cbe651a489b46f66005e1e1b5894a",
+      "size": 180152
     }
   ],
-  "verified_at": "2026-10-24T03:58:49Z"
+  "verified_at": "2026-11-05T17:48:10Z"
 }

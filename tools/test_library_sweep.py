@@ -689,6 +689,17 @@ class LibrarySweepTests(unittest.TestCase):
         )
         return private_path, {row["source_key"]}
 
+    def test_an_inherited_present_upscale_never_reaches_a_route(self) -> None:
+        # SR_PRESENT_UPSCALE=fsr1 left in the shell enhances the window (#1273); a sweep is
+        # authentic evidence, so every route runs with it off and the private report says so.
+        with mock.patch.dict(library_sweep.os.environ, {"SR_PRESENT_UPSCALE": "fsr1"}):
+            self.assertEqual(library_sweep._route_environment()["SR_PRESENT_UPSCALE"], "off")
+        path, _ = self._write_checkpoint(library_sweep._default_comparison_identity())
+        private = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(private["present_upscale"], "off")
+        public = json.loads((self.root / "checkpoint-public.json").read_text(encoding="utf-8"))
+        self.assertNotIn("present_upscale", public)
+
     def test_checkpoint_resumes_only_with_the_same_comparison_settings(self) -> None:
         identity = library_sweep._default_comparison_identity()
         path, keys = self._write_checkpoint(identity)

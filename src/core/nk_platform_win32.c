@@ -345,14 +345,20 @@ bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
     return true;
 }
 
-bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
+/* Both directory walks. With skipped NULL this is nk_platform_list_dir; with it,
+   every entry left out is counted and a listing that stops on an error fails. */
+static bool win32_list_dir(const char *dir, NkDirEntryFn fn, void *ctx, size_t *skipped) {
     if (!dir || !*dir || !fn) return false;
     /* Extended-length buffers stay off the stack: a caller walking a tree may
        hold several of its own frames. */
     enum { WIDE_PATTERN_CHARS = 32768 };
+    /* A cloud file that is not on this computer: reading it would download it. */
+    const DWORD cloud = FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN |
+                        FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
     char *pattern = (char *)malloc(WIDE_PATTERN_CHARS);
     WCHAR *wpattern = (WCHAR *)malloc(sizeof(WCHAR) * WIDE_PATTERN_CHARS);
     bool ok = false;
+    if (skipped) *skipped = 0;
     if (pattern && wpattern) {
         int written = snprintf(pattern, WIDE_PATTERN_CHARS, "%s\\*", dir);
         if (written > 0 && written < WIDE_PATTERN_CHARS &&
@@ -362,17 +368,27 @@ bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
             if (find == INVALID_HANDLE_VALUE) {
                 ok = GetLastError() == ERROR_FILE_NOT_FOUND;
             } else {
+                bool stopped = false;
                 ok = true;
                 do {
-                    if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
                     if (wcscmp(data.cFileName, L".") == 0 ||
                         wcscmp(data.cFileName, L"..") == 0) continue;
+                    if ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+                        (skipped && (data.dwFileAttributes & cloud))) {
+                        if (skipped) ++*skipped;
+                        continue;
+                    }
                     char name[1024];
-                    if (!wide_to_utf8(data.cFileName, name, sizeof(name))) continue;
+                    if (!wide_to_utf8(data.cFileName, name, sizeof(name))) {
+                        if (skipped) ++*skipped;
+                        continue;
+                    }
                     if (!fn(name, (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0, ctx)) {
+                        stopped = true;
                         break;
                     }
                 } while (FindNextFileW(find, &data));
+                if (skipped && !stopped && GetLastError() != ERROR_NO_MORE_FILES) ok = false;
                 FindClose(find);
             }
         }
@@ -380,6 +396,27 @@ bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
     free(pattern);
     free(wpattern);
     return ok;
+}
+
+bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
+    return win32_list_dir(dir, fn, ctx, NULL);
+}
+
+bool nk_platform_list_dir_counted(const char *dir, NkDirEntryFn fn, void *ctx,
+                                  size_t *skipped) {
+    size_t none = 0;
+    return win32_list_dir(dir, fn, ctx, skipped ? skipped : &none);
+}
+
+bool nk_platform_sync_file(FILE *f) {
+    if (!f || fflush(f) != 0) return false;
+    intptr_t os = _get_osfhandle(_fileno(f));
+    if (os == -1) return false;
+    return FlushFileBuffers((HANDLE)os) != 0;
+}
+
+bool nk_platform_sync_dir(const char *dir) {
+    return nk_platform_dir_exists(dir);
 }
 
 void nk_platform_list_drive_roots(NkDirFileFn fn, void *ctx) {
@@ -1290,6 +1327,13 @@ void nk_platform_terminate_process(NkProcessHandle *process) {
     }
     if (process->native_handle) {
         TerminateProcess((HANDLE)process->native_handle, 1);
+        /* TerminateProcess only starts the end; wait for it, as the POSIX backend reaps
+           its child, so the caller never goes on while it may still be writing. */
+        if (WaitForSingleObject((HANDLE)process->native_handle,
+                                NK_PLATFORM_TERMINATE_WAIT_MS) != WAIT_OBJECT_0) {
+            process->is_active = true;
+            return;
+        }
     }
     process->is_active = false;
 }

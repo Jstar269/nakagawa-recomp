@@ -218,6 +218,7 @@ static uint64_t s_flight_last_sequence;
 static uint32_t s_flight_last_kind;
 static int s_flight_init_state;
 static char s_flight_ace[96];          /* Ace Mode's line for an enhanced run, else empty */
+static char s_flight_upscale[16];      /* SR_PRESENT_UPSCALE's mode when the window is upscaled */
 static int s_flight_exit_registered;
 static int s_flight_dumped;
 static uint32_t s_flight_dump_count;
@@ -473,6 +474,16 @@ void sr_flight_set_enhancements(const char *ace_line) {
         s_flight_ace[n] = plain ? ch : '?';
     }
     s_flight_ace[n] = '\0';
+}
+
+void sr_flight_set_present_upscale(const char *mode) {
+    size_t n = 0;
+    for (; mode && mode[n] && n + 1 < sizeof(s_flight_upscale); n++) {
+        char ch = mode[n];
+        int plain = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
+        s_flight_upscale[n] = plain ? ch : '?';
+    }
+    s_flight_upscale[n] = '\0';
 }
 
 void sr_flight_init(void) {
@@ -1153,10 +1164,18 @@ static int write_bundle(int reason) {
         }
     }
     ok = ok && fprintf(file, "{\n  \"schema_version\": %u,\n", SR_FLIGHT_SCHEMA_VERSION) >= 0;
-    /* An authentic run writes the same bytes as before; an Ace Mode run adds its line. */
+    /* An authentic run writes the same bytes as before; an Ace Mode run adds its line, and a run
+     * whose window was upscaled adds the upscaler. */
     ok = ok && fputs("  \"runtime\": {\"name\": \"nakagawa-recomp\", ", file) != EOF;
-    if (s_flight_ace[0])
-        ok = ok && fprintf(file, "\"enhancements\": {\"ace\": \"%s\"}, ", s_flight_ace) >= 0;
+    if (s_flight_ace[0] || s_flight_upscale[0]) {
+        ok = ok && fputs("\"enhancements\": {", file) != EOF;
+        if (s_flight_ace[0])
+            ok = ok && fprintf(file, "\"ace\": \"%s\"%s", s_flight_ace,
+                               s_flight_upscale[0] ? ", " : "") >= 0;
+        if (s_flight_upscale[0])
+            ok = ok && fprintf(file, "\"present_upscale\": \"%s\"", s_flight_upscale) >= 0;
+        ok = ok && fputs("}, ", file) != EOF;
+    }
     ok = ok && fprintf(file, "\"cpu_state_abi\": %u},\n",
                        (unsigned)SR_CPUSTATE_ABI_VERSION) >= 0;
     ok = ok && fprintf(file,

@@ -6,12 +6,12 @@ a PSPDEV installation, or controlled downloads.
 
 ## Current immutable baseline
 
-The authoritative `v20261001` local evidence gate is recorded in
+The authoritative `v20261101` local evidence gate is recorded in
 `assets/upstream/pspdev.evidence.json`:
 
 - the official `pspdev-ubuntu-latest-x86_64.tar.gz` release asset was downloaded;
-  its 172,980,272-byte payload matched GitHub's published release API SHA-256;
-- the official Docker Hub `v20261001` tag was pulled by immutable digest and
+  its 172,966,346-byte payload matched GitHub's published release API SHA-256;
+- the official Docker Hub `v20261101` tag was pulled by immutable digest and
   inspected as `linux/amd64`;
 - all 13 required/optional tools from the release asset were fingerprinted by
   size and SHA-256 against the extracted archive, then checked at the
@@ -21,28 +21,43 @@ The authoritative `v20261001` local evidence gate is recorded in
   scratch directory against the refreshed committed digests;
 - `assets/upstream/pspdev.lock.json` passes `--require-local`.
 
-The release changed the profile-zero output bytes. The v20261001 PSPSDK
-`build.mak` defaults `MEMSIZE` to 2 instead of 1 for firmware versions above
-3.90, which changes the SFO in `EBOOT.PBP`; the 11 PSP SDK static archives
-linked by the fixture also changed while `main.o` remained byte-identical.
-Only the generated-output checksum file was refreshed. The new digests are
-`168dc9eceb038066ebcda305c23efe826cbfbfd346c03526329f928c946d5b63` for
+`v20261101` carries the same `pspdev/pspdev` commit as `v20261001`
+(`99dee465`); its archive was rebuilt from newer component heads (pspsdk
+`c3da4314`, psplinkusb `bae0ac40`, newlib `09d1adaf`). Of the 13 pinned tools
+only `pspsh` and `usbhostfs_pc` changed; the compiler, binutils, and PSPSDK host
+tools are byte-identical to `v20261001`'s. No license or notice file in the
+archive was added, removed, or changed.
+
+The release changed the profile-zero output bytes. `main.o` and the generated
+`PARAM.SFO` are byte-identical to the `v20261001` build; the PRX changed because
+newlib's `makebuf.o` in `libc.a` and `_stat` in PSPSDK's `libcglue.a` were
+rebuilt with `st_blksize` buffering (details in
+`fixtures/profile_zero/README.md`), and `EBOOT.PBP` changed because it contains
+the PRX. The same recipe with the `v20261001` archive still reproduces the
+previous digests. Only the generated-output checksum file was refreshed. The
+new digests are
+`379483e8525e957fd553099b7d10b56482e637748154a001a65b4c1ae4fca1a5` for
 `EBOOT.PBP` and
-`c644fdaa9682480b72f52d6aaa83b64c1b2d3ef2bed8e74eb548eaf0a669c6f6` for
+`86d2e2f34bf6601d8f82d512aadb72b9c6389cc71aa9fd970caef48ebdc73cc0` for
 `profile_zero_guest.prx`; neither generated binary is tracked.
 
-The default `tools.test_profile_zero_e2e` run passes its lock/evidence checks
-and skips the production runtime route as configured. An opt-in
-`NK_TEST_TIER=full` attempt did not complete the runtime route and is
-`INCONCLUSIVE`; the standalone fixture rebuild and digest comparison passed.
-The documented `showcase-smoke` passed TEST00007 but failed TEST00008 in three
-runs, including one at the merged head: the scheduler pause was observed at
-vcount 121 instead of the expected 120. That runtime timing result remains
-separate from the successful PSPDEV fixture builds and is unresolved.
+With `v20261101` at `/usr/local/pspdev`, the documented `showcase-smoke` passed
+both TEST00007 and TEST00008 (frame, input, audio, pause and headless capture),
+and the PSP oracle smoke case built. The default `tools.test_profile_zero_e2e`
+run passes its lock/evidence checks and skips the production runtime route as
+configured; with the rebuilt bytes staged in `fixtures/profile_zero/prebuilt/`,
+its committed-digest case passes as well. The opt-in `NK_TEST_TIER=full`
+runtime route was not run for this pin.
+
+The `v20261001` pin before it changed the profile-zero bytes for a different
+reason: its PSPSDK `build.mak` defaults `MEMSIZE` to 2 instead of 1 for firmware
+versions above 3.90, which changed the SFO in `EBOOT.PBP`, and the 11 PSP SDK
+static archives linked by the fixture changed while `main.o` remained
+byte-identical.
 
 The earlier Debian evidence remains historical: neither the May 2026 nor the
 previous June 2026 Debian archive reproduced the committed profile-zero fixture.
-The current pin uses the October 2026 Ubuntu asset, and its profile-zero result
+The current pin uses the November 2026 Ubuntu asset, and its profile-zero result
 is recorded by the check above.
 
 This proves the locked distribution and tool identities. It still does not

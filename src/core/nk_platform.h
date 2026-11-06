@@ -70,6 +70,25 @@ bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx);
  * early when fn returns false. Returns false when dir cannot be opened. */
 typedef bool (*NkDirEntryFn)(const char *name, bool is_dir, void *ctx);
 bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx);
+/* nk_platform_list_dir for a caller that must account for every entry, such as
+ * a backup. *skipped (required) counts what nk_platform_list_dir leaves out
+ * without saying so: a symlink, junction or other reparse point (a cloud
+ * placeholder file among them), a file a cloud service keeps off this
+ * computer, any other entry that is neither a regular file nor a directory, an
+ * entry whose details cannot be read, and a name or path too long for this
+ * build. Unlike nk_platform_list_dir it also returns false when the listing
+ * stops on a read error part way. */
+bool nk_platform_list_dir_counted(const char *dir, NkDirEntryFn fn, void *ctx,
+                                  size_t *skipped);
+/* Flush f's buffered bytes and have the operating system put them on the disk
+ * (fflush, then FlushFileBuffers or fsync). False when either fails. */
+bool nk_platform_sync_file(FILE *f);
+/* Put dir's own entries (names added, renamed or removed in it) on the disk:
+ * fsync on the directory on POSIX, where a file system that cannot sync a
+ * directory (EINVAL) counts as done. NTFS journals directory changes and
+ * nk_rename_utf8 renames with MOVEFILE_WRITE_THROUGH, so Win32 has nothing to
+ * do and returns true when dir exists. */
+bool nk_platform_sync_dir(const char *dir);
 /* Call fn(root, ctx) for the root of each drive the computer has mounted that a user could
  * plug in or carry: on Win32 the root of every fixed or removable drive letter; on macOS each
  * folder in /Volumes; elsewhere each folder in /media, /media/<name>, /run/media/<name> and
@@ -270,6 +289,12 @@ int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms);
    False when the child has no such window yet, or where there is no window
    system to ask (the POSIX build). */
 bool nk_platform_bring_process_window_to_front(const NkProcessHandle *process);
+/* Ends the process and its children, then waits a bounded time for it to go, so a stopped
+   process is not still writing once the caller goes on. POSIX sends SIGTERM, then SIGKILL,
+   and reaps the child (up to about 3 s). Win32 terminates its job and the process and waits
+   up to NK_PLATFORM_TERMINATE_WAIT_MS; is_active stays true there when it had not ended by
+   then. The caller's thread blocks for that wait. */
+#define NK_PLATFORM_TERMINATE_WAIT_MS 2000
 void nk_platform_terminate_process(NkProcessHandle *process);
 void nk_platform_close_process(NkProcessHandle *process);
 /* Whether nk_platform_bring_process_window_to_front can work on this host at all. Win32 can;

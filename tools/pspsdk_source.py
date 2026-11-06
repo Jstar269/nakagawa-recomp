@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 from typing import Any, Callable
 
 import pspdev_lock
@@ -32,6 +33,13 @@ IMPORT_FUNC_RE = re.compile(
     r'^\s*IMPORT_FUNC\s+"(?P<library>[^"\\]+)"\s*,\s*'
     r'(?P<nid>0x[0-9A-Fa-f]{8})\s*,\s*'
     r'(?P<symbol>[A-Za-z_][A-Za-z0-9_]*)\s*$'
+)
+# pspimport.s's IMPORT_FUNC_WITH_ALIAS emits one stub under two global names.
+IMPORT_FUNC_WITH_ALIAS_RE = re.compile(
+    r'^\s*IMPORT_FUNC_WITH_ALIAS\s+"(?P<library>[^"\\]+)"\s*,\s*'
+    r'(?P<nid>0x[0-9A-Fa-f]{8})\s*,\s*'
+    r'(?P<symbol>[A-Za-z_][A-Za-z0-9_]*)\s*,\s*'
+    r'(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*$'
 )
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 IDENT_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -127,16 +135,23 @@ def parse_import_assembly(
                 )
             libraries[library] = flags
         if "IMPORT_FUNC" in line:
-            match = IMPORT_FUNC_RE.fullmatch(raw_line)
+            aliased = "IMPORT_FUNC_WITH_ALIAS" in line
+            match = (IMPORT_FUNC_WITH_ALIAS_RE if aliased else IMPORT_FUNC_RE).fullmatch(raw_line)
             if not match:
+                kind = "IMPORT_FUNC_WITH_ALIAS" if aliased else "IMPORT_FUNC"
                 raise SyncError(
-                    f"{source_file}:{line_number}: unrecognized IMPORT_FUNC: {line!r}"
+                    f"{source_file}:{line_number}: unrecognized {kind}: {line!r}"
                 )
+            entry: dict[str, Any] = {
+                "library": match.group("library"),
+                "nid": f"0x{int(match.group('nid'), 16):08x}",
+                "symbol": match.group("symbol"),
+            }
+            if aliased:
+                entry["alias"] = match.group("alias")
             functions.append(
                 {
-                    "library": match.group("library"),
-                    "nid": f"0x{int(match.group('nid'), 16):08x}",
-                    "symbol": match.group("symbol"),
+                    **entry,
                     "source_file": source_file,
                     "source_line": line_number,
                 }
@@ -173,10 +188,51 @@ def _source_files(root: Path, suffix: str) -> list[Path]:
     return paths
 
 
+def _same_import(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True when two declarations name the same library, NID, symbol and alias."""
+    return all(a.get(k) == b.get(k) for k in ("library", "nid", "symbol", "alias"))
+
+
+def _is_placeholder(entry: dict[str, Any]) -> bool:
+    """True when the symbol is PSPSDK's unnamed-stub form <library>_<NID>, NID in upper-case hex."""
+    return bool(entry["symbol"] == f"{entry['library']}_{entry['nid'][2:].upper()}")
+
+
+def _check_name(
+    entry: dict[str, Any], seen_names: dict[tuple[str, str], dict[str, Any]]
+) -> None:
+    previous = seen_names.get((entry["library"], entry["symbol"]))
+    if previous is not None and previous["nid"] != entry["nid"]:
+        raise SyncError(
+            f"upstream import {entry['library']} {entry['symbol']} has two NIDs: "
+            f"{previous['nid']} at {previous['source_file']}:"
+            f"{previous['source_line']} and {entry['nid']} at "
+            f"{entry['source_file']}:{entry['source_line']}"
+        )
+
+
 def scan_imports(root: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Collect every IMPORT_FUNC declaration in a PSPSDK tree, one entry per (library, NID).
+
+    Duplicate declarations of one (library, NID):
+
+    - an exact duplicate (same symbol and alias) is kept once, with one line naming both
+      locations;
+    - a placeholder and a real name: when exactly one of the two symbols is PSPSDK's
+      unnamed-stub form ``<library>_<NID>`` for that same library and NID (eight upper-case
+      hex digits, as PSPSDK writes them), the real name is kept, with one line naming the NID,
+      both names and both locations. PSPSDK 71fb45a ("add missing stub") added
+      ``sceNandReadPagesRawAll`` for sceNand_driver 0xC478C1DE and kept the earlier
+      ``sceNand_driver_C478C1DE`` line;
+    - any other pair of names fails closed with both locations.
+
+    One symbol with two NIDs in one library also fails closed with both locations, including a
+    placeholder that was dropped in favour of a real name.
+    """
     functions: list[dict[str, Any]] = []
     libraries: dict[str, str] = {}
     seen: dict[tuple[str, str], dict[str, Any]] = {}
+    seen_names: dict[tuple[str, str], dict[str, Any]] = {}
     for path in _source_files(root, ".S"):
         relative = path.relative_to(root).as_posix()
         if relative == "src/base/pspimport.s":
@@ -195,14 +251,43 @@ def scan_imports(root: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
         for entry in parsed:
             key = (entry["library"], entry["nid"])
             if key in seen:
-                previous = seen[key]
+                first = seen[key]
+                if _same_import(first, entry):
+                    # The same stub declared twice links to one import: keep the first.
+                    print(
+                        f"pspsdk_sync: duplicate upstream import {entry['library']} "
+                        f"{entry['nid']} {entry['symbol']} at {first['source_file']}:"
+                        f"{first['source_line']} and {entry['source_file']}:"
+                        f"{entry['source_line']}; kept once",
+                        file=sys.stderr,
+                    )
+                    continue
+                if _is_placeholder(first) != _is_placeholder(entry):
+                    kept, dropped = (entry, first) if _is_placeholder(first) else (first, entry)
+                    print(
+                        f"pspsdk_sync: upstream import {entry['library']} {entry['nid']} is "
+                        f"declared as placeholder {dropped['symbol']} at {dropped['source_file']}:"
+                        f"{dropped['source_line']} and as {kept['symbol']} at "
+                        f"{kept['source_file']}:{kept['source_line']}; kept {kept['symbol']}",
+                        file=sys.stderr,
+                    )
+                    # Both names stay in seen_names, so the dropped placeholder still
+                    # fails closed if it reappears under another NID.
+                    _check_name(entry, seen_names)
+                    seen_names.setdefault((entry["library"], entry["symbol"]), entry)
+                    if kept is entry:
+                        functions[next(i for i, f in enumerate(functions) if f is first)] = entry
+                        seen[key] = entry
+                    continue
                 raise SyncError(
                     f"duplicate upstream import {entry['library']} {entry['nid']}: "
-                    f"{previous['symbol']} at {previous['source_file']}:"
-                    f"{previous['source_line']} and {entry['symbol']} at "
+                    f"{first['symbol']} at {first['source_file']}:"
+                    f"{first['source_line']} and {entry['symbol']} at "
                     f"{entry['source_file']}:{entry['source_line']}"
                 )
+            _check_name(entry, seen_names)
             seen[key] = entry
+            seen_names[(entry["library"], entry["symbol"])] = entry
             functions.append(entry)
             if len(functions) > MAX_IMPORTS:
                 raise SyncError(f"upstream import count exceeds cap {MAX_IMPORTS}")

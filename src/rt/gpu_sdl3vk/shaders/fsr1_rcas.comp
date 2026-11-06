@@ -1,0 +1,36 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 the Nakagawa Recomp authors */
+/* fsr1_rcas.comp - the presentation upscaler's second pass (gpu_sdl3vk/fsr1_pass.c): AMD FSR 1 RCAS,
+ * robust contrast-adaptive sharpening of EASU's output at the window's size. The algorithm is AMD's,
+ * in third_party/fidelityfx_sdk (FidelityFX SDK, MIT); this file only binds it to the pass's images.
+ * Loads clamp to the image, so the edge pixels read their own row and column instead of outside it. */
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D in_frame;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D out_frame;
+
+layout(push_constant) uniform Rcas {
+    uvec4 con;   /* x: the sharpness as a linear float's bits (fsr1_pass.c rcas_con) */
+    uvec4 size;  /* x, y: the image size */
+} pc;
+
+#define FFX_GPU 1
+#define FFX_GLSL 1
+#include "../../../../third_party/fidelityfx_sdk/api/internal/gpu/ffx_core.h"
+
+#define FSR_RCAS_F 1
+FfxFloat32x4 FsrRcasLoadF(FfxInt32x2 p) {
+    return texelFetch(in_frame, clamp(p, FfxInt32x2(0), FfxInt32x2(pc.size.xy) - FfxInt32x2(1)), 0);
+}
+void FsrRcasInputF(inout FfxFloat32 r, inout FfxFloat32 g, inout FfxFloat32 b) {}
+#include "../../../../third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr1/ffx_fsr1.h"
+
+void main() {
+    uvec2 p = gl_GlobalInvocationID.xy;
+    if (p.x >= pc.size.x || p.y >= pc.size.y) return;
+    FfxFloat32x3 c;
+    FsrRcasF(c.r, c.g, c.b, p, pc.con);
+    imageStore(out_frame, ivec2(p), vec4(c, 1.0));
+}

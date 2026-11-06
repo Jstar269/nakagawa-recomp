@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import sys
@@ -17,7 +19,7 @@ import pspsdk_compare
 import pspsdk_source
 import pspsdk_sync
 
-PIN = "314b2083f2e1eaf145fc5de342736336fe1f0148"
+PIN = "687501d09733390ad75d855f73d69a0672b93a12"
 
 IMPORT_SOURCE = r'''
     .set noreorder
@@ -87,6 +89,37 @@ class ImportParserTests(unittest.TestCase):
             pspsdk_source.parse_import_assembly(bad, "bad.S")
         self.assertIn("unrecognized IMPORT_FUNC", str(ctx.exception))
 
+    def test_aliased_import_keeps_both_names(self) -> None:
+        # PSPSDK's InitForKernel.S and sceSasCore.S use this macro; the sync failed on it.
+        source = (
+            'IMPORT_START "sceSasCore",0x00090000\n'
+            'IMPORT_FUNC_WITH_ALIAS\t"sceSasCore",0xA232CBE6,'
+            "__sceSasSetTrianglarWave,__sceSasSetTriangularWave\n"
+        )
+        functions, _ = pspsdk_source.parse_import_assembly(source, "src/sascore/sceSasCore.S")
+        self.assertEqual(
+            functions,
+            [
+                {
+                    "library": "sceSasCore",
+                    "nid": "0xa232cbe6",
+                    "symbol": "__sceSasSetTrianglarWave",
+                    "alias": "__sceSasSetTriangularWave",
+                    "source_file": "src/sascore/sceSasCore.S",
+                    "source_line": 2,
+                }
+            ],
+        )
+
+    def test_aliased_import_without_alias_fails_closed(self) -> None:
+        source = (
+            'IMPORT_START "L",0x00090000\n'
+            'IMPORT_FUNC_WITH_ALIAS "L",0x00000001,onlyOneName\n'
+        )
+        with self.assertRaises(pspsdk_source.SyncError) as ctx:
+            pspsdk_source.parse_import_assembly(source, "bad.S")
+        self.assertIn("unrecognized IMPORT_FUNC_WITH_ALIAS", str(ctx.exception))
+
     def test_function_without_matching_start_fails(self) -> None:
         source = 'IMPORT_FUNC "Ghost",0x00000001,sceGhost\n'
         with self.assertRaises(pspsdk_source.SyncError) as ctx:
@@ -102,16 +135,125 @@ class ImportParserTests(unittest.TestCase):
             pspsdk_source.parse_import_assembly(source, "flags.S")
         self.assertIn("conflicting flags", str(ctx.exception))
 
-    def test_duplicate_library_nid_across_files_fails(self) -> None:
+    def test_exact_duplicate_across_files_is_kept_once_and_named(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             make_tree(root)
             (root / "src" / "user" / "duplicate.S").write_text(
                 IMPORT_SOURCE, encoding="utf-8"
             )
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                functions, _ = pspsdk_source.scan_imports(root)
+            self.assertEqual(
+                [(f["nid"], f["symbol"]) for f in functions],
+                [("0xe81caf8f", "sceKernelCreateCallback")],
+            )
+            lines = stderr.getvalue().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertIn("duplicate upstream import ThreadManForUser 0xe81caf8f", lines[0])
+            self.assertIn("sceKernelCreateCallback", lines[0])
+            self.assertIn("kept once", lines[0])
+
+    def test_same_nid_with_different_names_fails_with_both_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            make_tree(root)
+            (root / "src" / "user" / "renamed.S").write_text(
+                IMPORT_SOURCE.replace("sceKernelCreateCallback", "otherName"),
+                encoding="utf-8",
+            )
             with self.assertRaises(pspsdk_source.SyncError) as ctx:
                 pspsdk_source.scan_imports(root)
-            self.assertIn("duplicate upstream import", str(ctx.exception))
+            message = str(ctx.exception)
+            self.assertIn("duplicate upstream import ThreadManForUser 0xe81caf8f", message)
+            self.assertIn("src/user/ThreadManForUser.S:8", message)
+            self.assertIn("src/user/renamed.S:8", message)
+
+    NAND_START = 'IMPORT_START "sceNand_driver",0x00010000\n'
+
+    def _scan_nand(self, *names: str, extra: str = "") -> tuple[list[dict[str, object]], str]:
+        # The shape of PSPSDK 71fb45a's src/nand/sceNand_driver.S: one NID declared twice.
+        source = self.NAND_START + "".join(
+            f'IMPORT_FUNC "sceNand_driver",0xC478C1DE,{name}\n' for name in names
+        ) + extra
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src" / "nand").mkdir(parents=True)
+            (root / "src" / "nand" / "sceNand_driver.S").write_text(source, encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                functions, _ = pspsdk_source.scan_imports(root)
+            return functions, stderr.getvalue()
+
+    def test_placeholder_and_real_name_resolve_to_the_real_name(self) -> None:
+        for names, lines in (
+            (("sceNand_driver_C478C1DE", "sceNandReadPagesRawAll"), (2, 3)),
+            (("sceNandReadPagesRawAll", "sceNand_driver_C478C1DE"), (3, 2)),
+        ):
+            with self.subTest(order=names):
+                functions, stderr = self._scan_nand(*names)
+                self.assertEqual(
+                    [(f["nid"], f["symbol"], f["source_line"]) for f in functions],
+                    [("0xc478c1de", "sceNandReadPagesRawAll", lines[1])],
+                )
+                printed = stderr.splitlines()
+                self.assertEqual(len(printed), 1)
+                self.assertIn("sceNand_driver 0xc478c1de", printed[0])
+                self.assertIn(
+                    f"placeholder sceNand_driver_C478C1DE at src/nand/sceNand_driver.S:{lines[0]}",
+                    printed[0],
+                )
+                self.assertIn(
+                    f"sceNandReadPagesRawAll at src/nand/sceNand_driver.S:{lines[1]}", printed[0]
+                )
+
+    def test_dropped_placeholder_under_another_nid_still_fails(self) -> None:
+        # The placeholder that lost to the real name is still a name with one NID.
+        renumbered = 'IMPORT_FUNC "sceNand_driver",0x11111111,sceNand_driver_C478C1DE\n'
+        for names, line in (
+            (("sceNand_driver_C478C1DE", "sceNandReadPagesRawAll"), 2),
+            (("sceNandReadPagesRawAll", "sceNand_driver_C478C1DE"), 3),
+        ):
+            with self.subTest(order=names):
+                with self.assertRaises(pspsdk_source.SyncError) as ctx:
+                    self._scan_nand(*names, extra=renumbered)
+                message = str(ctx.exception)
+                self.assertIn("sceNand_driver sceNand_driver_C478C1DE has two NIDs", message)
+                self.assertIn(f"0xc478c1de at src/nand/sceNand_driver.S:{line}", message)
+                self.assertIn("0x11111111 at src/nand/sceNand_driver.S:4", message)
+
+    def test_two_real_names_for_one_nid_still_fail(self) -> None:
+        with self.assertRaises(pspsdk_source.SyncError) as ctx:
+            self._scan_nand("sceNandReadPagesRawAll", "sceNandReadPagesRawExtra")
+        self.assertIn("duplicate upstream import sceNand_driver 0xc478c1de", str(ctx.exception))
+
+    def test_near_placeholders_still_fail(self) -> None:
+        for name in (
+            "sceOther_driver_C478C1DE",  # another library's form
+            "sceNand_driver_DEADBEEF",  # another NID
+            "sceNand_driver_c478c1de",  # not PSPSDK's upper-case form
+            "sceNand_driver_C478C1DE_x",  # a prefix match only
+        ):
+            with self.subTest(name=name):
+                with self.assertRaises(pspsdk_source.SyncError) as ctx:
+                    self._scan_nand(name, "sceNandReadPagesRawAll")
+                self.assertIn("duplicate upstream import", str(ctx.exception))
+
+    def test_same_name_with_different_nids_fails_with_both_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            make_tree(root)
+            (root / "src" / "user" / "renumbered.S").write_text(
+                IMPORT_SOURCE.replace("0xE81CAF8F", "0x12345678"),
+                encoding="utf-8",
+            )
+            with self.assertRaises(pspsdk_source.SyncError) as ctx:
+                pspsdk_source.scan_imports(root)
+            message = str(ctx.exception)
+            self.assertIn("sceKernelCreateCallback has two NIDs", message)
+            self.assertIn("src/user/ThreadManForUser.S:8", message)
+            self.assertIn("src/user/renumbered.S:8", message)
 
 
 class PrototypeParserTests(unittest.TestCase):
@@ -330,6 +472,42 @@ class ManifestAndComparisonTests(unittest.TestCase):
         )
         self.assertEqual(row["nakagawa_status"], "stub")
         self.assertIn("not automatically", result["classification_rule"])
+
+    def test_registration_under_either_aliased_name_is_an_exact_pair(self) -> None:
+        upstream = {
+            "schema": 1,
+            "upstream": {"commit": PIN},
+            "libraries": [
+                {
+                    "name": "L",
+                    "flags": "0x00000000",
+                    "functions": [
+                        {
+                            "library": "L",
+                            "nid": "0x00000001",
+                            "symbol": "primaryName",
+                            "alias": "aliasName",
+                        },
+                    ],
+                }
+            ],
+        }
+        for name in ("primaryName", "aliasName"):
+            with self.subTest(name=name):
+                nakagawa = {
+                    "schema": 1,
+                    "registrations": [
+                        {
+                            "nid": "0x00000001",
+                            "name": name,
+                            "handler": "h",
+                            "classification": "dedicated",
+                            "status": "implemented",
+                        }
+                    ],
+                }
+                result = pspsdk_compare.compare_with_nakagawa(upstream, nakagawa)
+                self.assertEqual(result["counts"], {"exact_pair": 1})
 
     def test_markdown_escapes_table_control_characters(self) -> None:
         upstream = {

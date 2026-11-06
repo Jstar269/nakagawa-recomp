@@ -88,7 +88,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
 
       # Data only. refs/pull/N/head is served by the base repository for fork
       # and same-repository pull requests alike, so this needs no token and no
@@ -447,7 +447,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
 
       - name: Install PSPDEV from the checked-in lock
         run: |
@@ -511,7 +511,7 @@ jobs:
     # required candidate input before any build or OIDC permission is used.
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     needs: [showcase_prx]
-    runs-on: windows-2022
+    runs-on: windows-2025
     # The player, the synthetic smoke and the two showcase demo packages compile
     # on the runner's 2 vCPUs.
     timeout-minutes: 75
@@ -556,11 +556,11 @@ jobs:
               throw "Checked-out commit $checkedOutSha does not match the dispatched commit $env:GITHUB_SHA."
           }
 
-      - name: Set up Windows CPython 3.15.1
+      - name: Set up Windows CPython 3.15.2
         id: windows-cpython
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
           architecture: x64
 
       - name: Set up MSYS2 UCRT64
@@ -579,16 +579,16 @@ jobs:
 
       # MSYS2 still ships Python 3.14.8; the release manifest's toolchain policy
       # is Python 3.15. As in the CI Windows job, repository tools and Make recipes
-      # use the separately installed Windows CPython 3.15.1 through PYTHON, and the
+      # use the separately installed Windows CPython 3.15.2 through PYTHON, and the
       # toolchain record names that interpreter.
-      - name: Pin the Windows Python toolchain (CPython 3.15.1)
+      - name: Pin the Windows Python toolchain (CPython 3.15.2)
         shell: pwsh
         env:
           PYTHON_EXE: ${{ steps.windows-cpython.outputs.python-path }}
         run: |
           $version = & $env:PYTHON_EXE -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
-          if ($LASTEXITCODE -ne 0 -or $version -ne "3.15.1") {
-            throw "Expected Windows CPython 3.15.1, got '$version'"
+          if ($LASTEXITCODE -ne 0 -or $version -ne "3.15.2") {
+            throw "Expected Windows CPython 3.15.2, got '$version'"
           }
           $pythonPath = $env:PYTHON_EXE.Replace('\', '/')
           $utf8NoBom = [System.Text.UTF8Encoding]::new($false)

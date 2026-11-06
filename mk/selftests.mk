@@ -710,9 +710,9 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-# The scaled-upload case (#1296), the per-fragment mip level case (#1373) and the readback-rows
-# case (#323, also on its SR_GPU_READBACK_FULL reference path) run again alone
-# at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
+# The scaled-upload case (#1296), the per-fragment mip level case (#1373), the readback-rows
+# case (#323, also on its SR_GPU_READBACK_FULL reference path) and the widescreen Fill case
+# (#1881) run again alone at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
 # cmd.exe does not take one.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
@@ -734,6 +734,38 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 2 --case undrawn-rows
 	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows
 	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows --readback-full 1
+	$(GPU_COHERENCE_BIN) --scale 2 --case wide-fill
+	$(GPU_COHERENCE_BIN) --scale 4 --case wide-fill
+	$(GPU_COHERENCE_BIN) --gpu-timestamps unset --case gpu-timestamps-off
+	$(GPU_COHERENCE_BIN) --gpu-timestamps 0 --case gpu-timestamps-off
+	@rc=0; $(GPU_COHERENCE_BIN) --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; \
+	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest gpu-timestamps (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest gpu-timestamps (exit $$rc)"; exit $$rc; fi
+	@$(MAKE) --no-print-directory gpu-coherence-selftest-snapbar-mutants
+
+# gpu-coherence-selftest-snapbar-mutants — the submit-batch case must kill each
+# SR_GPU_SNAPBAR_MUTANT in ge_gpu.c: 1 records one barrier command per image (the stream before
+# the pair), 2 leaves the target SHADER_READ_ONLY after a copy op, 3 drops the write from the
+# barriers' destination access. Each builds its own binary and must fail with its own message;
+# exit 77 (no Vulkan device) is a SKIP, as for the selftest itself.
+gpu-coherence-selftest-snapbar-mutants: shader-verify $(RT_GE_O)
+	@for m in 1 2 3; do \
+		case $$m in \
+			1) kill="barrier commands, want";; \
+			2) kill="copy ops left the target outside COLOR_ATTACHMENT_OPTIMAL";; \
+			*) kill="weaker than to_layout";; \
+		esac; \
+		bin=$(BUILD_DIR)/gpu_coherence_snapbar_mutant$$m.exe; \
+		$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPBAR_MUTANT=$$m -ffunction-sections -fdata-sections \
+			-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(LDFLAGS) -Wl,--gc-sections -o $$bin \
+			tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+			$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS) || exit 1; \
+		$$bin --case submit-batch > $$bin.log 2>&1; result=$$?; \
+		if test $$result -eq 77; then echo "snapbar mutant $$m: SKIP (no Vulkan device)"; exit 77; fi; \
+		if test $$result -eq 0; then cat $$bin.log; echo "snapbar mutant $$m unexpectedly passed" >&2; exit 1; fi; \
+		if ! grep -Fq "$$kill" $$bin.log; then cat $$bin.log; echo "snapbar mutant $$m failed for another reason" >&2; exit 1; fi; \
+		echo "gpu-coherence-selftest-snapbar-mutants: mutant $$m killed ($$kill)"; \
+	done
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies

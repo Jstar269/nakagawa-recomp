@@ -43,13 +43,12 @@ from vulkan_sdk import VulkanSdkError, discover_vulkan_sdk
 # $IsWindows variable (PowerShell 6.0): no ternary, null-coalescing/null-
 # conditional, pipeline-chain, -Parallel, -AsHashtable, Join-Path
 # -AdditionalChildPath, Test-Json, Get-Error, clean-block, or -ProgressAction
-# usage exists. 7.4 is the oldest release line Microsoft still supports (LTS,
-# end of support 2026-11-10), and 337's non-goals exclude EOL lines and Windows
-# PowerShell 5.1, so the enforced floor is 7.4 rather than the static 6.0
-# maximum. Runtime evidence (2026-09-24): every PowerShell-backed test passed on
-# 7.4.20, 7.5.11 and 7.6.6. 7.4 and 7.5 both reach end of support 2026-11-10;
-# raise this floor to (7, 6) then.
-MINIMUM_POWERSHELL: tuple[int, int] = (7, 4)
+# usage exists. 337's non-goals exclude EOL lines and Windows PowerShell 5.1, so
+# the enforced floor is the oldest release line Microsoft still supports rather
+# than the static 6.0 maximum. 7.4 and 7.5 reach end of support on 2026-11-10;
+# 7.6 is the LTS line supported until 2028-11-14. Runtime evidence (2026-09-24):
+# every PowerShell-backed test passed on 7.4.20, 7.5.11 and 7.6.6.
+MINIMUM_POWERSHELL: tuple[int, int] = (7, 6)
 MINIMUM_POWERSHELL_TEXT = ".".join(str(part) for part in MINIMUM_POWERSHELL)
 
 #: Advisory worktree-accumulation bounds (#368 item 8). These are not gates:

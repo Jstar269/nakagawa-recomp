@@ -46,6 +46,12 @@ LATIN_INDEX_FILES: Tuple[str, ...] = tuple(f"ltn{index}.pgf" for index in range(
 LATIN_SIZE_GROUP_COUNT = 8
 #: The project's Latin font for the second size group; a project folder without it serves the first.
 PROJECT_LATIN_SMALL_FILE = "nkltns.pgf"
+#: The project face of each Latin index's own family and style (src/core/nk_font.c
+#: kProjectLatinIndexFile): the two regular sans-serif faces keep the names above.
+PROJECT_LATIN_INDEX_FILES: Tuple[str, ...] = tuple(
+    "nkltn.pgf" if index == 0 else PROJECT_LATIN_SMALL_FILE if index == 8 else f"nkltn{index}.pgf"
+    for index in range(16)
+)
 
 
 def latin_index_from_filename(name: str) -> Optional[int]:
@@ -793,7 +799,9 @@ def resolve_latin_index(
     ``served_index`` is 0..15 for an indexed user file, -1 for the project font, and -2 for a
     legacy unindexed user import. An old cache containing no indexed files keeps serving its
     legacy file for every index; mixed/newer caches use it only when the project font is absent.
-    A project resolution also names its ``project_file``.
+    A project resolution also names its ``project_file`` and ``project_style_index``, the Latin
+    index whose family and style that file carries: the index's own face first, then the regular
+    face of its size group, then the larger size's regular face.
     """
     if index < 0 or index >= len(LATIN_INDEX_FILES):
         raise ValueError(f"Latin index must be between 0 and {len(LATIN_INDEX_FILES) - 1}.")
@@ -819,15 +827,18 @@ def resolve_latin_index(
             return {"source": "user", "served_index": -2}
 
     if project_font_dir is not None:
-        first = PROJECT_LATIN_SMALL_FILE if index >= LATIN_SIZE_GROUP_COUNT else SLOT_FILES["latin"]
-        for name in (first, SLOT_FILES["latin"]):
+        group_regular = LATIN_SIZE_GROUP_COUNT if index >= LATIN_SIZE_GROUP_COUNT else 0
+        for name, style in ((PROJECT_LATIN_INDEX_FILES[index], index),
+                            (PROJECT_LATIN_INDEX_FILES[group_regular], group_regular),
+                            (SLOT_FILES["latin"], 0)):
             project_path = Path(project_font_dir) / name
             try:
                 info = _inspect(project_path.read_bytes()) if project_path.is_file() else {"accepted": False}
             except OSError:
                 info = {"accepted": False}
             if info.get("accepted") and info.get("slot") == "latin":
-                return {"source": "project", "served_index": -1, "project_file": name}
+                return {"source": "project", "served_index": -1, "project_file": name,
+                        "project_style_index": style}
 
     if status == "OK" and "latin" in entries and _check_slot_file(cdir, "latin", entries["latin"])[0]:
         return {"source": "user", "served_index": -2}

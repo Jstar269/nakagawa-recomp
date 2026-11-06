@@ -83,7 +83,7 @@ class BootGateTests(unittest.TestCase):
 
     def test_ace_mode_run_is_never_boot_evidence(self) -> None:
         # An Ace Mode run (src/rt/ace.h) is enhanced, so a clean boot still fails (C6).
-        stamp = "ACE_MODE: on (af=16, text=on, readout=off, notice=on, wide=off, smooth=off)\n"
+        stamp = "ACE_MODE: on (af=16, text=on, readout=off, notice=on, wide=off, smooth=off, sas=off)\n"
         result = self.parse(
             [stamp] + self.ordered_prefix() + [event("first_frame", source="cpu", nonzero_pixels=9)]
         )
@@ -104,6 +104,29 @@ class BootGateTests(unittest.TestCase):
         )
         self.assertFalse(events_only["ok"])
         self.assertEqual(events_only["disqualifyingReasons"], ["ace-mode-run"])
+
+    def test_present_upscale_run_is_never_boot_evidence(self) -> None:
+        # SR_PRESENT_UPSCALE=fsr1 (#1273) enhances the window; src/rt/gui.c stamps the run with
+        # an ACE_MODE line and a phase=present_upscale boot event, so a clean boot still fails.
+        clean_tail = [event("first_frame", source="cpu", nonzero_pixels=9)]
+        stamp = "ACE_MODE: present upscale fsr1 (the window only; captures hold the guest's frame)\n"
+        result = self.parse([stamp] + self.ordered_prefix() + clean_tail)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["aceMode"])
+        self.assertEqual(result["presentUpscale"], "fsr1")
+        self.assertEqual(result["disqualifyingReasons"], ["present-upscale-run"])
+        # SR_QUIET silences stderr; the boot event alone still says it.
+        events_only = self.parse([event("present_upscale", mode="fsr1")] + self.ordered_prefix() + clean_tail)
+        self.assertFalse(events_only["ok"])
+        self.assertEqual(events_only["presentUpscale"], "fsr1")
+        self.assertEqual(events_only["disqualifyingReasons"], ["present-upscale-run"])
+        # An authentic run carries neither, and both stamps together name both reasons.
+        authentic = self.parse(self.ordered_prefix() + clean_tail)
+        self.assertTrue(authentic["ok"])
+        self.assertIsNone(authentic["presentUpscale"])
+        ace_stamp = "ACE_MODE: on (af=16, text=on, readout=off, notice=on, wide=off, smooth=off)\n"
+        both = self.parse([ace_stamp, stamp] + self.ordered_prefix() + clean_tail)
+        self.assertEqual(both["disqualifyingReasons"], ["ace-mode-run", "present-upscale-run"])
 
     def test_runtime_fault_is_disqualifying(self) -> None:
         result = self.parse(
