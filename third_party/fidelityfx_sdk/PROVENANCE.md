@@ -56,7 +56,7 @@ unchanged, and further SDK components can be added beside these files under this
 | `api/internal/gpu/ffx_core_hlsl.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_core_hlsl.h` | `d617c5bbc8c6820fb91d9817db4824c60aca2668` | `c14a6bcb12f40284412b54c584bc86d424e5231fc579211008bcda547c3d5d05` |
 | `api/internal/gpu/ffx_core_portability.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/api/internal/gpu/ffx_core_portability.h` | `b488f5c97a72e61c5c48b41a09274681a3eea702` | `217281792d09b88ad122055a6361a9303ccbce22238172fa6b30df7978d38968` |
 | `framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation.h` | `59d1d67347ffc8ba4f74f07ed18f672d77a47271` | `720ae3c8ffd4ead803128d47f56c67e66fa0d926f271794ad4c8210cbf81b010` |
-| `framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h` | imported + LOCAL DELTA (2.4.0) | `Kits/FidelityFX/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h` | `67a8f9c0094d3ee6e76c14fb0a3526c80ab52dda` | `858dc32aeab144467825b7ed6841b1a2176765c104ab964d8b6ae862137da371` (this tree's bytes) |
+| `framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h` | imported + LOCAL DELTA (2.4.0) | `Kits/FidelityFX/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h` | `67a8f9c0094d3ee6e76c14fb0a3526c80ab52dda` | `6ce9fb80aa8f85519423c100b06bf50a424c4aa567b7a91bc41a0fd9601694e7` (this tree's bytes) |
 | `framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h` | `afa5c5c93929e0a07bfeee738c58db38eb6e3701` | `5779ae7b19938d820ce2beb25a1d47620d4f34c330de8ec6e8c1b30da96f2533` |
 | `framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_game_vector_field_inpainting_pyramid.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_game_vector_field_inpainting_pyramid.h` | `f5d351372559b984a2487ca246958fbb7dac15ea` | `b0fb4338ea5c4b15de71e22e882a5d1c48b9c4b1ac74edd49d519c39c52d8a6a` |
 | `framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_inpainting_pyramid.h` | imported byte-identical (2.4.0) | `Kits/FidelityFX/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_inpainting_pyramid.h` | `8895afab934d5e4a5c2ea12b9bcea6cf6aa2ad3c` | `4dfec81e9da16484c5a71e1b507cddce6ad6f8b3908bc5ebafd2a355bfef928e` |
@@ -139,18 +139,28 @@ two, as R32ui, and that atomics reach both.
 The same change, for the same reason, in frame generation's two callbacks headers:
 
 - `framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h`
-  (Git blob `5ecc209d0e7de663e76299740a40f035fdbaf391` in this tree): six declarations,
+  (Git blob `20fd6d9ac520ce2bae8ade01fdaa12c2dfdab9a5` in this tree): six declarations,
   `rw_reconstructed_depth_previous_frame`, `rw_reconstructed_depth_interpolated_frame`,
   `rw_game_motion_vector_field_x` and `_y`, and `rw_optical_flow_motion_vector_field_x` and `_y`.
+  This file has a second change. Where a pass binds both the output and the inpainting mask (the
+  interpolation and inpainting passes), AMD declares `rw_output` as `RWTexture2D<FfxFloat32x3>` and
+  stores three components into the output, which is in the colour format. Vulkan requires a storage
+  write to have at least as many components as the image's format
+  (`VUID-vkCmdDispatch-OpImageWrite-08795`), so the delta declares it `FfxFloat32x4`, stores
+  `FfxFloat32x4(val.rgb, 1.f)` (alpha 1, as the upscaler's `rw_upscaled_output`), and reads back
+  `.rgb`. No pass reads the output's alpha: the inpainting passes take the fourth component from the
+  inpainting mask. `tools/test_fsr3_port.py` checks the component count of every storage write in the
+  embedded SPIR-V.
 - `framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_callbacks_hlsl.h` (Git blob
   `492a7495af10bb6d83cea5723fb76ab0dbd5138d` in this tree): three declarations,
   `rw_optical_flow_scd_histogram`, `rw_optical_flow_scd_temp` and `rw_optical_flow_scd_output`.
   `rw_optical_flow_histogram` is atomic too, but no imported pass binds it, so it is left as AMD
   wrote it.
 
-Each gets the same three-line notice. An image declared R32ui is also R32ui where a pass reads it
-without an atomic, which matches its `R32_UINT` view. The test checks, image by image across both
-sets, that an image declares R32ui exactly when an atomic reaches it in some pass.
+Each gets the same notice, which in the frame-interpolation header also names the output change. An
+image declared R32ui is also R32ui where a pass reads it without an atomic, which matches its
+`R32_UINT` view. The test checks, image by image across both sets, that an image declares R32ui
+exactly when an atomic reaches it in some pass.
 
 Upstream ends some lines in spaces, so `.gitattributes` exempts the imported files from the
 whitespace checks; this manifest keeps the normal rules.

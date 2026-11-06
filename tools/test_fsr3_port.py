@@ -43,6 +43,11 @@ OP_SAMPLED_IMAGE, OP_DECORATE, OP_MEMBER_DECORATE, OP_CAPABILITY = 86, 71, 72, 1
 CAP_GROUP_NON_UNIFORM = 61
 DEC_BINDING, DEC_DESCRIPTOR_SET, DEC_OFFSET, DEC_BUFFER_BLOCK, DEC_NON_WRITABLE = 33, 34, 35, 3, 24
 MODE_LOCAL_SIZE, FORMAT_UNKNOWN, FORMAT_R32UI = 17, 0, 33
+OP_TYPE_VECTOR, OP_IMAGE_WRITE = 23, 99
+# Instructions with operands but no result type: everything else that has a result id has its type in
+# its first operand. OpType* (19-39) have a result id only.
+NO_RESULT_TYPE = {2, 3, 4, 5, 6, 7, 8, 10, 11, 14, 15, 16, 17, 62, 63, 71, 72, 73, 74, 75, 99, 224, 225, 228,
+                  246, 247, 249, 250, 251, 254, 317, 330, 332, 5632, 5633}
 
 
 def spirv_words(inc: Path) -> list[int]:
@@ -61,6 +66,7 @@ def reflect(words: list[int]) -> dict:
     names, binding, dset, types, pointers, variables = {}, {}, {}, {}, {}, {}
     member_names, offsets, loads, sampled, texel_pointers = {}, {}, {}, set(), set()
     buffer_blocks, read_only = set(), set()
+    vectors, value_type, image_writes = {}, {}, []
     local = None
     caps = set()
     i = 5
@@ -101,7 +107,18 @@ def reflect(words: list[int]) -> dict:
             sampled.add(a[2])
         elif op == OP_IMAGE_TEXEL_POINTER:
             texel_pointers.add(a[2])
+        elif op == OP_TYPE_VECTOR:
+            vectors[a[0]] = a[2]
+        elif op == OP_IMAGE_WRITE:
+            image_writes.append((a[0], a[2]))
+        if op not in NO_RESULT_TYPE and not 19 <= op <= 39 and count >= 3:
+            value_type[a[1]] = a[0]
         i += count
+    # The components of each storage image's writes, by the image's name.
+    writes = {}
+    for image, texel in image_writes:
+        name = names.get(loads.get(image), "")
+        writes.setdefault(name, set()).add(vectors.get(value_type.get(texel), 1))
     rows, formats, cbuffers = [], {}, {}
     for var, number in binding.items():
         pointee = pointers[variables[var]]
@@ -121,7 +138,8 @@ def reflect(words: list[int]) -> dict:
             cbuffers[name] = [(member_names.get((pointee, m)), offsets.get((pointee, m))) for m in range(kind[1])]
         linear = any(loads.get(image) == var for image in sampled)
         rows.append((number, dset.get(var), what, name, linear))
-    return {"local": local, "rows": sorted(rows), "formats": formats, "cbuffers": cbuffers, "caps": caps}
+    return {"local": local, "rows": sorted(rows), "formats": formats, "cbuffers": cbuffers, "caps": caps,
+            "writes": writes}
 
 
 def c_tables(path: Path = HOST_C, struct: str = "Fsr3Binding",
@@ -285,6 +303,23 @@ class FrameGenerationShaderTests(unittest.TestCase):
             "rw_optical_flow_motion_vector_field_x", "rw_optical_flow_motion_vector_field_y",
             "rw_optical_flow_scd_histogram", "rw_optical_flow_scd_temp", "rw_optical_flow_scd_output"})
 
+    def test_storage_writes_have_the_components_of_their_images(self) -> None:
+        # Vulkan requires a write's texel to have at least as many components as the image's format
+        # (VUID-vkCmdDispatch-OpImageWrite-08795): the four-component images (the output, in the colour
+        # format, and the inpainting pyramid) take four, and no pass writes three.
+        four = {"rw_output"} | {f"rw_inpainting_pyramid{m}" for m in range(13)}
+        seen = set()
+        for module, facts in self.modules.items():
+            for name, counts in facts["writes"].items():
+                with self.subTest(module=module, image=name):
+                    self.assertTrue(name, "a write to an image that is not a named variable")
+                    self.assertNotIn(3, counts)
+                    if name in four:
+                        self.assertEqual(counts, {4})
+                        seen.add(name)
+        self.assertIn("rw_output", seen)
+        self.assertIn("rw_inpainting_pyramid0", seen)
+
     def test_only_the_optical_flow_search_uses_subgroup_operations(self) -> None:
         users = {m for m, facts in self.modules.items() if CAP_GROUP_NON_UNIFORM in facts["caps"]}
         self.assertEqual(users, {"fsr3fg_of_compute_optical_flow_advanced_v5_comp.inc"})
@@ -339,10 +374,12 @@ class FrameGenerationShaderTests(unittest.TestCase):
 
 class NoticeTests(unittest.TestCase):
     DERIVED = ("src/rt/fsr3_host.c", "src/rt/fsr3_host.h", "src/rt/fsr3_jitter.c", "src/rt/fsr3_jitter.h",
-               "src/rt/gpu_sdl3vk/fsr3_pass.c", "src/rt/fsr3_fg_host.c", "src/rt/fsr3_fg_host.h")
+               "src/rt/gpu_sdl3vk/fsr3_pass.c", "src/rt/fsr3_fg_host.c", "src/rt/fsr3_fg_host.h",
+               "src/rt/gpu_sdl3vk/fsr3_fg_pass.c")
     PROJECT = ("src/rt/gpu_sdl3vk/fsr3_pass.h", "src/rt/gpu_sdl3vk/fsr3_pass_selftest.c",
                "tests/native/fsr3_host_selftest.c", "tests/native/fsr3_fg_host_selftest.c", "tools/fsr3_mutants.py",
-               "src/rt/fsr3_fg_state.c", "src/rt/fsr3_fg_state.h", "tests/native/fsr3_fg_state_selftest.c")
+               "src/rt/fsr3_fg_state.c", "src/rt/fsr3_fg_state.h", "tests/native/fsr3_fg_state_selftest.c",
+               "src/rt/gpu_sdl3vk/fsr3_fg_pass.h", "src/rt/gpu_sdl3vk/fsr3_fg_pass_selftest.c")
 
     def test_derived_files_keep_amds_notice_and_say_they_were_modified(self) -> None:
         licence = (ROOT / "third_party/fidelityfx_sdk/LICENSE-AMD.md").read_text(encoding="utf-8")
@@ -394,7 +431,8 @@ class InertTests(unittest.TestCase):
 
     def test_no_runtime_or_player_source_refers_to_fsr3(self) -> None:
         own = {"fsr3_host.c", "fsr3_host.h", "fsr3_jitter.c", "fsr3_jitter.h", "fsr3_pass.c", "fsr3_pass.h",
-               "fsr3_pass_selftest.c", "fsr3_fg_host.c", "fsr3_fg_host.h", "fsr3_fg_state.c", "fsr3_fg_state.h"}
+               "fsr3_pass_selftest.c", "fsr3_fg_host.c", "fsr3_fg_host.h", "fsr3_fg_state.c", "fsr3_fg_state.h",
+               "fsr3_fg_pass.c", "fsr3_fg_pass.h", "fsr3_fg_pass_selftest.c"}
         for path in sorted((ROOT / "src").rglob("*")):
             if path.suffix not in {".c", ".h", ".cpp", ".inc"} or path.name in own:
                 continue

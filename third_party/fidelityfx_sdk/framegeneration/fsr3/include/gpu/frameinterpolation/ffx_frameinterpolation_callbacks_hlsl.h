@@ -21,7 +21,8 @@
 // THE SOFTWARE.
 //
 // Modified by Nakagawa Recomp contributors, 2026-11-05: [[vk::image_format("r32ui")]] on the storage
-// images that atomics reach, for Vulkan SPIR-V with unknown image formats.
+// images that atomics reach, for Vulkan SPIR-V with unknown image formats; rw_output stored with four
+// components (alpha 1, as the upscaler's output), as Vulkan requires of a write to a four-component image.
 
 #include "ffx_frameinterpolation_resources.h"
 
@@ -538,17 +539,17 @@ FfxFloat32x2 LoadInputMotionVector(FfxInt32x2 iPxDilatedMotionVectorPos)
 // declare UAVs and UAV accessors
 ///////////////////////////////////////////////
 #if defined(FFX_FRAMEINTERPOLATION_BIND_UAV_INPAINTING_MASK) && defined(FFX_FRAMEINTERPOLATION_BIND_UAV_OUTPUT)
-    RWTexture2D<FfxFloat32x3> rw_output          FFX_DECLARE_UAV(FFX_FRAMEINTERPOLATION_BIND_UAV_OUTPUT);
+    RWTexture2D<FfxFloat32x4> rw_output          FFX_DECLARE_UAV(FFX_FRAMEINTERPOLATION_BIND_UAV_OUTPUT);
     RWTexture2D<FfxFloat32>   rw_inpainting_mask FFX_DECLARE_UAV(FFX_FRAMEINTERPOLATION_BIND_UAV_INPAINTING_MASK);
 
     FfxFloat32x4 RWLoadFrameinterpolationOutput(FFX_PARAMETER_IN FfxInt32x2 iPxPos)
     {
-        return FfxFloat32x4(rw_output[iPxPos], rw_inpainting_mask[iPxPos]);
+        return FfxFloat32x4(rw_output[iPxPos].rgb, rw_inpainting_mask[iPxPos]);
     }
 
     void StoreFrameinterpolationOutput(FFX_PARAMETER_IN FfxInt32x2 iPxPos, FFX_PARAMETER_IN FfxFloat32x4 val)
     {
-        rw_output[iPxPos] = val.rgb;
+        rw_output[iPxPos] = FfxFloat32x4(val.rgb, 1.f);
         rw_inpainting_mask[iPxPos] = val.a;
     }
 

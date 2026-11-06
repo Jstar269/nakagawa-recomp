@@ -78,7 +78,7 @@
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h",
-          "sha256": "858dc32aeab144467825b7ed6841b1a2176765c104ab964d8b6ae862137da371"
+          "sha256": "6ce9fb80aa8f85519423c100b06bf50a424c4aa567b7a91bc41a0fd9601694e7"
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h",
@@ -129,7 +129,7 @@
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h",
-          "sha256": "858dc32aeab144467825b7ed6841b1a2176765c104ab964d8b6ae862137da371"
+          "sha256": "6ce9fb80aa8f85519423c100b06bf50a424c4aa567b7a91bc41a0fd9601694e7"
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h",
@@ -180,7 +180,7 @@
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h",
-          "sha256": "858dc32aeab144467825b7ed6841b1a2176765c104ab964d8b6ae862137da371"
+          "sha256": "6ce9fb80aa8f85519423c100b06bf50a424c4aa567b7a91bc41a0fd9601694e7"
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h",
@@ -231,7 +231,7 @@
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h",
-          "sha256": "858dc32aeab144467825b7ed6841b1a2176765c104ab964d8b6ae862137da371"
+          "sha256": "6ce9fb80aa8f85519423c100b06bf50a424c4aa567b7a91bc41a0fd9601694e7"
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h",
@@ -282,7 +282,7 @@
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h",
-          "sha256": "858dc32aeab144467825b7ed6841b1a2176765c104ab964d8b6ae862137da371"
+          "sha256": "6ce9fb80aa8f85519423c100b06bf50a424c4aa567b7a91bc41a0fd9601694e7"
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h",
@@ -333,7 +333,7 @@
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h",
-          "sha256": "858dc32aeab144467825b7ed6841b1a2176765c104ab964d8b6ae862137da371"
+          "sha256": "6ce9fb80aa8f85519423c100b06bf50a424c4aa567b7a91bc41a0fd9601694e7"
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h",
@@ -356,7 +356,7 @@
     },
     {
       "embedded": "src/rt/gpu_sdl3vk/fsr3fg_fi_interpolation_comp.inc",
-      "embedded_sha256": "502e4cff1fe1858c818d33f657517d65221a8ae7d7d99cc35afd39767da80404",
+      "embedded_sha256": "c115659d517236f3fb55ab2fc7862fa4c1fd6420be1dbfcbe1fd43b15e87a75e",
       "includes": [
         {
           "path": "third_party/fidelityfx_sdk/api/internal/gpu/ffx_common_types.h",
@@ -388,7 +388,7 @@
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h",
-          "sha256": "858dc32aeab144467825b7ed6841b1a2176765c104ab964d8b6ae862137da371"
+          "sha256": "6ce9fb80aa8f85519423c100b06bf50a424c4aa567b7a91bc41a0fd9601694e7"
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h",
@@ -401,8 +401,8 @@
       ],
       "source": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_pass.hlsl",
       "source_sha256": "cb6dfea9d25e8261b8599b0cbeefe1ab82625d7219d81b14955c34c57ebe324a",
-      "spirv_bytes": 19324,
-      "spirv_sha256": "470e98cb010e7fbcdd76ac0bef2caa8992969788ffe85fa704bca3824ba6ef9f",
+      "spirv_bytes": 19292,
+      "spirv_sha256": "811014ba88337b8dc4cd825ce04ad29d295a7b8950f4c0e14b4ba4f7394f6278",
       "stage": "comp"
     },
     {
@@ -435,7 +435,7 @@
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h",
-          "sha256": "858dc32aeab144467825b7ed6841b1a2176765c104ab964d8b6ae862137da371"
+          "sha256": "6ce9fb80aa8f85519423c100b06bf50a424c4aa567b7a91bc41a0fd9601694e7"
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h",
@@ -462,7 +462,7 @@
     },
     {
       "embedded": "src/rt/gpu_sdl3vk/fsr3fg_fi_inpainting_comp.inc",
-      "embedded_sha256": "2635e239b4f2cc55794bf23f5ed2b70abc96b4e49c481f55343aba0b6d0bcea2",
+      "embedded_sha256": "b05d2f6b5fc6614e47518639e306285f7ee6e5c0c9f34a00344a086475a5b891",
       "includes": [
         {
           "path": "third_party/fidelityfx_sdk/api/internal/gpu/ffx_common_types.h",
@@ -490,7 +490,7 @@
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h",
-          "sha256": "858dc32aeab144467825b7ed6841b1a2176765c104ab964d8b6ae862137da371"
+          "sha256": "6ce9fb80aa8f85519423c100b06bf50a424c4aa567b7a91bc41a0fd9601694e7"
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h",
@@ -507,8 +507,8 @@
       ],
       "source": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_inpainting_pass.hlsl",
       "source_sha256": "a7b76063cbc089568ba479cc9338831cb23a4c090ff7740c8271baca15c18135",
-      "spirv_bytes": 12156,
-      "spirv_sha256": "0aaaeed45c797e21fb5c55a10ed20379decc80c21f1f63f1efad5d22cb3383a3",
+      "spirv_bytes": 12124,
+      "spirv_sha256": "e1e33d8768cf67b1aa0b3ae6b17b9fd9eebbdeb10549eabeab2a44fcfb59cd7e",
       "stage": "comp"
     },
     {
@@ -541,7 +541,7 @@
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h",
-          "sha256": "858dc32aeab144467825b7ed6841b1a2176765c104ab964d8b6ae862137da371"
+          "sha256": "6ce9fb80aa8f85519423c100b06bf50a424c4aa567b7a91bc41a0fd9601694e7"
         },
         {
           "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h",
