@@ -98,7 +98,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
 
       - name: Hash the labelled head
         id: record
@@ -217,7 +217,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
 
       # The verifier fetches refs/pull/N/head into a private ref as objects
       # only, with no credentials, and posts the status itself.
