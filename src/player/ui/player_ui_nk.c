@@ -950,6 +950,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.resolution = player_ui_resolution_word(app->settings.resolution_scale);
     model.pacing = app->settings.fps_cap < 0 ? "PSP timing" : "No extra cap";
     model.scaling = player_present_scaling_label(app->settings.present_scaling);
+    model.preset = player_app_graphics_preset_label(app);
     model.vsync = app->settings.vsync;
     model.display_refresh_hz = player_ui_display_refresh_hz(player->window);
     model.fullscreen = app->settings.fullscreen;

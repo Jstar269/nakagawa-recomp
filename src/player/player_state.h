@@ -276,6 +276,9 @@ typedef struct {
     bool fullscreen;
     bool launcher_fullscreen;
     bool vsync;
+    /* PLAYER_PRESET_*: the graphics preset last chosen (#2150). It reads as Custom once
+       a setting it set no longer holds its value (player_app_graphics_preset). */
+    int graphics_preset;
     int fps_cap;          /* -1 = PSP scanout, 0 = uncapped host presentation */
     int master_volume;    /* 0..100 */
     /* Launcher accessibility (Settings > Accessibility). Reduce motion holds the
@@ -909,6 +912,7 @@ struct PlayerApp {
        no longer lists the game closes the page. */
     char enhanced_page_disc[PLAYER_DISC_ID_KEY_LEN];
     char settings_notice[128];
+    bool settings_notice_preset; /* settings_notice is a graphics preset's note */
     /* The operating system's display preferences, as player_app_read_system_preferences
        last read them: what an AUTO accessibility choice follows. */
     bool system_reduced_motion;
@@ -1479,6 +1483,45 @@ void player_app_set_present_scaling(PlayerApp *app, int scaling);
 void player_app_cycle_present_scaling(PlayerApp *app, int direction);
 /* "Sharp", "Integer" or "Bilinear" for a NK_PRESENT_SCALING_* value. */
 const char *player_present_scaling_label(int scaling);
+
+/* Graphics presets (#2150): a named set of values for display settings that already
+   exist, in one table (k_graphics_presets in player_state.c). Choosing one writes
+   those settings, which stay ordinary settings the user can change; the settings file
+   keeps each of them, so a file from before presets loads as it did. A preset adds no
+   rendering feature and changes nothing a game can observe: resolution scale and
+   presentation leave guest frames and VRAM unchanged, and the play mode, the Enhanced
+   parts and the launch line are not in the table. */
+typedef enum {
+    PLAYER_PRESET_CUSTOM = 0,
+    PLAYER_PRESET_LOW,
+    PLAYER_PRESET_MEDIUM,
+    PLAYER_PRESET_HIGH,
+    PLAYER_PRESET_ULTRA,
+    PLAYER_PRESET_HANDHELD,
+    PLAYER_PRESET_COUNT
+} PlayerGraphicsPreset;
+
+typedef struct {
+    const char *word;     /* settings.json "graphics_preset" */
+    const char *label;    /* the Settings button */
+    int resolution_scale;
+    int present_scaling;  /* NK_PRESENT_SCALING_* */
+    bool vsync;
+    int fullscreen;       /* 1 on, 0 off, -1 left as the user set it */
+    bool upscaler;        /* asks for the FSR 1 upscaler, which Settings cannot set yet (#2122) */
+} PlayerGraphicsPresetRow;
+
+/* The preset's row; NULL for Custom or a value out of range. */
+const PlayerGraphicsPresetRow *player_graphics_preset_row(int preset);
+/* The chosen preset while every value it set still holds, else PLAYER_PRESET_CUSTOM. */
+int player_app_graphics_preset(const PlayerApp *app);
+/* "Low", ..., "Handheld", or "Custom". */
+const char *player_app_graphics_preset_label(const PlayerApp *app);
+/* Writes the preset's values. A value it cannot set is named in settings_notice,
+   never shown as applied; a preset with nothing to report clears its own earlier note. */
+void player_app_apply_graphics_preset(PlayerApp *app, int preset);
+/* The next (or, with a negative direction, previous) preset, Custom stepping to Low. */
+void player_app_cycle_graphics_preset(PlayerApp *app, int direction);
 void player_app_set_fps_cap(PlayerApp *app, int cap);
 void player_app_cycle_fps_cap(PlayerApp *app, int direction);
 void player_app_toggle_fullscreen(PlayerApp *app);

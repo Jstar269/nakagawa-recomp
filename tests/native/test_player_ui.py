@@ -2184,11 +2184,12 @@ class NativePlayerUiTests(unittest.TestCase):
         "interface_size": str(0x452D), "high_contrast": str(0x452E),
         "reduce_motion": str(0x4509), "text_size": str(0x452F),
         "ace": str(0x4540), "ace_open": str(0x4541), "ace_mode": str(0x4542),
+        "preset": str(0x4510),
     }
-    # From Resolution, Down runs through the Game card's six rows (the last is the
-    # one Play mode row, which opens Settings > Enhanced) to the button row, which it enters at
+    # From Resolution, Down runs through the Game card's seven rows (Play mode, which opens
+    # Settings > Enhanced, then Graphics preset, #2150) to the button row, which it enters at
     # Third-party notices.
-    TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 6
+    TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 7
 
     def focus_trail(self, run: dict[str, object]) -> list[str]:
         """The controls the next UI focused, with repeats collapsed."""
@@ -2199,6 +2200,23 @@ class NativePlayerUiTests(unittest.TestCase):
             if not trail or trail[-1] != frame["next_focus"]:
                 trail.append(frame["next_focus"])
         return trail
+
+    def test_next_ui_graphics_preset_writes_its_settings(self) -> None:
+        """#2150: the Game card's last row steps the graphics preset, and each step writes
+        the preset's own settings: Custom (a new library) to Low, then Medium's 2x."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + ("KEY_DOWN",) * 6 +
+            ("KEY_RETURN", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
+        )
+        self.assertIn(focus["preset"], self.focus_trail(run), "Down reaches Graphics preset")
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("graphics_preset"), "medium", "two steps: Low, then Medium")
+        self.assertEqual(settings.get("resolution_scale"), 2, "Medium draws at 2x")
+        self.assertEqual(settings.get("present_scaling"), "sharp")
+        self.assertIs(settings.get("vsync"), True)
 
     def test_next_ui_settings_changes_are_saved_and_done_returns(self) -> None:
         """#1302: Settings in the next UI runs the same handlers and saves each change."""

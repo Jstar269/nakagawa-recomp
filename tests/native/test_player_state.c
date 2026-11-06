@@ -7069,6 +7069,174 @@ static void test_play_mode_sas_settings(void) {
     printf("PASS: clean pitched sound is read, resolved and saved at both levels\n");
 }
 
+/* Graphics presets (#2150): each writes exactly its row, a later change reads as Custom,
+ * the choice is saved beside the settings it set, a file without it loads as before, and
+ * no preset reaches the play mode, the launch line or the upscaler of an Authentic run. */
+static void test_graphics_presets(void) {
+    char sep = nk_platform_path_separator();
+    char cache_root[512], root[700], path[800];
+    char line[192];
+    PlayerPlayResolved r;
+    NkRuntimeConfig config;
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(root, sizeof(root), "%s%cgraphics_preset_probe", cache_root, sep);
+    assert(nk_platform_mkdir_p(root));
+    snprintf(path, sizeof(path), "%s%csettings.json", root, sep);
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    PlayerApp *back = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app && back);
+
+    player_app_settings_init_default(&app->settings);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    assert(strcmp(player_app_graphics_preset_label(app), "Custom") == 0);
+    assert(player_graphics_preset_row(PLAYER_PRESET_CUSTOM) == NULL);
+    assert(player_graphics_preset_row(PLAYER_PRESET_COUNT) == NULL);
+
+    /* Each preset writes its own values and nothing else, whatever was set before. */
+    for (int p = PLAYER_PRESET_LOW; p < PLAYER_PRESET_COUNT; p++) {
+        const PlayerGraphicsPresetRow *row = player_graphics_preset_row(p);
+        assert(row && row->word && row->label);
+        for (int fs = 0; fs < 2; fs++) {
+            PlayerSettings expected;
+            player_app_settings_init_default(&app->settings);
+            app->settings.fullscreen = fs != 0;
+            app->settings.resolution_scale = row->resolution_scale == 1 ? 2 : 1;
+            app->settings.present_scaling = NK_PRESENT_SCALING_BILINEAR;
+            app->settings.vsync = false;
+            app->settings.fps_cap = 0;
+            app->settings.master_volume = 37;
+            app->settings.launcher_fullscreen = true;
+            app->settings.enhanced.library = PLAYER_PLAY_AUTHENTIC;
+            expected = app->settings;
+            expected.resolution_scale = row->resolution_scale;
+            expected.present_scaling = row->present_scaling;
+            expected.vsync = row->vsync;
+            if (row->fullscreen >= 0) expected.fullscreen = row->fullscreen != 0;
+            expected.graphics_preset = p;
+            player_app_apply_graphics_preset(app, p);
+            assert(memcmp(&expected, &app->settings, sizeof(expected)) == 0);
+            assert(player_app_graphics_preset(app) == p);
+            assert(strcmp(player_app_graphics_preset_label(app), row->label) == 0);
+            /* A value the preset cannot set is named on the card, never shown as set. */
+            if (row->upscaler) {
+                assert(strstr(app->settings_notice, row->label) != NULL &&
+                       strstr(app->settings_notice, "FSR 1 upscaler") != NULL);
+            } else {
+                assert(app->settings_notice[0] == '\0');
+            }
+            /* Authentic stays Authentic: the launch line is off and the session gets no
+               upscaler, under every preset. */
+            player_play_resolve(&app->settings, "TEST92150", &r);
+            assert(!r.on);
+            assert(player_play_launch_line(&r, line, sizeof(line)) && strcmp(line, "off") == 0);
+            memset(&config, 0, sizeof(config));
+            player_app_apply_settings_to_session(&app->settings, &config);
+            assert(config.present_upscale == NK_PRESENT_UPSCALE_OFF && config.ace_spec[0] == '\0');
+            assert(config.resolution_scale == row->resolution_scale);
+        }
+    }
+
+    /* A later change to a value the preset set makes it Custom. */
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_MEDIUM);
+    player_app_cycle_resolution_scale(app, 1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    assert(strcmp(player_app_graphics_preset_label(app), "Custom") == 0);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_MEDIUM);
+    player_app_toggle_vsync(app);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_MEDIUM);
+    player_app_cycle_present_scaling(app, 1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_HANDHELD);
+    assert(app->settings.fullscreen);
+    player_app_toggle_fullscreen(app);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    /* Fullscreen is the user's own under every other preset. */
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_LOW);
+    player_app_toggle_fullscreen(app);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_LOW);
+    /* Neither is a setting no preset sets. */
+    player_app_set_fps_cap(app, app->settings.fps_cap < 0 ? 0 : -1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_LOW);
+
+    /* Ultra's note goes when another preset is chosen; another notice stays. */
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_ULTRA);
+    assert(app->settings_notice[0] != '\0');
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_HIGH);
+    assert(app->settings_notice[0] == '\0');
+    snprintf(app->settings_notice, sizeof(app->settings_notice), "Settings could not be read.");
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_LOW);
+    assert(strcmp(app->settings_notice, "Settings could not be read.") == 0);
+    app->settings_notice[0] = '\0';
+
+    /* Stepping: Custom goes to Low, Handheld wraps to Low, back from Low is Handheld. */
+    player_app_settings_init_default(&app->settings);
+    player_app_cycle_graphics_preset(app, 1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_LOW);
+    for (int p = PLAYER_PRESET_MEDIUM; p < PLAYER_PRESET_COUNT; p++) {
+        player_app_cycle_graphics_preset(app, 1);
+        assert(player_app_graphics_preset(app) == p);
+    }
+    player_app_cycle_graphics_preset(app, 1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_LOW);
+    player_app_cycle_graphics_preset(app, -1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_HANDHELD);
+    player_app_settings_init_default(&app->settings);
+    player_app_cycle_graphics_preset(app, -1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_HANDHELD);
+
+    /* Saved beside the settings it set, and loaded back. */
+    player_app_settings_init_default(&app->settings);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_HIGH);
+    assert(player_app_save_settings(app, path) == NK_OK);
+    {
+        char *saved = read_text_file(path);
+        assert(saved && strstr(saved, "\"graphics_preset\": \"high\",") != NULL);
+        assert(strstr(saved, "\"resolution_scale\": 4,") != NULL);
+        free(saved);
+    }
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(player_app_graphics_preset(back) == PLAYER_PRESET_HIGH);
+    assert(back->settings.resolution_scale == 4);
+
+    /* A file whose own values left its preset loads as Custom and saves as custom. */
+    write_text_file(path,
+        "{\"schema_version\": 2, \"graphics_preset\": \"high\", \"resolution_scale\": 2}");
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.resolution_scale == 2);
+    assert(player_app_graphics_preset(back) == PLAYER_PRESET_CUSTOM);
+    assert(player_app_save_settings(back, path) == NK_OK);
+    {
+        char *saved = read_text_file(path);
+        assert(saved && strstr(saved, "\"graphics_preset\": \"custom\",") != NULL);
+        free(saved);
+    }
+    /* A word this build does not know is Custom. */
+    write_text_file(path, "{\"schema_version\": 2, \"graphics_preset\": \"cinematic\"}");
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(player_app_graphics_preset(back) == PLAYER_PRESET_CUSTOM);
+
+    /* v0.0.1's settings file, from before presets, loads as it did, as Custom. */
+    versioned_copy_fixture("fixtures/user_data/v0.0.1/settings.json", path);
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings_notice[0] == '\0');
+    assert(back->settings.resolution_scale == 2);
+    assert(back->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    assert(back->settings.vsync == false);
+    assert(player_app_graphics_preset(back) == PLAYER_PRESET_CUSTOM);
+
+    assert(remove(path) == 0);
+    (void)test_rmdir(root);
+    free(back);
+    free(app);
+    printf("PASS: graphics presets write their rows, turn Custom on a change, save, load "
+           "and leave Authentic alone\n");
+}
+
 /* Smooth motion (#1272) as an Enhanced part: off by default, x2 on the launch line and never
  * match, and refused by the true 60 FPS game logic build whatever the settings say. */
 static void test_play_mode_smooth_motion(void) {
@@ -7552,6 +7720,7 @@ int main(int argc, char **argv) {
     test_play_mode_settings_mapping();
     test_play_mode_smooth_motion();
     test_play_mode_sas_settings();
+    test_graphics_presets();
     test_play_mode_line_parses_in_runtime();
     test_play_mode_title_page();
     /* Saves a library file under the cache root, so it runs only once that

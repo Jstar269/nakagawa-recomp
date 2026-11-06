@@ -393,6 +393,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     }
     settings.pacing = "PSP timing";
     settings.scaling = "Sharp";
+    settings.preset = "Medium";
     settings.vsync = true;
     /* The refresh-rate advisory case runs on a 144 Hz display; the rest on 60 Hz. */
     settings.display_refresh_hz = which == FLOW_SETTINGS_REFRESH ? 144.0 : 60.0;
@@ -2630,6 +2631,8 @@ static void test_settings_pages(void) {
          "the fullscreen button toggles game fullscreen"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_SCALING, PLAYER_UI_SETTINGS_CYCLE_SCALING,
          "the scaling button cycles the scaling"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_PRESET, PLAYER_UI_SETTINGS_CYCLE_PRESET,
+         "the graphics preset button steps the preset"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_VOLUME_DOWN, PLAYER_UI_SETTINGS_VOLUME_DOWN,
          "minus lowers the volume"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_VOLUME_UP, PLAYER_UI_SETTINGS_VOLUME_UP,

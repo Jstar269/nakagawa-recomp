@@ -1779,6 +1779,7 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op, size
         case PLAYER_UI_SETTINGS_TOGGLE_VSYNC: player_app_toggle_vsync(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_FULLSCREEN: player_app_toggle_fullscreen(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_SCALING: player_app_cycle_present_scaling(app, 1); break;
+        case PLAYER_UI_SETTINGS_CYCLE_PRESET: player_app_cycle_graphics_preset(app, 1); break;
         case PLAYER_UI_SETTINGS_VOLUME_DOWN: player_app_adjust_volume(app, -5); break;
         case PLAYER_UI_SETTINGS_VOLUME_UP: player_app_adjust_volume(app, 5); break;
         case PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS: player_app_toggle_ui_sounds(app); break;

@@ -124,7 +124,8 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
            design 190 px; at a larger text size the names wrap instead. */
         const char *values[] = {
             safe_text(model->resolution, "2x"), safe_text(model->pacing, "PSP timing"),
-            safe_text(model->scaling, "Sharp"), "Size, contrast, motion",
+            safe_text(model->scaling, "Sharp"), safe_text(model->preset, "Custom"),
+            "Size, contrast, motion",
             "Controller and keyboard", "Check for updates", "Off", "Off: options"
         };
         float buttons = 190.0f;
@@ -197,6 +198,13 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                                                         : "Authentic: options",
                              model->enhanced_library_on, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_OPEN_ACE);
+            }
+            /* A graphics preset (#2150) sets the rows above it in one choice; changing one of
+               them afterwards makes it Custom. Last on the card, so the rows above keep their
+               places beside the LAUNCHER AND SOUND rows. */
+            if (settings_row(ui, 13u, PLAYER_UI_ID_SETTINGS_PRESET, "Graphics preset",
+                             safe_text(model->preset, "Custom"), false, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_PRESET);
             }
             nk_ui_end_container(ui);
         }
