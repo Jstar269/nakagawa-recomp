@@ -1227,6 +1227,7 @@
     "tests/native/vfs_contained_selftest.c",
     "tests/native/vfs_selftest.c",
     "tests/native/videorec_selftest.c",
+    "tests/native/vram_view_identity_selftest.c",
     "tests/native/watchpoints_file_selftest.c",
     "third_party/clay/LICENSE.md",
     "third_party/clay/PROVENANCE.md",
