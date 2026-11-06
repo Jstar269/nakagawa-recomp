@@ -107,6 +107,7 @@ void sr_replay_checkpoint_vblank(uint32_t vcount);
  *
  *   NKREC v=1 every=<n> clock=deterministic exe=<64 hex> disc=<id|-> abi=<n> cpustate=<n>
  *   NKANSW v=1 call=osk request=<k> pending=<p> result=<ok|cancel|abandoned|open> units=<hex|->
+ *   NKPAD v=1 first=<k> count=<n> value=<8 hex buttons>.<lx>.<ly>.<keyboard>|skip
  *   NKCKPT v=1 frame=<f> ...                  (every SR_REPLAY_CHECKPOINT_EVERY vblanks)
  *   NKREC_END frame=<last vblank>             (at a normal exit)
  *
@@ -114,7 +115,10 @@ void sr_replay_checkpoint_vblank(uint32_t vcount);
  * A keyboard request is answered after `pending` polls that reported it still open; ok
  * carries the text as 8 hex digits per wchar_t unit. A request still open at a checkpoint
  * is written as `open` so far, and a later line for it supersedes that one. A run ended by
- * _Exit has no NKREC_END line and replays to its last checkpoint.
+ * _Exit has no NKREC_END line and replays to its last checkpoint. Pad samples are numbered in
+ * the order sr_ctrl_sample takes them; a run of equal ones is one NKPAD line, written when the
+ * value changes and before each checkpoint. `skip` is a sample not taken because a pause was
+ * requested; the replay skips it too.
  *
  * SR_REPLAY=<file> checks the header first (refusals use the nkstate names:
  * executable-identity, disc-id, abi-version, cpustate-size, clock-not-deterministic, and
@@ -124,18 +128,28 @@ void sr_replay_checkpoint_vblank(uint32_t vcount);
  *   REPLAY_MISMATCH frame=<f> index=<i> kind=<k> digest=<name>
  *                                                     exit 1, at the first differing checkpoint
  *   REPLAY_MISSING_ANSWER call=osk request=<k> frame=<f> detail=<why>
+ *   REPLAY_MISSING_ANSWER call=pad sample=<k> frame=<f> detail=<why>
  *                                                     exit 1: the guest asked for an answer
  *                                                     the recording does not hold; nothing
  *                                                     is invented
  *   REPLAY_COMPLETE frame=<f> checkpoints=<n> answers=<k>
- *                                                     the run continues live
+ *                                                     every checkpoint matched; input recorded
+ *                                                     after the last one is still served, and
+ *                                                     each channel goes live when it runs out
  *   REPLAY_NOT_RUN reached=<f> end=<f> checkpoints=<i>/<n>
  *                                                     at exit, when the run stopped first;
  *                                                     never a pass
  *
- * Input from the pad is not recorded yet: a replay of a run that read live pad input stops
- * at a REPLAY_MISMATCH. SR_PADSCRIPT and SR_OSK_SCRIPT runs replay when they are given the
- * same script. */
+ * The pad is recorded as the sample the guest was handed, after the route, the stick mode and
+ * the keyboard's masking, so a replay needs neither the person nor the script. Scripted-input
+ * bookkeeping still runs during a replay, so an SR_ROUTE run replays with the same route. */
+
+/* sr_ctrl_sample's entry points (hle_route.c). At its top, sr_replay_pad_skip(live_skip)
+ * says whether this sample is skipped: the live answer, written down under SR_RECORD; the
+ * recorded one under SR_REPLAY. Once the sample is final, sr_replay_pad_sample records it, or
+ * replaces it with the recorded one; keyboard_took is whether the on-screen keyboard took it. */
+int sr_replay_pad_skip(int live_skip);
+void sr_replay_pad_sample(uint32_t *buttons, uint8_t *lx, uint8_t *ly, int *keyboard_took);
 
 #define SR_REPLAY_OSK_UNITS 256 /* the HLE keyboard's field bound, terminator included */
 

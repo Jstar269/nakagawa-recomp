@@ -201,7 +201,7 @@ def parse(data: bytes, *, self_identity: Identity | None = None,
         raise StateError("too-many-segments", f"{count} segments, at most {MAX_SEGMENTS}")
     if len(data) - HEADER.size < count * ENTRY.size:
         raise StateError("truncated", "the segment table runs past the end")
-    entries = []
+    entries: list[tuple[str, int, int, bytes]] = []
     for i in range(count):
         tag_raw, version, length, digest = ENTRY.unpack_from(data, HEADER.size + i * ENTRY.size)
         if not _tag_ok(tag_raw):

@@ -192,7 +192,7 @@
     X("SR_PSMF_SELFTEST_DEBUG", "flag-presence", "off", "psmf_producer_selftest.c", "Makes the PSMF producer self-test print extra statistics lines to stderr.") \
     X("SR_QUIET", "flag-nonzero", "off", "driver.c", "When nonzero, redirects stdout and stderr to the null device.") \
     X("SR_REAL_MODULE_START", "string", "unset (module_start runs for libfont only)", "hle_kernel_module.c,hle_thread_selftest.c", "1 lets module_start run for any module, 0 for none; other values are ignored with a warning.") \
-    X("SR_RECORD", "path", "unset (no recording)", "replay_checkpoint.c", "Records the run (checkpoints and keyboard answers) to this file for SR_REPLAY; needs SR_DETERMINISTIC_CLOCK=1.") \
+    X("SR_RECORD", "path", "unset (no recording)", "replay_checkpoint.c", "Records the run (checkpoints, pad samples, keyboard answers) to this file for SR_REPLAY; needs SR_DETERMINISTIC_CLOCK=1.") \
     X("SR_REDUCE_MOTION", "string", "Automatic (system setting)", "gui.c,overlay/overlay_host.c", "Player's Reduce motion choice for the overlay, falling back to the platform preference.") \
     X("SR_REPLAY", "path", "unset (no replay)", "replay_checkpoint.c", "Replays an SR_RECORD file in a fresh run, checking each checkpoint; prints one REPLAY_ verdict and goes live when used up.") \
     X("SR_REPLAY_CHECKPOINTS", "path", "unset (no checkpoints)", "replay_checkpoint.c", "Writes digests of the threads, scheduler, VRAM and RAM every N vblanks to this file; tools/nkstate.py ckpt-diff names where two runs split.") \

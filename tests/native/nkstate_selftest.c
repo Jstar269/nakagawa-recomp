@@ -797,6 +797,9 @@ static void test_checkpoint_stream(void) {
  *   request 1 from frame 9: the person cancels after 1 poll;
  *   request 2 at frames 14-16: nobody answers, and the guest abandons it at frame 17
  *   (extra: it polls once more at frame 17 and abandons at 18).
+ * After each VBLANK it takes a pad sample whose buttons and stick follow pad=<seed> (default
+ * 1); pause=<frame> skips that frame's sample, as sr_ctrl_sample does when a pause is
+ * requested.
  * Each answer is folded into guest memory, so it decides the rest of the run. Test-only
  * options: perturb=<frame> writes one guest word after that frame; hostclock reports the host
  * clock; hardexit=<frame> stops with _Exit after that frame's VBLANK.
@@ -811,9 +814,11 @@ typedef struct {
     unsigned frames;
     int perturb, hard_exit, osk_extra;
     char text[16];
+    unsigned pad_seed;
+    int pause;
 } ChildOptions;
 
-static ChildOptions g_child = {24u, -1, -1, 0, "HELLO"};
+static ChildOptions g_child = {24u, -1, -1, 0, "HELLO", 1u, -1};
 
 /* "--rr-child" alone, or followed by ":" and comma-separated options. Returns 0 on a bad one. */
 static int parse_child_options(const char *arg) {
@@ -833,6 +838,8 @@ static int parse_child_options(const char *arg) {
         else if (strncmp(opt, "perturb=", 8) == 0) g_child.perturb = atoi(opt + 8);
         else if (strncmp(opt, "hardexit=", 9) == 0) g_child.hard_exit = atoi(opt + 9);
         else if (strcmp(opt, "extra") == 0) g_child.osk_extra = 1;
+        else if (strncmp(opt, "pad=", 4) == 0) g_child.pad_seed = (unsigned)atoi(opt + 4);
+        else if (strncmp(opt, "pause=", 6) == 0) g_child.pause = atoi(opt + 6);
         else if (strcmp(opt, "hostclock") == 0) g_child_host_clock = 1;
         else if (strncmp(opt, "text=", 5) == 0 && strlen(opt + 5) < sizeof g_child.text) strcpy(g_child.text, opt + 5);
         else return 0;
@@ -910,6 +917,19 @@ static int rr_child(void) {
         if ((int)f == hard_exit) {
             fflush(stderr);
             _Exit(0);
+        }
+        /* This VBLANK's pad sample, taken as sr_ctrl_sample takes it: skipped while a pause is
+         * requested, otherwise final once the keyboard has had its say, then folded into the
+         * decoder's state so every later frame depends on it. */
+        {
+            uint32_t b = ((f / 3u) * g_child.pad_seed * 0x1111u) & 0xF3F9u;
+            uint8_t lx = (uint8_t)(128u + f / 4u), ly = (uint8_t)(100u + g_child.pad_seed);
+            int kb = (f % 7u) == 6u;
+            if (!sr_replay_pad_skip((int)f == g_child.pause)) {
+                sr_replay_pad_sample(&b, &lx, &ly, &kb);
+                MEM_W32(STATE_ADDR + 4u, MEM_R32(STATE_ADDR + 4u) * 37u + b + ((uint32_t)lx << 16) +
+                                             ((uint32_t)ly << 24) + (uint32_t)kb);
+            }
         }
     }
     fprintf(stderr, "CHILD_FINAL v1=%08x h=%08x x=%08x frame=%u live_polls=%u live_abandons=%u\n", s.r[V1],
@@ -1065,8 +1085,9 @@ static void test_record_replay(void) {
     char want[160], got[160], line[200];
     size_t rec_len = 0;
 
-    /* Record. */
+    /* Record, with a pause requested at frame 11. */
     rr_env(RR_REC, "");
+    rr_opt("pause=11");
     log = rr_run(&st);
     CHECK(st == 0, "record child exit %d: %.300s", st, log);
     final_state(log, want, sizeof want);
@@ -1085,6 +1106,10 @@ static void test_record_replay(void) {
           "request 2 was not written as open at the frame-16 checkpoint");
     CHECK(strstr(rec, "\nNKANSW v=1 call=osk request=2 pending=3 result=abandoned units=-\n") != NULL,
           "request 2's abandon not recorded");
+    CHECK(strstr(rec, "\nNKPAD v=1 first=0 count=3 value=00000000.128.101.0\n") != NULL,
+          "the first pad run (frames 0-2) not recorded");
+    CHECK(strstr(rec, "\nNKPAD v=1 first=11 count=1 value=skip\n") != NULL, "the pause at frame 11 not recorded");
+    CHECK(strstr(rec, ".1\n") != NULL, "no pad sample the keyboard took was recorded");
     CHECK(rec_len > 20u && strcmp(rec + rec_len - 20u, "\nNKREC_END frame=23\n") == 0, "record end line: %s",
           rec_len > 40u ? rec + rec_len - 40u : rec);
     {
@@ -1096,6 +1121,8 @@ static void test_record_replay(void) {
     /* Replay in a fresh process, with a person who would type something else. */
     rr_env("", RR_REC);
     rr_opt("text=WORLD");
+    rr_opt("pad=2");
+    rr_opt("pause=5");
     log = rr_run(&st);
     final_state(log, got, sizeof got);
     CHECK(st == 0, "replay child exit %d: %.300s", st, log);
@@ -1110,9 +1137,18 @@ static void test_record_replay(void) {
      * the replay served is what made it match. */
     rr_env("", "");
     rr_opt("text=WORLD");
+    rr_opt("pad=2");
     log = rr_run(&st);
     final_state(log, got, sizeof got);
     CHECK(st == 0 && got[0] && strcmp(got, want) != 0, "control run (no replay, WORLD) matched the recording: %s", got);
+    free(log);
+
+    /* Control: the recording's own person and pad, without the pause, end elsewhere, so the
+     * skipped sample the replay reproduced is part of what made it match. */
+    rr_env("", "");
+    log = rr_run(&st);
+    final_state(log, got, sizeof got);
+    CHECK(st == 0 && got[0] && strcmp(got, want) != 0, "control run (no pause) matched the recording: %s", got);
     free(log);
 
     /* One guest word changed after frame 6: the frame-8 checkpoint names its chunk. */
@@ -1154,6 +1190,8 @@ static void test_record_replay(void) {
             {"a request out of order", "request=1 pending=1", "request=4 pending=1", "REPLAY_REFUSED reason=answer-order line="},
             {"a bad answer unit", "units=00000048", "units=0000004G", "REPLAY_REFUSED reason=malformed-answer line="},
             {"a not-a-recording file", "NKREC v=1 ", "NKREX v=1 ", "REPLAY_REFUSED reason=bad-magic line=1\n"},
+            {"a gap in the pad samples", "NKPAD v=1 first=0 count=", "NKPAD v=1 first=1 count=", "REPLAY_REFUSED reason=pad-order line="},
+            {"a bad pad value", "value=skip", "value=skop", "REPLAY_REFUSED reason=malformed-pad line="},
         };
         for (size_t i = 0; i < sizeof edits / sizeof edits[0]; i++) {
             const char *at = strstr(rec, edits[i].find);

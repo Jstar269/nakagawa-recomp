@@ -1425,11 +1425,14 @@ How this differs from the other tools:
 
 `SR_RECORD=<file>` records a run, and `SR_REPLAY=<file>` replays that recording in a fresh run of the
 same executable. Both need `SR_DETERMINISTIC_CLOCK=1`. With it the guest clock and the RTC follow guest
-time, not the host clock, so the only host answer left to record is the on-screen-keyboard text. A
-recording holds:
+time, not the host clock, so what is left to record is what came from outside the guest: the pad
+and the on-screen-keyboard text. A recording holds:
 
 - a header binding it to one build: the cadence, the clock, a digest of the executable, the disc ID
   (`SR_DISC_ID`), and the `CpuState` ABI version and size;
+- each pad sample the guest was handed (`NKPAD`): buttons, stick, and whether the on-screen keyboard
+  took it, as runs of equal samples. A sample skipped because a pause was requested is recorded as a
+  skip, and the replay skips it too;
 - each keyboard request's answer and how many polls it stayed open first (`NKANSW`);
 - the run's own checkpoints, every `SR_REPLAY_CHECKPOINT_EVERY` vblanks (`NKCKPT`);
 - `NKREC_END` at a normal exit.
@@ -1453,12 +1456,12 @@ reaches it and writes exactly one verdict to stderr:
 | `REPLAY_REFUSED reason=<name> line=<n>` | exit 1 before the guest runs: another executable, disc, `CpuState` ABI or clock, or a line it cannot read |
 | `REPLAY_MISMATCH frame=<f> index=<i> kind=<k> digest=<name>` | exit 1 at the first checkpoint that differs, naming the thread, scheduler or memory chunk |
 | `REPLAY_MISSING_ANSWER call=osk request=<k> frame=<f> detail=<why>` | exit 1: the guest asked for an answer the recording does not hold. Nothing is made up |
-| `REPLAY_COMPLETE frame=<f> checkpoints=<n> answers=<k>` | the recording is used up; the run carries on live |
+| `REPLAY_COMPLETE frame=<f> checkpoints=<n> answers=<k>` | every checkpoint matched. Input recorded after the last one is still served; the pad and the keyboard each go live when the recording runs out |
 | `REPLAY_NOT_RUN reached=<f> end=<f> checkpoints=<i>/<n>` | at exit, when the run stopped before the recording was used up. This is never a pass |
 
-Pad input is not recorded yet. A recorded run that read the live pad stops at a `REPLAY_MISMATCH`
-where the input first changed the guest. Runs driven by `SR_PADSCRIPT` or `SR_OSK_SCRIPT` replay when
-they are given the same script. `ckpt-diff` compares two recordings, or a recording with a checkpoint
+The pad is recorded after the route, the stick mode and the keyboard have shaped it, so a replay needs
+neither the person nor the script, and a pause requested during a replay does not change it. Route
+bookkeeping still runs during a replay, so an `SR_ROUTE` run replays with the same route. `ckpt-diff` compares two recordings, or a recording with a checkpoint
 stream taken on the same cadence. A recording holds no game bytes, but it describes a private run:
 keep it with your logs.
 
@@ -1485,8 +1488,8 @@ its own host coroutine, and a thread waiting in an import or at a loop back-edge
 native frames that its `CpuState` does not describe. So #2146 builds save states first as a verified
 deterministic replay: the run is replayed from boot under `SR_DETERMINISTIC_CLOCK=1`, and its
 checkpoints are compared on the way. Today the container, its refusals, the checkpoints and
-`SR_RECORD`/`SR_REPLAY` exist; pad input in recordings and the player's save and load keys are still
-to come. Direct states and fast rewind need the runtime to resume a thread at a guest PC with no host
+`SR_RECORD`/`SR_REPLAY`, pad input included, exist; the player's save and load keys are still to
+come. Direct states and fast rewind need the runtime to resume a thread at a guest PC with no host
 frames, which is tracked as its own issue.
 
 #### Running on a disposable Memory Stick

@@ -63,7 +63,7 @@ class GoldenTest(unittest.TestCase):
 
     def test_cpustate_abi_matches_recomp_h(self) -> None:
         match = re.search(r"#define SR_CPUSTATE_ABI_VERSION (\d+)u", RECOMP_H)
-        self.assertIsNotNone(match)
+        assert match is not None, "recomp.h has no SR_CPUSTATE_ABI_VERSION"
         self.assertEqual(int(match.group(1)), nkstate.ABI_VERSION)
 
     def test_header_layout_matches_c(self) -> None:

@@ -399,7 +399,19 @@ static FILE *s_rec_fp;
 static uint32_t s_osk_request;
 static uint32_t s_osk_pending;
 
+/* One recorded pad sample, or a run of equal ones: `skip` is a sample sr_ctrl_sample did not
+ * take (a pause request); otherwise the buttons, stick and whether the keyboard took it. */
+typedef struct {
+    uint64_t first, count;
+    int skip;
+    uint32_t buttons;
+    uint8_t lx, ly, keyboard;
+} PadRun;
+
 /* Replay. */
+static PadRun *s_rep_pad;           /* the recorded pad runs, contiguous from sample 0 */
+static size_t s_rep_pad_count;
+static size_t s_rep_pad_next;
 static char *s_rep_text;
 static char **s_rep_ckpt;           /* the recorded checkpoint lines, in order */
 static size_t s_rep_ckpt_count;
@@ -469,6 +481,7 @@ static int disc_field(char out[REC_DISC_LEN]) {
 }
 
 static void rr_exit(void);
+static void pad_flush(void);
 
 static void record_setup(const char *path) {
     char exe[65], disc[REC_DISC_LEN];
@@ -575,6 +588,39 @@ static int parse_answer(char *p, OskAnswer *a) {
     return 1;
 }
 
+/* "skip", or "<8 hex buttons>.<lx>.<ly>.<keyboard 0|1>". */
+static int parse_pad_value(const char *v, PadRun *r) {
+    if (strcmp(v, "skip") == 0) {
+        r->skip = 1;
+        return 1;
+    }
+    uint32_t b = 0;
+    for (int i = 0; i < 8; i++) {
+        const int h = hexval(v[i]);
+        if (h < 0 || (v[i] >= 'A' && v[i] <= 'F')) return 0;
+        b = (b << 4) | (uint32_t)h;
+    }
+    if (v[8] != '.') return 0;
+    char tmp[16];
+    const size_t n = strlen(v + 9);
+    if (n >= sizeof tmp) return 0;
+    memcpy(tmp, v + 9, n + 1u);
+    char *lx = tmp, *ly = strchr(lx, '.');
+    if (!ly) return 0;
+    *ly++ = '\0';
+    char *kb = strchr(ly, '.');
+    if (!kb) return 0;
+    *kb++ = '\0';
+    uint32_t x, y, k;
+    if (!parse_u32(lx, &x) || !parse_u32(ly, &y) || !parse_u32(kb, &k) || x > 255u || y > 255u || k > 1u)
+        return 0;
+    r->buttons = b;
+    r->lx = (uint8_t)x;
+    r->ly = (uint8_t)y;
+    r->keyboard = (uint8_t)k;
+    return 1;
+}
+
 static void replay_setup(const char *path) {
     FILE *fp = fopen(path, "rb");
     if (!fp) {
@@ -597,6 +643,7 @@ static void replay_setup(const char *path) {
     char exe[65], disc[REC_DISC_LEN];
     size_t ckpt_cap = 0;
     size_t answ_cap = 0;
+    size_t pad_cap = 0;
     size_t line_no = 0;
     char *line = s_rep_text;
     while (*line) {
@@ -650,6 +697,28 @@ static void replay_setup(const char *path) {
             } else {
                 refuse("answer-order", line_no);
             }
+        } else if (strncmp(p, "NKPAD v=1 ", 10) == 0) {
+            if (s_rep_have_end_line) refuse("after-end", line_no);
+            p += 10;
+            const char *first = field(&p, "first=");
+            const char *count = field(&p, "count=");
+            const char *value = field(&p, "value=");
+            PadRun r = {0u, 0u, 0, 0u, 0u, 0u, 0u};
+            if (!parse_u64(first, &r.first) || !parse_u64(count, &r.count) || r.count == 0u || !value || *p ||
+                !parse_pad_value(value, &r))
+                refuse("malformed-pad", line_no);
+            const uint64_t want = s_rep_pad_count ? s_rep_pad[s_rep_pad_count - 1u].first +
+                                                        s_rep_pad[s_rep_pad_count - 1u].count
+                                                  : 0u;
+            if (r.first != want || r.count > UINT64_MAX - r.first) refuse("pad-order", line_no);
+            if (s_rep_pad_count == pad_cap) {
+                size_t ncap = pad_cap ? pad_cap * 2u : 64u;
+                PadRun *n = (PadRun *)realloc(s_rep_pad, ncap * sizeof *n);
+                if (!n) refuse("out-of-memory", line_no);
+                s_rep_pad = n;
+                pad_cap = ncap;
+            }
+            s_rep_pad[s_rep_pad_count++] = r;
         } else if (strncmp(p, "NKREC_END ", 10) == 0) {
             p += 10;
             const char *frame = field(&p, "frame=");
@@ -722,6 +791,7 @@ static void rr_vblank(uint32_t vcount) {
         /* A keyboard request still open is written as far as it got, so a recording cut short
          * by _Exit still answers every poll before its last checkpoint. */
         if (s_osk_pending) record_answer(s_osk_request, s_osk_pending, ANSW_OPEN, NULL, 0);
+        pad_flush(); /* every sample before this VBLANK's own */
         if (!ckpt_take(vcount) || !nk_ckpt_format(&s_ckpt, s_ckpt_line, sizeof s_ckpt_line))
             die("SR_RECORD: a checkpoint did not fit (too many threads); the recording stops here");
         fputs(s_ckpt_line, s_rec_fp);
@@ -752,6 +822,7 @@ static void rr_vblank(uint32_t vcount) {
 static void rr_exit(void) {
     if (s_rr == RR_RECORD && s_rec_fp) {
         if (s_osk_pending) record_answer(s_osk_request, s_osk_pending, ANSW_OPEN, NULL, 0);
+        pad_flush();
         if (s_rr_seen_vblank) fprintf(s_rec_fp, "NKREC_END frame=%" PRIu32 "\n", s_rr_vcount);
         fclose(s_rec_fp);
         s_rec_fp = NULL;
@@ -770,6 +841,14 @@ void sr_replay_checkpoint_vblank(uint32_t vcount) {
     if (s_rr != RR_OFF) rr_vblank(vcount);
 }
 
+/* After REPLAY_COMPLETE the recording may still hold input taken after its last checkpoint (the
+ * last VBLANK's pad sample, a keyboard answer): it is served while it lasts, and each channel
+ * goes live for good at the first input the recording does not hold. */
+static int s_osk_live, s_pad_live;
+
+static int serving_osk(void) { return s_rr == RR_REPLAY || (s_rr == RR_COMPLETE && !s_osk_live); }
+static int serving_pad(void) { return s_rr == RR_REPLAY || (s_rr == RR_COMPLETE && !s_pad_live); }
+
 static void missing_answer(const char *what) {
     s_rr = RR_OFF;
     fprintf(stderr, "REPLAY_MISSING_ANSWER call=osk request=%" PRIu32 " frame=%" PRIu32 " detail=%s\n",
@@ -783,25 +862,32 @@ int sr_replay_osk_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out
     /* The live contract's first answer, which opens no request: never counted or recorded. */
     if (!out || cap < 2) return 0;
     if (s_rr == RR_UNREAD) rr_setup();
-    if (s_rr == RR_REPLAY) {
-        if (s_osk_request >= s_rep_answ_count) missing_answer("no-recorded-request");
-        const OskAnswer *a = &s_rep_answ[s_osk_request];
-        if (s_osk_pending < a->pending) {
+    if (serving_osk()) {
+        const char *why = NULL;
+        const OskAnswer *a = s_osk_request < s_rep_answ_count ? &s_rep_answ[s_osk_request] : NULL;
+        if (!a) {
+            why = "no-recorded-request";
+        } else if (s_osk_pending < a->pending) {
             s_osk_pending++;
             return SR_OSK_TEXT_PENDING;
-        }
-        if (a->result == ANSW_OK) {
-            uint32_t n = a->nunits;
-            if (cap > SR_REPLAY_OSK_UNITS) cap = SR_REPLAY_OSK_UNITS;
-            if (n > (uint32_t)cap - 1u) missing_answer("answer-longer-than-field");
-            memcpy(out, a->units, (size_t)n * sizeof *out);
-            out[n] = L'\0';
+        } else if (a->result == ANSW_OK) {
+            const uint32_t n = a->nunits;
+            if (n > (uint32_t)(cap > SR_REPLAY_OSK_UNITS ? SR_REPLAY_OSK_UNITS : cap) - 1u) {
+                why = "answer-longer-than-field";
+            } else {
+                memcpy(out, a->units, (size_t)n * sizeof *out);
+                out[n] = L'\0';
+            }
         } else if (a->result != ANSW_CANCEL) {
-            missing_answer(a->result == ANSW_OPEN ? "polled-past-recording" : "polled-after-abandon");
+            why = a->result == ANSW_OPEN ? "polled-past-recording" : "polled-after-abandon";
         }
-        s_osk_request++;
-        s_osk_pending = 0;
-        return a->result == ANSW_OK;
+        if (!why) {
+            s_osk_request++;
+            s_osk_pending = 0;
+            return a->result == ANSW_OK;
+        }
+        if (s_rr == RR_REPLAY) missing_answer(why);
+        s_osk_live = 1; /* used up: the person answers from here */
     }
     const int answer = live(desc, initial, out, cap, input_type);
     if (s_rr != RR_RECORD) return answer;
@@ -817,14 +903,19 @@ int sr_replay_osk_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out
 
 void sr_replay_osk_abandon(void (*live_abandon)(void)) {
     if (s_rr == RR_UNREAD) rr_setup();
-    if (s_rr == RR_REPLAY) {
-        if (s_osk_pending == 0u) return; /* no request open: nothing to abandon, as live */
-        if (s_osk_request >= s_rep_answ_count || s_rep_answ[s_osk_request].result != ANSW_ABANDONED ||
-            s_rep_answ[s_osk_request].pending != s_osk_pending)
+    if (serving_osk()) {
+        if (s_osk_pending == 0u) {
+            if (s_rr == RR_REPLAY) return; /* no request open: nothing to abandon, as live */
+        } else if (s_osk_request < s_rep_answ_count && s_rep_answ[s_osk_request].result == ANSW_ABANDONED &&
+                   s_rep_answ[s_osk_request].pending == s_osk_pending) {
+            s_osk_request++;
+            s_osk_pending = 0;
+            return;
+        } else if (s_rr == RR_REPLAY) {
             missing_answer("abandoned-unlike-recording");
-        s_osk_request++;
-        s_osk_pending = 0;
-        return;
+        } else {
+            s_osk_live = 1;
+        }
     }
     if (s_rr == RR_RECORD && s_osk_pending) {
         record_answer(s_osk_request, s_osk_pending, ANSW_ABANDONED, NULL, 0);
@@ -832,6 +923,104 @@ void sr_replay_osk_abandon(void (*live_abandon)(void)) {
         s_osk_pending = 0;
     }
     live_abandon();
+}
+
+/* ---- the pad sample (sr_ctrl_sample, hle_route.c) ---------------------------------------- */
+
+/* Pad samples are numbered from 0 in call order. A run of equal samples is one NKPAD line. */
+static PadRun s_pad_run;      /* record: the run being built */
+static int s_pad_run_open;
+static uint64_t s_pad_ordinal; /* the next sample's number, both modes */
+
+static void pad_flush(void) {
+    if (!s_pad_run_open || !s_rec_fp) return;
+    fprintf(s_rec_fp, "NKPAD v=1 first=%llu count=%llu value=", (unsigned long long)s_pad_run.first,
+            (unsigned long long)s_pad_run.count);
+    if (s_pad_run.skip)
+        fputs("skip\n", s_rec_fp);
+    else
+        fprintf(s_rec_fp, "%08" PRIx32 ".%u.%u.%u\n", s_pad_run.buttons, (unsigned)s_pad_run.lx,
+                (unsigned)s_pad_run.ly, (unsigned)s_pad_run.keyboard);
+    fflush(s_rec_fp);
+    s_pad_run_open = 0;
+}
+
+static int pad_same(const PadRun *a, const PadRun *b) {
+    if (a->skip || b->skip) return a->skip && b->skip;
+    return a->buttons == b->buttons && a->lx == b->lx && a->ly == b->ly && a->keyboard == b->keyboard;
+}
+
+static void pad_record(const PadRun *v) {
+    if (s_pad_run_open && pad_same(&s_pad_run, v)) {
+        s_pad_run.count++;
+    } else {
+        pad_flush();
+        s_pad_run = *v;
+        s_pad_run.first = s_pad_ordinal;
+        s_pad_run.count = 1u;
+        s_pad_run_open = 1;
+    }
+    s_pad_ordinal++;
+}
+
+/* Replay: the recorded run holding the next sample, or NULL past the recording. */
+static const PadRun *pad_recorded(void) {
+    while (s_rep_pad_next < s_rep_pad_count &&
+           s_pad_ordinal >= s_rep_pad[s_rep_pad_next].first + s_rep_pad[s_rep_pad_next].count)
+        s_rep_pad_next++;
+    return s_rep_pad_next < s_rep_pad_count ? &s_rep_pad[s_rep_pad_next] : NULL;
+}
+
+static void pad_missing(const char *what) {
+    s_rr = RR_OFF;
+    fprintf(stderr, "REPLAY_MISSING_ANSWER call=pad sample=%llu frame=%" PRIu32 " detail=%s\n",
+            (unsigned long long)s_pad_ordinal, s_rr_vcount, what);
+    fflush(stderr);
+    exit(1);
+}
+
+int sr_replay_pad_skip(int live_skip) {
+    if (s_rr == RR_UNREAD) rr_setup();
+    if (s_rr == RR_RECORD) {
+        if (live_skip) {
+            const PadRun skip = {0u, 0u, 1, 0u, 0u, 0u, 0u};
+            pad_record(&skip);
+        }
+        return live_skip;
+    }
+    if (!serving_pad()) return live_skip;
+    const PadRun *r = pad_recorded();
+    if (!r) {
+        if (s_rr == RR_REPLAY) pad_missing("no-recorded-sample");
+        s_pad_live = 1; /* used up: the pad is live from here */
+        return live_skip;
+    }
+    if (r->skip) {
+        s_pad_ordinal++;
+        return 1; /* the recorded run skipped this sample (a pause request), so this one does */
+    }
+    return 0;
+}
+
+void sr_replay_pad_sample(uint32_t *buttons, uint8_t *lx, uint8_t *ly, int *keyboard_took) {
+    if (s_rr == RR_UNREAD) rr_setup();
+    if (s_rr == RR_RECORD) {
+        const PadRun v = {0u, 0u, 0, *buttons, *lx, *ly, (uint8_t)(*keyboard_took != 0)};
+        pad_record(&v);
+        return;
+    }
+    if (!serving_pad()) return;
+    const PadRun *r = pad_recorded();
+    if (!r || r->skip) {
+        if (s_rr == RR_REPLAY) pad_missing(r ? "sampled-where-recording-skipped" : "no-recorded-sample");
+        s_pad_live = 1;
+        return;
+    }
+    *buttons = r->buttons;
+    *lx = r->lx;
+    *ly = r->ly;
+    *keyboard_took = r->keyboard;
+    s_pad_ordinal++;
 }
 
 const char *nk_ckpt_diff_name(NkCkptDiff diff) {
