@@ -589,6 +589,7 @@ const size_t nk_psp_builtin_value_count =
     sizeof(nk_psp_builtin_values) / sizeof(nk_psp_builtin_values[0]);
 
 const NkPspFirmwareTag nk_psp_firmware_tags[] = {
+    {0x06000000, "firmware updater DATA.PSAR block"},
     {0x07000000, "system menu index.dat"},
     {0x0B000000, "firmware updater executable"},
     {0x0B2B05F0, "system menu index.dat"},
@@ -597,6 +598,7 @@ const NkPspFirmwareTag nk_psp_firmware_tags[] = {
     {0x0B2B0AF0, "system menu index.dat"},
     {0x0B2B0BF0, "system menu index.dat"},
     {0x0B2B0CF0, "system menu index.dat"},
+    {0x0B2B10F0, "system menu index.dat"},
     {0x0B2B11F0, "system menu index.dat"},
     {0x0B2B12F0, "system menu index.dat"},
     {0x0B2B1EF0, "system menu index.dat"},

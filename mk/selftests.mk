@@ -700,9 +700,9 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-# The scaled-upload case (#1296), the per-fragment mip level case (#1373) and the readback-rows
-# case (#323, also on its SR_GPU_READBACK_FULL reference path) run again alone
-# at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
+# The scaled-upload case (#1296), the per-fragment mip level case (#1373), the readback-rows
+# case (#323, also on its SR_GPU_READBACK_FULL reference path) and the widescreen Fill case
+# (#1881) run again alone at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
 # cmd.exe does not take one.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
@@ -724,6 +724,8 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 2 --case undrawn-rows
 	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows
 	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows --readback-full 1
+	$(GPU_COHERENCE_BIN) --scale 2 --case wide-fill
+	$(GPU_COHERENCE_BIN) --scale 4 --case wide-fill
 	$(GPU_COHERENCE_BIN) --gpu-timestamps unset --case gpu-timestamps-off
 	$(GPU_COHERENCE_BIN) --gpu-timestamps 0 --case gpu-timestamps-off
 	@rc=0; $(GPU_COHERENCE_BIN) --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; \

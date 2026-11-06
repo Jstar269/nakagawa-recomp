@@ -2314,6 +2314,202 @@
       }
     },
     {
+      "path": "fixtures/fonts/liberation/LiberationSans-Bold.pin.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-font-pin-records-2005",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSans-Bold.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-fonts-latin-2005",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "SIL Open Font License 1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSans-BoldItalic.pin.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-font-pin-records-2005",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSans-BoldItalic.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-fonts-latin-2005",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "SIL Open Font License 1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSans-Italic.pin.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-font-pin-records-2005",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSans-Italic.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-fonts-latin-2005",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "SIL Open Font License 1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSans-Regular.pin.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-font-pin-records-2005",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSans-Regular.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-fonts-latin-2005",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "SIL Open Font License 1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSerif-Bold.pin.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-font-pin-records-2005",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSerif-Bold.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-fonts-latin-2005",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "SIL Open Font License 1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSerif-BoldItalic.pin.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-font-pin-records-2005",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSerif-BoldItalic.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-fonts-latin-2005",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "SIL Open Font License 1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSerif-Italic.pin.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-font-pin-records-2005",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSerif-Italic.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-fonts-latin-2005",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "SIL Open Font License 1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSerif-Regular.pin.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-font-pin-records-2005",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/LiberationSerif-Regular.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-fonts-latin-2005",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "SIL Open Font License 1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "fixtures/fonts/liberation/OFL.txt",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "liberation-fonts-latin-2005",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "SIL Open Font License 1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
       "path": "fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf",
       "classification": "upstream_derived",
       "evidence": {
@@ -13460,6 +13656,17 @@
       }
     },
     {
+      "path": "tools/ge_draw_identity.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-draw-identity-motion0",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/ge_flight_overhead.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -15783,6 +15990,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "c-gap-psp-platform",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_ge_draw_identity.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-draw-identity-motion0",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
