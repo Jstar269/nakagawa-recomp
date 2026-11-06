@@ -1099,6 +1099,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # The profile-zero route (#306): manifest -> ProgramImage -> AOT package -> production
+      # runtime on Linux, the same route the Windows routes part runs. PSPDEV is installed in
+      # this part, so the test rebuilds the guest from source and checks it against the pinned
+      # digests first; then it runs the package twice, the second time on the deterministic
+      # guest clock, whose output digests are pinned in the test and so must equal Windows'.
+      # NK_PROFILE_ZERO_REQUIRED turns a missing dependency into a failure, not a SKIP.
+      - name: Build and run the profile-zero production route on Linux
+        if: matrix.part == 'player'
+        env:
+          NK_PROFILE_ZERO_REQUIRED: "1"
+        run: make --no-print-directory CC=gcc profile-zero-e2e
+
       - name: Smoke the CMake Linux player headlessly
         if: matrix.part == 'player'
         run: |
@@ -1736,13 +1748,15 @@ jobs:
       # AOT package -> production runtime route (#557). The Windows runner has no
       # PSPDEV/PSPSDK, so the route runs on the fixture the profile_zero_fixture job
       # built from source and verified against the pinned digests; on hosts with
-      # PSPDEV the test rebuilds it itself. Its only remaining SKIP is a missing
-      # host multimedia dependency (Vulkan SDK / SDL3), printed with the reason.
+      # PSPDEV the test rebuilds it itself. A missing host multimedia dependency
+      # (Vulkan SDK / SDL3) fails the step (NK_PROFILE_ZERO_REQUIRED) instead of
+      # skipping it, and the make target runs the route case at the full test tier.
       - name: Build and run profile-zero production routes
         if: matrix.part == 'routes'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
+          NK_PROFILE_ZERO_REQUIRED: "1"
         run: |
           set -euo pipefail
           command -v pwsh

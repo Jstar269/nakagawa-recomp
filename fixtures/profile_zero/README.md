@@ -53,7 +53,9 @@ absolute (as shown). Both digests must equal the entries in `prebuilt/SHA256SUMS
 present and fails on byte drift; on hosts without PSPDEV it runs the same
 seven-case route on bytes already staged in `prebuilt/` (in hosted CI, the
 `profile_zero_fixture` artifact), checked against the digests, and reports
-`NOT_RUN` when no bytes are staged.
+`NOT_RUN` when no bytes are staged (a failure instead when `NK_PROFILE_ZERO_REQUIRED=1`,
+as in hosted CI). The rebuild is a make of its own: it drops the calling make's
+`MAKEFLAGS`, so `make CC=gcc profile-zero-e2e` cannot replace PSPSDK's `psp-gcc`.
 
 The rebuild-and-compare is authoritative only for the pinned distribution.
 The gate first verifies that the installed PSPDEV tool binaries match

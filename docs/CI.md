@@ -746,7 +746,9 @@ When the classifier routes the Python suite, every PR runs all discovered module
 in the PR tier. Only cases marked `NIGHTLY_TIER:` are deferred: the composite
 public-export gate report, the profile-zero package/runtime route, the slow
 make-built platform-ladder runtime checks, the full-history report generation,
-and the matrix inventory report. Their constituent legal-blocker, publication,
+and the matrix inventory report. The profile-zero route still runs on every routed
+PR, through its own make gate (`make profile-zero-e2e` sets `NK_TEST_TIER=full`)
+in `windows_runtime` and `native_tools` below. Their constituent legal-blocker, publication,
 fail-closed NID/dispatch, cosimulation, provenance, import-audit, and security
 gates remain in their normal PR jobs and tests. `python_tools` includes a
 one-line summary of skips by `NIGHTLY_TIER`, `WINDOWS_ONLY`, and `PRIVATE_INPUT`.
@@ -1424,6 +1426,14 @@ developer runs locally, without private inputs:
   as an artifact, so the repository stores no generated executable (#1100) and the
   Windows runner still executes the whole route; where PSPDEV is installed, the
   gate rebuilds the fixture itself and fails if any byte differs from `SHA256SUMS`.
+  The make target runs the route case at the full test tier, and the step sets
+  `NK_PROFILE_ZERO_REQUIRED=1`, so a missing Vulkan SDK or SDL3 fails it rather than
+  skipping it. The `player` part of `native_tools` runs the same gate on Linux, where
+  PSPDEV is installed and the guest is rebuilt from source. On both hosts the gate also
+  runs each package on the deterministic guest clock and compares digests of its
+  result file, save and first rasterized frame with the values pinned in
+  `tools/test_profile_zero_e2e.py` (`CROSS_HOST_DIGESTS`), so Windows and Linux must
+  produce the same bytes (#306).
   The same job builds Nakagawa Font Copy (`src/psp_companion/Makefile`), the PSP app
   behind the player's font import, through its user-mode import gate; nothing from
   that build is uploaded. Public
