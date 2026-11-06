@@ -103,8 +103,8 @@ measurement of a real device.
 
 ## Storage
 
-The player's data, settings, caches, logs and saves are in `nakagawa/` in the app's private
-files folder (`NK_ANDROID_DATA_DIR`, set by the activities). The files the APK bundles (`assets/`
+The player's data, settings, caches, logs and saves are in `Nakagawa/` in the app's private
+files folder (`NK_ANDROID_DATA_DIR`, set by the activities), the folder name every host uses. The files the APK bundles (`assets/`
 with the UI fonts, `titles/` with the bundled titles) are unpacked into the files folder itself
 on the first start after an install or update, and it is the working directory: SDL resolves a
 relative path against that folder, so `SDL_GetBasePath()` (`./` on Android) finds them.

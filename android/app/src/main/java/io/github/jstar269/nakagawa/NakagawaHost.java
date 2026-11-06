@@ -37,8 +37,9 @@ final class NakagawaHost {
 
     private NakagawaHost() {}
 
+    /** The user data folder. Every host names it Nakagawa, with the same layout inside. */
     static File dataDir(Context context) {
-        return new File(context.getFilesDir(), "nakagawa");
+        return new File(context.getFilesDir(), "Nakagawa");
     }
 
     static File appDir(Context context) {
