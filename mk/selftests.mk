@@ -972,6 +972,9 @@ ge-replay: shader-verify $(RT_GE_O)
 # Last, a known difference no mutant made: the "overlap" capture's one PRIM of two overlapping
 # 50% blends on 5650 (#2109; shader-blend batches read one pre-batch copy of the target) must be
 # found as draw 1, its 100x100 overlap and nothing else. The #2109 fix flips this expectation.
+# Then fail-closed cells: a 512-wide capture is compared past x 480 (mutant 1's draw lies there);
+# a capture with no draw is NO_DRAWS (exit 6); 33 targets (one past the limit) and a stride past
+# 1024 are INCOMPLETE (exit 5), never NO_DIFFERENCE.
 # Exit 77 (no Vulkan device) is a SKIP, as for gpu-coherence-selftest.
 GE_FBD_DIR = $(BUILD_DIR)/ge_first_bad_draw
 ge-first-bad-draw-selftest: ge-replay
@@ -1018,6 +1021,27 @@ ge-first-bad-draw-selftest: ge-replay
 		   ! grep -Fq "pixels=10000 max_diff=" $$log || ! grep -Fq "bbox=140,100,239,199" $$log; then \
 			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the #2109 overlap was not found as draw 1, exactly the overlap ($$mode)" >&2; exit 1; fi; \
 		echo "ge-first-bad-draw-selftest: known difference #2109 found at draw 1, the 100x100 overlap only ($$mode)"; \
+	done
+	@for v in wide empty many deep; do \
+		$(BUILD_DIR)/ge_replay.exe --write-synthetic $(GE_FBD_DIR)/$$v.ngef $$v || exit 1; \
+	done
+	@log=$(GE_FBD_DIR)/wide.log; result=0; \
+	$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/wide.ngef --first-bad-draw --report $(GE_FBD_DIR)/wide > $$log 2>&1 || result=$$?; \
+	if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest wide (no Vulkan device)"; exit 77; fi; \
+	if test $$result -ne 0 || ! grep -Fq "result=NO_DIFFERENCE draws=4 " $$log; then \
+		cat $$log; echo "FAIL ge-first-bad-draw-selftest: the unchanged backend did not report NO_DIFFERENCE on the 512-wide capture" >&2; exit 1; fi; \
+	log=$(GE_FBD_DIR)/wide-mutant1.log; result=0; \
+	$(BUILD_DIR)/ge_replay_fbd_mutant1.exe $(GE_FBD_DIR)/wide.ngef --first-bad-draw --report $(GE_FBD_DIR)/wide-mutant1 > $$log 2>&1 || result=$$?; \
+	if test $$result -ne 1 || ! grep -Fq "result=FIRST_BAD_DRAW index=3 " $$log || ! grep -Fq "bbox=488,40,507,199" $$log; then \
+		cat $$log; echo "FAIL ge-first-bad-draw-selftest: mutant 1's draw right of x 480 was not named as draw 3" >&2; exit 1; fi; \
+	echo "ge-first-bad-draw-selftest: a difference right of x 480 is compared (mutant 1 named as draw 3)"
+	@for cell in "empty 6 result=NO_DRAWS" "many 5 reason=region-limit" "deep 5 reason=stride"; do \
+		set -- $$cell; log=$(GE_FBD_DIR)/$$1.log; result=0; \
+		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/$$1.ngef --first-bad-draw --report $(GE_FBD_DIR)/$$1 > $$log 2>&1 || result=$$?; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest $$1 (no Vulkan device)"; exit 77; fi; \
+		if test $$result -ne $$2 || ! grep -Fq "$$3" $$log || grep -Fq "result=NO_DIFFERENCE" $$log; then \
+			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the $$1 capture was not refused with exit $$2 ($$3)" >&2; exit 1; fi; \
+		echo "ge-first-bad-draw-selftest: the $$1 capture is refused with exit $$2 ($$3)"; \
 	done
 
 # selftest — compile and run the C++ reference interpreter unit tests.

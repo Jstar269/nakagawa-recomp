@@ -655,7 +655,11 @@ static int fbd_self_check(void) {
  *   mutants' draw, and draw 4 covers part of it.
  * - "overlap": a 5650 target, a clear, then ONE PRIM of two overlapping 50% alpha blends
  *   (draw 1). ge.c blends the second sprite over the first; a backend that blends every
- *   primitive of a batch against one pre-batch copy of the target does not (#2109). */
+ *   primitive of a batch against one pre-batch copy of the target does not (#2109).
+ * - "wide": a 512-wide scissor and four draws; draw 3, the mutants' draw, lies right of x 480.
+ * - "empty": a list with no draw.
+ * - "many": 33 colour targets, one sprite each: one more than the tool compares.
+ * - "deep": one sprite into a target of stride 1088, past the widest the tool compares. */
 static void fbd_put32(uint32_t addr, uint32_t value) { memcpy(SR_HOST_LINEAR(addr), &value, 4); }
 static void fbd_putf(uint32_t addr, float value) { memcpy(SR_HOST_LINEAR(addr), &value, 4); }
 
@@ -677,6 +681,13 @@ static int fbd_write_synthetic(const char *path, const char *variant) {
         { 40, 40, 240, 200, 0, 0x800000FFu },               /* 1: red at alpha 0x80 ... */
         { 140, 100, 340, 240, 0, 0x8000FF00u },             /* ... and green over it, one PRIM */
     };
+    static const FbdSprite wide[4] = {
+        { 0, 0, 512, 272, 0, 0xFF202020u },                 /* 0: clear colour */
+        { 40, 40, 200, 160, 0, 0xFF0000E0u },               /* 1 */
+        { 120, 100, 320, 220, 0, 0xFF00E000u },             /* 2 */
+        { 488, 40, 508, 200, 0, 0xFFE00000u },              /* 3: the mutants' draw */
+    };
+    static const FbdSprite one[1] = { { 0, 0, 16, 16, 0, 0xFF00E0E0u } };
     const uint32_t sprite = (0x04u << 24) | (6u << 16) | 2u;
     const uint32_t two_sprites = (0x04u << 24) | (6u << 16) | 4u;
     const uint32_t head[] = {
@@ -700,6 +711,34 @@ static int fbd_write_synthetic(const char *path, const char *variant) {
         two_sprites,                                            /* 1 */
         0x0F000000u, 0x0C000000u,
     };
+    const uint32_t wide_tail[] = {
+        0xD2000003u,                                            /* 8888 */
+        0xD5000000u | 511u | (271u << 10),                      /* scissor 512x272 */
+        0xD3000301u, sprite, 0xD3000000u,                       /* 0: clear colour and stencil */
+        sprite, sprite, sprite,                                 /* 1-3 */
+        0x0F000000u, 0x0C000000u,
+    };
+    const uint32_t empty_tail[] = { 0xD2000003u, 0x0F000000u, 0x0C000000u };
+    const uint32_t deep_tail[] = {
+        0xD2000003u, 0x9D000000u | 1088u,                       /* stride 1088 */
+        0xD5000000u | 15u | (15u << 10), sprite,
+        0x0F000000u, 0x0C000000u,
+    };
+    /* "many": target i at VRAM offset i * 0x4000, stride 64, a 16x16 scissor, one sprite. */
+    enum { FBD_MANY = FBD_MAX_REGIONS + 1 };
+    static uint32_t many_tail[3 + FBD_MANY * 4 + 2];
+    unsigned nmany = 0;
+    many_tail[nmany++] = 0xD2000003u;
+    many_tail[nmany++] = 0xD4000000u;
+    many_tail[nmany++] = 0xD5000000u | 15u | (15u << 10);
+    for (unsigned i = 0; i < FBD_MANY; i++) {
+        many_tail[nmany++] = 0x9C000000u | ((i * 0x4000u) & 0xFFFFFFu);
+        many_tail[nmany++] = 0x9D000000u | 64u;
+        many_tail[nmany++] = 0x01000000u | (verts & 0xFFFFFFu);
+        many_tail[nmany++] = sprite;
+    }
+    many_tail[nmany++] = 0x0F000000u;
+    many_tail[nmany++] = 0x0C000000u;
     const FbdSprite *sprites;
     unsigned nsprites, ntail;
     const uint32_t *tail;
@@ -709,6 +748,17 @@ static int fbd_write_synthetic(const char *path, const char *variant) {
     } else if (strcmp(variant, "overlap") == 0) {
         sprites = overlap; nsprites = 3; tail = overlap_tail;
         ntail = (unsigned)(sizeof overlap_tail / sizeof overlap_tail[0]);
+    } else if (strcmp(variant, "wide") == 0) {
+        sprites = wide; nsprites = 4; tail = wide_tail;
+        ntail = (unsigned)(sizeof wide_tail / sizeof wide_tail[0]);
+    } else if (strcmp(variant, "empty") == 0) {
+        sprites = one; nsprites = 0; tail = empty_tail;
+        ntail = (unsigned)(sizeof empty_tail / sizeof empty_tail[0]);
+    } else if (strcmp(variant, "many") == 0) {
+        sprites = one; nsprites = 1; tail = many_tail; ntail = nmany;
+    } else if (strcmp(variant, "deep") == 0) {
+        sprites = one; nsprites = 1; tail = deep_tail;
+        ntail = (unsigned)(sizeof deep_tail / sizeof deep_tail[0]);
     } else {
         fprintf(stderr, "ge_replay: unknown synthetic capture %s\n", variant);
         return 0;
@@ -736,7 +786,7 @@ static int fbd_write_synthetic(const char *path, const char *variant) {
     static uint16_t zbuf[GE_CAPTURE_ZBUF_WORDS];
     if (!ge_capture_begin(path, 1, list, &initial, zbuf)) return 0;
     ge_capture_note_memory(list, (nhead + ntail) * 4u);
-    ge_capture_note_memory(verts, nsprites * 32u);
+    if (nsprites) ge_capture_note_memory(verts, nsprites * 32u);
     return ge_capture_end(&initial);
 }
 
