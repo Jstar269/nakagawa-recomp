@@ -95,6 +95,14 @@ EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_NOT_PROVEN = 0, 1, 2, 3
 
 # One PSP display period: 59.94 Hz, 1001/60 ms (the NTSC-derived rate the PSP LCD runs at).
 PERIOD_US_NUM, PERIOD_US_DEN = 1001 * 1000, 60
+# How far a stop may fall short of the time asked for. PPSSPP's reported time truncates to whole
+# microseconds each time it rebases its clock (Core/CoreTiming.cpp GetGlobalTimeUs, and again on a
+# CPU clock change), so a run can read a microsecond or so behind the deadline it was given. Every
+# action sits half a period (8341 us) from a vblank, so this allowance never moves an input or a
+# capture across one.
+CLOCK_SLACK_US = 1000
+# The latest a stop may land: past the half period it would read the next vblank's state.
+LATE_LIMIT_US = PERIOD_US_NUM // (2 * PERIOD_US_DEN) - CLOCK_SLACK_US
 # The date Nakagawa's deterministic clock starts at (src/rt/hle.c rtc_now_tick, #2037).
 DEFAULT_RTC = 1325376000
 DEFAULT_TIMEOUT_SECONDS = 900
@@ -109,7 +117,7 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 # PSP controller bits (pspctrl.h) and the names PPSSPP's input.buttons.send takes for them.
 # The first fourteen are the names a pad script may spell out (src/rt/hle_route.c s_route_btn).
-BUTTONS: tuple[tuple[str, int, str], ...] = (
+BUTTONS: tuple[tuple[str | None, int, str], ...] = (
     ("SELECT", 0x00000001, "select"),
     ("START", 0x00000008, "start"),
     ("UP", 0x00000010, "up"),
@@ -262,7 +270,8 @@ def pad_states(rows: Sequence[PadRow]) -> list[PadState]:
         for r in held:
             mask |= r.mask
         with_stick = [r for r in held if r.stick is not None]
-        stick = max(with_stick, key=lambda r: r.frame).stick if with_stick else (CENTRE, CENTRE)
+        latest = max(with_stick, key=lambda r: r.frame).stick if with_stick else None
+        stick = latest if latest is not None else (CENTRE, CENTRE)
         if states and states[-1].mask == mask and states[-1].stick == stick:
             continue
         states.append(PadState(at, mask, stick))
@@ -466,7 +475,8 @@ def resolve_ppsspp(arg: str | None, env: Mapping[str, str]) -> Path:
 def free_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((LOOPBACK, 0))
-        return s.getsockname()[1]
+        port: int = s.getsockname()[1]
+        return port
 
 
 # ---- the plan -------------------------------------------------------------------------------
@@ -763,6 +773,8 @@ class DriveResult:
     version: str
     base_us: int
     shots: list[Shot] = field(default_factory=list)
+    max_early_us: int = 0  # the furthest a stop fell short of its planned time (clock rounding)
+    max_late_us: int = 0   # the furthest a stop ran past it
 
 
 def drive(dbg: Debugger, plan: Sequence[Action], pid: int | None, rtc: int, timeout: float,
@@ -813,9 +825,14 @@ def drive(dbg: Debugger, plan: Sequence[Action], pid: int | None, rtc: int, time
             raise CaptureFailed(f"cpu.runUntilTime {target} refused ({exc})") from None
         dbg.wait_event("cpu.stepping", left())
         reached = int(dbg.request("cpu.status").get("us", -1))
-        if reached < target:
+        if reached < target - CLOCK_SLACK_US:
             raise CaptureFailed(f"PPSSPP stopped at {reached} us before the {target} us the plan "
                                 f"asked for (a breakpoint or an exception?)")
+        if reached > target + LATE_LIMIT_US:
+            raise CaptureFailed(f"PPSSPP stopped at {reached} us, past the next vblank after the "
+                                f"{target} us the plan asked for")
+        result.max_early_us = max(result.max_early_us, target - reached)
+        result.max_late_us = max(result.max_late_us, reached - target)
         if action.kind == "input":
             if action.buttons:
                 dbg.request("input.buttons.send", buttons=dict(action.buttons))
@@ -833,13 +850,16 @@ def drive(dbg: Debugger, plan: Sequence[Action], pid: int | None, rtc: int, time
 
 def _launch_and_drive(exe: Path, sf: SceneFile, plan: Sequence[Action], work: Path,
                       ) -> tuple[DriveResult, dict[str, dict[str, str]]]:
+    if sf.disc is None:
+        raise NotRun("no-disc", "the scene file names no disc image")
+    disc = sf.disc
     port = free_loopback_port()
     ini = effective_ini(port, sf.ini)
     ini_path = work / "nk-ppsspp-ref.ini"
     ini_path.write_text(render_ini(ini), encoding="utf-8")
     log = (work / "ppsspp.log").open("wb")
     try:
-        proc = subprocess.Popen(build_command(exe, ini_path, sf.disc), cwd=str(exe.parent),
+        proc = subprocess.Popen(build_command(exe, ini_path, disc), cwd=str(exe.parent),
                                 stdout=log, stderr=subprocess.STDOUT)
     except OSError as exc:
         log.close()
@@ -889,6 +909,8 @@ def capture(sf: SceneFile, exe: Path, runs: int, replace: bool, keep_work: bool 
         try:
             result, ini = runner(exe, sf, plan, work)
             results.append(result)
+            print(f"PPSSPP_REF run {run + 1}: every stop within {result.max_early_us} us early and "
+                  f"{result.max_late_us} us late of its planned time", file=sys.stderr)
         finally:
             if keep_work:
                 print(f"PPSSPP_REF run {run + 1}: work folder kept at {work}", file=sys.stderr)

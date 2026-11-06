@@ -252,7 +252,10 @@ References and diff images are game pixels: the tool refuses an output folder in
   the next with `cpu.runUntilTime`. Frame `n` is the display period that starts at vblank `n` (1001/60
   ms each, counted from boot). A capture is taken half a period after vblank `n`. A press for frame
   `n` is set half a period before vblank `n`, so the controller sample at vblank `n` is the first to
-  see it.
+  see it. PPSSPP's reported time can trail the deadline by a microsecond or so, because it
+  truncates whenever its clock rebases. So a stop up to 1000 µs early is accepted, and so is one up
+  to the next vblank's margin late. A stop outside that window is a `FAIL`, and each run prints
+  how far its stops strayed.
 - **Input.** Only the legacy `<frame> <mask> <width> [<lx> <ly>]` table is accepted, with the same
   rules for overlapping rows as the runtime. A route program waits on guest state that PPSSPP cannot
   report, so it is refused. Nakagawa's scripted input waits for the guest to read each press

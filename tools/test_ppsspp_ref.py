@@ -56,9 +56,10 @@ class FakePPSSPP:
     """
 
     def __init__(self, pid=4242, version_has_pid=True, has_run_until=True, has_us=True,
-                 stop_short_by=0, boot_us=0):
+                 stop_short_by=0, boot_us=0, overshoot_by=0):
         self.pid, self.version_has_pid = pid, version_has_pid
         self.has_run_until, self.has_us, self.stop_short_by = has_run_until, has_us, stop_short_by
+        self.overshoot_by = overshoot_by
         self.us = boot_us
         self.stepping = False
         self.buttons = {}
@@ -120,7 +121,7 @@ class FakePPSSPP:
             return
         target = int(msg["us"])
         before = self.us
-        self.us = max(self.us, target - self.stop_short_by)
+        self.us = max(self.us, target - self.stop_short_by + self.overshoot_by)
         self.reply({"event": "cpu.runUntilTime", "targetUs": target, "us": before}, t)
         self.outbox.append({"event": "cpu.stepping", "pc": 0, "ticks": self.us * 222})
 
@@ -311,8 +312,23 @@ class TestDrive(unittest.TestCase):
             self.drive(FakePPSSPP(pid=1))
 
     def test_an_early_stop_fails(self):
-        with self.assertRaisesRegex(pr.CaptureFailed, "stopped at"):
-            self.drive(FakePPSSPP(stop_short_by=1))
+        with self.assertRaisesRegex(pr.CaptureFailed, "before the"):
+            self.drive(FakePPSSPP(stop_short_by=pr.CLOCK_SLACK_US + 1))
+
+    def test_clock_rounding_short_of_the_deadline_is_accepted(self):
+        # A real PPSSPP development build stopped 1 us short of a 15 s deadline: its reported time
+        # truncates to whole microseconds when its clock rebases.
+        fake = FakePPSSPP(stop_short_by=1)
+        result = self.drive(fake)
+        self.assertEqual(result.max_early_us, 1)
+        self.assertEqual(result.max_late_us, 0)
+        self.assertEqual([s.frame for s in result.shots], [s.frame for s in self.drive(FakePPSSPP()).shots])
+
+    def test_a_stop_past_the_next_vblank_fails(self):
+        result = self.drive(FakePPSSPP(overshoot_by=pr.LATE_LIMIT_US))
+        self.assertEqual(result.max_late_us, pr.LATE_LIMIT_US)
+        with self.assertRaisesRegex(pr.CaptureFailed, "past the next vblank"):
+            self.drive(FakePPSSPP(overshoot_by=pr.LATE_LIMIT_US + 1))
 
 
 class TestCaptureAndCompare(unittest.TestCase):
