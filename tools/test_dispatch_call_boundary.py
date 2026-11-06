@@ -759,10 +759,6 @@ def _call_into_a_live_frame_tail() -> tuple[int, ...]:
 
 _S0 = 16
 _CENSUS = ("--stack-census",)
-# 94c278ec9's rule: a transfer that leaves $sp at the recording body's entry owes no restore.
-_SIBCALL_RECORDS_NOTHING = {"recomp.h": (
-    "    sr_tail_transfer.has_restore = owes_restore ? 1u : 0u;",
-    "    sr_tail_transfer.has_restore = (owes_restore && s->r[29] != restore_sp) ? 1u : 0u;")}
 
 
 def _native_head_into_an_alloca_tail_end(*, crossing: str, frame: int = _FP) -> tuple[int, ...]:
@@ -875,11 +871,14 @@ def _a_load_above_the_entry_then_a_live_frame_tail(*, head: bool) -> tuple[int, 
     _sp_load_check), so F owes no restore. F hands on by `j` to G there, a plain body that
     lowers $sp and hands its live frame to PIECE, whose own return writes back G's lowered
     $sp. G's record is the chain's restore and gives G's caller the stack F loaded:
-    v0 = 0x5B, v1 = _PROBE_SP + 0x40. A record of F's entry $sp would come first and leave
-    PIECE's write-back, 0x20 below. ``head`` puts a native H in front that reaches F by a
-    sibcall at its entry $sp, so F, interpreted, runs as a TAIL step.
+    v0 = 0x5B, v1 = F's entry $sp + 0x40. A record of F's entry $sp would come first and
+    leave PIECE's write-back, 0x20 below. ``head`` puts _switch_then_a_sibcall_into_a_guest_sp_body's
+    H in front, which owes no restore and reaches F by a sibcall on the stack it switched to
+    (F's entry $sp _PROBE_SP - 0x60), so F, interpreted, runs as a TAIL step. (A head that
+    owes its entry $sp would put its record first, #1949's limit 2.)
     """
-    lead = [_j(0x1018), _NOP] if head else []
+    lead = ([_addiu(_SP, _SP, -0x20), _addiu(_T8, _SP, -0x40),
+             _sw(_T8, 0x10, _SP), _j(0x1024), _lw(_SP, 0x10, _SP)] if head else [])
     f = 0x1010 + 4 * len(lead)
     g = f + 0x14
     piece = g + 0x1C
@@ -1467,6 +1466,7 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
             recomp_old=(
                 "SrGuestInterpResult interp_result = call_boundary\n"
                 "        ? sr_guest_interp_run_with_boundary(s, target, call_boundary, &fault)\n"
+                "        : drain == SR_DRAIN_SEGMENT ? sr_guest_interp_run_tail_step(s, target, &fault)\n"
                 "        : sr_guest_interp_run(s, target, &fault);"
             ),
             recomp_new="SrGuestInterpResult interp_result = sr_guest_interp_run(s, target, &fault);",
@@ -1765,14 +1765,9 @@ class GeneratedCallDepthTests(unittest.TestCase):
                     self.assertEqual(rc, 0, output)
                     self.assertEqual(fields.get("v0"), 0x57, output)
                     self.assertEqual(fields.get("v1"), _PROBE_SP, output)
-        # A1: a transfer at the entry $sp records nothing, as on 94c278ec9.
-        self._assert_mutant_fails(
-            "A1-a-sibcall-at-the-entry-sp-records-nothing",
-            _native_head_into_an_alloca_tail_end(crossing="tail"), (0,),
-            _SIBCALL_RECORDS_NOTHING,
-            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
-            codegen_args=("--omit-aot=0x00001018",),
-        )
+        # A1 (a transfer at the entry $sp records nothing, as on 94c278ec9) no longer changes
+        # this chain: F, native or interpreted as a TAIL step, records the same entry $sp H's
+        # sibcall would have (#1935), so the run cannot tell the two rules apart.
 
     def test_a_sibcall_into_a_guest_sp_body_keeps_the_callers_sp(self):
         # F frees its alloca through $s0, a $sp load the frame walk does not own. On
@@ -1808,15 +1803,8 @@ class GeneratedCallDepthTests(unittest.TestCase):
                             "_sp_kept = 0u;")},
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
         )
-        # A1: H's sibcall at its entry $sp records nothing. Native F's own record now gives
-        # the same $sp back, so only interpreted F, which hands TAIL on unrecorded, tells.
-        self._assert_mutant_fails(
-            "A1-a-sibcall-at-the-entry-sp-records-nothing",
-            _native_head_into_an_alloca_tail_end(crossing="tail", frame=_S0), (0,),
-            _SIBCALL_RECORDS_NOTHING,
-            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
-            codegen_args=("--omit-aot=0x00001018",),
-        )
+        # A1 (H's sibcall at its entry $sp records nothing) no longer changes this chain in
+        # any tier: F's own record, native or interpreted as a TAIL step, gives the same $sp.
 
     def test_a_switch_to_a_lower_stack_keeps_the_stack_it_loaded(self):
         # F's $sp load leaves its frame downwards, as a context switch does, so F owes no
@@ -1869,13 +1857,13 @@ class GeneratedCallDepthTests(unittest.TestCase):
                 self.assertEqual(rc, 0, output)
                 self.assertEqual(fields.get("v0"), 0x57, output)
                 self.assertEqual(fields.get("v1"), _PROBE_SP - 0x60, output)
-        # T1: the interpreted TAIL step records its transfer but owes no restore.
+        # TS1: the interpreted TAIL step records its transfer but owes no restore.
         self._assert_mutant_fails(
-            "T1-an-interpreted-tail-step-owes-no-restore",
+            "TS1-an-interpreted-tail-step-owes-no-restore",
             _switch_then_a_sibcall_into_a_guest_sp_body(), (0,),
             {"guest_interp.c": (
-                "sr_tail_record(s, pc, NULL, tail_entry_sp, loaded_sp ? 0u : 1u);",
-                "sr_tail_record(s, pc, NULL, 0u, 0u);")},
+                "sr_tail_record(s, pc, next_fn, tail_entry_sp, loaded_sp ? 0u : 1u);",
+                "sr_tail_record(s, pc, next_fn, 0u, 0u);")},
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP - 0x60,
             codegen_args=("--omit-aot=0x00001024",),
         )
@@ -1884,8 +1872,10 @@ class GeneratedCallDepthTests(unittest.TestCase):
         # F's $sp load lands 0x40 above its entry $sp. Native, interpreted by a linked call
         # and interpreted as a TAIL step, F owes no restore and G's record gives back the
         # stack F loaded. Before #1935's review F2 no fixture ran this part of the check.
-        cases = ((False, None), (False, 0x1010), (True, None), (True, 0x1018))
+        # With both H and F interpreted one run covers both (see the test above): not here.
+        cases = ((False, None), (False, 0x1010), (True, None), (True, 0x1010), (True, 0x1024))
         for head, omitted in cases:
+            loaded = (_PROBE_SP - 0x60 if head else _PROBE_SP) + 0x40
             codegen_args = () if omitted is None else (f"--omit-aot=0x{omitted:08x}",)
             with self.subTest(head=head, omitted=omitted):
                 _generated, results = self._probe(
@@ -1894,10 +1884,10 @@ class GeneratedCallDepthTests(unittest.TestCase):
                 rc, output, fields = results[0]
                 self.assertEqual(rc, 0, output)
                 self.assertEqual(fields.get("v0"), 0x5B, output)
-                self.assertEqual(fields.get("v1"), _PROBE_SP + 0x40, output)
+                self.assertEqual(fields.get("v1"), loaded, output)
 
-        def stays(r):
-            return r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP + 0x40
+        def stays(r, loaded=_PROBE_SP + 0x40):
+            return r[0][0] != 0 or r[0][2].get("v1") != loaded
 
         # U1: generated code's check drops its `>= _sp_entry` part: F's record comes first.
         self._assert_mutant_fails(
@@ -1911,11 +1901,13 @@ class GeneratedCallDepthTests(unittest.TestCase):
         interp_upward = {"guest_interp.c": (
             "return frame_sp == NULL || after < before || after >= *frame_sp;",
             "return frame_sp == NULL || after < before;")}
-        for head, omitted in ((False, 0x1010), (True, 0x1018)):
+        for head, omitted in ((False, 0x1010), (True, 0x1024)):
+            loaded = (_PROBE_SP - 0x60 if head else _PROBE_SP) + 0x40
             self._assert_mutant_fails(
                 f"U2-an-interpreted-sp-load-above-the-entry-stays-in-the-frame-head-{head}",
                 _a_load_above_the_entry_then_a_live_frame_tail(head=head), (0,),
-                interp_upward, stays, codegen_args=(f"--omit-aot=0x{omitted:08x}",),
+                interp_upward, lambda r, loaded=loaded: stays(r, loaded),
+                codegen_args=(f"--omit-aot=0x{omitted:08x}",),
             )
 
     def test_a_call_site_drains_before_the_caller_goes_on(self):
@@ -2389,7 +2381,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self._assert_mutant_fails(
             "I2-an-alloca-free-leaves-the-frame", _alloca_tail_end(), (0,),
             {"guest_interp.c": (
-                "    return boundary == NULL || after < before || after >= boundary->entry_sp;",
+                "    return frame_sp == NULL || after < before || after >= *frame_sp;",
                 "    return 1;")},
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
             codegen_args=interpreted_f,

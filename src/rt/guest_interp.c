@@ -1547,6 +1547,9 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
     const uint32_t tail_entry_sp = s->r[29];
     const uint32_t *frame_sp = boundary != NULL ? &boundary->entry_sp
                                : tail_step ? &tail_entry_sp : NULL;
+    /* Whether `pc` was reached by a computed transfer (jr/jalr), not a static one or by
+     * running on: a TAIL step's record keeps the target's body only for the latter. */
+    int reached_by_computed = 0;
     set_fault(fault, entry, 0u, entry, 0);
     /* Establish the COP0 delay-slot contract (spec 3.5): straight-line code
      * runs with in_delay_slot clear; the branch path below sets it around
@@ -1631,12 +1634,16 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                  * transfer for the drain, with the entry $sp it owes once the chain completes
                  * while every $sp load it ran stayed in its frame. The drain keeps the first
                  * restore of the chain, so the record matters only when no earlier body owes
-                 * one: a head that switched stacks or longjmped (#1935). Under the stack
-                 * census a native body records none, and its wrapper restores instead. */
+                 * one: a head that switched stacks or longjmped (#1935). As in generated code, a
+                 * static transfer or a fall-through keeps its target's body, so the target
+                 * runs in this drain; a computed one is dispatched by address, a step of its
+                 * own. Under the stack census a native body records no restore, and its
+                 * wrapper restores instead. */
+                RecompFn const next_fn = reached_by_computed ? NULL : sr_lookup(pc);
 #if defined(SR_STACK_CENSUS_ENABLED)
-                sr_tail_record(s, pc, NULL, 0u, 0u);
+                sr_tail_record(s, pc, next_fn, 0u, 0u);
 #else
-                sr_tail_record(s, pc, NULL, tail_entry_sp, loaded_sp ? 0u : 1u);
+                sr_tail_record(s, pc, next_fn, tail_entry_sp, loaded_sp ? 0u : 1u);
 #endif
                 return SR_GUEST_INTERP_AOT_HANDOFF;
             }
@@ -1722,6 +1729,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                 if (sr_perf_enabled) sr_perf_interp_instruction();
                 sr_exec_interp_instructions++;
                 pc += 8u;
+                reached_by_computed = 0;
                 s->pc = pc;
                 continue;
             }
@@ -1791,6 +1799,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                 }
                 dispatch_call(s, transfer.target, resume_pc);
                 pc = resume_pc;
+                reached_by_computed = 0;
                 s->pc = pc;
                 continue;
             }
@@ -1823,6 +1832,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                 return SR_GUEST_INTERP_RETURN_TARGET_MISMATCH;
             }
             pc = transfer.taken ? transfer.target : pc + 8u;
+            reached_by_computed = transfer.taken && transfer.computed;
             s->pc = pc;
             continue;
         }
@@ -1846,6 +1856,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
         if (sr_perf_enabled) sr_perf_interp_instruction();
         sr_exec_interp_instructions++;
         pc += 4u;
+        reached_by_computed = 0;
         s->pc = pc;
     }
 }
