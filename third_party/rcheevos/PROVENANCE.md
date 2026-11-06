@@ -14,7 +14,7 @@ host's callback, so nothing here opens a connection.
 - Repository: `https://github.com/RetroAchievements/rcheevos`
 - Pin: release tag `v12.5.0`, commit `1433173220a7eaede6a9ed7a18e94117be1821e0` (published 2026-09-14, the newest
   release at the time of import).
-- License: MIT (`LICENSE`, "Copyright (c) 2018 RetroAchievements.org"), kept beside the sources unchanged. MIT is
+- License: MIT (`third_party/rcheevos/LICENSE`, "Copyright (c) 2018 RetroAchievements.org"), kept beside the sources unchanged. MIT is
   compatible with GPL-3.0-or-later. `src/rhash/md5.c` and `md5.h` are L. Peter Deutsch's MD5 ("Copyright (C)
   1999, 2000, 2002 Aladdin Enterprises"), under the zlib licence in their own headers, which are kept unchanged;
   rcheevos uses it to sign unlock requests. The zlib licence is compatible with GPL-3.0-or-later.
