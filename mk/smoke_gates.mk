@@ -97,6 +97,15 @@ display-smoke-gui:
 	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui
 
+# display-smoke-fsr1 runs the fixture twice on the Vulkan presenter in a hidden window, with
+# SR_PRESENT_UPSCALE off and fsr1 (#1273): the guest's flight events, its first frame and guest VRAM
+# match; the fsr1 run upscaled its presents and is stamped as enhanced, and the off run is not. It
+# needs a Vulkan device and a display, so like display-smoke-gui it is not part of any aggregate
+# gate. Hosted CI checks the present path with gpu-capture-selftest on lavapipe instead.
+display-smoke-fsr1:
+	$(MAKE) display-smoke
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) fsr1 --build-dir $(DISPLAY_SMOKE_DIR)
+
 # display-smoke-quit closes the window while the long guest still runs: the quit must stop the
 # scheduler and end through the driver's teardown with exit 0 (#1377). It needs a display, so it
 # is not part of any aggregate gate either. SR_VIDEO=gdi runs it on the GDI fallback.

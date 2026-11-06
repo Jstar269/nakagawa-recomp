@@ -214,9 +214,22 @@ void sdl3vk_set_logic_slowed_cb(int (*cb)(unsigned *rate)) {
 
 static void (*s_ui_pass)(const Sdl3VkUiPass *frame);
 static Sdl3VkShowPass s_show_pass;
+static Sdl3VkUpscalePass s_upscale_pass;
+/* What the last present's frame blit read: its source image and size, its place in the window and
+ * its filter. The capture selftest checks the presentation upscaler's image is what reaches the
+ * window. */
+static struct {
+    VkImage src;
+    int sw, sh, dx, dy, dw, dh;
+    VkFilter filter;
+} s_last_blit;
 
 void sdl3vk_set_show_pass(Sdl3VkShowPass pass) {
     s_show_pass = pass;
+}
+
+void sdl3vk_set_upscale_pass(Sdl3VkUpscalePass pass) {
+    s_upscale_pass = pass;
 }
 
 void sdl3vk_set_ui_pass(void (*pass)(const Sdl3VkUiPass *frame)) {
@@ -2069,7 +2082,20 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         blt.dstSubresource = blt.srcSubresource;
         blt.srcOffsets[1].z = 1;
         blt.dstOffsets[1].z = 1;
-        if (plan.prescale > 1 && prescale_ensure(plan.prescale * showw, plan.prescale * showh)) {
+        /* The presentation upscaler, when one is set, makes the picture at its place's size;
+         * the blit below then copies it 1:1. */
+        VkImage upscaled = VK_NULL_HANDLE;
+        /* Only a place at least as large on both axes and larger on one: EASU enlarges, it is not a
+         * downscaler. */
+        if (s_upscale_pass && plan.w >= showw && plan.h >= showh && (plan.w > showw || plan.h > showh))
+            upscaled = (VkImage)s_upscale_pass((void *)cmd, (void *)show, showw, showh, plan.w, plan.h);
+        if (upscaled) {
+            blit_src = upscaled;
+            bw = plan.w;
+            bh = plan.h;
+            plan.nearest = 1;
+        } else if (plan.prescale > 1 &&
+                   prescale_ensure(plan.prescale * showw, plan.prescale * showh)) {
             /* Sharp scaling, pass 1: nearest enlargement to the integer multiple. */
             barrier(cmd, s_prescale_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     0, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -2091,6 +2117,14 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             blt.srcOffsets[1].x = bw;              blt.srcOffsets[1].y = bh;
             blt.dstOffsets[0].x = plan.x;          blt.dstOffsets[0].y = plan.y;
             blt.dstOffsets[1].x = plan.x + plan.w; blt.dstOffsets[1].y = plan.y + plan.h;
+            s_last_blit.src = blit_src;
+            s_last_blit.sw = bw;
+            s_last_blit.sh = bh;
+            s_last_blit.dx = plan.x;
+            s_last_blit.dy = plan.y;
+            s_last_blit.dw = plan.w;
+            s_last_blit.dh = plan.h;
+            s_last_blit.filter = plan.nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
             vkCmdBlitImage(cmd, blit_src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &blt, plan.nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);

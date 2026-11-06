@@ -747,6 +747,22 @@ flips once per VBLANK therefore keeps every frame when its flips reach the host 
 scheduling jitter, while a second submission inside the same slot is still dropped and the
 long-run present rate never exceeds the cap (`gui-present-selftest`).
 
+### Presentation upscaler (`SR_PRESENT_UPSCALE`)
+
+`SR_PRESENT_UPSCALE=fsr1` makes the Vulkan presenter enlarge the picture to its place in the
+window with AMD FidelityFX Super Resolution 1: EASU, an edge-adaptive upscaler, then RCAS
+sharpening. `off`, the default, keeps the `SR_PRESENT_SCALING` filter. It runs only when the
+picture is enlarged on both axes, on whatever frame the presenter shows. It is presentation only:
+the guest's frame, guest VRAM and captures are byte for byte what they are with it off
+(`gpu-capture-selftest` and, with a Vulkan device and a display, `display-smoke-fsr1`). The pause
+overlay is drawn at the window's size on the CPU, so the paused picture is not upscaled and looks
+softer than the running one. Its cost is small: from 1920x1088 to 3840x2160, EASU and RCAS took
+0.40 ms per present on an RTX 3080 (`fsr1-selftest`). An unknown value, or a device without
+compute, leaves it off with a line in the log; so does a size whose images cannot be made, which
+is then not tried again. The launcher turns it off for an authentic session, and a run with it on
+is stamped as enhanced (`ACE_MODE: present upscale fsr1`), which `boot_gate.py` reads. The picture
+gate and the library sweep set it `off` for their own runs.
+
 Runtime logs are written under `logs/`. Use `SR_DEBUG=0xFF` for all categories or consult [DEBUGGING.md](DEBUGGING.md) for targeted logging.
 On Windows, runtime output redirected to a file or pipe is buffered: a line reaches the log within 50 ms,
 and everything is written when the game exits, aborts or writes a crash report. A process killed from

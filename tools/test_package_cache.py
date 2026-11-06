@@ -1166,6 +1166,18 @@ class PackageCacheTests(unittest.TestCase):
             self.assertIn(directory, listed)
         self.assertNotIn("src/player", listed)
 
+    def test_player_runtime_digest_lists_the_same_directories(self) -> None:
+        # The player computes the same digest in C (package_runtime_source_digest in
+        # src/core/nk_title_manifest.c) to tell whether a package is outdated; a directory
+        # listed on one side only makes every package look outdated to this build.
+        text = (ROOT / "src" / "core" / "nk_title_manifest.c").read_text(encoding="utf-8")
+        start = text.index("static bool package_runtime_source_digest(")
+        block = re.search(r"source_dirs\[\]\s*=\s*\{(.*?)\};", text[start:], re.S)
+        if block is None:
+            self.fail("package_runtime_source_digest has no source_dirs list")
+        names = re.findall(r'"([^"]+)"', block.group(1))
+        self.assertEqual(sorted(names), sorted(package_cache.RUNTIME_SOURCE_DIRECTORIES))
+
     # A generated-code stage: the outputs of one generation phase, named as the planner
     # names them for the game "game", recorded with the package completion discipline.
     STAGE_FILES = {

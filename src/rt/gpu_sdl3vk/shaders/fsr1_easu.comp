@@ -1,0 +1,42 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 the Nakagawa Recomp authors */
+/* fsr1_easu.comp - the presentation upscaler's first pass (gpu_sdl3vk/fsr1_pass.c): AMD FSR 1 EASU,
+ * edge-adaptive spatial upsampling, from the frame the presenter shows into a private image at the
+ * window's size. The algorithm is AMD's, in third_party/fidelityfx_sdk (FidelityFX SDK, MIT); this
+ * file only binds it to the pass's images. One invocation per output pixel.
+ *
+ * The SDK's constant setup (ffxFsrPopulateEasuConstants) runs here rather than on the CPU: the
+ * SDK's CPU layer is C++ and the runtime is C. It is a few multiplies per invocation, from the two
+ * sizes the pass pushes, and gives the constants AMD's own code computes. */
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D in_frame;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D out_frame;
+
+layout(push_constant) uniform Easu {
+    uvec4 size;  /* x, y: the input size; z, w: the output size */
+} pc;
+
+#define FFX_GPU 1
+#define FFX_GLSL 1
+#include "../../../../third_party/fidelityfx_sdk/api/internal/gpu/ffx_core.h"
+
+#define FFX_FSR_EASU_FLOAT 1
+FfxFloat32x4 FsrEasuRF(FfxFloat32x2 p) { return textureGather(in_frame, p, 0); }
+FfxFloat32x4 FsrEasuGF(FfxFloat32x2 p) { return textureGather(in_frame, p, 1); }
+FfxFloat32x4 FsrEasuBF(FfxFloat32x2 p) { return textureGather(in_frame, p, 2); }
+#include "../../../../third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr1/ffx_fsr1.h"
+
+void main() {
+    uvec2 p = gl_GlobalInvocationID.xy;
+    if (p.x >= pc.size.z || p.y >= pc.size.w) return;
+    FfxUInt32x4 con0, con1, con2, con3;
+    FfxFloat32 in_w = FfxFloat32(pc.size.x), in_h = FfxFloat32(pc.size.y);
+    ffxFsrPopulateEasuConstants(con0, con1, con2, con3, in_w, in_h, in_w, in_h,
+                                FfxFloat32(pc.size.z), FfxFloat32(pc.size.w));
+    FfxFloat32x3 c;
+    ffxFsrEasuFloat(c, p, con0, con1, con2, con3);
+    imageStore(out_frame, ivec2(p), vec4(c, 1.0));
+}

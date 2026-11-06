@@ -29,6 +29,7 @@ Nakagawa has since substantially extended and modified that codebase. This repos
 - **minimp3 — lieff (Lion) and contributors** — CC0-1.0 public-domain dedication. The MPEG audio decoder header in [`src/rt/minimp3/`](src/rt/minimp3/), pinned to upstream commit `ea99364f61c14656440e8d77e9c233ccf3124633` and kept byte-identical; it backs the `sceMp3` library.
 - **Clay — Nic Barker** — zlib. The layout library in [`third_party/clay/`](third_party/clay/).
 - **Portable Snippets — Evan Nemerson** — CC0-1.0 (public domain). The overflow-checked arithmetic header in [`third_party/portable-snippets/`](third_party/portable-snippets/).
+- **AMD FidelityFX SDK (FSR 1) — Advanced Micro Devices, Inc.** — MIT. EASU and RCAS, the optional presentation upscaler (`SR_PRESENT_UPSCALE=fsr1`), in [`third_party/fidelityfx_sdk/`](third_party/fidelityfx_sdk/): FSR 1 and the `ffx_core` headers from FidelityFX SDK v2.4.0 (commit `7539ae8b6568ad29ed78a753404351daf3b5cca7`), and the GLSL portability header `ffx_core_glsl.h` from FidelityFX SDK v1.1.4 (commit `c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`), the last release that ships one. Every file is imported byte-identical.
 - **dr_libs (dr_wav) — David Reid** — public domain (Unlicense), elected from its Unlicense or MIT-0 choice. The WAV writer selftests use, in [`third_party/dr_libs/`](third_party/dr_libs/).
 - **libchdr — Romain Tisserand and contributors** — BSD-3-Clause, pinned at
   `47d794151b2b64f6aba60304e6480f4f5a2bc24b`, with the codecs it carries: miniz 3.1.2 (RAD Game Tools, Valve Software,
