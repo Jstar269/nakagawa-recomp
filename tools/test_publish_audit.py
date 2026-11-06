@@ -1957,6 +1957,17 @@ class TextHygieneTests(unittest.TestCase):
         self.assertNotIn("TEXT_FINAL_NEWLINE", self._codes(data, path=path))
         self.assertIn("TEXT_FINAL_NEWLINE", self._codes(data + b" ", path=path))
 
+    def test_exact_fidelityfx_upstream_license_keeps_its_byte_identity(self):
+        # AMD's docs/license.md at the pinned SDK commit has no final newline.
+        path = "third_party/fidelityfx_sdk/LICENSE-AMD.md"
+        data = (publish_audit.ROOT / path).read_bytes()
+        self.assertEqual(
+            hashlib.sha256(data).hexdigest(),
+            "410f9c138e766e846acf2dc93db768198def0293a017d7e3296815b451688dbe",
+        )
+        self.assertNotIn("TEXT_FINAL_NEWLINE", self._codes(data, path=path))
+        self.assertIn("TEXT_FINAL_NEWLINE", self._codes(data + b" ", path=path))
+
     def test_binary_content_is_never_reported(self):
         # NUL-bearing data is binary; CRLF inside it is not a line-ending defect.
         self.assertEqual(self._codes(NUL + b"payload" + CRLF), [])

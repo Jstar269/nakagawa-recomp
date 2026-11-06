@@ -1741,6 +1741,7 @@ TEXT_HYGIENE_EXEMPT_SUFFIXES = frozenset({".dat", ".bin", ".png", ".jpg", ".jpeg
 # upstream LICENSE.md bytes while keeping the general final-newline check.
 TEXT_HYGIENE_FINAL_NEWLINE_EXCEPTIONS = {
     "third_party/clay/LICENSE.md": "5dd30f9f52093076b7574458f5efb8242fe6cbbd4669d4a2914e7616810d0df8",
+    "third_party/fidelityfx_sdk/LICENSE-AMD.md": "410f9c138e766e846acf2dc93db768198def0293a017d7e3296815b451688dbe",
 }
 
 
