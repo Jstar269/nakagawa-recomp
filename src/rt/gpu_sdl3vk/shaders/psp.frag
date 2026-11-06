@@ -46,7 +46,8 @@ layout(set = 0, binding = 1) uniform sampler2D u_dst;   /* destination snapshot 
  * slope mode | mipmap-linear << 1 | highest level << 2, texenv.a = TEXLODSLOPE,
  * fogcol.a = the TEXLEVEL bias in 1/16 (the sampler spans every level).
  * 32768 constant stencil (ge_gpu.c stencil_fixed_alpha): an 8888 stencil state that reads
- * no destination stores bl.z (0-255) as its alpha; u_dst is not read. */
+ * no destination stores bl.z (0-255) as its alpha; u_dst is not read.
+ * Bits 17-19 = factor - 1 of a scaled texture copy (ge_gpu.c, tex_scale.h); 0 otherwise. */
 layout(push_constant) uniform PC {
     ivec4 cfg;      /* x = texfunc | flags<<8, y = alpha test (func|ref<<8|mask<<16),
                        z = minz, w = maxz */
@@ -172,8 +173,16 @@ void main() {
             if (v_uvbox.x <= v_uvbox.z) uv.x = clamp(uv.x, v_uvbox.x, v_uvbox.z);
             if (v_uvbox.y <= v_uvbox.w) uv.y = clamp(uv.y, v_uvbox.y, v_uvbox.w);
             uv = floor(uv * 4096.0 + vec2(0.5)) / 4096.0;
+            /* Flags bits 17-19: the bound texture is a scaled copy of the guest's (texture
+             * scaling, an Ace run only), factor = bits + 1. Both rules then run on the copy's
+             * own texel lattice, so nearest keeps the copy's detail and linear steps in
+             * sixteenths of a copy texel; the coordinate still addresses guest texels. With
+             * the bits clear, as for every guest texture and render target, nothing changes. */
+            int tscale = ((flags >> 17) & 7) + 1;
+            if (tscale > 1) uv *= float(tscale);
             if ((flags & 64) != 0) uv = floor(uv) + vec2(0.5);
             else uv = floor((uv - vec2(0.5)) * 16.0) / 16.0 + vec2(0.5);
+            if (tscale > 1) uv /= float(tscale);
             uv += pc.texsize.zw;
             vec4 t;
             if ((flags & 16384) != 0) {

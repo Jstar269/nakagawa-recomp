@@ -610,8 +610,8 @@ class SpecSeamCoverageTests(unittest.TestCase):
 
 
 class HostThreadCreatorAuditTests(unittest.TestCase):
-    """Only the documented OSK worker, diagnostic-stream drain, Android output pump and
-    preemption timer may create a native host thread (docs/ARCHITECTURE.md, "Runtime
+    """Only the documented OSK worker, diagnostic-stream drain, Android output pump,
+    texture-scaling workers and preemption timer may create a native host thread (docs/ARCHITECTURE.md, "Runtime
     host-thread audit")."""
 
     def test_native_thread_creators_are_allowlisted(self):
@@ -630,8 +630,8 @@ class HostThreadCreatorAuditTests(unittest.TestCase):
             if "selftest" not in Path(path).name.lower():
                 creators.append(path)
         self.assertEqual(
-            creators, ["src/core/nk_platform_posix.c", "src/rt/debug.c", "src/rt/osk_text_entry.c",
-                       "src/rt/sched.c"],
+            creators, ["src/core/nk_platform_posix.c", "src/rt/debug.c",
+                       "src/rt/gpu_sdl3vk/tex_scale.c", "src/rt/osk_text_entry.c", "src/rt/sched.c"],
             "native thread creation needs a documented owner and guest-state quiescence rule",
         )
 
