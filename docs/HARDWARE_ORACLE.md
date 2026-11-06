@@ -70,6 +70,19 @@ proposals. Each claim covers only the exact fixture named:
   and `invalid-tail-s0-d-try` each returned `0x80000104` with no byte changed:
   size 0 with a NULL destination, a NULL source, both pointers owned, or
   destination `0xFFFFFFFF`. The size check precedes the pointer checks.
+- **DMA over-long requests inside owned memory** (issue #303, Tier B): on a PSP-3000 / 6.61 /
+  ARK-5.1.0, pspver 6.6.0 (2026-11-06, boots 139 (memcpy-dst), 140 (memcpy-src), 141 (try-dst) and 142 (try-src), commit `8db3ec9d`, each
+  acceptance-eligible with `setup_mask=0x07`), `invalid-tail-b1-delta-0001`, `invalid-tail-b1-delta-0004`,
+  `invalid-tail-b1-delta-1000`, `invalid-tail-b1-delta-2000`, `invalid-tail-b2-delta-0001`,
+  `invalid-tail-b2-delta-0004`, `invalid-tail-b2-delta-1000`, `invalid-tail-b2-delta-2000`,
+  `invalid-tail-b3-delta-0001`, `invalid-tail-b3-delta-0004`, `invalid-tail-b3-delta-1000`,
+  `invalid-tail-b3-delta-2000`, `invalid-tail-b4-delta-0001`, `invalid-tail-b4-delta-0004`,
+  `invalid-tail-b4-delta-1000` and `invalid-tail-b4-delta-2000` each returned 0 and moved all 0xc000 + delta
+  requested bytes, from `sceDmacMemcpy` (B1, B2) and `sceDmacTryMemcpy` (B3, B4), with the over-long end at
+  the destination (B1, B3) or the source (B2, B4). With a destination tail the owned post-guard and overflow
+  band changed exactly as far as the request reached; with a source tail the over-read guard bytes arrived in
+  the destination. Nothing past a request changed and the source stayed intact. Every request lies inside
+  memory the probe owns, so these cells say nothing about a span across an unmapped edge.
 - **VFPU fixtures** (live record: issue #40): Group A vhdp/vdot NaN/Inf
   matrix, 13 records PASS across 4 launches in two sessions; Group B 91-cell
   overlap matrix, all PASS across 3 bitwise-identical launches; same qualified
@@ -182,8 +195,8 @@ proposals. Each claim covers only the exact fixture named:
   and destination residues, paired unaligned addresses, and overlap in both
   directions. It records cache-disciplined copy observations and owned-buffer
   guards; the previously measured size matrix is not repeated. The Tier S
-  invalid-tail cells below were measured on 2026-11-03; the Tier B cells are
-  built but `NOT_RUN`. Both tiers exercise only
+  invalid-tail cells below were measured on 2026-11-03 and the Tier B cells on
+  2026-11-06. Both tiers exercise only
   zero-length pointer validation and bounded copies wholly inside owned RAM.
   Kernel validation of an actually invalid span, including the K3/K4 atomicity
   distinction, remains in the works under #303.
@@ -260,7 +273,9 @@ destination, a NULL source, both pointers owned, and destination `0xFFFFFFFF`,
 all with size 0. No payload, guard or source byte changed. The size check
 therefore precedes the pointer checks; `src/rt/hle_cache_dma.c` already orders
 them so, and `test_dmac_hardware_semantics` pins the three bad-pointer shapes.
-The Tier B launches were not run.
+The four Tier B launches ran on 2026-11-06 (boots 139 (memcpy-dst), 140 (memcpy-src), 141 (try-dst) and 142 (try-src), commit `8db3ec9d`, each acceptance-eligible,
+`setup_mask=0x07`): every B1-B4 request returned 0 and moved all 0xc000 + delta bytes, nothing past a request
+changed, and the source was intact.
 
 Tier B keeps each entire request inside the same allocation or a module-owned
 array. The four existing launch names map to B1-B4, each with
