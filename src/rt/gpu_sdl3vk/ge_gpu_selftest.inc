@@ -3476,6 +3476,174 @@ static int coherence_run_submit_batch(void) {
     return ok;
 }
 
+/* SR_GPU_TIMESTAMPS through its environment gate: the harness's --gpu-timestamps sets or removes the
+ * variable before sdl3vk_init and gegpu_init, which both read it (sr_perf_gpu_timestamps_requested).
+ * Both cases below run the submit-batch list, whose recordings mix render batches, snapshot copies
+ * and ring uploads, against ge.c's frames (a warm-up that makes the pipelines and targets, then the
+ * measured run), then present its main target TS_PRESENTS times through gegpu_present, as
+ * gui_present does, and wait for those presents so that each presentation command buffer's
+ * timestamp pair (sdl3vk.c present_common) has been read back. */
+#define TS_PRESENTS 4u
+
+typedef struct {
+    SubmitBatchRun run;
+    unsigned long long submits;
+    uint64_t buffers, total, ns[SR_PERF_GE_REASON_COUNT];
+    uint64_t present_timed, present_ns;
+} TsCaseRun;
+
+static int ts_case_run(const char *name, TsCaseRun *out) {
+    const SubmitBatchShape sh = { 48u, 8u, 2u, 24u, 6u, 8u, 24u };
+    const size_t bytes = (size_t)FB_W * FB_H * 4u;
+    uint32_t *ref_a = (uint32_t *)malloc(bytes), *ref_b = (uint32_t *)malloc(bytes);
+    memset(out, 0, sizeof *out);
+    if (!ref_a || !ref_b) {
+        free(ref_a); free(ref_b);
+        fprintf(stderr, "gpu coherence selftest [%s]: out of memory\n", name);
+        return 0;
+    }
+    coherence_reset_targets();
+    ge_set_gpu_hooks(NULL);
+    ge_run_list(submit_batch_prepare(&sh, SB_TEX), 0);
+    ge_set_gpu_hooks(&k_hooks);
+    memcpy(ref_a, SR_HOST(0x04000000u | SB_FBA_A), bytes);
+    memcpy(ref_b, SR_HOST(0x04000000u | SB_FBA_B), bytes);
+
+    const uint32_t cap = s_submit_batch_ops;
+    int ok = submit_batch_run(&sh, SB_TEX + 0x100u, cap, &out->run) && cmd_drain(GEGPU_BOUNDARY_LIFETIME);
+    uint64_t ns_before[SR_PERF_GE_REASON_COUNT];
+    memcpy(ns_before, s_ts_ns, sizeof ns_before);
+    const uint64_t buffers_before = s_ts_buffers;
+    /* Every queue submit from here to the final drain: the list's own, the snapshot boundary's
+     * readbacks, and the drain's flush of any open chain. submit_batch_run drains first. */
+    GeGpuReplayStats q_before, q_after;
+    gegpu_replay_stats_get(&q_before);
+    ok = ok && submit_batch_run(&sh, SB_TEX + 0x200u, cap, &out->run) &&
+         submit_batch_same("A", cap, (const uint32_t *)SR_HOST(0x04000000u | SB_FBA_A), ref_a) &&
+         submit_batch_same("B", cap, (const uint32_t *)SR_HOST(0x04000000u | SB_FBA_B), ref_b) &&
+         cmd_drain(GEGPU_BOUNDARY_LIFETIME);
+    gegpu_replay_stats_get(&q_after);
+    free(ref_a);
+    free(ref_b);
+    out->submits = q_after.queue_submits - q_before.queue_submits;
+    for (int i = 0; i < SR_PERF_GE_REASON_COUNT; i++) out->total += out->ns[i] = s_ts_ns[i] - ns_before[i];
+    out->buffers = s_ts_buffers - buffers_before;
+    if (!ok) {
+        fprintf(stderr, "gpu coherence selftest [%s]: the submit-batch list did not give ge.c's frames\n", name);
+        coherence_reset_targets();
+        return 0;
+    }
+
+    uint64_t timed0 = 0, ns0 = 0, timed1 = 0, ns1 = 0;
+    (void)sdl3vk_present_timestamps(&timed0, &ns0);
+    for (unsigned i = 0; i < TS_PRESENTS; i++) {
+        const int pr = gegpu_present(0x04000000u | SB_FBA_A, 3, 512u);
+        if (pr != GEGPU_PRESENT_SHOWN) {
+            fprintf(stderr, "gpu coherence selftest [%s]: present %u of the main target returned %d, not "
+                            "GEGPU_PRESENT_SHOWN\n", name, i, pr);
+            coherence_reset_targets();
+            return 0;
+        }
+    }
+    Target *t = target_find_by_fba(SB_FBA_A);
+    if (!t || !sdl3vk_wait_image((void *)t->img)) {
+        fprintf(stderr, "gpu coherence selftest [%s]: could not wait for the presents\n", name);
+        coherence_reset_targets();
+        return 0;
+    }
+    (void)sdl3vk_present_timestamps(&timed1, &ns1);
+    out->present_timed = timed1 - timed0;
+    out->present_ns = ns1 - ns0;
+    coherence_reset_targets();
+    return 1;
+}
+
+/* --gpu-timestamps unset and --gpu-timestamps 0 (--case gpu-timestamps-off): neither the GE nor the
+ * presenter makes a query pool, and nothing is timed, neither the GE's recordings nor the presents. */
+static int coherence_run_gpu_timestamps_off(void) {
+    const char *v = getenv("SR_GPU_TIMESTAMPS");
+    const char *shown = !v ? "unset" : v[0] ? v : "(empty)";
+    if (sr_perf_gpu_timestamps_requested()) {
+        fprintf(stderr, "gpu coherence selftest [gpu-timestamps-off]: SR_GPU_TIMESTAMPS is '%s'; this case "
+                        "runs with it unset or 0\n", shown);
+        return 0;
+    }
+    const int present_pool = sdl3vk_present_timestamps(NULL, NULL);
+    if (s_ts_on || s_ts_pool != VK_NULL_HANDLE || present_pool) {
+        fprintf(stderr, "gpu coherence selftest [gpu-timestamps-off]: SR_GPU_TIMESTAMPS %s, but a query pool "
+                        "exists (GE %d, presenter %d)\n", shown, s_ts_pool != VK_NULL_HANDLE, present_pool);
+        return 0;
+    }
+    TsCaseRun r;
+    if (!ts_case_run("gpu-timestamps-off", &r)) return 0;
+    if (r.buffers || r.total || r.present_timed || r.present_ns) {
+        fprintf(stderr, "gpu coherence selftest [gpu-timestamps-off]: SR_GPU_TIMESTAMPS %s, but buffers=%llu "
+                        "gpu_ns=%llu presents_timed=%llu present_ns=%llu were timed\n", shown,
+                (unsigned long long)r.buffers, (unsigned long long)r.total,
+                (unsigned long long)r.present_timed, (unsigned long long)r.present_ns);
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s SR_GPU_TIMESTAMPS=%s no query pool, submits=%llu presents=%u "
+           "none timed, frames=ge.c-exact\n", "gpu-timestamps-off", shown, r.submits, TS_PRESENTS);
+    return 1;
+}
+
+/* --gpu-timestamps 1 (--case gpu-timestamps): gegpu_init and sdl3vk_init made their query pools;
+ * every recording of the measured run is collected once its fence has signalled, and its GPU time
+ * splits into render, snapshot and upload time, with only the few microseconds after a buffer's last
+ * op left on the buffer's mixed submit reason; every present is read back with a GPU time. The frames
+ * stay ge.c's (timestamps change no rendering). Returns 77 (SKIP) when the queue has no timestamps. */
+static int coherence_run_gpu_timestamps(void) {
+    if (!sr_perf_gpu_timestamps_requested()) {
+        fprintf(stderr, "gpu coherence selftest [gpu-timestamps]: SR_GPU_TIMESTAMPS is not set; this case "
+                        "runs with --gpu-timestamps 1\n");
+        return 0;
+    }
+    if (!s_ts_on) {
+        if (s_ts_unavailable) {
+            printf("gpu coherence selftest: SKIP gpu-timestamps (the GE queue has no timestamp queries)\n");
+            return 77;
+        }
+        fprintf(stderr, "gpu coherence selftest [gpu-timestamps]: SR_GPU_TIMESTAMPS is set, but gegpu_init "
+                        "made no query pool\n");
+        return 0;
+    }
+    if (!sdl3vk_present_timestamps(NULL, NULL)) {
+        fprintf(stderr, "gpu coherence selftest [gpu-timestamps]: the GE has timestamps, but sdl3vk_init made "
+                        "no presentation query pool on the same queue\n");
+        return 0;
+    }
+    TsCaseRun r;
+    if (!ts_case_run("gpu-timestamps", &r)) return 0;
+    const uint64_t *ns = r.ns;
+    const uint64_t upload = ns[SR_PERF_GE_TEXTURE_UPLOAD] + ns[SR_PERF_GE_TARGET_UPLOAD] +
+                            ns[SR_PERF_GE_DEPTH_UPLOAD];
+    if (r.buffers != r.submits || !ns[SR_PERF_GE_RENDER_BATCH] || !ns[SR_PERF_GE_SNAPSHOT_COPY] ||
+        (r.run.uploads && !upload) || ns[SR_PERF_GE_MIXED_DRAIN] * 4u > r.total) {
+        fprintf(stderr, "gpu coherence selftest [gpu-timestamps]: buffers=%llu submits=%llu render_ns=%llu "
+                        "snapshot_ns=%llu upload_ns=%llu (uploads=%llu) mixed_ns=%llu total_ns=%llu: want every "
+                        "submitted recording collected, render, snapshot and upload time, and under a quarter "
+                        "left on the mixed reason\n",
+                (unsigned long long)r.buffers, r.submits, (unsigned long long)ns[SR_PERF_GE_RENDER_BATCH],
+                (unsigned long long)ns[SR_PERF_GE_SNAPSHOT_COPY], (unsigned long long)upload, r.run.uploads,
+                (unsigned long long)ns[SR_PERF_GE_MIXED_DRAIN], (unsigned long long)r.total);
+        return 0;
+    }
+    if (r.present_timed != TS_PRESENTS || !r.present_ns) {
+        fprintf(stderr, "gpu coherence selftest [gpu-timestamps]: %llu of %u presents were read back with "
+                        "%llu ns of GPU time: want every present timed, and a nonzero time\n",
+                (unsigned long long)r.present_timed, TS_PRESENTS, (unsigned long long)r.present_ns);
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s buffers=%llu ops=%llu render_us=%.1f snapshot_us=%.1f "
+           "upload_us=%.1f mixed_us=%.1f total_us=%.1f presents_timed=%llu present_us=%.1f frames=ge.c-exact\n",
+           "gpu-timestamps", (unsigned long long)r.buffers, r.run.ops,
+           (double)ns[SR_PERF_GE_RENDER_BATCH] / 1e3, (double)ns[SR_PERF_GE_SNAPSHOT_COPY] / 1e3,
+           (double)upload / 1e3, (double)ns[SR_PERF_GE_MIXED_DRAIN] / 1e3, (double)r.total / 1e3,
+           (unsigned long long)r.present_timed, (double)r.present_ns / 1e3);
+    return 1;
+}
+
 static int coherence_queue_flat_sprite(uint32_t base, uint32_t stride, uint32_t fmt,
                                        float x0, float y0, float x1, float y1) {
     memset(s_ge, 0, sizeof(*s_ge));
@@ -5676,6 +5844,8 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
         if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
         if (strcmp(only, "wide-fill") == 0) return coherence_run_wide_fill();
+        if (strcmp(only, "gpu-timestamps") == 0) return coherence_run_gpu_timestamps();
+        if (strcmp(only, "gpu-timestamps-off") == 0) return coherence_run_gpu_timestamps_off();
         if (strcmp(only, "submit-batch") == 0) return coherence_run_submit_batch();   /* the snapbar mutants */
         if (strcmp(only, "depth-evict-newer") == 0) return coherence_run_depth_evict_newer();
         if (strcmp(only, "depth-zbp-switch") == 0) return coherence_run_depth_zbp_switch();
