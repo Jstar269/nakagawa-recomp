@@ -633,7 +633,7 @@ at `s_twin`).
   - I/O speed: unchanged. The twin performs no guest I/O.
 - **Default.** Off. It stays off by default until section 11.2 item 4's "nothing worse" runs pass: picture-gate or
   route runs on *Hot Shots Tennis* and *LittleBigPlanet*, and a library sweep, each with the twin on against the same
-  run with it off. Its launch-line key (`twin`, below) is admitted under section 11.2.
+  run with it off. When the Ace launch line carries its key (`twin`, below), the key follows section 11.2 item 2.
 - **Setting.** `SR_GPU_TWIN_COLOR=1` (full colour) or `native` (the twin with the authentic colour, which the identity
   self-tests use), read when the renderer starts. Unset, empty, `0` and `off` are off. Any other value prints
   `TWIN: refused (...)` and leaves it off. It takes effect only in Ace Mode: in an authentic run it stays off whatever
