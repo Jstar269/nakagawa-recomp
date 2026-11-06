@@ -130,6 +130,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/perf.c \
               src/rt/fbcap_policy.c \
               src/rt/fbcap.c \
+              src/rt/videorec.c \
               src/rt/ge_capture.c \
               src/rt/vfpu_interp.c \
               $(HLE_SRCS) src/rt/audio_resample.c src/rt/flash0_font.c \
@@ -219,7 +220,7 @@ GEGPU_SRCS := src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c src/rt/gpu_
 # Ace Mode's run switch (src/rt/ace.c) decides whether the device asks for anisotropic filtering.
 # Its event pump runs through sr_coro_call_on_thread_stack (src/rt/sr_coro.c), which Android
 # needs for JNI; a selftest without coroutines calls straight through it.
-SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/gpu_sdl3vk/fsr1_pass.c src/rt/fbcap_policy.c src/rt/fbcap.c src/rt/sr_coro.c src/rt/ace.c \
+SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/gpu_sdl3vk/fsr1_pass.c src/rt/fbcap_policy.c src/rt/fbcap.c src/rt/videorec.c src/rt/sr_coro.c src/rt/ace.c \
                src/core/nk_input_profile.c src/core/nk_json.c $(PLAYER_PLATFORM_SRC)
 
 $(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)

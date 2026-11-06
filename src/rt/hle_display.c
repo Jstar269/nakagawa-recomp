@@ -242,6 +242,8 @@ static void display_present_active(void) {
         (void)ace_flip(s_display_active.addr & 0x1FFFFFu, bytes, s_vcount,
                        sr_host_monotonic_ms() * 1000000ull);
     }
+    /* A recording counts the guest's own flips beside the picture (videorec.h). */
+    sr_videorec_guest_flip();
     display_present_frame();
     sr_capture_cancel();
     uint32_t brightest;
@@ -731,6 +733,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                 fprintf(stderr, "SR_FBDUMP: no trustworthy framebuffer snapshot was written\n");
                 sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, 1u);
                 sr_compat_report();
+                (void)sr_videorec_finish_status("SR_FBDUMP found no trustworthy framebuffer", 1);
                 sr_perf_shutdown();
                 SR_VERIFY_REPORT_NOW();
                 _Exit(1);
@@ -740,6 +743,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                 sr_flight_exit((uint32_t)capture_exit_status);
                 psmf_av_final("capture_exit");
                 sr_compat_report();
+                (void)sr_videorec_finish_status("SR_FBDUMP capture exit", capture_exit_status);
                 sr_perf_shutdown();
                 SR_VERIFY_REPORT_NOW();
                 _Exit(capture_exit_status);
@@ -942,6 +946,9 @@ void sr_vblank_tick(void) {
         display_present_active();
     }
     if (g_ace_on) gui_ace_vblank(s_vcount);
+    /* SR_VIDEOREC_DIR (videorec.h): this VBLANK's video frame is the newest picture presented
+     * above, and the audio up to it is final. Host-side only; off, nothing is read. */
+    sr_videorec_vblank(s_vcount, sched_vtime_us());
     /* Periodic VCOUNT cadences are boundary crossings, not an exact modulus: a serviced
      * tick can step over a multiple or repeat one (see sr_vcount_window_crossed). */
     static uint32_t tick_log_window = 0;
@@ -1029,6 +1036,7 @@ void sr_vblank_tick(void) {
               fprintf(stderr, "WATCHDOG: aborting after %u vblanks with no new frame (SR_WATCHDOG_EXIT=%d)\n", diff, wde);
               sr_flight_hang(diff, (uint32_t)wde);
               sr_compat_report();
+              (void)sr_videorec_finish_status("SR_WATCHDOG_EXIT", 1);
               sr_perf_shutdown();
               SR_VERIFY_REPORT_NOW();
               _Exit(1);
@@ -1096,6 +1104,8 @@ void sr_vblank_tick(void) {
             /* _Exit skips atexit, so the SR_AUDIODUMP file is closed here whether or not
              * SR_AUDIOSTAT is set; after the stats call above it is a no-op. */
             hle_exit_close_audio_dump();
+            /* The same for a video recording: its encoder is finished and the files muxed. */
+            (void)sr_videorec_finish_status("SR_EXIT_AT_VBLANK", 0);
             sr_dump_calls();
             fflush(stderr);
             fflush(stdout);

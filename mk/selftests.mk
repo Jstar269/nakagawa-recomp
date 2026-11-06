@@ -135,6 +135,17 @@ fbcap-selftest:
 		tests/native/fbcap_selftest.c src/rt/fbcap.c src/rt/fbcap_policy.c
 	$(BUILD_DIR)/fbcap_selftest.exe $(BUILD_DIR)/fbcap_selftest
 
+# videorec-selftest - the run recorder (src/rt/videorec.c, #1273) driven with synthetic pictures,
+# VBLANKs and audio hand-offs: one frame per VBLANK (new, repeat and gap frames), audio exactly as
+# long as the video, impulses landing on the samples their guest time names, channel volume,
+# summing and clipping, RGBX order, refused sizes, and the guest's buffers left alone. With FFmpeg
+# on PATH it also encodes FFV1 and muxes; without it that part reports SKIP. No GPU or game input.
+native-core-tests: videorec-selftest
+videorec-selftest:
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -DSR_VIDEOREC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		-o $(BUILD_DIR)/videorec_selftest.exe tests/native/videorec_selftest.c src/rt/videorec.c
+	$(BUILD_DIR)/videorec_selftest.exe $(BUILD_DIR)/videorec_selftest
+
 # osk-text-entry-selftest - the on-screen keyboard's text entry (src/rt/osk_text_entry.c)
 # with a fake native input box: a poll never waits for the person, the box runs off the
 # polling thread, answers are handed over once, an abandoned box is closed whether or not it
@@ -433,7 +444,10 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 # all twenty-seven: hle_mpeg.c and the presentation boundary its A/V measurement drives
 # (display, audio, audio_codec, route, input), plus tests/native/hle_focus_media_stubs.c for the
 # calls into the rest of HLE. tools/hle_focus_check.py then reads the executable's symbol table
-# and fails if any excluded HLE file was linked. $(HLE_OBJS) are only the symbol reference.
+# and fails if any excluded HLE file was linked. The three --videorec-audio runs record ten VBLANKs while the
+# production sceAudioOutputBlocking, sceAudioOutput2OutputBlocking (44.1 kHz) and 48000 Hz
+# sceAudioSRCOutputBlocking handlers play a block: each fails if its recorder hook in
+# hle_audio.c is gone or skips its channel (#1273). $(HLE_OBJS) are only the symbol reference.
 # The runtime's src/core objects (nk_font, nk_json, nk_xb, nk_input_profile and the platform file)
 # come from native-core-objects-core, which native-core-tests builds for the product core tests
 # already: the same sources, no runtime-only define, so the focused link does not compile them a
@@ -459,6 +473,9 @@ psmf-media-focused-selftest: native-core-objects-core $(PSMF_MEDIA_FOCUSED_RT_OB
 	$(PYTHON) tools/hle_focus_check.py --exe $(BUILD_DIR)/psmf_media_focused_selftest.exe --objdir $(BUILD_DIR) \
 		--include $(HLE_MEDIA_FOCUS_SRCS) --stub $(BUILD_DIR)/hle_focus_media_stubs.o --require hle_register_psmf_player_handlers sr_hle_test_psmf_av_reset
 	$(BUILD_DIR)/psmf_media_focused_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
+	$(BUILD_DIR)/psmf_media_focused_selftest.exe --videorec-audio $(BUILD_DIR)/videorec_audio_channel channel
+	$(BUILD_DIR)/psmf_media_focused_selftest.exe --videorec-audio $(BUILD_DIR)/videorec_audio_output2 output2
+	$(BUILD_DIR)/psmf_media_focused_selftest.exe --videorec-audio $(BUILD_DIR)/videorec_audio_src src
 
 # The hosted gate for the focused link (#307): native-core-tests runs on every pull request.
 native-core-tests: psmf-media-focused-selftest
@@ -484,7 +501,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(H264_SUB_OBJS) $(GENERIC_TITLE_CONFIG_HE
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		$(HLE_THREAD_SELFTEST_SOURCE) $(HLE_SRCS) src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		$(HLE_THREAD_SELFTEST_SOURCE) $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -523,7 +540,7 @@ hle-title-selftest-one: $(RT_GE_O) $(H264_SUB_OBJS) $(TITLE_CONFIG_TOOL) tools/t
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o $(HLE_TITLE_SELFTEST_EXE) \
-		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -563,7 +580,7 @@ $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(H264_SUB_OBJS) $(PSP_ORACLE
 		-Wno-infinite-recursion -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses -Wno-pointer-sign \
 		-I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \

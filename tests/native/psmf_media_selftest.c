@@ -38,6 +38,7 @@
 #include "flight_recorder.h"
 #include "perf.h"
 #include "iso.h"
+#include "videorec.h"
 #include "mpeg.c"
 #include <stdint.h>
 #include <stdio.h>
@@ -5429,6 +5430,101 @@ static void test_atrac_riff_mutations(unsigned iterations) {
            "accepted and driven, 0 crashes\n", iterations, seeds_accepted, iterations, accepted);
 }
 
+/* ---- the recorder's production audio hooks (#1273, #2080 review) ------------------------
+ *
+ * Run as `--videorec-audio DIR channel|output2|src`: a recording (raw, on the deterministic clock)
+ * of ten VBLANKs through the production sr_vblank_tick, while a production handler plays a
+ * constant stereo block from guest memory: sceAudioOutputBlocking on a regular channel, or
+ * sceAudioOutput2OutputBlocking (44100 Hz, the Output2 channel), both through audio_output's
+ * hook; or sceAudioSRCOutputBlocking on a 48000 Hz SRC reservation, whose frames the resampler
+ * converts to 44100 Hz (audio_src_output's hook). audio.wav must hold that block's samples:
+ * removing either hook in hle_audio.c, or skipping the Output2 channel in the first, leaves it
+ * silent and fails its run.
+ *
+ * Two blocks, not one per VBLANK: no scheduler runs here, so guest time does not advance and the
+ * deterministic clock's virtual audio queue never drains. A regular channel's blocking output
+ * waits while more than two blocks are queued (hle_audio.c, #67), which would never end; and two
+ * blocks (4096 frames) fit inside ten VBLANKs (about 7350 frames), so the recording has no
+ * overflow either. */
+extern uint32_t s_vcount;  /* hle_display.c (hle_internal.h) */
+#define VR_NID_SRC_RESERVE 0x38553111u  /* sceAudioSRCChReserve(samples, freq, channels) */
+#define VR_NID_SRC_BLOCK   0xe0727056u  /* sceAudioSRCOutputBlocking(vol, buf) */
+
+static int videorec_audio_hooks(const char *dir, const char *which) {
+    const int src = strcmp(which, "src") == 0, output2 = strcmp(which, "output2") == 0;
+    if (!src && !output2 && strcmp(which, "channel") != 0) {
+        fprintf(stderr, "--videorec-audio: the path is channel, output2 or src, not %s\n", which);
+        return 2;
+    }
+#ifdef _WIN32
+    _putenv_s("SR_VIDEOREC_DIR", dir);
+    _putenv_s("SR_VIDEOREC_CODEC", "raw");
+    _putenv_s("SR_DETERMINISTIC_CLOCK", "1");
+#else
+    setenv("SR_VIDEOREC_DIR", dir, 1);
+    setenv("SR_VIDEOREC_CODEC", "raw", 1);
+    setenv("SR_DETERMINISTIC_CLOCK", "1", 1);
+#endif
+    /* As the runtime's main() does: the recorder takes the scheduler's clock (videorec.h). */
+    sr_videorec_set_clock(sched_clock_deterministic);
+    const int16_t left = src ? 5000 : output2 ? 4000 : 3000, right = (int16_t)-left;
+    for (uint32_t i = 0; i < PB_FRAMES; i++) {
+        MEM_W16(PB_AU_A + i * 4u, (uint16_t)left);
+        MEM_W16(PB_AU_A + i * 4u + 2u, (uint16_t)right);
+    }
+    int channel = -1;
+    if (src) {
+        CHECK(guest_mpeg_import(VR_NID_SRC_RESERVE, PB_FRAMES, 48000u, 2u, 0, 0) == 0,
+              "videorec-audio: a 48000 Hz SRC channel is reserved");
+    } else if (output2) {
+        CHECK(guest_mpeg_import(PB_NID_OUT2_RESERVE, PB_FRAMES, 0, 0, 0, 0) == 0,
+              "videorec-audio: the Output2 channel is reserved");
+    } else {
+        channel = (int)guest_mpeg_import(PB_NID_CH_RESERVE, 0xffffffffu, PB_FRAMES, 0u, 0, 0);
+        CHECK(channel >= 0 && channel < 8, "videorec-audio: a regular channel is reserved");
+    }
+    CHECK(sr_videorec_active(), "videorec-audio: the recording starts on the deterministic clock");
+    static uint32_t picture[480u * 272u];
+    for (uint32_t v = 0; v < 10; v++) {
+        for (uint32_t i = 0; i < 480u * 272u; i++) picture[i] = v;
+        sr_videorec_frame(picture, 480u, 272u, 480u * 4u, SR_CAP_ORDER_BGRX);
+        s_vcount++;
+        sr_vblank_tick();
+        if (v != 1 && v != 6) continue;
+        uint32_t r = src ? guest_mpeg_import(VR_NID_SRC_BLOCK, 0x8000u, PB_AU_A, 0, 0, 0)
+                     : output2 ? guest_mpeg_import(PB_NID_OUT2_BLOCK, 0x8000u, PB_AU_A, 0, 0, 0)
+                               : guest_mpeg_import(PB_NID_OUTPUT_BLOCK, (uint32_t)channel, 0x8000u,
+                                                   PB_AU_A, 0, 0);
+        /* sceAudioOutput2OutputBlocking returns 0; the other two return the sample count. */
+        CHECK(r == (output2 ? 0u : (uint32_t)PB_FRAMES),
+              "videorec-audio: the production output handler takes the block");
+    }
+    s_vcount++;
+    sr_vblank_tick();
+    CHECK(sr_videorec_finish() == 1, "videorec-audio: the recording finishes PASS");
+
+    char path[1024];
+    snprintf(path, sizeof path, "%s/audio.wav", dir);
+    FILE *f = fopen(path, "rb");
+    long matching = 0, samples = 0;
+    if (f) {
+        uint8_t h[44], s4[4];
+        if (fread(h, 1, sizeof h, f) == sizeof h) {
+            while (fread(s4, 1, 4, f) == 4) {
+                int16_t l = (int16_t)((uint16_t)s4[0] | ((uint16_t)s4[1] << 8));
+                int16_t rr = (int16_t)((uint16_t)s4[2] | ((uint16_t)s4[3] << 8));
+                samples++;
+                if (l > left / 2 && l <= left && rr < right / 2 && rr >= right) matching++;
+            }
+        }
+        fclose(f);
+    }
+    CHECK(samples > 0, "videorec-audio: audio.wav holds the recording's samples");
+    CHECK(matching >= 1000, "videorec-audio: the guest's block reached audio.wav through the hook");
+    printf("videorec-audio %s: samples=%ld matching=%ld\n", which, samples, matching);
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
     sr_perf_init();
     sr_flight_init();
@@ -5446,6 +5542,8 @@ int main(int argc, char **argv) {
     /* SR_HOST maps VRAM at g_mem - 0x04000000, so reserve that prefix in the fixture arena. */
     g_mem = arena + GUEST_VRAM_PREFIX_BYTES;
     memset(arena, 0, sizeof(arena));
+    if (argc == 4 && strcmp(argv[1], "--videorec-audio") == 0)
+        return videorec_audio_hooks(argv[2], argv[3]);
 
 #if defined(SR_H264_FFMPEG)
     CHECK(sr_h264_select_backend("ffmpeg"),
