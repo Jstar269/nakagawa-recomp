@@ -2236,7 +2236,10 @@ The deterministic clock changes the run itself, not only the recording:
   `SR_DETERMINISTIC_CLOCK=1`, without recording, before recording it.
 
 On the Vulkan presenter the recorded picture is the one the window shows (Ace Mode's smooth motion
-included), scaled with the window's own scaling mode into a fixed-size target. It is a clean capture:
+included), scaled with the window's own scaling mode (`SR_PRESENT_SCALING`) into a fixed-size
+target. The presentation upscaler is not applied to it: with `SR_PRESENT_UPSCALE=fsr1` the window
+shows FSR 1's output, but the recording still uses `SR_PRESENT_SCALING`'s filter
+([#2138](https://github.com/Jstar269/nakagawa-recomp/issues/2138)). It is a clean capture:
 no host overlay reaches it, neither the HUD and its frame-rate readout nor the player's notices nor
 the pause overlay. `SR_VIDEOREC_SIZE=3840x2160` records 4K whatever the window's size. The CPU
 presenters (GDI, offscreen) record their 480x272 frame.
