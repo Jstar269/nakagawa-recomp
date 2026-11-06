@@ -1336,6 +1336,29 @@ One console is one data point; see §11. Nothing here closes issue #70
     matches neither table.
   - Pixel x of level L reads texel x >> L, as `ge-mip` measured.
 
+- **PSP-3000 single-case run of the `ge-rtt` probe on commit `cb3702cf` (2026-11-06)**: system software 6.61,
+  ARK-5.1.0 (owner); `pspver` 6.6.0, the firmware declared to the runner. PSPLink 3.2.1, operator-declared model
+  PSP-3000, XMB context. `ge-rtt` (case 158, `fixtures/psp_oracle/probe_ge_sample.c`) on boot 137, after the
+  `transport-write` preflight (PSP-TRANSPORT-001 is not re-cited). Both envelopes are acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict golden
+  sequence (126 records and the done record), all PASS; every list reached GE idle. The raw envelopes and host0
+  logs stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-06, `cb3702cf`) |
+  | --- | --- | --- | --- |
+  | `PSP-GE-RTT-001` | `cpu-*`, `flush-*`, `noflush-*`, `warm-noflush-*`, `warm-flush-*`, `warm-texsync-*`, `warm-both-*`, `565-flush-*`, `565-warm-noflush-*`, `ge-rtt-done` (boot 137) | the texture cache's size, line or eviction rule, fetches across lists, a 5650 target with a TEXFLUSH after a warm fetch, other formats, the wait timings | MEASURED (`ge-rtt`) |
+
+  `ge-rtt` (#343): in one display list each cell draws a flat colour C1 over the first 16x4 texels of a VRAM
+  target the CPU filled with a pattern P0, and fetches those texels into a colour buffer before and after the
+  draw. Every list starts with TEXFLUSH. What the cells establish, for these exact states only:
+  - *Cold fetch:* a fetch of a region not fetched earlier in the list reads what the CPU wrote (`cpu`) or what
+    the GE drew, with or without TEXFLUSH after the draw (`flush`, `noflush`, `565-flush`).
+  - *Warm fetch:* once the region has been fetched, a fetch after the draw reads the old P0 texels
+    (`warm-noflush`, `565-warm-noflush`) unless TEXFLUSH comes between the draw and the fetch (`warm-flush`, and
+    `warm-both` with TEXSYNC before it). TEXSYNC alone does not (`warm-texsync`).
+  - *5650:* a 5650 target sampled as 5650 writes each channel expanded by replicating its high bits (C1, stored
+    as `0x241c`, reads `0x002182e7`).
+
 - **PSP-3000 single-case runs of the `hle-std-handles` and `ge-weight` probes on commit `d5fed0ba`
   (2026-11-06)**: system software 6.61, ARK-5.1.0 (owner); `pspver` 6.6.0, the firmware declared to the runner.
   PSPLink 3.2.1, operator-declared model PSP-3000, XMB context. `hle-std-handles` (case 156,
@@ -1349,7 +1372,7 @@ One console is one data point; see §11. Nothing here closes issue #70
   | Evidence id | Cells cited | Not cited | Outcome (2026-11-06, `d5fed0ba`) |
   | --- | --- | --- | --- |
   | `PSP-HLE-STDIO-001` | `stdio-handles`, `stdio-write-stdout`, `stdio-write-stderr`, `stdio-close-stdout`, `hle-std-handles-done` (boot 135) | a read from Stdin, the handles in the game context, the UID values on other boots | MEASURED (`hle-std-handles`) |
-  | `PSP-GE-WEIGHT-001` | `f32-w1-*`, `u8-w1-*`, `u16-w1-*`, `u8-hi-*`, `u16-hi-*`, `f32-neg-*`, `f32-c1-*`, `f32-c3-*` to `f32-c8-*`, `u8-c3-*`, `u8-c5-*`, `u16-c3-*`, `ge-weight-done` (boot 136) | sub-pixel rounding of weighted positions, weights with lighting or normals, morph targets, the wait timings | MEASURED (`ge-weight`) |
+  | `PSP-GE-WEIGHT-001` | `f32-w1-*`, `u8-w1-*`, `u16-w1-*`, `u8-hi-*`, `u16-hi-*`, `f32-neg-*`, `f32-c1-*`, `f32-c3-*`, `f32-c4-*`, `f32-c5-*`, `f32-c6-*`, `f32-c7-*`, `f32-c8-*`, `u8-c3-*`, `u8-c5-*`, `u16-c3-*`, `ge-weight-done` (boot 136) | sub-pixel rounding of weighted positions, weights with lighting or normals, morph targets, the wait timings | MEASURED (`ge-weight`) |
 
   `hle-std-handles` (#341): `sceKernelStdin`, `sceKernelStdout` and `sceKernelStderr` return three distinct
   kernel UIDs, not 1. A one-byte `sceIoWrite` returns 1 on Stdout and on Stderr. `sceIoClose` of the Stdout UID

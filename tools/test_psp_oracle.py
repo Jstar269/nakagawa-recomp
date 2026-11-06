@@ -3274,6 +3274,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 # The 2026-11-06 acceptance-eligible hle-std-handles (#341, boot 135) and ge-weight
                 # (#343, boot 136) runs.
                 "PSP-HLE-STDIO-001", "PSP-GE-WEIGHT-001",
+                # The 2026-11-06 acceptance-eligible ge-rtt (#343, boot 137) run.
+                "PSP-GE-RTT-001",
             },
         )
         self.assertEqual(

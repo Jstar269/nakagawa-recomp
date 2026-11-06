@@ -2280,6 +2280,70 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-GE-RTT-001",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "cpu-*",
+          "flush-*",
+          "noflush-*",
+          "warm-noflush-*",
+          "warm-flush-*",
+          "warm-texsync-*",
+          "warm-both-*",
+          "565-flush-*",
+          "565-warm-noflush-*",
+          "ge-rtt-done"
+        ],
+        "measurement_note": "Measured by the 2026-11-06 PSP-3000 launch (system software 6.61, ARK-5.1.0 (owner); pspver 6.6.0, declared to the runner; boot 137, XMB context) of commit cb3702cf, case ge-rtt after the transport-write preflight: 126 records and the done record (out0 126), all PASS, acceptance-eligible with 0 blockers; every one of the 9 lists reached GE idle. A texture fetch from a region the GE has just drawn into reads the new pixels when that region was not fetched earlier in the list, with or without TEXFLUSH (flush, noflush, 565-flush). Once the region has been fetched (warm-*), a later fetch after the draw reads the old texels unless TEXFLUSH comes between them: TEXFLUSH, alone or after TEXSYNC, gives the new pixels, and TEXSYNC alone gives the old ones. A 5650 target sampled as 5650 expands each channel by replicating its high bits. The raw stream stays in the private campaign directory.",
+        "group": "ge",
+        "source": "fixtures/psp_oracle/probe_ge_sample.c",
+        "prx": "ge_rtt.prx",
+        "apis": [
+          "sceGeListEnQueue",
+          "sceGeListSync",
+          "sceGeDrawSync",
+          "sceGeBreak",
+          "sceGeEdramGetAddr",
+          "sceKernelDcacheWritebackAll",
+          "sceKernelDelayThread",
+          "sceKernelGetSystemTimeLow",
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "PSP GE render to texture, TEXFLUSH and TEXSYNC"
+        ],
+        "diagnostic_case_ids": [
+          "ge-rtt"
+        ],
+        "case_ids": [
+          "cpu-*",
+          "flush-*",
+          "noflush-*",
+          "warm-noflush-*",
+          "warm-flush-*",
+          "warm-texsync-*",
+          "warm-both-*",
+          "565-flush-*",
+          "565-warm-noflush-*",
+          "ge-rtt-done"
+        ],
+        "invariant": "#343: per cell (an 8888 or 5650 target; the order of a draw into the target, fetches from it, TEXFLUSH and TEXSYNC in one list), the target's first row read back by the CPU and the raw 8888 pixels of a 16x12 window (x 16..31, y 8..19 of a 64x32 buffer at VRAM 0x100000) where each fetch draws a 16x4 textured sprite from the target at VRAM 0x120000, which the CPU fills with a known pattern before the list and the draw covers with one flat colour; blending, every test, depth writes and fog are off",
+        "issues": [
+          343
+        ],
+        "risk": "low; raw display lists into an 8 KiB colour block at VRAM offset 0x100000 and a 4 KiB target at 0x120000 that the CPU writes first; depth test and writes are off; every GE wait is bounded and a list that does not finish resets the queues; no display, callback or device state is changed",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-TRACE-001",
         "status": "implemented",
         "hardware_evidence": "MEASURED",
