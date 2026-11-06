@@ -1510,6 +1510,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->fullscreen = false;
     settings->launcher_fullscreen = false;
     settings->vsync = true;
+    settings->graphics_preset = PLAYER_PRESET_CUSTOM;
     settings->fps_cap = -1;
     settings->master_volume = 80;
     settings->reduce_motion_choice = PLAYER_SYSTEM_CHOICE_AUTO;
@@ -1957,6 +1958,16 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         if (strcmp(scaling_name, kPresentScalingNames[i]) == 0) app->settings.present_scaling = i;
     }
 
+    NkJsonNode *preset_node = nk_json_obj_get(root, "graphics_preset");
+    const char *preset_name = preset_node ? nk_json_get_string(preset_node) : NULL;
+    /* A file without the key, or with a word this build does not know, is Custom. */
+    app->settings.graphics_preset = PLAYER_PRESET_CUSTOM;
+    for (int i = PLAYER_PRESET_LOW; preset_name && i < PLAYER_PRESET_COUNT; i++) {
+        if (strcmp(preset_name, player_graphics_preset_row(i)->word) == 0) {
+            app->settings.graphics_preset = i;
+        }
+    }
+
     NkJsonNode *fps_node = nk_json_obj_get(root, "fps_cap");
     int64_t fps_val = 0;
     if (fps_node && nk_json_get_int64(fps_node, &fps_val) && (fps_val == -1 || fps_val == 0)) {
@@ -2285,6 +2296,11 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"present_scaling\": \"%s\",\n",
             kPresentScalingNames[present_scaling_valid(app->settings.present_scaling)
                                  ? app->settings.present_scaling : NK_PRESENT_SCALING_SHARP]);
+    {
+        const PlayerGraphicsPresetRow *preset =
+            player_graphics_preset_row(player_app_graphics_preset(app));
+        fprintf(f, "  \"graphics_preset\": \"%s\",\n", preset ? preset->word : "custom");
+    }
     fprintf(f, "  \"fps_cap\": %d,\n", app->settings.fps_cap);
     fprintf(f, "  \"vsync\": %s,\n", app->settings.vsync ? "true" : "false");
     fprintf(f, "  \"fullscreen\": %s,\n", app->settings.fullscreen ? "true" : "false");
@@ -2377,9 +2393,12 @@ static void maybe_persist_settings(PlayerApp *app) {
     }
 }
 
+static void graphics_preset_row_edited(PlayerApp *app);
+
 void player_app_set_resolution_scale(PlayerApp *app, int scale) {
     if (!app || !resolution_scale_valid(scale)) return;
     app->settings.resolution_scale = scale;
+    graphics_preset_row_edited(app);
     maybe_persist_settings(app);
 }
 
@@ -2404,12 +2423,14 @@ void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
         at = (at + 1) % 3;
     }
     app->settings.resolution_scale = kOrder[at];
+    graphics_preset_row_edited(app);
     maybe_persist_settings(app);
 }
 
 void player_app_set_present_scaling(PlayerApp *app, int scaling) {
     if (!app || !present_scaling_valid(scaling)) return;
     app->settings.present_scaling = scaling;
+    graphics_preset_row_edited(app);
     maybe_persist_settings(app);
 }
 
@@ -2418,7 +2439,101 @@ void player_app_cycle_present_scaling(PlayerApp *app, int direction) {
     int current = present_scaling_valid(app->settings.present_scaling)
         ? app->settings.present_scaling : NK_PRESENT_SCALING_SHARP;
     app->settings.present_scaling = (current + (direction < 0 ? 2 : 1)) % 3;
+    graphics_preset_row_edited(app);
     maybe_persist_settings(app);
+}
+
+/* The graphics presets (#2150), one row each. Starting values, to be tuned by
+   measurement on real titles: Low draws at the PSP's own 480x272, Medium and Handheld
+   at 2x, High and Ultra at 4x (the GPU renderer's largest scale). Ultra adds the FSR 1
+   upscaler, which Settings cannot set until #2122, so its row and note say so. Handheld
+   keeps a battery-friendly 2x and starts games fullscreen. No row touches frame pacing,
+   the play mode or an Enhanced part, and only Enhanced and Ace sessions use a row
+   (player_session_apply_graphics_preset). docs/PLAYER_UI_DESIGN.md lists the same values. */
+static const PlayerGraphicsPresetRow k_graphics_presets[PLAYER_PRESET_COUNT] = {
+    [PLAYER_PRESET_LOW] = {"low", "Low", "Low", 1, NK_PRESENT_SCALING_SHARP, true, -1, false},
+    [PLAYER_PRESET_MEDIUM] = {"medium", "Medium", "Medium", 2, NK_PRESENT_SCALING_SHARP, true,
+                              -1, false},
+    [PLAYER_PRESET_HIGH] = {"high", "High", "High", 4, NK_PRESENT_SCALING_SHARP, true, -1,
+                            false},
+    [PLAYER_PRESET_ULTRA] = {"ultra", "Ultra", "Ultra (no upscaler)", 4,
+                             NK_PRESENT_SCALING_SHARP, true, -1, true},
+    [PLAYER_PRESET_HANDHELD] = {"handheld", "Handheld", "Handheld", 2,
+                                NK_PRESENT_SCALING_SHARP, true, 1, false},
+};
+
+const PlayerGraphicsPresetRow *player_graphics_preset_row(int preset) {
+    if (preset <= PLAYER_PRESET_CUSTOM || preset >= PLAYER_PRESET_COUNT) return NULL;
+    return &k_graphics_presets[preset];
+}
+
+int player_app_graphics_preset(const PlayerApp *app) {
+    if (!app || !player_graphics_preset_row(app->settings.graphics_preset)) {
+        return PLAYER_PRESET_CUSTOM;
+    }
+    return app->settings.graphics_preset;
+}
+
+const char *player_app_graphics_preset_label(const PlayerApp *app) {
+    const PlayerGraphicsPresetRow *row = player_graphics_preset_row(player_app_graphics_preset(app));
+    return row ? row->value : "Custom";
+}
+
+bool player_app_graphics_preset_note(const PlayerApp *app, char *out, size_t cap,
+                                     bool *warns) {
+    const PlayerGraphicsPresetRow *row = player_graphics_preset_row(player_app_graphics_preset(app));
+    if (warns) *warns = false;
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (!row) return false;
+    /* A value the preset asks for that Settings cannot set is named, never shown as set. One
+       line, so the page still fits 960 x 540 (test_player_screens.c). */
+    int n = snprintf(out, cap, "%s is used in Enhanced and Ace%s. Authentic uses your own display "
+                     "settings.", row->label,
+                     row->upscaler ? ", without its FSR 1 upscaler for now" : "");
+    if (n <= 0 || (size_t)n >= cap) {
+        out[0] = '\0';
+        return false;
+    }
+    if (warns) *warns = row->upscaler;
+    return true;
+}
+
+/* An edit to a row the chosen preset sets: the rows now apply everywhere, so the preset is
+   Custom. Each such setter calls this; nothing derives Custom from the values. */
+static void graphics_preset_row_edited(PlayerApp *app) {
+    app->settings.graphics_preset = PLAYER_PRESET_CUSTOM;
+}
+
+void player_app_apply_graphics_preset(PlayerApp *app, int preset) {
+    if (!app || !player_graphics_preset_row(preset)) return;
+    app->settings.graphics_preset = preset;
+    maybe_persist_settings(app);
+}
+
+void player_app_cycle_graphics_preset(PlayerApp *app, int direction) {
+    if (!app) return;
+    int current = player_app_graphics_preset(app);
+    int next;
+    if (current == PLAYER_PRESET_CUSTOM) {
+        next = direction < 0 ? PLAYER_PRESET_COUNT - 1 : PLAYER_PRESET_LOW;
+    } else if (direction < 0) {
+        next = current == PLAYER_PRESET_LOW ? PLAYER_PRESET_COUNT - 1 : current - 1;
+    } else {
+        next = current + 1 >= PLAYER_PRESET_COUNT ? PLAYER_PRESET_LOW : current + 1;
+    }
+    player_app_apply_graphics_preset(app, next);
+}
+
+void player_session_apply_graphics_preset(const PlayerSettings *settings, bool enhanced,
+                                          NkRuntimeConfig *config) {
+    const PlayerGraphicsPresetRow *row =
+        settings ? player_graphics_preset_row(settings->graphics_preset) : NULL;
+    if (!config || !enhanced || !row) return;
+    config->resolution_scale = row->resolution_scale;
+    config->present_scaling = row->present_scaling;
+    config->vsync = row->vsync;
+    if (row->fullscreen >= 0) config->fullscreen = row->fullscreen != 0;
 }
 
 const char *player_present_scaling_label(int scaling) {
@@ -2445,6 +2560,13 @@ void player_app_cycle_fps_cap(PlayerApp *app, int direction) {
 void player_app_toggle_fullscreen(PlayerApp *app) {
     if (!app) return;
     app->settings.fullscreen = !app->settings.fullscreen;
+    /* Only a preset that sets fullscreen (Handheld) turns Custom: under the others the row is
+       the user's own in every session, so the preset still holds. */
+    {
+        const PlayerGraphicsPresetRow *row =
+            player_graphics_preset_row(player_app_graphics_preset(app));
+        if (row && row->fullscreen >= 0) graphics_preset_row_edited(app);
+    }
     maybe_persist_settings(app);
 }
 
@@ -2744,6 +2866,7 @@ bool player_ui_canvas_fit(int pixel_width, int pixel_height,
 void player_app_toggle_vsync(PlayerApp *app) {
     if (!app) return;
     app->settings.vsync = !app->settings.vsync;
+    graphics_preset_row_edited(app);
     maybe_persist_settings(app);
 }
 
@@ -5148,6 +5271,10 @@ void player_launch_work_run(PlayerLaunchWork *work) {
             snprintf(session->config.ace_spec, sizeof(session->config.ace_spec), "off");
             ace.on = false;
         }
+        /* The graphics preset (#2150) overlays the display rows for Enhanced and Ace only:
+           an Authentic run keeps the user's own rows, since a render scale above 1x reaches
+           guest VRAM (docs/ENHANCEMENT_CONTRACT.md 10.3). */
+        player_session_apply_graphics_preset(&work->settings, ace.on, &session->config);
         session->config.ace_report_path[0] = '\0';
         if (ace.on && player_ace_report_path(session->user_data_root, game->disc_id,
                                              session->config.ace_report_path,

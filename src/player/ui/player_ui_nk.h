@@ -558,6 +558,7 @@ typedef enum {
     PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST,  /* Automatic, On, Off */
     PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE,      /* Standard, Large, Larger (100, 125, 150%) */
     PLAYER_UI_SETTINGS_OPEN_ACE,             /* Settings > Enhanced, the library's page */
+    PLAYER_UI_SETTINGS_CYCLE_PRESET,         /* the next graphics preset (#2150) */
     PLAYER_UI_SETTINGS_CYCLE_PLAY_MODE,      /* that page's play mode: the library's default,
                                                 or the title's choice on a title's page */
     PLAYER_UI_SETTINGS_CYCLE_ENHANCED_PART,  /* the part in the action's title_index */
@@ -613,6 +614,7 @@ typedef struct {
     const char *resolution;         /* "2x (960x544)" */
     const char *pacing;             /* "PSP timing" */
     const char *scaling;            /* "Sharp" */
+    const char *preset;             /* "Medium", or "Custom" (#2150) */
     bool vsync;
     bool fullscreen;
     int volume;                     /* 0-100 */
@@ -643,6 +645,11 @@ typedef struct {
     const char *controller_line;    /* "Keyboard ready" or the pad's name */
     const char *saves_folder;
     const char *notice;             /* a settings notice (a failed save), or NULL */
+    /* The main page's graphics preset note (#2150): where the preset applies, or NULL for
+       Custom. Drawn when there is no notice; in the warning colour when it names a value
+       the preset could not set. */
+    const char *preset_notice;
+    bool preset_notice_warns;
     /* Build tools and cache: builds share compiled system libraries (#1306) */
     bool share_system_libraries;
     /* Updates (VIEW_UPDATES): what the last step found, in words */
@@ -976,6 +983,7 @@ enum {
     PLAYER_UI_ID_SETTINGS_ONLINE = 0x450Du,
     PLAYER_UI_ID_SETTINGS_NOTICES = 0x450Eu,
     PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS = 0x450Fu,
+    PLAYER_UI_ID_SETTINGS_PRESET = 0x4510u,           /* the GAME card's graphics preset */
     PLAYER_UI_ID_SETTINGS_ONLINE_MODE = 0x4511u,
     PLAYER_UI_ID_SETTINGS_NEWS = 0x4513u,
     PLAYER_UI_ID_SETTINGS_REPORTS = 0x4514u,
