@@ -1035,6 +1035,395 @@ static void expect(int ok, const char *scenario, const char *what) {
     }
 }
 
+/* Widescreen Fill (#1881), the software rasterizer's wing canvases. One list on a display
+ * framebuffer: sceGuClear-style 64-pixel clear strips, a transform-mode quad from guest x -240
+ * to 720 (rows 68..203), the band shapes below, and a through-mode bar over the screen's width
+ * (rows 100..139); the fade variant ends with an untextured whole-screen sprite.
+ *
+ * The band shapes pin where the wings put geometry. Rows 4..63 hold shapes in or across the
+ * left edge, rows 208..267 shapes in or across the right edge: flat triangle pairs, a gouraud
+ * pair across the edge, and transform-mode sprites, one with a corner in (-1, 0). Every corner
+ * lies at a non-integer multiple of 1/16 that the identity transform keeps exact. Each shape
+ * is drawn a second time WIDE_K pixels toward the centre, wholly on screen, so the authentic
+ * frame shows what the rasterizer gives that shape whole: left-wing canvas column c must hold
+ * frame column c - D + WIDE_K, and right-wing column c frame column c - D + 480 - WIDE_K.
+ * Moving a wing by a pixel, dropping one, or rounding a sprite corner differently fails that.
+ *
+ * At each window aspect, with Fill on, guest VRAM must be byte-identical to Fill off, the
+ * wings must hold the quad, the shapes as mapped above and the clear colour elsewhere, the bar
+ * must reach no wing pixel, the fade must cover them, a scissor narrower than the screen must
+ * keep every draw out of them, a shown canvas must be cleared by its next wing draw, the GE
+ * clock must not change, and the vertices a backend's wing hook receives must be the guest's,
+ * snapped to the 28.4 grid and shifted by whole pixels. gpu-coherence-selftest runs the same
+ * list on the Vulkan backend and compares the canvases. */
+#define LIST_WIDE      0x08130000u
+#define WIDE_VERTS     0x08134000u
+#define WIDE_FB        0x04000000u
+#define WIDE_VRAM      0x04000000u
+#define WIDE_VRAM_SIZE 0x00200000u
+#define WIDE_D         76
+#define WIDE_K         270
+#define WIDE_BG        0xff302010u
+#define WIDE_QUAD      0xff20c040u
+#define WIDE_BAR       0xff0000ffu
+#define WIDE_FADE      0xff808080u
+enum { WF_FADE = 1, WF_NARROW = 2, WF_NOCLEAR = 4, WF_CAPTURE = 8 };
+
+typedef struct { float x0, x1, y0, y1; uint32_t c0, c1; int sprite, right; } WideShape;
+static const WideShape k_wide_shapes[] = {
+    { -50.625f,  -30.0f,     4.25f,  17.0f,   0xff4060a0u, 0xff4060a0u, 0, 0 },
+    { -20.625f,   19.6875f, 21.25f,  34.0f,   0xff1080f0u, 0xfff08010u, 0, 0 },
+    { -11.25f,    -0.9375f, 38.25f,  51.0f,   0xffa0a020u, 0xffa0a020u, 1, 0 },
+    {  -0.9375f,  18.75f,   55.25f,  63.75f,  0xff20a0a0u, 0xff20a0a0u, 1, 0 },
+    { 510.0f,    530.625f,  208.25f, 221.0f,  0xff6040a0u, 0xff6040a0u, 0, 1 },
+    { 460.3125f, 500.625f,  225.25f, 238.0f,  0xfff08010u, 0xff1080f0u, 0, 1 },
+    { 491.25f,   501.5625f, 242.25f, 255.0f,  0xff20a0a0u, 0xff20a0a0u, 1, 1 },
+    { 460.3125f, 481.875f,  259.25f, 267.75f, 0xffa0a020u, 0xffa0a020u, 1, 1 },
+};
+#define WIDE_NSHAPES (sizeof k_wide_shapes / sizeof k_wide_shapes[0])
+
+static uint32_t s_wide_vc;
+
+static void wide_vtx(uint32_t color, float x, float y) {
+    uint8_t *d = (uint8_t *)SR_HOST(s_wide_vc);
+    const float pos[3] = { x, y, 0.0f };
+    memcpy(d, &color, 4);
+    memcpy(d + 4, pos, 12);
+    s_wide_vc += 16u;
+}
+
+static void wide_matrix(uint32_t cmd, const float *m, int n) {
+    W(cmd, 0u);
+    for (int i = 0; i < n; i++) W(cmd + 1u, f24(m[i]));
+}
+
+/* One shape, moved `shift` guest pixels, in clip space under the identity transform. */
+static void wide_shape(const WideShape *sh, float shift) {
+    const float x0 = (sh->x0 + shift - 240.0f) / 240.0f, x1 = (sh->x1 + shift - 240.0f) / 240.0f;
+    const float y0 = (136.0f - sh->y0) / 136.0f, y1 = (136.0f - sh->y1) / 136.0f;
+    const uint32_t at = s_wide_vc;
+    W(0x50, sh->c0 != sh->c1 ? 1u : 0u);   /* gouraud for the gradient pairs */
+    if (sh->sprite) {
+        wide_vtx(sh->c1, x0, y0); wide_vtx(sh->c1, x1, y1);
+    } else {
+        wide_vtx(sh->c0, x0, y0); wide_vtx(sh->c1, x1, y0); wide_vtx(sh->c0, x0, y1);
+        wide_vtx(sh->c1, x1, y0); wide_vtx(sh->c1, x1, y1); wide_vtx(sh->c0, x0, y1);
+    }
+    W(0x01, at & 0x00FFFFFFu);
+    W(0x04, sh->sprite ? (6u << 16) | 2u : (3u << 16) | 6u);
+}
+
+static void build_wide_list(int flags) {
+    const uint32_t through = (7u << 2) | (3u << 7) | (1u << 23), transform = (7u << 2) | (3u << 7);
+    s_pc = LIST_WIDE;
+    s_wide_vc = WIDE_VERTS;
+    W(0x10, 0x080000u);                    /* BASE: vertices at 0x08xxxxxx */
+    W(0x13, 0u);
+    W(0x9C, WIDE_FB & 0x00FFFFFFu);
+    W(0x9D, 512u);
+    W(0xD2, 3u);
+    W(0x15, 0u);
+    W(0x16, (271u << 10) | 479u);
+    W(0xD4, 0u);
+    W(0xD5, (271u << 10) | ((flags & WF_NARROW) ? 400u : 479u));
+    W(0xD6, 0u);
+    W(0xD7, 0xFFFFu);
+    for (uint32_t cmd = 0x17; cmd <= 0x28; cmd++) W(cmd, 0u);   /* every unit off */
+    W(0x50, 0u);                           /* flat shading */
+    W(0xE8, 0u);
+    W(0xE9, 0u);
+
+    uint32_t at = s_wide_vc;
+    if (!(flags & (WF_NOCLEAR | WF_CAPTURE))) {
+        for (int i = 0; i < 8; i++) {
+            wide_vtx(WIDE_BG, (float)(i * 64), 0.0f);
+            wide_vtx(WIDE_BG, (float)(i * 64 + 64), 272.0f);
+        }
+        W(0xD3, 0x301u);                   /* clear colour and alpha */
+        W(0x12, through);
+        W(0x01, at & 0x00FFFFFFu);
+        W(0x04, (6u << 16) | 16u);
+        W(0xD3, 0u);
+    }
+
+    static const float ident43[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 };
+    static const float ident44[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    wide_matrix(0x3A, ident43, 12);
+    wide_matrix(0x3C, ident43, 12);
+    wide_matrix(0x3E, ident44, 16);
+    W(0x42, f24(240.0f));
+    W(0x43, f24(-136.0f));
+    W(0x44, f24(-32000.0f));
+    W(0x45, f24(2048.0f));
+    W(0x46, f24(2048.0f));
+    W(0x47, f24(32767.5f));
+    W(0x4C, (2048u - 240u) << 4);
+    W(0x4D, (2048u - 136u) << 4);
+    W(0x12, transform);
+    if (flags & WF_CAPTURE) {
+        /* Corners off the 1/16 grid (guest x about -50.3, 39.6, 520.4 and -10.3), so the
+         * 28.4 snap before the wing shift is visible in what the wing hook receives. */
+        at = s_wide_vc;
+        wide_vtx(WIDE_QUAD, -1.2095833f, 0.5f); wide_vtx(WIDE_QUAD, -0.835f, 0.5f);
+        wide_vtx(WIDE_QUAD, -1.2095833f, -0.5f);
+        wide_vtx(WIDE_QUAD, 1.2016f, 0.5f); wide_vtx(WIDE_QUAD, 0.835f, 0.5f);
+        wide_vtx(WIDE_QUAD, 1.2016f, -0.5f);
+        W(0x01, at & 0x00FFFFFFu);
+        W(0x04, (3u << 16) | 6u);
+        at = s_wide_vc;
+        wide_vtx(WIDE_BAR, -1.0429f, 0.9f); wide_vtx(WIDE_BAR, -0.5f, 0.8f);
+        W(0x01, at & 0x00FFFFFFu);
+        W(0x04, (6u << 16) | 2u);
+        W(0x0F, 0u);
+        W(0x0C, 0u);
+        return;
+    }
+    if (!(flags & WF_NOCLEAR)) {
+        at = s_wide_vc;                    /* clip x -2..2 is guest x -240..720 */
+        wide_vtx(WIDE_QUAD, -2.0f, 0.5f); wide_vtx(WIDE_QUAD, 2.0f, 0.5f); wide_vtx(WIDE_QUAD, -2.0f, -0.5f);
+        wide_vtx(WIDE_QUAD, 2.0f, 0.5f); wide_vtx(WIDE_QUAD, 2.0f, -0.5f); wide_vtx(WIDE_QUAD, -2.0f, -0.5f);
+        W(0x01, at & 0x00FFFFFFu);
+        W(0x04, (3u << 16) | 6u);
+    }
+    for (size_t i = 0; i < WIDE_NSHAPES; i++) {
+        wide_shape(&k_wide_shapes[i], 0.0f);
+        wide_shape(&k_wide_shapes[i], k_wide_shapes[i].right ? -(float)WIDE_K : (float)WIDE_K);
+    }
+    W(0x50, 0u);
+
+    at = s_wide_vc;
+    wide_vtx(WIDE_BAR, 0.0f, 100.0f); wide_vtx(WIDE_BAR, 480.0f, 140.0f);
+    if (flags & WF_FADE) { wide_vtx(WIDE_FADE, 0.0f, 0.0f); wide_vtx(WIDE_FADE, 480.0f, 272.0f); }
+    W(0x12, through);
+    W(0x01, at & 0x00FFFFFFu);
+    W(0x04, (6u << 16) | ((flags & WF_FADE) ? 4u : 2u));
+    W(0x0F, 0u);
+    W(0x0C, 0u);
+}
+
+/* Run the list with wing width `wing` from zeroed VRAM and copy all of guest VRAM to `vram`. */
+static void run_wide_list(int wing, int flags, uint8_t *vram) {
+    memset(SR_HOST(WIDE_VRAM), 0, WIDE_VRAM_SIZE);
+    expect(ge_wide_set_wing(wing) == wing, "wide_fill", "the wing width is taken as given");
+    ge_wide_note_display(WIDE_FB);
+    build_wide_list(flags);
+    expect(ge_run_list(LIST_WIDE, 0) == 0, "wide_fill", "list did not reach END");
+    memcpy(vram, SR_HOST(WIDE_VRAM), WIDE_VRAM_SIZE);
+}
+
+/* The colour canvas pixel (x, y) must hold, from the authentic frame `frame` of the same list. */
+static uint32_t wide_want(const uint32_t *frame, int wing, int flags, uint32_t x, uint32_t y) {
+    const uint32_t d = (uint32_t)wing;
+    if (x >= 2u * d) return 0u;
+    if (flags & WF_FADE) return WIDE_FADE;
+    if (y >= 68u && y <= 203u) return (flags & WF_NOCLEAR) ? 0u : WIDE_QUAD;
+    if (y < 68u && x < d) return frame[y * 512u + x - d + WIDE_K];
+    if (y > 203u && x >= d) return frame[y * 512u + x - d + 480u - WIDE_K];
+    return (flags & WF_NOCLEAR) ? 0u : WIDE_BG;
+}
+
+static size_t wide_check_canvas(const char *name, int wing, int flags, const uint32_t *frame) {
+    int fmt = -1;
+    const uint32_t *c = ge_wide_canvas(WIDE_FB, &fmt);
+    if (!c || fmt != 3) { expect(0, "wide_fill", "Fill on draws the canvas"); return 1; }
+    size_t bad = 0;
+    for (uint32_t y = 0; y < 272u; y++)
+        for (uint32_t x = 0; x < GE_WIDE_CANVAS_W; x++) {
+            const uint32_t want = wide_want(frame, wing, flags, x, y);
+            if (c[y * GE_WIDE_CANVAS_W + x] != want) {
+                if (!bad)
+                    fprintf(stderr, "wide_fill: %s canvas (%u,%u) = %08x, want %08x (flags=%d)\n",
+                            name, x, y, (unsigned)c[y * GE_WIDE_CANVAS_W + x], (unsigned)want, flags);
+                bad++;
+            }
+        }
+    /* Spot checks the mapping cannot satisfy vacuously: each shape is really there. */
+    const uint32_t d = (uint32_t)wing;
+    if (!(flags & WF_FADE)) {
+        static const struct { int gx, y, shape; } spots[] = {
+            { -40, 10, 0 }, { -12, 45, 2 }, { -1, 60, 3 }, { 520, 215, 4 }, { 491, 250, 6 }, { 480, 263, 7 },
+        };
+        for (size_t i = 0; i < sizeof spots / sizeof spots[0]; i++) {
+            const uint32_t x = (uint32_t)(spots[i].gx < 0 ? spots[i].gx + wing : spots[i].gx - 480 + wing);
+            if (x >= 2u * d) continue;
+            /* RGB only: without a clear the frame's alpha (stencil) stays 0 under the shapes. */
+            if ((c[(uint32_t)spots[i].y * GE_WIDE_CANVAS_W + x] ^ k_wide_shapes[spots[i].shape].c1) & 0x00FFFFFFu) {
+                fprintf(stderr, "wide_fill: %s guest (%d,%d) is %08x, not shape %d\n", name, spots[i].gx,
+                        spots[i].y, (unsigned)c[(uint32_t)spots[i].y * GE_WIDE_CANVAS_W + x], spots[i].shape);
+                bad++;
+            }
+        }
+        /* The sprite from -11.25 covers guest column -12, not -13 (floor, not truncation). */
+        if (d >= 13u && !((c[45u * GE_WIDE_CANVAS_W + d - 13u] ^ k_wide_shapes[2].c1) & 0x00FFFFFFu)) {
+            fprintf(stderr, "wide_fill: %s sprite reaches guest column -13\n", name);
+            bad++;
+        }
+    }
+    return bad;
+}
+
+/* Wing hooks of a fake backend that records what it is handed; the guest's own draws are
+ * declined, so the software rasterizer draws the authentic frame. */
+static GeVtx s_cap_auth[3][3], s_cap_wing[3][3];
+static int s_cap_cols[3][2], s_cap_nauth, s_cap_nwing;
+static int cap_tri(const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp) {
+    (void)persp;
+    if (s_cap_nauth < 3) { s_cap_auth[s_cap_nauth][0] = *a; s_cap_auth[s_cap_nauth][1] = *b; s_cap_auth[s_cap_nauth][2] = *c; }
+    s_cap_nauth++;
+    return 0;
+}
+static int cap_sprite(const GeVtx *a, const GeVtx *b, int persp) {
+    (void)persp;
+    if (s_cap_nauth < 3) { s_cap_auth[s_cap_nauth][0] = *a; s_cap_auth[s_cap_nauth][1] = *b; }
+    s_cap_nauth++;
+    return 0;
+}
+static int cap_wing_tri(uint32_t fb, int x0, int x1, const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp) {
+    (void)fb; (void)persp;
+    if (s_cap_nwing < 3) {
+        s_cap_wing[s_cap_nwing][0] = *a; s_cap_wing[s_cap_nwing][1] = *b; s_cap_wing[s_cap_nwing][2] = *c;
+        s_cap_cols[s_cap_nwing][0] = x0; s_cap_cols[s_cap_nwing][1] = x1;
+    }
+    s_cap_nwing++;
+    return 1;
+}
+static int cap_wing_sprite(uint32_t fb, int x0, int x1, const GeVtx *a, const GeVtx *b, int persp) {
+    (void)fb; (void)persp;
+    if (s_cap_nwing < 3) {
+        s_cap_wing[s_cap_nwing][0] = *a; s_cap_wing[s_cap_nwing][1] = *b;
+        s_cap_cols[s_cap_nwing][0] = x0; s_cap_cols[s_cap_nwing][1] = x1;
+    }
+    s_cap_nwing++;
+    return 1;
+}
+
+static void test_ge_wide_capture(uint8_t *vram) {
+    GeGpuHooks hooks;
+    memset(&hooks, 0, sizeof hooks);
+    hooks.tri = cap_tri;
+    hooks.sprite = cap_sprite;
+    hooks.flush = hook_flush;
+    hooks.vram_dirty = hook_vram_dirty;
+    hooks.wing_tri = cap_wing_tri;
+    hooks.wing_sprite = cap_wing_sprite;
+    s_cap_nauth = s_cap_nwing = 0;
+    ge_set_gpu_hooks(&hooks);
+    run_wide_list(WIDE_D, WF_CAPTURE, vram);
+    ge_set_gpu_hooks(NULL);
+    const int d = WIDE_D;
+    expect(s_cap_nauth == 3 && s_cap_nwing == 3, "wide_fill",
+           "each of the two triangles and the sprite reaches one wing hook");
+    expect(ge_wide_drawn(WIDE_FB), "wide_fill", "a wing hook that draws marks the canvas drawn");
+    if (s_cap_nauth != 3 || s_cap_nwing != 3) { ge_wide_set_wing(0); return; }
+    int off_grid = 0;
+    for (int t = 0; t < 2; t++) {
+        const int shift = t == 0 ? d : d - 480;
+        expect(s_cap_cols[t][0] == (t == 0 ? 0 : d) && s_cap_cols[t][1] == (t == 0 ? d - 1 : 2 * d - 1),
+               "wide_fill", "a wing hook gets its wing's canvas columns");
+        for (int i = 0; i < 3; i++) {
+            const float x = s_cap_auth[t][i].x;
+            const float want = floorf(x * 16.0f + 0.375f) / 16.0f + (float)shift;
+            if (x * 16.0f != floorf(x * 16.0f)) off_grid = 1;
+            if (s_cap_wing[t][i].x != want || s_cap_wing[t][i].y != s_cap_auth[t][i].y) {
+                fprintf(stderr, "wide_fill: wing vertex x %.6f, want %.6f (guest %.6f)\n",
+                        (double)s_cap_wing[t][i].x, (double)want, (double)x);
+                expect(0, "wide_fill", "a wing triangle is the guest's, snapped to 28.4 and shifted");
+            }
+        }
+    }
+    expect(off_grid, "wide_fill", "the capture list has corners off the 28.4 grid");
+    expect(s_cap_cols[2][0] == 0 && s_cap_cols[2][1] == d - 1, "wide_fill", "the sprite reaches the left wing");
+    for (int i = 0; i < 2; i++)
+        expect(s_cap_wing[2][i].x == floorf(s_cap_auth[2][i].x) + (float)d, "wide_fill",
+               "a transform sprite's corners are floored, then shifted");
+    ge_wide_set_wing(0);
+}
+
+static void test_ge_wide_fill(void) {
+    /* Window sizes at 16:9, 21:9 and 32:9 and the wing each gives. The PSP's 480x272 is 30:17,
+     * which a 16:9 window widens by under 4 pixels, so 16:9 has no wings. */
+    static const struct { int w, h, wing; const char *name; } aspects[] = {
+        { 1920, 1080, 0, "16:9" }, { 2520, 1080, WIDE_D, "21:9" }, { 3840, 1080, 240, "32:9" },
+    };
+    for (size_t i = 0; i < sizeof aspects / sizeof aspects[0]; i++)
+        expect(ge_wide_wing_for(aspects[i].w, aspects[i].h) == aspects[i].wing, "wide_fill",
+               "the wing width of a 16:9, 21:9 or 32:9 window");
+    expect(ge_wide_wing_for(1280, 1024) == 0, "wide_fill", "a window narrower than 30:17 has no wings");
+    expect(ge_wide_wing_for(7680, 1080) == GE_WIDE_MAX_WING, "wide_fill", "the wing is capped");
+    expect(ge_wide_set_wing(77) == 76 && ge_wide_set_wing(0) == 0, "wide_fill",
+           "a wing width rounds down to a multiple of 4");
+
+    uint8_t *off = (uint8_t *)malloc(WIDE_VRAM_SIZE), *on = (uint8_t *)malloc(WIDE_VRAM_SIZE);
+    if (!off || !on) { expect(0, "wide_fill", "no memory"); free(off); free(on); return; }
+    for (size_t a = 0; a < sizeof aspects / sizeof aspects[0]; a++) {
+        const int wing = ge_wide_wing_for(aspects[a].w, aspects[a].h);
+        for (int fade = 0; fade < 2; fade++) {
+            const int flags = fade ? WF_FADE : 0;
+            run_wide_list(0, flags, off);
+            expect(!ge_wide_canvas(WIDE_FB, NULL) && !ge_wide_drawn(WIDE_FB), "wide_fill",
+                   "Fill off makes no canvas");
+            run_wide_list(wing, flags, on);
+            if (memcmp(off, on, WIDE_VRAM_SIZE)) {
+                fprintf(stderr, "wide_fill: %s (wing %d) changed guest VRAM (fade=%d)\n",
+                        aspects[a].name, wing, fade);
+                expect(0, "wide_fill", "Fill leaves guest VRAM and the authentic frame unchanged");
+            }
+            uint32_t bar;
+            memcpy(&bar, on + (120u * 512u + 240u) * 4u, 4u);
+            expect(fade || bar == WIDE_BAR, "wide_fill", "the bar is in the frame");
+            if (!wing) {
+                expect(!ge_wide_canvas(WIDE_FB, NULL) && !ge_wide_drawn(WIDE_FB), "wide_fill",
+                       "a 16:9 window makes no canvas");
+                continue;
+            }
+            expect(ge_wide_drawn(WIDE_FB), "wide_fill", "Fill on draws the canvas");
+            expect(!wide_check_canvas(aspects[a].name, wing, flags, (const uint32_t *)off), "wide_fill",
+                   "the wings hold the quad, the shapes where a wider screen puts them, and the clear");
+            ge_wide_shown(WIDE_FB);
+            expect(!ge_wide_drawn(WIDE_FB), "wide_fill", "showing a frame resets its drawn flag");
+            if (!fade) {
+                /* The next frame draws its shapes with no clear: the first wing draw clears the
+                 * shown canvas, so it holds this frame's shapes on black, not the last frame's. */
+                memset(SR_HOST(WIDE_VRAM), 0, WIDE_VRAM_SIZE);
+                ge_wide_note_display(WIDE_FB);
+                build_wide_list(WF_NOCLEAR);
+                expect(ge_run_list(LIST_WIDE, 0) == 0, "wide_fill", "list did not reach END");
+                expect(ge_wide_drawn(WIDE_FB), "wide_fill", "the next frame's wing draws mark it drawn");
+                expect(!wide_check_canvas(aspects[a].name, wing, WF_NOCLEAR, (const uint32_t *)SR_HOST(WIDE_VRAM)),
+                       "wide_fill", "a shown canvas is cleared by the next frame's first wing draw");
+                ge_wide_shown(WIDE_FB);
+                memset(SR_HOST(WIDE_VRAM), 0, WIDE_VRAM_SIZE);
+                build_wide_list(WF_NARROW);
+                expect(ge_run_list(LIST_WIDE, 0) == 0, "wide_fill", "list did not reach END");
+                expect(!ge_wide_drawn(WIDE_FB), "wide_fill",
+                       "a frame that draws no wing primitive leaves the canvas undrawn (shown black)");
+            }
+            ge_wide_set_wing(0);
+        }
+    }
+    run_wide_list(WIDE_D, WF_NARROW, on);
+    expect(!ge_wide_canvas(WIDE_FB, NULL) && !ge_wide_drawn(WIDE_FB), "wide_fill",
+           "a scissor narrower than the screen keeps every draw out of the wings");
+    ge_wide_set_wing(0);
+
+    /* Host-only: the wing passes charge no GE time. */
+    ge_timing_set_enabled(1);   /* off in this test otherwise */
+    run_wide_list(0, 0, off);
+    const double clk_off = ge_timing_run_clk();
+    run_wide_list(240, 0, on);
+    const double clk_on = ge_timing_run_clk();
+    ge_wide_set_wing(0);
+    ge_timing_set_enabled(0);
+    if (!(clk_off > 0.0 && clk_on == clk_off)) {
+        fprintf(stderr, "wide_fill: GE clock %.3f with Fill off, %.3f with Fill on\n", clk_off, clk_on);
+        expect(0, "wide_fill", "Fill charges no GE time");
+    }
+
+    test_ge_wide_capture(on);
+    free(off);
+    free(on);
+}
+
 static void print_mask(FILE *out, uint32_t mask) {
     if (!mask) { fputs("none", out); return; }
     const char *sep = "";
@@ -1945,6 +2334,7 @@ int main(int argc, char **argv) {
     test_ge_mip_use_trace_routes();
     test_ge_immediate_mode();
     test_ge_immediate_stream();
+    test_ge_wide_fill();
     build_lists();
     expect_api_contract();
 

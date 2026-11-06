@@ -1083,7 +1083,7 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         """The CPython runtime's own libraries and the packages without licence files (#1285).
 
         Release policy (#1285): the source archive also carries the source
-        releases of the third-party libraries inside the CPython 3.15.1 embeddable
+        releases of the third-party libraries inside the CPython 3.15.2 embeddable
         runtime (CPython's PCbuild/get_externals.bat, checked against the shipped
         binaries), the Microsoft C runtime ships its redistribution terms instead, and
         the five MSYS2 packages whose binaries carry no licence file get theirs from

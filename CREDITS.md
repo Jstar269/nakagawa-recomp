@@ -44,7 +44,7 @@ Nakagawa has since substantially extended and modified that codebase. This repos
   decoder in [`third_party/stb/`](third_party/stb/), for the player's prompt glyphs and the disc art read from your own disc.
 - **Kenney "Input Prompts" and "Interface Sounds" — Kenney Vleugels ([kenney.nl](https://kenney.nl))** — CC0-1.0. The
   next UI's button prompt glyphs and its optional launcher sounds, in [`third_party/kenney/`](third_party/kenney/).
-- **Font fixtures** — Gudea (Agustina Mingote), Gowun Dodum (The Gowun Dodum Project Authors) and M+ 1p (The M+ Project Authors), all SIL Open Font License 1.1, used only by tests ([`fixtures/fonts/`](fixtures/fonts/)).
+- **Font fixtures** — Gudea (Agustina Mingote), Gowun Dodum (The Gowun Dodum Project Authors), M+ 1p (The M+ Project Authors) and Liberation Sans and Liberation Serif 2.1.5 (Google Corporation and Red Hat, Inc.; Reserved Font Names Arimo, Tinos, Cousine and Liberation), all SIL Open Font License 1.1 ([`fixtures/fonts/`](fixtures/fonts/)). The build converts Liberation (Latin), M+ 1p (Japanese) and Gowun Dodum (Korean) into the project's stand-in PSP fonts; Gudea is used only by tests.
 
 The authoritative, component-by-component provenance records are [`NOTICE.md`](NOTICE.md) and the
 [`public provenance ledger`](assets/public_provenance_ledger.json).

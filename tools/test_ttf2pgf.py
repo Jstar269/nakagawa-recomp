@@ -71,6 +71,14 @@ JAPANESE_PIN = JAPANESE_FONT_DIR / "PIN.json"
 KOREAN_FONT_DIR = ROOT / "fixtures" / "fonts" / "gowundodum"
 KOREAN_FONT = KOREAN_FONT_DIR / "GowunDodum-Regular.ttf"
 KOREAN_PIN = KOREAN_FONT_DIR / "PIN.json"
+LIBERATION_DIR = ROOT / "fixtures" / "fonts" / "liberation"
+#: The console's Latin index order within a size group (#2005): family, then style.
+LATIN_FACES = (
+    ("LiberationSans-Regular", "Regular"), ("LiberationSerif-Regular", "Regular"),
+    ("LiberationSans-Italic", "Italic"), ("LiberationSerif-Italic", "Italic"),
+    ("LiberationSans-Bold", "Bold"), ("LiberationSerif-Bold", "Bold"),
+    ("LiberationSans-BoldItalic", "Bold Italic"), ("LiberationSerif-BoldItalic", "Bold Italic"),
+)
 
 DEFAULT_CODES = (0x20, 0x7E)
 PPEM_SHAPE = 16  # large enough that the source-owned H shape is unambiguous
@@ -935,6 +943,43 @@ class ProjectCodePointCoverageTests(unittest.TestCase):
         missing = [code for code in points.codes if font.glyph_id(code) is None]
         self.assertEqual(missing, [], "M PLUS 1p must cover all 348 Latin text points")
 
+    def test_latin_cyrillic_set_adds_the_111_console_characters(self) -> None:
+        """#2005: 111 of the console Latin fonts' 322 non-ASCII characters were missing."""
+        points = ttf2pgf.latin_cyrillic_text_code_points()
+        self.assertEqual(len(points.codes), 454)
+        self.assertEqual(points.codes, tuple(sorted(set(points.codes))))
+        self.assertEqual(points.source, "builtin:latin-cyrillic-text")
+        self.assertEqual(points.sha256, ttf2pgf.LATIN_CYRILLIC_CODE_POINTS_SHA256)
+        codes = set(points.codes)
+        first = set(ttf2pgf.latin_1_text_code_points().codes)
+        added = codes - first
+        self.assertEqual(len(added), 111)
+        cyrillic = set(range(0x0401, 0x040D)) | set(range(0x040E, 0x0450)) | set(range(0x0451, 0x045D)) \
+            | {0x045E, 0x045F, 0x0490, 0x0491, 0x04C0}
+        self.assertEqual(len(cyrillic), 95)
+        self.assertTrue(cyrillic <= added)
+        self.assertEqual(added - cyrillic, {0x0192, 0x02C6, 0x02DC, 0x0301, 0x0306, 0x0308, 0x0338, 0x2116,
+                                            0x2206, 0x2219, 0x221A, 0x221E, 0x2248, 0x2260, 0x2264, 0x2265})
+        self.assertEqual(first - codes, {0x2011, 0x2023, 0x2024, 0x2025, 0x2027})
+        # Every Windows-1252 character is in it.
+        cp1252 = {ord(bytes((byte,)).decode("cp1252")) for byte in (*range(0x20, 0x7F), *range(0x80, 0x100))
+                  if byte not in (0x81, 0x8D, 0x8F, 0x90, 0x9D)}
+        self.assertTrue(cp1252 <= codes)
+
+    def test_every_liberation_face_draws_the_latin_cyrillic_set(self) -> None:
+        codes = ttf2pgf.latin_cyrillic_text_code_points().codes
+        license_text = (LIBERATION_DIR / "OFL.txt").read_text(encoding="utf-8")
+        for stem, _style in LATIN_FACES:
+            with self.subTest(face=stem):
+                data = (LIBERATION_DIR / f"{stem}.ttf").read_bytes()
+                pin = load_pin(LIBERATION_DIR / f"{stem}.pin.json", data)
+                self.assertEqual(pin.spdx, "OFL-1.1")
+                self.assertEqual(pin.license_text, license_text)
+                self.assertIn("Liberation", pin.reserved_font_names)
+                ttf2pgf.validate_output_name("Nakagawa Open Latin", pin)
+                font = ttf2pgf._Ttf(data)
+                self.assertEqual([code for code in codes if font.glyph_id(code) is None], [])
+
     def test_korean_set_is_codec_derived_and_gowun_covers_every_assigned_point(self) -> None:
         points = ttf2pgf.ks_x_1001_korean_code_points()
         rows = (1, 2, 3, 4, 6, 7, 8, 9)
@@ -1326,41 +1371,86 @@ class HeaderAndEllipsisOptionTests(CliRefusalMixin):
                                 "--baseline-ellipsis")
 
 
-class ProjectLatinStrikeTests(unittest.TestCase):
-    """#1300: the build's Latin strikes meet the console fonts of their size in the numbers that make
-    text look different: where the ink sits, how thick the strokes are, and how far each letter moves.
+def _makefile_flags(variable: str) -> list[str]:
+    match = re.search(rf"^{variable} := (.+)$", read_makefile(ROOT), re.MULTILINE)
+    assert match is not None, f"the Makefile does not define {variable}"
+    return match.group(1).split()
 
-    The targets are aggregates measured on console Latin fonts of each size; no glyph shape is taken
-    from them. Hot Shots Tennis opens the second size's regular face (ltn8.pgf). The bounds are one pixel
-    for an edge, because the source font's proportions are not the console's, and a fifth of a pixel for
-    a stem.
+
+_CONVERT_FLAGS = {
+    "--ppem": "ppem", "--embolden-x": "embolden_x", "--embolden-y": "embolden_y",
+    "--embolden-advance": "embolden_advance", "--nominal-size": "nominal_size_26_6",
+    "--resolution": "resolution_26_6", "--header-ascender": "header_ascender_26_6",
+    "--header-descender": "header_descender_26_6", "--tracking": "tracking",
+    "--digit-advance": "digit_advance_26_6",
+}
+
+
+def _convert_arguments(tokens: list[str]) -> dict:
+    arguments: dict = {}
+    tokens = list(tokens)
+    if "--baseline-ellipsis" in tokens:
+        tokens.remove("--baseline-ellipsis")
+        arguments["baseline_ellipsis"] = True
+    for flag, value in zip(tokens[0::2], tokens[1::2], strict=True):
+        arguments[_CONVERT_FLAGS[flag]] = int(value)
+    return arguments
+
+
+def _code_set(codes: set[int]) -> ttf2pgf.CodePointSet:
+    ordered = tuple(sorted(codes))
+    canonical = "".join(f"U+{code:04X}\n" for code in ordered).encode("ascii")
+    return ttf2pgf.CodePointSet(codes=ordered, sha256=hashlib.sha256(canonical).hexdigest(), source="test")
+
+
+class ProjectLatinStrikeTests(unittest.TestCase):
+    """#1300 and #2005: each of the build's sixteen Latin faces meets the console font of its index in
+    the numbers that make text look different: where the ink sits, how thick the strokes are, and
+    how far each letter moves.
+
+    The targets are aggregates measured on console Latin fonts (font/README.md, "Measured
+    differences"); no glyph shape is taken from them. A line width is the sum of the advances of a
+    sentence and a menu line without their spaces. The bounds are 3% of a line (the source fonts'
+    capital-to-lowercase ratio is not the console's, so no spacing meets both lines exactly), one
+    pixel for an ink edge and a fifth of a pixel for a stem.
     """
 
-    MPLUS = ROOT / "fixtures" / "fonts" / "mplus1p"
-    STRIKES = (
-        ("PROJECT_LATIN_FONT_ARGS", 648, 863, -196, 11, 14, -3, 2.13, 11.43),
-        ("PROJECT_LATIN_SMALL_FONT_ARGS", 448, 576, -131, 7, 9, -2, 1.40, 7.62),
+    SENTENCE = "The quick brown fox jumps over the lazy dog.".replace(" ", "")
+    MENU = "NEW GAME  CONTINUE  OPTIONS  0123456789".replace(" ", "")
+    #: Console line widths in pixels (sentence, menu) for Latin indices 0-15.
+    LINES = (
+        (413.4, 463.5), (363.1, 406.5), (413.4, 463.5), (356.1, 405.2),
+        (432.3, 473.6), (382.4, 416.2), (432.3, 473.6), (363.8, 412.8),
+        (275.6, 309.0), (242.1, 271.1), (275.6, 309.0), (237.5, 270.2),
+        (288.1, 315.7), (254.9, 277.4), (288.1, 315.7), (242.5, 275.2),
     )
+    #: The regular sans faces' class averages in pixels (lowercase, capitals, digits).
+    CLASSES = {0: (11.435, 14.64, 14.69), 8: (7.63, 9.76, 9.80)}
+    #: Ink of the regular sans faces: nominal, header ascender and descender, x-height, cap height,
+    #: descender drop and stem.
+    INK = {0: (648, 863, -196, 11, 14, -3, 2.13), 8: (448, 576, -131, 7, 9, -2, 1.40)}
+    CODES = {ord(c) for c in SENTENCE + MENU} | set(range(0x41, 0x5B)) | set(range(0x61, 0x7B)) \
+        | set(range(0x30, 0x3A)) | {0x2E, 0x2026}
+    _cache: ClassVar[dict[int, ttf2pgf.Conversion]] = {}
+
+    @staticmethod
+    def _face(index: int) -> tuple[str, str]:
+        group = index % 8
+        return (_makefile_flags(f"PROJECT_LATIN_{group}_FACE")[0],
+                " ".join(_makefile_flags(f"PROJECT_LATIN_{group}_STYLE")))
 
     @classmethod
-    def _convert(cls, variable: str):
-        makefile = read_makefile(ROOT)
-        match = re.search(rf"^{variable} := (.+)$", makefile, re.MULTILINE)
-        assert match is not None, f"the Makefile does not define {variable}"
-        tokens = match.group(1).split()
-        tokens.remove("--baseline-ellipsis")
-        flags = dict(zip(tokens[0::2], tokens[1::2], strict=True))
-        names = {
-            "--ppem": "ppem", "--embolden-x": "embolden_x", "--embolden-y": "embolden_y",
-            "--embolden-advance": "embolden_advance", "--nominal-size": "nominal_size_26_6",
-            "--resolution": "resolution_26_6", "--header-ascender": "header_ascender_26_6",
-            "--header-descender": "header_descender_26_6",
-        }
-        data = (cls.MPLUS / "MPLUS1p-Regular.ttf").read_bytes()
-        return convert(data, input_path="MPLUS1p-Regular.ttf", output_path="nkltn.pgf",
-                       code_points=ttf2pgf.latin_1_text_code_points(), baseline_ellipsis=True,
-                       font_name="Nakagawa Open Latin", font_type="Regular",
-                       **{names[flag]: int(value) for flag, value in flags.items()})
+    def _convert(cls, index: int) -> ttf2pgf.Conversion:
+        if index not in cls._cache:
+            strike = "PROJECT_LATIN_STRIKE_ARGS" if index < 8 else "PROJECT_LATIN_SMALL_STRIKE_ARGS"
+            tokens = _makefile_flags(strike) + _makefile_flags(f"PROJECT_LATIN_{index}_SPACING")
+            stem, style = cls._face(index)
+            data = (LIBERATION_DIR / f"{stem}.ttf").read_bytes()
+            cls._cache[index] = convert(
+                data, input_path=f"{stem}.ttf", output_path="nkltn.pgf", code_points=_code_set(cls.CODES),
+                font_name="Nakagawa Open Latin", font_type=style,
+                pin=load_pin(LIBERATION_DIR / f"{stem}.pin.json", data), **_convert_arguments(tokens))
+        return cls._cache[index]
 
     @staticmethod
     def _ink_rows(glyph: Glyph) -> tuple[int, int]:
@@ -1374,10 +1464,45 @@ class ProjectLatinStrikeTests(unittest.TestCase):
         row = glyph.height // 2
         return float(sum(glyph.samples[row * glyph.width:(row + 1) * glyph.width])) / 15
 
-    def test_each_strike_meets_the_console_font_of_its_size(self) -> None:
-        for variable, nominal, ascender, descender, x_height, cap, drop, stem, advance in self.STRIKES:
-            with self.subTest(strike=variable):
-                conversion = self._convert(variable)
+    @staticmethod
+    def _average(glyphs: dict[int, Glyph], codes: range) -> float:
+        return sum(cast(int, glyphs[code].advance_x) for code in codes) / 64 / len(codes)
+
+    @staticmethod
+    def _width(glyphs: dict[int, Glyph], text: str) -> float:
+        return sum(cast(int, glyphs[ord(c)].advance_x) for c in text) / 64
+
+    def test_each_index_has_its_own_face_in_the_console_order(self) -> None:
+        """#2005: one face used to serve all eight styles of a size group."""
+        for index in range(16):
+            with self.subTest(index=index):
+                self.assertEqual(self._face(index), LATIN_FACES[index % 8])
+                conversion = self._convert(index)
+                field = conversion.image[0x75:0x75 + 64].split(b"\0", 1)[0].decode("ascii")
+                self.assertEqual(field, LATIN_FACES[index % 8][1])
+
+    def test_each_index_meets_the_console_line_widths(self) -> None:
+        for index, (sentence, menu) in enumerate(self.LINES):
+            with self.subTest(index=index):
+                glyphs = _glyph_map(self._convert(index).glyphs)
+                self.assertLessEqual(abs(self._width(glyphs, self.SENTENCE) - sentence) / sentence, 0.03)
+                self.assertLessEqual(abs(self._width(glyphs, self.MENU) - menu) / menu, 0.03)
+
+    def test_regular_faces_meet_the_console_letter_capital_and_digit_widths(self) -> None:
+        """#2005: capitals and digits were narrower than the console's; digits are tabular."""
+        for index, (lower, capital, digit) in self.CLASSES.items():
+            with self.subTest(index=index):
+                glyphs = _glyph_map(self._convert(index).glyphs)
+                average = functools.partial(self._average, glyphs)
+                self.assertLessEqual(abs(average(range(0x61, 0x7B)) - lower) / lower, 0.03)
+                self.assertLessEqual(abs(average(range(0x41, 0x5B)) - capital) / capital, 0.03)
+                self.assertLessEqual(abs(average(range(0x30, 0x3A)) - digit) / digit, 0.01)
+                self.assertEqual(len({glyphs[code].advance_x for code in range(0x30, 0x3A)}), 1)
+
+    def test_regular_faces_meet_the_console_ink(self) -> None:
+        for index, (nominal, ascender, descender, x_height, cap, drop, stem) in self.INK.items():
+            with self.subTest(index=index):
+                conversion = self._convert(index)
                 glyphs = _glyph_map(conversion.glyphs)
                 self.assertEqual(struct.unpack_from("<iiii", conversion.image, 0x24),
                                  (nominal, nominal, 8192, 8192))
@@ -1386,14 +1511,86 @@ class ProjectLatinStrikeTests(unittest.TestCase):
                 self.assertLessEqual(abs(self._ink_rows(glyphs[ord("H")])[0] - cap), 1)
                 self.assertLessEqual(abs(self._ink_rows(glyphs[ord("p")])[1] - drop), 1)
                 self.assertLessEqual(abs(self._stem(glyphs[ord("l")]) - stem), 0.2)
-                lower = [cast(int, glyphs[code].advance_x) / 64 for code in range(ord("a"), ord("z") + 1)]
-                self.assertLessEqual(abs(sum(lower) / len(lower) - advance), 0.2)
 
     def test_the_ellipsis_sits_on_the_line_of_the_full_stop(self) -> None:
-        for variable, *_ in self.STRIKES:
-            with self.subTest(strike=variable):
-                glyphs = _glyph_map(self._convert(variable).glyphs)
+        # No strike passes --baseline-ellipsis: every Liberation face already draws U+2026 there.
+        for index in range(16):
+            with self.subTest(index=index):
+                glyphs = _glyph_map(self._convert(index).glyphs)
                 self.assertEqual(glyphs[0x2026].adjust_y, glyphs[ord(".")].adjust_y)
+
+
+class SpacingOptionTests(CliRefusalMixin):
+    """#2005: tracking and tabular digits are explicit, recorded and bounded options."""
+
+    def setUp(self) -> None:
+        self.data = FONT.read_bytes()
+        self.pin = load_pin(PIN, self.data)
+        self.tmp = Path(tempfile.mkdtemp(prefix="ttf2pgf-spacing-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _convert(self, **overrides: object) -> ttf2pgf.Conversion:
+        arguments: dict = {"input_path": str(FONT), "output_path": "out.pgf", "codes": (0x30, 0x48), "ppem": 13,
+                           "pin": self.pin}
+        arguments.update(overrides)
+        return convert(self.data, **arguments)
+
+    def test_tracking_adds_sub_samples_to_every_advance_and_is_recorded(self) -> None:
+        plain = _glyph_map(self._convert().glyphs)
+        tracked = self._convert(tracking=3)
+        self.assertEqual(tracked.manifest["parameters"]["tracking_sub_samples"], 3)
+        self.assertNotIn("tracking_sub_samples", self._convert().manifest["parameters"])
+        for code, glyph in _glyph_map(tracked.glyphs).items():
+            self.assertEqual(glyph.advance_x, cast(int, plain[code].advance_x) + 3 * 8)
+            self.assertEqual(glyph.samples, plain[code].samples)
+        tighter = _glyph_map(self._convert(tracking=-2).glyphs)
+        self.assertEqual(tighter[0x48].advance_x, cast(int, plain[0x48].advance_x) - 16)
+
+    def test_digit_advance_makes_tabular_digits_centred_in_their_change(self) -> None:
+        plain = _glyph_map(self._convert().glyphs)
+        conversion = self._convert(digit_advance_26_6=640)
+        self.assertEqual(conversion.manifest["parameters"]["digit_advance_26_6"], 640)
+        glyphs = _glyph_map(conversion.glyphs)
+        for code in range(0x30, 0x3A):
+            natural = cast(int, plain[code].advance_x)
+            self.assertEqual(glyphs[code].advance_x, 640)
+            # The outline moves by half the change, so the ink stays centred.
+            self.assertLessEqual(abs(glyphs[code].adjust_x - plain[code].adjust_x - (640 - natural) // 128), 1)
+        self.assertEqual(glyphs[0x48].advance_x, plain[0x48].advance_x, "letters keep their own advance")
+
+    def test_digit_advance_is_centred_when_metric_targets_choose_the_ppem(self) -> None:
+        # The ppem search rasterizes the digits before their shift is known; the shift must still apply.
+        targets = ttf2pgf._MetricTargets(
+            ascender_px=9, descender_px=-2, tolerance_px=1, ppem_min=6, ppem_max=24,
+        )
+        searched = self._convert(ppem=None, metric_targets=targets, digit_advance_26_6=640)
+        ppem = searched.manifest["parameters"]["ppem"]
+        direct = _glyph_map(self._convert(ppem=ppem, digit_advance_26_6=640).glyphs)
+        plain = _glyph_map(self._convert(ppem=ppem).glyphs)
+        glyphs = _glyph_map(searched.glyphs)
+        self.assertTrue(
+            any(direct[code].adjust_x != plain[code].adjust_x for code in range(0x30, 0x3A)),
+            "the chosen ppem must move at least one digit, or this test proves nothing",
+        )
+        for code in range(0x30, 0x3A):
+            with self.subTest(code=hex(code)):
+                self.assertEqual(glyphs[code].advance_x, 640)
+                self.assertEqual(glyphs[code].adjust_x, direct[code].adjust_x)
+                self.assertEqual(glyphs[code].samples, direct[code].samples)
+
+    def test_spacing_options_out_of_range_are_refused(self) -> None:
+        for kwargs, reason in (
+            ({"tracking": ttf2pgf.MAX_TRACKING + 1}, "tracking-out-of-range"),
+            ({"tracking": ttf2pgf.MIN_TRACKING - 1}, "tracking-out-of-range"),
+            ({"tracking": True}, "tracking-out-of-range"),
+            ({"digit_advance_26_6": 63}, "digit-advance-out-of-range"),
+            ({"digit_advance_26_6": 640, "codes": (0x41, 0x48)}, "digit-advance-unavailable"),
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(TtfConvertError) as caught:
+                self._convert(**kwargs)
+            self.assertEqual(caught.exception.reason, reason)
+        self.assert_cli_refused("tracking-out-of-range", self.tmp / "out.pgf", FONT, "--codes", "0x48-0x48",
+                                "--tracking", "17")
 
 
 class NameDenylistTests(unittest.TestCase):
