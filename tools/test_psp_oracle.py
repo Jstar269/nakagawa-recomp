@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 134)
+        self.assertEqual(len(routes), 135)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
-                         | {150, 151, 152, 153, 154, 155, 156},
+                         | {150, 151, 152, 153, 154, 155, 156, 157},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -9798,6 +9798,120 @@ class GeOverlapProbeTests(unittest.TestCase):
                     self.assertGreaterEqual(steps(in_order, other), 3.0, (name, i))
                 checked += 1
         self.assertGreater(checked, 0)
+
+
+class GeWeightProbeTests(unittest.TestCase):
+    """CASE=ge-weight (157, PSP-GE-WEIGHT-001) in probe_ge_sample.c: the #343 weighted-vertex
+    cells. Slot 0 carries each quad through bone 0 at weight 1.0 and the target slot moves it by
+    16 w pixels, so the row a sample lands on reads the weight the GE used; the stream matches the
+    registry and the list uploads the eight bones and the vertex type the cells claim."""
+
+    probe: ClassVar[str]
+    makefile: ClassVar[str]
+    section: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_WEIGHT\n\n")
+        end = cls.probe.index("#endif /* GE_CASE_WEIGHT */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),ge-weight)\nCASE_ID = 157\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),ge-weight)\nTARGET = $(BUILD_DIR)/ge_weight\n"
+                      "OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define GE_CASE_WEIGHT 157\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "ge-weight"\n#define HLE_TEST_ID "PSP-GE-WEIGHT-001"\n'
+                      '#define HLE_LOG "host0:/ge_weight_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "ge-weight").name,
+                         "ge_weight_log.txt")
+        self.assertEqual(_campaign_completeness_contract("ge-weight"), "strict-golden-sequence")
+        self.assertNotIn("ge-weight", CAMPAIGN_QUEUE_CASES)
+
+    def test_section_calls_only_the_ge_and_cache_imports_and_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
+            "sceGeEdramGetAddr", "sceGeListEnQueue", "sceGeListSync", "sceGeDrawSync",
+            "sceGeBreak", "sceKernelDcacheWritebackAll", "sceKernelDelayThread",
+            "sceKernelGetSystemTimeLow"})
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceGu", "sceDisplay", "sceIo"):
+            self.assertNotIn(banned, self.section)
+        self.assertEqual(self.section.count("i < GW_WAIT_POLLS; i++"), 2)
+        body = _c_function_bodies(self.section)["gw_draw"]
+        self.assertLess(body.index("hle_step(c->name);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceGeListEnQueue("), body.index("hle_record("))
+        # The list fits its buffer: 200 words for every cell (the counts in gw_list).
+        self.assertIn("#define GW_LIST_WORDS 224u", self.section)
+        self.assertIn("#define GW_MAX_VTX_BYTES 48u", self.section)
+
+    def test_list_uploads_eight_bones_and_the_cells_vertex_type(self) -> None:
+        body = _c_function_bodies(self.section)["gw_list"]
+        for word in ("GW_W(0x2a, 0);", "GW_W(0x2b, gw_fbits(m[i]) >> 8);",
+                     "GW_W(0x2c, gw_fbits(1.0f) >> 8);", "GW_W(0x12, vtype);",
+                     "GW_W(0x04, (3u << 16) | GW_VTX_COUNT);", "GW_W(0xe7, 1);", "GW_W(0xde, 1);",
+                     "m[10] = (float)c->t0 / 16.0f;", "m[10] = 1.0f;"):
+            self.assertIn(word, body)
+        self.assertIn("for (uint32_t b = 0; b < GW_BONES; b++) {", body)
+        self.assertIn("#define GW_BONES 8u", self.section)
+        # The bones come before the world matrix, all of it before the draw.
+        self.assertLess(body.index("GW_W(0x2a, 0);"), body.index("GW_W(0x3a, 0);"))
+        self.assertLess(body.index("GW_W(0x3a, 0);"), body.index("GW_W(0x04,"))
+        draw = _c_function_bodies(self.section)["gw_draw"]
+        self.assertIn("(7u << 2) | (3u << 7) | ((uint32_t)c->fmt << 9) |", draw)
+        self.assertIn("((uint32_t)(c->count - 1u) << 14);", draw)
+        units = re.search(r"off_units\[12\] = \{([^}]*)\}", self.section)
+        assert units is not None
+        cleared = {int(word.strip().rstrip("u"), 16) for word in units.group(1).split(",")}
+        self.assertIn(0x17, cleared)   # lighting off
+
+    def _cells(self) -> list[tuple[str, str, int, int, int, int, int]]:
+        rows = re.findall(r'\{"([a-z0-9-]+)", (GW_U8|GW_U16|GW_F32), (\d)u, (\d)u, '
+                          r'(-?(?:0x[0-9a-f]+|\d+)), (-?(?:0x[0-9a-f]+|\d+)), (-?\d+)\},',
+                          self.section)
+        return [(name, fmt, int(count), int(target), int(base, 0), int(step, 0), int(t0))
+                for name, fmt, count, target, base, step, t0 in rows]
+
+    def test_cells_match_the_registry_and_land_on_the_documented_rows(self) -> None:
+        cells = self._cells()
+        self.assertEqual(len(cells), 16)
+        self.assertIn("#define GW_CELL_COUNT 16u", self.section)
+        spec, counts = CAMPAIGN_PROBE_CASES["ge-weight"]
+        self.assertEqual(spec.test_id, "PSP-GE-WEIGHT-001")
+        self.assertEqual([case[:-len("-draw")] for case in spec.semantic_cases
+                          if case.endswith("-draw")], [name for name, *_ in cells])
+        self.assertEqual(len(spec.semantic_cases), 16 * 18)
+        for case in spec.semantic_cases:
+            self.assertEqual(counts[case], 10 if case.endswith("-draw") else 16)
+        one = {"GW_U8": 0x80, "GW_U16": 0x8000, "GW_F32": 16}
+        for name, fmt, count, target, base, step, t0 in cells:
+            with self.subTest(cell=name):
+                self.assertTrue(1 <= count <= 8)
+                self.assertTrue(target < count)
+                self.assertEqual(target == 0, count == 1)
+                limit = {"GW_U8": 0xff, "GW_U16": 0xffff, "GW_F32": 1 << 20}[fmt]
+                for s in range(16):
+                    raw = base + step * s
+                    if fmt != "GW_F32":
+                        self.assertTrue(0 <= raw <= limit)
+                    # The documented model: row = 8 + t0 + 16 w, w = raw / one.
+                    row = 8 + t0 + (16 * raw) // one[fmt]
+                    expected = 8 if name == "f32-c1" else 24 - s if name == "f32-neg" else 8 + s
+                    self.assertEqual(row, expected)
+                    self.assertTrue(8 <= row <= 24)
+
+    def test_vertex_layout_pads_small_weights_to_the_colour(self) -> None:
+        bodies = _c_function_bodies(self.section)
+        self.assertIn("return (gw_weight_bytes(c) + 3u) & ~3u;", bodies["gw_colour_offset"])
+        self.assertIn("return gw_colour_offset(c) + 4u + 12u;", bodies["gw_vertex_size"])
+        size = {"GW_U8": 1, "GW_U16": 2, "GW_F32": 4}
+        for name, fmt, count, *_ in self._cells():
+            with self.subTest(cell=name):
+                self.assertLessEqual(((count * size[fmt] + 3) & ~3) + 16, 48)
 
 
 class GeClutMipProbeTests(unittest.TestCase):

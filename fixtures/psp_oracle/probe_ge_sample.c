@@ -87,6 +87,7 @@ PSP_HEAP_SIZE_KB(64);
 #define GE_CASE_LIGHT 139
 #define GE_CASE_OVERLAP 153
 #define GE_CASE_CLUT_MIP 154
+#define GE_CASE_WEIGHT 157
 
 #if PSP_ORACLE_CASE == GE_CASE_SAMPLE
 #define HLE_CAMPAIGN_ID "ge-sample"
@@ -112,6 +113,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "ge-clut-mip"
 #define HLE_TEST_ID "PSP-GE-MIP-002"
 #define HLE_LOG "host0:/ge_clut_mip_log.txt"
+#elif PSP_ORACLE_CASE == GE_CASE_WEIGHT
+#define HLE_CAMPAIGN_ID "ge-weight"
+#define HLE_TEST_ID "PSP-GE-WEIGHT-001"
+#define HLE_LOG "host0:/ge_weight_log.txt"
 #else
 #error probe_ge_sample.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -2652,6 +2657,328 @@ static int hle_run(void)
 }
 
 #endif /* GE_CASE_CLUT_MIP */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == GE_CASE_WEIGHT
+
+/* ==== GE weighted-vertex cells (PSP-GE-WEIGHT-001, #343) ====
+ * What the GE does with vertex weights in transform mode: the scale of each weight format, the
+ * weight count field, which bone each weight slot selects, and where the components of a weighted
+ * vertex sit. Each cell is one display list of project-written command words (no game data):
+ * world = view = identity, the ge-light orthographic projection and viewport (screen x = 32 + 32 X,
+ * y = 16 + 16 Y on a 64x32 8888 buffer), lighting, texturing, fog, dither, blending, culling and
+ * every test off, flat shading, so a pixel is the vertex colour or 0.
+ *
+ * Sample s (0..15) is a quad (two triangles, six vertices) covering pixel (16 + s, 8) before
+ * skinning, with the ge-light corners. Vertex type: weights, 8888 colour, float position. Bone 0
+ * is the identity plus a y translation of t0 pixels and weight slot 0 holds 1.0 (u8 0x80, u16
+ * 0x8000, float 1.0), so slot 0 carries the quad. The target slot's bone is the zero matrix plus a
+ * translation of 16 pixels in y, so that slot moves the quad down by 16 w pixels, w being the
+ * weight the GE reads; every other bone is the zero matrix plus 64 pixels, off the window, and its
+ * slot holds 0. Read on the model u8 / 128, u16 / 32768, float as is, sample s lands on row
+ * 8 + s in every cell below except f32-neg (row 24 - s) and f32-c1 (row 8): any other row, or no
+ * pixel, measures a different scale, sign, slot order or vertex layout.
+ *
+ * The layout written is the PSPSDK one: weights first, then colour, then position, each
+ * component aligned to its own element size and the vertex to 4 bytes. The u8 and u16 cells
+ * with three and five weights put padding before the colour.
+ *
+ * Records per cell: `<cell>-draw` (10 words: the GE wait outcome as ge-light, the list length,
+ * the vertex type word, the vertex size, the weight count) and the window rows `<cell>-rN`
+ * (x 16..31, y 8..24). */
+
+#define GW_FB_OFFSET 0x00100000u   /* VRAM-relative colour buffer, stride 64, 32 rows */
+#define GW_ZB_OFFSET 0x00110000u   /* depth buffer pointer; depth test and writes are off */
+#define GW_STRIDE 64u
+#define GW_ROWS 32u
+#define GW_WX 16u                  /* window x 16..31, y 8..24 */
+#define GW_WY 8u
+#define GW_WW 16u
+#define GW_WH 17u
+#define GW_SAMPLES 16u
+#define GW_VTX_PER_SAMPLE 6u
+#define GW_VTX_COUNT (GW_SAMPLES * GW_VTX_PER_SAMPLE)
+#define GW_MAX_VTX_BYTES 48u       /* eight float weights, colour, float position */
+#define GW_BONES 8u
+#define GW_LIST_WORDS 224u
+#define GW_WAIT_POLLS 5000u        /* 5000 x 100 us: a half-second bound per draw */
+#define GW_WAIT_POLL_US 100u
+
+enum { GW_U8 = 1, GW_U16 = 2, GW_F32 = 3 };
+
+/* fmt: VTYPE bits 9-10; count: weights per vertex; target: the slot whose bone moves the quad
+   (0: none); base, step: the target weight of sample s is base + step s, raw for u8 and u16 and
+   in sixteenths for float; t0: bone 0's y translation in pixels. */
+struct gw_cell {
+    const char *name;
+    uint8_t fmt, count, target;
+    int32_t base, step, t0;
+};
+
+#define GW_CELL_COUNT 16u
+static const struct gw_cell gw_cells[GW_CELL_COUNT] = {
+    {"f32-w1", GW_F32, 2u, 1u, 0, 1, 0},
+    {"u8-w1", GW_U8, 2u, 1u, 0, 8, 0},
+    {"u16-w1", GW_U16, 2u, 1u, 0, 0x800, 0},
+    {"u8-hi", GW_U8, 2u, 1u, 0x80, 8, -16},
+    {"u16-hi", GW_U16, 2u, 1u, 0x8000, 0x800, -16},
+    {"f32-neg", GW_F32, 2u, 1u, 0, -1, 16},
+    {"f32-c1", GW_F32, 1u, 0u, 0, 0, 0},
+    {"f32-c3", GW_F32, 3u, 2u, 0, 1, 0},
+    {"f32-c4", GW_F32, 4u, 3u, 0, 1, 0},
+    {"f32-c5", GW_F32, 5u, 4u, 0, 1, 0},
+    {"f32-c6", GW_F32, 6u, 5u, 0, 1, 0},
+    {"f32-c7", GW_F32, 7u, 6u, 0, 1, 0},
+    {"f32-c8", GW_F32, 8u, 7u, 0, 1, 0},
+    {"u8-c3", GW_U8, 3u, 2u, 0, 8, 0},
+    {"u8-c5", GW_U8, 5u, 4u, 0, 8, 0},
+    {"u16-c3", GW_U16, 3u, 2u, 0, 0x800, 0},
+};
+
+static uint8_t s_gw_vtx[GW_VTX_COUNT * GW_MAX_VTX_BYTES] __attribute__((aligned(64)));
+static uint32_t s_gw_list[GW_LIST_WORDS] __attribute__((aligned(64)));
+static uint32_t s_gw_win[GW_WW * GW_WH];
+
+static uint32_t gw_fbits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
+static uint32_t gw_phys(const void *p)
+{
+    return (uint32_t)(uintptr_t)p & 0x0fffffffu;
+}
+
+/* The uncached mirror of the 8 KiB colour block at VRAM offset GW_FB_OFFSET. */
+static volatile uint32_t *gw_fb(void)
+{
+    const uint32_t vram = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    return (volatile uint32_t *)(uintptr_t)((vram | 0x40000000u) + GW_FB_OFFSET);
+}
+
+static uint32_t gw_weight_bytes(const struct gw_cell *c)
+{
+    return c->count * (c->fmt == GW_F32 ? 4u : c->fmt == GW_U16 ? 2u : 1u);
+}
+
+static uint32_t gw_colour_offset(const struct gw_cell *c)
+{
+    return (gw_weight_bytes(c) + 3u) & ~3u;
+}
+
+static uint32_t gw_vertex_size(const struct gw_cell *c)
+{
+    return gw_colour_offset(c) + 4u + 12u;
+}
+
+static void gw_put_weight(uint8_t *v, const struct gw_cell *c, uint32_t slot, int32_t raw)
+{
+    if (c->fmt == GW_F32) {
+        const uint32_t bits = gw_fbits((float)raw / 16.0f);
+        memcpy(v + 4u * slot, &bits, 4u);
+    } else if (c->fmt == GW_U16) {
+        const uint16_t half = (uint16_t)raw;
+        memcpy(v + 2u * slot, &half, 2u);
+    } else {
+        v[slot] = (uint8_t)raw;
+    }
+}
+
+/* Every sample's six vertices for cell c; returns the vertex size. */
+static uint32_t gw_vertices(const struct gw_cell *c)
+{
+    static const float corner[GW_VTX_PER_SAMPLE][2] = {
+        {-0.375f, -0.375f}, {0.625f, -0.375f}, {-0.375f, 0.625f},
+        {-0.375f, 0.625f}, {0.625f, -0.375f}, {0.625f, 0.625f},
+    };
+    const uint32_t size = gw_vertex_size(c);
+    const uint32_t coff = gw_colour_offset(c);
+    const int32_t one = c->fmt == GW_F32 ? 16 : c->fmt == GW_U16 ? 0x8000 : 0x80;
+    memset(s_gw_vtx, 0, sizeof(s_gw_vtx));
+    for (uint32_t s = 0; s < GW_SAMPLES; s++) {
+        const uint32_t colour = 0xff000000u | (0x30u << 16) | (0xc0u << 8) | (0x10u * s + 0x0fu);
+        const float px = (float)(GW_WX + s);
+        const float py = (float)GW_WY;
+        for (uint32_t k = 0; k < GW_VTX_PER_SAMPLE; k++) {
+            uint8_t *v = s_gw_vtx + (s * GW_VTX_PER_SAMPLE + k) * size;
+            gw_put_weight(v, c, 0u, one);
+            if (c->target != 0u) {
+                gw_put_weight(v, c, c->target, c->base + c->step * (int32_t)s);
+            }
+            memcpy(v + coff, &colour, 4u);
+            const float pos[3] = {(px + corner[k][0] - 32.0f) / 32.0f,
+                                  (py + corner[k][1] - 16.0f) / 16.0f, 0.0f};
+            memcpy(v + coff + 4u, pos, sizeof(pos));
+        }
+    }
+    return size;
+}
+
+/* The draw's display list for vertex words at `vtx` (physical address); returns the word count.
+   Every state the draw reads is set. */
+static uint32_t gw_list(const struct gw_cell *c, uint32_t vtx, uint32_t vtype, uint32_t *out)
+{
+    static const uint8_t off_units[12] = {0x17u, 0x1cu, 0x1du, 0x1fu, 0x20u, 0x21u,
+                                          0x22u, 0x23u, 0x24u, 0x25u, 0x27u, 0x28u};
+    static const float ident43[12] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                      0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f};
+    static const float proj[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    const uint32_t full = (GW_STRIDE - 1u) | ((GW_ROWS - 1u) << 10);
+    uint32_t n = 0;
+#define GW_W(cmd, data) (out[n++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(data) & 0x00ffffffu))
+    GW_W(0x10, (vtx >> 8) & 0x000f0000u);
+    GW_W(0x9c, GW_FB_OFFSET);
+    GW_W(0x9d, GW_STRIDE);
+    GW_W(0xd2, 3u);             /* 8888 */
+    GW_W(0x9e, GW_ZB_OFFSET);
+    GW_W(0x9f, GW_STRIDE);
+    GW_W(0x15, 0);
+    GW_W(0x16, full);
+    GW_W(0xd4, 0);
+    GW_W(0xd5, full);
+    GW_W(0xd6, 0);
+    GW_W(0xd7, 0xffffu);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GW_W(off_units[i], 0);  /* lighting, culling, texturing, fog, dither, blending, tests */
+    }
+    GW_W(0x1e, 0);              /* texture off */
+    GW_W(0xc9, 0);
+    GW_W(0x50, 0);              /* flat shading */
+    GW_W(0xd3, 0);              /* clear mode off */
+    GW_W(0xe7, 1);              /* depth writes off */
+    GW_W(0xe8, 0);
+    GW_W(0xe9, 0);
+    GW_W(0xdb, 0x00ff0001u);    /* alpha test ALWAYS */
+    GW_W(0xd8, 1);              /* colour test ALWAYS */
+    GW_W(0xd9, 0);
+    GW_W(0xda, 0);
+    GW_W(0xdc, 0x00ff0001u);    /* stencil test ALWAYS */
+    GW_W(0xdd, 0);              /* KEEP, KEEP, KEEP */
+    GW_W(0xde, 1);              /* depth test ALWAYS */
+    GW_W(0xdf, 0x32u);
+    GW_W(0xe0, 0);
+    GW_W(0xe1, 0);
+    GW_W(0xe6, 3);              /* logic op COPY */
+    GW_W(0xcf, 0);
+    GW_W(0xcd, 0);
+    GW_W(0xce, 0);
+    GW_W(0x53, 0);              /* MATERIALUPDATE: vertex colour is the only colour source */
+    GW_W(0x2c, gw_fbits(1.0f) >> 8);   /* morph weight 0; one morph target */
+    /* Bones: 0 is the identity plus t0 pixels in y; the target slot's bone is the zero matrix
+       plus 16 pixels (one clip unit); every other bone the zero matrix plus 64 pixels. */
+    GW_W(0x2a, 0);
+    for (uint32_t b = 0; b < GW_BONES; b++) {
+        float m[12] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 4.0f, 0.0f};
+        if (b == 0u) {
+            memcpy(m, ident43, sizeof(m));
+            m[10] = (float)c->t0 / 16.0f;
+        } else if (c->target != 0u && b == c->target) {
+            m[10] = 1.0f;
+        }
+        for (uint32_t i = 0; i < 12u; i++) {
+            GW_W(0x2b, gw_fbits(m[i]) >> 8);
+        }
+    }
+    GW_W(0x3a, 0);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GW_W(0x3b, gw_fbits(ident43[i]) >> 8);
+    }
+    GW_W(0x3c, 0);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GW_W(0x3d, gw_fbits(ident43[i]) >> 8);
+    }
+    GW_W(0x3e, 0);
+    for (uint32_t i = 0; i < 16u; i++) {
+        GW_W(0x3f, gw_fbits(proj[i]) >> 8);
+    }
+    GW_W(0x42, gw_fbits(32.0f) >> 8);   /* viewport: x = 32 + 32 X, y = 16 + 16 Y */
+    GW_W(0x43, gw_fbits(16.0f) >> 8);
+    GW_W(0x44, 0);
+    GW_W(0x45, gw_fbits(2048.0f) >> 8);
+    GW_W(0x46, gw_fbits(2048.0f) >> 8);
+    GW_W(0x47, gw_fbits(32768.0f) >> 8);
+    GW_W(0x4c, (2048u - 32u) << 4);
+    GW_W(0x4d, (2048u - 16u) << 4);
+    GW_W(0x12, vtype);
+    GW_W(0x01, vtx);
+    GW_W(0x04, (3u << 16) | GW_VTX_COUNT);   /* triangles */
+    GW_W(0x0f, 0);
+    GW_W(0x0c, 0);
+#undef GW_W
+    return n;
+}
+
+/* One cell: build the vertices, clear the block, queue the list, wait (bounded), read the
+   window back, then the `-draw` record and one `-rN` record per window row. */
+static void gw_draw(const struct gw_cell *c)
+{
+    static char row[48];
+    hle_step(c->name);
+    const uint32_t size = gw_vertices(c);
+    /* Transform mode: 8888 colour (bits 2-4 = 7), float position (bits 7-8 = 3), the weight
+       format in bits 9-10 and the weight count less one in bits 14-16. */
+    const uint32_t vtype = (7u << 2) | (3u << 7) | ((uint32_t)c->fmt << 9) |
+                           ((uint32_t)(c->count - 1u) << 14);
+    volatile uint32_t *fb = gw_fb();
+    for (unsigned i = 0; i < GW_STRIDE * GW_ROWS; i++) {
+        fb[i] = 0u;
+    }
+    __asm__ volatile("sync" ::: "memory");
+    const uint32_t words = gw_list(c, gw_phys(s_gw_vtx), vtype, s_gw_list);
+    sceKernelDcacheWritebackAll();
+    const uint32_t t0 = sceKernelGetSystemTimeLow();
+    const int qid = sceGeListEnQueue(s_gw_list, NULL, -1, NULL);
+    int list_state = qid;
+    int draw_state = -1;
+    int idle = 0;
+    for (unsigned i = 0; i < GW_WAIT_POLLS; i++) {
+        list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
+        draw_state = sceGeDrawSync(1);
+        idle = draw_state == PSP_GE_LIST_DONE;
+        if (idle) {
+            break;
+        }
+        sceKernelDelayThread(GW_WAIT_POLL_US);
+    }
+    const uint32_t elapsed = sceKernelGetSystemTimeLow() - t0;
+    int reset_rc = 0;
+    if (!idle) {
+        PspGeBreakParam param;
+        memset(&param, 0, sizeof(param));
+        reset_rc = sceGeBreak(1, &param);
+        for (unsigned i = 0; i < GW_WAIT_POLLS; i++) {
+            if (sceGeDrawSync(1) == PSP_GE_LIST_DONE) {
+                break;
+            }
+            sceKernelDelayThread(GW_WAIT_POLL_US);
+        }
+    }
+    for (uint32_t i = 0; i < GW_WW * GW_WH; i++) {
+        s_gw_win[i] = fb[(GW_WY + i / GW_WW) * GW_STRIDE + GW_WX + i % GW_WW];
+    }
+    const uint32_t draw[10] = {(uint32_t)qid, (uint32_t)list_state, (uint32_t)draw_state,
+                               elapsed, (uint32_t)idle, (uint32_t)reset_rc, words, vtype, size,
+                               c->count};
+    snprintf(row, sizeof(row), "%s-draw", c->name);
+    hle_record(row, qid < 0 ? "FAIL" : idle ? "PASS" : "TIMEOUT", (uint32_t)qid, draw, 10);
+    for (uint32_t y = 0; y < GW_WH; y++) {
+        snprintf(row, sizeof(row), "%s-r%u", c->name, (unsigned int)y);
+        hle_record(row, "PASS", y, &s_gw_win[y * GW_WW], GW_WW);
+    }
+}
+
+static int hle_run(void)
+{
+    for (uint32_t i = 0; i < GW_CELL_COUNT; i++) {
+        gw_draw(&gw_cells[i]);
+    }
+    return 1;
+}
+
+#endif /* GE_CASE_WEIGHT */
 
 /* ------------------------------------------------------------------------- */
 

@@ -2348,6 +2348,18 @@ _register_campaign_probe(
     {case: (4 if case == "sas-mix-load" else 16) for case in SAS_MIX_CASES},
 )
 
+# ge-weight (157, probe_ge_sample.c): the #343 weighted-vertex cells. Per cell of the gw_cells
+# table, in order: one `-draw` record (10 words: the GE wait outcome, the list length, the vertex
+# type, the vertex size and the weight count) and seventeen `-rN` window rows.
+GE_WEIGHT_CELLS = ("f32-w1", "u8-w1", "u16-w1", "u8-hi", "u16-hi", "f32-neg", "f32-c1",
+                   *(f"f32-c{count}" for count in range(3, 9)), "u8-c3", "u8-c5", "u16-c3")
+GE_WEIGHT_CASES = tuple(case for cell in GE_WEIGHT_CELLS
+                        for case in (f"{cell}-draw", *(f"{cell}-r{y}" for y in range(17))))
+_register_campaign_probe(
+    "ge-weight", "PSP-GE-WEIGHT-001", GE_WEIGHT_CASES,
+    {case: (10 if case.endswith("-draw") else 16) for case in GE_WEIGHT_CASES},
+)
+
 # module-start (124, probe_module_start.c): the module_start thread cell. A fixed-shape
 # stream of raw words: module_start's own sceKernelReferThreadStatus (return code and the
 # 26-word SceKernelThreadInfo), the user-partition free sizes before and after the helper

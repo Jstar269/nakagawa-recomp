@@ -245,6 +245,10 @@ CASE_ID = 153
 # level of an indexed texture reads, with TEXMODE bit 8 clear and set.
 else ifeq ($(CASE),ge-clut-mip)
 CASE_ID = 154
+# 157: the GE weighted-vertex cells (probe_ge_sample.c, #343): weight formats, the weight
+# count, the bone each slot selects and the weighted vertex layout.
+else ifeq ($(CASE),ge-weight)
+CASE_ID = 157
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -614,6 +618,10 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE multi-CLUT mip cells: the same source as the sample-point cells, case 154.
 else ifeq ($(CASE),ge-clut-mip)
 TARGET = $(BUILD_DIR)/ge_clut_mip
+OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
+# The GE weighted-vertex cells: the same source as the sample-point cells, case 157.
+else ifeq ($(CASE),ge-weight)
+TARGET = $(BUILD_DIR)/ge_weight
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The instruction trace: its own source, the single-step trampoline and the fixtures
 # header, with the same writer, ThreadManForUser block and module lifecycle as the HLE
