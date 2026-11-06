@@ -1182,6 +1182,18 @@ float sr_vfpu_exp2(float x);
 #define SR_VFPU_STATE   2
 int sr_vfpu_interp(CpuState *s, uint32_t op);
 
+/* Unverified VFPU forms in the run log (#1877; patterns generated into hle_evidence.h from
+ * docs/HLE_COVERAGE.md). sr_vfpu_note_unverified is the interpreter floor's once-per-pattern
+ * line for an executed VFPU load or store and returns 1 when the word is in a pattern (the
+ * patterns for opcodes 0x34 and 0x3f can only come from translated code). Generated start-up
+ * code passes the first word codegen translated in each pattern to
+ * sr_vfpu_report_unverified_uses, which prints each pattern once. Both only log. */
+typedef struct { uint32_t word; uint32_t pc; } SrVfpuUse;
+extern FILE *sr_vfpu_evidence_log; /* a test seam: NULL logs to stderr */
+int  sr_vfpu_note_unverified(uint32_t word, uint32_t pc);
+void sr_vfpu_evidence_reset(void); /* a test seam: every pattern may be named again */
+void sr_vfpu_report_unverified_uses(const SrVfpuUse *uses, uint32_t count);
+
 /* ---- SR_NAN_TRAP: opt-in NaN/Inf origin diagnostic (issue #69) -------------
  *
  * A guest instruction that turns all-finite operands into a NaN or an Inf is the
@@ -1849,6 +1861,11 @@ double   ge_timing_run_clk(void);
  * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
 void ge_transition_trace_check(const char *why, uint32_t vcount);
 extern uint32_t g_ge_stall_addr;
+/* SIGNAL list control (ge.c): how many SIGNAL CALLs the running list may nest (the numStacks
+ * its sceGeListEnQueue took), and the fault a SIGNAL JUMP, CALL or RET met in the last run,
+ * if any. A fault stops the list at that SIGNAL; ge_take_signal_fault names it once. */
+extern uint32_t g_ge_signal_stack_limit;
+int ge_take_signal_fault(char *detail, size_t size);
 /* Diagnostic counters the watchdog and statistics reports print (hle.c). The GE ones
  * are kept by ge.c, the MPEG ones by mpeg.c. */
 extern uint32_t g_frame_prims;
@@ -2117,6 +2134,11 @@ uint32_t sr_display_vcount(void);
 typedef uint32_t (*HleFn)(CpuState *s);
 void     sr_hle_register(uint32_t nid, const char *name, HleFn fn);
 void     sr_hle_init(void);     /* registers all built-in handlers (idempotent) */
+/* Ace Mode's sas=sinc (src/rt/ace.h, #2054): SAS VAG voices mix through a band-limited
+ * resampler. Host-only: voice state and timing are the authentic ones. 0 (the default) is
+ * authentic. Returns 1 when a SAS mixer took the switch; a link without one (the headless
+ * gate's stubs) returns 0, so the feature is never confirmed there. */
+int      sr_hle_sas_set_band_limited(int on);
 uint32_t sr_syscall(CpuState *s, uint32_t nid);
 typedef struct SrLoadExecRequest {
     char guest_path[256];

@@ -329,6 +329,8 @@ void     SDL_DelayPrecise(uint64_t ns) { (void)ns; }
 
 /* --- HLE / OSK stubs (dead on microtest path) --- */
 void     sr_syscall_wrapper(uint32_t nid) { (void)nid; }
+/* No SAS mixer here: Ace Mode's sas=sinc is refused, so driver.c never confirms it. */
+int      sr_hle_sas_set_band_limited(int on) { (void)on; return 0; }
 
 #ifdef SR_GATE_BUILD
 void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc) {

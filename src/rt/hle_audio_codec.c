@@ -1486,9 +1486,10 @@ static uint32_t h_AtracReinit(CpuState *s) {
     return space >= 0 ? 0u : HLE_KERNEL_ERROR_NO_MEMORY;
 }
 
-/* sceAtracReleaseResources(): release system resources allocated for ATRAC decoding. */
+/* sceAtracEndEntry(): the ATRAC3plus library's module-stop entry, which releases the codec's
+ * EDRAM if any was allocated. PPSSPP registers it as sceAtracReleaseResources. */
 static uint32_t s_atrac_release_count = 0u;
-static uint32_t h_AtracReleaseResources(CpuState *s) {
+static uint32_t h_AtracEndEntry(CpuState *s) {
     (void)s;
     s_atrac_release_count++;
     return 0;
@@ -2047,7 +2048,7 @@ void hle_register_atrac_handlers(void) {
     sr_hle_register(0xf6837a1a, "sceAtracSetMOutData", h_AtracSetMOutData);
     sr_hle_register(0x83bf7afd, "sceAtracSetSecondBuffer", h_AtracSetSecondBuffer);
     sr_hle_register(0x83e85ea0, "sceAtracGetSecondBufferInfo", h_AtracGetSecondBufferInfo);
-    sr_hle_register(0xd5c28cc0, "sceAtracReleaseResources", h_AtracReleaseResources);
+    sr_hle_register(0xd5c28cc0, "sceAtracEndEntry", h_AtracEndEntry);
     sr_hle_register_unsupported(0xd1f59fdb, "sceAtracStartEntry", 0x80630004u); /* ATRAC invalid codec type */
     sr_hle_register(0xeca32a99, "sceAtracIsSecondBufferNeeded", h_AtracIsSecondBufferNeeded);
     sr_hle_register(0xe88f759b, "sceAtracGetInternalErrorInfo", h_AtracGetInternalErrorInfo);

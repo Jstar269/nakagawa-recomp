@@ -46,6 +46,7 @@ PUBLIC_TARGETS := \
 	display-smoke-run \
 	display-smoke-picture-gate \
 	display-smoke-gui \
+	display-smoke-fsr1 \
 	display-smoke-quit \
 	display-smoke-player \
 	display-smoke-clean \
@@ -137,6 +138,7 @@ PUBLIC_TARGETS := \
 	osk-overlay-selftest \
 	ace-selftest \
 	ace-smooth-selftest \
+	fsr1-selftest \
 	ace-ui-selftest \
 	osk-overlay-paint-selftest \
 	psmf-producer-selftest \
@@ -147,6 +149,7 @@ PUBLIC_TARGETS := \
 	audio-resampler-bench \
 	atrac3p-title-accept \
 	gpu-coherence-selftest \
+	gpu-coherence-selftest-snapbar-mutants \
 	gpu-snapsync-selftest \
 	gpu-ace-selftest \
 	ge-replay \
@@ -171,8 +174,9 @@ PUBLIC_TARGETS := \
 	form-sweep-selftest \
 	form-sweep-deep
 
-PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-latin-small-font project-korean-font
-INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-latin-small-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+PROJECT_LATIN_STYLE_TARGETS := $(foreach i,1 2 3 4 5 6 7 9 10 11 12 13 14 15,project-latin-$(i)-font)
+PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-latin-small-font project-korean-font $(PROJECT_LATIN_STYLE_TARGETS)
+INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-latin-small-font project-korean-font project-latin-1-font project-latin-2-font project-latin-3-font project-latin-4-font project-latin-5-font project-latin-6-font project-latin-7-font project-latin-9-font project-latin-10-font project-latin-11-font project-latin-12-font project-latin-13-font project-latin-14-font project-latin-15-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -209,6 +213,7 @@ HELP_DESCRIPTION_display-smoke := build the display smoke fixture
 HELP_DESCRIPTION_display-smoke-run := run display smoke and compare its GE/present flight bundle
 HELP_DESCRIPTION_display-smoke-picture-gate := compare display smoke frames with an accepted reference (SKIP, PASS, FAIL)
 HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
+HELP_DESCRIPTION_display-smoke-fsr1 := compare the display smoke with the FSR 1 presentation upscaler off and on (needs a Vulkan device)
 HELP_DESCRIPTION_display-smoke-quit := close the display smoke window mid-run and check the orderly quit
 HELP_DESCRIPTION_display-smoke-player := build the player and run display smoke
 HELP_DESCRIPTION_display-smoke-clean := remove display smoke artifacts
@@ -304,6 +309,7 @@ HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blo
 HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-machine selftest (pure C)
 HELP_DESCRIPTION_ace-selftest := run Ace Mode's CPU-only selftest (launch line, 30 Hz detector, readout, report; pure C)
 HELP_DESCRIPTION_ace-smooth-selftest := run Ace Mode's in-between frames selftest on a headless Vulkan device (SKIPs without one)
+HELP_DESCRIPTION_fsr1-selftest := run the FSR 1 presentation upscaler selftest on a headless Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_ace-ui-selftest := run Ace Mode's in-game UI selftest (layout, then a headless Vulkan render; SKIPs the GPU leg without Vulkan)
 HELP_DESCRIPTION_osk-overlay-paint-selftest := run the in-window keyboard painter's exact-pixel selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
@@ -314,6 +320,7 @@ HELP_DESCRIPTION_audio-selftest := run the SDL3 host audio output selftest
 HELP_DESCRIPTION_audio-resampler-bench := run the synthetic-input audio resampler microbenchmark (no game data)
 HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
 HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
+HELP_DESCRIPTION_gpu-coherence-selftest-snapbar-mutants := prove the GPU coherence selftest kills three broken snapshot-copy barrier variants
 HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
 HELP_DESCRIPTION_gpu-ace-selftest := run Ace Mode's texture filtering selftest on a real Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_ge-replay := run the graphics-engine replay selftest

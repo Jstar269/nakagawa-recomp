@@ -4394,6 +4394,48 @@ static void test_mpeg_looped_stream_feeds_past_header_size(uint32_t lead, int st
 /* A movie put whole and only once: the last access unit stays open in the demux, and its packets
  * stay in the ring until it leaves. A title that takes an empty ring for the end of the movie never
  * asks for it otherwise, as WipEout Pure's short menu movies do not. */
+/* sceMpegRingbufferAvailableSize answers through the ring's sceMpeg context.
+ * pspautotests tests/video/mpeg/ringbuffer/avail measured it on a PSP: a 512-packet ring reads
+ * 0x200 free after sceMpegCreate (avail.expected:9); once the context is deleted and the ring
+ * destructed it returns 0x80618009 (line 10); with packetsAvail at the total it reads 0, at 1 it
+ * reads 0x1ff (lines 20-21). PPSSPP answers through getMpegCtx on the ring's handle, which fails
+ * the same way. sceMpegRingbufferAvailableSize's handler is a direct call of
+ * mpeg_ringbuffer_available_size; the destruct goes through its production handler. */
+void hle_register_mpeg_shared_handlers(void);
+
+static void test_mpeg_ringbuffer_available_needs_a_live_context(void) {
+    enum {
+        RA_DESC = 0x08600000u, RA_DATA = 0x08610000u, RA_RING = 0x08630000u,
+        RA_RING_DATA = 0x086c0000u, RA_PACKETS = 512u,
+    };
+    const uint32_t nid_destruct = 0x13407f13u;
+    const uint32_t ring_bytes = RA_PACKETS * MPEG_RING_BYTES_PER_PKT;
+    hle_register_mpeg_shared_handlers();
+    CHECK(mpeg_init() == 0u, "mpeg-avail: sceMpegInit returns 0");
+    MEM_W32(RA_DESC, 0u);
+    CHECK(mpeg_ringbuffer_construct(RA_RING, RA_PACKETS, RA_RING_DATA, ring_bytes, 0u, 0u) == 0u &&
+              mpeg_create(RA_DESC, RA_DATA, 0x10000u, RA_RING, 512u, 0u, 0u) == 0u,
+          "mpeg-avail: a 512-packet ring and its context are set up");
+    CHECK(mpeg_ringbuffer_available_size(RA_RING) == 0x200u,
+          "mpeg-avail: a new ring reads 0x200 free (avail.expected:9)");
+    CHECK(mpeg_delete(RA_DESC) == 0u &&
+              guest_mpeg_import(nid_destruct, RA_RING, 0u, 0u, 0u, 0u) == 0u,
+          "mpeg-avail: the context is deleted and the ring destructed");
+    CHECK(mpeg_ringbuffer_available_size(RA_RING) == 0x80618009u,
+          "mpeg-avail: after the delete the ring reads 0x80618009 (avail.expected:10)");
+    CHECK(mpeg_ringbuffer_construct(RA_RING, RA_PACKETS, RA_RING_DATA, ring_bytes, 0u, 0u) == 0u &&
+              mpeg_create(RA_DESC, RA_DATA, 0x10000u, RA_RING, 512u, 0u, 0u) == 0u,
+          "mpeg-avail: a second context on the same ring is set up");
+    rb_set(RA_RING, RB_packetsAvail, RA_PACKETS);
+    CHECK(mpeg_ringbuffer_available_size(RA_RING) == 0u,
+          "mpeg-avail: packetsAvail at the total reads 0 free (avail.expected:20)");
+    rb_set(RA_RING, RB_packetsAvail, 1u);
+    CHECK(mpeg_ringbuffer_available_size(RA_RING) == 0x1ffu,
+          "mpeg-avail: packetsAvail at 1 reads 0x1ff free (avail.expected:21)");
+    (void)mpeg_delete(RA_DESC);
+    (void)mpeg_finish();
+}
+
 static void test_mpeg_last_unit_keeps_its_ring_packets(void) {
     enum {
         LU_DESC = 0x08600000u, LU_DATA = 0x08610000u, LU_RING = 0x08630000u, LU_HDR = 0x08640000u,
@@ -5555,6 +5597,7 @@ int main(int argc, char **argv) {
     test_mpeg_looped_stream_feeds_past_header_size(0u, 0);
     test_mpeg_looped_stream_feeds_past_header_size(4u, 0);
     test_mpeg_looped_stream_feeds_past_header_size(0u, 1);
+    test_mpeg_ringbuffer_available_needs_a_live_context();
     test_mpeg_last_unit_keeps_its_ring_packets();
     test_mpeg_feed_end_without_stream_size(0);
     test_mpeg_feed_end_without_stream_size(1);

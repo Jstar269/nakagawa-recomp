@@ -178,6 +178,8 @@ int sr_host_data_prepare(void) {{
     return 4; /* SR_DATA_STATE_DISABLED */
 }}
 size_t sr_host_data_entry_count(void) {{ return 0; }}
+/* No SAS mixer in this harness: Ace Mode's sas=sinc is refused (driver.c never confirms it). */
+int sr_hle_sas_set_band_limited(int on) {{ (void)on; return 0; }}
 
 static void check_all_or_nothing_on_exit(void) {{
     if (g_check_all_or_nothing) {{

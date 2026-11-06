@@ -140,6 +140,26 @@ class TrackedCorpusTest(unittest.TestCase):
             "src/rt/nid_names.h is stale; run python tools/regen_all.py",
         )
 
+    def test_module_entry_points_carry_the_names_their_nids_derive_from(self) -> None:
+        # 0xD5C28CC0 is the SHA-1 NID of sceAtracEndEntry, the ATRAC3plus library's
+        # module-stop entry (PSPSDK src/atrac3/sceAtrac3plus.S; uofw
+        # src/kd/libatrac3plus/exports.exp). PPSSPP renamed it sceAtracReleaseResources in
+        # 4e8e6312e, a name that does not hash to it. The other two are controls.
+        names = gen.nid_names(self.corpus)
+        derivable = {
+            e["name"] for e in self.corpus["entries"] if e["class"] in gen.DERIVABLE_CLASSES
+        }
+        for name, nid in (
+            ("sceAtracEndEntry", 0xD5C28CC0),
+            ("sceAtracStartEntry", 0xD1F59FDB),
+            ("sceMp3EndEntry", 0x732B042A),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(gen.nid_of(name), nid)
+                self.assertIn(name, derivable)
+                self.assertEqual(names[nid], name)
+        self.assertNotEqual(gen.nid_of("sceAtracReleaseResources"), 0xD5C28CC0)
+
     def test_derivable_entries_store_no_nid(self) -> None:
         stored = [
             e["name"] for e in self.corpus["entries"]
@@ -155,8 +175,8 @@ class TrackedCorpusTest(unittest.TestCase):
     def test_copied_constant_reduction_is_what_it_claims(self) -> None:
         derived = sum(self.corpus["counts"][c] for c in gen.DERIVABLE_CLASSES)
         stored = sum(1 for e in self.corpus["entries"] if "nid" in e)
-        self.assertEqual(derived, 1463)
-        self.assertEqual(stored, 152)
+        self.assertEqual(derived, 1464)
+        self.assertEqual(stored, 151)
         self.assertEqual(derived + stored, len(self.corpus["entries"]))
 
     def test_generator_needs_no_ppsspp_checkout(self) -> None:

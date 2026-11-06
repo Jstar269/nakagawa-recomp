@@ -280,6 +280,10 @@ The **Where** column of each table names the places a code can appear:
 | `PYTHON_NOT_FOUND` | player | The verified Python runtime is not in app data. |
 | `REDIRECT_REJECTED` | player | A download was redirected to a host it does not use. |
 | `REMOVE_FAILED` | player | The game could not be removed from the library. |
+| `SAVES_ADD_FAILED` | player | A save folder could not be added to a title's saves. |
+| `SAVES_BACKUP_FAILED` | player | A title's saves could not be backed up. |
+| `SAVES_PICKER_FAILED` | player | The folder picker for adding a save could not open. |
+| `SAVES_RESTORE_FAILED` | player | A save backup was refused or could not be restored; the saves are unchanged. |
 | `SIZE_MISMATCH` | player | A download is not the size its manifest lists. |
 | `SPAWN_FAILED` | player | A tool process could not be started. |
 | `SWEEP_REPORT_INVALID` | library | A sweep run's report has no failure class. |

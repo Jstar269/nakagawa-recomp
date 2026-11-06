@@ -84,6 +84,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/test_xb_parser",
     "build/test_disc_expand",
     "build/test_disc_verify",
+    "build/test_nk_zip",
     "build/test_safe_math",
     "build/test_pcm_wav_dump",
     "build/test_fuzz_parsers --iters 100",
@@ -253,6 +254,9 @@ class StandaloneTestBinTargetTests(unittest.TestCase):
         commands = _dry_run("player-state-test-bin")
         self.assertTrue(any("-DNK_TITLE_MANIFEST_TEST_SEAMS" in c and "src/core/nk_font.c" in c
                             for c in commands))
+        # The saves fault seams (#1883) compile into nk_zip.c and player_state.c here only.
+        self.assertTrue(any("-DNK_SAVES_TEST_SEAMS" in c and "src/core/nk_zip.c" in c
+                            and "src/player/player_state.c" in c for c in commands))
 
 
 if __name__ == "__main__":

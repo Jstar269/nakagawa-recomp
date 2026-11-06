@@ -664,6 +664,26 @@ unsigned long g_mpeg_put;
 unsigned long g_mpeg_getavc;
 unsigned long g_mpeg_avcdec;
 unsigned long g_mpeg_nodata;
+/* mpeg.c is not linked here. The sceMpeg handlers the interrupt-context check
+ * registers (test_mpeg_create_refused_in_interrupt) reach these spies, which
+ * record only whether a context was asked for and how many are live. */
+static unsigned s_mpi_create_calls, s_mpi_live;
+uint32_t mpeg_init(void) { return 0; }
+uint32_t mpeg_finish(void) { s_mpi_live = 0; return 0; }
+uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_t ringAddr,
+                     uint32_t frameWidth, uint32_t mode, uint32_t ddrTop) {
+    (void)mpegAddr; (void)dataPtr; (void)size; (void)ringAddr;
+    (void)frameWidth; (void)mode; (void)ddrTop;
+    s_mpi_create_calls++;
+    s_mpi_live++;
+    return 0;
+}
+uint32_t mpeg_delete(uint32_t mpegAddr) {
+    (void)mpegAddr;
+    if (!s_mpi_live) return 0xffffffffu;
+    s_mpi_live--;
+    return 0;
+}
 int sr_perf_enabled;
 /* Non-zero, and never repeating: every `sr_perf_now_ns()` caller uses the value only as
  * a "the counters are live" predicate before handing it to a stub, so a constant 0 would
@@ -3870,6 +3890,215 @@ static void test_io_async_and_path_imports(void) {
            "sceIoSync names unsupported device semantics with a real error");
 }
 
+/* sceIoAssign / sceIoUnassign through the production syscall path. WipEout Pure's Memory
+ * Stick insert handler assigns "fatms0:" to "msstor0p1:" through "fatms0:" read/write, and
+ * its eject handler unassigns it; before these handlers both NIDs were unregistered and the
+ * run stopped at boot. Arguments 5 and 6 (the mount argument buffer and its size) arrive in
+ * t0 and t1 (MIPS EABI): the stack slots hold a kernel-bit poison value, so a handler that
+ * read them from the stack would answer ILLEGAL_ADDR where these cells expect success. */
+static uint32_t io_assign_call(uint32_t dev, uint32_t block, uint32_t fs, uint32_t mode,
+                               uint32_t arg, uint32_t arg_size) {
+    enum { STACK_ADDR = 0x09016000u };
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[29] = STACK_ADDR;
+    MEM_W32(STACK_ADDR, 0x80000000u);
+    MEM_W32(STACK_ADDR + 4u, 0x80000000u);
+    cpu.r[4] = dev;
+    cpu.r[5] = block;
+    cpu.r[6] = fs;
+    cpu.r[7] = mode;
+    cpu.r[8] = arg;
+    cpu.r[9] = arg_size;
+    return sr_syscall(&cpu, 0xb2a628c1u);
+}
+
+static uint32_t io_unassign_call(uint32_t dev) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dev;
+    return sr_syscall(&cpu, 0x6d08a871u);
+}
+
+/* One sceIo call on a guest path through sr_syscall: open (with flags), getstat, mkdir or
+ * remove. Returns the syscall's result; an open that succeeds is closed again. */
+static uint32_t io_assign_path_call(uint32_t nid, uint32_t path_addr, const char *guest,
+                                    uint32_t flags) {
+    enum { STAT_ADDR = 0x09015200u };
+    CpuState cpu;
+    fd_guest_copy(path_addr, guest, strlen(guest) + 1u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = path_addr;
+    if (nid == 0x109f50bcu) {          /* sceIoOpen */
+        cpu.r[5] = flags;
+        cpu.r[6] = 0777u;
+    } else if (nid == 0xace946e8u) {   /* sceIoGetstat */
+        cpu.r[5] = STAT_ADDR;
+    } else if (nid == 0x06a70004u) {   /* sceIoMkdir */
+        cpu.r[5] = 0777u;
+    }
+    uint32_t rc = sr_syscall(&cpu, nid);
+    if (nid == 0x109f50bcu && rc >= 3u && rc < 64u) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = rc;
+        (void)sr_syscall(&cpu, 0x810c4bc3u);   /* sceIoClose */
+    }
+    return rc;
+}
+
+static void test_io_assign_through_syscall(void) {
+    enum {
+        ALIAS_ADDR = 0x09015000u,
+        BLOCK_ADDR = 0x09015040u,
+        FS_ADDR = 0x09015080u,
+        OTHER_ADDR = 0x090150c0u,
+        PATH_ADDR = 0x09015100u,
+        STAT_ADDR = 0x09015200u,
+        ARG_ADDR = 0x09015300u,
+        NO_SUCH_DEVICE = 0x80020321u,
+        ALIAS_USED = 0x80020326u,
+        ILLEGAL_ADDR = 0x800200d3u,
+        UNSUPPORTED = 0x80010086u,
+        RDWR = 0u,
+        RDONLY = 1u,
+    };
+    static const char probe_guest[] = "fatms0:/NAKAGAWA_IO_ASSIGN.TXT";
+    static const char probe_ms0[] = "ms0:/NAKAGAWA_IO_ASSIGN.TXT";
+    sr_hle_test_register_iofilemgr();   /* the production IoFileMgr registration run */
+    bool registered = sr_hle_test_is_registered(0xb2a628c1u) &&
+                      sr_hle_test_is_registered(0x6d08a871u);
+    expect(registered, "sceIoAssign and sceIoUnassign are registered IoFileMgr imports");
+    if (!registered) return;   /* an unregistered NID ends the run as an import miss */
+
+    fd_guest_copy(ALIAS_ADDR, "fatms0:", sizeof("fatms0:"));
+    fd_guest_copy(BLOCK_ADDR, "msstor0p1:", sizeof("msstor0p1:"));
+    fd_guest_copy(FS_ADDR, "fatms0:", sizeof("fatms0:"));
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == 0u,
+           "sceIoAssign honours fatms0: on msstor0p1: through fatms0: read/write");
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == ALIAS_USED,
+           "a second assign of the same alias name is ALIAS_USED");
+    fd_guest_copy(OTHER_ADDR, " FATMS0:", sizeof(" FATMS0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == ALIAS_USED,
+           "alias names compare case-insensitively after leading spaces");
+
+    /* The alias names the VFS Memory Stick: a file created through fatms0: is the ms0: file. */
+    char host[256];
+    fd_host_path(host, sizeof(host), probe_ms0);
+    nk_remove_utf8(host);
+    CpuState cpu;
+    fd_guest_copy(PATH_ADDR, probe_guest, sizeof(probe_guest));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = 0x00000602u;   /* PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC */
+    cpu.r[6] = 0777u;
+    uint32_t fd = sr_syscall(&cpu, 0x109f50bcu);   /* sceIoOpen */
+    expect(fd >= 3u && fd < 64u, "a file opens through the assigned fatms0: alias");
+    if (fd >= 3u && fd < 64u) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        expect(sr_syscall(&cpu, 0x810c4bc3u) == 0u, "the fatms0: probe closes");   /* sceIoClose */
+        fd_guest_copy(PATH_ADDR, probe_ms0, sizeof(probe_ms0));
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = PATH_ADDR;
+        cpu.r[5] = STAT_ADDR;
+        expect(sr_syscall(&cpu, 0xace946e8u) == 0u,   /* sceIoGetstat */
+               "the file created through fatms0: is the ms0: file");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = PATH_ADDR;
+        expect(sr_syscall(&cpu, 0xf27a9c51u) == 0u, "the probe file is removed");   /* sceIoRemove */
+    }
+
+    /* The aliases the runtime serves from boot are in the table. */
+    fd_guest_copy(OTHER_ADDR, "ms0:", sizeof("ms0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == ALIAS_USED,
+           "ms0 is assigned from boot");
+    fd_guest_copy(OTHER_ADDR, "disc0:", sizeof("disc0:"));
+    fd_guest_copy(BLOCK_ADDR, "umd0:", sizeof("umd0:"));
+    fd_guest_copy(FS_ADDR, "isofs0:", sizeof("isofs0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDONLY, 0u, 0u) == ALIAS_USED,
+           "disc0 is assigned from boot");
+    fd_guest_copy(BLOCK_ADDR, "msstor0p1:", sizeof("msstor0p1:"));
+    fd_guest_copy(FS_ADDR, "fatms0:", sizeof("fatms0:"));
+
+    /* uofw's argument checks. */
+    expect(io_assign_call(0u, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == NO_SUCH_DEVICE,
+           "a NULL alias is NO_SUCH_DEVICE");
+    fd_guest_copy(OTHER_ADDR, "msnew0:", sizeof("msnew0:"));
+    expect(io_assign_call(OTHER_ADDR, 0u, FS_ADDR, RDWR, 0u, 0u) == NO_SUCH_DEVICE,
+           "a filesystem without a block device is NO_SUCH_DEVICE");
+    expect(io_assign_call(OTHER_ADDR, 0x88000000u, FS_ADDR, RDWR, 0u, 0u) == ILLEGAL_ADDR,
+           "a kernel-space device pointer is ILLEGAL_ADDR");
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, ARG_ADDR, 0x80000000u) ==
+               ILLEGAL_ADDR,
+           "the argument size in t1 is checked (a negative size is ILLEGAL_ADDR)");
+    fd_guest_copy(OTHER_ADDR, "nocolon", sizeof("nocolon"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == NO_SUCH_DEVICE,
+           "an alias without ':' is NO_SUCH_DEVICE");
+
+    /* Assigns the VFS cannot honour stop at the named boundary, never success. */
+    fd_guest_copy(OTHER_ADDR, "msnew0:", sizeof("msnew0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == UNSUPPORTED,
+           "a new alias name the VFS does not serve is refused at the boundary");
+    expect(io_unassign_call(ALIAS_ADDR) == 0u, "sceIoUnassign removes the game-made fatms0 alias");
+
+    /* The unassign unmounts fatms0: (uofw sceIoUnassign calls the driver's df_umount), so a
+     * path on it no longer reaches the Memory Stick: NO_SUCH_DEVICE, also through the
+     * handlers that answer one fixed code for other unusable paths. */
+    enum { OPEN = 0x109f50bcu, GETSTAT = 0xace946e8u, MKDIR = 0x06a70004u, REMOVE = 0xf27a9c51u,
+           CREATE = 0x00000602u /* PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC */ };
+    static const char probe_dir[] = "fatms0:/NAKAGAWA_IO_ASSIGN_DIR";
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_guest, CREATE) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoOpen on fatms0: is NO_SUCH_DEVICE");
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_guest, 0u) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoGetstat on fatms0: is NO_SUCH_DEVICE");
+    expect(io_assign_path_call(MKDIR, PATH_ADDR, probe_dir, 0u) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoMkdir on fatms0: is NO_SUCH_DEVICE");
+    {
+        CpuState dev_cpu;
+        fd_guest_copy(OTHER_ADDR, "fatms0:", sizeof("fatms0:"));
+        memset(&dev_cpu, 0, sizeof(dev_cpu));
+        dev_cpu.r[4] = OTHER_ADDR;
+        dev_cpu.r[5] = 0x02425818u;   /* a Memory Stick devctl command */
+        expect(sr_syscall(&dev_cpu, 0x54f5fb11u) == NO_SUCH_DEVICE,   /* sceIoDevctl */
+               "after the unassign, sceIoDevctl on fatms0: is NO_SUCH_DEVICE");
+    }
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_ms0, 0u) != 0u,
+           "the refused open created nothing on the Memory Stick");
+    /* ms0 keeps serving the Memory Stick: the runtime's choice, since whether the PSP's
+     * unmount takes the unit ms0 shares with it is not measured. */
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_ms0, CREATE) < 64u,
+           "ms0: still opens after fatms0 is unassigned");
+    expect(io_assign_path_call(REMOVE, PATH_ADDR, probe_ms0, 0u) == 0u,
+           "and the ms0: probe is removed");
+    fd_guest_copy(OTHER_ADDR, "msnew0:", sizeof("msnew0:"));
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, ARG_ADDR, 4u) == UNSUPPORTED,
+           "a mount argument buffer in t0 is refused at the boundary (not modelled)");
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDONLY, 0u, 0u) == UNSUPPORTED,
+           "a read-only Memory Stick mount is refused: the VFS serves it read/write");
+
+    /* sceIoUnassign. */
+    expect(io_unassign_call(ALIAS_ADDR) == NO_SUCH_DEVICE,
+           "unassigning an alias that is not assigned is NO_SUCH_DEVICE");
+    expect(io_unassign_call(0u) == NO_SUCH_DEVICE, "sceIoUnassign(NULL) is NO_SUCH_DEVICE");
+    expect(io_unassign_call(0x88000000u) == ILLEGAL_ADDR,
+           "sceIoUnassign of a kernel-space pointer is ILLEGAL_ADDR");
+    fd_guest_copy(OTHER_ADDR, "ms0:", sizeof("ms0:"));
+    expect(io_unassign_call(OTHER_ADDR) == UNSUPPORTED,
+           "unassigning ms0, which the VFS keeps serving, is refused at the boundary");
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == 0u,
+           "fatms0 assigns again after its unassign (the insert-eject-insert sequence)");
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_guest, CREATE) < 64u,
+           "fatms0: opens again once it is assigned again");
+    expect(io_assign_path_call(REMOVE, PATH_ADDR, probe_guest, 0u) == 0u,
+           "and the fatms0: probe is removed");
+    expect(io_unassign_call(ALIAS_ADDR) == 0u, "and unassigns again");
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_guest, 0u) == NO_SUCH_DEVICE,
+           "the second unassign unmounts fatms0: again");
+    /* Leave fatms0: usable for the tests that follow, as it is from boot. */
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == 0u,
+           "fatms0 assigns a third time");
+}
+
 static void test_fd_namespace(void) {
     enum {
         FD_KIND_STD = 1,
@@ -4561,6 +4790,7 @@ static void test_fd_namespace(void) {
            "the descriptor reused after async close closes cleanly");
 
     test_io_async_and_path_imports();
+    test_io_assign_through_syscall();
     test_io_open_async_notifies_later_callback();
     test_io_enhancement_data_file();
     test_state_sampler_rows();
@@ -6924,12 +7154,10 @@ static void test_sysreg_write_model(void) {
 /* Persistence: a flush writes the overlay atomically, a restart loads it, a flush after reads
  * writes nothing, and values equal to their defaults are not recorded. */
 /* Named refusals for NIDs whose contract is not established from the sources in this tree.
- * Each one returns its named error and does not stop the title, so the run continues past it:
- *  - sceNetInit (0x39af39a6): the offline network policy (sceNetGetLocalEtherAddr's 0x80010086).
+ * Each one returns its named error and does not stop the title, so the run continues past it.
  * The test pins the codes, so a later measured handler has to replace them deliberately.
- * sceKernelReferSystemStatus is no longer refused: it is measured (test_refer_system_status). */
-#define NID_REFUSE_NET_INIT                0x39af39a6u
-#define NID_REFUSE_NET_TERM                0x281928a9u
+ * sceKernelReferSystemStatus is no longer refused: it is measured (test_refer_system_status), and
+ * neither are sceNetInit and sceNetTerm (test_net_core_without_network). */
 #define REFUSE_NET_CODE                    0x80010086u
 #define REFUSE_UNSUPPORTED_CODE            0x80020002u
 
@@ -6945,10 +7173,6 @@ static void test_named_refusals(void) {
     static const uint8_t mac[6] = {0x01u, 0x23u, 0x45u, 0x67u, 0x89u, 0xabu};
     reset_fixture();
     sr_hle_init();
-    expect(refuse_call(NID_REFUSE_NET_INIT) == REFUSE_NET_CODE,
-           "sceNetInit refuses with the offline network code 0x80010086");
-    expect(refuse_call(NID_REFUSE_NET_TERM) == REFUSE_NET_CODE,
-           "sceNetTerm has a named offline refusal instead of the unknown-NID stop");
     expect(refuse_call(0xf9d8eb63u) == REFUSE_NET_CODE,
            "sceHttpsEnd refuses with the offline HTTP code 0x80010086, as sceHttpEnd does");
     expect(refuse_call(0x011f03c1u) == REFUSE_UNSUPPORTED_CODE,
@@ -7337,6 +7561,125 @@ static void test_unregistered_batch_profiler_refer_null(void) {
     }
 }
 
+/* The sceNet core library with no network (hle_network.c, #341). A PSP's sceNetInit only takes the
+ * library's pool and returns 0, and so do sceNetTerm and Init again after Term (pspautotests
+ * 70e72391 tests/net: every net test, net/adhoc/socketids). The calls that need a network answer as
+ * a PSP with no group and no access point does: sceNetGetLocalEtherAddr 0x80410180 with the buffer
+ * untouched (net/adhoc/apctlinit), and sceNetAdhocctlGetParameter, with the ad hoc control library
+ * never initialized, 0x80410b08 (net/adhoc/adhocctl "Before init"). Before this, sceNetInit refused
+ * with 0x80010086, and LittleBigPlanet's "connect" then called through a network object it never
+ * set up. The argument codes are PPSSPP's (UNMEASURED). */
+static uint32_t net_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t t0) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3; cpu.r[8] = t0;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_net_core_without_network(void) {
+    enum {
+        NID_NET_INIT = 0x39af39a6u, NID_NET_TERM = 0x281928a9u,
+        NID_NET_LOCAL_ETHER = 0x0bf0a3aeu, NID_ADHOCCTL_GET_PARAMETER = 0xded9d28eu,
+        MAC_ADDR = 0x00281000u, PARAM_ADDR = 0x00281040u, PARAM_SIZE = 0x70u,
+        POOL = 0x20000u,
+    };
+    extern void sr_hle_test_partition_reset(void);
+    extern void hle_net_reset(void);
+    extern int sr_hle_test_net_inited(void);
+    extern uint32_t sr_hle_test_net_pool_uid(void);
+    extern uint32_t block_addr(uint32_t uid);
+    extern uint32_t alloc_block(uint32_t size);
+    extern uint32_t free_block(uint32_t uid);
+    const uint32_t loaded_end = s_fixture_loaded_end;
+    reset_fixture();
+    s_fixture_loaded_end = 0x08a00000u;   /* a main image in user RAM, as a game's is */
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    hle_net_reset();
+
+    memset(SR_HOST(MAC_ADDR), 0xcc, 6u);
+    expect(net_call(NID_NET_LOCAL_ETHER, MAC_ADDR, 0, 0, 0, 0) == 0x80410180u,
+           "sceNetGetLocalEtherAddr before sceNetInit: no local address (0x80410180; UNMEASURED before "
+           "Init, measured after it)");
+
+    expect(net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0u,
+           "sceNetInit(0x20000, 0x20, 0x1000, 0x20, 0x1000) returns 0, as on a PSP");
+    const uint32_t pool_uid = sr_hle_test_net_pool_uid();
+    const uint32_t pool_addr = block_addr(pool_uid);
+    expect(sr_hle_test_net_inited() && pool_addr != 0u &&
+               pool_addr >= 0x08800000u && pool_addr + POOL <= 0x0a000000u,
+           "sceNetInit takes its pool from the user partition");
+
+    expect(net_call(NID_NET_LOCAL_ETHER, MAC_ADDR, 0, 0, 0, 0) == 0x80410180u,
+           "sceNetGetLocalEtherAddr with no group or access point: 0x80410180");
+    const uint8_t *mac = SR_HOST(MAC_ADDR);
+    int untouched = 1;
+    for (int i = 0; i < 6; i++) untouched &= mac[i] == 0xccu;
+    expect(untouched, "sceNetGetLocalEtherAddr leaves the buffer untouched");
+
+    memset(SR_HOST(PARAM_ADDR), 0xcc, PARAM_SIZE);
+    expect(net_call(NID_ADHOCCTL_GET_PARAMETER, PARAM_ADDR, 0, 0, 0, 0) == 0x80410b08u,
+           "sceNetAdhocctlGetParameter before sceNetAdhocctlInit: NOT_INITIALIZED (0x80410b08)");
+    const uint8_t *param = SR_HOST(PARAM_ADDR);
+    untouched = 1;
+    for (uint32_t i = 0; i < PARAM_SIZE; i++) untouched &= param[i] == 0xccu;
+    expect(untouched, "sceNetAdhocctlGetParameter writes nothing when it fails");
+
+    expect(net_call(NID_NET_TERM, 0, 0, 0, 0, 0) == 0u, "sceNetTerm returns 0");
+    expect(!sr_hle_test_net_inited() && block_addr(pool_uid) == 0u,
+           "sceNetTerm gives the pool back to the user partition");
+    expect(net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0u,
+           "sceNetInit again after sceNetTerm returns 0 (net/adhoc/socketids)");
+    const uint32_t second = sr_hle_test_net_pool_uid();
+    expect(net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0u &&
+               block_addr(second) == 0u && block_addr(sr_hle_test_net_pool_uid()) != 0u,
+           "a second sceNetInit without Term keeps one pool (PPSSPP; UNMEASURED)");
+    expect(net_call(NID_NET_TERM, 0, 0, 0, 0, 0) == 0u, "sceNetTerm after the second Init returns 0");
+
+    expect(net_call(NID_NET_INIT, 0u, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0x800201b7u &&
+               !sr_hle_test_net_inited(),
+           "sceNetInit with pool size 0: ILLEGAL_MEMSIZE, nothing initialized (PPSSPP; UNMEASURED)");
+    expect(net_call(NID_NET_INIT, POOL, 0x07u, 0x1000u, 0x20u, 0x1000u) == 0x80020193u &&
+               net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x78u, 0x1000u) == 0x80020193u &&
+               !sr_hle_test_net_inited(),
+           "sceNetInit with a thread priority outside 0x08-0x77: ILLEGAL_PRIORITY (PPSSPP; UNMEASURED)");
+
+    /* A pool size within 255 of 4 GB has no 256-byte-rounded slot. With a small free block in the
+     * partition the rounding must not wrap to a 256-byte slot that the free block satisfies. */
+    const uint32_t hole = alloc_block(0x1000u), keep = alloc_block(0x1000u);
+    expect(hole != 0xffffffffu && keep != 0xffffffffu && free_block(hole) == 0u,
+           "a 0x1000-byte free block sits below an allocated one");
+    expect(alloc_block(0xffffff01u) == 0xffffffffu,
+           "alloc_block refuses a size whose 256-byte rounding passes 4 GB");
+    expect(net_call(NID_NET_INIT, 0xfffffff0u, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0x80020190u &&
+               !sr_hle_test_net_inited(),
+           "sceNetInit with a pool size near 4 GB: NO_MEMORY, nothing initialized");
+    free_block(keep);
+
+    /* The recordings were made with the WLAN switch on. With the profile's switch off sceNetInit
+     * still returns 0: the chosen behaviour for an UNMEASURED case (PPSSPP does not consult it). */
+    static const char switch_off[] =
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, "
+        "\"categories\": [], \"keys\": [], \"console\": {\"wlan_mac_hex\": \"00a1b2c3d4e5\", "
+        "\"open_psid_hex\": \"00112233445566778899aabbccddeeff\", \"wlan_switch\": 0}}";
+    sysreg_scratch_clean();
+    expect(sysreg_write_file(SYSREG_SCRATCH_FILE, switch_off, sizeof(switch_off) - 1u),
+           "the switch-off overlay is written");
+    sysreg_restart();
+    expect(profile_call(0xd7763699u, 0u) == 0u, "the profile's WLAN switch reads off");
+    expect(net_call(NID_NET_INIT, POOL, 0x20u, 0x1000u, 0x20u, 0x1000u) == 0u && sr_hle_test_net_inited(),
+           "sceNetInit with the WLAN switch off returns 0 (UNMEASURED; the switch-on result is kept)");
+    expect(net_call(NID_NET_LOCAL_ETHER, MAC_ADDR, 0, 0, 0, 0) == 0x80410180u &&
+               net_call(NID_NET_TERM, 0, 0, 0, 0, 0) == 0u,
+           "with the switch off there is still no local address, and sceNetTerm returns 0");
+    sysreg_scratch_clean();   /* the process-wide scratch overlay main() set stays selected */
+    sysreg_restart();
+
+    hle_net_reset();
+    sr_hle_test_partition_reset();
+    s_fixture_loaded_end = loaded_end;
+}
+
 /* Imports that stopped titles on an unknown NID now resolve to a named refusal with the code
  * recorded in hle.c's unregistered-import batch. The two NIDs without a confirmed public name
  * must stay unregistered, so an unknown-NID trap still names them. */
@@ -7349,7 +7692,6 @@ static void test_unregistered_batch_refusals(void) {
         {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
         {0x72189c48u, 0x80010086u, "sceImposeSetUMDPopup"},
         {0x8c943191u, 0x80010086u, "sceImposeGetBatteryIconStatus"},
-        {0x0bf0a3aeu, 0x80010086u, "sceNetGetLocalEtherAddr"},
         {0x0282a3bdu, 0x80010086u, "sceHttpGetContentLength"},
         {0x03d9526fu, 0x80010086u, "sceHttpSetResolveRetry"},
         {0x1f0fc3e3u, 0x80010086u, "sceHttpSetRecvTimeOut"},
@@ -7380,7 +7722,7 @@ static void test_unregistered_batch_refusals(void) {
 
 /* #1139 phase 0: the public PSPSDK ad hoc surface (pspnet_adhoc.h 22, pspnet_adhocctl.h 21,
  * pspnet_adhocmatching.h 16 prototypes; NIDs are sha1(name)) is refused by name with the offline
- * network code sceNetInit uses. That code is the runtime's documented refusal, not a measured ad hoc
+ * network code 0x80010086. That code is the runtime's documented refusal, not a measured ad hoc
  * result. A NID missing from the registry would reach sr_syscall's unknown-NID stop, so membership is
  * checked before the call. */
 static void test_adhoc_named_refusals(void) {
@@ -7421,7 +7763,6 @@ static void test_adhoc_named_refusals(void) {
         {0x362cbe8fu, "sceNetAdhocctlGetAdhocId"},
         {0x5a014ce0u, "sceNetAdhocctlGetGameModeInfo"},
         {0x8916c003u, "sceNetAdhocctlGetNameByAddr"},
-        {0xded9d28eu, "sceNetAdhocctlGetParameter"},
         {0x8db83fdcu, "sceNetAdhocctlGetPeerInfo"},
         {0xe162cb14u, "sceNetAdhocctlGetPeerList"},
         {0x81aee1beu, "sceNetAdhocctlGetScanInfo"},
@@ -7448,7 +7789,8 @@ static void test_adhoc_named_refusals(void) {
         {0x32b156b3u, "sceNetAdhocMatchingStop"},
         {0x7945ecdau, "sceNetAdhocMatchingTerm"},
     };
-    expect(sizeof(adhoc) / sizeof(adhoc[0]) == 59u, "the public ad hoc surface has 59 prototypes");
+    expect(sizeof(adhoc) / sizeof(adhoc[0]) == 58u,
+           "the public ad hoc surface less sceNetAdhocctlGetParameter (test_net_core_without_network) has 58 prototypes");
     reset_fixture();
     sr_hle_init();
     for (size_t i = 0; i < sizeof(adhoc) / sizeof(adhoc[0]); i++) {
@@ -15534,6 +15876,103 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
     sr_hle_test_data_reset(0);
 }
 
+/* 2c. Archive discovery skips an unpack folder ("<archive>.d" beside the archive
+ *     file "<archive>", the layout staging writes) and walks every other ".d"
+ *     directory. Loose serving is untouched: a loose root's unpack folder still
+ *     serves its files, and the primary root's unpack folders stay out of an
+ *     archive-mode namespace, as before. */
+static const char *const s_xb_unpack_dirs[] = {
+    "", "/primary", "/primary/pack.xb.d", "/primary/pack.xb.d/data",
+    "/primary/pack.xb.d/data/menu", "/primary/orphan.xb.d", "/primary/notes.d",
+    "/loose", "/loose/side.xb.d", "/loose/side.xb.d/data", "/loose/side.xb.d/data/menu"
+};
+static const char *const s_xb_unpack_files[] = {
+    "/primary/pack.xb", "/primary/pack.xb.d/data/decoy.xb",
+    "/primary/pack.xb.d/data/menu/unpacked-primary.to", "/primary/orphan.xb.d/inner.xb",
+    "/primary/notes.d/deep.xb", "/loose/side.xb", "/loose/side.xb.d/data/menu/unpacked.to"
+};
+
+static int host_data_duplicate_write_file(const char *root, const char *relative,
+                                          const char *body);
+
+static int xb_unpack_write_archive(const char *base, const char *relative,
+                                   const char *member, const char *body) {
+    char path[MAX_PATH];
+    if (snprintf(path, sizeof path, "%s%s", base, relative) >= (int)sizeof path) return 0;
+    const HleXbEntry entry = { member, (const uint8_t *)body, strlen(body) };
+    return hle_xb_write(path, &entry, 1u);
+}
+
+static void test_archive_discovery_skips_unpack_folders_only(void) {
+    char scratch[MAX_PATH], base[MAX_PATH], dataroot[MAX_PATH], loose[MAX_PATH + 32];
+    expect(hle_scratch_root(scratch, sizeof scratch), "the unpack-folder fixture has a scratch root");
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    snprintf(base, sizeof base, "%s/xb_unpack_%lu", scratch, (unsigned long)getpid());
+    int made = 1;
+    for (size_t i = 0; i < sizeof(s_xb_unpack_dirs) / sizeof(s_xb_unpack_dirs[0]); i++) {
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s%s", base, s_xb_unpack_dirs[i]);
+        if (!nk_platform_mkdir_p(dir)) made = 0;
+    }
+    made = made &&
+        xb_unpack_write_archive(base, "/primary/pack.xb", "data/menu/inpack.to", "outer-archive") &&
+        /* An archive among an unpack folder's files, as a nested member would be. */
+        xb_unpack_write_archive(base, "/primary/pack.xb.d/data/decoy.xb", "data/menu/decoy.to",
+                                "decoy-archive") &&
+        /* ".d" folders with no archive file of that name beside them. */
+        xb_unpack_write_archive(base, "/primary/orphan.xb.d/inner.xb", "data/menu/orphan.to",
+                                "orphan-archive") &&
+        xb_unpack_write_archive(base, "/primary/notes.d/deep.xb", "data/menu/deep.to",
+                                "deep-archive") &&
+        xb_unpack_write_archive(base, "/loose/side.xb", "data/menu/side.to", "side-archive") &&
+        host_data_duplicate_write_file(base, "/primary/pack.xb.d/data/menu/unpacked-primary.to",
+                                       "unpacked-primary") &&
+        host_data_duplicate_write_file(base, "/loose/side.xb.d/data/menu/unpacked.to",
+                                       "unpacked-loose");
+    expect(made, "the unpack-folder fixture was created");
+
+    snprintf(dataroot, sizeof dataroot, "%s/primary", base);
+    snprintf(loose, sizeof loose, "%s/loose\t\t10\t0\t0\n", base);
+    hle_test_setenv("SR_DATAROOT", dataroot);
+    hle_test_setenv("SR_LOOSE_CONTENT_ROOTS", loose);
+    sr_hle_test_data_reset(0);
+    expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_READY,
+           "a primary root with unpack folders and a loose root reaches READY");
+
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/inpack.to",
+                                          "outer-archive"),
+           "the archive beside its unpack folder is mounted and serves its member");
+    expect(hle_archive_route_open_result("disc0:/PSP_GAME/USRDIR/data/menu/decoy.to") != 0u,
+           "an archive inside an unpack folder is not mounted as a top-level archive");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/orphan.to",
+                                          "orphan-archive"),
+           "a .xb.d folder with no archive beside it is still searched for archives");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/deep.to",
+                                          "deep-archive"),
+           "a .d folder whose name is not an archive's is still searched for archives");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/unpacked.to",
+                                          "unpacked-loose"),
+           "a loose root's unpack folder still serves its files");
+    expect(hle_archive_route_open_result("disc0:/PSP_GAME/USRDIR/data/menu/side.to") != 0u,
+           "an archive in a loose root is served as a file, never mounted");
+    expect(hle_archive_route_open_result(
+               "disc0:/PSP_GAME/USRDIR/data/menu/unpacked-primary.to") != 0u,
+           "archive mode still serves no file from the primary root's unpack folders");
+
+    prewarm_env_restore();
+    sr_hle_test_data_reset(0);
+    for (size_t i = 0; i < sizeof(s_xb_unpack_files) / sizeof(s_xb_unpack_files[0]); i++) {
+        char path[MAX_PATH];
+        snprintf(path, sizeof path, "%s%s", base, s_xb_unpack_files[i]);
+        nk_remove_utf8(path);
+    }
+    for (size_t i = sizeof(s_xb_unpack_dirs) / sizeof(s_xb_unpack_dirs[0]); i-- > 0;) {
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s%s", base, s_xb_unpack_dirs[i]);
+        rmdir(dir);
+    }
+}
+
 static int host_data_duplicate_write_file(const char *root, const char *relative,
                                           const char *body) {
     char path[MAX_PATH];
@@ -19394,6 +19833,93 @@ static TCB *fixture_thread(uint32_t uid, int state, int priority) {
  * come after those definitions. It adds no production code and changes no
  * handler behavior. */
 #include "intr_conformance.h"
+
+/* sceMpegCreate inside an interrupt handler. pspautotests tests/intr/delays
+ * measured it on a PSP: from a VBLANK sub-interrupt handler it returns
+ * 0x80618008 (delays.expected:24), while the same call on a thread returns 0
+ * and sceMpegDelete then returns 0 (lines 12-13), and after a Finish/Init reset
+ * the library creates again (lines 28-30). PPSSPP took the same check in
+ * 177244863. The check lives in the production handler (hle_mpeg.c); the
+ * library behind it is the spies above. The thread calls run with a fixture
+ * thread current; the interrupt call is reached through the production
+ * sub-interrupt registration and resume path (ic_call_in_interrupt). */
+void sr_hle_test_register_mpeg_create_handlers(void);
+
+#define NID_MPI_INIT    0x682a619bu
+#define NID_MPI_FINISH  0x874624d6u
+#define NID_MPI_CREATE  0xd8c5f121u
+#define NID_MPI_DELETE  0x606a4649u
+#define MPI_DESC        0x00258000u   /* SceMpeg word */
+#define MPI_DATA        0x00260000u   /* 0x10000-byte context buffer */
+
+static void mpi_create_args(CpuState *c) {
+    memset(c, 0, sizeof *c);
+    c->r[4] = MPI_DESC;
+    c->r[5] = MPI_DATA;
+    c->r[6] = 0x10000u;     /* sceMpegQueryMemSize */
+    c->r[7] = 0u;           /* no ringbuffer */
+    c->r[8] = 512u;         /* frameWidth (stack_arg 0), as delays.c passes */
+}
+
+/* One call from guest thread context: a fixture thread is current, as for the
+ * matrix's normal leg. None of these four handlers waits. */
+static uint32_t mpi_on_thread(uint32_t nid, const CpuState *args) {
+    TCB *t = fixture_thread(0x1b0u, TH_RUNNING, 32);
+    if (!t) return 0xdeadbeefu;
+    t->started = 1;
+    s_cur = (int)(t - s_tcb);
+    CpuState c = *args;
+    uint32_t r = sr_syscall(&c, nid);
+    s_cur = -1;
+    return r;
+}
+
+static uint32_t mpi_on_thread_a0(uint32_t nid, uint32_t a0) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = a0;
+    return mpi_on_thread(nid, &c);
+}
+
+static void test_mpeg_create_refused_in_interrupt(void) {
+    static const IcProbe create = {
+        "sceMpegCreate", NID_MPI_CREATE, "", ICG_NONE, 0,
+        {0, 0, 0, 0}, {IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN},
+        {IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN},
+        {IC_PREC_NA, IC_PREC_NA, IC_PREC_NA, IC_PREC_NA}, IC_HW_IMMEDIATE, NULL
+    };
+    CpuState c;
+    reset_fixture(); sr_hle_init();
+    sr_hle_test_register_mpeg_create_handlers();
+    s_vbl_next_us = UINT64_MAX;
+    s_mpi_create_calls = 0;
+    s_mpi_live = 0;
+
+    expect(mpi_on_thread_a0(NID_MPI_INIT, 0u) == 0u, "mpeg-intr: sceMpegInit returns 0");
+    mpi_create_args(&c);
+    expect(mpi_on_thread(NID_MPI_CREATE, &c) == 0u,
+           "mpeg-intr: sceMpegCreate on a thread returns 0 (delays.expected:12)");
+    expect(mpi_on_thread_a0(NID_MPI_DELETE, MPI_DESC) == 0u,
+           "mpeg-intr: sceMpegDelete on a thread returns 0 (delays.expected:13)");
+
+    mpi_create_args(&s_ic_probe_cpu);
+    const unsigned creates_before = s_mpi_create_calls;
+    uint64_t in_intr = ic_call_in_interrupt(&create);
+    expect(in_intr == IC_RET(0x80618008u),
+           "mpeg-intr: sceMpegCreate in an interrupt handler returns 0x80618008 "
+           "(delays.expected:24)");
+    expect(s_mpi_create_calls == creates_before,
+           "mpeg-intr: the refused create never reaches the library");
+
+    expect(mpi_on_thread_a0(NID_MPI_FINISH, 0u) == 0u && mpi_on_thread_a0(NID_MPI_INIT, 0u) == 0u,
+           "mpeg-intr: sceMpegFinish and sceMpegInit reset the library");
+    mpi_create_args(&c);
+    expect(mpi_on_thread(NID_MPI_CREATE, &c) == 0u &&
+               mpi_on_thread_a0(NID_MPI_DELETE, MPI_DESC) == 0u,
+           "mpeg-intr: after the reset a thread creates and deletes again (delays.expected:29-30)");
+    (void)mpi_on_thread_a0(NID_MPI_FINISH, 0u);
+    reset_fixture();
+}
 
 static void run_worker(TCB *worker) {
     s_cur = (int)(worker - s_tcb);
@@ -26390,6 +26916,239 @@ static void test_ge_sync_ids_match_psp(void) {
     sr_hle_test_ge_lists_reset();
 }
 
+/* A SIGNAL whose behaviour is JUMP (0x10), CALL (0x11), RET (0x12) or their relative (0x13,
+ * 0x14) and origin (0x15, 0x16) forms, with the END after it, moves the list: the GE driver's
+ * interrupt handler jumps, or saves the caller on the list's stack and calls, or returns
+ * (uofw src/kd/ge/ge.c _sceGeListInterrupt). A title that hangs each frame's drawing off one
+ * SIGNAL CALL drew nothing while the pair was only logged. The fog registers are plain state
+ * that sceGeGetCmd reads back, so each says which list words ran. */
+static void ge_signal_pair(uint32_t at, unsigned behavior, uint32_t off) {
+    MEM_W32(at, 0x0e000000u | (behavior << 16) | (off >> 16));
+    MEM_W32(at + 4u, 0x0c000000u | (off & 0xffffu));
+}
+
+static void test_ge_signal_jump_call_ret(void) {
+    const uint32_t ml = 0x08923000u, sub = 0x08924000u, sub2 = 0x08924100u;
+    const uint32_t args = 0x08925000u, ml2 = 0x08926000u, rsub = 0x08926200u;
+    const uint32_t hw = 0x08926400u;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_lists_reset();
+    sr_hle_test_set_compiled_sdk_version(0u);   /* before SDK 2.00: 32 stack entries */
+
+    /* Main list: CALL sub, then FOGCOLOR. sub: FOG1, JUMP sub2. sub2: FOG2, RET. */
+    MEM_W32(ml, 0x10080000u);                   /* BASE 0x08 */
+    ge_signal_pair(ml + 4u, 0x11u, sub);        /* SIGNAL CALL sub */
+    MEM_W32(ml + 12u, 0xcf000011u);             /* FOGCOLOR, after the return */
+    MEM_W32(ml + 16u, 0x0f000000u);             /* FINISH */
+    MEM_W32(ml + 20u, 0x0c000000u);             /* END */
+    MEM_W32(sub, 0xcd000022u);                  /* FOG1 */
+    MEM_W32(sub + 4u, 0x10090000u);             /* BASE 0x09: the RET restores 0x08 */
+    ge_signal_pair(sub + 8u, 0x10u, sub2);      /* SIGNAL JUMP sub2 */
+    MEM_W32(sub + 16u, 0xcd0000eeu);            /* skipped by the JUMP */
+    MEM_W32(sub2, 0xce000033u);                 /* FOG2 */
+    ge_signal_pair(sub2 + 4u, 0x12u, 0u);       /* SIGNAL RET */
+    MEM_W32(sub2 + 12u, 0xce0000eeu);           /* skipped by the RET */
+
+    const uint32_t a = gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml, 0u, 0xffffffffu, 0u);
+    expect((a & 0xff000000u) == 0x35000000u && gsw_call(NID_SCE_GE_LIST_SYNC, a, 1u, 0u, 0u) == 0u,
+           "a list that SIGNAL-CALLs a sub-list runs to its own END");
+    expect(gsw_call(NID_SCE_GE_GET_CMD, 0xcdu, 0u, 0u, 0u) == 0x22u,
+           "SIGNAL CALL runs the called list (uofw _sceGeListInterrupt)");
+    expect(gsw_call(NID_SCE_GE_GET_CMD, 0xceu, 0u, 0u, 0u) == 0x33u,
+           "SIGNAL JUMP continues at its target, not after its END");
+    expect(gsw_call(NID_SCE_GE_GET_CMD, 0xcfu, 0u, 0u, 0u) == 0x11u,
+           "SIGNAL RET returns to the word after the caller's END");
+    expect(gsw_call(NID_SCE_GE_GET_CMD, 0x10u, 0u, 0u, 0u) == 0x080000u,
+           "SIGNAL RET restores the caller's BASE");
+
+    /* Relative CALL (from the SIGNAL word), and a hardware CALL/RET inside the callee: the
+     * callee starts with an empty hardware stack, so its RET returns to it, not to the caller. */
+    MEM_W32(ml2, 0x13000000u);                  /* OFFSETADDR 0 */
+    ge_signal_pair(ml2 + 4u, 0x14u, rsub - (ml2 + 4u));   /* SIGNAL RCALL rsub */
+    MEM_W32(ml2 + 12u, 0xcf000044u);
+    MEM_W32(ml2 + 16u, 0x0f000000u);
+    MEM_W32(ml2 + 20u, 0x0c000000u);
+    MEM_W32(rsub, 0x10080000u);                 /* BASE 0x08 */
+    MEM_W32(rsub + 4u, 0x0a000000u | (hw & 0x00ffffffu));  /* hardware CALL hw */
+    MEM_W32(rsub + 8u, 0xcd000055u);
+    ge_signal_pair(rsub + 12u, 0x12u, 0u);      /* SIGNAL RET */
+    MEM_W32(hw, 0xce000066u);
+    MEM_W32(hw + 4u, 0x0b000000u);              /* hardware RET */
+    const uint32_t b = gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml2, 0u, 0xffffffffu, 0u);
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, b, 1u, 0u, 0u) == 0u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xceu, 0u, 0u, 0u) == 0x66u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xcdu, 0u, 0u, 0u) == 0x55u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xcfu, 0u, 0u, 0u) == 0x44u,
+           "SIGNAL RCALL is relative to the SIGNAL, and a hardware CALL/RET nests inside it");
+
+    /* The stack holds SceGeListArgs.numStacks entries. With none, a CALL is the driver's
+     * stack-overflow error: the run stops by name and the list stays at the SIGNAL. */
+    MEM_W32(args, 16u);                         /* size */
+    MEM_W32(args + 4u, 0u);                     /* context */
+    MEM_W32(args + 8u, 0u);                     /* numStacks */
+    MEM_W32(args + 12u, 0u);                    /* stacks */
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    const uint32_t c = gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml, 0u, 0xffffffffu, args);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, c, 1u, 0u, 0u) != 0u,
+           "a SIGNAL CALL with numStacks 0 stops the run by name, the list unfinished");
+    sr_hle_test_ge_lists_reset();
+
+    /* After SDK 2.00 a list with no arguments has no stack either (uofw _sceGeListEnQueue). */
+    sr_hle_test_set_compiled_sdk_version(0x02000010u);
+    stops = sr_hle_test_unmodelled_stops();
+    (void)gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml, 0u, 0xffffffffu, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "an SDK 2.00 list enqueued without arguments has no SIGNAL CALL stack");
+    sr_hle_test_ge_lists_reset();
+    MEM_W32(args + 8u, 1u);
+    stops = sr_hle_test_unmodelled_stops();
+    const uint32_t d = gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml, 0u, 0xffffffffu, args);
+    expect(sr_hle_test_unmodelled_stops() == stops &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, d, 1u, 0u, 0u) == 0u,
+           "numStacks 1 holds the one SIGNAL CALL");
+    MEM_W32(args + 8u, 256u);
+    expect(gsw_call(NID_SCE_GE_LIST_ENQUEUE, ml, 0u, 0xffffffffu, args) == 0x80000104u,
+           "numStacks 256 is SCE_ERROR_INVALID_SIZE (uofw _sceGeListEnQueue)");
+
+    /* A RET with nothing called is the driver's stack-underflow error. */
+    sr_hle_test_ge_lists_reset();
+    stops = sr_hle_test_unmodelled_stops();
+    (void)gsw_call(NID_SCE_GE_LIST_ENQUEUE, sub2, 0u, 0xffffffffu, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "a SIGNAL RET with an empty stack stops the run by name");
+    sr_hle_test_set_compiled_sdk_version(0u);
+    sr_hle_test_ge_lists_reset();
+}
+
+/* The SIGNAL list-control cases that need a caller inside a hardware CALL, the origin forms,
+ * the address error, the BASE a RET restores, and a stall between a SIGNAL and its END. */
+static void test_ge_signal_depth_origin_stall(void) {
+    const uint32_t m3 = 0x08927000u, h3 = 0x08927100u, c3 = 0x08927200u, x3 = 0x08927300u;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_lists_reset();
+    sr_hle_test_set_compiled_sdk_version(0u);   /* before SDK 2.00: 32 stack entries */
+
+    /* A SIGNAL CALL made one hardware CALL deep. The callee's unpaired hardware RET can't pop
+     * the caller's entry, and the callee's own hardware CALL, left open at its SIGNAL RET, is
+     * dropped: the RET restores the caller's depth, so the caller's RET returns to m3. */
+    MEM_W32(m3, 0x10080000u);                   /* BASE 0x08 */
+    MEM_W32(m3 + 4u, 0x13000000u);              /* OFFSETADDR 0 */
+    MEM_W32(m3 + 8u, 0x0a000000u | (h3 & 0x00ffffffu));   /* hardware CALL h3 */
+    MEM_W32(m3 + 12u, 0xcf000077u);
+    MEM_W32(m3 + 16u, 0x0f000000u);             /* FINISH */
+    MEM_W32(m3 + 20u, 0x0c000000u);             /* END */
+    ge_signal_pair(h3, 0x11u, c3);              /* SIGNAL CALL c3, at hardware depth 1 */
+    MEM_W32(h3 + 8u, 0xce000088u);
+    MEM_W32(h3 + 12u, 0x0b000000u);             /* hardware RET to m3 */
+    MEM_W32(c3, 0x0b000000u);                   /* unpaired hardware RET: ignored */
+    MEM_W32(c3 + 4u, 0x0a000000u | (x3 & 0x00ffffffu));   /* hardware CALL x3, never returned */
+    MEM_W32(c3 + 8u, 0xcd0000eeu);              /* reached only by a wrong RET */
+    MEM_W32(c3 + 12u, 0x0f000000u);
+    MEM_W32(c3 + 16u, 0x0c000000u);
+    MEM_W32(x3, 0xcd000099u);
+    ge_signal_pair(x3 + 4u, 0x12u, 0u);         /* SIGNAL RET to h3 + 8 */
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    const uint32_t a = gsw_call(NID_SCE_GE_LIST_ENQUEUE, m3, 0u, 0xffffffffu, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, a, 1u, 0u, 0u) == 0u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xcdu, 0u, 0u, 0u) == 0x99u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xceu, 0u, 0u, 0u) == 0x88u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xcfu, 0u, 0u, 0u) == 0x77u,
+           "a SIGNAL CALL one hardware CALL deep: the callee's RET keeps off the caller's "
+           "entry, and SIGNAL RET restores the caller's depth");
+
+    /* OCALL and OJUMP add the offset register (OFFSETADDR or ORIGIN), not BASE. BASE is
+     * 0x09 here, so a target that also added it would land outside these lists. */
+    const uint32_t m4 = 0x08927400u, o4 = 0x08927500u, j4 = 0x08927580u;
+    const uint32_t org = 0x08920000u;
+    MEM_W32(m4, 0x10090000u);                   /* BASE 0x09 */
+    MEM_W32(m4 + 4u, 0x13000000u | (org >> 8)); /* OFFSETADDR org */
+    ge_signal_pair(m4 + 8u, 0x16u, o4 - org);   /* SIGNAL OCALL o4 */
+    ge_signal_pair(m4 + 16u, 0x15u, j4 - org);  /* SIGNAL OJUMP j4 */
+    MEM_W32(m4 + 24u, 0x0f000000u);             /* reached only if the OJUMP falls through */
+    MEM_W32(m4 + 28u, 0x0c000000u);
+    MEM_W32(o4, 0xcd0000a1u);
+    ge_signal_pair(o4 + 4u, 0x12u, 0u);         /* SIGNAL RET */
+    MEM_W32(j4, 0xce0000a2u);
+    MEM_W32(j4 + 4u, 0x0f000000u);
+    MEM_W32(j4 + 8u, 0x0c000000u);
+    stops = sr_hle_test_unmodelled_stops();
+    const uint32_t b = gsw_call(NID_SCE_GE_LIST_ENQUEUE, m4, 0u, 0xffffffffu, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, b, 1u, 0u, 0u) == 0u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xcdu, 0u, 0u, 0u) == 0xa1u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xceu, 0u, 0u, 0u) == 0xa2u,
+           "SIGNAL OCALL and OJUMP are relative to the offset register, without BASE");
+
+    /* SIGNAL RET restores the caller's BASE register itself, not only the value sceGeGetCmd
+     * reads: the caller's next hardware CALL is addressed from it. */
+    const uint32_t m5 = 0x08927600u, c5 = 0x08927700u, t5 = 0x08927780u;
+    MEM_W32(m5, 0x10080000u);                   /* BASE 0x08 */
+    MEM_W32(m5 + 4u, 0x13000000u);              /* OFFSETADDR 0 */
+    ge_signal_pair(m5 + 8u, 0x11u, c5);         /* SIGNAL CALL c5 */
+    MEM_W32(m5 + 16u, 0x0a000000u | (t5 & 0x00ffffffu));  /* hardware CALL t5 under BASE 0x08 */
+    MEM_W32(m5 + 20u, 0x0f000000u);
+    MEM_W32(m5 + 24u, 0x0c000000u);
+    MEM_W32(c5, 0x10090000u);                   /* BASE 0x09 in the callee */
+    ge_signal_pair(c5 + 4u, 0x12u, 0u);         /* SIGNAL RET */
+    MEM_W32(t5, 0xcf0000b3u);
+    MEM_W32(t5 + 4u, 0x0b000000u);
+    const uint32_t wrong = 0x09000000u | (t5 & 0x00ffffffu);
+    MEM_W32(wrong, 0xcf0000eeu);                /* where BASE 0x09 would have sent it */
+    MEM_W32(wrong + 4u, 0x0b000000u);
+    const uint32_t c = gsw_call(NID_SCE_GE_LIST_ENQUEUE, m5, 0u, 0xffffffffu, 0u);
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, c, 1u, 0u, 0u) == 0u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xcfu, 0u, 0u, 0u) == 0xb3u,
+           "SIGNAL RET restores BASE for the caller's later addressing");
+
+    /* A JUMP to an address that is not word-aligned, or not readable, is the driver's address
+     * error: the run stops by name, the list unfinished. The aligned word below the misaligned
+     * target ends the list, so a run that skipped the check would finish it. */
+    const uint32_t m6 = 0x08927800u, t6 = 0x08927880u;
+    ge_signal_pair(m6, 0x10u, t6 + 2u);         /* SIGNAL JUMP t6 + 2 */
+    MEM_W32(m6 + 8u, 0x0f000000u);
+    MEM_W32(m6 + 12u, 0x0c000000u);
+    MEM_W32(t6, 0x0f000000u);
+    MEM_W32(t6 + 4u, 0x0c000000u);
+    sr_hle_test_ge_lists_reset();
+    stops = sr_hle_test_unmodelled_stops();
+    const uint32_t d = gsw_call(NID_SCE_GE_LIST_ENQUEUE, m6, 0u, 0xffffffffu, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, d, 1u, 0u, 0u) != 0u,
+           "a SIGNAL JUMP to a misaligned address stops the run by name");
+    sr_hle_test_ge_lists_reset();
+    ge_signal_pair(m6, 0x10u, 0x0f000000u);     /* SIGNAL JUMP outside guest memory */
+    stops = sr_hle_test_unmodelled_stops();
+    const uint32_t e = gsw_call(NID_SCE_GE_LIST_ENQUEUE, m6, 0u, 0xffffffffu, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, e, 1u, 0u, 0u) != 0u,
+           "a SIGNAL JUMP to an unreadable address stops the run by name");
+    sr_hle_test_ge_lists_reset();
+
+    /* A stall address on the END of a SIGNAL CALL pair: the pair still calls once the stall
+     * moves on, since the driver reads both words when the END runs. */
+    const uint32_t m7 = 0x08927900u, c7 = 0x08927a00u;
+    MEM_W32(m7, 0x10080000u);
+    ge_signal_pair(m7 + 4u, 0x11u, c7);         /* SIGNAL CALL c7; the stall is on its END */
+    MEM_W32(m7 + 12u, 0xcf0000c1u);
+    MEM_W32(m7 + 16u, 0x0f000000u);
+    MEM_W32(m7 + 20u, 0x0c000000u);
+    MEM_W32(c7, 0xcd0000c2u);
+    ge_signal_pair(c7 + 4u, 0x12u, 0u);         /* SIGNAL RET */
+    const uint32_t f = gsw_call(NID_SCE_GE_LIST_ENQUEUE, m7, m7 + 8u, 0xffffffffu, 0u);
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, f, 1u, 0u, 0u) != 0u,
+           "a list stalled on the END of its SIGNAL CALL waits there");
+    expect(gsw_call(NID_SCE_GE_LIST_UPDATE_STALL_ADDR, f, m7 + 24u, 0u, 0u) == 0u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, f, 1u, 0u, 0u) == 0u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xcdu, 0u, 0u, 0u) == 0xc2u &&
+               gsw_call(NID_SCE_GE_GET_CMD, 0xcfu, 0u, 0u, 0u) == 0xc1u,
+           "a SIGNAL CALL split by a stall between it and its END still calls when resumed");
+    sr_hle_test_ge_lists_reset();
+}
+
 
 static void test_kernel_import_sweep_ge_head(void) {
     const uint32_t list = 0x08918000u;
@@ -29877,7 +30636,7 @@ static void test_atrac_aa3_and_reinit_1379(void) {
  *   5. MPEG (RingbufferDestruct, FlushAllStream, AvcDecodeFlush)
  *   6. LwMutex status (ReferLwMutexStatus, ReferLwMutexStatusByID)
  *   7. ATRAC second buffer & lifecycle (SetSecondBuffer, GetSecondBufferInfo,
- *      GetBufferInfoForResetting / Reseting, Reinit, ReleaseResources)
+ *      GetBufferInfoForResetting / Reseting, Reinit, EndEntry)
  * Dispatches through sr_syscall to pin the exact production NID mapping. */
 
 #define NID_SCE_CTRL_SET_SAMPLING_MODE               0x1f4011e6u
@@ -29905,7 +30664,7 @@ static void test_atrac_aa3_and_reinit_1379(void) {
 #define NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETTING  0x2dd3e298u
 #define NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETING   0xca3ca3d2u
 #define NID_SCE_ATRAC_REINIT                         0x132f1ecau
-#define NID_SCE_ATRAC_RELEASE_RESOURCES              0xd5c28cc0u
+#define NID_SCE_ATRAC_END_ENTRY                      0xd5c28cc0u
 
 extern void sr_hle_test_ctrl_sampling_reset(void);
 extern uint32_t sr_hle_test_power_lock_count(void);
@@ -30182,7 +30941,7 @@ static void test_td24d_hle_batch(void) {
      * 7. ATRAC second buffer & lifecycle family (5 NIDs / 6 functions):
      *    sceAtracSetSecondBuffer (0x83bf7afd), sceAtracGetSecondBufferInfo (0x83e85ea0),
      *    sceAtracGetBufferInfoForResetting (0x2dd3e298) / sceAtracGetBufferInfoForReseting (0xca3ca3d2),
-     *    sceAtracReinit (0x132f1eca), sceAtracReleaseResources (0xd5c28cc0)
+     *    sceAtracReinit (0x132f1eca), sceAtracEndEntry (0xd5c28cc0)
      * ========================================================================= */
     sr_hle_test_atrac_reinit_reset();
     sr_hle_test_atrac_release_reset();
@@ -30195,9 +30954,9 @@ static void test_td24d_hle_batch(void) {
            "sceAtracReinit succeeds when no ATRAC contexts are in use");
     expect(sr_hle_test_atrac_reinit_count() == 1u, "reinit count incremented");
 
-    /* Release resources succeeds and increments count */
-    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_RESOURCES, 0u, 0u, 0u, 0u) == 0u,
-           "sceAtracReleaseResources succeeds");
+    /* The module-stop entry releases resources: succeeds and increments the count */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_END_ENTRY, 0u, 0u, 0u, 0u) == 0u,
+           "sceAtracEndEntry succeeds");
     expect(sr_hle_test_atrac_release_count() == 1u, "release count incremented");
 
     /* Bad-ID error checks */
@@ -30540,6 +31299,623 @@ static void sas_test_vag(uint32_t addr, uint32_t blocks, uint8_t flags) {
         MEM_W8(a, 0u); MEM_W8(a + 1u, b + 1u == blocks ? flags : 0u);
         for (uint32_t k = 0; k < 14u; k++) MEM_W8(a + 2u + k, 0x11u);
     }
+}
+
+/* ---- #2054: Ace Mode's band-limited SAS resampling (sas=sinc) ----------------------------------
+ *
+ * Every case plays synthetic VAG data through the guest calls (SetVoice, SetPitch, SetVolume,
+ * SetKeyOn, __sceSasCore) once authentic (zero-order hold) and once band-limited, and reads voice
+ * state through the guest calls each grain (end flags, envelope heights).
+ *
+ * - The alias cells measure only energy that must not be there (Blackman-Harris window, 16384-point
+ *   FFT). Upward, the voice plays a sweep that lies wholly above the output's Nyquist frequency once
+ *   pitched, so every sample it produces is alias: the cell measures the output's energy. Downward,
+ *   it plays a sweep inside the band, and the cell measures the share of energy above the source's
+ *   Nyquist frequency as heard at that pitch, where only images can land. A model of the authentic
+ *   stepping replays the same decoded stream through a zero-order hold, linear interpolation, a
+ *   4-tap Catmull-Rom cubic and sas_resample.h: the model must agree with the mixer, and the cheap
+ *   interpolators must miss the floors the mixer has to reach.
+ * - The golden cell pins the authentic mix to a checksum taken from origin/main's mixer, before
+ *   #2054, so the off path is compared with the old code and not with itself.
+ * - The remaining cells cover a looped voice (against the same data unrolled), pitch 0x4000, two
+ *   voices, a constant signal (DC gain 1), a re-trigger, data that ends mid-grain, and how far ahead
+ *   of the authentic decoder the band-limited path reads guest memory. */
+#include "../../src/rt/sas_resample.h"   /* the reference renderer for the #2054 model */
+/* The #2054 alias floors: each about 3 dB under the measured cut and far above what linear and
+ * 4-tap cubic interpolation reach on the same stepping. Measured (sinc / linear / cubic, dB):
+ * 0x1800 25.5 / 2.7 / 2.3, 0x2A00 28.1 / 2.9 / 1.4, 0x4000 29.8 / 0.0 / 0.0 (whole steps: both
+ * reduce to the zero-order hold), 0x0B00 78.4 / 14.1 / 20.9, 0x0800 80.7 / 8.1 / 17.3. */
+#define SAS_BL_FLOOR_1800 22.0
+#define SAS_BL_FLOOR_2A00 25.0
+#define SAS_BL_FLOOR_4000 26.0
+#define SAS_BL_FLOOR_0B00 75.0
+#define SAS_BL_FLOOR_0800 77.0
+#define NID_SAS_SET_PITCH      0xad84d37fu
+#define NID_SAS_GET_ENV_HEIGHT 0x74ae582au
+#define SAS_BL_GRAIN   256u
+#define SAS_BL_FFT     16384u
+#define SAS_BL_MAX_BLOCKS 2600u   /* enough source for SAS_BL_FFT outputs at pitch 0x4000 */
+#define SAS_BL_GRAINS  200u
+#define SAS_BL_VOICES  2u
+#define SAS_BL_CORE    0x08030000u
+#define SAS_BL_OUT     0x08010000u
+#define SAS_BL_VAG     0x08100000u
+#define SAS_BL_VAG2    0x08140000u
+
+typedef struct {
+    const uint8_t *data;       /* blocks * 16 bytes, copied into guest memory at vag */
+    uint32_t vag, blocks, pitch, vol;
+    int loop;                  /* SetVoice's loop argument */
+} SasBlVoice;
+
+typedef struct {
+    int16_t left[SAS_BL_GRAINS * SAS_BL_GRAIN];
+    uint32_t end_flags[SAS_BL_GRAINS];
+    uint32_t envelope[SAS_BL_GRAINS][SAS_BL_VOICES];
+    uint32_t grains;           /* grains mixed (the run stops two grains after every voice ends) */
+    int32_t last_audible;      /* index of the last nonzero left sample */
+    uint64_t fnv;              /* FNV-1a over every grain's left and right samples */
+} SasBlRun;
+
+typedef void (*SasBlHook)(CpuState *cpu, uint32_t grain, void *ctx);
+
+static SasBlRun s_bl_off, s_bl_on, s_bl_alt;
+static double s_bl_re[SAS_BL_FFT], s_bl_im[SAS_BL_FFT];
+static uint8_t s_bl_data[3][SAS_BL_MAX_BLOCKS * 16u];
+static int16_t s_bl_pcm[SAS_BL_MAX_BLOCKS * 28u];
+static int16_t s_bl_model[5][SAS_BL_FFT];
+static int32_t s_bl_k[SAS_BL_GRAINS * SAS_BL_GRAIN];
+static uint16_t s_bl_frac[SAS_BL_GRAINS * SAS_BL_GRAIN];
+static uint32_t s_bl_blocks_by_grain[SAS_BL_GRAINS];
+
+static const int s_bl_f0[5] = { 0, 60, 115, 98, 122 }, s_bl_f1[5] = { 0, 0, -52, -55, -60 };
+
+/* The mixer's VAG decode rule (sas_vag_block), on host bytes. */
+static void sas_bl_decode(const uint8_t *data, uint32_t blocks, int16_t *pcm) {
+    int h1 = 0, h2 = 0;
+    for (uint32_t b = 0; b < blocks; b++) {
+        const uint8_t *blk = data + b * 16u;
+        int pred = (blk[0] >> 4) & 0xF, shift = blk[0] & 0xF;
+        if (pred > 4) pred = 0;
+        for (int i = 0; i < 28; i++) {
+            int nib = (i & 1) ? (blk[2 + (i >> 1)] >> 4) : (blk[2 + (i >> 1)] & 0xF);
+            int s = ((int)(int16_t)(uint16_t)((unsigned)nib << 12) >> shift) + ((h1 * s_bl_f0[pred] + h2 * s_bl_f1[pred]) >> 6);
+            if (s > 32767) s = 32767;
+            if (s < -32768) s = -32768;
+            pcm[b * 28u + (uint32_t)i] = (int16_t)s;
+            h2 = h1; h1 = s;
+        }
+    }
+}
+
+/* Closed-loop VAG encoder: each block takes the filter and shift whose decode (the mixer's own
+ * rule) is closest to the input. */
+static void sas_bl_encode(uint8_t *out, const int16_t *pcm, uint32_t blocks) {
+    int h1 = 0, h2 = 0;
+    for (uint32_t b = 0; b < blocks; b++) {
+        const int16_t *in = pcm + b * 28u;
+        double best = -1.0;
+        int best_hdr = 0, best_h1 = 0, best_h2 = 0;
+        int nib[28], best_nib[28];
+        for (int pred = 0; pred < 5; pred++) {
+            for (int shift = 0; shift <= 12; shift++) {
+                int t1 = h1, t2 = h2;
+                double err = 0.0;
+                for (int i = 0; i < 28; i++) {
+                    int p = (t1 * s_bl_f0[pred] + t2 * s_bl_f1[pred]) >> 6;
+                    double d = (double)(in[i] - p) * (double)(1 << shift) / 4096.0;
+                    int q = (int)floor(d + 0.5);
+                    if (q > 7) q = 7;
+                    if (q < -8) q = -8;
+                    int s = ((int)(int16_t)(uint16_t)((unsigned)(q & 0xF) << 12) >> shift) + p;
+                    if (s > 32767) s = 32767;
+                    if (s < -32768) s = -32768;
+                    err += (double)(s - in[i]) * (double)(s - in[i]);
+                    nib[i] = q & 0xF;
+                    t2 = t1; t1 = s;
+                }
+                if (best < 0.0 || err < best) {
+                    best = err; best_hdr = (pred << 4) | shift; best_h1 = t1; best_h2 = t2;
+                    memcpy(best_nib, nib, sizeof(nib));
+                }
+            }
+        }
+        h1 = best_h1; h2 = best_h2;
+        uint8_t *blk = out + b * 16u;
+        blk[0] = (uint8_t)best_hdr;
+        blk[1] = 0u;
+        for (uint32_t k = 0; k < 14u; k++) blk[2u + k] = (uint8_t)(best_nib[2 * k] | (best_nib[2 * k + 1] << 4));
+    }
+}
+
+/* A linear sine sweep from fa to fb Hz at the source's own rate, amplitude 12000, encoded into out;
+ * returns its block count. It is long enough for SAS_BL_FFT outputs at `pitch` plus margin, so the
+ * voice's end is never in the analysed window. */
+static uint32_t sas_bl_sweep_hz(uint8_t *out, uint32_t pitch, double fa, double fb) {
+    const double pi = 3.14159265358979323846, rate = 44100.0;
+    const uint32_t blocks = (uint32_t)((double)SAS_BL_FFT * (double)pitch / 4096.0 / 28.0) + 40u;
+    const double len = (double)(blocks * 28u) / rate;
+    for (uint32_t i = 0; i < blocks * 28u; i++) {
+        double t = (double)i / rate;
+        s_bl_pcm[i] = (int16_t)floor(12000.0 * sin(2.0 * pi * (fa * t + (fb - fa) * t * t / (2.0 * len))) + 0.5);
+    }
+    sas_bl_encode(out, s_bl_pcm, blocks);
+    return blocks;
+}
+
+/* The in-band sweep: 1.5 to 9 kHz once played at `pitch`. */
+static uint32_t sas_bl_sweep(uint8_t *out, uint32_t pitch) {
+    const double ratio = (double)pitch / 4096.0;
+    return sas_bl_sweep_hz(out, pitch, 1500.0 / ratio, 9000.0 / ratio);
+}
+
+/* Integer-only VAG data (no libm, so the bytes are the same on every host): filter 0, so a block
+ * decodes the same whatever came before it, shifts 4 to 7 and pseudo-random nibbles; flags 0. */
+static void sas_bl_noise(uint8_t *out, uint32_t blocks, uint32_t seed) {
+    for (uint32_t b = 0; b < blocks; b++) {
+        uint8_t *blk = out + b * 16u;
+        seed = seed * 1664525u + 1013904223u;
+        blk[0] = (uint8_t)(4u + ((seed >> 24) & 3u));
+        blk[1] = 0u;
+        for (uint32_t k = 0; k < 14u; k++) {
+            seed = seed * 1664525u + 1013904223u;
+            blk[2u + k] = (uint8_t)(seed >> 24);
+        }
+    }
+}
+
+static void sas_bl_fnv(uint64_t *h, int16_t v) {
+    uint16_t u = (uint16_t)v;
+    *h = (*h ^ (u & 0xffu)) * 1099511628211ull;
+    *h = (*h ^ (u >> 8)) * 1099511628211ull;
+}
+
+/* One run of up to max_grains grains. hook, when set, runs before each grain's __sceSasCore. */
+static void sas_bl_play(SasBlRun *run, int band_limited, const SasBlVoice *voices, uint32_t nvoices,
+                        uint32_t max_grains, SasBlHook hook, void *ctx) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_sas_reset();
+    sr_hle_sas_set_band_limited(band_limited);
+    memset(&cpu, 0, sizeof(cpu));
+    memset(run, 0, sizeof(*run));
+    cpu.r[29] = 0x09012000u;
+    cpu.r[4] = SAS_BL_CORE; cpu.r[5] = SAS_BL_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "sas=sinc fixture: __sceSasInit accepts a 256-sample grain");
+    for (uint32_t v = 0; v < nvoices; v++) {
+        const SasBlVoice *sv = &voices[v];
+        for (uint32_t i = 0; i < sv->blocks * 16u; i++) MEM_W8(sv->vag + i, sv->data[i]);
+        cpu.r[4] = SAS_BL_CORE; cpu.r[5] = v; cpu.r[6] = sv->vag; cpu.r[7] = sv->blocks * 16u; cpu.r[8] = (uint32_t)sv->loop;
+        expect(sr_syscall(&cpu, NID_SAS_SET_VOICE) == 0, "sas=sinc fixture: __sceSasSetVoice accepts the data");
+        cpu.r[4] = SAS_BL_CORE; cpu.r[5] = v; cpu.r[6] = sv->pitch;
+        expect(sr_syscall(&cpu, NID_SAS_SET_PITCH) == 0, "sas=sinc fixture: __sceSasSetPitch accepts the pitch");
+        cpu.r[4] = SAS_BL_CORE; cpu.r[5] = v; cpu.r[6] = sv->vol; cpu.r[7] = sv->vol; cpu.r[8] = 0; cpu.r[9] = 0;
+        expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0, "sas=sinc fixture: __sceSasSetVolume accepts the volume");
+    }
+    for (uint32_t v = 0; v < nvoices; v++) {
+        cpu.r[4] = SAS_BL_CORE; cpu.r[5] = v;
+        expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "sas=sinc fixture: __sceSasSetKeyOn keys the voice on");
+    }
+    const uint32_t mask = (1u << nvoices) - 1u;
+    uint32_t ended_at = 0;
+    run->last_audible = -1;
+    run->fnv = 14695981039346656037ull;
+    if (max_grains > SAS_BL_GRAINS) max_grains = SAS_BL_GRAINS;
+    for (uint32_t g = 0; g < max_grains; g++) {
+        if (hook) hook(&cpu, g, ctx);
+        cpu.r[4] = SAS_BL_CORE; cpu.r[5] = SAS_BL_OUT;
+        (void)sr_syscall(&cpu, NID_SAS_CORE);
+        for (uint32_t i = 0; i < SAS_BL_GRAIN; i++) {
+            int16_t l = (int16_t)MEM_R16(SAS_BL_OUT + i * 4u), r = (int16_t)MEM_R16(SAS_BL_OUT + i * 4u + 2u);
+            run->left[g * SAS_BL_GRAIN + i] = l;
+            if (l) run->last_audible = (int32_t)(g * SAS_BL_GRAIN + i);
+            sas_bl_fnv(&run->fnv, l);
+            sas_bl_fnv(&run->fnv, r);
+        }
+        cpu.r[4] = SAS_BL_CORE;
+        run->end_flags[g] = sr_syscall(&cpu, NID_SAS_GET_END);
+        for (uint32_t v = 0; v < nvoices; v++) {
+            cpu.r[4] = SAS_BL_CORE; cpu.r[5] = v;
+            run->envelope[g][v] = sr_syscall(&cpu, NID_SAS_GET_ENV_HEIGHT);
+        }
+        run->grains = g + 1u;
+        if ((run->end_flags[g] & mask) == mask && !ended_at) ended_at = g + 1u;
+        if (ended_at && g >= ended_at + 1u) break;
+    }
+    sr_hle_sas_set_band_limited(0);
+}
+
+static void sas_bl_key(CpuState *cpu, uint32_t nid) {
+    cpu->r[4] = SAS_BL_CORE; cpu->r[5] = 0;
+    (void)sr_syscall(cpu, nid);
+}
+
+/* hook: ctx is the grain (as a uint32_t) at which voice 0 is keyed off. */
+static void sas_bl_hook_key_off(CpuState *cpu, uint32_t grain, void *ctx) {
+    if (grain == *(const uint32_t *)ctx) sas_bl_key(cpu, NID_SAS_SET_KEY_OFF);
+}
+
+/* hook: ctx is the grain at which voice 0 is keyed on again while it plays. */
+static void sas_bl_hook_key_on(CpuState *cpu, uint32_t grain, void *ctx) {
+    if (grain == *(const uint32_t *)ctx) sas_bl_key(cpu, NID_SAS_SET_KEY_ON);
+}
+
+/* The authentic stepping (sas_mix_stateful with sas_next_sample) for one unlooped VAG voice: the
+ * decoded-stream index and fraction of each output sample, and how many blocks the decoder has read
+ * by the end of each grain. A step past a block's end lands on the next block's first sample. */
+static uint32_t sas_bl_stepping(uint32_t pitch, uint32_t outputs, uint32_t blocks) {
+    int bufi = 0, bufn = 0;
+    uint32_t frac = 0, read = 0, i = 0;
+    for (; i < outputs; i++) {
+        if (bufi >= bufn) {
+            if (read >= blocks) break;
+            read++; bufi = 0; bufn = 28;
+        }
+        s_bl_k[i] = (int32_t)((read - 1u) * 28u) + bufi;
+        s_bl_frac[i] = (uint16_t)frac;
+        frac += pitch;
+        while (frac >= 0x1000u) { frac -= 0x1000u; bufi++; }
+        if ((i + 1u) % SAS_BL_GRAIN == 0u && (i + 1u) / SAS_BL_GRAIN <= SAS_BL_GRAINS)
+            s_bl_blocks_by_grain[i / SAS_BL_GRAIN] = read;
+    }
+    return i;
+}
+
+static void sas_bl_fft(double *re, double *im, uint32_t n) {
+    for (uint32_t i = 1, j = 0; i < n; i++) {
+        uint32_t bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            double t = re[i]; re[i] = re[j]; re[j] = t;
+            t = im[i]; im[i] = im[j]; im[j] = t;
+        }
+    }
+    for (uint32_t len = 2; len <= n; len <<= 1) {
+        double ang = -2.0 * 3.14159265358979323846 / (double)len;
+        for (uint32_t i = 0; i < n; i += len) {
+            for (uint32_t k = 0; k < len / 2u; k++) {
+                double wr = cos(ang * k), wi = sin(ang * k);
+                double xr = re[i + k + len / 2u] * wr - im[i + k + len / 2u] * wi;
+                double xi = re[i + k + len / 2u] * wi + im[i + k + len / 2u] * wr;
+                re[i + k + len / 2u] = re[i + k] - xr; im[i + k + len / 2u] = im[i + k] - xi;
+                re[i + k] += xr; im[i + k] += xi;
+            }
+        }
+    }
+}
+
+/* The windowed energy of the first SAS_BL_FFT samples above edge_hz (0: all of it), in dB. */
+static double sas_bl_band_db(const int16_t *x, double edge_hz) {
+    const double pi = 3.14159265358979323846;
+    double above = 0.0;
+    for (uint32_t i = 0; i < SAS_BL_FFT; i++) {
+        double t = 2.0 * pi * (double)i / (double)(SAS_BL_FFT - 1u);
+        double w = 0.35875 - 0.48829 * cos(t) + 0.14128 * cos(2.0 * t) - 0.01168 * cos(3.0 * t);
+        s_bl_re[i] = w * x[i];
+        s_bl_im[i] = 0.0;
+    }
+    sas_bl_fft(s_bl_re, s_bl_im, SAS_BL_FFT);
+    for (uint32_t k = 1; k <= SAS_BL_FFT / 2u; k++)
+        if ((double)k * 44100.0 / SAS_BL_FFT > edge_hz) above += s_bl_re[k] * s_bl_re[k] + s_bl_im[k] * s_bl_im[k];
+    return 10.0 * log10(above + 1e-30);
+}
+
+/* The cell's metric for a run at `pitch` (lower is cleaner). Upward: all output energy, since the
+ * sweep is wholly alias. Downward: the share above the source's Nyquist frequency at that pitch
+ * (plus 300 Hz), where only images land. */
+static double sas_bl_alias_metric(const int16_t *x, uint32_t pitch) {
+    if (pitch > 0x1000u) return sas_bl_band_db(x, 0.0);
+    return sas_bl_band_db(x, 22050.0 * (double)pitch / 4096.0 + 300.0) - sas_bl_band_db(x, 0.0);
+}
+
+static int16_t sas_bl_round16(double y) {
+    y = floor(y + 0.5);
+    return (int16_t)(y > 32767.0 ? 32767.0 : y < -32768.0 ? -32768.0 : y);
+}
+
+/* The model: the data in s_bl_data[0] decoded, stepped authentically and rendered four ways into
+ * s_bl_model (zero-order hold, linear, Catmull-Rom cubic, sas_resample.h). */
+static void sas_bl_model_renders(uint32_t pitch, uint32_t blocks) {
+    static int16_t padded[SAS_RS_REACH + SAS_BL_MAX_BLOCKS * 28u + SAS_RS_REACH];
+    memset(padded, 0, sizeof(padded));
+    sas_bl_decode(s_bl_data[0], blocks, padded + SAS_RS_REACH);
+    const int16_t *src = padded + SAS_RS_REACH;
+    uint32_t n = sas_bl_stepping(pitch, SAS_BL_FFT, blocks);
+    expect(n == SAS_BL_FFT, "sas=sinc model: the sweep outlasts the analysed window");
+    for (uint32_t i = 0; i < n; i++) {
+        const int16_t *x = src + s_bl_k[i];
+        double f = (double)s_bl_frac[i] / 4096.0;
+        s_bl_model[0][i] = x[0];
+        s_bl_model[1][i] = sas_bl_round16(x[0] + f * (x[1] - x[0]));
+        s_bl_model[2][i] = sas_bl_round16(x[0] + 0.5 * f * (x[1] - x[-1] + f * (2.0 * x[-1] - 5.0 * x[0] + 4.0 * x[1] - x[2]
+                                                         + f * (3.0 * (x[0] - x[1]) + x[2] - x[-1]))));
+    }
+    sas_rs_render(src, (int32_t)(blocks * 28u + SAS_RS_REACH), s_bl_k, s_bl_frac, (int)n, (int)pitch, s_bl_model[3]);
+}
+
+/* Voice state the guest can read: end flags and envelope heights, every grain. (The last nonzero
+ * output sample is compared only where the signal makes it robust: see the data-end cell.) */
+static int sas_bl_timing_equal(const SasBlRun *a, const SasBlRun *b) {
+    if (a->grains != b->grains) return 0;
+    for (uint32_t g = 0; g < a->grains; g++) {
+        if (a->end_flags[g] != b->end_flags[g]) return 0;
+        for (uint32_t v = 0; v < SAS_BL_VOICES; v++)
+            if (a->envelope[g][v] != b->envelope[g][v]) return 0;
+    }
+    return 1;
+}
+
+static void sas_bl_voice(SasBlVoice *v, const uint8_t *data, uint32_t vag, uint32_t blocks, uint32_t pitch) {
+    v->data = data; v->vag = vag; v->blocks = blocks; v->pitch = pitch; v->vol = 0x1000u; v->loop = 0;
+}
+
+/* The alias cells, with the model as the negative control. */
+static void sas_bl_alias_cells(void) {
+    /* Upward 1.5x, 2.625x and 4x (decimation: the sweep runs from 1.1x the output's Nyquist
+     * frequency, as heard at the pitch, to 0.92x the source's) and downward 0.6875x and 0.5x
+     * (images of an in-band sweep), each with the reduction the mixer must reach. */
+    static const uint32_t pitches[] = { 0x1800u, 0x2A00u, 0x4000u, 0x0B00u, 0x0800u };
+    static const double floors[] = { SAS_BL_FLOOR_1800, SAS_BL_FLOOR_2A00, SAS_BL_FLOOR_4000, SAS_BL_FLOOR_0B00,
+                                     SAS_BL_FLOOR_0800 };
+    for (size_t p = 0; p < sizeof(pitches) / sizeof(pitches[0]); p++) {
+        char what[200];
+        SasBlVoice v;
+        const uint32_t pitch = pitches[p];
+        const double ratio = (double)pitch / 4096.0;
+        uint32_t blocks = pitch > 0x1000u ? sas_bl_sweep_hz(s_bl_data[0], pitch, 1.1 * 22050.0 / ratio, 0.92 * 22050.0)
+                                          : sas_bl_sweep(s_bl_data[0], pitch);
+        sas_bl_voice(&v, s_bl_data[0], SAS_BL_VAG, blocks, pitch);
+        sas_bl_play(&s_bl_off, 0, &v, 1, SAS_BL_GRAINS, NULL, NULL);
+        sas_bl_play(&s_bl_on, 1, &v, 1, SAS_BL_GRAINS, NULL, NULL);
+        double cut = sas_bl_alias_metric(s_bl_off.left, pitch) - sas_bl_alias_metric(s_bl_on.left, pitch);
+        sas_bl_model_renders(pitch, blocks);
+        double zoh_m = sas_bl_alias_metric(s_bl_model[0], pitch);
+        double cut_lin = zoh_m - sas_bl_alias_metric(s_bl_model[1], pitch);
+        double cut_cub = zoh_m - sas_bl_alias_metric(s_bl_model[2], pitch);
+        double cut_sinc = zoh_m - sas_bl_alias_metric(s_bl_model[3], pitch);
+        fprintf(stderr, "  sas=sinc pitch 0x%04x: %s cut by %.1f dB (floor %.0f); model cuts: linear %.1f, cubic %.1f, "
+                        "sinc %.1f dB\n",
+                (unsigned)pitch, pitch > 0x1000u ? "alias energy" : "image share", cut, floors[p], cut_lin, cut_cub,
+                cut_sinc);
+        snprintf(what, sizeof(what), "sas=sinc at pitch 0x%04x cuts the %s by at least %.0f dB", (unsigned)pitch,
+                 pitch > 0x1000u ? "alias energy" : "image share", floors[p]);
+        expect(cut >= floors[p], what);
+        snprintf(what, sizeof(what),
+                 "sas=sinc model at pitch 0x%04x: the stepping model's cut matches the mixer's within 0.5 dB",
+                 (unsigned)pitch);
+        expect(fabs(cut_sinc - cut) <= 0.5, what);
+        snprintf(what, sizeof(what),
+                 "sas=sinc negative control at pitch 0x%04x: linear and 4-tap cubic interpolation miss the %.0f dB floor",
+                 (unsigned)pitch, floors[p]);
+        expect(cut_lin < floors[p] && cut_cub < floors[p], what);
+        snprintf(what, sizeof(what), "sas=sinc at pitch 0x%04x: end flags and envelope heights match authentic every grain",
+                 (unsigned)pitch);
+        expect(s_bl_off.grains > 4u && s_bl_off.last_audible > 0 && sas_bl_timing_equal(&s_bl_off, &s_bl_on), what);
+        snprintf(what, sizeof(what), "sas=sinc at pitch 0x%04x changes the mixed sample values", (unsigned)pitch);
+        expect(memcmp(s_bl_off.left, s_bl_on.left, SAS_BL_FFT * sizeof(int16_t)) != 0, what);
+    }
+}
+
+/* The golden cell: two voices of integer-only data, one looped at 0x1800 and keyed off at grain 40,
+ * one ending at 0x0B00, mixed authentic for 64 grains. SAS_BL_GOLDEN_FNV is this run's checksum on
+ * origin/main's mixer before #2054. A deliberate change to the authentic mixer updates it. */
+#define SAS_BL_GOLDEN_FNV 0xaf01339448c39cadull
+static void sas_bl_golden_cell(void) {
+    SasBlVoice v[2];
+    uint32_t off_grain = 40u;
+    sas_bl_noise(s_bl_data[0], 60u, 0x2054u);
+    s_bl_data[0][10u * 16u + 1u] = 6u;    /* loop start */
+    s_bl_data[0][59u * 16u + 1u] = 3u;    /* loop end: back to the loop start */
+    sas_bl_noise(s_bl_data[1], 300u, 0x1807u);
+    sas_bl_voice(&v[0], s_bl_data[0], SAS_BL_VAG, 60u, 0x1800u);
+    v[0].loop = 1;
+    sas_bl_voice(&v[1], s_bl_data[1], SAS_BL_VAG2, 300u, 0x0B00u);
+    v[1].vol = 0x0C00u;
+    sas_bl_play(&s_bl_off, 0, v, 2, 64u, sas_bl_hook_key_off, &off_grain);
+    fprintf(stderr, "  sas=sinc golden: authentic mix checksum 0x%016llx over %u grains\n",
+            (unsigned long long)s_bl_off.fnv, (unsigned)s_bl_off.grains);
+    expect(s_bl_off.fnv == SAS_BL_GOLDEN_FNV,
+           "sas=sinc off: the authentic mix matches the checksum taken from the mixer before #2054");
+    /* Switched on and back off, the mix is the same run again. */
+    sas_bl_play(&s_bl_on, 1, v, 2, 64u, sas_bl_hook_key_off, &off_grain);
+    sas_bl_play(&s_bl_alt, 0, v, 2, 64u, sas_bl_hook_key_off, &off_grain);
+    expect(s_bl_on.fnv != s_bl_off.fnv && s_bl_alt.fnv == s_bl_off.fnv && sas_bl_timing_equal(&s_bl_off, &s_bl_on)
+               && sas_bl_timing_equal(&s_bl_off, &s_bl_alt),
+           "sas=sinc golden: on changes only the values; switched back off the mix is the authentic one again");
+}
+
+/* A looped voice against the same data unrolled: the lookahead follows the loop, so both paths
+ * give the same samples. Filter-0 blocks decode the same after the jump as in sequence. */
+static void sas_bl_loop_cells(void) {
+    static const uint32_t pitches[] = { 0x4000u, 0x0B00u };
+    for (size_t p = 0; p < 2; p++) {
+        enum { INTRO = 3, BODY = 20, GRAINS = 40 };
+        char what[160];
+        uint32_t need = (uint32_t)GRAINS * SAS_BL_GRAIN * pitches[p] / 0x1000u / 28u + 12u;
+        uint32_t reps = (need - INTRO) / BODY + 1u, unrolled = INTRO + reps * BODY;
+        SasBlVoice looped, flat;
+        sas_bl_noise(s_bl_data[0], INTRO + BODY, 0x100u + (uint32_t)p);
+        memcpy(s_bl_data[1], s_bl_data[0], (INTRO + BODY) * 16u);
+        for (uint32_t r = 1; r < reps; r++)
+            memcpy(s_bl_data[1] + (INTRO + r * BODY) * 16u, s_bl_data[0] + INTRO * 16u, BODY * 16u);
+        s_bl_data[0][INTRO * 16u + 1u] = 6u;
+        s_bl_data[0][(INTRO + BODY - 1u) * 16u + 1u] = 3u;
+        sas_bl_voice(&looped, s_bl_data[0], SAS_BL_VAG, INTRO + BODY, pitches[p]);
+        looped.loop = 1;
+        sas_bl_voice(&flat, s_bl_data[1], SAS_BL_VAG2, unrolled, pitches[p]);
+        for (int on = 0; on < 2; on++) {
+            sas_bl_play(&s_bl_off, on, &looped, 1, GRAINS, NULL, NULL);
+            sas_bl_play(&s_bl_on, on, &flat, 1, GRAINS, NULL, NULL);
+            snprintf(what, sizeof(what), "sas=%s at pitch 0x%04x: a looped voice mixes the same samples as its data unrolled",
+                     on ? "sinc" : "off", (unsigned)pitches[p]);
+            expect(s_bl_off.grains == GRAINS && s_bl_on.grains == GRAINS && s_bl_off.fnv == s_bl_on.fnv, what);
+        }
+    }
+}
+
+/* A constant signal (filter 0, shift 0, every nibble 1: 4096) has gain 1 at every pitch: once the
+ * history holds the signal, the band-limited mix equals the authentic one sample for sample. */
+static void sas_bl_dc_cells(void) {
+    static const uint32_t pitches[] = { 0x0B00u, 0x1800u, 0x4000u };
+    for (size_t p = 0; p < 3; p++) {
+        char what[160];
+        SasBlVoice v;
+        for (uint32_t b = 0; b < 1200u; b++) {
+            uint8_t *blk = s_bl_data[0] + b * 16u;
+            blk[0] = 0u; blk[1] = 0u;
+            memset(blk + 2, 0x11, 14);
+        }
+        sas_bl_voice(&v, s_bl_data[0], SAS_BL_VAG, 1200u, pitches[p]);
+        sas_bl_play(&s_bl_off, 0, &v, 1, 20u, NULL, NULL);
+        sas_bl_play(&s_bl_on, 1, &v, 1, 20u, NULL, NULL);
+        int same = s_bl_off.grains == 20u && s_bl_off.left[SAS_BL_GRAIN] != 0;
+        for (uint32_t i = SAS_BL_GRAIN; i < 20u * SAS_BL_GRAIN; i++) if (s_bl_off.left[i] != s_bl_on.left[i]) same = 0;
+        snprintf(what, sizeof(what), "sas=sinc at pitch 0x%04x: a constant signal comes out unchanged (DC gain 1)",
+                 (unsigned)pitches[p]);
+        expect(same, what);
+    }
+}
+
+/* Two voices: the band-limited mix of both is the sum of each alone, and both voices keep their
+ * authentic timing. */
+static void sas_bl_two_voice_cells(void) {
+    SasBlVoice v[2];
+    uint32_t a = sas_bl_sweep(s_bl_data[0], 0x1800u);
+    uint32_t b = sas_bl_sweep(s_bl_data[1], 0x0B00u);
+    sas_bl_voice(&v[0], s_bl_data[0], SAS_BL_VAG, a, 0x1800u);
+    sas_bl_voice(&v[1], s_bl_data[1], SAS_BL_VAG2, b, 0x0B00u);
+    v[0].vol = v[1].vol = 0x0800u;
+    sas_bl_play(&s_bl_off, 0, v, 2, 40u, NULL, NULL);
+    sas_bl_play(&s_bl_on, 1, v, 2, 40u, NULL, NULL);
+    expect(sas_bl_timing_equal(&s_bl_off, &s_bl_on),
+           "sas=sinc with two voices: end flags and both envelope heights match authentic");
+    sas_bl_play(&s_bl_off, 1, &v[0], 1, 40u, NULL, NULL);
+    sas_bl_play(&s_bl_alt, 1, &v[1], 1, 40u, NULL, NULL);
+    int sum = s_bl_on.grains == 40u;
+    for (uint32_t i = 0; i < 40u * SAS_BL_GRAIN; i++)
+        if (s_bl_on.left[i] != s_bl_off.left[i] + s_bl_alt.left[i]) sum = 0;
+    expect(sum, "sas=sinc with two voices: the mix is each voice's band-limited mix added sample for sample");
+}
+
+/* A key-on while the voice plays restarts it: from that grain on, the mix is a fresh run's. */
+static void sas_bl_retrigger_cells(void) {
+    SasBlVoice v;
+    uint32_t again = 20u;
+    uint32_t blocks = sas_bl_sweep(s_bl_data[0], 0x1800u);
+    sas_bl_voice(&v, s_bl_data[0], SAS_BL_VAG, blocks, 0x1800u);
+    for (int on = 0; on < 2; on++) {
+        char what[160];
+        sas_bl_play(&s_bl_on, on, &v, 1, 50u, sas_bl_hook_key_on, &again);
+        sas_bl_play(&s_bl_off, on, &v, 1, 30u, NULL, NULL);
+        snprintf(what, sizeof(what), "sas=%s: a key-on while the voice plays restarts it exactly like a fresh key-on",
+                 on ? "sinc" : "off");
+        expect(s_bl_on.grains == 50u &&
+                   memcmp(s_bl_on.left + again * SAS_BL_GRAIN, s_bl_off.left, 30u * SAS_BL_GRAIN * sizeof(int16_t)) == 0,
+               what);
+    }
+    /* A release ends the voice mid-sweep: the envelope's timing is the authentic one. */
+    uint32_t off_grain = 30u;
+    sas_bl_play(&s_bl_off, 0, &v, 1, SAS_BL_GRAINS, sas_bl_hook_key_off, &off_grain);
+    sas_bl_play(&s_bl_on, 1, &v, 1, SAS_BL_GRAINS, sas_bl_hook_key_off, &off_grain);
+    expect(s_bl_off.grains == 33u && sas_bl_timing_equal(&s_bl_off, &s_bl_on),
+           "sas=sinc: a key-off's release ends the voice in the same grain and sample as authentic");
+    /* Data that ends mid-grain ends the voice in the same grain and on the same sample. The data is a
+     * constant 4096, so the last sample the voice plays is nonzero in both paths. */
+    for (uint32_t b = 0; b < 101u; b++) {
+        uint8_t *blk = s_bl_data[1] + b * 16u;
+        blk[0] = 0u; blk[1] = 0u;
+        memset(blk + 2, 0x11, 14);
+    }
+    sas_bl_voice(&v, s_bl_data[1], SAS_BL_VAG, 101u, 0x1800u);
+    sas_bl_play(&s_bl_off, 0, &v, 1, SAS_BL_GRAINS, NULL, NULL);
+    sas_bl_play(&s_bl_on, 1, &v, 1, SAS_BL_GRAINS, NULL, NULL);
+    expect(s_bl_off.grains < 16u && s_bl_off.last_audible > 0 &&
+               s_bl_off.last_audible % (int32_t)SAS_BL_GRAIN != (int32_t)SAS_BL_GRAIN - 1 &&
+               s_bl_on.last_audible == s_bl_off.last_audible && sas_bl_timing_equal(&s_bl_off, &s_bl_on),
+           "sas=sinc: data that ends mid-grain ends the voice in the same grain and on the same sample as authentic");
+}
+
+/* Streaming just in time: before each grain the guest data holds the real blocks only up to `lead`
+ * blocks past the last block the authentic decoder will have read by that grain's end, and garbage
+ * after them. The lookahead decodes up to one past the last source sample the last output's window
+ * reaches (sas_rs_reach), plus one spare: (28 + reach) / 28 blocks past the decoder, which is 4 at
+ * pitch 0x4000 and 1 at 0x1000 and below. */
+extern int sr_hle_test_sas_lookahead_lead(void);
+typedef struct { uint32_t lead, blocks, vag; } SasBlStream;
+
+static void sas_bl_hook_stream(CpuState *cpu, uint32_t grain, void *ctx) {
+    const SasBlStream *st = (const SasBlStream *)ctx;
+    uint32_t real = s_bl_blocks_by_grain[grain] + st->lead, seed = 0x5eedu + grain;
+    (void)cpu;
+    if (real > st->blocks) real = st->blocks;
+    for (uint32_t i = 0; i < real * 16u; i++) MEM_W8(st->vag + i, s_bl_data[0][i]);
+    for (uint32_t b = real; b < st->blocks; b++) {
+        seed = seed * 1664525u + 1013904223u;
+        MEM_W8(st->vag + b * 16u, (uint8_t)((((seed >> 24) % 5u) << 4) | ((seed >> 16) % 13u)));
+        MEM_W8(st->vag + b * 16u + 1u, 0u);
+        for (uint32_t k = 0; k < 14u; k++) {
+            seed = seed * 1664525u + 1013904223u;
+            MEM_W8(st->vag + b * 16u + 2u + k, (uint8_t)(seed >> 24));
+        }
+    }
+}
+
+static void sas_bl_stream_cells(void) {
+    static const uint32_t pitches[] = { 0x4000u, 0x0B00u };
+    for (size_t p = 0; p < 2; p++) {
+        enum { GRAINS = 40 };
+        char what[200];
+        SasBlVoice v;
+        uint32_t blocks = sas_bl_sweep(s_bl_data[0], pitches[p]);
+        SasBlStream st = { 0u, blocks, SAS_BL_VAG };
+        sas_bl_voice(&v, s_bl_data[0], SAS_BL_VAG, blocks, pitches[p]);
+        (void)sas_bl_stepping(pitches[p], GRAINS * SAS_BL_GRAIN, blocks);
+        const uint32_t bound = (uint32_t)(28 + sas_rs_reach((int)pitches[p])) / 28u;
+        uint64_t clean_on, clean_off;
+        (void)sr_hle_test_sas_lookahead_lead();
+        sas_bl_play(&s_bl_on, 1, &v, 1, GRAINS, NULL, NULL);
+        int lead = sr_hle_test_sas_lookahead_lead();
+        fprintf(stderr, "  sas=sinc pitch 0x%04x: the lookahead decoded at most %d blocks past the decoder (bound %u)\n",
+                (unsigned)pitches[p], lead, (unsigned)bound);
+        snprintf(what, sizeof(what), "sas=sinc at pitch 0x%04x: the lookahead decodes exactly up to its %u-block bound",
+                 (unsigned)pitches[p], (unsigned)bound);
+        expect(lead == (int)bound, what);
+        sas_bl_play(&s_bl_off, 0, &v, 1, GRAINS, NULL, NULL);
+        clean_on = s_bl_on.fnv; clean_off = s_bl_off.fnv;
+        sas_bl_play(&s_bl_alt, 0, &v, 1, GRAINS, sas_bl_hook_stream, &st);
+        snprintf(what, sizeof(what),
+                 "sas=off at pitch 0x%04x: the authentic decoder reads no block past the stepping model's count",
+                 (unsigned)pitches[p]);
+        expect(s_bl_alt.fnv == clean_off, what);
+        sas_bl_play(&s_bl_alt, 1, &v, 1, GRAINS, sas_bl_hook_stream, &st);
+        snprintf(what, sizeof(what),
+                 "sas=sinc at pitch 0x%04x: garbage right past the decoder changes only the mixed values, never voice state",
+                 (unsigned)pitches[p]);
+        expect(s_bl_alt.fnv != clean_on && sas_bl_timing_equal(&s_bl_alt, &s_bl_on), what);
+        st.lead = bound;
+        sas_bl_play(&s_bl_alt, 1, &v, 1, GRAINS, sas_bl_hook_stream, &st);
+        snprintf(what, sizeof(what),
+                 "sas=sinc at pitch 0x%04x: garbage %u blocks past the authentic decoder changes nothing",
+                 (unsigned)pitches[p], (unsigned)bound);
+        expect(s_bl_alt.fnv == clean_on, what);
+        st.lead = bound - 1u;
+        sas_bl_play(&s_bl_alt, 1, &v, 1, GRAINS, sas_bl_hook_stream, &st);
+        snprintf(what, sizeof(what), "sas=sinc at pitch 0x%04x: garbage %u blocks past the decoder reaches the mix",
+                 (unsigned)pitches[p], (unsigned)(bound - 1u));
+        expect(s_bl_alt.fnv != clean_on, what);
+    }
+}
+
+static void test_sas_band_limited_resampling(void) {
+    sas_bl_alias_cells();
+    sas_bl_golden_cell();
+    sas_bl_loop_cells();
+    sas_bl_dc_cells();
+    sas_bl_two_voice_cells();
+    sas_bl_retrigger_cells();
+    sas_bl_stream_cells();
 }
 
 static void test_sas_state_contracts(void) {
@@ -42109,9 +43485,9 @@ static void test_flight_recorder_trace(void) {
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL,
                          4u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "controlled unsupported producer returns its named error");
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "controlled unsupported producer remains stable on retry");
     sr_flight_snapshot(&snapshot);
     expect(snapshot.recorded == 4u && snapshot.trigger_count == 0u &&
@@ -42247,17 +43623,17 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     reset_fixture();
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL, 16u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "refused call returns its named error and the guest keeps running");
     expect(sr_syscall(&cpu, 0x011f03c1u /* sceRtcGetAccumulativeTime, a named refusal */) == 0x80020002u,
            "a second named refusal returns its own error and the guest keeps running");
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "a repeated refusal returns the same error");
     sr_flight_snapshot(&snapshot);
     expect(snapshot.trigger_count == 0u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_RUNNING,
            "named refusals do not end the record");
     expect(snapshot.refusal_count == 3u && snapshot.refusal_distinct == 2u &&
-               snapshot.refusal_first_nid == 0x39af39a6u && snapshot.refusal_first_sequence == 2u,
+               snapshot.refusal_first_nid == 0xe1d621d7u && snapshot.refusal_first_sequence == 2u,
            "refusals are counted, and the first refusal is kept in its own field");
     sr_flight_fatal(SR_FLIGHT_KIND_FATAL_RAW_SYSCALL, 0x08900100u, 0x0000000cu, 0u);
     sr_flight_snapshot(&snapshot);
@@ -42273,9 +43649,9 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
            "bundle terminal names the later fatal");
     expect(strstr(bundle, "\"refusals\": {\"count\": 3") != NULL,
            "bundle counts every refusal");
-    snprintf(needle, sizeof(needle), "\"first_nid\": %u", 0x39af39a6u);
+    snprintf(needle, sizeof(needle), "\"first_nid\": %u", 0xe1d621d7u);
     expect(strstr(bundle, needle) != NULL, "bundle keeps the first refused NID in its own field");
-    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x39af39a6u);
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0xe1d621d7u);
     expect(strstr(bundle, needle) != NULL, "bundle lists each refused NID with its count");
     snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", 0x011f03c1u);
     expect(strstr(bundle, needle) != NULL, "bundle lists the second refused NID");
@@ -42286,7 +43662,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     remove(output);
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED, 8u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "refusal before a clean exit returns its named error");
     sr_flight_exit(7u);
     sr_flight_snapshot(&snapshot);
@@ -42306,7 +43682,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     remove(output);
     sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED, 8u);
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
+    expect(sr_syscall(&cpu, 0xe1d621d7u) == 0x80010086u,
            "refusal before any terminal returns its named error");
     bundle_size = flight_refusal_read_bundle(output, bundle, sizeof(bundle));
     expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"running\"") != NULL &&
@@ -43678,6 +45054,32 @@ static void test_flash0_latin_index_resolution(void) {
                strcmp(project_small.font_name, "Nakagawa Project Latin Second") == 0 &&
                project_large.h_size != project_small.h_size,
            "the project's Latin font serves each size group its own strike");
+
+    /* #2005: the project has a face per Latin index. Index 13 (serif bold, small) has its own file
+     * and reports its own style; index 12 (sans bold, small) has none here, so the regular face of
+     * its size group serves it and says it is regular. */
+    SrFontRegistryInfo project_style, project_group;
+    expect(sr_flash0_font_registry_info(&project_sources, 14u, &project_style) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               strcmp(project_style.font_name, "Nakagawa Project Latin Serif Bold") == 0 &&
+               project_style.style == 5u && !project_style.served_as_regular &&
+               !project_style.served_as_other_family,
+           "a project face of its own style reports that style, not a regular substitute");
+    expect(sr_flash0_font_registry_info(&project_sources, 13u, &project_group) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               strcmp(project_group.font_name, "Nakagawa Project Latin Second") == 0 &&
+               project_group.style == 1u && project_group.served_as_regular &&
+               !project_group.served_as_other_family,
+           "a Latin index with no project face of its own is served by its size group's regular face");
+    /* Index 10 (serif regular, small) has no face here either: the sans-serif regular face of its
+     * group serves it. The style matches, so only the family says it is a substitute. */
+    SrFontRegistryInfo project_family;
+    expect(sr_flash0_font_registry_info(&project_sources, 10u, &project_family) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               strcmp(project_family.font_name, "Nakagawa Project Latin Second") == 0 &&
+               project_family.style == 1u && !project_family.served_as_regular &&
+               project_family.served_as_other_family && project_family.family_code == 2u,
+           "a serif index served by the sans-serif face of its group is reported as a substitute");
 
     /* #1300: resolving a font for the font list says nothing of what the game draws with; only
      * an open does, and the open is what the log has to name. */
@@ -46868,6 +48270,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sysparam_nickname_string();
     test_ge_edram_addr_translation();
     test_named_refusals();
+    test_net_core_without_network();
     test_refer_system_status();
     test_ctrl_read_latch();
     test_ctrl_peek_latch_keeps_the_latch();
@@ -46881,6 +48284,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_blocking_sync_waits_for_stalled_list();
     test_ge_list_stops_for_a_stronger_thread();
     test_ge_sync_ids_match_psp();
+    test_ge_signal_jump_call_ret();
+    test_ge_signal_depth_origin_stall();
     test_ge_break_continue();
     test_ge_completion_timing();
     test_ge_finish_callback_reports();
@@ -47040,6 +48445,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_route_observer_waits_for_guest_scanout_state();
     test_extracted_data_prepares_before_guest_and_lookup_never_builds();
     test_disc_route_serves_archive_and_loose_content_in_one_namespace();
+    test_archive_discovery_skips_unpack_folders_only();
     test_primary_extracted_archive_duplicates_match_main();
     test_direct_xb_read_precedence_and_listing();
     test_direct_xb_malformed_archive_fails_closed();
@@ -47110,6 +48516,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
+    test_sas_band_limited_resampling();
     test_sas_end_flags_refresh_per_cycle();
     test_sas_reinit_is_a_fresh_init();
     test_sas_envelope_follows_its_rates_and_curves();
@@ -47149,6 +48556,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vpl_blocking_waits();
     test_mbx_lifecycle_and_ordering();
     test_intr_context_conformance();
+    test_mpeg_create_refused_in_interrupt();
     test_psp_mutex();
     test_kernel_nested_join();
     test_kernel_nested_mutex();

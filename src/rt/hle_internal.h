@@ -209,6 +209,7 @@ typedef struct {
 
 #define HLE_KERNEL_ERROR_NOT_IMPLEMENTED 0x80020002u /* SCE_KERNEL_ERROR_NOTIMP */
 #define HLE_KERNEL_ERROR_ILLEGAL_ADDR 0x800200d3u     /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+#define HLE_KERNEL_ERROR_NO_SUCH_DEVICE 0x80020321u   /* SCE_KERNEL_ERROR_NO_SUCH_DEVICE */
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
 #define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
 
@@ -970,6 +971,7 @@ typedef struct {
     uint32_t stall_addr;
     uint32_t cbid;
     uint32_t cbarg;
+    uint32_t signal_stacks; // SIGNAL CALLs it may nest: SceGeListArgs.numStacks or the SDK default
     int status; // GE_LIST_*
     int executed; // the GE ran this list to its END; a later stall address must not re-run it
     int busy; // the list has started; only sceGeDrawSync(0) or a reset clears it (uofw isBusy)
@@ -1145,8 +1147,13 @@ void sreg_note_placeholder_read(int node, const char *caller);
 extern uint32_t s_ctrl_sampling_mode;
 extern uint32_t s_ctrl_sampling_cycle;
 __attribute__((format(printf, 2, 3))) uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...);
+const char *hle_import_name(uint32_t nid);
 int guest_cstr(uint32_t addr, char *out, int max);
 uint32_t free_block(uint32_t uid);
+/* sceNet core library state (hle_network.c): reset at LoadExec and by the self-tests. */
+void hle_net_reset(void);
+int sr_hle_test_net_inited(void);
+uint32_t sr_hle_test_net_pool_uid(void);
 extern FplPool s_fpls[FPL_MAX];
 FplPool *fpl_lookup(uint32_t uid);
 void fpl_remove_waiter(FplPool *p, uint32_t thread_uid);
@@ -1327,6 +1334,9 @@ extern uint64_t s_io_async_sequence;
 extern IoCwd s_io_cwds[64];
 IoCwd *io_cwd_find(uint32_t thread_uid, int create);
 void hle_fd_init(void);
+void hle_io_assign_reset(void);   /* sceIoAssign alias table (hle_io.c) */
+/* 0, or NO_SUCH_DEVICE (logged) for a path on a device the game unassigned (hle_io.c). */
+uint32_t hle_io_assign_path_check(const char *path);
 int hle_fd_is_file(uint32_t fd);
 int hle_fd_is_raw_device(uint32_t fd);
 uint32_t hle_io_raw_device_boundary(IoRawDeviceBoundary operation, const char *api, const char *path, uint32_t fd);
