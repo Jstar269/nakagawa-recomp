@@ -2702,6 +2702,8 @@ static struct productStruct s_ud_product;
 static SceIoDirent s_ud_dirent;
 static char s_ud_names[HLE_UD_CLEAN_FILES][HLE_UD_NAME_BYTES];
 static char s_ud_path[sizeof(HLE_UD_GD_DIR) + 1u + HLE_UD_NAME_BYTES];
+_Static_assert(sizeof(s_ud_path) >= sizeof(HLE_UD_GD_DIR) + HLE_UD_NAME_BYTES,
+               "a file path is the directory, a slash, a name of at most 63 bytes and a NUL");
 static uint32_t s_ud_stuck;
 static uint32_t s_ud_fail;
 
@@ -3146,6 +3148,22 @@ static uint32_t hle_ud_gamedata_precheck(void)
     return reason;
 }
 
+/* s_ud_path = HLE_UD_GD_DIR "/" name. A kept name is shorter than HLE_UD_NAME_BYTES (the
+   collection checks it), and the copy stops at HLE_UD_NAME_BYTES - 1 bytes in any case, so the
+   path always fits: sizeof(HLE_UD_GD_DIR) - 1 + 1 + 63 + 1 <= sizeof(s_ud_path). Built with
+   memcpy rather than snprintf, so nothing can be cut short. */
+static void hle_ud_file_path(const char *name)
+{
+    const uint32_t dir = (uint32_t)sizeof(HLE_UD_GD_DIR) - 1u;
+    uint32_t len = 0;
+    for (; len + 1u < HLE_UD_NAME_BYTES && name[len] != '\0'; len++) {
+    }
+    memcpy(s_ud_path, HLE_UD_GD_DIR, dir);
+    s_ud_path[dir] = '/';
+    memcpy(s_ud_path + dir + 1u, name, len);
+    s_ud_path[dir + 1u + len] = '\0';
+}
+
 /* Remove what the dialog left in the probe-owned directory, then the directory itself. */
 static void hle_ud_gamedata_cleanup(uint32_t reason)
 {
@@ -3192,7 +3210,7 @@ static void hle_ud_gamedata_cleanup(uint32_t reason)
         hle_step("gamedata-cleanup-dclose");
         out[4] = (uint32_t)sceIoDclose(dfd);
         for (uint32_t f = 0; f < files; f++) {
-            snprintf(s_ud_path, sizeof(s_ud_path), "%s/%s", HLE_UD_GD_DIR, s_ud_names[f]);
+            hle_ud_file_path(s_ud_names[f]);
             hle_step("gamedata-cleanup-remove");
             out[HLE_UD_CLEAN_HEAD + f] = (uint32_t)sceIoRemove(s_ud_path);
             out[HLE_UD_CLEAN_HEAD + HLE_UD_CLEAN_FILES + f] = sizes[f];

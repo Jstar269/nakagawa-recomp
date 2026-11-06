@@ -9759,8 +9759,12 @@ class HleUtilityDialogsProbeTests(unittest.TestCase):
         gate = self.makefile[self.makefile.index(
             "ifeq ($(CASE),hle-utility-dialogs)\nLIBS"):]
         gate = gate[:gate.index("\nendif\n")]
+        # Only the ad hoc libraries are named; the SDK's own link order supplies the others.
+        self.assertIn("\nLIBS += -lpspumd -lpspnet_adhocctl -lpspnet_adhoc\n", gate)
         for library, nids in (("sceNet", "0x39AF39A6,0x281928A9"),
-                              ("sceNetInet", "0x17943399,0xA9ED66B9"),
+                              # Init/Term, then the libc glue's Close, Recv, Send, GetErrno.
+                              ("sceNetInet", "0x17943399,0xA9ED66B9,0x8D7284EA,0xCDA85C99,"
+                                             "0x7AA671BC,0xFBABE411"),
                               ("sceNetApctl", "0xE2F91F9B,0xB3EDD0EC"),
                               ("sceNetAdhoc", "0xE1D621D7,0xA62C6F57"),
                               ("sceNetAdhocctl", "0xE26F226E,0x9D689E13"),
@@ -9830,8 +9834,12 @@ class HleUtilityDialogsProbeTests(unittest.TestCase):
         self.assertEqual(sorted(set(re.findall(r"\bsceIo(?:Dopen|Rmdir|Getstat)\(([^,)]*)", code))),
                          ["HLE_UD_GD_DIR"])
         self.assertEqual(re.findall(r"\bsceIoRemove\(([^)]*)\)", code), ["s_ud_path"])
-        self.assertIn('snprintf(s_ud_path, sizeof(s_ud_path), "%s/%s", HLE_UD_GD_DIR, '
-                      's_ud_names[f]);', code)
+        self.assertIn("hle_ud_file_path(s_ud_names[f]);", code)
+        path = self._body("static void hle_ud_file_path(const char *name)")
+        self.assertIn("memcpy(s_ud_path, HLE_UD_GD_DIR, dir);", path)
+        self.assertIn("len + 1u < HLE_UD_NAME_BYTES", path)
+        self.assertIn("static char s_ud_path[sizeof(HLE_UD_GD_DIR) + 1u + HLE_UD_NAME_BYTES];",
+                      self.section)
         cleanup = self._body("static void hle_ud_gamedata_cleanup(uint32_t reason)")
         self.assertIn('strcmp(name, ".") == 0 || strcmp(name, "..") == 0', cleanup)
         self.assertIn("FIO_S_ISREG(s_ud_dirent.d_stat.st_mode)", cleanup)

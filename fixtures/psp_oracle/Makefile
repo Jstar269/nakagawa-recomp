@@ -830,12 +830,19 @@ endif
 # UMD presence check; and from each net library only its Init and Term call. No connect, create,
 # join or scan call can be linked: each net library is pinned to that pair, and the libraries
 # with no Init/Term use here (matching, resolver, HTTP, SSL, the registry) are forbidden.
+# sceNetInet also carries the four calls every PRX imports from the PSPSDK libc glue's socket
+# fallback (Close, Recv, Send, GetErrno, used only on a socket descriptor, which this case never
+# opens). Only the two ad hoc libraries are added here: build.mak appends -lpspnet and
+# -lpspnet_apctl, and psp-gcc's lib spec appends -lpspnet_inet after the libc group. Naming
+# -lpspnet_inet here too would pull InetInit/InetTerm in an earlier link pass than the glue's
+# four calls, split the sceNetInet stubs into two runs, and psp-fixup-imports refuses that
+# ("stubs out of order").
 ifeq ($(CASE),hle-utility-dialogs)
-LIBS += -lpspumd -lpspnet_adhocctl -lpspnet_adhoc -lpspnet_apctl -lpspnet_inet -lpspnet
+LIBS += -lpspumd -lpspnet_adhocctl -lpspnet_adhoc
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUtility=0xA5DA2406,0x34B78343,0x50C4CD57,0x8874DBE0,0xD4B95FFB,0x9790B33C,0x2AD8E239,0x4DB1E739,0x6332AA39,0x91E70E35,0xF88155F6,0x24AC31EB,0xB57E95D9,0x4AECD179,0x32E32DCB,0xC492F751,0x946963F3,0x7853182D,0xEFC6F80F,0x1579A159,0x64D50C56
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUmdUser=0x46EBB729
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceNet=0x39AF39A6,0x281928A9
-USER_MODE_IMPORT_GATE_ARGS += --exact-library sceNetInet=0x17943399,0xA9ED66B9
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceNetInet=0x17943399,0xA9ED66B9,0x8D7284EA,0xCDA85C99,0x7AA671BC,0xFBABE411
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceNetApctl=0xE2F91F9B,0xB3EDD0EC
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceNetAdhoc=0xE1D621D7,0xA62C6F57
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceNetAdhocctl=0xE26F226E,0x9D689E13
