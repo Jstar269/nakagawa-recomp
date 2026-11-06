@@ -660,10 +660,10 @@ static void test_no_iso_child_environment(const char *test_executable,
     session.enhancement_package_id[0] = '\0';
     session.config.developer_mode = false;
     session.config.reduce_motion = NK_REDUCE_MOTION_SYSTEM;
-    /* The acceptance checkpoint is evidence: an Ace line refuses to launch it. */
+    /* The acceptance checkpoint is evidence: an Enhanced or Ace line refuses to launch it. */
     session.config.headless_accept_presented_frames = 3u;
     assert(nk_launch_start(&session) != NK_OK);
-    assert(strstr(session.last_error, "Ace Mode is on") != NULL);
+    assert(strstr(session.last_error, "Enhanced or Ace is on") != NULL);
     session.config.headless_accept_presented_frames = 0u;
     snprintf(session.config.ace_spec, sizeof(session.config.ace_spec), "off");
     session.config.ace_report_path[0] = '\0';

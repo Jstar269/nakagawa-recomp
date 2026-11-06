@@ -25,9 +25,30 @@ static int value_on_off(const char *v, int *out) {
     return 0;
 }
 
+/* The line's keys. Each says whether a line must carry it, so the order of the table decides
+   nothing: tier is the one key a line may leave out (an Enhanced run). */
+typedef enum {
+    ACE_KEY_AF, ACE_KEY_TEXT, ACE_KEY_READOUT, ACE_KEY_NOTICE, ACE_KEY_WIDE, ACE_KEY_SMOOTH,
+    ACE_KEY_SAS, ACE_KEY_TIER
+} AceKey;
+
+static const struct {
+    const char *name;
+    AceKey key;
+    int required;
+} k_ace_keys[] = {
+    {"af", ACE_KEY_AF, 1},
+    {"text", ACE_KEY_TEXT, 1},
+    {"readout", ACE_KEY_READOUT, 1},
+    {"notice", ACE_KEY_NOTICE, 1},
+    {"wide", ACE_KEY_WIDE, 1},
+    {"smooth", ACE_KEY_SMOOTH, 1},
+    {"sas", ACE_KEY_SAS, 1},
+    {"tier", ACE_KEY_TIER, 0},
+};
+
 int ace_parse(const char *spec, AceConfig *out, char *why, size_t why_cap) {
-    static const char *const keys[] = { "af", "text", "readout", "notice", "wide", "smooth", "sas" };
-    enum { KEYS = (int)(sizeof(keys) / sizeof(keys[0])) };
+    enum { KEYS = (int)(sizeof(k_ace_keys) / sizeof(k_ace_keys[0])) };
     AceConfig c;
     char buf[ACE_SPEC_MAX];
     int seen[KEYS] = {0};
@@ -54,28 +75,32 @@ int ace_parse(const char *spec, AceConfig *out, char *why, size_t why_cap) {
             *eq = '\0';
             const char *v = eq + 1;
             for (int i = 0; i < KEYS; i++)
-                if (strcmp(field, keys[i]) == 0) k = i;
+                if (strcmp(field, k_ace_keys[i].name) == 0) k = i;
             if (k < 0) { why_set(why, why_cap, "unknown key"); return 0; }
             if (seen[k]) { why_set(why, why_cap, "duplicate key"); return 0; }
             seen[k] = 1;
             int ok = 0;
-            switch (k) {
-            case 0:
+            switch (k_ace_keys[k].key) {
+            case ACE_KEY_AF:
                 ok = strcmp(v, "0") == 0 || strcmp(v, "2") == 0 || strcmp(v, "4") == 0 ||
                      strcmp(v, "8") == 0 || strcmp(v, "16") == 0;
                 if (ok) c.af = atoi(v);
                 break;
-            case 1: ok = value_on_off(v, &c.text); break;
-            case 2: ok = value_on_off(v, &c.readout); break;
-            case 3: ok = value_on_off(v, &c.notice); break;
-            case 4:
+            case ACE_KEY_TEXT: ok = value_on_off(v, &c.text); break;
+            case ACE_KEY_READOUT: ok = value_on_off(v, &c.readout); break;
+            case ACE_KEY_NOTICE: ok = value_on_off(v, &c.notice); break;
+            case ACE_KEY_WIDE:
                 if (strcmp(v, "off") == 0) { c.wide = ACE_WIDE_OFF; ok = 1; }
                 else if (strcmp(v, "fill") == 0) { c.wide = ACE_WIDE_FILL; ok = 1; }
                 if (ok && c.wide && !ACE_HAS_WIDE) {
                     why_set(why, why_cap, "wide is not part of this build"); return 0;
                 }
                 break;
-            case 5:
+            case ACE_KEY_TIER:
+                if (strcmp(v, "enhanced") == 0) { c.tier = ACE_TIER_ENHANCED; ok = 1; }
+                else if (strcmp(v, "ace") == 0) { c.tier = ACE_TIER_ACE; ok = 1; }
+                break;
+            case ACE_KEY_SMOOTH:
                 if (strcmp(v, "off") == 0) { c.smooth = ACE_SMOOTH_OFF; ok = 1; }
                 else if (strcmp(v, "match") == 0) { c.smooth = ACE_SMOOTH_MATCH; ok = 1; }
                 else if (strcmp(v, "x2") == 0) { c.smooth = ACE_SMOOTH_X2; ok = 1; }
@@ -84,7 +109,7 @@ int ace_parse(const char *spec, AceConfig *out, char *why, size_t why_cap) {
                     why_set(why, why_cap, "this smooth mode is not part of this build"); return 0;
                 }
                 break;
-            default:
+            case ACE_KEY_SAS:
                 if (strcmp(v, "off") == 0) { c.sas = ACE_SAS_OFF; ok = 1; }
                 else if (strcmp(v, "sinc") == 0) { c.sas = ACE_SAS_SINC; ok = 1; }
                 if (ok && c.sas && !ACE_HAS_SAS) {
@@ -98,7 +123,7 @@ int ace_parse(const char *spec, AceConfig *out, char *why, size_t why_cap) {
         field = end + 1;
     }
     for (int i = 0; i < KEYS; i++)
-        if (!seen[i]) { why_set(why, why_cap, "missing key"); return 0; }
+        if (k_ace_keys[i].required && !seen[i]) { why_set(why, why_cap, "missing key"); return 0; }
     c.on = 1;
     if (out) *out = c;
     why_set(why, why_cap, "");
@@ -110,15 +135,18 @@ static const char *wide_word(int v) { return v == ACE_WIDE_FILL ? "fill" : "off"
 static const char *smooth_word(int v) {
     return v == ACE_SMOOTH_MATCH ? "match" : v == ACE_SMOOTH_X2 ? "x2" : "off";
 }
+static const char *tier_word(int v) { return v == ACE_TIER_ACE ? "ace" : "enhanced"; }
 static const char *sas_word(int v) { return v == ACE_SAS_SINC ? "sinc" : "off"; }
 
 int ace_format(const AceConfig *c, char *out, size_t cap) {
     int n;
     if (!out || !cap) return 0;
     if (!c || !c->on) n = snprintf(out, cap, "off");
-    else n = snprintf(out, cap, "v1;af=%d;text=%s;readout=%s;notice=%s;wide=%s;smooth=%s;sas=%s",
-                      c->af, on_off(c->text), on_off(c->readout), on_off(c->notice),
-                      wide_word(c->wide), smooth_word(c->smooth), sas_word(c->sas));
+    else n = snprintf(out, cap, "v1;tier=%s;af=%d;text=%s;readout=%s;notice=%s;wide=%s;smooth=%s;"
+                                "sas=%s",
+                      tier_word(c->tier), c->af, on_off(c->text), on_off(c->readout),
+                      on_off(c->notice), wide_word(c->wide), smooth_word(c->smooth),
+                      sas_word(c->sas));
     if (n < 0 || (size_t)n >= cap) { out[0] = '\0'; return 0; }
     return 1;
 }
@@ -207,9 +235,10 @@ int ace_init_spec(const char *spec, const char *report_path) {
     if (report_path && report_path[0])
         snprintf(s_report_path, sizeof(s_report_path), "%s", report_path);
     g_ace_on = 1;
-    fprintf(stderr, "ACE_MODE: on (af=%d, text=%s, readout=%s, notice=%s, wide=%s, smooth=%s, sas=%s)\n",
-            s_req.af, on_off(s_req.text), on_off(s_req.readout), on_off(s_req.notice),
-            wide_word(s_req.wide), smooth_word(s_req.smooth), sas_word(s_req.sas));
+    fprintf(stderr, "ACE_MODE: on (tier=%s, af=%d, text=%s, readout=%s, notice=%s, wide=%s, "
+            "smooth=%s, sas=%s)\n", tier_word(s_req.tier), s_req.af, on_off(s_req.text),
+            on_off(s_req.readout), on_off(s_req.notice), wide_word(s_req.wide),
+            smooth_word(s_req.smooth), sas_word(s_req.sas));
     return 1;
 }
 
@@ -220,6 +249,7 @@ int ace_init_from_env(void) {
 const AceConfig *ace_requested(void) { return &s_req; }
 const AceConfig *ace_effective(void) { return &s_eff; }
 const char *ace_spec_text(void) { return s_spec; }
+const char *ace_tier_name(void) { return s_req.tier == ACE_TIER_ACE ? "Ace" : "Enhanced"; }
 
 void ace_feature_unavailable(AceFeature feature, const char *reason) {
     if (!g_ace_on || (unsigned)feature >= ACE_FEATURE_COUNT) return;
