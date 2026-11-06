@@ -86,6 +86,8 @@ _PROGRESS_STAGE_TO_SWEEP_STAGE = {
 }
 _PROGRESS_STAGE_NAMES = frozenset(_PROGRESS_STAGE_TO_SWEEP_STAGE)
 BLOCKING_PROCESS_NAMES = frozenset({"verify_flagship", "hst", "nakagawa_player"})
+# SR_PRESENT_UPSCALE for every route: off, whatever the shell says (#1273).
+SWEEP_PRESENT_UPSCALE = "off"
 
 _PUBLIC_AGGREGATE_V1_REQUIRED_KEYS = frozenset({
     "schema_version",
@@ -561,6 +563,9 @@ def _route_environment() -> dict[str, str]:
     # the user placed in each title's folder, so no key file is located here.
     environment = os.environ.copy()
     environment["MAKEFLAGS"] = "-j4"
+    # A sweep is authentic evidence: a presentation upscaler left in the shell (#1273) must not
+    # enhance its windows, so the value is set, not inherited, and the private report records it.
+    environment["SR_PRESENT_UPSCALE"] = SWEEP_PRESENT_UPSCALE
     return environment
 
 
@@ -1710,6 +1715,8 @@ def _write_outputs(
         "comparison_identity": comparison_identity,
         # Private only (never in the public summary): lets a run with optional inputs resume.
         "optional_input_fingerprints": optional_input_fingerprints,
+        # The presentation upscaler every route of this sweep ran with (_route_environment).
+        "present_upscale": SWEEP_PRESENT_UPSCALE,
         "updated_at_utc": _utc_now(),
         "coverage": {
             "iso_count": total_isos,
