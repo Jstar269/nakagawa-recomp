@@ -2311,7 +2311,7 @@ static int hle_run(void)
    two blocks ahead; this case measures what the console does.
 
    For each channel size F of 1024, 2048 and 4096 frames, one stereo channel is reserved with
-   sceAudioChReserve (channel -1, F frames, PSP_AUDIO_FORMAT_STEREO) and fed HLE_AREST_BLOCKS
+   sceAudioChReserve, given channel -1, F frames and PSP_AUDIO_FORMAT_STEREO, and fed HLE_AREST_BLOCKS
    blocking outputs of the same F-frame buffer at volume 0x8000. Right after each return the probe reads
    sceAudioGetChannelRestLen and sceAudioGetChannelRestLength and the system time. Nothing is
    written to host0 between the outputs (a host0 write can take longer than a block and would
