@@ -29,28 +29,99 @@ project-japanese-font:
 project-latin-font:
 project-latin-small-font:
 project-korean-font:
+project-latin-1-font:
+project-latin-2-font:
+project-latin-3-font:
+project-latin-4-font:
+project-latin-5-font:
+project-latin-6-font:
+project-latin-7-font:
+project-latin-9-font:
+project-latin-10-font:
+project-latin-11-font:
+project-latin-12-font:
+project-latin-13-font:
+project-latin-14-font:
+project-latin-15-font:
 
-# The project fonts use this rule family. Each source pin, repertoire, and
-# project-owned PGF name is data; output staging is handled once by tools/copy_build_assets.ps1.
+# The project fonts use this rule family. Each source pin, repertoire, project-owned PGF name and
+# style is data; output staging is handled once by tools/copy_build_assets.ps1.
+# Arguments: 1 target stem, 2 output, 3 TTF, 4 pin, 5 licence text, 6 repertoire, 7 PGF name,
+# 8 converter settings, 9 PGF style.
 define PROJECT_FONT_RULE
 project-$(1)-font: $(PROJECT_FONT_GENERATED_DIR)/$(2)
 
 $(PROJECT_FONT_GENERATED_DIR)/$(2): $(3) $(4) $(5) tools/ttf2pgf.py tools/pgf_writer.py docs/cleanroom/PGF_CONVERTER_SPEC.md
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(PROJECT_FONT_GENERATED_DIR_PY)').mkdir(parents=True, exist_ok=True)"
-	"$(PYTHON)" tools/ttf2pgf.py "$$@" "$(3)" --pin "$(4)" $(6) $(8) --font-name "$(7)" --font-type "Regular" --manifest "$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2)).json"
+	"$(PYTHON)" tools/ttf2pgf.py "$$@" "$(3)" --pin "$(4)" $(6) $(8) --font-name "$(7)" --font-type "$(9)" --manifest "$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2)).json"
 	"$(PYTHON)" -c "import shutil; shutil.copyfile('$(5)', '$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2))-OFL.txt')"
 endef
 
-# The console's two Latin sizes, 10.125 and 7 points at 128 dpi. Each strike is sized and weighted so
-# that its ink meets the console font of that size: x-height, cap height, stem width and spacing
-# (font/README.md). The header ascender and descender are the console fonts' design values.
-PROJECT_LATIN_FONT_ARGS := --ppem 19 --embolden-x 7 --embolden-advance 8 --nominal-size 648 --resolution 8192 --header-ascender 863 --header-descender -196 --baseline-ellipsis
-PROJECT_LATIN_SMALL_FONT_ARGS := --ppem 13 --embolden-x 3 --embolden-y 2 --embolden-advance 5 --nominal-size 448 --resolution 8192 --header-ascender 576 --header-descender -131 --baseline-ellipsis
+# The console's two Latin sizes, 10.125 and 7 points at 128 dpi (#2005, font/README.md). Every face of
+# a size shares its strike: the size and emboldening that put the regular face's ink where the console
+# font of that size has it (x-height, cap height, descender, stem), and the console fonts' header
+# ascender and descender. Each face then has its own spacing, chosen so that its lines are as long as
+# the console face's of the same index; the sans-serif faces also get the console's digit width.
+LIBERATION := fixtures/fonts/liberation
+PROJECT_LATIN_STRIKE_ARGS := --ppem 20 --embolden-x 4 --embolden-advance 4 --nominal-size 648 --resolution 8192 --header-ascender 863 --header-descender -196
+PROJECT_LATIN_SMALL_STRIKE_ARGS := --ppem 13 --embolden-x 2 --embolden-advance 2 --nominal-size 448 --resolution 8192 --header-ascender 576 --header-descender -131
+# Per index: source face, PGF style, then that face's spacing (--tracking, eighths of a pixel) and,
+# where measured, digit advance (26.6 px).
+PROJECT_LATIN_0_FACE := LiberationSans-Regular
+PROJECT_LATIN_1_FACE := LiberationSerif-Regular
+PROJECT_LATIN_2_FACE := LiberationSans-Italic
+PROJECT_LATIN_3_FACE := LiberationSerif-Italic
+PROJECT_LATIN_4_FACE := LiberationSans-Bold
+PROJECT_LATIN_5_FACE := LiberationSerif-Bold
+PROJECT_LATIN_6_FACE := LiberationSans-BoldItalic
+PROJECT_LATIN_7_FACE := LiberationSerif-BoldItalic
+PROJECT_LATIN_0_STYLE := Regular
+PROJECT_LATIN_1_STYLE := Regular
+PROJECT_LATIN_2_STYLE := Italic
+PROJECT_LATIN_3_STYLE := Italic
+PROJECT_LATIN_4_STYLE := Bold
+PROJECT_LATIN_5_STYLE := Bold
+PROJECT_LATIN_6_STYLE := Bold Italic
+PROJECT_LATIN_7_STYLE := Bold Italic
+PROJECT_LATIN_0_SPACING := --tracking 7 --digit-advance 852
+PROJECT_LATIN_1_SPACING := --tracking 2
+PROJECT_LATIN_2_SPACING := --tracking 7 --digit-advance 852
+PROJECT_LATIN_3_SPACING := --tracking 3
+PROJECT_LATIN_4_SPACING := --tracking 6 --digit-advance 840
+PROJECT_LATIN_5_SPACING := --tracking 1
+PROJECT_LATIN_6_SPACING := --tracking 6 --digit-advance 840
+PROJECT_LATIN_7_SPACING := --tracking 2
+PROJECT_LATIN_8_SPACING := --tracking 7 --digit-advance 555
+PROJECT_LATIN_9_SPACING := --tracking 3
+PROJECT_LATIN_10_SPACING := --tracking 7 --digit-advance 555
+PROJECT_LATIN_11_SPACING := --tracking 4
+PROJECT_LATIN_12_SPACING := --tracking 6 --digit-advance 559
+PROJECT_LATIN_13_SPACING := --tracking 3
+PROJECT_LATIN_14_SPACING := --tracking 6 --digit-advance 559
+PROJECT_LATIN_15_SPACING := --tracking 3
+# $(1) index, $(2) target stem, $(3) output, $(4) the face index within its size (0-7), $(5) strike.
+define PROJECT_LATIN_FACE_RULE
+$(call PROJECT_FONT_RULE,$(2),$(3),$(LIBERATION)/$(PROJECT_LATIN_$(4)_FACE).ttf,$(LIBERATION)/$(PROJECT_LATIN_$(4)_FACE).pin.json,$(LIBERATION)/OFL.txt,--latin-cyrillic-text,Nakagawa Open Latin,$(5) $(PROJECT_LATIN_$(1)_SPACING),$(PROJECT_LATIN_$(4)_STYLE))
+endef
+$(eval $(call PROJECT_LATIN_FACE_RULE,0,latin,nkltn.pgf,0,$(PROJECT_LATIN_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,1,latin-1,nkltn1.pgf,1,$(PROJECT_LATIN_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,2,latin-2,nkltn2.pgf,2,$(PROJECT_LATIN_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,3,latin-3,nkltn3.pgf,3,$(PROJECT_LATIN_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,4,latin-4,nkltn4.pgf,4,$(PROJECT_LATIN_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,5,latin-5,nkltn5.pgf,5,$(PROJECT_LATIN_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,6,latin-6,nkltn6.pgf,6,$(PROJECT_LATIN_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,7,latin-7,nkltn7.pgf,7,$(PROJECT_LATIN_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,8,latin-small,nkltns.pgf,0,$(PROJECT_LATIN_SMALL_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,9,latin-9,nkltn9.pgf,1,$(PROJECT_LATIN_SMALL_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,10,latin-10,nkltn10.pgf,2,$(PROJECT_LATIN_SMALL_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,11,latin-11,nkltn11.pgf,3,$(PROJECT_LATIN_SMALL_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,12,latin-12,nkltn12.pgf,4,$(PROJECT_LATIN_SMALL_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,13,latin-13,nkltn13.pgf,5,$(PROJECT_LATIN_SMALL_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,14,latin-14,nkltn14.pgf,6,$(PROJECT_LATIN_SMALL_STRIKE_ARGS)))
+$(eval $(call PROJECT_LATIN_FACE_RULE,15,latin-15,nkltn15.pgf,7,$(PROJECT_LATIN_SMALL_STRIKE_ARGS)))
 
-$(eval $(call PROJECT_FONT_RULE,japanese,nkjpn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--jis-x-0208-japanese,Nakagawa Open Japanese,--ppem 12))
-$(eval $(call PROJECT_FONT_RULE,latin,nkltn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,$(PROJECT_LATIN_FONT_ARGS)))
-$(eval $(call PROJECT_FONT_RULE,latin-small,nkltns.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,$(PROJECT_LATIN_SMALL_FONT_ARGS)))
-$(eval $(call PROJECT_FONT_RULE,korean,nkkr.pgf,fixtures/fonts/gowundodum/GowunDodum-Regular.ttf,fixtures/fonts/gowundodum/PIN.json,fixtures/fonts/gowundodum/OFL.txt,--ks-x-1001-korean,Nakagawa Open Korean,--ppem 12))
+$(eval $(call PROJECT_FONT_RULE,japanese,nkjpn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--jis-x-0208-japanese,Nakagawa Open Japanese,--ppem 12,Regular))
+$(eval $(call PROJECT_FONT_RULE,korean,nkkr.pgf,fixtures/fonts/gowundodum/GowunDodum-Regular.ttf,fixtures/fonts/gowundodum/PIN.json,fixtures/fonts/gowundodum/OFL.txt,--ks-x-1001-korean,Nakagawa Open Korean,--ppem 12,Regular))
 
 project-fonts: $(PROJECT_FONT_SLOT_TARGETS)
 

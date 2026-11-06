@@ -17,11 +17,12 @@
         "cpu_state_abi": {"const": 3},
         "enhancements": {
           "type": "object",
-          "description": "Present only in a run with Ace Mode on (src/rt/ace.h): the run's SR_ACE line. Such a run is enhanced, not authentic, and tools/flight_diff.py refuses to compare a bundle that carries this block. An authentic run never writes it, so authentic bundles from before and after this property are unchanged.",
+          "description": "Present only in an enhanced run: with Ace Mode on (src/rt/ace.h), the run's SR_ACE line; with the presentation upscaler on (SR_PRESENT_UPSCALE, src/rt/gpu_sdl3vk/fsr1_pass.h), its mode. Such a run is not authentic, and tools/flight_diff.py refuses to compare a bundle that carries this block. An authentic run never writes it, so authentic bundles from before and after this property are unchanged.",
           "additionalProperties": false,
-          "required": ["ace"],
+          "minProperties": 1,
           "properties": {
-            "ace": {"type": "string", "pattern": "^v1(;[a-z]+=[a-z0-9]+)+$", "maxLength": 95}
+            "ace": {"type": "string", "pattern": "^v1(;[a-z]+=[a-z0-9]+)+$", "maxLength": 95},
+            "present_upscale": {"type": "string", "enum": ["fsr1"]}
           }
         }
       }

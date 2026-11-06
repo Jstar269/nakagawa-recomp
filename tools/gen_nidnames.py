@@ -14,7 +14,7 @@ it **recomputes** the NID rather than copying one::
     nid = int.from_bytes(sha1(name)[0:4], "little")
 
 That is the derivation ``psp-build-exports`` in the pspdev toolchain applies
-when it builds a PRX.  1463 of the emitted NIDs are therefore computed here from
+when it builds a PRX.  1464 of the emitted NIDs are therefore computed here from
 the name, not transcribed from another project's table.
 
 What that does and does not claim

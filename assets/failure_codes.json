@@ -1225,6 +1225,30 @@
         "player"
       ]
     },
+    "SAVES_ADD_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "SAVES_BACKUP_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "SAVES_PICKER_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
+    "SAVES_RESTORE_FAILED": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
     "SIZE_MISMATCH": {
       "stage": "host",
       "in": [

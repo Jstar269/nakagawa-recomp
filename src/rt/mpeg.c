@@ -76,6 +76,7 @@
 #define SCE_MPEG_ERROR_BAD_VERSION   0x806100A0u
 #define SCE_MPEG_ERROR_NO_DATA       0x80618001u
 #define SCE_MPEG_ERROR_NO_MEMORY     0x80610022u
+#define SCE_MPEG_ERROR_NOT_YET_INIT  0x80618009u   /* MEASURED: pspautotests video/mpeg/ringbuffer/avail.expected:10 */
 
 static const int videoTimestampStep = 3003;   /* mpegTimestampPerSecond / 29.97 */
 static const int audioTimestampStep = 4180;   /* 2048 samples / 44100 Hz */
@@ -796,6 +797,11 @@ uint32_t mpeg_unregist_stream(uint32_t mpegAddr, uint32_t sid) {
 uint32_t mpeg_ringbuffer_available_size(uint32_t ring) {
     RingState state;
     if (!rb_read_valid(ring, &state, 0)) return 0;
+    /* The PSP answers through the ring's sceMpeg context: once that context is deleted it returns
+     * NOT_YET_INIT (pspautotests video/mpeg/ringbuffer/avail.expected:10), as PPSSPP does through
+     * getMpegCtx. A ring never handed to sceMpegCreate crashes the PSP (avail.cpp); it is refused
+     * here the same way rather than answered from its counters. */
+    if (!mpeg_find(rb_get(ring, RB_mpeg))) return SCE_MPEG_ERROR_NOT_YET_INIT;
     return state.packets - state.avail;
 }
 

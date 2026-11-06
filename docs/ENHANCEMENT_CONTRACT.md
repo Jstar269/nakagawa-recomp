@@ -42,6 +42,20 @@ Asset replacement operates at the resource loading boundary. When the guest titl
 Presentation enhancements operate strictly after or alongside the host graphics presentation step.
 
 - **Allowed:** Drawing an ImGui-based diagnostic HUD or FPS counter; applying CRT or CAS post-processing shaders to the final swapchain render target; letterboxing 16:9 PSP output into ultrawide display windows.
+- **Upscaling:** `SR_PRESENT_UPSCALE=off|fsr1` (default `off`) enlarges the shown picture to the
+  window with AMD FidelityFX Super Resolution 1 (EASU, then RCAS) in place of the bilinear or
+  nearest filter. It reads the shown image and writes private images only; captures still hold
+  the guest's frame (`gpu-capture-selftest`, run by hosted CI on lavapipe, presents through the
+  real pass and checks both), and guest VRAM and every guest flight event match with it off
+  (`display-smoke-fsr1`, which needs a Vulkan device and a display, so it is a local gate). It is
+  not part of Authentic: the launcher exports `SR_PRESENT_UPSCALE=off` for an authentic session
+  whatever the setting or the inherited environment (section 10.1), and a run with it on says
+  `ACE_MODE: present upscale fsr1`, emits a `phase=present_upscale` boot event and carries
+  `"present_upscale": "fsr1"` in its flight bundle's `runtime.enhancements`, so neither
+  `flight_diff.py` nor `boot_gate.py` takes it as authentic evidence. `picture_gate.py` and
+  `library_sweep.py` run the runtime themselves, so they set the key `off` (a picture-gate route
+  may ask for it) and record the value they used. GPU cost at
+  4K: 0.40 ms per present for 1920x1088 to 3840x2160 on an RTX 3080 (`fsr1-selftest`).
 - **Forbidden:** Mutating GE display list commands, intercepting guest draw calls to alter gameplay geometry, or feeding host input back into the guest controller state.
 
 ### 2.3. Guest Memory and Code Hooks (`guest_memory_code_hook`)
@@ -69,7 +83,7 @@ Camera overrides operate at the 3D projection interface, transforming guest came
 
 PSP titles commonly lock physics and animation loops to 30 Hz or 60 Hz VBLANK ticks. Enhancing presentation or rescaling frame-counted game logic to run at a true 60 Hz requires strict separation from real-time clocks (see #328):
 
-- **Allowed:** Interpolating host rendering between consecutive guest frames; adjusting presentation swap intervals; multiplying display updates while keeping guest timer tick counts authentic; applying declarative frame-rate rescale transforms (`count_x2`, `step_x0.5`, `decay_k_to_1-sqrt(1-k)`, `probability_per_update_x0.5`, `gate_30hz`, `vblank_wait_2_to_1`, `retention_m_to_sqrt(m)`) to verified symbolic sites during an explicit AOT enhancement epoch.
+- **Allowed:** Interpolating host rendering between consecutive guest frames; adjusting presentation swap intervals; multiplying display updates while keeping guest timer tick counts authentic; applying the declarative frame-rate rescale transforms of section 9.2 to verified symbolic sites during an explicit AOT enhancement epoch.
 - **Forbidden:** Speeding up the guest real-time clock (`sceKernelGetSystemTime*`, `sceRtc*`, audio hardware sample clocks) to force higher frame rates, which breaks real-time clocks, physics, and audio synchronization. Only frame-counted logic is rescaled; the game's real-time clock stays 100% authentic.
 - **RNG Policy for 60 Hz Rescaling:** Frame-rate rescale packages must declare an explicit `rng_policy` (`rescale_probability` or `subtick_30hz`) with its rationale. Under `rescale_probability`, stateless per-update probability thresholds use `probability_per_update_x0.5` ($p_{60} = 0.5\,p_{30}$) so expected events per second remain invariant at 60 Hz, while stateful multi-roll PRNG sequences or coupled physics/particle steps use `gate_30hz` to step on alternate 60 Hz ticks (30 Hz cadence) without altering PRNG state evolution.
 
@@ -189,7 +203,9 @@ Each `sites` entry names a symbolic `function`, a 4-byte-aligned `insn_offset`, 
 | --- | --- | --- |
 | `vblank_wait_2_to_1` | `addi`/`addiu`/`slti`/`sltiu`/`ori` with immediate 2 | immediate 2 becomes 1 |
 | `gate_30hz` | `jal`; accumulating `addiu rt, rt, imm`, `addu`/`subu`/`add`/`sub` with the destination as a source, `add.s`/`sub.s` likewise | the statement runs only on even logic updates (§9.5), so every instance runs on the same alternate updates |
+| `gate_30hz_hold` | `jal` | the call runs only on even logic updates, as `gate_30hz`; on a skipped update `f0` takes the value of `f12`. It is for a helper that returns its first float argument advanced by one update (an ease toward a target): a skipped update holds the value, so each 30 Hz value shows for two updates. The resolver refuses the site unless the callee, read from its entry to its `jr $ra` and that delay slot, makes no call, jump or trap, writes no memory, `$ra`, `$sp` or FPU control register, branches only to words up to that `jr $ra`, reads `f12` before it writes it, and writes `f0`: skipping it then drops nothing but its result. The check reads the body in address order, not along each path, and does not look at VFPU registers. The site's evidence shows the rest: that the result is stored back as the value the call advances, and that nothing reads the helper's other outputs |
 | `count_x2` | positive `addi`/`addiu`/`slti`/`sltiu` immediate; `andi` mask $2^n-1$; `lui` of a normal float; `sll`; integer loads; `lwc1`/`swc1`; `sw` (only with `stock_values`, §9.6); `lv.s` (the loaded VFPU register is scaled); single-precision arithmetic and `cvt.s.w`; a unit countdown `addiu rt, rt, -1` | the produced value is doubled (a countdown is gated) |
+| `count_x2_even` | `slti`/`sltiu rt, rs, n` with $0 < n \le$ `0x3FFF` and `rt` neither `$zero` nor `rs` | a bound on a counter of logic updates since an event: true while `rs` $< 2n$ and `rs` is even, so the $n$ events of the stock window still happen, one every second update, at the stock instants (`count_x2` would make $2n$ of them, twice as dense). Under `slti` a negative `rs` stays true, as in stock, so an inactive value such as $-1$ keeps its meaning; under `sltiu` it is a large unsigned value, false in both forms. The resolver refuses the site unless `rs` is loaded from memory (`lb`, `lbu`, `lh`, `lhu` or `lw`) within the 16 instructions before the compare, with no branch, jump or call in between, and not in the delay slot of a jump, a call or a branch-likely. The check reads backward in address order and does not see a branch from elsewhere into those instructions. The site's evidence shows the rest: that the stored count advances by one every update |
 | `step_x0.5`, `probability_per_update_x0.5` | as `count_x2` except integer loads, plus accumulating `+1`/`-1`/`addu`/`subu` updates | the produced value is halved (exactly, or by gating a unit or register step); `add.s fd, fd, ft` halves the addend `ft` |
 | `decay_k_to_1-sqrt(1-k)` | `lui` of a float $k \in (0, 1)$; `lwc1` or `lv.s` of the factor | $k \to 1 - \sqrt{1-k}$, evaluated as $k / (1 + \sqrt{1-k})$ in double so that a small $k$ does not cancel to 0, and rounded to the upper half; after an `lwc1` or `lv.s` the loaded register is mapped at run time, and a value outside $(0, 1)$ keeps its stock value and is reported once per site (`ENHANCEMENT_FACTOR_KEPT`) |
 | `retention_m_to_sqrt(m)` | `lui` of a float $m \in (0, 1)$; `lwc1` or `lv.s` of the factor | $m \to \sqrt{m}$, rounded to the upper half; after an `lwc1` or `lv.s` as for `decay_k_to_1-sqrt(1-k)` |
@@ -216,9 +232,9 @@ Every frame-rate rescale package declares `rng_policy`. Under `rescale_probabili
 
 ### 9.5. Update Boundary: Gating Counts Logic Updates
 
-A gated statement (a `gate_30hz` site, and the unit steps and countdowns whose rewrite is a gate) runs when the number of logic updates begun so far is even. The package says where an update begins with `update_boundary`: a symbolic `function`, a 4-byte-aligned `insn_offset` and the `stock_digest` of one instruction that runs exactly once per logic update, usually the first instruction of the title's per-frame body. While `SR_EXPERIMENTAL_60HZ=1`, that instruction first advances the counter `nk_enhancement_updates` and then runs its stock statement unchanged; with the toggle off nothing is counted.
+A gated statement (a `gate_30hz` or `gate_30hz_hold` site, and the unit steps and countdowns whose rewrite is a gate) runs when the number of logic updates begun so far is even. The package says where an update begins with `update_boundary`: a symbolic `function`, a 4-byte-aligned `insn_offset` and the `stock_digest` of one instruction that runs exactly once per logic update, usually the first instruction of the title's per-frame body. While `SR_EXPERIMENTAL_60HZ=1`, that instruction first advances the counter `nk_enhancement_updates` and then runs its stock statement unchanged; with the toggle off nothing is counted.
 
-1. **Required when anything gates.** The validator refuses a package with a `gate_30hz` site and no `update_boundary`, and codegen refuses one whose planned rewrites include any gate without it.
+1. **Required when anything gates.** The validator refuses a package with a `gate_30hz` or `gate_30hz_hold` site and no `update_boundary`, and codegen refuses one whose planned rewrites include any gate without it.
 2. **Verified like a site.** The boundary's function resolves and its stock word is checked against `stock_digest` the same way, fail-closed. It may not be a control transfer or a rewritten site, and a package whose boundary is never emitted is refused like an unemitted site.
 3. **Correct under frame drops.** The count advances once per update however many display VBLANKs that update takes, so gated statements keep alternating when an update overruns a VBLANK or a stock two-VBLANK wait still runs. `tools/test_enhancement_package.py` compiles the generated gate and runs updates of one to three VBLANKs to check it.
 4. **Slowdown is reported.** An update that takes longer than one VBLANK of host time is followed by the title's own wait for the next VBLANK, so the logic runs below 60 updates per second while every per-update step stays halved: the game plays slower than the original. The generated start-up hands `nk_enhancement_updates` to the runtime (`sr_enhancement_register_updates()`), which compares it once a second. Logic that runs but stays under 57 updates per second for three seconds in a row is logged as `ENHANCEMENT_LOGIC_SLOWED` and shown in the game window as a red `60 FPS logic: <n>/s - SLOWED` line, with or without the F3 HUD. A second with no update at all (a load or a pause) clears the count.
@@ -244,7 +260,7 @@ Some titles parse a table from disc at load time and store each field into RAM w
 - **A store site that never runs.** With the toggle on, when the process ends, each site with `stock_values` that stored no value prints `ENHANCEMENT_DATA_SITE_NOT_REACHED: site <id> at 0x<pc> stored no value in this run; whatever it should have rescaled stayed stock`: the title filled the field on another path, and its readers saw stock values. A run stopped by `ENHANCEMENT_DATA_MISMATCH` prints only the mismatch. The line is printed at an ordinary exit and on the runtime's `_Exit` paths (the headless end of run, a route failure, a capture exit, an unsupported import, a guest fault), through `sr_at_process_end()` in `src/rt/perf.h`. It is a report and leaves the exit status as it is: those statuses already mean something (a route result, a capture code), and the site may legitimately not have run yet when the run ends early. A tool that accepts a 60 Hz run checks for the line.
 - **Choosing the store.** The site must be the last store of the value: after any clamp or range check the title applies to the field, or a scaled value the title clamps afterwards is lost without a line. If a later store cannot be ruled out, keep the scaled values inside the clamp.
 - **A scaled value that is also a stock value.** The check compares the stored value with the stock list, so it cannot tell a stock value from an already scaled value that equals another stock value (stock values 30 and 60 with `count_x2`: a re-stored 60 that was a scaled 30 is scaled again to 120). The package is not refused, because one table can hold both v and 2v, but codegen prints `warning: enhancement site <id>: stock value <v> scales to <w>, which is also a stock value; ...` once per such value. The package author checks that no path stores an already scaled value again through that instruction.
-- **`requires`** is a non-empty list of site ids, each another site of the package that declares `stock_values`. The site runs its rewrite only after every required site has applied at least once in the run; until then it runs its stock statement, and the first time that happens it prints `ENHANCEMENT_SITE_GATED: site <id> at 0x<pc> runs stock: <required id> has not applied` once. It works for every rewrite kind. The package refuses an unknown id, the site's own id, a duplicate, an id that names a data site or data file, and a required site that itself declares `requires`.
+- **`requires`** is a non-empty list of site ids, each another site of the package that declares `stock_values`. The site runs its rewrite only after every required site has applied at least once in the run; until then it runs its stock statement, and the first time that happens it prints `ENHANCEMENT_SITE_GATED: site <id> at 0x<pc> runs stock: <required id> has not applied` once. It works for every rewrite kind; on a gated call (`gate_30hz` or `gate_30hz_hold` on a `jal`) the stock statement is the call made on every update. The package refuses an unknown id, the site's own id, a duplicate, an id that names a data site or data file, and a required site that itself declares `requires`.
 - **"In the run" means the process.** Application counts and the gate are kept for the life of the process, including after an in-process `LoadExec`: a site that applied before it still counts as applied.
 
 ### 9.7. Side-by-Side Timing Check
@@ -335,7 +351,8 @@ lands, the player still turns smooth motion off for a launch of the enhanced 60 
 so. That is a limit of this build, not a rule of the contract; the item that lands the interpolator removes it and
 updates the tests that pin it.
 
-Ultrawide (a host-only wide mirror of the GE's draws) is designed and tracked in #1272; it is not part of this build.
+Ultrawide, the widescreen Fill mode (#1881), is not offered in this build: `SR_ACE` still refuses `wide=fill`. Its
+renderer layer is in place and off by default (section 10.8).
 
 ### 10.6. Smooth Motion
 
@@ -343,8 +360,37 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
 `src/rt/gpu_sdl3vk/ace_smooth.c`, its shaders and the pure pacing rule in `src/rt/ace.c`.
 
 - **How a frame is made.** Block-matched motion between two private copies of consecutive presented frames, in a
-  compute pass on the present's command buffer. It reads nothing of the GE, so it does not need #318, and it treats
-  a GPU target and a CPU frame (a movie) alike.
+  compute pass on the present's command buffer. It does not need #318, and it treats a GPU target and a CPU frame (a
+  movie) alike.
+- **What it reads of the GE.** For a GPU target, two host-only inputs (`src/rt/gpu_sdl3vk/ace_hud.c`):
+  - **A HUD mask.** The boxes of the frame's through-mode (2D) draws onto that target, as one bit per guest pixel.
+    A box that covers a quarter of the screen or more, or that samples a render target, is a backdrop or a post
+    effect and is left out. A frame with more than 1024 boxes, or boxes covering more than two screens, has no mask.
+    Masked pixels never steer the motion search. Beside the HUD, where the scene's own vector puts most of a block
+    under it, the block keeps the cost the coarser search level measured for that vector. A vector whose end lands
+    on the HUD in one frame takes only the other frame's side, judged by its block's cost, so the HUD is never
+    dragged into the scene. A changed pixel on the HUD keeps the old frame's side.
+  - **Depth.** A private R16 copy of the target's depth, taken only when a batch wrote that depth image since it
+    was last handed on. A clear that clears depth counts as a write. Freshness belongs to the depth image, not to
+    the colour target: when two display buffers share one depth buffer and a frame writes no depth, the depth still
+    holds the other buffer's frame and is withheld. A frame without fresh depth has none, so its pair matches on
+    colour alone. A vector whose two ends land at different depths fits worse: it joins two surfaces, not one that
+    moved. The GE's depth image is only read and keeps its layout.
+
+  Both are used only when both frames of a pair have them. Each present hands its inputs to the image it presents
+  and to no other, and the show pass takes them once: a CPU frame (a movie) never gets a GPU frame's mask or depth,
+  and inputs no show pass took are dropped and counted. `SR_ACE_SMOOTH_HUD=0` and `SR_ACE_SMOOTH_DEPTH=0` turn each
+  off. There is no per-title switch yet. With both off, the in-betweens are the same bytes as without these inputs.
+  The boxes are noted in the GPU GE's draw hooks after the draw is recorded, and the depth copy is recorded in the
+  present's command buffer. So neither changes what the guest, the authentic renderer or a capture sees.
+
+  Nothing is dropped silently. The report's `smooth_aux` block counts the pairs that used each input (`pairs`,
+  `pairs_mask`, `pairs_depth`) and the depth copies refused (`depth_refused`). It counts the boxes kept, merged or
+  left out, by reason (`boxes`: `kept`, `merged`, `large`, `target`, `outside`, `full`). It also counts frames:
+  those with a mask, those that overflowed it, and those with depth, with unwritten depth or with no depth buffer.
+  The last count is inputs no show pass took (`frames`: `mask`, `overflow`, `depth`, `depth_unwritten`,
+  `depth_none`, `unshown`). The run's exit prints the same counts on one `ACE_MODE: smooth inputs` line. The first
+  frame to overflow the mask prints a warning.
 - **When.** The flip of frame B shows the in-between of A and B; the next VBLANK shows B. Nothing is shown before the
   guest made it, so a frame is never predicted. The cost is one VBLANK of added delay (about 17 ms), reported in the
   run's report as `added_delay_ms`. A flip that arrives first replaces the held frame.
@@ -365,6 +411,58 @@ With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the 
 
 `sas=sinc` (#2054) resamples SAS VAG voices through a band-limited filter on the host. The mixed values land in guest
 memory, so it is a guest-visible item, and its entry is section 11.3.1.
+
+### 10.8. Widescreen Fill: the Renderer Layer
+
+Fill shows more of the 3D scene to the left and right of the PSP's 480x272 picture, at the game's own vertical field of
+view and pixel scale, and keeps 2D at its native shape in the centre. The GE has no x or y clip planes, so the
+transformed positions of geometry past the screen edges already exist; the guest's scissor is what drops them. Fill
+draws them again onto host-only images instead of widening any guest matrix. The code is in `src/rt/ge.c` (which
+primitives reach the wings, and the software rasterizer's wings), `src/rt/gpu_sdl3vk/ge_gpu.c` (the Vulkan wings) and
+`ge_wide_*` in `src/rt/ge_shared.h`.
+
+- **The picture itself never changes.** Guest VRAM, depth, readbacks, captures, the snapshot path and GE time are those
+  of Fill off. Each display framebuffer has a host-only wing canvas holding both wings, which no guest-memory path
+  reaches, and a wing pass charges no GE time and counts in no guest or frame statistic. One route differs: the opt-in
+  GPU T&L route (`SR_GPU_TNL=1`, off by default) declines while Fill is on, because the wings need ge.c's screen-space
+  triangles, so with that switch set the picture is drawn by CPU T&L as it is without the switch.
+- **What reaches the wings.** A transform-mode triangle or sprite that leaves the screen while it draws into a display
+  framebuffer under a scissor as wide as the screen, shifted by whole pixels so it rasterizes as it would on a wider
+  screen: a triangle after the 28.4 snap, a sprite after flooring its corners, so a corner at x = -10.5 lands in column
+  D - 11. Of the through-mode (2D) draws, only clear-mode sprites that reach a screen edge (`sceGuClear`'s strips) and
+  untextured whole-screen sprites (fades) are stretched across the wings; every other 2D draw stays in the centre. CPU
+  writes (movies), block transfers, lines and points do not reach the wings. On Vulkan a primitive whose state the
+  backend draws in software is dropped from the wings, counted, and named once on stderr (`gegpu: Fill dropped a wing
+  primitive`).
+- **Never a stale wing.** The first wing draw after a canvas was shown (`ge_wide_shown`) clears it, so a canvas holds
+  the current frame's wings only, whatever the game clears with. `ge_wide_drawn` is true only when a wing primitive was
+  really drawn since then; the presenter shows black wings otherwise.
+- **Any window aspect wider than the PSP's.** The wing width comes from the window's shape at the PSP's 272 lines,
+  rounded down to a multiple of 4: 21:9 (about 635x272) has 76-pixel wings and 32:9 (about 967x272) has 240-pixel
+  wings. The PSP's 480x272 is 30:17, about 16:9; a 16:9 window widens it by under 4 pixels, so 16:9 has none. One canvas
+  holds both wings in a 512-column image, the GE's widest framebuffer, so the Vulkan canvas shares every target's size,
+  viewport and readback. That caps a wing at 256 pixels, a picture of 992x272 (about 32.8:9); a wider window (three
+  screens) gets the widest Fill and black beyond it.
+- **Off is the default.** With no wing width set, no canvas exists and no wing is drawn or submitted. What Off still
+  costs is a test per primitive in `src/rt/ge.c` (`s_wide_d`), plus tests of an always-NULL pointer in the software
+  rasterizer's pixel accessors (`s_wing`) and the Vulkan backend's batch path (`s_wing_dst`).
+- **Tests.** `gpu-coherence-selftest` (case `wide-fill`, also at render scales 2 and 4) and
+  `ge-cpu-profile-validate-selftest` run one list at 16:9, 21:9 and 32:9. Shapes with sub-pixel corners in and across
+  each edge (flat and gouraud triangles, transform-mode sprites) are drawn a second time wholly on screen, and each wing
+  pixel must equal, exactly and at every scale, the pixel of the same renderer's frame that a wider screen would show
+  there. At render scale 1 the software and Vulkan wings must also agree with each other: byte for byte, except on a
+  gouraud shape's rows, where each channel may differ by one step. The tests also check that all of guest VRAM is
+  byte-identical with Fill on and off, that the GE clock is unchanged, that a narrower scissor reaches no wing, that a
+  shown canvas holds only the next frame's wings, that a frame whose every wing primitive the Vulkan backend drops
+  leaves the canvas undrawn and black, and that the wing hooks receive the guest's vertices snapped and shifted.
+
+**Next layers.** Presentation composes the left wing, the picture and the right wing into one image the window's
+shape, shows black wings for a frame that drew none, and turns on `wide=fill`. Then **layer 2**, per title: a game
+that skips objects it considers off screen never submits them, so they appear at the edges of the wings. A declared
+symbolic `guest_memory_code_hook` (section 2.3) that widens that title's culling extents, resolved through its title
+profile and never by a raw address in a package (section 5), fixes that title, and the title's HUD stays inside the
+PSP's picture at every aspect. That hook changes what the guest computes, so it is a section 11 item. The setting's
+help text says so.
 
 ### 10.10. Texture Scaling and the Smart 2D Filter
 
@@ -447,7 +545,7 @@ The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture
 
 ## 11. Guest-Visible Items
 
-Sections 10.3 and 10.6 describe host-only features: what the guest reads, in its registers, memory and timing, is the
+Sections 10.3, 10.6 and 10.8 describe host-only features: what the guest reads, in its registers, memory and timing, is the
 same with them on or off. The owner's decision of 2026-11-04 (#2055) is that Enhanced does not have to stay fully
 Authentic: a change that improves a game without making anything worse is allowed, even when the guest can observe
 it. This section is the class for those changes. It adds to the classes above and removes none of them.
@@ -467,10 +565,47 @@ An item is guest-visible when, with it on, any of the following differs from the
 - the speed of I/O the guest performs: disc, Memory Stick or savedata reads and writes.
 
 The item's contract entry (section 11.2) names each of these that applies. An item that changes none of them is
-host-only and follows sections 10.2 to 10.6, not this section. One existing feature already sits on this line:
+host-only and follows sections 10.2 to 10.6 and 10.8, not this section. One existing feature already sits on this line:
 texture filtering changes the frame that every present commits to guest VRAM, so a game that copies its screen keeps
 the filtered picture (the "Pixels" bullet of section 10.3). It keeps that entry, and is not held to items 2 to 5 of
-section 11.2 retroactively; a change to it is. A new item is not admitted by analogy with it.
+section 11.2 retroactively; a change to it is. A new item is not admitted by analogy with it. Render scale, below,
+is the other existing feature on this line, with its own rule for changes.
+
+A render scale above 1x (the player's Internal Render Resolution, not an Enhanced or Ace item) sits on the same line.
+Its off switch is 1x, where the picture and every readback are the PSP's values. A change to how the renderer draws
+above 1x is part of this render-scale item, not a new item or a new class, when it keeps 1x byte-identical and above
+1x moves the picture toward the 1x picture. That is a claim about the picture, not about every pixel: the change's
+pull request traces each device pixel that ends farther from its own 1x value and says why it does. Items 2 to 5 of
+section 11.2 do not apply to such a change; its pull request still carries a test that fails without it and the
+comparison runs that show it. A readback keeps the
+top-left device pixel of each guest pixel, so the guest reads what the device drew there:
+
+- Where the device image holds the PSP's own value, the readback returns it. That covers a target uploaded from
+  guest memory, and a sprite sampled nearest at one texel per pixel in either direction, whatever its origin. Every
+  device pixel of such a sprite shows the PSP's texel (`sprite-scaled` in `gpu-coherence-selftest`).
+- Every other draw samples at each device pixel's own position. The readback returns the top-left device sample,
+  which sits 0.5 - 0.5 / scale of a pixel before the PSP's pixel centre. At 4x that is 0.375 of a pixel: for a 1:1
+  linear sprite or triangle the value moves by up to 0.375 of the step between neighbouring texels, and a minified
+  nearest sprite can return a different texel. The exception is the left and top edge pixels of a clamped primitive
+  (next bullet): there the top-left device sample lies in the clamped band, so the readback returns the PSP's value.
+- At the edges of an axis-aligned through-mode primitive (a sprite, or a strip or quad drawn as screen-aligned
+  rectangles, flipped or not), no device pixel samples outside the texture range the primitive's 1x pixel centres
+  cover. Those centres follow the rasteriser's top-left rule. A device pixel in the outer part of an edge pixel shows
+  that pixel's own sample, as the PSP does, instead of reaching past it (with repeat wrapping, into the texture's
+  opposite edge), and is filtered with the primitive's own footprint. This change is part of the render-scale item
+  above: 1x stays byte-identical, and above 1x it removes the edge bleed, moving the picture toward the 1x picture
+  (`uv-edge-clamp` in `gpu-coherence-selftest`). A pixel that ends farther from its own 1x value comes from
+  interpolation on the axis the clamp leaves free, or from content beneath the primitive; #2104 traces each one on
+  its captures.
+  What it does not do:
+  - Rotated and sheared primitives, a strip half without both a horizontal and a vertical leg (a trapezoid), and
+    transform-mode (3D) geometry are not clamped.
+  - Where two clamped primitives meet with continuous texture coordinates, each keeps its edge pixel's sample over
+    its outer band, so the seam shows the 1x step instead of a smooth upscaled blend across it.
+  - A sprite that samples a render target at device resolution (a screen copy) is clamped the same way, so the copy's
+    one-pixel border shows the guest-pixel sample instead of the upscaled detail.
+
+At 1x the readback is the PSP's value.
 
 ### 11.2. What an Item Must Have
 
@@ -577,6 +712,54 @@ No guest-visible item is admitted by this section alone. Each lands in its own p
 - **Per-title off switch (section 11.2, item 5).** None. No title is known to regress with the item on.
 - **Evidence tools (section 11.2, item 6).** `ACE_MODE: on (...)` and the flight recorder's `runtime.enhancements`
   carry `sas=` with the rest of the launch line, and section 10.4's refusals apply to the run unchanged.
+
+#### 11.3.2. The 60 FPS logic transforms `count_x2_even` and `gate_30hz_hold`
+
+Every section 9 transform rewrites guest code, so what the guest computes differs with it on. These two are the
+first section 9 transforms admitted under this section; a later section 9 transform is admitted the same way, with
+its own entry.
+
+- **Key.** The title's "60 FPS game logic" setting of section 9.1, item 2: the player's
+  `enhancement_60hz_discs` list (or `--experimental-60hz` for the session), which launches the title's enhanced
+  package with `SR_EXPERIMENTAL_60HZ=1`. A transform acts only at the sites the title's package names with it, so
+  each title's package is that title's switch for each transform.
+- **Off switch.** The same setting, per title: turning a title's 60 FPS game logic off launches its authentic
+  package with `SR_EXPERIMENTAL_60HZ=0`, and any value other than `1` runs every stock statement. This switch is
+  coarser than section 11.2, item 2 asks: it turns off every section 9 transform of the title's package together,
+  not these two alone, and there is no launch-line key or library setting for them alone. A package leaves either
+  transform out for its title by not naming it (the site keeps its stock instruction, or names `count_x2` or
+  `gate_30hz` instead); that is the per-title data of section 11.2, item 5.
+- **What it changes.** `count_x2_even` doubles a `slti`/`sltiu` bound on a counter of logic updates and reads false
+  on a non-negative odd count, so the window's events happen at the stock instants. `gate_30hz_hold` skips a call to
+  an ease helper on odd logic updates and gives `f0` the value of `f12`, so each 30 Hz value shows for two updates.
+- **What the guest can observe.**
+  - Guest registers and memory: at a `count_x2_even` site, the compare's `rt` is 0 on an odd count below twice the
+    bound, where `count_x2` would give 1. At a skipped `gate_30hz_hold` call, `f0` is the held value and the
+    callee's other result registers keep their earlier values; no memory differs, because the resolver refuses a
+    callee that writes memory. Everything the logic computes from these values, and so what it draws, follows them,
+    as for every site of a 60 Hz package.
+  - VRAM bytes: no transform writes VRAM; the frames drawn follow the logic, as above.
+  - Readbacks: unchanged; neither transform reads or writes a GE or display readback.
+  - Timing the guest can measure: no VBLANK, DMA, GE list or media clock changes. An odd update does less work, by
+    the skipped call.
+  - I/O speed: unchanged.
+- **Tier and default.** Ace: on only for a title whose package names the sites and whose 60 FPS game logic is
+  selected. Off by default, as 60 FPS game logic is.
+- **Authentic stays byte-identical.** Without `--enhancement-package`, codegen output and the cache key's codegen
+  options are those of a build without this feature (section 9.1, item 1). With the package built in and the toggle
+  off, every site runs its stock statement. `test_count_x2_even_and_gate_30hz_hold_match_30hz_when_run` in
+  `tools/test_enhancement_package.py` builds a fixture with the package and without it, checks that each site's
+  toggle-off statement is the Authentic statement byte for byte, runs the same harness on both builds, and checks
+  that the toggle-off output equals the Authentic output byte for byte.
+- **Sampled checking.** With `SR_EXPERIMENTAL_60HZ=1`, the in-play verifier
+  ([sampled in-play checking](DEBUGGING.md#sampled-in-play-checking)) compares the enhanced code with the stock
+  reference interpreter, so a sampled call whose body holds any enhancement site, these two included, reports a
+  mismatch there; there is no enhancement skip class. Run it with the toggle off, or read such a mismatch as
+  expected. A skipped `gate_30hz` or `gate_30hz_hold` call never reaches its return boundary, so it starts no check.
+- **"Nothing worse".** The transforms replace `count_x2` and `gate_30hz` where those were wrong, and their tests pin
+  that: an event window keeps its stock count and instants, and a held ease keeps its 30 Hz values. The private
+  comparison runs of section 11.2, item 4 are recorded in the pull request that turns a title's 60 FPS game logic
+  on by default, not here; until they exist it stays off by default, as it is today.
 
 #### 11.3.3. Texture Scaling and the Smart 2D Filter (Not Yet Admitted)
 

@@ -45,6 +45,7 @@ set(CORE_SOURCES
     src/core/nk_psp_npumdimg.c
     src/core/nk_disc_expand.c
     src/core/nk_disc_verify.c
+    src/core/nk_zip.c
     src/core/generated/nk_title_catalog.c
 )
 
@@ -172,6 +173,13 @@ add_executable(test_disc_verify
 )
 target_link_libraries(test_disc_verify PRIVATE nakagawa_core)
 add_test(NAME disc_verify_test COMMAND test_disc_verify)
+
+add_executable(test_nk_zip
+    tests/native/test_nk_zip.c
+    tests/native/native_test_isolation.c
+)
+target_link_libraries(test_nk_zip PRIVATE nakagawa_core)
+add_test(NAME nk_zip_test COMMAND test_nk_zip)
 
 add_executable(test_xb_parser
     tests/native/test_xb_parser.c
@@ -842,6 +850,8 @@ set(NK_RUNTIME_SOURCES
     third_party/xbrz/xbrz.c
     src/rt/gpu_sdl3vk/ace_ui.c
     src/rt/gpu_sdl3vk/ace_smooth.c
+    src/rt/gpu_sdl3vk/ace_hud.c
+    src/rt/gpu_sdl3vk/fsr1_pass.c
     src/core/nk_input_profile.c
     src/core/nk_font.c
     src/core/nk_json.c

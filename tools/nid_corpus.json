@@ -14,10 +14,10 @@
   },
   "counts": {
     "pspsdk-sourced": 840,
-    "hash-verified": 623,
+    "hash-verified": 624,
     "library-attributed": 53,
     "editorial-alias": 11,
-    "unresolved": 88
+    "unresolved": 87
   },
   "entries": [
     {
@@ -3482,6 +3482,10 @@
     },
     {
       "class": "hash-verified",
+      "name": "sceAtracEndEntry"
+    },
+    {
+      "class": "hash-verified",
       "name": "sceAtracGetBufferInfoForResetting"
     },
     {
@@ -6255,11 +6259,6 @@
       "name": "scePowerSetClockFrequency630",
       "nid": "0x469989ad",
       "alias_of": "scePowerSetClockFrequency"
-    },
-    {
-      "class": "unresolved",
-      "name": "sceAtracReleaseResources",
-      "nid": "0xd5c28cc0"
     },
     {
       "class": "unresolved",

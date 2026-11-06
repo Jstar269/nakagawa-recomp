@@ -28,10 +28,13 @@ Every derived file below is labelled `derived-translated` in the trusted provena
 - LOCAL DELTA: the values and array names are unchanged. The file is C data in one table; a tag that appears in both
   upstream tables (a 144-byte and a 16-byte recipe with the same code) is one entry; the 144-byte keys keep upstream's
   32-bit words and the KeyStore serialises them little-endian, as upstream's byte view does on the PSP. Left out:
-  - every firmware container tag: `0x0B000000` (updater executable), `0x0E000000` (updater DATA.PSAR block),
-    `0x0F000000` and `0x862648D1` (Media Engine image), `0x07000000` and the seventeen `sceResmgr_9DC14891` index.dat
-    tags (`0x0B2B05F0` to `0x0B2B92F0`, `0x495BE403`). They are listed in `nk_psp_firmware_tags` only, so the boundary
-    can refuse them by name; their keys are not carried;
+  - every firmware container tag: `0x0B000000` (updater executable), `0x06000000` and `0x0E000000` (updater DATA.PSAR
+    blocks), `0x0F000000` and `0x862648D1` (Media Engine image), `0x07000000` and the eighteen `sceResmgr_9DC14891`
+    index.dat tags (`0x0B2B05F0` to `0x0B2B92F0`, `0x495BE403`). They are listed in `nk_psp_firmware_tags` only, so the
+    boundary can refuse them by name; their keys are not carried. `0x06000000` (the 1.00 updater) and `0x0B2B10F0` (the
+    3.60 index.dat) are the two tags PPSSPP added after the pin, in `fb371af6bb7d13406fdfe7f23b6bbad6c47629a0` and `6a9b84a714e2e03470dcfebb223c8c4688e61e99`; a review on 2026-11-05 of
+    the five upstream commits to `Core/ELF/PrxDecrypter.*` and `ext/libkirk` between the pin and
+    `5b3ddcc0628585b7b091c9a9904dba58bb4118c8` found no new or changed game key, tag recipe or cipher fix missing here;
   - the type-3 DRM BB patch tag `0x89742B04`, the SPRX decrypt-mode pad `xor_91E0A9AD` and the KIRK command-2 results,
     which need the installing console's context (PBP/NPDRM, a later phase);
   - amctrl's fixed-key tables (`key_357C`, `key_363C`, `dnas_key1A90`, `dnas_key1AA0`), which only PGD data and

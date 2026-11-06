@@ -1847,6 +1847,12 @@
     "name": "sceUmdGetDriveStat",
     "status": "partial"
   },
+  "0x6d08a871": {
+    "classification": "dedicated",
+    "handler": "h_IoUnassign",
+    "name": "sceIoUnassign",
+    "status": "unreviewed"
+  },
   "0x6d212bac": {
     "classification": "dedicated",
     "handler": "h_WaitSemaCB",
@@ -2950,6 +2956,12 @@
     "name": "sceIoDopen",
     "status": "partial"
   },
+  "0xb2a628c1": {
+    "classification": "dedicated",
+    "handler": "h_IoAssign",
+    "name": "sceIoAssign",
+    "status": "unreviewed"
+  },
   "0xb3a59970": {
     "classification": "dedicated",
     "handler": "h_GetVTimerBase",
@@ -3466,8 +3478,8 @@
   },
   "0xd5c28cc0": {
     "classification": "dedicated",
-    "handler": "h_AtracReleaseResources",
-    "name": "sceAtracReleaseResources",
+    "handler": "h_AtracEndEntry",
+    "name": "sceAtracEndEntry",
     "status": "unreviewed"
   },
   "0xd5ebbbcd": {

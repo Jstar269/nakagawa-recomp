@@ -1166,18 +1166,17 @@ class PackageCacheTests(unittest.TestCase):
             self.assertIn(directory, listed)
         self.assertNotIn("src/player", listed)
 
-    def test_native_runtime_digest_lists_the_same_directories(self) -> None:
-        # The player recomputes the digest in package_runtime_source_digest(); a directory
-        # listed on one side only makes every package the player checks look outdated.
-        source = (ROOT / "src/core/nk_title_manifest.c").read_text(encoding="utf-8")
-        match = re.search(r"source_dirs\[\]\s*=\s*\{([^}]*)\}", source)
-        self.assertIsNotNone(match, "package_runtime_source_digest() source_dirs[]")
-        assert match is not None
-        items = [item.strip() for item in match.group(1).split(",")]
-        self.assertEqual(items[-1], "NULL")
-        native = [item.strip('"') for item in items[:-1]]
-        self.assertTrue(all(item for item in native), native)
-        self.assertEqual(native, list(package_cache.RUNTIME_SOURCE_DIRECTORIES))
+    def test_player_runtime_digest_lists_the_same_directories(self) -> None:
+        # The player computes the same digest in C (package_runtime_source_digest in
+        # src/core/nk_title_manifest.c) to tell whether a package is outdated; a directory
+        # listed on one side only makes every package look outdated to this build.
+        text = (ROOT / "src" / "core" / "nk_title_manifest.c").read_text(encoding="utf-8")
+        start = text.index("static bool package_runtime_source_digest(")
+        block = re.search(r"source_dirs\[\]\s*=\s*\{(.*?)\};", text[start:], re.S)
+        if block is None:
+            self.fail("package_runtime_source_digest has no source_dirs list")
+        names = re.findall(r'"([^"]+)"', block.group(1))
+        self.assertEqual(sorted(names), sorted(package_cache.RUNTIME_SOURCE_DIRECTORIES))
 
     # A generated-code stage: the outputs of one generation phase, named as the planner
     # names them for the game "game", recorded with the package completion discipline.

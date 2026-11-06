@@ -27,10 +27,16 @@ def compare_with_nakagawa(
     by_nid: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_pair: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    # An IMPORT_FUNC_WITH_ALIAS stub answers to its alias as well: a registration under
+    # either name is the same pair, reported once under the primary symbol.
+    alias_pair: dict[tuple[str, str], tuple[str, str]] = {}
     for entry in _flatten_upstream(upstream_manifest):
         by_nid[entry["nid"]].append(entry)
         by_symbol[entry["symbol"]].append(entry)
         by_pair[(entry["nid"], entry["symbol"])].append(entry)
+        if "alias" in entry:
+            by_symbol[entry["alias"]].append(entry)
+            alias_pair[(entry["nid"], entry["alias"])] = (entry["nid"], entry["symbol"])
 
     findings: list[dict[str, Any]] = []
     matched_pairs: set[tuple[str, str]] = set()
@@ -38,7 +44,8 @@ def compare_with_nakagawa(
         nid = registration["nid"].lower()
         symbol = registration["name"]
         nid_entries = by_nid.get(nid, [])
-        exact = by_pair.get((nid, symbol), [])
+        pair = alias_pair.get((nid, symbol), (nid, symbol))
+        exact = by_pair.get(pair, [])
         symbol_entries = by_symbol.get(symbol, [])
         base = {
             "nid": nid,
@@ -48,7 +55,7 @@ def compare_with_nakagawa(
             "nakagawa_status": registration["status"],
         }
         if exact:
-            matched_pairs.add((nid, symbol))
+            matched_pairs.add(pair)
             findings.append(
                 {
                     **base,
