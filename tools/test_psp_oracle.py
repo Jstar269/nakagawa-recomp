@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 138)
+        self.assertEqual(len(routes), 139)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
-                         | {150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160},
+                         | {150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -5309,6 +5309,8 @@ class HleMeasureProbeTests(unittest.TestCase):
     LATER_FAMILIES = (
         ("hle-std-handles", 156, "hle_std_handles", None,
          "HLE_CASE_STD_HANDLES", "PSP-HLE-STDIO-001"),
+        ("hle-utility-dialogs", 161, "hle_utility_dialogs", "hle_utility_imports.S",
+         "HLE_CASE_UTILITY_DIALOGS", "PSP-HLE-UTILITY-DIALOG-001"),
     )
     ALL_FAMILIES = FAMILIES + SINGLE_LAUNCH_FAMILIES + TABLE_FAMILIES + LATER_FAMILIES
     # Every family block: file -> (library, version word, {function: NID}). The
@@ -5372,6 +5374,30 @@ class HleMeasureProbeTests(unittest.TestCase):
             "nkUtilGameSharingUpdate": 0x7853182D,
             "nkUtilGameSharingShutdownStart": 0xEFC6F80F,
         },
+        # hle-utility-dialogs: the four calls of savedata, netconf, game sharing and the gamedata
+        # install dialog, the message dialog's InitStart (only ever given a size-0 block), and
+        # the net module load/unload pair.
+        ("hle_utility_imports.S", 161): {
+            "nkUtilSavedataInitStart": 0x50C4CD57,
+            "nkUtilSavedataGetStatus": 0x8874DBE0,
+            "nkUtilSavedataUpdate": 0xD4B95FFB,
+            "nkUtilSavedataShutdownStart": 0x9790B33C,
+            "nkUtilMsgDialogInitStart": 0x2AD8E239,
+            "nkUtilNetconfInitStart": 0x4DB1E739,
+            "nkUtilNetconfGetStatus": 0x6332AA39,
+            "nkUtilNetconfUpdate": 0x91E70E35,
+            "nkUtilNetconfShutdownStart": 0xF88155F6,
+            "nkUtilGamedataInstallInitStart": 0x24AC31EB,
+            "nkUtilGamedataInstallGetStatus": 0xB57E95D9,
+            "nkUtilGamedataInstallUpdate": 0x4AECD179,
+            "nkUtilGamedataInstallShutdownStart": 0x32E32DCB,
+            "nkUtilGameSharingInitStart": 0xC492F751,
+            "nkUtilGameSharingGetStatus": 0x946963F3,
+            "nkUtilGameSharingUpdate": 0x7853182D,
+            "nkUtilGameSharingShutdownStart": 0xEFC6F80F,
+            "sceUtilityLoadNetModule": 0x1579A159,
+            "sceUtilityUnloadNetModule": 0x64D50C56,
+        },
     }
     # Calls supplied by the SDK's default IO/audio libraries, not by the hand-written
     # ThreadMan import block. Libc and CRT helpers are not sce-prefixed.
@@ -5383,6 +5409,13 @@ class HleMeasureProbeTests(unittest.TestCase):
         "sceKernelStdin", "sceKernelStdout", "sceKernelStderr",
         "sceAudioChReserve", "sceAudioChRelease", "sceAudioOutputBlocking",
         "sceAudioGetChannelRestLen", "sceAudioGetChannelRestLength",
+        # hle-utility-dialogs: the vblank counter, the UMD presence check, the directory calls
+        # of its gamedata precheck and cleanup, and the net libraries' Init/Term pairs.
+        "sceDisplayGetVcount", "sceUmdCheckMedium",
+        "sceIoDopen", "sceIoDread", "sceIoDclose", "sceIoRmdir",
+        "sceNetInit", "sceNetTerm", "sceNetInetInit", "sceNetInetTerm",
+        "sceNetApctlInit", "sceNetApctlTerm", "sceNetAdhocInit", "sceNetAdhocTerm",
+        "sceNetAdhocctlInit", "sceNetAdhocctlTerm",
     })
     MEASURED_CALL_RE = re.compile(
         r"\b(sceKernel(?:ReferSystemStatus|ReferFplStatus|CreateFpl|TryAllocateFpl|FreeFpl|"
@@ -5393,7 +5426,8 @@ class HleMeasureProbeTests(unittest.TestCase):
         r"Ch(?:Reserve|Release)|OutputBlocking|GetChannelRestLen(?:gth)?)|"
         r"scePowerGet\w+|sceHprmIs\w+|sceCtrl\w*Latch|"
         r"sceUtilityGetSystemParam\w+|sceUtilitySavedataInitStart|sceIoGetstat|"
-        r"sceGeEdram\w+|sceKernelStd(?:in|out|err))\s*\("
+        r"sceGeEdram\w+|sceKernelStd(?:in|out|err)|sceUmdCheckMedium|"
+        r"sceIo(?:Dopen|Dread|Dclose|Rmdir)|sceNet\w+|sceUtility(?:Load|Unload)NetModule)\s*\("
     )
     # A line that is nothing but a whole `int|float|void sce...(...);` declaration.
     # Only such a line is skipped as "not a call"; a declaration that shares its line
@@ -5591,13 +5625,13 @@ class HleMeasureProbeTests(unittest.TestCase):
         hle-sysparam can import no savedata call."""
         block = "hle_utility_imports.S"
         self.assertEqual(re.findall(r"^#if PSP_ORACLE_CASE == (\d+)$", self._block_text(block),
-                                    re.MULTILINE), ["104", "140"])
+                                    re.MULTILINE), ["104", "140", "161"])
         self.assertIn("#define HLE_CASE_SAVEDATA_GETSIZE 104\n", self.probe)
         self.assertIn("else ifeq ($(CASE),hle-savedata-getsize)\nCASE_ID = 104\n", self.makefile)
         users = [(case, case_id) for case, case_id, _stem, linked, _macro, _test
                  in self.ALL_FAMILIES if linked == block]
         self.assertEqual(users, [("hle-sysparam", 95), ("hle-savedata-getsize", 104),
-                                 ("hle-utility-none", 140)])
+                                 ("hle-utility-none", 140), ("hle-utility-dialogs", 161)])
         for case, case_id in users:
             with self.subTest(case=case):
                 gate = self.makefile.split(f"\nifeq ($(CASE),{case})\n", 1)[1].split("endif", 1)[0]
@@ -5802,9 +5836,10 @@ class HleMeasureProbeTests(unittest.TestCase):
         self.assertEqual(private.count("sceIoClose(fd)"), 2)
         # The read-back holds one byte more than was written, so a longer file is caught.
         self.assertIn("static uint8_t observed[sizeof(written) + 1u];", private)
-        # Removal is this file's alone: no other host0 file and no other family removes.
+        # Removal is this file's alone on host0; the only other removal is hle-utility-dialogs'
+        # cleanup of its own gamedata directory on ms0: (HleUtilityDialogsProbeTests).
         self.assertEqual(re.findall(r"\bsceIoRemove\s*\(([^)]*)\)", self.probe),
-                         ["HLE_PRIVATE_STRINGS_PATH"])
+                         ["HLE_PRIVATE_STRINGS_PATH", "s_ud_path"])
         issues = (self.fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
         self.assertNotRegex(issues, r"\bsceIoRemove\s*\(")
 
@@ -9663,6 +9698,171 @@ class HleUtilityNoneProbeTests(unittest.TestCase):
         section = self.probe[self.probe.index("#if PSP_ORACLE_CASE == HLE_CASE_UTILITY_NONE\n\n"):
                              self.probe.index("#endif /* HLE_CASE_UTILITY_NONE */")]
         self.assertNotIn("InitStart(", section)
+
+
+class HleUtilityDialogsProbeTests(unittest.TestCase):
+    """CASE=hle-utility-dialogs (161, PSP-HLE-UTILITY-DIALOG-001) in probe_hle_measure.c: #1386's
+    dialog status timing and wrong-state answers in game context. These pin the safety design:
+    the dialog order, no network join, scan or setting write, no button, bounded waits, and a
+    gamedata install only into a probe-owned directory that the probe removes again."""
+
+    probe: ClassVar[str]
+    section: ClassVar[str]
+    makefile: ClassVar[str]
+    imports: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_hle_measure.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        cls.imports = (fixture / "hle_utility_imports.S").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == HLE_CASE_UTILITY_DIALOGS\n\n")
+        cls.section = cls.probe[start:cls.probe.index("#endif /* HLE_CASE_UTILITY_DIALOGS */")]
+
+    def _body(self, signature: str) -> str:
+        start = self.section.index(signature)
+        return self.section[start:self.section.index("\n}\n", start)]
+
+    def test_route_and_registry(self) -> None:
+        self.assertIn("else ifeq ($(CASE),hle-utility-dialogs)\nCASE_ID = 161\n", self.makefile)
+        self.assertIn("#define HLE_CASE_UTILITY_DIALOGS 161\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "hle-utility-dialogs"\n'
+                      '#define HLE_TEST_ID "PSP-HLE-UTILITY-DIALOG-001"\n'
+                      '#define HLE_LOG "host0:/hle_utility_dialogs_log.txt"', self.probe)
+        spec, counts = CAMPAIGN_PROBE_CASES["hle-utility-dialogs"]
+        rows = tuple(row for row, _ in parse_golden.HLE_UTILITY_DIALOGS_ROWS)
+        self.assertEqual(spec.ordered_cases[:-1], rows)
+        self.assertEqual(len(rows), 24)
+        self.assertEqual(sum(counts[row] for row in rows), 3 * 24 + 3 * (24 + 4 * 21) + 5 + 23
+                         + 4 * 5)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "hle-utility-dialogs").name,
+                         "hle_utility_dialogs_log.txt")
+
+    def test_dialog_order_puts_the_radio_dialogs_last(self) -> None:
+        run = self._body("static int hle_run(void)")
+        calls = re.findall(r"\b(hle_ud_\w+)\(", run)
+        self.assertEqual(calls, ["hle_ud_timing", "hle_ud_timing", "hle_ud_timing",
+                                 "hle_ud_gamedata", "hle_ud_netconf", "hle_ud_sharing"])
+        self.assertEqual(re.findall(r'"(savedata-timing-r\d)"', run),
+                         ["savedata-timing-r1", "savedata-timing-r2", "savedata-timing-r3"])
+
+    def test_no_network_join_scan_or_setting_call_is_made_or_linked(self) -> None:
+        code = _c_code(self.section)
+        net_calls = set(re.findall(r"\b(sceNet\w+)\s*\(", code))
+        self.assertEqual(net_calls, {
+            "sceNetInit", "sceNetTerm", "sceNetInetInit", "sceNetInetTerm", "sceNetApctlInit",
+            "sceNetApctlTerm", "sceNetAdhocInit", "sceNetAdhocTerm", "sceNetAdhocctlInit",
+            "sceNetAdhocctlTerm"})
+        self.assertNotRegex(code, r"\bsce\w*(?:Connect|Create|Join|Scan|Set|Reg|Abort)\w*\s*\(")
+        self.assertNotRegex(code, r"\bnkUtil\w*Abort")
+        gate = self.makefile[self.makefile.index(
+            "ifeq ($(CASE),hle-utility-dialogs)\nLIBS"):]
+        gate = gate[:gate.index("\nendif\n")]
+        for library, nids in (("sceNet", "0x39AF39A6,0x281928A9"),
+                              ("sceNetInet", "0x17943399,0xA9ED66B9"),
+                              ("sceNetApctl", "0xE2F91F9B,0xB3EDD0EC"),
+                              ("sceNetAdhoc", "0xE1D621D7,0xA62C6F57"),
+                              ("sceNetAdhocctl", "0xE26F226E,0x9D689E13"),
+                              ("sceUmdUser", "0x46EBB729")):
+            with self.subTest(library=library):
+                self.assertIn(f"--exact-library {library}={nids}\n", gate + "\n")
+        for library in ("sceNetAdhocMatching", "sceNetResolver", "sceHttp", "sceSsl", "sceReg"):
+            self.assertIn(f"--forbid-library {library}", gate)
+
+    def test_netconf_connects_to_nothing_and_no_dialog_is_answered(self) -> None:
+        fill = self._body("static void hle_ud_fill_netconf(uint8_t *block)")
+        self.assertIn("hle_ud_put32(block, 0x30u, (uint32_t)PSP_NETCONF_ACTION_CONNECTAP);", fill)
+        self.assertIn("hle_ud_put32(block, 0x38u, 0u);", fill)
+        self.assertIn("hle_ud_put32(block, 0x40u, 0u);", fill)
+        # Every dialog call goes through the type's GetStatus, Update(1) and ShutdownStart, or
+        # an InitStart; Update is never given anything but 1.
+        code = _c_code(self.section)
+        self.assertEqual(set(re.findall(r"->update\(([^)]*)\)", code)), {"1"})
+        self.assertEqual(re.findall(r"\bnkUtilMsgDialog\w+\(([^)]*)\)", code),
+                         ["void *param", "s_ud_msg"])
+        state = self._body("static void hle_ud_state(")
+        self.assertIn("memset(s_ud_msg, 0, sizeof(s_ud_msg));", state)
+        block = self.imports[self.imports.index("#if PSP_ORACLE_CASE == 161\n"):]
+        block = block[:block.index("#endif")]
+        names = re.findall(r"IMPORT_FUNC\s+\"sceUtility\", 0x[0-9A-F]{8}, (\w+)", block)
+        self.assertEqual([n for n in names if "MsgDialog" in n], ["nkUtilMsgDialogInitStart"])
+        self.assertFalse([n for n in names if "Abort" in n or "Set" in n])
+
+    def test_waits_are_vblank_bounds_and_a_running_dialog_is_cancelled(self) -> None:
+        self.assertRegex(self.section, r"#define HLE_UD_POLL_LIMIT 600u\n")
+        self.assertRegex(self.section, r"#define HLE_UD_REACH_POLLS 300u\n")
+        self.assertRegex(self.section, r"#define HLE_UD_CANCEL_POLLS 60u\n")
+        drive = self._body("static void hle_ud_drive(HleUdRun *r)")
+        self.assertIn("for (uint32_t i = 0; i < HLE_UD_POLL_LIMIT; i++) {", drive)
+        self.assertIn("running >= HLE_UD_CANCEL_POLLS * (r->sd_calls + 1u)", drive)
+        self.assertIn("(void)sceDisplayWaitVblankStart();", drive)
+        reach = self._body("static int hle_ud_reach(HleUdRun *r, int want)")
+        self.assertIn("for (uint32_t i = 0; i < HLE_UD_REACH_POLLS; i++) {", reach)
+        # Nothing is written to host0 between the polls of a loop except the marker before a
+        # ShutdownStart, whose vblank is read after the marker.
+        poll = self._body("static int hle_ud_poll(HleUdRun *r)")
+        self.assertNotIn("hle_step", poll)
+        self.assertNotIn("hle_record", drive + reach + poll)
+        shutdown = " ".join(self._body("static void hle_ud_shutdown(").split())
+        self.assertLess(shutdown.index('hle_ud_step(r->t, "shutdown");'),
+                        shutdown.index("sceDisplayGetVcount()"))
+        self.assertLess(shutdown.index("sceDisplayGetVcount()"),
+                        shutdown.index("r->t->shutdown()"))
+
+    def test_gamedata_runs_only_without_a_disc_into_an_absent_probe_directory(self) -> None:
+        self.assertIn('#define HLE_UD_GD_DIR "ms0:/PSP/SAVEDATA/" HLE_UD_GD_GAME_NAME '
+                      'HLE_UD_GD_DATA_NAME\n', self.section)
+        self.assertIn('#define HLE_UD_GD_GAME_NAME "NKORACLE0"\n', self.section)
+        self.assertIn('#define HLE_UD_GD_DATA_NAME "GDI1"\n', self.section)
+        precheck = self._body("static uint32_t hle_ud_gamedata_precheck(void)")
+        for condition, reason in (("umd < 0", "HLE_UD_SKIP_UMD_UNKNOWN"),
+                                  ("umd != 0", "HLE_UD_SKIP_UMD_PRESENT"),
+                                  ("dfd >= 0", "HLE_UD_SKIP_DIR_EXISTS"),
+                                  ("(uint32_t)stat != HLE_UD_PATH_ABSENT",
+                                   "HLE_UD_SKIP_DIR_UNCLEAR")):
+            with self.subTest(condition=condition):
+                self.assertIn(f"}} else if ({condition}) {{\n        reason = {reason};", precheck)
+        gamedata = self._body("static void hle_ud_gamedata(void)")
+        self.assertEqual(gamedata.count("reason);"), 3)
+        # Every path the probe touches on ms0: is the probe directory or a file inside it.
+        code = _c_code(self.section)
+        self.assertEqual(sorted(set(re.findall(r"\bsceIo(?:Dopen|Rmdir|Getstat)\(([^,)]*)", code))),
+                         ["HLE_UD_GD_DIR"])
+        self.assertEqual(re.findall(r"\bsceIoRemove\(([^)]*)\)", code), ["s_ud_path"])
+        self.assertIn('snprintf(s_ud_path, sizeof(s_ud_path), "%s/%s", HLE_UD_GD_DIR, '
+                      's_ud_names[f]);', code)
+        cleanup = self._body("static void hle_ud_gamedata_cleanup(uint32_t reason)")
+        self.assertIn('strcmp(name, ".") == 0 || strcmp(name, "..") == 0', cleanup)
+        self.assertIn("FIO_S_ISREG(s_ud_dirent.d_stat.st_mode)", cleanup)
+        self.assertIn('again < 0 ? "PASS" : "FAIL"', cleanup)
+
+    def test_each_net_setup_is_torn_down_in_reverse(self) -> None:
+        for kind, pairs in (
+                ("netconf", (("sceNetApctlTerm()", "sceNetApctlInit("),
+                             ("sceNetInetTerm()", "sceNetInetInit()"),
+                             ("sceNetTerm()", "sceNetInit("),
+                             ("sceUtilityUnloadNetModule(PSP_NET_MODULE_INET)",
+                              "sceUtilityLoadNetModule(PSP_NET_MODULE_INET)"),
+                             ("sceUtilityUnloadNetModule(PSP_NET_MODULE_COMMON)",
+                              "sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON)"))),
+                ("sharing", (("sceNetAdhocctlTerm()", "sceNetAdhocctlInit("),
+                             ("sceNetAdhocTerm()", "sceNetAdhocInit()"),
+                             ("sceNetTerm()", "sceNetInit("),
+                             ("sceUtilityUnloadNetModule(PSP_NET_MODULE_ADHOC)",
+                              "sceUtilityLoadNetModule(PSP_NET_MODULE_ADHOC)"),
+                             ("sceUtilityUnloadNetModule(PSP_NET_MODULE_COMMON)",
+                              "sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON)")))):
+            with self.subTest(kind=kind):
+                setup = self._body(f"static uint32_t hle_ud_{kind}_setup(uint32_t *stage)")
+                teardown = self._body(f"static void hle_ud_{kind}_teardown(")
+                starts = [setup.index(init) for _term, init in pairs]
+                stops = [teardown.index(term) for term, _init in pairs]
+                self.assertEqual(starts, sorted(starts, reverse=True))
+                self.assertEqual(stops, sorted(stops))
+                group = self._body(f"static void hle_ud_{kind}(void)")
+                self.assertIn(f"hle_ud_{kind}_teardown(stage, reason == HLE_UD_SKIP_STUCK ? "
+                              "reason : 0u);", group)
 
 
 class GeMipProbeTests(unittest.TestCase):

@@ -215,6 +215,9 @@ CASE_ID = 156
 # 159: #279's audio channel rest length at each blocking-output return (1024, 2048, 4096).
 else ifeq ($(CASE),hle-audio-rest)
 CASE_ID = 159
+# 161: #1386's utility dialog status timing and wrong-state answers, in game context.
+else ifeq ($(CASE),hle-utility-dialogs)
+CASE_ID = 161
 # 106-108: the HLE issue cells (probe_hle_issues.c). 106 is the #356 model-getter and
 # #326 vrnd carry / vscmp batch; 107 the #325 interrupt and timer delivery cells; 108 the
 # #326 VFPU form words (vh2f, vuc2i, vsocp, vwbn, vrndf1/2).
@@ -553,6 +556,9 @@ OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),hle-audio-rest)
 TARGET = $(BUILD_DIR)/hle_audio_rest
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-utility-dialogs)
+TARGET = $(BUILD_DIR)/hle_utility_dialogs
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_utility_imports.o
 # HLE issue cells: their own source, which installs and removes interrupt and timer
 # handlers (107) and reaches a kernel getter through the kernel bridge (106), so they
 # stay out of probe_hle_measure.c. Same ThreadManForUser block and module lifecycle.
@@ -818,6 +824,23 @@ endif
 # dialog can be opened by this build.
 ifeq ($(CASE),hle-utility-none)
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUtility=0xA5DA2406,0x34B78343,0x8874DBE0,0xD4B95FFB,0x9790B33C,0x9A1C91D7,0x95FC253B,0x67AF3428,0x6332AA39,0x91E70E35,0xF88155F6,0xB57E95D9,0x4AECD179,0x32E32DCB,0x946963F3,0x7853182D,0xEFC6F80F
+endif
+# hle-utility-dialogs: the four calls of savedata, netconf, game sharing and the gamedata install
+# dialog, the message dialog's InitStart, and the net module load/unload pair (sceUtility); the
+# UMD presence check; and from each net library only its Init and Term call. No connect, create,
+# join or scan call can be linked: each net library is pinned to that pair, and the libraries
+# with no Init/Term use here (matching, resolver, HTTP, SSL, the registry) are forbidden.
+ifeq ($(CASE),hle-utility-dialogs)
+LIBS += -lpspumd -lpspnet_adhocctl -lpspnet_adhoc -lpspnet_apctl -lpspnet_inet -lpspnet
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUtility=0xA5DA2406,0x34B78343,0x50C4CD57,0x8874DBE0,0xD4B95FFB,0x9790B33C,0x2AD8E239,0x4DB1E739,0x6332AA39,0x91E70E35,0xF88155F6,0x24AC31EB,0xB57E95D9,0x4AECD179,0x32E32DCB,0xC492F751,0x946963F3,0x7853182D,0xEFC6F80F,0x1579A159,0x64D50C56
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUmdUser=0x46EBB729
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceNet=0x39AF39A6,0x281928A9
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceNetInet=0x17943399,0xA9ED66B9
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceNetApctl=0xE2F91F9B,0xB3EDD0EC
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceNetAdhoc=0xE1D621D7,0xA62C6F57
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceNetAdhocctl=0xE26F226E,0x9D689E13
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceNetAdhocMatching --forbid-library sceNetResolver
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceHttp --forbid-library sceSsl --forbid-library sceReg
 endif
 ifeq ($(CASE),cpu-timing)
 # The shared probe cleanup checks interrupt state; cpu-timing also calls the

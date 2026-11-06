@@ -1963,6 +1963,31 @@ _register_campaign_probe(
     tuple(row for row, _ in HLE_AUDIO_REST_ROWS), dict(HLE_AUDIO_REST_ROWS),
 )
 
+# hle-utility-dialogs (161, probe_hle_measure.c): #1386 in game context. Three savedata GETSIZE
+# timing runs; then for the gamedata install dialog, netconf (action 0) and game sharing, each
+# after its precheck or net setup: one timing run (InitStart to NONE, each status change's
+# vblank) and the wrong-state calls in INIT, RUNNING, FINISHED and SHUTDOWN, each on a fresh
+# dialog; then the gamedata directory cleanup or the net teardown. No message dialog is opened
+# (it leaves RUNNING only through a button or Abort). Every row is emitted on every run with a
+# fixed word count; a SKIP row carries its reason in result.
+HLE_UTILITY_DIALOGS_STATES = ("init", "running", "finished", "shutdown")
+HLE_UTILITY_DIALOGS_ROWS = (
+    *((f"savedata-timing-r{run}", 24) for run in (1, 2, 3)),
+    ("gamedata-precheck", 5), ("gamedata-timing", 24),
+    *((f"gamedata-state-{state}", 21) for state in HLE_UTILITY_DIALOGS_STATES),
+    ("gamedata-cleanup", 23),
+    ("netconf-setup", 5), ("netconf-timing", 24),
+    *((f"netconf-state-{state}", 21) for state in HLE_UTILITY_DIALOGS_STATES),
+    ("netconf-teardown", 5),
+    ("sharing-setup", 5), ("sharing-timing", 24),
+    *((f"sharing-state-{state}", 21) for state in HLE_UTILITY_DIALOGS_STATES),
+    ("sharing-teardown", 5),
+)
+_register_campaign_probe(
+    "hle-utility-dialogs", "PSP-HLE-UTILITY-DIALOG-001",
+    tuple(row for row, _ in HLE_UTILITY_DIALOGS_ROWS), dict(HLE_UTILITY_DIALOGS_ROWS),
+)
+
 # io-umd-eof (137, probe_kernel_semantics.c): #1380 on the UMD, read-only: the drive state
 # before and after; for two disc0: files (a = UMD_DATA.BIN, b = PSP_GAME/PARAM.SFO) the open
 # and size, seeks past the end, reads past and across the end, negative seeks and seeks at and
