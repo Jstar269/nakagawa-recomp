@@ -1974,7 +1974,7 @@ bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
     size_t count;
     double now_s;
     if (player == NULL || !player->ready || event == NULL) return false;
-    now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    now_s = player_ui_nk_now_s(player);
     if (player_ui_nk_find_open(player)) {
         /* The box takes what is typed: SDL's text input brings the characters,
            Backspace deletes one, and a printable key is not also a shortcut
@@ -2281,7 +2281,7 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
     }
 #endif
     {
-        double now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+        double now_s = player_ui_nk_now_s(player);
         if (strcmp(player->ace_last_disc, game->disc_id) != 0 || now_s - player->ace_last_read_s >= 2.0) {
             snprintf(player->ace_last_disc, sizeof(player->ace_last_disc), "%s", game->disc_id);
             player->ace_last_read_s = now_s;

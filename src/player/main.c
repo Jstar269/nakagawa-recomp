@@ -4847,9 +4847,9 @@ static int player_open_window(PlayerRun *run) {
                                       ui_error, sizeof(ui_error));
         player_ui_test_set_next_ui(run->next_ui);
         /* A capture is a still picture: drawn at a held time, the waves and
-           sweeps come out the same on every run (#2124). 37 s is the phase
-           nk_ui holds them at for Reduce motion. */
-        if (run->screenshot_path != NULL) player_ui_nk_hold_clock(run->next_ui, 37.0);
+           sweeps come out the same on every run (#2124), at the phase nk_ui
+           holds them at for Reduce motion. */
+        if (run->screenshot_path != NULL) player_ui_nk_hold_clock(run->next_ui, NK_UI_STILL_TIME_S);
         if (run->next_ui == NULL) {
             /* There is no other launcher to fall back to: say why, once, and
                stop. A build without the launcher's support needs building
@@ -4918,6 +4918,7 @@ static int player_capture_screenshot(PlayerRun *run) {
         if (target) {
             SDL_SetRenderTarget(run->renderer, target);
         }
+        player_ui_test_delay_screenshot();
         player_render_active_ui(run->next_ui, app, run->renderer, run->window, &run->input);
         if (ui_capture_screenshot(run->renderer, run->screenshot_path)) {
             printf("[PLAYER] Screenshot saved to %s (%dx%d pixels, %dx%d layout)\n", run->screenshot_path,
