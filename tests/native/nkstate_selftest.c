@@ -17,14 +17,31 @@
  * The per-frame trace, the final CpuState and the final data window must be identical.
  * A control continues from the clobbered state without restoring and must differ, so the
  * comparison is not vacuous. No game inputs are needed.
+ *
+ * Recording and replay (SR_RECORD / SR_REPLAY) run the same decoder in fresh child
+ * processes, with on-screen-keyboard requests answered by a fake person: a replay must end in
+ * the recorded state without asking the person, and every way it can go wrong (a changed
+ * word, an extra poll, an early stop, an edited or truncated file, the host clock) must end
+ * in its own named verdict.
  */
 
 #include "recomp.c"   /* arena, dispatch table, dispatch_call_try */
 #include "cpu_lle.c"  /* flow helpers the linked interpreter needs */
 
 #include "nkstate.h"
+#include "osk_text_entry.h" /* SR_OSK_TEXT_PENDING */
 #include "replay_checkpoint.h"
 #include "vfpu_tables.h"
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h> /* CreateProcessW: the record/replay children */
+#else
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+#include <wchar.h>
 
 /* No GE renderer is linked by this harness. */
 volatile int g_sr_vram_read_pending;
@@ -83,7 +100,8 @@ void sched_for_each_thread_cpu(SrSchedThreadVisit visit, void *ctx) {
     if (g_visit_cpu) visit(ctx, 1u, 2, 0x20, 0u, g_visit_cpu);
 }
 uint64_t sched_vtime_us(void) { return 1234u; }
-int sched_clock_deterministic(void) { return 1; }
+static int g_child_host_clock; /* the record/replay child's host-clock case */
+int sched_clock_deterministic(void) { return !g_child_host_clock; }
 
 /* ---- harness ---------------------------------------------------------------------- */
 
@@ -771,7 +789,443 @@ static void test_checkpoint_stream(void) {
           sizeof want_frames / sizeof want_frames[0]);
 }
 
-int main(void) {
+/* ---- recording and replay in fresh processes (SR_RECORD / SR_REPLAY) ------------------ */
+
+/* The child is this binary run with --rr-child[:<option>,...]. It runs the decoder for 24
+ * frames (frames=<n>) and, between frames, asks the on-screen keyboard three times:
+ *   request 0 from frame 2: the person answers HELLO (text=<word>) after 3 polls;
+ *   request 1 from frame 9: the person cancels after 1 poll;
+ *   request 2 at frames 14-16: nobody answers, and the guest abandons it at frame 17
+ *   (extra: it polls once more at frame 17 and abandons at 18).
+ * Each answer is folded into guest memory, so it decides the rest of the run. Test-only
+ * options: perturb=<frame> writes one guest word after that frame; hostclock reports the host
+ * clock; hardexit=<frame> stops with _Exit after that frame's VBLANK.
+ * At a normal end it prints CHILD_FINAL with the machine's state and the live keyboard calls. */
+
+#define RR_SCRATCH (DATA_BASE + 0x3000u)
+#define RR_PERTURB (DATA_BASE + 0x2000u)
+
+static unsigned g_live_polls, g_live_abandons, g_live_request, g_live_request_polls;
+
+typedef struct {
+    unsigned frames;
+    int perturb, hard_exit, osk_extra;
+    char text[16];
+} ChildOptions;
+
+static ChildOptions g_child = {24u, -1, -1, 0, "HELLO"};
+
+/* "--rr-child" alone, or followed by ":" and comma-separated options. Returns 0 on a bad one. */
+static int parse_child_options(const char *arg) {
+    static const char prefix[] = "--rr-child";
+    if (strncmp(arg, prefix, sizeof prefix - 1u) != 0) return 0;
+    arg += sizeof prefix - 1u;
+    if (!*arg) return 1;
+    if (*arg++ != ':') return 0;
+    while (*arg) {
+        char opt[32];
+        size_t n = strcspn(arg, ",");
+        if (n == 0 || n >= sizeof opt) return 0;
+        memcpy(opt, arg, n);
+        opt[n] = '\0';
+        arg += n + (arg[n] == ',');
+        if (strncmp(opt, "frames=", 7) == 0) g_child.frames = (unsigned)atoi(opt + 7);
+        else if (strncmp(opt, "perturb=", 8) == 0) g_child.perturb = atoi(opt + 8);
+        else if (strncmp(opt, "hardexit=", 9) == 0) g_child.hard_exit = atoi(opt + 9);
+        else if (strcmp(opt, "extra") == 0) g_child.osk_extra = 1;
+        else if (strcmp(opt, "hostclock") == 0) g_child_host_clock = 1;
+        else if (strncmp(opt, "text=", 5) == 0 && strlen(opt + 5) < sizeof g_child.text) strcpy(g_child.text, opt + 5);
+        else return 0;
+    }
+    return 1;
+}
+
+static int fake_live(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap, uint32_t input_type) {
+    (void)desc; (void)initial; (void)input_type;
+    g_live_polls++;
+    g_live_request_polls++;
+    if (g_live_request == 0u && g_live_request_polls == 4u) {
+        const char *text = g_child.text;
+        int n = 0;
+        for (; text[n] && n < cap - 1; n++) out[n] = (wchar_t)(unsigned char)text[n];
+        out[n] = L'\0';
+        g_live_request++;
+        g_live_request_polls = 0;
+        return 1;
+    }
+    if (g_live_request == 1u && g_live_request_polls == 2u) {
+        g_live_request++;
+        g_live_request_polls = 0;
+        return 0;
+    }
+    return SR_OSK_TEXT_PENDING;
+}
+
+static void fake_abandon(void) {
+    g_live_abandons++;
+    g_live_request++;
+    g_live_request_polls = 0;
+}
+
+static void fold_answer(int answer, const wchar_t *text) {
+    uint32_t x = MEM_R32(STATE_ADDR + 4u);
+    x = x * 33u + (uint32_t)(answer + 2);
+    for (uint32_t i = 0; answer == 1 && text[i] && i < 32u; i++) {
+        MEM_W16(RR_SCRATCH + 2u * i, (uint16_t)text[i]);
+        x = x * 31u + (uint32_t)text[i];
+    }
+    MEM_W32(STATE_ADDR + 4u, x);
+}
+
+static int rr_child(void) {
+    const unsigned frames = g_child.frames;
+    const int perturb = g_child.perturb;
+    const int hard_exit = g_child.hard_exit;
+    const unsigned abandon_at = g_child.osk_extra ? 18u : 17u;
+    unsigned request = 0;
+    CpuState s;
+    FrameTrace t;
+    fresh_machine(&s);
+    g_visit_cpu = &s;
+    for (unsigned f = 0; f < frames; f++) {
+        if (!run_frame(&s, &t)) return 90;
+        if ((int)f == perturb) MEM_W32(RR_PERTURB, 0xDEADBEEFu);
+        wchar_t out[64] = L"init";
+        if ((request == 0u && f >= 2u) || (request == 1u && f >= 9u)) {
+            const int r = sr_replay_osk_poll(L"name", L"init", out, 64, 0u, fake_live);
+            if (r != SR_OSK_TEXT_PENDING) {
+                fold_answer(r, out);
+                request++;
+            }
+        } else if (request == 2u && f >= 14u) {
+            if (f == abandon_at) {
+                sr_replay_osk_abandon(fake_abandon);
+                fold_answer(-1, out);
+                request++;
+            } else {
+                (void)sr_replay_osk_poll(L"name", L"init", out, 64, 0u, fake_live);
+            }
+        }
+        sr_replay_checkpoint_vblank(f);
+        if ((int)f == hard_exit) {
+            fflush(stderr);
+            _Exit(0);
+        }
+    }
+    fprintf(stderr, "CHILD_FINAL v1=%08x h=%08x x=%08x frame=%u live_polls=%u live_abandons=%u\n", s.r[V1],
+            MEM_R32(STATE_ADDR), MEM_R32(STATE_ADDR + 4u), MEM_R32(STATE_ADDR + 8u), g_live_polls, g_live_abandons);
+    fflush(stderr);
+    exit(0);
+}
+
+/* Run this binary with one argument, its stdout and stderr in errpath; the exit status, or
+ * -1 when it could not be started or waited for. */
+static int run_child(const char *mode, const char *errpath) {
+#ifdef _WIN32
+    wchar_t self[2048], command[2560], werr[1024], wmode[256];
+    DWORD n = GetModuleFileNameW(NULL, self, 2048);
+    if (n == 0 || n >= 2048) return -1;
+    if (MultiByteToWideChar(CP_UTF8, 0, errpath, -1, werr, 1024) <= 0) return -1;
+    if (MultiByteToWideChar(CP_UTF8, 0, mode, -1, wmode, 256) <= 0) return -1;
+    if (swprintf(command, 2560, L"\"%ls\" %ls", self, wmode) < 0) return -1;
+    SECURITY_ATTRIBUTES sa;
+    ZeroMemory(&sa, sizeof sa);
+    sa.nLength = sizeof sa;
+    sa.bInheritHandle = TRUE;
+    HANDLE out = CreateFileW(werr, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL, NULL);
+    if (out == INVALID_HANDLE_VALUE) return -1;
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION child;
+    ZeroMemory(&startup, sizeof startup);
+    startup.cb = sizeof startup;
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = out;
+    startup.hStdError = out;
+    if (!CreateProcessW(NULL, command, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &child)) {
+        CloseHandle(out);
+        return -1;
+    }
+    CloseHandle(out);
+    DWORD status = 0;
+    const int waited = WaitForSingleObject(child.hProcess, INFINITE) == WAIT_OBJECT_0 &&
+                       GetExitCodeProcess(child.hProcess, &status);
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+    return waited ? (int)status : -1;
+#else
+    fflush(stdout);
+    fflush(stderr);
+    pid_t pid = fork();
+    if (pid == 0) {
+        int fd = open(errpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) _exit(126);
+        dup2(fd, 1);
+        dup2(fd, 2);
+        close(fd);
+        execl("/proc/self/exe", "nkstate_selftest", mode, (char *)NULL);
+        _exit(127);
+    }
+    if (pid < 0) return -1;
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) return -1;
+    return WEXITSTATUS(status);
+#endif
+}
+
+static char *slurp(const char *path, size_t *len_out) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return NULL;
+    size_t cap = 1u << 16, len = 0;
+    char *buf = (char *)malloc(cap + 1u);
+    size_t got;
+    while (buf && (got = fread(buf + len, 1, cap - len, fp)) > 0) {
+        len += got;
+        if (len == cap) {
+            char *n = (char *)realloc(buf, cap * 2u + 1u);
+            if (!n) { free(buf); buf = NULL; break; }
+            buf = n;
+            cap *= 2u;
+        }
+    }
+    fclose(fp);
+    if (buf) buf[len] = '\0';
+    if (len_out) *len_out = len;
+    return buf;
+}
+
+static int spit(const char *path, const char *text, size_t len) {
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return 0;
+    const int ok = fwrite(text, 1, len, fp) == len;
+    return fclose(fp) == 0 && ok;
+}
+
+#define RR_REC   SR_SELFTEST_BUILD_ROOT "/nkstate_rr_record.txt"
+#define RR_CUT   SR_SELFTEST_BUILD_ROOT "/nkstate_rr_cut.txt"
+#define RR_EDIT  SR_SELFTEST_BUILD_ROOT "/nkstate_rr_edited.txt"
+#define RR_OUT   SR_SELFTEST_BUILD_ROOT "/nkstate_rr_child.log"
+
+static char g_child_args[128]; /* the next child's options, comma-separated */
+
+static void rr_opt(const char *opt) {
+    if (g_child_args[0]) strcat(g_child_args, ",");
+    strcat(g_child_args, opt);
+}
+
+static void rr_env(const char *record, const char *replay) {
+    set_env("SR_RECORD", record);
+    set_env("SR_REPLAY", replay);
+    set_env("SR_REPLAY_CHECKPOINTS", "");
+    set_env("SR_REPLAY_CHECKPOINT_EVERY", "4");
+    set_env("SR_DISC_ID", "");
+    g_child_args[0] = '\0';
+}
+
+/* Run the child; returns its log (caller frees) and stores its status. */
+static char *rr_run(int *status) {
+    char mode[160] = "--rr-child";
+    if (g_child_args[0]) {
+        strcat(mode, ":");
+        strcat(mode, g_child_args);
+    }
+    *status = run_child(mode, RR_OUT);
+    char *log = slurp(RR_OUT, NULL);
+    if (!log) return calloc(1, 1);
+    /* The child's stderr is a text stream: on Windows its lines end in CR LF. */
+    char *w = log;
+    for (const char *r = log; *r; r++)
+        if (*r != '\r') *w++ = *r;
+    *w = '\0';
+    return log;
+}
+
+static const char *final_line(const char *log, char *out, size_t cap) {
+    const char *p = strstr(log, "CHILD_FINAL ");
+    out[0] = '\0';
+    if (!p) return out;
+    size_t n = 0;
+    while (p[n] && p[n] != '\n' && p[n] != '\r' && n + 1u < cap) n++;
+    memcpy(out, p, n);
+    out[n] = '\0';
+    return out;
+}
+
+/* The state part of CHILD_FINAL, without the live-call counts. */
+static void final_state(const char *log, char *out, size_t cap) {
+    final_line(log, out, cap);
+    char *live = strstr(out, " live_polls=");
+    if (live) *live = '\0';
+}
+
+static void test_record_replay(void) {
+    int st;
+    char *log, *rec;
+    char want[160], got[160], line[200];
+    size_t rec_len = 0;
+
+    /* Record. */
+    rr_env(RR_REC, "");
+    log = rr_run(&st);
+    CHECK(st == 0, "record child exit %d: %.300s", st, log);
+    final_state(log, want, sizeof want);
+    CHECK(want[0] != '\0', "record child printed no final state: %.300s", log);
+    free(log);
+    rec = slurp(RR_REC, &rec_len);
+    CHECK(rec != NULL, "SR_RECORD wrote no file");
+    if (!rec) return;
+    CHECK(strncmp(rec, "NKREC v=1 every=4 clock=deterministic exe=", 42) == 0, "record header: %.120s", rec);
+    CHECK(strstr(rec, " disc=- abi=") != NULL, "record header disc field: %.200s", rec);
+    CHECK(strstr(rec, "\nNKANSW v=1 call=osk request=0 pending=3 result=ok units=00000048000000450000004c0000004c0000004f\n") != NULL,
+          "request 0 (HELLO after 3 polls) not recorded");
+    CHECK(strstr(rec, "\nNKANSW v=1 call=osk request=1 pending=1 result=cancel units=-\n") != NULL,
+          "request 1 (cancel after 1 poll) not recorded");
+    CHECK(strstr(rec, "\nNKANSW v=1 call=osk request=2 pending=3 result=open units=-\n") != NULL,
+          "request 2 was not written as open at the frame-16 checkpoint");
+    CHECK(strstr(rec, "\nNKANSW v=1 call=osk request=2 pending=3 result=abandoned units=-\n") != NULL,
+          "request 2's abandon not recorded");
+    CHECK(rec_len > 20u && strcmp(rec + rec_len - 20u, "\nNKREC_END frame=23\n") == 0, "record end line: %s",
+          rec_len > 40u ? rec + rec_len - 40u : rec);
+    {
+        unsigned ckpts = 0;
+        for (const char *p = rec; (p = strstr(p, "\nNKCKPT v=1 frame=")) != NULL; p++) ckpts++;
+        CHECK(ckpts == 6u, "the recording holds %u checkpoints, want 6 (frames 0,4,..,20)", ckpts);
+    }
+
+    /* Replay in a fresh process, with a person who would type something else. */
+    rr_env("", RR_REC);
+    rr_opt("text=WORLD");
+    log = rr_run(&st);
+    final_state(log, got, sizeof got);
+    CHECK(st == 0, "replay child exit %d: %.300s", st, log);
+    CHECK(strstr(log, "REPLAY_COMPLETE frame=23 checkpoints=6 answers=3\n") != NULL, "no REPLAY_COMPLETE: %.300s", log);
+    CHECK(strstr(log, "REPLAY_NOT_RUN") == NULL && strstr(log, "REPLAY_MISMATCH") == NULL, "replay verdicts: %.300s", log);
+    CHECK(strcmp(got, want) == 0, "replay ended in a different state:\n  record %s\n  replay %s", want, got);
+    CHECK(strstr(final_line(log, line, sizeof line), " live_polls=0 live_abandons=0") != NULL,
+          "the replay asked the live keyboard: %s", line);
+    free(log);
+
+    /* Control: the same live run with the other person's text ends elsewhere, so the answer
+     * the replay served is what made it match. */
+    rr_env("", "");
+    rr_opt("text=WORLD");
+    log = rr_run(&st);
+    final_state(log, got, sizeof got);
+    CHECK(st == 0 && got[0] && strcmp(got, want) != 0, "control run (no replay, WORLD) matched the recording: %s", got);
+    free(log);
+
+    /* One guest word changed after frame 6: the frame-8 checkpoint names its chunk. */
+    rr_env("", RR_REC);
+    rr_opt("perturb=6");
+    log = rr_run(&st);
+    CHECK(st == 1 && strstr(log, "REPLAY_MISMATCH frame=8 index=2 kind=digest digest=ram.08900000\n") != NULL,
+          "perturbed replay: exit %d: %.300s", st, log);
+    CHECK(strstr(log, "REPLAY_NOT_RUN") == NULL && strstr(log, "CHILD_FINAL") == NULL,
+          "a mismatch did not stop the run with one verdict: %.300s", log);
+    free(log);
+
+    /* The guest polls a request the recording abandoned. */
+    rr_env("", RR_REC);
+    rr_opt("extra");
+    log = rr_run(&st);
+    CHECK(st == 1 && strstr(log, "REPLAY_MISSING_ANSWER call=osk request=2 frame=16 detail=polled-after-abandon\n") != NULL,
+          "extra poll: exit %d: %.300s", st, log);
+    free(log);
+
+    /* A replay that stops early is not a pass. */
+    rr_env("", RR_REC);
+    rr_opt("frames=10");
+    log = rr_run(&st);
+    CHECK(strstr(log, "REPLAY_NOT_RUN reached=9 end=23 checkpoints=3/6\n") != NULL && strstr(log, "REPLAY_COMPLETE") == NULL,
+          "short replay: exit %d: %.300s", st, log);
+    free(log);
+
+    /* Refusals, each before the guest runs. */
+    {
+        static const struct {
+            const char *what, *find, *replace, *want;
+        } edits[] = {
+            {"another executable", " exe=", " exe=0", "REPLAY_REFUSED reason=executable-identity line=1\n"},
+            {"another disc", " disc=- ", " disc=ULUS10000 ", "REPLAY_REFUSED reason=disc-id line=1\n"},
+            {"another CpuState ABI", " abi=", " abi=9", "REPLAY_REFUSED reason=abi-version line=1\n"},
+            {"a host-clock recording", "clock=deterministic", "clock=host", "REPLAY_REFUSED reason=clock-not-deterministic line=1\n"},
+            {"an unknown line", "\nNKREC_END", "\nNKWHAT x=1\nNKREC_END", "REPLAY_REFUSED reason=unknown-line line="},
+            {"a request out of order", "request=1 pending=1", "request=4 pending=1", "REPLAY_REFUSED reason=answer-order line="},
+            {"a bad answer unit", "units=00000048", "units=0000004G", "REPLAY_REFUSED reason=malformed-answer line="},
+            {"a not-a-recording file", "NKREC v=1 ", "NKREX v=1 ", "REPLAY_REFUSED reason=bad-magic line=1\n"},
+        };
+        for (size_t i = 0; i < sizeof edits / sizeof edits[0]; i++) {
+            const char *at = strstr(rec, edits[i].find);
+            CHECK(at != NULL, "edit '%s' found no '%s'", edits[i].what, edits[i].find);
+            if (!at) continue;
+            const size_t head = (size_t)(at - rec), fl = strlen(edits[i].find), rl = strlen(edits[i].replace);
+            char *ed = (char *)malloc(rec_len + rl + 1u);
+            memcpy(ed, rec, head);
+            memcpy(ed + head, edits[i].replace, rl);
+            memcpy(ed + head + rl, at + fl, rec_len - head - fl + 1u);
+            /* " exe=0" adds a 65th hex digit; keep the field 64 long so the identity check, not
+             * the parser, refuses it. */
+            if (strcmp(edits[i].replace, " exe=0") == 0) memmove(ed + head + 6u + 63u, ed + head + 6u + 64u, strlen(ed + head + 6u + 64u) + 1u);
+            CHECK(spit(RR_EDIT, ed, strlen(ed)), "write %s", RR_EDIT);
+            free(ed);
+            rr_env("", RR_EDIT);
+            log = rr_run(&st);
+            CHECK(st == 1 && strstr(log, edits[i].want) != NULL && strstr(log, "CHILD_FINAL") == NULL,
+                  "%s: exit %d: %.300s", edits[i].what, st, log);
+            free(log);
+        }
+        /* The last line without its newline: truncated, never read as complete. */
+        CHECK(spit(RR_EDIT, rec, rec_len - 1u), "write truncated %s", RR_EDIT);
+        rr_env("", RR_EDIT);
+        log = rr_run(&st);
+        CHECK(st == 1 && strstr(log, "REPLAY_REFUSED reason=truncated") != NULL, "truncated: exit %d: %.300s", st, log);
+        free(log);
+    }
+
+    /* The deterministic clock is required on both sides. */
+    rr_env("", RR_REC);
+    rr_opt("hostclock");
+    log = rr_run(&st);
+    CHECK(st == 1 && strstr(log, "REPLAY_REFUSED reason=clock-not-deterministic line=0") != NULL,
+          "replay on the host clock: exit %d: %.300s", st, log);
+    free(log);
+    rr_env(RR_EDIT, "");
+    rr_opt("hostclock");
+    log = rr_run(&st);
+    CHECK(st == 1 && strstr(log, "SR_RECORD needs SR_DETERMINISTIC_CLOCK=1") != NULL, "record on the host clock: exit %d: %.300s",
+          st, log);
+    free(log);
+    rr_env(RR_EDIT, RR_REC);
+    log = rr_run(&st);
+    CHECK(st == 1 && strstr(log, "SR_RECORD and SR_REPLAY are both set") != NULL, "record+replay: exit %d: %.300s", st, log);
+    free(log);
+    free(rec);
+
+    /* A recording cut by _Exit right after the frame-16 checkpoint has no end line: it replays
+     * to that checkpoint, request 2's polls before it are answered from the open line, and
+     * the abandon at frame 17 is the live run's. */
+    rr_env(RR_CUT, "");
+    rr_opt("hardexit=16");
+    log = rr_run(&st);
+    CHECK(st == 0, "cut record exit %d: %.300s", st, log);
+    free(log);
+    rec = slurp(RR_CUT, &rec_len);
+    CHECK(rec && !strstr(rec, "NKREC_END") && !strstr(rec, "result=abandoned"),
+          "the cut recording has an end line or the later abandon");
+    free(rec);
+    rr_env("", RR_CUT);
+    log = rr_run(&st);
+    CHECK(st == 0 && strstr(log, "has no NKREC_END line") != NULL &&
+              strstr(log, "REPLAY_COMPLETE frame=16 checkpoints=5 answers=3\n") != NULL,
+          "replay of the cut recording: exit %d: %.300s", st, log);
+    CHECK(strstr(final_line(log, line, sizeof line), " live_polls=0 live_abandons=1") != NULL,
+          "after the cut recording the abandon should be live: %s", line);
+    free(log);
+    rr_env("", "");
+}
+
+int main(int argc, char **argv) {
     sr_mem_init();
     sr_exec_span_reset();
     if (!sr_exec_span_register(CODE_BASE, CODE_END)) {
@@ -779,6 +1233,17 @@ int main(void) {
         return 1;
     }
     install_program();
+    if (argc == 2 && strncmp(argv[1], "--rr-child", 10) == 0) {
+        if (!parse_child_options(argv[1])) {
+            fprintf(stderr, "nkstate_selftest: bad child option '%s'\n", argv[1]);
+            return 2;
+        }
+        return rr_child();
+    }
+    if (argc != 1) {
+        fprintf(stderr, "usage: nkstate_selftest\n");
+        return 2;
+    }
     test_round_trip_continues_identically();
     test_refusals();
     test_capture_refusals();
@@ -786,6 +1251,7 @@ int main(void) {
     test_golden();
     test_checkpoints();
     test_checkpoint_stream();
+    test_record_replay();
     if (g_failed) {
         fprintf(stderr, "NKSTATE SELFTEST FAILED\n");
         return 1;

@@ -338,12 +338,17 @@ def diff_checkpoints(a: list[Checkpoint], b: list[Checkpoint]) -> CkptMismatch |
     return None
 
 
+_RUN_HEADER = re.compile(r"(?:NKCKPT_RUN|NKREC) v=1 every=(\d+) clock=(\S+)")
+
+
 def run_settings(text: str) -> str | None:
-    """The stream's ``NKCKPT_RUN`` line (every=, clock=), or None for a bare list of lines."""
+    """The run's cadence and clock, ``every=<n> clock=<c>``, from an ``SR_REPLAY_CHECKPOINTS``
+    stream's ``NKCKPT_RUN`` line or an ``SR_RECORD`` recording's ``NKREC`` line, or None for a
+    bare list of checkpoint lines. A stream and a recording with the same settings compare."""
     for line in text.splitlines():
-        start = line.find("NKCKPT_RUN ")
-        if start >= 0:
-            return line[start:].strip()
+        m = _RUN_HEADER.search(line)
+        if m:
+            return f"every={m.group(1)} clock={m.group(2)}"
     return None
 
 

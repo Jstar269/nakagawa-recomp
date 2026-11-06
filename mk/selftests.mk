@@ -654,7 +654,10 @@ domain-mode-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 # loader caught by the save-back check, and one golden file tools/test_nkstate.py also
 # builds; and the replay checkpoints (src/rt/replay_checkpoint.c): two identical runs
 # match, and an injected RAM or register difference is named by chunk or thread at the
-# frame it happened. Exit code 0 = all hold.
+# frame it happened. SR_RECORD/SR_REPLAY run in fresh child processes: a replay ends in the
+# recorded state without asking the (fake) keyboard user, and a changed word, an extra poll,
+# an early stop, an edited or truncated file and the host clock each end in their own named
+# verdict. Exit code 0 = all hold.
 nkstate-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/nkstate_selftest.exe \
 		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \

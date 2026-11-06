@@ -258,6 +258,17 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual(rc, 3)
         self.assertTrue(out.startswith("NOT_RUN different-settings"), out)
 
+    def test_a_recording_compares_with_a_stream(self) -> None:
+        run = "".join(_line(f, [("sched", b"%d" % f)]) for f in range(3))
+        stream = "NKCKPT_RUN v=1 every=60 clock=deterministic\n"
+        record = ("NKREC v=1 every=60 clock=deterministic exe=" + "ab" * 32 + " disc=- abi=3 cpustate=1000\n"
+                  "NKANSW v=1 call=osk request=0 pending=2 result=cancel units=-\n")
+        self.assertEqual(self._diff(stream + run, record + run + "NKREC_END frame=2\n"),
+                         (0, "MATCH checkpoints=3"))
+        rc, out = self._diff(stream.replace("every=60", "every=4") + run, record + run)
+        self.assertEqual(rc, 3)
+        self.assertTrue(out.startswith("NOT_RUN different-settings"), out)
+
     def test_a_short_run_is_not_run(self) -> None:
         run = [_line(f, [("sched", b"%d" % f)]) for f in range(4)]
         self.assertEqual(self._diff("".join(run), "".join(run[:2])), (3, "NOT_RUN ended-early a=4 b=2"))
