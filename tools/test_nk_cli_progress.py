@@ -279,13 +279,45 @@ class NkCliProgressTests(unittest.TestCase):
         self.assertEqual(rows[0]["notice"], nk_cli.compile_load_notice(6, 24))
         self.assertNotIn("notice", rows[1])
 
+    def test_build_progress_words_are_plain(self) -> None:
+        """#1974: a START or PASS message is the player's build screen headline, so it is in
+        plain words with no build-system terms and no "..." (the screen's bar shows that work
+        goes on, and the stream is ASCII so no console code page can garble it)."""
+        import ast
+
+        tree = ast.parse(CLI_PATH.read_text(encoding="utf-8"))
+        jargon = ("AOT", "codegen", "guest", "manifest", "promoted", "Staging", "staging",
+                  "content-addressed", "Executable", "executable", "Compilation", "validated")
+        messages: list[str] = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "report" and len(node.args) >= 3):
+                continue
+            status = node.args[1]
+            if not (isinstance(status, ast.Constant) and status.value in ("START", "PASS")):
+                continue
+            message = node.args[2]
+            if isinstance(message, ast.Constant) and isinstance(message.value, str):
+                messages.append(message.value)
+            elif isinstance(message, ast.JoinedStr):
+                messages.append("".join(part.value for part in message.values
+                                        if isinstance(part, ast.Constant)
+                                        and isinstance(part.value, str)))
+        self.assertGreaterEqual(len(messages), 10)
+        for text in messages:
+            with self.subTest(message=text):
+                self.assertNotIn("...", text)
+                self.assertTrue(text.isascii())
+                for term in jargon:
+                    self.assertNotIn(term, text)
+
     def test_progress_events_without_a_count_carry_no_count_fields(self) -> None:
         import nk_cli
 
         with tempfile.TemporaryDirectory(prefix="nk_cli_progress_fields_") as temp:
             events_path = Path(temp) / "events.jsonl"
             reporter = nk_cli._BuildProgressReporter(events_path)
-            reporter.report("compile", "START", "Compiling package with AOT codegen...")
+            reporter.report("compile", "START", "Compiling the translated code")
             reporter.close()
             row = json.loads(events_path.read_text(encoding="utf-8"))
         self.assertEqual(set(row), {"stage", "status", "message"})
