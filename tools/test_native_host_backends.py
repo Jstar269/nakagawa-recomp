@@ -66,6 +66,7 @@ CORE_SOURCES = [
     "src/core/nk_psp_amctrl.c",
     "src/core/nk_psp_lzrc.c",
     "src/core/nk_psp_npumdimg.c",
+    "src/core/nk_pbp_homebrew.c",
     "src/core/nk_disc_expand.c",
     "src/core/nk_disc_verify.c",
     "src/core/nk_zip.c",

@@ -6217,6 +6217,170 @@ static void test_versioned_user_data(void) {
     free(app);
 }
 
+/* A PBP package of homebrew: PARAM.SFO (EG, no DISC_ID), an ICON0 section, a DATA.PSP program
+   and an empty DATA.PSAR, the form a homebrew EBOOT.PBP has. */
+static uint8_t *homebrew_pbp(const char *title, const uint8_t *program, size_t program_len,
+                             const uint8_t *icon, size_t icon_len, size_t *out_len) {
+    uint8_t sfo[512];
+    size_t sfo_len = psp_seal_sfo(sfo, sizeof(sfo), "EG", "", title);
+    size_t icon_at = 0x28u + sfo_len;
+    size_t psp_at = icon_at + icon_len;
+    uint8_t *pbp = (uint8_t *)calloc(1, psp_at + program_len);
+    assert(pbp != NULL);
+    memcpy(pbp, "\0PBP", 4);
+    psp_seal_put32le(pbp + 4, 0x00010000u);
+    psp_seal_put32le(pbp + 8, 0x28u);
+    psp_seal_put32le(pbp + 12, (uint32_t)icon_at);
+    for (unsigned i = 2; i < 6u; i++) psp_seal_put32le(pbp + 8 + i * 4u, (uint32_t)psp_at);
+    psp_seal_put32le(pbp + 8 + 6u * 4u, (uint32_t)psp_at);
+    psp_seal_put32le(pbp + 8 + 7u * 4u, (uint32_t)(psp_at + program_len));
+    memcpy(pbp + 0x28, sfo, sfo_len);
+    if (icon_len > 0) memcpy(pbp + icon_at, icon, icon_len);
+    memcpy(pbp + psp_at, program, program_len);
+    *out_len = psp_at + program_len;
+    return pbp;
+}
+
+/* #2143: an unencrypted homebrew EBOOT.PBP imports as a small private disc image holding its
+   program (and icon) under the library key of that image: the same program and title is the
+   same game, a different title is another. Encrypted and kernel-mode packages keep a named
+   refusal, and nothing is written for them. */
+static void test_homebrew_package_becomes_a_private_disc(void) {
+    const char sep = nk_platform_path_separator();
+    char cache_root[NK_MAX_PATH];
+    char base[NATIVE_TEST_PATH_MAX + 64];
+    char data_root[NATIVE_TEST_PATH_MAX + 96];
+    char pbp_path[NATIVE_TEST_PATH_MAX + 96];
+    char other_path[NATIVE_TEST_PATH_MAX + 96];
+    char partial[NATIVE_TEST_PATH_MAX + 192];
+    char code[64];
+    char message[512];
+    uint8_t program[128];
+    uint8_t icon[24];
+    uint8_t *pbp;
+    uint8_t *image;
+    size_t pbp_len = 0, image_len = 0;
+    PlayerPsnPackage package;
+    PlayerPsnPackage again;
+    PlayerPsnPackage renamed;
+    PsnTestProgress progress;
+    PlayerPsnConvertCallbacks cancel_hooks = { NULL, psn_test_cancel_now, NULL };
+    PlayerPsnConvertCallbacks hooks = { psn_test_progress, psn_test_never, NULL };
+    IsoInspectResult inspected;
+    PlayerApp *app;
+
+    printf("[PLAYER_STATE_TEST] Subtest: a homebrew EBOOT.PBP imports as a private disc image\n");
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(base, sizeof(base), "%s%chomebrew-package-state", cache_root, sep);
+    assert(test_remove_tree(base));
+    snprintf(data_root, sizeof(data_root), "%s%cdata", base, sep);
+    assert(nk_platform_mkdir_p(data_root));
+    snprintf(pbp_path, sizeof(pbp_path), "%s%cEBOOT.PBP", base, sep);
+    snprintf(other_path, sizeof(other_path), "%s%cOTHER.PBP", base, sep);
+    assert(nk_platform_set_app_data_dir_override(data_root));
+
+    memset(program, 0, sizeof(program));
+    build_synthetic_mips_elf(program);
+    memset(icon, 0xA5, sizeof(icon));
+    memcpy(icon, "\x89PNG\r\n\x1a\n", 8);
+
+    /* The package is inspected, converted with progress, and read back as a disc. */
+    pbp = homebrew_pbp("My Homebrew", program, 88u, icon, sizeof(icon), &pbp_len);
+    write_binary_file(pbp_path, pbp, pbp_len);
+    free(pbp);
+    assert(player_path_is_pbp_package(pbp_path));
+    assert(player_psn_package_inspect(pbp_path, &package, code, sizeof(code), message,
+                                      sizeof(message)));
+    assert(package.homebrew && !package.iso_ready);
+    assert(nk_disc_id_is_non_retail_key(package.disc_id));
+    assert(strcmp(package.title, "My Homebrew") == 0);
+    assert(strstr(package.iso_path, package.disc_id) != NULL);
+    snprintf(partial, sizeof(partial), "%s.converting", package.iso_path);
+
+    /* A cancel keeps nothing. */
+    assert(!player_psn_package_convert(&package, &cancel_hooks, code, sizeof(code), message,
+                                       sizeof(message)));
+    assert(strcmp(code, "CANCELLED") == 0);
+    assert(nk_platform_path_missing(package.iso_path) && nk_platform_path_missing(partial));
+
+    memset(&progress, 0, sizeof(progress));
+    hooks.userdata = &progress;
+    assert(player_psn_package_convert(&package, &hooks, code, sizeof(code), message,
+                                      sizeof(message)));
+    assert(progress.done == progress.total && progress.total == 88u + sizeof(icon));
+    assert(nk_platform_path_missing(partial));
+
+    /* The image is a disc under the key inspection named, with the program and icon in it. */
+    assert(iso_inspect_file(package.iso_path, &inspected) && inspected.success);
+    assert(strcmp(inspected.disc_id, package.disc_id) == 0);
+    assert(strcmp(inspected.title_name, "My Homebrew") == 0);
+    image = psn_test_read_file(package.iso_path, &image_len);
+    assert(image_len == (size_t)(22u + 1u + 1u) * 2048u);
+    assert(memcmp(image + 22u * 2048u, program, 88u) == 0);
+    assert(memcmp(image + 23u * 2048u, icon, sizeof(icon)) == 0);
+    free(image);
+
+    /* Picking it again reuses the checked image; the same program under another title is
+       another game, and the same package picked from another place is the same one. */
+    assert(player_psn_package_inspect(pbp_path, &again, code, sizeof(code), message,
+                                      sizeof(message)));
+    assert(again.homebrew && again.iso_ready);
+    assert(strcmp(again.disc_id, package.disc_id) == 0);
+    pbp = homebrew_pbp("Another Title", program, 88u, icon, sizeof(icon), &pbp_len);
+    write_binary_file(other_path, pbp, pbp_len);
+    free(pbp);
+    assert(player_psn_package_inspect(other_path, &renamed, code, sizeof(code), message,
+                                      sizeof(message)));
+    assert(strcmp(renamed.disc_id, package.disc_id) != 0 && !renamed.iso_ready);
+
+    /* The wizard says what is happening. */
+    app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    app->active_view = VIEW_LIBRARY;
+    player_app_psn_conversion_begin(app, &package);
+    assert(strstr(app->wizard.status_message, "My Homebrew") != NULL);
+    assert(strstr(app->wizard.status_message, "PSN") == NULL);
+    free(app);
+
+    /* An encrypted program, a file that is not a program and kernel-mode homebrew are
+       refused by name, and nothing is written. */
+    {
+        uint8_t encrypted[256];
+        uint8_t kernel[128];
+        memset(encrypted, 0, sizeof(encrypted));
+        memcpy(encrypted, "~PSP", 4);
+        pbp = homebrew_pbp("Encrypted", encrypted, sizeof(encrypted), NULL, 0, &pbp_len);
+        write_binary_file(other_path, pbp, pbp_len);
+        free(pbp);
+        psn_test_refused(other_path, "PBP_ENCRYPTED_EXECUTABLE_UNSUPPORTED",
+                         "holds an encrypted program");
+
+        memset(encrypted, 0x5A, sizeof(encrypted));
+        pbp = homebrew_pbp("Not a program", encrypted, sizeof(encrypted), NULL, 0, &pbp_len);
+        write_binary_file(other_path, pbp, pbp_len);
+        free(pbp);
+        psn_test_refused(other_path, "PBP_PACKAGE_UNSUPPORTED", "Only unencrypted homebrew");
+
+        memset(kernel, 0, sizeof(kernel));
+        build_synthetic_mips_elf(kernel);
+        kernel[64] = 8; kernel[65] = 0; kernel[66] = 0; kernel[67] = 0; /* p_paddr: module info */
+        kernel[92] = 0x00; kernel[93] = 0x10;                            /* attribute 0x1000 */
+        pbp = homebrew_pbp("Kernel Plugin", kernel, sizeof(kernel), NULL, 0, &pbp_len);
+        write_binary_file(other_path, pbp, pbp_len);
+        free(pbp);
+        psn_test_refused(other_path, "HOMEBREW_KERNEL_MODE_UNSUPPORTED", "kernel-mode homebrew");
+        kernel[93] = 0x00; /* the same module in user mode is taken */
+        pbp = homebrew_pbp("User Module", kernel, sizeof(kernel), NULL, 0, &pbp_len);
+        write_binary_file(other_path, pbp, pbp_len);
+        free(pbp);
+        assert(player_psn_package_inspect(other_path, &again, code, sizeof(code), message,
+                                          sizeof(message)));
+    }
+
+    assert(nk_platform_set_app_data_dir_override(NULL));
+    assert(test_remove_tree(base));
+}
+
 /* A synthetic PSN package imports as its ISO: converted once into
    <data>/discs/<ID>/<ID>.iso byte for byte, with progress, a cancel that keeps
    nothing, reuse of a checked conversion, and the wizard panel returning to
@@ -6345,7 +6509,7 @@ static void test_psn_package_imports_as_its_iso(void) {
                                                "PSONE_CLASSIC_UNSUPPORTED",
                                                "PBP_PACKAGE_UNSUPPORTED" };
         static const char *const texts[3] = { "is a PSOne Classic", "is a PSOne Classic",
-                                              "Only PSN releases of UMD games" };
+                                              "Only unencrypted homebrew and PSN releases of UMD games" };
         uint8_t psar[0x400];
         for (unsigned i = 0; i < 3u; i++) {
             memset(psar, 0, sizeof(psar));
@@ -7517,6 +7681,7 @@ int main(int argc, char **argv) {
 
     test_versioned_user_data();
     test_psn_package_imports_as_its_iso();
+    test_homebrew_package_becomes_a_private_disc();
     test_stage_discard_removes_a_deep_tree();
     test_tree_helpers_walk_a_deep_tree();
 #if defined(_WIN32) || defined(_WIN64)
