@@ -2046,6 +2046,72 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-GE-OVERLAP-001",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "a-*",
+          "b-*",
+          "ab-1p-*",
+          "ab-np-*",
+          "ba-1p-*",
+          "aa-1p-*",
+          "abc-1p-*",
+          "abc-np-*",
+          "tab-1p-*",
+          "tab-np-*",
+          "ge-overlap-done"
+        ],
+        "measurement_note": "Measured by the 2026-11-06 PSP-3000 launch (system software 6.61, ARK-5.1.0 (owner); pspver 6.6.1, 0x06060110, declared to the runner; boot 130, game context) of commit fd9a23b5, case ge-overlap after the transport-write preflight: 150 records and the done record (out0 150), all PASS, acceptance-eligible with 0 blockers; every one of the 30 lists reached GE idle. In 8888 and in 5650 with and without dithering, layers drawn by one PRIM command store the same pixels as the same layers drawn one PRIM each, the later layer blending over what the earlier one wrote.",
+        "group": "ge",
+        "source": "fixtures/psp_oracle/probe_ge_sample.c",
+        "prx": "ge_overlap.prx",
+        "apis": [
+          "sceGeListEnQueue",
+          "sceGeListSync",
+          "sceGeDrawSync",
+          "sceGeBreak",
+          "sceGeEdramGetAddr",
+          "sceKernelDcacheWritebackAll",
+          "sceKernelDelayThread",
+          "sceKernelGetSystemTimeLow",
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "PSP GE blending of overlapping primitives within one PRIM command"
+        ],
+        "diagnostic_case_ids": [
+          "ge-overlap"
+        ],
+        "case_ids": [
+          "a-*",
+          "b-*",
+          "ab-1p-*",
+          "ab-np-*",
+          "ba-1p-*",
+          "aa-1p-*",
+          "abc-1p-*",
+          "abc-np-*",
+          "tab-1p-*",
+          "tab-np-*",
+          "ge-overlap-done"
+        ],
+        "invariant": "#2109: per shape (layer A alone, B alone, A then B, B then A, A twice and A then B then C in one PRIM command; A then B and A then B then C with one PRIM per layer; A then B as two-triangle quads in one PRIM and in two) and per framebuffer format (8888; 5650 with the PSP SDK default dither matrix; 5650 without dithering), the raw pixels of a 16x4 window (x 16..31, y 8..11 of a 64x32 buffer at VRAM 0x100000) holding a generated destination pattern, after one display list of through-mode, untextured, flat-coloured layers A (x 16..25, ABGR 0xa0f808f8), B (x 22..31, 0x601010f0) and C (x 19..28, 0x8080f010) with blending (source alpha, one minus source alpha, add); texturing, every test, fog, depth writes and logic ops are off",
+        "issues": [
+          2109
+        ],
+        "risk": "low; raw display lists into an 8 KiB colour block at VRAM offset 0x100000 that the CPU clears first; depth test and writes are off; every GE wait is bounded and a list that does not finish resets the queues; no display, callback or device state is changed",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-TRACE-001",
         "status": "implemented",
         "hardware_evidence": "MEASURED",
