@@ -1188,7 +1188,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         del pkg["update_boundary"]
         with self.assertRaises(EnhancementPackageError) as ctx:
             validate_package(pkg)
-        self.assertIn("gate_30hz_hold sites must declare update_boundary", str(ctx.exception))
+        self.assertIn("gate_30hz_hold or gate_30hz_alt sites must declare update_boundary", str(ctx.exception))
 
     def _even_and_hold_build(self, tmp: Path) -> str:
         # The resolver's static checks: the held call goes to an ease, a leaf that reads f12
@@ -3317,7 +3317,7 @@ class TestAltGateStaticChecks(unittest.TestCase):
                     "    for (on = 0; on < 2; on++) {\n"
                     "        nk_enhancement_updates = on ? 100u : 0u;\n"
                     "        for (int u = 0; u < (int)(sizeof visits / sizeof visits[0]); u++) {\n"
-                    "            if (on) nk_enhancement_updates++;\n"
+                    "            nk_enhancement_updates++;  /* also while off: the toggle alone keeps it stock */\n"
                     "            for (int v = 0; v < visits[u]; v++) {\n"
                     "                printf(\"%s %d %d\\n\", on ? \"on\" : \"off\", u, v);\n"
                     "                s->r[4] = 0x40u + (uint32_t)u; s->r[31] = 0u; site(s);\n"
