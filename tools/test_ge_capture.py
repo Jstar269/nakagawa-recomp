@@ -381,7 +381,10 @@ class TestGeCaptureWiring(unittest.TestCase):
 
 
 class TestGeFirstBadDrawWiring(unittest.TestCase):
-    """#2141: the first-bad-draw comparison runs in hosted CI with executed mutants."""
+    """#2141: the first-bad-draw comparison runs in hosted CI with executed mutants.
+
+    These are checks of the source text (the recipe and the hooks are wired). The behaviour is
+    tested by `make ge-first-bad-draw-selftest`, which runs the tool and its mutants."""
 
     def setUp(self):
         self.makefile = read_makefile(ROOT)
@@ -391,7 +394,9 @@ class TestGeFirstBadDrawWiring(unittest.TestCase):
     def test_selftest_runs_after_the_coherence_selftest(self):
         coherence = self.makefile.split("gpu-coherence-selftest: $(GPU_COHERENCE_BIN)", 1)[1]
         coherence = coherence.split("# gpu-coherence-selftest-snapbar-mutants", 1)[0]
-        self.assertIn("$(MAKE) --no-print-directory ge-first-bad-draw-selftest", coherence)
+        # Inside gpu-coherence-selftest a skip is a SKIP line, as for its other skipped cases.
+        self.assertIn("$(MAKE) --no-print-directory ge-first-bad-draw-selftest GE_FBD_SKIP_STATUS=0",
+                      coherence)
 
     def test_each_mutant_is_built_and_must_name_its_draw(self):
         self.assertIn("for m in 1 2; do", self.rule)
@@ -399,8 +404,10 @@ class TestGeFirstBadDrawWiring(unittest.TestCase):
         self.assertIn("for mode in linear bisect; do", self.rule)
         self.assertIn('"result=FIRST_BAD_DRAW index=3 "', self.rule)
         self.assertIn('"result=NO_DIFFERENCE draws=6 "', self.rule)
-        # A skip is reported as a skip with exit 77, never as a pass.
-        self.assertIn("exit 77", self.rule)
+        # A skip is reported as a skip (exit 77 run alone), never as a pass.
+        self.assertIn("GE_FBD_SKIP_STATUS ?= 77", self.makefile)
+        self.assertNotIn("exit 77", self.rule)
+        self.assertEqual(self.rule.count("exit $(GE_FBD_SKIP_STATUS); fi"), 5)
         self.assertIn("--fbd-self-check", self.rule)
 
     def test_known_overlap_difference_is_pinned(self):

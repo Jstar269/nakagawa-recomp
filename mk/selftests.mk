@@ -788,7 +788,7 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
 	@rc=0; $(GPU_COHERENCE_BIN) --twin 1 --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest twin gpu-timestamps (exit 77; the reason is printed above)"; 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest twin gpu-timestamps (exit $$rc)"; exit $$rc; fi
 	@$(MAKE) --no-print-directory gpu-coherence-selftest-snapbar-mutants
-	@$(MAKE) --no-print-directory ge-first-bad-draw-selftest
+	@$(MAKE) --no-print-directory ge-first-bad-draw-selftest GE_FBD_SKIP_STATUS=0
 
 # gpu-coherence-selftest-snapbar-mutants — the submit-batch case must kill each
 # SR_GPU_SNAPBAR_MUTANT in ge_gpu.c: 1 records one barrier command per image (the stream before
@@ -975,8 +975,11 @@ ge-replay: shader-verify $(RT_GE_O)
 # Then fail-closed cells: a 512-wide capture is compared past x 480 (mutant 1's draw lies there);
 # a capture with no draw is NO_DRAWS (exit 6); 33 targets (one past the limit) and a stride past
 # 1024 are INCOMPLETE (exit 5), never NO_DIFFERENCE.
-# Exit 77 (no Vulkan device) is a SKIP, as for gpu-coherence-selftest.
+# Exit 77 (no Vulkan device) is a SKIP, as for gpu-coherence-selftest (GE_FBD_SKIP_STATUS).
 GE_FBD_DIR = $(BUILD_DIR)/ge_first_bad_draw
+# The exit status of a skip: 77 run alone; gpu-coherence-selftest passes 0, so a host with no
+# Vulkan device gets SKIP lines there, as for its other skipped cases, not a make error.
+GE_FBD_SKIP_STATUS ?= 77
 ge-first-bad-draw-selftest: ge-replay
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(GE_FBD_DIR)').mkdir(parents=True, exist_ok=True)"
 	@$(BUILD_DIR)/ge_replay.exe --fbd-self-check
@@ -985,7 +988,7 @@ ge-first-bad-draw-selftest: ge-replay
 		log=$(GE_FBD_DIR)/clean-$$mode.log; result=0; \
 		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/synthetic.ngef --first-bad-draw --mode $$mode \
 			--report $(GE_FBD_DIR)/clean-$$mode > $$log 2>&1 || result=$$?; \
-		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest (exit 77; no Vulkan device)"; exit 77; fi; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest (exit 77; no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
 		if test $$result -ne 0 || ! grep -Fq "result=NO_DIFFERENCE draws=6 " $$log; then \
 			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the unchanged backend did not report NO_DIFFERENCE ($$mode)" >&2; exit 1; fi; \
 		echo "ge-first-bad-draw-selftest: unchanged backend NO_DIFFERENCE ($$mode)"; \
@@ -999,7 +1002,7 @@ ge-first-bad-draw-selftest: ge-replay
 			log=$(GE_FBD_DIR)/mutant$$m-$$mode.log; result=0; \
 			$$bin $(GE_FBD_DIR)/synthetic.ngef --first-bad-draw --mode $$mode \
 				--report $(GE_FBD_DIR)/mutant$$m-$$mode > $$log 2>&1 || result=$$?; \
-			if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest mutant $$m (no Vulkan device)"; exit 77; fi; \
+			if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest mutant $$m (no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
 			if test $$result -ne 1 || ! grep -Fq "result=FIRST_BAD_DRAW index=3 " $$log || \
 			   ! grep -Fq "GE_FBD_DRAW index=3 command=PRIM" $$log || \
 			   ! grep -Fq "GE_FBD_CROP image=diff" $$log; then \
@@ -1016,7 +1019,7 @@ ge-first-bad-draw-selftest: ge-replay
 		log=$(GE_FBD_DIR)/overlap-$$mode.log; result=0; \
 		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/overlap.ngef --first-bad-draw --mode $$mode \
 			--report $(GE_FBD_DIR)/overlap-$$mode > $$log 2>&1 || result=$$?; \
-		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest overlap (no Vulkan device)"; exit 77; fi; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest overlap (no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
 		if test $$result -ne 1 || ! grep -Fq "result=FIRST_BAD_DRAW index=1 draws=2 " $$log || \
 		   ! grep -Fq "pixels=10000 max_diff=" $$log || ! grep -Fq "bbox=140,100,239,199" $$log; then \
 			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the #2109 overlap was not found as draw 1, exactly the overlap ($$mode)" >&2; exit 1; fi; \
@@ -1027,7 +1030,7 @@ ge-first-bad-draw-selftest: ge-replay
 	done
 	@log=$(GE_FBD_DIR)/wide.log; result=0; \
 	$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/wide.ngef --first-bad-draw --report $(GE_FBD_DIR)/wide > $$log 2>&1 || result=$$?; \
-	if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest wide (no Vulkan device)"; exit 77; fi; \
+	if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest wide (no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
 	if test $$result -ne 0 || ! grep -Fq "result=NO_DIFFERENCE draws=4 " $$log; then \
 		cat $$log; echo "FAIL ge-first-bad-draw-selftest: the unchanged backend did not report NO_DIFFERENCE on the 512-wide capture" >&2; exit 1; fi; \
 	log=$(GE_FBD_DIR)/wide-mutant1.log; result=0; \
@@ -1038,7 +1041,7 @@ ge-first-bad-draw-selftest: ge-replay
 	@for cell in "empty 6 result=NO_DRAWS" "many 5 reason=region-limit" "deep 5 reason=stride"; do \
 		set -- $$cell; log=$(GE_FBD_DIR)/$$1.log; result=0; \
 		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/$$1.ngef --first-bad-draw --report $(GE_FBD_DIR)/$$1 > $$log 2>&1 || result=$$?; \
-		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest $$1 (no Vulkan device)"; exit 77; fi; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest $$1 (no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
 		if test $$result -ne $$2 || ! grep -Fq "$$3" $$log || grep -Fq "result=NO_DIFFERENCE" $$log; then \
 			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the $$1 capture was not refused with exit $$2 ($$3)" >&2; exit 1; fi; \
 		echo "ge-first-bad-draw-selftest: the $$1 capture is refused with exit $$2 ($$3)"; \

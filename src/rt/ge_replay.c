@@ -102,7 +102,7 @@ static int write_ppm(const char *path, const GeState *state) {
 static void usage(const char *exe) {
     fprintf(stderr, "usage: %s <fixture.ngef> [--backend software|vulkan] [--repeat N] [--output frame.ppm]\n"
                     "       %s <fixture.ngef> --first-bad-draw [--mode auto|linear|bisect] [--report PREFIX]\n"
-                    "       %s --write-synthetic <fixture.ngef> [basic|overlap]\n"
+                    "       %s --write-synthetic <fixture.ngef> [basic|overlap|wide|empty|many|deep]\n"
                     "       %s --fbd-self-check\n", exe, exe, exe, exe);
 }
 
@@ -129,7 +129,10 @@ static void usage(const char *exe) {
  * result moves a truncated narrower channel by at most 1). Every other difference counts. */
 #define FBD_AUTO_LINEAR_MAX 256ul
 #define FBD_MAX_REGIONS 32
-#define FBD_ROWS 272u
+#define FBD_MAX_GAPS 8
+#define FBD_MAX_SIDE 1024u      /* scissor and transfer coordinates are 10 bits */
+#define FBD_DEPTH_STRIDE 512u   /* ge.c's software depth buffer: 272 rows of 512 */
+#define FBD_DEPTH_ROWS 272u
 
 enum { FBD_KIND_COLOR, FBD_KIND_DEPTH, FBD_KIND_XFER };
 
@@ -138,8 +141,17 @@ typedef struct FbdRegion {
     uint32_t base;       /* guest address */
     uint32_t stride;     /* pixels per row */
     uint32_t fmt;        /* colour: GE pixel format 0-3; transfer: bytes per pixel */
-    uint32_t width, rows;
+    uint32_t need_w, need_h;   /* the extent the prefix's draws can write (scissor, transfer) */
+    uint32_t width, rows;      /* the extent compared (fbd_finalize) */
 } FbdRegion;
+
+/* A buffer a draw can write that the tool does not compare, or compares only in part: the
+ * result is then INCOMPLETE, never NO_DIFFERENCE. */
+typedef struct FbdGap {
+    int kind;
+    uint32_t base, stride, need_w, need_h, width, rows;
+    const char *reason;
+} FbdGap;
 
 typedef struct FbdRun {
     unsigned long limit;
@@ -152,7 +164,9 @@ typedef struct FbdRun {
     GeState last_state;
     FbdRegion regions[FBD_MAX_REGIONS];
     int nregions;
-    int regions_dropped;
+    FbdGap gaps[FBD_MAX_GAPS];
+    int ngaps;
+    int gaps_more;   /* gaps past FBD_MAX_GAPS: counted, not listed */
     int blended;
 } FbdRun;
 
@@ -180,19 +194,68 @@ static uint32_t fbd_bpp(const FbdRegion *r) {
     return r->fmt == 3u ? 4u : 2u;
 }
 
-static void fbd_add_region(FbdRun *run, int kind, uint32_t base, uint32_t stride, uint32_t fmt) {
-    if (stride == 0u || stride > 1024u) return;
-    for (int i = 0; i < run->nregions; i++) {
-        const FbdRegion *r = &run->regions[i];
-        if (r->kind == kind && r->base == base && r->stride == stride && r->fmt == fmt) return;
+static void fbd_gap(FbdRun *run, int kind, uint32_t base, uint32_t stride, uint32_t need_w,
+                    uint32_t need_h, uint32_t width, uint32_t rows, const char *reason) {
+    for (int i = 0; i < run->ngaps; i++) {
+        const FbdGap *g = &run->gaps[i];
+        if (g->kind == kind && g->base == base && g->stride == stride && g->reason == reason) return;
     }
-    if (run->nregions == FBD_MAX_REGIONS) { run->regions_dropped++; return; }
-    FbdRegion r = { kind, base, stride, fmt, stride < 480u ? stride : 480u, FBD_ROWS };
-    uint32_t bpp = fbd_bpp(&r);
-    /* Rows that lie in guest memory; a buffer near the end of VRAM keeps the rows it has. */
-    while (r.rows && !sr_inrange_n(base, ((r.rows - 1u) * stride + r.width) * bpp)) r.rows--;
-    if (!r.rows) return;
+    if (run->ngaps == FBD_MAX_GAPS) { run->gaps_more++; return; }
+    FbdGap g = { kind, base, stride, need_w, need_h, width, rows, reason };
+    run->gaps[run->ngaps++] = g;
+}
+
+/* Records that the running draw can write `need_w` x `need_h` pixels of a buffer. A region
+ * grows to the largest extent any draw of the prefix reaches; fbd_finalize fixes what is
+ * compared once the prefix has run. */
+static void fbd_add_region(FbdRun *run, int kind, uint32_t base, uint32_t stride, uint32_t fmt,
+                           uint32_t need_w, uint32_t need_h) {
+    const uint32_t max_stride = kind == FBD_KIND_DEPTH ? FBD_DEPTH_STRIDE : FBD_MAX_SIDE;
+    if (stride == 0u || stride > max_stride) {
+        fbd_gap(run, kind, base, stride, need_w, need_h, 0u, 0u, "stride");
+        return;
+    }
+    /* Writes past the stride land on the following rows. */
+    if (need_w > stride) { need_h += (need_w - 1u) / stride; need_w = stride; }
+    for (int i = 0; i < run->nregions; i++) {
+        FbdRegion *r = &run->regions[i];
+        if (r->kind == kind && r->base == base && r->stride == stride && r->fmt == fmt) {
+            if (need_w > r->need_w) r->need_w = need_w;
+            if (need_h > r->need_h) r->need_h = need_h;
+            return;
+        }
+    }
+    if (run->nregions == FBD_MAX_REGIONS) {
+        fbd_gap(run, kind, base, stride, need_w, need_h, 0u, 0u, "region-limit");
+        return;
+    }
+    FbdRegion r = { kind, base, stride, fmt, need_w, need_h, 0u, 0u };
     run->regions[run->nregions++] = r;
+}
+
+/* The compared extent of each region: all it needs, except depth past ge.c's 272 rows and rows
+ * outside guest memory, each recorded as a gap. */
+static void fbd_finalize(FbdRun *run) {
+    for (int i = 0; i < run->nregions; i++) {
+        FbdRegion *r = &run->regions[i];
+        uint32_t rows = r->need_h;
+        const char *reason = NULL;
+        if (r->kind == FBD_KIND_DEPTH && rows > FBD_DEPTH_ROWS) { rows = FBD_DEPTH_ROWS; reason = "depth-rows"; }
+        const uint32_t bpp = fbd_bpp(r);
+        while (rows && !sr_inrange_n(r->base, ((rows - 1u) * r->stride + r->need_w) * bpp)) {
+            rows--;
+            reason = "memory";
+        }
+        r->width = r->need_w;
+        r->rows = rows;
+        if (reason) fbd_gap(run, r->kind, r->base, r->stride, r->need_w, r->need_h, r->width, rows, reason);
+    }
+}
+
+/* The scissor's extent from the buffer's origin: the pixels a draw can write. */
+static uint32_t fbd_extent(int last) {
+    if (last < 0) return 1u;
+    return (uint32_t)last + 1u > FBD_MAX_SIDE ? FBD_MAX_SIDE : (uint32_t)last + 1u;
 }
 
 static uint32_t fbd_depth_base(const GeState *st) {
@@ -217,12 +280,21 @@ static int fbd_observer(void *ctx, unsigned long index, uint32_t op, uint32_t cm
     if ((op >> 24) == 0xEAu) {   /* TRANSFERSTART: the destination rectangle's buffer */
         uint32_t dst = (st->xf_dst & 0xFFFFF0u) | ((st->xf_dstw & 0xFF0000u) << 8);
         dst = dst < 0x00200000u ? dst | SR_VRAM_CPU_BASE : dst;
-        fbd_add_region(run, FBD_KIND_XFER, dst, st->xf_dstw & 0x7F8u, (op & 1u) ? 4u : 2u);
+        /* The rectangle as ge.c decodes it (TRANSFERDSTPOS, TRANSFERSIZE). */
+        uint32_t need_w = (st->xf_dpos & 0x3FFu) + (st->xf_size & 0x3FFu) + 1u;
+        uint32_t need_h = ((st->xf_dpos >> 10) & 0x3FFu) + ((st->xf_size >> 10) & 0x3FFu) + 1u;
+        fbd_add_region(run, FBD_KIND_XFER, dst, st->xf_dstw & 0x7F8u, (op & 1u) ? 4u : 2u,
+                       need_w, need_h);
         return 0;
     }
-    fbd_add_region(run, FBD_KIND_COLOR, fb_addr(st), st->fbw, st->fbfmt & 3u);
-    if (st->zbw && st->zbw <= 512u)
-        fbd_add_region(run, FBD_KIND_DEPTH, fbd_depth_base(st), st->zbw, 0u);
+    const uint32_t need_w = fbd_extent(st->scis_x2), need_h = fbd_extent(st->scis_y2);
+    fbd_add_region(run, FBD_KIND_COLOR, fb_addr(st), st->fbw, st->fbfmt & 3u, need_w, need_h);
+    /* Depth only where the draw can write it (ge.c: the clear's depth bit, else the depth
+     * test with writes on). */
+    const int writes_depth = st->clear ? (st->clear_mode & 0x400u) != 0
+                                       : st->ztest_enable && !st->zwrite_disable;
+    if (writes_depth)
+        fbd_add_region(run, FBD_KIND_DEPTH, fbd_depth_base(st), st->zbw, 0u, need_w, need_h);
     if (st->blend_enable && !st->clear) run->blended = 1;
     return 0;
 }
@@ -341,6 +413,7 @@ static int fbd_pass(const GeCaptureFixture *fixture, const GeGpuHooks *hooks, un
     }
     ge_set_draw_observer(NULL, NULL);
     s_fbd_current = (unsigned long)-1;
+    if (ok && !regions) fbd_finalize(run);
     if (ok && hooks && !gegpu_capture_materialize()) ok = 0;
     if (ok && !ge_zbuf_materialize_current()) ok = 0;
     if (ok) ok = fbd_snapshot(regions ? regions : run, shot);
@@ -425,8 +498,16 @@ static void fbd_print_regions(const FbdRun *run, const FbdDiff *diff) {
     if (diff->rule_pixels)
         printf("GE_FBD_RULE rule=blend-2lsb pixels=%lu source=src/rt/gpu_sdl3vk/README.md\n",
                diff->rule_pixels);
-    if (run->regions_dropped)
-        printf("GE_FBD_WARNING regions_not_compared=%d\n", run->regions_dropped);
+}
+
+static void fbd_print_gaps(const FbdRun *run) {
+    for (int i = 0; i < run->ngaps; i++) {
+        const FbdGap *g = &run->gaps[i];
+        printf("GE_FBD_UNCOMPARED kind=%s base=0x%08x stride=%u need=%ux%u compared=%ux%u reason=%s\n",
+               fbd_kind_name(g->kind), g->base, g->stride, g->need_w, g->need_h, g->width, g->rows,
+               g->reason);
+    }
+    if (run->gaps_more) printf("GE_FBD_UNCOMPARED more=%d\n", run->gaps_more);
 }
 
 static void fbd_print_draw(const FbdRun *run) {
@@ -542,7 +623,8 @@ static const GeGpuHooks *fbd_vulkan_hooks(void) { return ge_get_gpu_hooks(); }
 #endif
 
 /* Returns 0 for NO_DIFFERENCE or RULE_ONLY, 1 for a first bad draw (or INITIAL_STATE), 3 when
- * a replay fails. */
+ * a replay fails, 5 for INCOMPLETE (a buffer a draw can write was not compared in full, so no
+ * answer is given) and 6 for NO_DRAWS (the capture has nothing to compare). */
 static int fbd_run(const GeCaptureFixture *fixture, const char *mode, const char *report) {
     const GeGpuHooks *vk_hooks = fbd_vulkan_hooks();
     if (!vk_hooks) {
@@ -556,6 +638,19 @@ static int fbd_run(const GeCaptureFixture *fixture, const char *mode, const char
     long full = fbd_eval(fixture, vk_hooks, (unsigned long)-1, &sw_run, &sw, &vk, &diff);
     if (full < 0) return 3;
     unsigned long draws = sw_run.seen;
+    if (draws == 0) {
+        printf("GE_FIRST_BAD_DRAW result=NO_DRAWS draws=0\n");
+        return 6;
+    }
+    /* Every prefix's buffers and extents are within the whole frame's, so a complete frame
+     * means complete prefixes. */
+    if (sw_run.ngaps) {
+        printf("GE_FIRST_BAD_DRAW result=INCOMPLETE draws=%lu regions=%d uncompared=%d pixels=%lu\n",
+               draws, sw_run.nregions, sw_run.ngaps + sw_run.gaps_more, diff.pixels);
+        fbd_print_gaps(&sw_run);
+        fbd_print_regions(&sw_run, &diff);
+        return 5;
+    }
     int linear = strcmp(mode, "linear") == 0 ||
                  (strcmp(mode, "auto") == 0 && draws <= FBD_AUTO_LINEAR_MAX);
     const char *ran = linear ? "linear" : "bisect";
