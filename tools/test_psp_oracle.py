@@ -3216,6 +3216,7 @@ class PspDmacProbeTests(unittest.TestCase):
                 # The 2026-10-31 acceptance-eligible ge-mip (#1373) and ge-sync-ids (#1374) runs of
                 # 66940d76.
                 "PSP-GE-MIP-001", "PSP-GE-SYNC-001",
+                "PSP-GE-OVERLAP-001",
             },
         )
         self.assertEqual(
