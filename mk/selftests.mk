@@ -157,6 +157,16 @@ ace-selftest:
 		-o $(BUILD_DIR)/ace_selftest$(EXE_EXT) tests/native/ace_selftest.c src/rt/ace.c
 	$(BUILD_DIR)/ace_selftest$(EXE_EXT) $(BUILD_DIR)
 
+# motion-match-selftest - the draw matcher of render-state motion (src/rt/motion_match.c, #2081):
+# anchors, reorder, spawn and despawn, rebuilds at a new address, ties, teleports and each
+# frame cut, on synthetic PRIM lists. Built from motion_match.c and its test alone (pure C).
+native-core-tests: motion-match-selftest
+motion-match-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/motion_match_selftest$(EXE_EXT) tests/native/motion_match_selftest.c \
+		src/rt/motion_match.c -lm
+	$(BUILD_DIR)/motion_match_selftest$(EXE_EXT)
+
 # osk-overlay-selftest - the in-window on-screen keyboard's state machine (src/rt/osk_overlay.c):
 # navigation, typing, the guest's length bound with UTF-16 pairs, backspace, confirm and cancel,
 # the UTF-16 answer, the inputtype rules, edge-based pad input and the session the HLE keyboard
@@ -701,13 +711,15 @@ asset-index-selftest:
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
 # The scaled-upload case (#1296), the per-fragment mip level case (#1373), the readback-rows
-# case (#323, also on its SR_GPU_READBACK_FULL reference path) and the widescreen Fill case
-# (#1881) run again alone at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
-# cmd.exe does not take one. The host twin (#2050) runs after them: twin-off runs of twin-scene write
-# reference files that the twin-on runs at the same scale check (guest VRAM always, the shown
-# images for the native twin), `--twin native` runs the whole suite with every twin checked
-# against its image after each case, twin-gate checks the switch's values and its Ace gate
-# (`--authentic`), and twin-alloc-fail injects a failed twin allocation.
+# case (#323, also on its SR_GPU_READBACK_FULL reference path), the undrawn-rows case and the
+# widescreen Fill case (#1881) run again alone at render scales 2 and 4; the sprite-scaled and
+# uv-edge-clamp cases (#2110) run alone at scales 2, 3 and 4. Each is selected by arguments: a
+# VAR=value prefix needs a POSIX shell, and cmd.exe does not take one. The host twin (#2050) runs
+# after them: twin-off runs of twin-scene write reference files that the twin-on runs at the
+# same scale check (guest VRAM always, the shown images for the native twin), `--twin native`
+# runs the whole suite with every twin checked against its image after each case, twin-gate
+# checks the switch's values and its Ace gate (`--authentic`), and twin-alloc-fail injects a
+# failed twin allocation.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
@@ -735,6 +747,12 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	@rc=0; $(GPU_COHERENCE_BIN) --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; \
 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest gpu-timestamps (exit 77; the reason is printed above)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest gpu-timestamps (exit $$rc)"; exit $$rc; fi
+	$(GPU_COHERENCE_BIN) --scale 2 --case sprite-scaled
+	$(GPU_COHERENCE_BIN) --scale 3 --case sprite-scaled
+	$(GPU_COHERENCE_BIN) --scale 4 --case sprite-scaled
+	$(GPU_COHERENCE_BIN) --scale 2 --case uv-edge-clamp
+	$(GPU_COHERENCE_BIN) --scale 3 --case uv-edge-clamp
+	$(GPU_COHERENCE_BIN) --scale 4 --case uv-edge-clamp
 	$(GPU_COHERENCE_BIN) --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s1.txt
 	$(GPU_COHERENCE_BIN) --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
 	$(GPU_COHERENCE_BIN) --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
