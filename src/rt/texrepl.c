@@ -1,5 +1,8 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Copyright (c) 2012- PPSSPP Project */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
+/* Derived from PPSSPP (GPL-2.0-or-later) at 3bc60270eae3069f13dfbfdb7292a7e1375de6f6; modified by Nakagawa Recomp
+ * contributors, 2026-11-06. See NOTICE.md and CREDITS.md for upstream lineage. */
 /*
  * texrepl.c - Texture replacement packs in PPSSPP's layout (#1880), phase 1. See texrepl.h.
  *
