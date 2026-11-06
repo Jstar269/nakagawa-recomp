@@ -148,6 +148,13 @@ static void test_memory_map(uint8_t *ram) {
     CHECK(nk_ach_read_memory(&mem, 0x00800000u + USER_RAM_SIZE - 2u, buf, 4u) == 2u &&
               buf[0] == 1 && buf[1] == 2 && buf[2] == 0xee,
           "a read at the end of the span stops at its last byte");
+    /* A span shorter than the buffer behind it: a read past the span's end must read nothing even
+     * though the bytes there exist. */
+    const NkAchMemory small = {ram, USER_RAM, 0x1000u};
+    CHECK(nk_ach_read_memory(&small, 0x00800000u + 0x1010u, buf, 4u) == 0u,
+          "a read past the span's end reads nothing");
+    CHECK(nk_ach_read_memory(&small, 0x00800000u + 0x0ffeu, buf, 4u) == 2u,
+          "a read across the span's end stops at it");
     const NkAchMemory none = {NULL, USER_RAM, USER_RAM_SIZE};
     CHECK(nk_ach_read_memory(&none, 0x00800000u, buf, 1u) == 0u, "no memory, nothing read");
 }
