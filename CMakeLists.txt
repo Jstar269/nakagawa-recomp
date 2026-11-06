@@ -840,6 +840,7 @@ set(NK_RUNTIME_SOURCES
     src/rt/gpu_sdl3vk/ge_gpu.c
     src/rt/gpu_sdl3vk/ace_ui.c
     src/rt/gpu_sdl3vk/ace_smooth.c
+    src/rt/gpu_sdl3vk/fsr1_pass.c
     src/core/nk_input_profile.c
     src/core/nk_font.c
     src/core/nk_json.c

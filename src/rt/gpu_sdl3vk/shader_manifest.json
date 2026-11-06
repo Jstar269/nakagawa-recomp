@@ -53,6 +53,24 @@
       "spirv_bytes": 7532,
       "spirv_sha256": "a80ccfb575bf908fa2f9763f1fe6b83c28255002a3492f212d066b4fd1f4456d",
       "stage": "comp"
+    },
+    {
+      "embedded": "fsr1_easu_comp.inc",
+      "embedded_sha256": "23fda4c8a7dce5b0cc2af48fe6cd10faa272963f844b36d0dd395678beacbe8f",
+      "source": "shaders/fsr1_easu.comp",
+      "source_sha256": "6097066e6cfa3657e35877557349eeabbb7bafe620344d91df90899cd34ddc4d",
+      "spirv_bytes": 36868,
+      "spirv_sha256": "57a467ff2a7189227ebb5b487b88b77813ab2ca35b9852514d83a9bc84d3e162",
+      "stage": "comp"
+    },
+    {
+      "embedded": "fsr1_rcas_comp.inc",
+      "embedded_sha256": "dd213f53692cf6f812cb081a9b0e61df4c3e90316b5b9c7c2c56ce309e38b172",
+      "source": "shaders/fsr1_rcas.comp",
+      "source_sha256": "4bbd5513d9acfb4fb73e0db36bc034e1150c087b6514ff31374ba9d62ecbc2fa",
+      "spirv_bytes": 16976,
+      "spirv_sha256": "492a9dd7802bc46ab219022f044cf3c619dbaf769fde542fdcc8b9417f0656cd",
+      "stage": "comp"
     }
   ]
 }

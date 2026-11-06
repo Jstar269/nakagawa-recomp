@@ -664,6 +664,26 @@ unsigned long g_mpeg_put;
 unsigned long g_mpeg_getavc;
 unsigned long g_mpeg_avcdec;
 unsigned long g_mpeg_nodata;
+/* mpeg.c is not linked here. The sceMpeg handlers the interrupt-context check
+ * registers (test_mpeg_create_refused_in_interrupt) reach these spies, which
+ * record only whether a context was asked for and how many are live. */
+static unsigned s_mpi_create_calls, s_mpi_live;
+uint32_t mpeg_init(void) { return 0; }
+uint32_t mpeg_finish(void) { s_mpi_live = 0; return 0; }
+uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_t ringAddr,
+                     uint32_t frameWidth, uint32_t mode, uint32_t ddrTop) {
+    (void)mpegAddr; (void)dataPtr; (void)size; (void)ringAddr;
+    (void)frameWidth; (void)mode; (void)ddrTop;
+    s_mpi_create_calls++;
+    s_mpi_live++;
+    return 0;
+}
+uint32_t mpeg_delete(uint32_t mpegAddr) {
+    (void)mpegAddr;
+    if (!s_mpi_live) return 0xffffffffu;
+    s_mpi_live--;
+    return 0;
+}
 int sr_perf_enabled;
 /* Non-zero, and never repeating: every `sr_perf_now_ns()` caller uses the value only as
  * a "the counters are live" predicate before handing it to a stub, so a constant 0 would
@@ -3870,6 +3890,215 @@ static void test_io_async_and_path_imports(void) {
            "sceIoSync names unsupported device semantics with a real error");
 }
 
+/* sceIoAssign / sceIoUnassign through the production syscall path. WipEout Pure's Memory
+ * Stick insert handler assigns "fatms0:" to "msstor0p1:" through "fatms0:" read/write, and
+ * its eject handler unassigns it; before these handlers both NIDs were unregistered and the
+ * run stopped at boot. Arguments 5 and 6 (the mount argument buffer and its size) arrive in
+ * t0 and t1 (MIPS EABI): the stack slots hold a kernel-bit poison value, so a handler that
+ * read them from the stack would answer ILLEGAL_ADDR where these cells expect success. */
+static uint32_t io_assign_call(uint32_t dev, uint32_t block, uint32_t fs, uint32_t mode,
+                               uint32_t arg, uint32_t arg_size) {
+    enum { STACK_ADDR = 0x09016000u };
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[29] = STACK_ADDR;
+    MEM_W32(STACK_ADDR, 0x80000000u);
+    MEM_W32(STACK_ADDR + 4u, 0x80000000u);
+    cpu.r[4] = dev;
+    cpu.r[5] = block;
+    cpu.r[6] = fs;
+    cpu.r[7] = mode;
+    cpu.r[8] = arg;
+    cpu.r[9] = arg_size;
+    return sr_syscall(&cpu, 0xb2a628c1u);
+}
+
+static uint32_t io_unassign_call(uint32_t dev) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dev;
+    return sr_syscall(&cpu, 0x6d08a871u);
+}
+
+/* One sceIo call on a guest path through sr_syscall: open (with flags), getstat, mkdir or
+ * remove. Returns the syscall's result; an open that succeeds is closed again. */
+static uint32_t io_assign_path_call(uint32_t nid, uint32_t path_addr, const char *guest,
+                                    uint32_t flags) {
+    enum { STAT_ADDR = 0x09015200u };
+    CpuState cpu;
+    fd_guest_copy(path_addr, guest, strlen(guest) + 1u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = path_addr;
+    if (nid == 0x109f50bcu) {          /* sceIoOpen */
+        cpu.r[5] = flags;
+        cpu.r[6] = 0777u;
+    } else if (nid == 0xace946e8u) {   /* sceIoGetstat */
+        cpu.r[5] = STAT_ADDR;
+    } else if (nid == 0x06a70004u) {   /* sceIoMkdir */
+        cpu.r[5] = 0777u;
+    }
+    uint32_t rc = sr_syscall(&cpu, nid);
+    if (nid == 0x109f50bcu && rc >= 3u && rc < 64u) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = rc;
+        (void)sr_syscall(&cpu, 0x810c4bc3u);   /* sceIoClose */
+    }
+    return rc;
+}
+
+static void test_io_assign_through_syscall(void) {
+    enum {
+        ALIAS_ADDR = 0x09015000u,
+        BLOCK_ADDR = 0x09015040u,
+        FS_ADDR = 0x09015080u,
+        OTHER_ADDR = 0x090150c0u,
+        PATH_ADDR = 0x09015100u,
+        STAT_ADDR = 0x09015200u,
+        ARG_ADDR = 0x09015300u,
+        NO_SUCH_DEVICE = 0x80020321u,
+        ALIAS_USED = 0x80020326u,
+        ILLEGAL_ADDR = 0x800200d3u,
+        UNSUPPORTED = 0x80010086u,
+        RDWR = 0u,
+        RDONLY = 1u,
+    };
+    static const char probe_guest[] = "fatms0:/NAKAGAWA_IO_ASSIGN.TXT";
+    static const char probe_ms0[] = "ms0:/NAKAGAWA_IO_ASSIGN.TXT";
+    sr_hle_test_register_iofilemgr();   /* the production IoFileMgr registration run */
+    bool registered = sr_hle_test_is_registered(0xb2a628c1u) &&
+                      sr_hle_test_is_registered(0x6d08a871u);
+    expect(registered, "sceIoAssign and sceIoUnassign are registered IoFileMgr imports");
+    if (!registered) return;   /* an unregistered NID ends the run as an import miss */
+
+    fd_guest_copy(ALIAS_ADDR, "fatms0:", sizeof("fatms0:"));
+    fd_guest_copy(BLOCK_ADDR, "msstor0p1:", sizeof("msstor0p1:"));
+    fd_guest_copy(FS_ADDR, "fatms0:", sizeof("fatms0:"));
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == 0u,
+           "sceIoAssign honours fatms0: on msstor0p1: through fatms0: read/write");
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == ALIAS_USED,
+           "a second assign of the same alias name is ALIAS_USED");
+    fd_guest_copy(OTHER_ADDR, " FATMS0:", sizeof(" FATMS0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == ALIAS_USED,
+           "alias names compare case-insensitively after leading spaces");
+
+    /* The alias names the VFS Memory Stick: a file created through fatms0: is the ms0: file. */
+    char host[256];
+    fd_host_path(host, sizeof(host), probe_ms0);
+    nk_remove_utf8(host);
+    CpuState cpu;
+    fd_guest_copy(PATH_ADDR, probe_guest, sizeof(probe_guest));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = 0x00000602u;   /* PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC */
+    cpu.r[6] = 0777u;
+    uint32_t fd = sr_syscall(&cpu, 0x109f50bcu);   /* sceIoOpen */
+    expect(fd >= 3u && fd < 64u, "a file opens through the assigned fatms0: alias");
+    if (fd >= 3u && fd < 64u) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        expect(sr_syscall(&cpu, 0x810c4bc3u) == 0u, "the fatms0: probe closes");   /* sceIoClose */
+        fd_guest_copy(PATH_ADDR, probe_ms0, sizeof(probe_ms0));
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = PATH_ADDR;
+        cpu.r[5] = STAT_ADDR;
+        expect(sr_syscall(&cpu, 0xace946e8u) == 0u,   /* sceIoGetstat */
+               "the file created through fatms0: is the ms0: file");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = PATH_ADDR;
+        expect(sr_syscall(&cpu, 0xf27a9c51u) == 0u, "the probe file is removed");   /* sceIoRemove */
+    }
+
+    /* The aliases the runtime serves from boot are in the table. */
+    fd_guest_copy(OTHER_ADDR, "ms0:", sizeof("ms0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == ALIAS_USED,
+           "ms0 is assigned from boot");
+    fd_guest_copy(OTHER_ADDR, "disc0:", sizeof("disc0:"));
+    fd_guest_copy(BLOCK_ADDR, "umd0:", sizeof("umd0:"));
+    fd_guest_copy(FS_ADDR, "isofs0:", sizeof("isofs0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDONLY, 0u, 0u) == ALIAS_USED,
+           "disc0 is assigned from boot");
+    fd_guest_copy(BLOCK_ADDR, "msstor0p1:", sizeof("msstor0p1:"));
+    fd_guest_copy(FS_ADDR, "fatms0:", sizeof("fatms0:"));
+
+    /* uofw's argument checks. */
+    expect(io_assign_call(0u, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == NO_SUCH_DEVICE,
+           "a NULL alias is NO_SUCH_DEVICE");
+    fd_guest_copy(OTHER_ADDR, "msnew0:", sizeof("msnew0:"));
+    expect(io_assign_call(OTHER_ADDR, 0u, FS_ADDR, RDWR, 0u, 0u) == NO_SUCH_DEVICE,
+           "a filesystem without a block device is NO_SUCH_DEVICE");
+    expect(io_assign_call(OTHER_ADDR, 0x88000000u, FS_ADDR, RDWR, 0u, 0u) == ILLEGAL_ADDR,
+           "a kernel-space device pointer is ILLEGAL_ADDR");
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, ARG_ADDR, 0x80000000u) ==
+               ILLEGAL_ADDR,
+           "the argument size in t1 is checked (a negative size is ILLEGAL_ADDR)");
+    fd_guest_copy(OTHER_ADDR, "nocolon", sizeof("nocolon"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == NO_SUCH_DEVICE,
+           "an alias without ':' is NO_SUCH_DEVICE");
+
+    /* Assigns the VFS cannot honour stop at the named boundary, never success. */
+    fd_guest_copy(OTHER_ADDR, "msnew0:", sizeof("msnew0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == UNSUPPORTED,
+           "a new alias name the VFS does not serve is refused at the boundary");
+    expect(io_unassign_call(ALIAS_ADDR) == 0u, "sceIoUnassign removes the game-made fatms0 alias");
+
+    /* The unassign unmounts fatms0: (uofw sceIoUnassign calls the driver's df_umount), so a
+     * path on it no longer reaches the Memory Stick: NO_SUCH_DEVICE, also through the
+     * handlers that answer one fixed code for other unusable paths. */
+    enum { OPEN = 0x109f50bcu, GETSTAT = 0xace946e8u, MKDIR = 0x06a70004u, REMOVE = 0xf27a9c51u,
+           CREATE = 0x00000602u /* PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC */ };
+    static const char probe_dir[] = "fatms0:/NAKAGAWA_IO_ASSIGN_DIR";
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_guest, CREATE) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoOpen on fatms0: is NO_SUCH_DEVICE");
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_guest, 0u) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoGetstat on fatms0: is NO_SUCH_DEVICE");
+    expect(io_assign_path_call(MKDIR, PATH_ADDR, probe_dir, 0u) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoMkdir on fatms0: is NO_SUCH_DEVICE");
+    {
+        CpuState dev_cpu;
+        fd_guest_copy(OTHER_ADDR, "fatms0:", sizeof("fatms0:"));
+        memset(&dev_cpu, 0, sizeof(dev_cpu));
+        dev_cpu.r[4] = OTHER_ADDR;
+        dev_cpu.r[5] = 0x02425818u;   /* a Memory Stick devctl command */
+        expect(sr_syscall(&dev_cpu, 0x54f5fb11u) == NO_SUCH_DEVICE,   /* sceIoDevctl */
+               "after the unassign, sceIoDevctl on fatms0: is NO_SUCH_DEVICE");
+    }
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_ms0, 0u) != 0u,
+           "the refused open created nothing on the Memory Stick");
+    /* ms0 keeps serving the Memory Stick: the runtime's choice, since whether the PSP's
+     * unmount takes the unit ms0 shares with it is not measured. */
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_ms0, CREATE) < 64u,
+           "ms0: still opens after fatms0 is unassigned");
+    expect(io_assign_path_call(REMOVE, PATH_ADDR, probe_ms0, 0u) == 0u,
+           "and the ms0: probe is removed");
+    fd_guest_copy(OTHER_ADDR, "msnew0:", sizeof("msnew0:"));
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, ARG_ADDR, 4u) == UNSUPPORTED,
+           "a mount argument buffer in t0 is refused at the boundary (not modelled)");
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDONLY, 0u, 0u) == UNSUPPORTED,
+           "a read-only Memory Stick mount is refused: the VFS serves it read/write");
+
+    /* sceIoUnassign. */
+    expect(io_unassign_call(ALIAS_ADDR) == NO_SUCH_DEVICE,
+           "unassigning an alias that is not assigned is NO_SUCH_DEVICE");
+    expect(io_unassign_call(0u) == NO_SUCH_DEVICE, "sceIoUnassign(NULL) is NO_SUCH_DEVICE");
+    expect(io_unassign_call(0x88000000u) == ILLEGAL_ADDR,
+           "sceIoUnassign of a kernel-space pointer is ILLEGAL_ADDR");
+    fd_guest_copy(OTHER_ADDR, "ms0:", sizeof("ms0:"));
+    expect(io_unassign_call(OTHER_ADDR) == UNSUPPORTED,
+           "unassigning ms0, which the VFS keeps serving, is refused at the boundary");
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == 0u,
+           "fatms0 assigns again after its unassign (the insert-eject-insert sequence)");
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_guest, CREATE) < 64u,
+           "fatms0: opens again once it is assigned again");
+    expect(io_assign_path_call(REMOVE, PATH_ADDR, probe_guest, 0u) == 0u,
+           "and the fatms0: probe is removed");
+    expect(io_unassign_call(ALIAS_ADDR) == 0u, "and unassigns again");
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_guest, 0u) == NO_SUCH_DEVICE,
+           "the second unassign unmounts fatms0: again");
+    /* Leave fatms0: usable for the tests that follow, as it is from boot. */
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == 0u,
+           "fatms0 assigns a third time");
+}
+
 static void test_fd_namespace(void) {
     enum {
         FD_KIND_STD = 1,
@@ -4561,6 +4790,7 @@ static void test_fd_namespace(void) {
            "the descriptor reused after async close closes cleanly");
 
     test_io_async_and_path_imports();
+    test_io_assign_through_syscall();
     test_io_open_async_notifies_later_callback();
     test_io_enhancement_data_file();
     test_state_sampler_rows();
@@ -15646,6 +15876,103 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
     sr_hle_test_data_reset(0);
 }
 
+/* 2c. Archive discovery skips an unpack folder ("<archive>.d" beside the archive
+ *     file "<archive>", the layout staging writes) and walks every other ".d"
+ *     directory. Loose serving is untouched: a loose root's unpack folder still
+ *     serves its files, and the primary root's unpack folders stay out of an
+ *     archive-mode namespace, as before. */
+static const char *const s_xb_unpack_dirs[] = {
+    "", "/primary", "/primary/pack.xb.d", "/primary/pack.xb.d/data",
+    "/primary/pack.xb.d/data/menu", "/primary/orphan.xb.d", "/primary/notes.d",
+    "/loose", "/loose/side.xb.d", "/loose/side.xb.d/data", "/loose/side.xb.d/data/menu"
+};
+static const char *const s_xb_unpack_files[] = {
+    "/primary/pack.xb", "/primary/pack.xb.d/data/decoy.xb",
+    "/primary/pack.xb.d/data/menu/unpacked-primary.to", "/primary/orphan.xb.d/inner.xb",
+    "/primary/notes.d/deep.xb", "/loose/side.xb", "/loose/side.xb.d/data/menu/unpacked.to"
+};
+
+static int host_data_duplicate_write_file(const char *root, const char *relative,
+                                          const char *body);
+
+static int xb_unpack_write_archive(const char *base, const char *relative,
+                                   const char *member, const char *body) {
+    char path[MAX_PATH];
+    if (snprintf(path, sizeof path, "%s%s", base, relative) >= (int)sizeof path) return 0;
+    const HleXbEntry entry = { member, (const uint8_t *)body, strlen(body) };
+    return hle_xb_write(path, &entry, 1u);
+}
+
+static void test_archive_discovery_skips_unpack_folders_only(void) {
+    char scratch[MAX_PATH], base[MAX_PATH], dataroot[MAX_PATH], loose[MAX_PATH + 32];
+    expect(hle_scratch_root(scratch, sizeof scratch), "the unpack-folder fixture has a scratch root");
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    snprintf(base, sizeof base, "%s/xb_unpack_%lu", scratch, (unsigned long)getpid());
+    int made = 1;
+    for (size_t i = 0; i < sizeof(s_xb_unpack_dirs) / sizeof(s_xb_unpack_dirs[0]); i++) {
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s%s", base, s_xb_unpack_dirs[i]);
+        if (!nk_platform_mkdir_p(dir)) made = 0;
+    }
+    made = made &&
+        xb_unpack_write_archive(base, "/primary/pack.xb", "data/menu/inpack.to", "outer-archive") &&
+        /* An archive among an unpack folder's files, as a nested member would be. */
+        xb_unpack_write_archive(base, "/primary/pack.xb.d/data/decoy.xb", "data/menu/decoy.to",
+                                "decoy-archive") &&
+        /* ".d" folders with no archive file of that name beside them. */
+        xb_unpack_write_archive(base, "/primary/orphan.xb.d/inner.xb", "data/menu/orphan.to",
+                                "orphan-archive") &&
+        xb_unpack_write_archive(base, "/primary/notes.d/deep.xb", "data/menu/deep.to",
+                                "deep-archive") &&
+        xb_unpack_write_archive(base, "/loose/side.xb", "data/menu/side.to", "side-archive") &&
+        host_data_duplicate_write_file(base, "/primary/pack.xb.d/data/menu/unpacked-primary.to",
+                                       "unpacked-primary") &&
+        host_data_duplicate_write_file(base, "/loose/side.xb.d/data/menu/unpacked.to",
+                                       "unpacked-loose");
+    expect(made, "the unpack-folder fixture was created");
+
+    snprintf(dataroot, sizeof dataroot, "%s/primary", base);
+    snprintf(loose, sizeof loose, "%s/loose\t\t10\t0\t0\n", base);
+    hle_test_setenv("SR_DATAROOT", dataroot);
+    hle_test_setenv("SR_LOOSE_CONTENT_ROOTS", loose);
+    sr_hle_test_data_reset(0);
+    expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_READY,
+           "a primary root with unpack folders and a loose root reaches READY");
+
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/inpack.to",
+                                          "outer-archive"),
+           "the archive beside its unpack folder is mounted and serves its member");
+    expect(hle_archive_route_open_result("disc0:/PSP_GAME/USRDIR/data/menu/decoy.to") != 0u,
+           "an archive inside an unpack folder is not mounted as a top-level archive");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/orphan.to",
+                                          "orphan-archive"),
+           "a .xb.d folder with no archive beside it is still searched for archives");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/deep.to",
+                                          "deep-archive"),
+           "a .d folder whose name is not an archive's is still searched for archives");
+    expect(hle_archive_route_file_matches("disc0:/PSP_GAME/USRDIR/data/menu/unpacked.to",
+                                          "unpacked-loose"),
+           "a loose root's unpack folder still serves its files");
+    expect(hle_archive_route_open_result("disc0:/PSP_GAME/USRDIR/data/menu/side.to") != 0u,
+           "an archive in a loose root is served as a file, never mounted");
+    expect(hle_archive_route_open_result(
+               "disc0:/PSP_GAME/USRDIR/data/menu/unpacked-primary.to") != 0u,
+           "archive mode still serves no file from the primary root's unpack folders");
+
+    prewarm_env_restore();
+    sr_hle_test_data_reset(0);
+    for (size_t i = 0; i < sizeof(s_xb_unpack_files) / sizeof(s_xb_unpack_files[0]); i++) {
+        char path[MAX_PATH];
+        snprintf(path, sizeof path, "%s%s", base, s_xb_unpack_files[i]);
+        nk_remove_utf8(path);
+    }
+    for (size_t i = sizeof(s_xb_unpack_dirs) / sizeof(s_xb_unpack_dirs[0]); i-- > 0;) {
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s%s", base, s_xb_unpack_dirs[i]);
+        rmdir(dir);
+    }
+}
+
 static int host_data_duplicate_write_file(const char *root, const char *relative,
                                           const char *body) {
     char path[MAX_PATH];
@@ -19506,6 +19833,93 @@ static TCB *fixture_thread(uint32_t uid, int state, int priority) {
  * come after those definitions. It adds no production code and changes no
  * handler behavior. */
 #include "intr_conformance.h"
+
+/* sceMpegCreate inside an interrupt handler. pspautotests tests/intr/delays
+ * measured it on a PSP: from a VBLANK sub-interrupt handler it returns
+ * 0x80618008 (delays.expected:24), while the same call on a thread returns 0
+ * and sceMpegDelete then returns 0 (lines 12-13), and after a Finish/Init reset
+ * the library creates again (lines 28-30). PPSSPP took the same check in
+ * 177244863. The check lives in the production handler (hle_mpeg.c); the
+ * library behind it is the spies above. The thread calls run with a fixture
+ * thread current; the interrupt call is reached through the production
+ * sub-interrupt registration and resume path (ic_call_in_interrupt). */
+void sr_hle_test_register_mpeg_create_handlers(void);
+
+#define NID_MPI_INIT    0x682a619bu
+#define NID_MPI_FINISH  0x874624d6u
+#define NID_MPI_CREATE  0xd8c5f121u
+#define NID_MPI_DELETE  0x606a4649u
+#define MPI_DESC        0x00258000u   /* SceMpeg word */
+#define MPI_DATA        0x00260000u   /* 0x10000-byte context buffer */
+
+static void mpi_create_args(CpuState *c) {
+    memset(c, 0, sizeof *c);
+    c->r[4] = MPI_DESC;
+    c->r[5] = MPI_DATA;
+    c->r[6] = 0x10000u;     /* sceMpegQueryMemSize */
+    c->r[7] = 0u;           /* no ringbuffer */
+    c->r[8] = 512u;         /* frameWidth (stack_arg 0), as delays.c passes */
+}
+
+/* One call from guest thread context: a fixture thread is current, as for the
+ * matrix's normal leg. None of these four handlers waits. */
+static uint32_t mpi_on_thread(uint32_t nid, const CpuState *args) {
+    TCB *t = fixture_thread(0x1b0u, TH_RUNNING, 32);
+    if (!t) return 0xdeadbeefu;
+    t->started = 1;
+    s_cur = (int)(t - s_tcb);
+    CpuState c = *args;
+    uint32_t r = sr_syscall(&c, nid);
+    s_cur = -1;
+    return r;
+}
+
+static uint32_t mpi_on_thread_a0(uint32_t nid, uint32_t a0) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = a0;
+    return mpi_on_thread(nid, &c);
+}
+
+static void test_mpeg_create_refused_in_interrupt(void) {
+    static const IcProbe create = {
+        "sceMpegCreate", NID_MPI_CREATE, "", ICG_NONE, 0,
+        {0, 0, 0, 0}, {IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN},
+        {IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN, IC_UNKNOWN},
+        {IC_PREC_NA, IC_PREC_NA, IC_PREC_NA, IC_PREC_NA}, IC_HW_IMMEDIATE, NULL
+    };
+    CpuState c;
+    reset_fixture(); sr_hle_init();
+    sr_hle_test_register_mpeg_create_handlers();
+    s_vbl_next_us = UINT64_MAX;
+    s_mpi_create_calls = 0;
+    s_mpi_live = 0;
+
+    expect(mpi_on_thread_a0(NID_MPI_INIT, 0u) == 0u, "mpeg-intr: sceMpegInit returns 0");
+    mpi_create_args(&c);
+    expect(mpi_on_thread(NID_MPI_CREATE, &c) == 0u,
+           "mpeg-intr: sceMpegCreate on a thread returns 0 (delays.expected:12)");
+    expect(mpi_on_thread_a0(NID_MPI_DELETE, MPI_DESC) == 0u,
+           "mpeg-intr: sceMpegDelete on a thread returns 0 (delays.expected:13)");
+
+    mpi_create_args(&s_ic_probe_cpu);
+    const unsigned creates_before = s_mpi_create_calls;
+    uint64_t in_intr = ic_call_in_interrupt(&create);
+    expect(in_intr == IC_RET(0x80618008u),
+           "mpeg-intr: sceMpegCreate in an interrupt handler returns 0x80618008 "
+           "(delays.expected:24)");
+    expect(s_mpi_create_calls == creates_before,
+           "mpeg-intr: the refused create never reaches the library");
+
+    expect(mpi_on_thread_a0(NID_MPI_FINISH, 0u) == 0u && mpi_on_thread_a0(NID_MPI_INIT, 0u) == 0u,
+           "mpeg-intr: sceMpegFinish and sceMpegInit reset the library");
+    mpi_create_args(&c);
+    expect(mpi_on_thread(NID_MPI_CREATE, &c) == 0u &&
+               mpi_on_thread_a0(NID_MPI_DELETE, MPI_DESC) == 0u,
+           "mpeg-intr: after the reset a thread creates and deletes again (delays.expected:29-30)");
+    (void)mpi_on_thread_a0(NID_MPI_FINISH, 0u);
+    reset_fixture();
+}
 
 static void run_worker(TCB *worker) {
     s_cur = (int)(worker - s_tcb);
@@ -30222,7 +30636,7 @@ static void test_atrac_aa3_and_reinit_1379(void) {
  *   5. MPEG (RingbufferDestruct, FlushAllStream, AvcDecodeFlush)
  *   6. LwMutex status (ReferLwMutexStatus, ReferLwMutexStatusByID)
  *   7. ATRAC second buffer & lifecycle (SetSecondBuffer, GetSecondBufferInfo,
- *      GetBufferInfoForResetting / Reseting, Reinit, ReleaseResources)
+ *      GetBufferInfoForResetting / Reseting, Reinit, EndEntry)
  * Dispatches through sr_syscall to pin the exact production NID mapping. */
 
 #define NID_SCE_CTRL_SET_SAMPLING_MODE               0x1f4011e6u
@@ -30250,7 +30664,7 @@ static void test_atrac_aa3_and_reinit_1379(void) {
 #define NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETTING  0x2dd3e298u
 #define NID_SCE_ATRAC_GET_BUFFER_INFO_FOR_RESETING   0xca3ca3d2u
 #define NID_SCE_ATRAC_REINIT                         0x132f1ecau
-#define NID_SCE_ATRAC_RELEASE_RESOURCES              0xd5c28cc0u
+#define NID_SCE_ATRAC_END_ENTRY                      0xd5c28cc0u
 
 extern void sr_hle_test_ctrl_sampling_reset(void);
 extern uint32_t sr_hle_test_power_lock_count(void);
@@ -30527,7 +30941,7 @@ static void test_td24d_hle_batch(void) {
      * 7. ATRAC second buffer & lifecycle family (5 NIDs / 6 functions):
      *    sceAtracSetSecondBuffer (0x83bf7afd), sceAtracGetSecondBufferInfo (0x83e85ea0),
      *    sceAtracGetBufferInfoForResetting (0x2dd3e298) / sceAtracGetBufferInfoForReseting (0xca3ca3d2),
-     *    sceAtracReinit (0x132f1eca), sceAtracReleaseResources (0xd5c28cc0)
+     *    sceAtracReinit (0x132f1eca), sceAtracEndEntry (0xd5c28cc0)
      * ========================================================================= */
     sr_hle_test_atrac_reinit_reset();
     sr_hle_test_atrac_release_reset();
@@ -30540,9 +30954,9 @@ static void test_td24d_hle_batch(void) {
            "sceAtracReinit succeeds when no ATRAC contexts are in use");
     expect(sr_hle_test_atrac_reinit_count() == 1u, "reinit count incremented");
 
-    /* Release resources succeeds and increments count */
-    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_RESOURCES, 0u, 0u, 0u, 0u) == 0u,
-           "sceAtracReleaseResources succeeds");
+    /* The module-stop entry releases resources: succeeds and increments the count */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_END_ENTRY, 0u, 0u, 0u, 0u) == 0u,
+           "sceAtracEndEntry succeeds");
     expect(sr_hle_test_atrac_release_count() == 1u, "release count incremented");
 
     /* Bad-ID error checks */
@@ -44641,6 +45055,32 @@ static void test_flash0_latin_index_resolution(void) {
                project_large.h_size != project_small.h_size,
            "the project's Latin font serves each size group its own strike");
 
+    /* #2005: the project has a face per Latin index. Index 13 (serif bold, small) has its own file
+     * and reports its own style; index 12 (sans bold, small) has none here, so the regular face of
+     * its size group serves it and says it is regular. */
+    SrFontRegistryInfo project_style, project_group;
+    expect(sr_flash0_font_registry_info(&project_sources, 14u, &project_style) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               strcmp(project_style.font_name, "Nakagawa Project Latin Serif Bold") == 0 &&
+               project_style.style == 5u && !project_style.served_as_regular &&
+               !project_style.served_as_other_family,
+           "a project face of its own style reports that style, not a regular substitute");
+    expect(sr_flash0_font_registry_info(&project_sources, 13u, &project_group) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               strcmp(project_group.font_name, "Nakagawa Project Latin Second") == 0 &&
+               project_group.style == 1u && project_group.served_as_regular &&
+               !project_group.served_as_other_family,
+           "a Latin index with no project face of its own is served by its size group's regular face");
+    /* Index 10 (serif regular, small) has no face here either: the sans-serif regular face of its
+     * group serves it. The style matches, so only the family says it is a substitute. */
+    SrFontRegistryInfo project_family;
+    expect(sr_flash0_font_registry_info(&project_sources, 10u, &project_family) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               strcmp(project_family.font_name, "Nakagawa Project Latin Second") == 0 &&
+               project_family.style == 1u && !project_family.served_as_regular &&
+               project_family.served_as_other_family && project_family.family_code == 2u,
+           "a serif index served by the sans-serif face of its group is reported as a substitute");
+
     /* #1300: resolving a font for the font list says nothing of what the game draws with; only
      * an open does, and the open is what the log has to name. */
     const uint32_t opened_bit = 1u << 14;
@@ -48005,6 +48445,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_route_observer_waits_for_guest_scanout_state();
     test_extracted_data_prepares_before_guest_and_lookup_never_builds();
     test_disc_route_serves_archive_and_loose_content_in_one_namespace();
+    test_archive_discovery_skips_unpack_folders_only();
     test_primary_extracted_archive_duplicates_match_main();
     test_direct_xb_read_precedence_and_listing();
     test_direct_xb_malformed_archive_fails_closed();
@@ -48115,6 +48556,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vpl_blocking_waits();
     test_mbx_lifecycle_and_ordering();
     test_intr_context_conformance();
+    test_mpeg_create_refused_in_interrupt();
     test_psp_mutex();
     test_kernel_nested_join();
     test_kernel_nested_mutex();

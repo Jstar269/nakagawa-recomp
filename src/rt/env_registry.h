@@ -176,6 +176,7 @@
     X("SR_PPM_DUMP", "path", "unset (no dump)", "driver.c", "Output file path for a 64x64 PPM dump of the framebuffer at exit.") \
     X("SR_PRESENT_SCALING", "string", "sharp", "gpu_sdl3vk/sdl3vk.c", "Present scaling mode: sharp, integer or bilinear; unknown values warn and use sharp.") \
     X("SR_PRESENT_TRACE", "flag-presence", "off", "gui.c,hle_display.c", "Emits a boot event for each presented frame on the offscreen sink and traces display presents.") \
+    X("SR_PRESENT_UPSCALE", "string", "off", "gui.c", "Presentation upscaler: off or fsr1 (AMD FSR 1 EASU + RCAS to the picture's place in the window; presentation only). Unknown values warn, stay off.") \
     X("SR_PROFILE", "flag-nonzero", "off", "recomp.c", "When set and not 0, enables hot-path profiling with a dump at exit.") \
     X("SR_PROFILE_DUMP_VBLANKS", "number", "0 (no periodic dump)", "hle_display.c", "Dumps the profile every N vertical blanks.") \
     X("SR_PSMF_MEDIA_DEBUG", "flag-presence", "off", "psmf_media_selftest.c", "Prints media chain counters in the PSMF media selftest.") \

@@ -49,7 +49,7 @@ class TestPythonLockfileHostileInputs(unittest.TestCase):
             [(p["name"], p["version"], len(p["declared_sha256"])) for p in packages],
             [("compiledb", "0.10.7", 2), ("ruff", "0.17.3", 18),
              ("click", "8.5.0", 2), ("bashlex", "0.18", 2),
-             ("coverage", "7.17.0", 119)],
+             ("coverage", "7.17.2", 119)],
         )
 
     def test_valid_intentionally_empty_lockfile_parses_to_empty_inventory(self):

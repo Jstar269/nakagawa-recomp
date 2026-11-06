@@ -119,7 +119,7 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIsNotNone(step, "python_tools must enforce the tracked mypy baseline")
         assert step is not None
         text = "\n".join(step)
-        self.assertIn("mypy==2.1.0", text)
+        self.assertIn("mypy==2.4.1", text)
         self.assertIn("--require-hashes", text)
         self.assertIn("python tools/mypy_baseline.py", text)
 
@@ -574,9 +574,9 @@ _WINDOWS_SERIAL_GATES = {
 # runtime-object compile gate.
 _WINDOWS_EVERY_PART = (
     "Check out repository",
-    "Set up Windows CPython 3.15.1",
+    "Set up Windows CPython 3.15.2",
     "Set up MSYS2 UCRT64",
-    "Pin the Windows Python toolchain (CPython 3.15.1)",
+    "Pin the Windows Python toolchain (CPython 3.15.2)",
     "Verify default and override compiler resolution",
     "Compute the persisted compiler cache key",
     "Restore the persisted compiler cache",
@@ -632,9 +632,9 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         return _matched(match).group(1)
 
     def test_windows_runtime_pins_windows_cpython_315_for_tools_and_make(self) -> None:
-        setup = "\n".join(cast(list[str], self.steps["Set up Windows CPython 3.15.1"]))
-        self.assertIn('python-version: "3.15.1"', setup)
-        pin = "\n".join(cast(list[str], self.steps["Pin the Windows Python toolchain (CPython 3.15.1)"]))
+        setup = "\n".join(cast(list[str], self.steps["Set up Windows CPython 3.15.2"]))
+        self.assertIn('python-version: "3.15.2"', setup)
+        pin = "\n".join(cast(list[str], self.steps["Pin the Windows Python toolchain (CPython 3.15.2)"]))
         self.assertIn("shell: pwsh", pin)
         self.assertIn("steps.windows-cpython.outputs.python-path", pin)
         self.assertIn('"PYTHON=$pythonPath`n"', pin)
@@ -1470,7 +1470,7 @@ class PublicExportJobTests(unittest.TestCase):
         build_versions = versions(build_lock)
         package_versions = versions(lock)
         self.assertEqual(build_versions, {
-            "cython": "3.3.0",
+            "cython": "3.3.1",
             "setuptools": "84.2.1",
             "packaging": "26.3",
             "wheel": "0.48.0",
@@ -1479,15 +1479,15 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertEqual(package_versions, {
             "cfgv": "3.5.0",
             "distlib": "0.4.4",
-            "filelock": "4.2.4",
+            "filelock": "4.2.9",
             "identify": "2.6.20",
-            "nodeenv": "1.11.0",
+            "nodeenv": "1.12.0",
             "packaging": "26.3",
-            "platformdirs": "4.13.5",
-            "pre-commit": "4.6.2",
+            "platformdirs": "4.14.5",
+            "pre-commit": "4.7.0",
             "pyyaml": "6.0.3",
-            "python-discovery": "1.6.4",
-            "virtualenv": "21.14.11",
+            "python-discovery": "1.9.4",
+            "virtualenv": "21.15.5",
         })
         self.assertEqual(lock.count("--hash=sha256:"), len(package_versions))
 
@@ -1513,7 +1513,7 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("PROVENANCE_UNVERIFIED", export)
         job = "\n".join(self.blocks["public_export"])
         self.assertIn("fetch-depth: 0", job)
-        self.assertIn('python-version: "3.15.1"', job)
+        self.assertIn('python-version: "3.15.2"', job)
 
     def test_public_export_job_is_ungated_by_path(self) -> None:
         block = self.blocks["public_export"]
@@ -1807,7 +1807,8 @@ def _on_block(text: str) -> list[str]:
 #: outputs (tools/ci_paths.py, docs/CI.md "Self-hosted Linux runners").
 SELF_HOSTED_RUNS_ON = """${{ fromJSON(needs.classify.outputs.linux_runner || '"ubuntu-24.04"') }}"""
 SELF_HOSTED_RUNS_ON_2604 = """${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}"""
-#: The jobs that read each: every Linux job of CI except classify, which decides.
+#: The jobs that read each: every Linux job of CI except classify, which decides, and
+#: linux_gcc16, a container job that needs Docker on a hosted runner.
 SELF_HOSTED_JOBS = frozenset({"native_tools", "python_tools"})
 SELF_HOSTED_JOBS_2604 = frozenset({"hygiene", "markdown", "public_export", "profile_zero_fixture", "main_smoke",
                                    "ci_required"})
@@ -1856,13 +1857,13 @@ def _job_if(block: list[str]) -> str:
     raise AssertionError("job has no if:")
 
 
-_EXPRESSION_TOKEN = re.compile(r"\s*(\|\||&&|==|!=|!|\(|\)|,|'(?:[^']|'')*'|[A-Za-z_][A-Za-z0-9_.-]*)")
+_EXPRESSION_TOKEN = re.compile(r"\s*(\|\||&&|==|!=|!|\(|\)|,|'(?:[^']|'')*'|\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_.-]*)")
 
 
 def _actions_eval(expression: str, context: Mapping[str, object]) -> bool:
     """Evaluate the GitHub Actions expression subset the job guards use.
 
-    Supported: ``||``, ``&&``, ``!``, ``==``, ``!=``, parentheses, single-quoted strings,
+    Supported: ``||``, ``&&``, ``!``, ``==``, ``!=``, parentheses, single-quoted strings, number literals,
     context paths (a missing or null step reads as null), ``startsWith`` and ``always``.
     As in Actions, ``!`` binds tighter than ``==`` and ``!=``, two strings compare without
     case, operands of different types compare as numbers (null and '' are 0, a non-numeric
@@ -1928,6 +1929,8 @@ def _actions_eval(expression: str, context: Mapping[str, object]) -> bool:
             return value
         if token.startswith("'"):
             return token[1:-1].replace("''", "'")
+        if token[0].isdigit():
+            return float(token)
         if peek() == "(":
             take("(")
             arguments: list[object] = []
@@ -1999,6 +2002,12 @@ class ActionsExpressionEvaluatorTests(unittest.TestCase):
         self.assertTrue(_actions_eval("github.missing == github.empty", context))
         self.assertFalse(_actions_eval("github.missing == 'batch/'", context))
         self.assertFalse(_actions_eval("github.missing != ''", context))
+
+    def test_a_number_literal_compares_as_a_number(self) -> None:
+        self.assertTrue(_actions_eval("run.attempt == 1", {"run": {"attempt": 1}}))
+        self.assertFalse(_actions_eval("run.attempt == 1", {"run": {"attempt": 2}}))
+        self.assertTrue(_actions_eval("run.attempt == 1", {"run": {"attempt": "1"}}))
+        self.assertFalse(_actions_eval("missing == 1", {}))
 
     def test_strings_compare_without_case(self) -> None:
         self.assertTrue(_actions_eval("github.repository == 'jstar269/NAKAGAWA-recomp'",
@@ -2184,6 +2193,15 @@ class TrustedVerdictTriggerTests(unittest.TestCase):
         dispatch = {"github": {"event_name": "workflow_dispatch", "event": {}}, "needs": self.NEEDS}
         self.assertTrue(_actions_eval(self.guard, dispatch))
 
+    def test_only_a_cancelled_first_ci_attempt_is_skipped(self) -> None:
+        for conclusion, attempt, runs in (("cancelled", 1, False), ("cancelled", 2, True),
+                                          ("success", 1, True), ("failure", 1, True)):
+            with self.subTest(conclusion=conclusion, attempt=attempt):
+                run = {"event": "pull_request", "conclusion": conclusion, "run_attempt": attempt}
+                context = {"github": {"event_name": "workflow_run", "event": {"workflow_run": run}},
+                           "needs": self.NEEDS}
+                self.assertEqual(_actions_eval(self.guard, context), runs)
+
 
 class SelfHostedRunnerWiringTests(unittest.TestCase):
     """Only the classifier's trusted-run decision can send a job to the self-hosted pool.
@@ -2224,7 +2242,7 @@ class SelfHostedRunnerWiringTests(unittest.TestCase):
         self.assertEqual(ci.count("needs.classify.outputs.linux_runner_2604 "), len(SELF_HOSTED_JOBS_2604))
         # The classifier, which decides, and the Windows gates stay hosted.
         self.assertIn("    runs-on: ubuntu-26.04", "\n".join(blocks["classify"]))
-        self.assertIn("    runs-on: windows-2022", "\n".join(blocks["windows_runtime"]))
+        self.assertIn("    runs-on: windows-2025", "\n".join(blocks["windows_runtime"]))
         for job in SELF_HOSTED_JOBS | SELF_HOSTED_JOBS_2604:
             block = "\n".join(blocks[job])
             with self.subTest(job=job):
@@ -2291,6 +2309,104 @@ class SelfHostedRunnerWiringTests(unittest.TestCase):
         for fact in ("`NK_SELF_HOSTED_LINUX`", "`NK_SELF_HOSTED_HEARTBEAT`", "`carry/pr-<N>`", "job-started hook",
                      "fork", "`linux_runner`", "The routing is not the security boundary",
                      "which is the boundary", "`all_external_contributors`", "`gh run rerun <run>`"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, section)
+
+
+class Gcc16CanaryWiringTests(unittest.TestCase):
+    """linux_gcc16 runs a released GCC 16 beside native_tools, fully pinned, and blocks nothing.
+
+    It stays out of ci_required's needs until it is promoted (docs/CI.md, "GCC 16 canary"), and
+    it has no continue-on-error, so a failure is red rather than reported green.
+    """
+
+    INSTALL_STEP = "Install GCC 16.2 and the native test dependencies from Fedora 45's GA repository"
+    #: An exact name-version-release from Fedora 45: the dist tag, optionally with a rebuild suffix.
+    PINNED = re.compile(r"^[A-Za-z0-9_+-]+-[0-9][A-Za-z0-9_.+]*-[0-9][A-Za-z0-9_.]*\.fc45(\.[0-9]+)?$")
+
+    def setUp(self) -> None:
+        self.blocks = _ci_job_blocks()
+        self.block = self.blocks["linux_gcc16"]
+        self.text = "\n".join(self.block)
+
+    def _install_packages(self) -> list[str]:
+        step = _ci_step(self.block, self.INSTALL_STEP)
+        self.assertIsNotNone(step, "linux_gcc16 lost its install step")
+        assert step is not None
+        command = " ".join(line.strip().rstrip("\\") for line in step)
+        self.assertIn("dnf -y --repo=fedora --setopt=install_weak_deps=False install ", command)
+        tail = command.split(" install ", 1)[1]
+        return tail.split(" ln -sf ", 1)[0].split()
+
+    def test_runs_in_a_digest_pinned_container_on_a_hosted_runner(self) -> None:
+        self.assertIn("    name: Linux GCC 16 canary", self.text)
+        self.assertIn("    runs-on: ubuntu-26.04", self.text)
+        self.assertRegex(self.text, r"(?m)^      image: fedora@sha256:[0-9a-f]{64} # fedora:45, ")
+        self.assertIn("    permissions:\n      contents: read\n    needs:", self.text)
+        self.assertNotIn("id-token", self.text)
+        self.assertNotIn("secrets.", self.text)
+
+    def test_the_container_has_an_init_that_reaps_orphans(self) -> None:
+        # Without it PID 1 is `tail -f /dev/null`, and a killed grandchild stays a zombie that
+        # test_posix_process's process-tree subtest still sees.
+        self.assertIn("      options: --init\n    permissions:", self.text)
+
+    def test_runs_when_native_tools_does(self) -> None:
+        self.assertIn("    needs: [classify, public_export]", self.text)
+        self.assertIn("needs.classify.outputs.allow_substantive == 'true'", self.text)
+        self.assertIn("needs.classify.outputs.run_native == 'true'", self.text)
+
+    def test_every_named_package_is_pinned_from_the_ga_repository_only(self) -> None:
+        packages = self._install_packages()
+        for name in ("gcc-16.2.1-", "libasan-16.2.1-", "libubsan-16.2.1-", "git-core-", "python3-",
+                     "mesa-vulkan-drivers-"):
+            with self.subTest(package=name):
+                self.assertTrue(any(p.startswith(name) for p in packages))
+        for package in packages:
+            with self.subTest(package=package):
+                self.assertRegex(package, self.PINNED)
+        self.assertNotIn("updates", self.text)
+        self.assertNotIn("--enablerepo", self.text)
+
+    def test_the_build_identity_comes_from_the_checked_out_revision(self) -> None:
+        # Root in the container cannot read the runner-owned checkout with git, so the display
+        # smoke's flight step gets its build identity from the job, as on windows_runtime.
+        self.assertIn("    env:\n      SR_SOURCE_COMMIT: ${{ github.sha }}\n    steps:", self.text)
+
+    def test_git_is_installed_before_the_checkout(self) -> None:
+        self.assertIn("git-core-", " ".join(self._install_packages()))
+        self.assertLess(_ci_step_index(self.block, self.INSTALL_STEP),
+                        _ci_step_index(self.block, "Check out repository"))
+
+    def test_runs_the_core_suite_and_the_headless_display_smoke(self) -> None:
+        for name, command in (
+            ("Run native core test suite with GCC 16.2", "run: make -j2 CC=gcc native-core-tests"),
+            ("Run the headless display smoke with GCC 16.2", "run: make -j2 CC=gcc display-smoke-run"),
+        ):
+            with self.subTest(step=name):
+                step = _ci_step(self.block, name)
+                self.assertIsNotNone(step)
+                assert step is not None
+                self.assertIn(command, "\n".join(step))
+
+    def test_is_not_required_and_never_reports_a_failure_green(self) -> None:
+        # Until it is promoted, ci_required neither needs nor reads it.
+        required = "\n".join(self.blocks["ci_required"])
+        needs = re.search(r"(?m)^    needs: \[(.*)\]$", required)
+        self.assertIsNotNone(needs)
+        assert needs is not None
+        self.assertNotIn("linux_gcc16", [job.strip() for job in needs.group(1).split(",")])
+        self.assertNotIn("linux_gcc16", required)
+        self.assertNotIn("linux_gcc16", (ROOT / "tools" / "ci_required.py").read_text(encoding="utf-8"))
+        self.assertNotIn("continue-on-error", self.text)
+
+    def test_docs_describe_the_canary_and_its_promotion(self) -> None:
+        section = _markdown_section((ROOT / "docs" / "CI.md").read_text(encoding="utf-8"),
+                                    "### GCC 16 canary")
+        for fact in ("`linux_gcc16`", "--repo=fedora", "`gcc-16.2.1-2.fc45.1`", "`--init`", "`SR_SOURCE_COMMIT`",
+                     "Not required",
+                     "no `continue-on-error`", "steps locally against the new digest", "from any event",
+                     "conclusion, with none failed by the container", "libavutil/mem.c:272"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, section)
 

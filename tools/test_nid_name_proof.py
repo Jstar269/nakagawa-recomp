@@ -118,10 +118,10 @@ class ShippedTableTest(unittest.TestCase):
     def test_measurement_matches_the_ledger(self) -> None:
         counts = self.report["counts"]
         self.assertEqual(self.report["total"], 1615)
-        self.assertEqual(counts["verified"], 1463)
+        self.assertEqual(counts["verified"], 1464)
         self.assertEqual(counts["library-attributed-unknown-name"], 53)
         self.assertEqual(counts["editorial-alias"], 11)
-        self.assertEqual(counts["unresolved"], 88)
+        self.assertEqual(counts["unresolved"], 87)
 
     def test_no_sentinels_remain_in_the_shipped_table(self) -> None:
         """IND-1 step A removed the eight; the generator cannot reintroduce them."""
