@@ -65,7 +65,7 @@ steps run one after another:
 | `linux_gcc16` | 1 job, 3.3 min | unchanged (not required, a container job on a hosted runner) |
 | `native_tools` | 3 parts, 7.9-9.2 min | unchanged |
 | `python_tools` | 6 shards, 4.2-18.2 min | 3 shards, about 16.5 min each |
-| `windows_runtime` | 6 parts, 4.2-9.7 min | 3 groups of parts, about 12.5, 11.5 and 10 min |
+| `windows_runtime` | 6 parts, 4.2-9.7 min (4.5-12.0 in run 42258417250) | 3 groups of parts, about 10-13 min each |
 | `ci_required` | 1 job | unchanged |
 
 - **Hygiene.** The check keeps its name, which the ruleset and the
@@ -103,7 +103,7 @@ or run flag of their own. Each merged job's `timeout-minutes` covers its parts: 
 The trade-offs: a step that fails stops the later steps of its own job, so a pull request that
 fails, for example, the Windows smoke part does not learn about its routes part in the same run
 (the Markdown lint is the exception above). A Python shard now takes about as long as the old
-slowest shard, and the longest Windows group about 12.5 minutes instead of 10, which is still
+slowest shard, and the longest Windows group about 13 minutes instead of 10-12, which is still
 shorter than a Python shard, so a run on idle runners takes about as long as before, and less
 time waiting when other runs are queued.
 `tools/test_public_ci_wiring.py` (`PublicExportJobTests`, `WindowsRuntimePartitionTests`)

@@ -1463,9 +1463,10 @@ jobs:
     # The six parts run on three runners (docs/CI.md, "Jobs per run"): each matrix
     # group runs its parts one after another, in this file's step order, after one
     # copy of the shared setup and the runtime-object compile gate. The groups are
-    # balanced on run 42270920833's step times (about 12.5, 11.5 and 10 minutes), and
-    # parts that share a group use separate build trees, apart from the fuzz shards,
-    # which ran in the same tree as each other before. needs.windows_runtime.result
+    # balanced on the step times of runs 42270920833 and 42258417250 (about 10-13
+    # minutes each), and parts that share a group use separate build trees, apart
+    # from the fuzz shards, which ran in the same tree as each other before.
+    # needs.windows_runtime.result
     # aggregates all groups, and a failing step fails its group's job.
     # A group's timeout is the sum of its parts' former 25-minute limits.
     strategy:
