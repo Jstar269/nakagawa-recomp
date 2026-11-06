@@ -1847,6 +1847,12 @@
     "name": "sceUmdGetDriveStat",
     "status": "partial"
   },
+  "0x6d08a871": {
+    "classification": "dedicated",
+    "handler": "h_IoUnassign",
+    "name": "sceIoUnassign",
+    "status": "unreviewed"
+  },
   "0x6d212bac": {
     "classification": "dedicated",
     "handler": "h_WaitSemaCB",
@@ -2949,6 +2955,12 @@
     "handler": "h_IoDopen",
     "name": "sceIoDopen",
     "status": "partial"
+  },
+  "0xb2a628c1": {
+    "classification": "dedicated",
+    "handler": "h_IoAssign",
+    "name": "sceIoAssign",
+    "status": "unreviewed"
   },
   "0xb3a59970": {
     "classification": "dedicated",
