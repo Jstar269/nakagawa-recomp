@@ -72,6 +72,8 @@ SITE_TRANSFORMS = frozenset({
     "offset_x2",
     "window_start_x2",
     "argument_x2",
+    "count_x2_even",
+    "gate_30hz_hold",
 })
 
 # What a site's instruction builds, when its encoding alone cannot say: the upper
@@ -629,10 +631,10 @@ def validate_package(data: Any) -> dict[str, Any]:
             _check_instruction_location(boundary, "update_boundary", "update_boundary")
             if (boundary["function"], boundary["insn_offset"]) in seen_positions:
                 fail("update_boundary", "update_boundary must not be a rewritten site")
-        elif any(site["transform"] == "gate_30hz" for site in sites):
+        elif any(site["transform"] in ("gate_30hz", "gate_30hz_hold") for site in sites):
             fail(
                 "update_boundary",
-                "A package with gate_30hz sites must declare update_boundary: gated sites run on "
+                "A package with gate_30hz or gate_30hz_hold sites must declare update_boundary: gated sites run on "
                 "alternate logic updates, counted where each update begins",
             )
 
@@ -902,6 +904,211 @@ def load_symbol_map(path: Path | str) -> dict[str, int]:
     return out
 
 
+# Opcodes that write memory: sb, sh, swl, sw, swr, cache, sc, swc1, sv.s, svl.q/svr.q, sv.q.
+_STORE_OPS = frozenset((0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x2F, 0x38, 0x39, 0x3A, 0x3D, 0x3E))
+_LOAD_OPS = frozenset((0x20, 0x21, 0x23, 0x24, 0x25))  # lb, lh, lw, lbu, lhu
+HOLD_CALLEE_MAX_WORDS = 256
+EVEN_COUNTER_SCAN_WORDS = 16
+_JR_RA = 0x03E00008
+
+
+def _branch_target(w: int, pc: int) -> int | None:
+    """The target of a conditional branch (likely forms included) at ``pc``, else None."""
+    op, rs, rt = w >> 26, (w >> 21) & 31, (w >> 16) & 31
+    is_branch = (op in (0x04, 0x05, 0x06, 0x07, 0x14, 0x15, 0x16, 0x17)
+                 or (op == 0x01 and rt in (0x00, 0x01, 0x02, 0x03))
+                 or (op in (0x11, 0x12) and rs == 0x08))  # bc1*, the VFPU's bvf/bvt
+    if not is_branch:
+        return None
+    simm16 = w & 0xFFFF
+    if simm16 & 0x8000:
+        simm16 -= 0x10000
+    return (pc + 4 + (simm16 << 2)) & 0xFFFFFFFF
+
+
+def _leaf_refusal(w: int) -> str | None:
+    """Why ``w`` cannot appear in a callee whose call may be skipped, or None."""
+    op, rs, rt, fn = w >> 26, (w >> 21) & 31, (w >> 16) & 31, w & 0x3F
+    if op in (0x02, 0x03):
+        return "jumps or calls"
+    if op == 0x00 and fn == 0x09:
+        return "calls through a register"
+    if op == 0x00 and fn == 0x08 and rs != 31:
+        return "jumps through a register"
+    if op == 0x00 and fn in (0x0C, 0x0D):
+        return "traps (syscall or break)"
+    if op == 0x01 and rt in (0x10, 0x11, 0x12, 0x13):
+        return "calls (a linking branch)"
+    if op in _STORE_OPS:
+        return "writes memory"
+    if op in (0x10, 0x1C):
+        return "uses a system instruction"
+    if op == 0x11 and rs == 0x06:
+        return "writes an FPU control register (ctc1)"
+    return None
+
+
+def _is_likely_branch(w: int) -> bool:
+    """A branch-likely: its delay slot runs only when the branch is taken."""
+    op, rs, rt = w >> 26, (w >> 21) & 31, (w >> 16) & 31
+    return (op in (0x14, 0x15, 0x16, 0x17)
+            or (op == 0x01 and rt in (0x02, 0x03))
+            or (op in (0x11, 0x12) and rs == 0x08 and rt & 0x02 != 0))  # bc1fl/bc1tl, bvfl/bvtl
+
+
+def _fpr_uses(w: int) -> tuple[frozenset[int], frozenset[int]]:
+    """(FPU registers read, FPU registers written) by ``w``."""
+    op, fmt = w >> 26, (w >> 21) & 31
+    ft, fs, fd, fn = (w >> 16) & 31, (w >> 11) & 31, (w >> 6) & 31, w & 0x3F
+    if op == 0x31:  # lwc1 ft
+        return frozenset(), frozenset((ft,))
+    if op != 0x11:
+        return frozenset(), frozenset()
+    if fmt == 0x00:  # mfc1 rt, fs
+        return frozenset((fs,)), frozenset()
+    if fmt == 0x04:  # mtc1 rt, fs
+        return frozenset(), frozenset((fs,))
+    if fmt in (0x10, 0x14):  # .s and .w arithmetic, conversions and compares
+        if fn >= 0x30:
+            return frozenset((fs, ft)), frozenset()
+        if fn <= 0x03:
+            return frozenset((fs, ft)), frozenset((fd,))
+        return frozenset((fs,)), frozenset((fd,))
+    return frozenset(), frozenset()
+
+
+def _gpr_destination(w: int) -> int:
+    """The general register ``w`` writes; 0 when it writes none, -1 when this check cannot tell."""
+    op, rs, rt, rd, fn = w >> 26, (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31, w & 0x3F
+    if op == 0x00:
+        if fn in (0x08, 0x0C, 0x0D, 0x0F, 0x11, 0x13) or 0x18 <= fn <= 0x1F:
+            return 0  # jr, syscall, break, sync, mthi/mtlo, mult/div/madd forms write HI/LO
+        return rd
+    if 0x08 <= op <= 0x0F or op in _LOAD_OPS or op in (0x22, 0x26, 0x30, 0x38):
+        return rt
+    if op == 0x03:
+        return 31
+    if op == 0x01:
+        return 31 if rt in (0x10, 0x11, 0x12, 0x13) else 0
+    if op in (0x02, 0x04, 0x05, 0x06, 0x07, 0x14, 0x15, 0x16, 0x17) or op in _STORE_OPS:
+        return 0
+    if op == 0x11:
+        return rt if rs in (0x00, 0x02) else 0  # mfc1, cfc1
+    if op == 0x31 or op in (0x32, 0x35, 0x36):
+        return 0  # lwc1 and the VFPU loads write no general register
+    if op in (0x18, 0x19, 0x1B, 0x34, 0x37, 0x3C, 0x3F):
+        return 0  # VFPU arithmetic writes only VFPU registers
+    if op == 0x12:
+        return rt if rs == 0x03 else 0  # mfv / mfvc write rt; the rest of COP2 writes none
+    if op == 0x1F:
+        return rd if fn == 0x20 else rt if fn in (0x00, 0x04) else -1  # bshfl, ext, ins
+    return -1
+
+
+def _is_jump(w: int) -> bool:
+    """An unconditional jump or call: j, jal, jr, jalr, or a linking branch."""
+    op, rt, fn = w >> 26, (w >> 16) & 31, w & 0x3F
+    return (op in (0x02, 0x03) or (op == 0x00 and fn in (0x08, 0x09))
+            or (op == 0x01 and rt in (0x10, 0x11, 0x12, 0x13)))
+
+
+def _read_word(read_words_fn: Any, addr: int) -> int | None:
+    got = read_words_fn(addr, 1)
+    if not got:
+        return None
+    return int(got[0]) & 0xFFFFFFFF
+
+
+def _check_hold_callee(site_path: str, site_addr: int, word: int, read_words_fn: Any) -> None:
+    """A gate_30hz_hold call may be skipped only when skipping it drops nothing but its result.
+
+    The callee, read from its entry to its ``jr $ra`` and that delay slot, makes no call,
+    jump or trap, writes no memory, branches only inside that body, reads ``f12`` before it
+    writes it, and writes ``f0``: the value the hold then takes from ``f12``.
+    """
+    target = ((site_addr + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
+    where = f"gate_30hz_hold callee 0x{target:08x}"
+    body: list[int] = []
+    for i in range(HOLD_CALLEE_MAX_WORDS):
+        w = _read_word(read_words_fn, target + 4 * i)
+        if w is None:
+            fail(site_path, f"{where} cannot be read at 0x{target + 4 * i:08x} (fail-closed refusal)")
+        body.append(w)
+        if w == _JR_RA:
+            slot = _read_word(read_words_fn, target + 4 * (i + 1))
+            if slot is None:
+                fail(site_path, f"{where} cannot be read at its return's delay slot (fail-closed refusal)")
+            body.append(slot)
+            break
+    else:
+        fail(site_path, f"{where} has no jr $ra in its first {HOLD_CALLEE_MAX_WORDS} instructions "
+                        f"(fail-closed refusal)")
+    ret = target + 4 * (len(body) - 2)  # the jr $ra; the word after it is its delay slot
+    f12_first: str | None = None
+    writes_f0 = False
+    for i, w in enumerate(body):
+        pc = target + 4 * i
+        why = _leaf_refusal(w)
+        if why is not None:
+            fail(site_path, f"{where} {why} at 0x{pc:08x}: a skipped call must drop nothing but its "
+                            f"result (fail-closed refusal)")
+        written = _gpr_destination(w)
+        if written in (29, 31, -1):
+            what = {29: "writes $sp", 31: "writes $ra", -1: f"has a word this check cannot read (0x{w:08x})"}
+            fail(site_path, f"{where} {what[written]} at 0x{pc:08x}: a skipped call must leave the "
+                            f"caller's frame and return as the call would (fail-closed refusal)")
+        branch = _branch_target(w, pc)
+        if branch is not None and not target <= branch <= ret:
+            # A branch to the return's delay slot would run the slot and then fall through
+            # past the body this check reads.
+            fail(site_path, f"{where} branches from 0x{pc:08x} to 0x{branch:08x}, outside the body "
+                            f"up to its jr $ra (fail-closed refusal)")
+        reads, writes = _fpr_uses(w)
+        if f12_first is None and 12 in reads:
+            f12_first = "read"
+        elif f12_first is None and 12 in writes:
+            f12_first = "written"
+        writes_f0 = writes_f0 or 0 in writes
+    if f12_first != "read":
+        fail(site_path, f"{where} does not read f12 before it writes it: the hold keeps f12 as the "
+                        f"value the call advances (fail-closed refusal)")
+    if not writes_f0:
+        fail(site_path, f"{where} does not write f0, the result the hold replaces (fail-closed refusal)")
+
+
+def _check_even_counter(site_path: str, fn_addr: int, site_addr: int, word: int, read_words_fn: Any) -> None:
+    """count_x2_even compares a counter: its register is loaded from memory in the
+    straight-line code just before the compare, with no call or branch in between."""
+    rs = (word >> 21) & 31
+    lo = max(fn_addr, site_addr - 4 * EVEN_COUNTER_SCAN_WORDS)
+    pc = site_addr - 4
+    while pc >= lo:
+        w = _read_word(read_words_fn, pc)
+        if w is None:
+            break
+        written = _gpr_destination(w)
+        if written == rs:
+            if (w >> 26) in _LOAD_OPS:
+                prev = _read_word(read_words_fn, pc - 4) if pc > fn_addr else None
+                if prev is not None and (_is_jump(prev) or _is_likely_branch(prev)):
+                    # A call's slot runs before the callee, which may change the counter; a
+                    # branch-likely skips its slot on the path that falls through to the compare.
+                    fail(site_path, f"count_x2_even's counter ${rs} is loaded at 0x{pc:08x}, in the delay "
+                                    f"slot of 0x{prev:08x}: the load does not reach the compare on every "
+                                    f"path (fail-closed refusal)")
+                return
+            fail(site_path, f"count_x2_even's counter ${rs} is computed at 0x{pc:08x} (0x{w:08x}), not "
+                            f"loaded from memory: the site must compare a stored count (fail-closed refusal)")
+        if written == -1:
+            fail(site_path, f"count_x2_even cannot tell whether 0x{w:08x} at 0x{pc:08x} writes the counter "
+                            f"${rs} (fail-closed refusal)")
+        if _branch_target(w, pc) is not None or _is_jump(w):
+            break
+        pc -= 4
+    fail(site_path, f"count_x2_even's counter ${rs} is not loaded from memory in the straight-line code "
+                    f"before the compare (fail-closed refusal)")
+
+
 def verify_and_resolve_sites(
     pkg_data: Mapping[str, Any],
     *,
@@ -999,6 +1206,10 @@ def verify_and_resolve_sites(
                                                acceleration=stock_values[accel])
         elif len(stock_words) == 1:
             rewrites = [plan_site_rewrite(site, stock_words[0])]
+            if site["transform"] == "gate_30hz_hold":
+                _check_hold_callee(site_path, site_addr, stock_words[0], read_words_fn)
+            elif site["transform"] == "count_x2_even":
+                _check_even_counter(site_path, fn_addr, site_addr, stock_words[0], read_words_fn)
         else:
             if "stock_values" in site:
                 fail(f"{site_path}.stock_values", "stock_values belongs only to swc1 and sw store sites")
@@ -1500,7 +1711,9 @@ def _plan_word_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
 
     Returned kinds:
       ``word``            execute ``word`` instead of the stock word;
-      ``gate``            execute the stock instruction on alternate 60 Hz updates only;
+      ``gate``            execute the stock instruction on alternate 60 Hz updates only; a gated
+                          call with ``hold_f`` sets FPR 0 to FPR ``hold_f`` on the updates it skips;
+      ``word_even``       execute ``word``, then clear GPR ``rt`` when GPR ``reg`` was odd;
       ``scale_int_reg``   after the stock load, multiply GPR ``reg`` by 2;
       ``scale_int_args``  after the stock entry instruction, multiply the GPRs ``regs`` by 2;
       ``scale_f_reg``   after the stock instruction, multiply FPR ``reg`` by ``factor``;
@@ -1575,6 +1788,22 @@ def _plan_word_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
 
     if tf == "launch_velocity_x0.5":
         _refuse(site, w, "launch_velocity_x0.5 rewrites a lui/ori float pair")
+
+    if tf == "gate_30hz_hold":
+        # A call that advances its first float argument (f12) by one update and returns
+        # the result in f0: on a skipped update the call holds that value instead.
+        if is_jal:
+            return {"kind": "gate", "hold_f": 12}
+        _refuse(site, w, "gate_30hz_hold takes a jal")
+
+    if tf == "count_x2_even":
+        # slti/sltiu rt, rs, n where rs counts logic updates: true while rs < 2n and rs is
+        # even, so n events still happen, one every second update, at the stock instants.
+        if op not in (0x0A, 0x0B) or simm16 <= 0 or 2 * simm16 > 0x7FFF:
+            _refuse(site, w, "count_x2_even takes a slti/sltiu with a positive immediate")
+        if rt == 0 or rt == rs:
+            _refuse(site, w, "count_x2_even needs a destination other than $zero and the counter")
+        return {"kind": "word_even", "word": _with_imm(w, 2 * simm16), "reg": rs, "rt": rt}
 
     if tf == "gate_30hz":
         if is_jal or is_jalr:
