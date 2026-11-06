@@ -28,6 +28,7 @@
 #include "flight_recorder.h"
 #include "prx_loader.h"
 #include "ace.h"
+#include "videorec.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -56,6 +57,13 @@ static SrPauseHost s_driver_pause_host = {
  * (gui_stop_requested), and an SR_GE_CAPTURE_EXIT capture asks to end once written. */
 static int driver_stop_requested(void) {
     return ge_capture_exit_due() || gui_stop_requested();
+}
+
+/* An end of main once the guest has run: a recording (#1273) names it and the exit status
+ * main is about to return, so record.json tells a clean end from a failed one. */
+static int driver_run_end(int status, const char *how) {
+    (void)sr_videorec_finish_status(how, status);
+    return status;
 }
 
 /* An opt-in file side channel for a parent launcher that cannot reliably own a
@@ -499,6 +507,8 @@ int main(int argc, char **argv) {
     DriverExpectedU32 expectations[DRIVER_MAX_EXPECT_U32];
     memset(expectations, 0, sizeof(expectations));
     sr_flight_init();
+    /* The run recorder records only on the scheduler's deterministic clock (videorec.h). */
+    sr_videorec_set_clock(sched_clock_deterministic);
 
 #ifndef SR_SELFTEST_ONLY
 #ifdef _WIN32
@@ -732,7 +742,7 @@ have_image:;
             if (!sched_reset_for_loadexec()) {
                 fprintf(stderr, "LOAD_EXEC_SCHEDULER_RESET_REFUSED: unable to retire old guest threads\n");
                 sr_hle_loadexec_release(&request);
-                return 2;
+                return driver_run_end(2, "LoadExec could not retire the old guest threads");
             }
             sr_hle_loadexec_reset_guest_state();
             sr_mem_reset();
@@ -743,13 +753,13 @@ have_image:;
             uint32_t next_entry = 0u, next_gp = 0u;
             if (!sr_hle_loadexec_boot_module(request.guest_path, &next_entry, &next_gp)) {
                 sr_hle_loadexec_release(&request);
-                return 2;
+                return driver_run_end(2, "LoadExec could not boot the replacement module");
             }
             memset(&s, 0, sizeof(s));
             sr_vfpu_thread_ctrl_init(&s);
             if (!sr_driver_seed_loadexec_arguments(&s, &request, next_entry, next_gp)) {
                 sr_hle_loadexec_release(&request);
-                return 2;
+                return driver_run_end(2, "LoadExec could not pass the replacement its arguments");
             }
             sched_set_guest_process_gp(next_gp);
             sr_driver_boot_event("BOOT_EVENT phase=loadexec_restart entry=0x%08x args=%u",
@@ -815,19 +825,21 @@ have_image:;
         );
         if (!matches) any_failure = 1;
     }
-    if (any_failure) return 3;
+    if (any_failure) return driver_run_end(3, "a DRIVER_EXPECT_U32 check failed");
 
     if (gui_headless_acceptance_requested()) {
         if (gui_headless_acceptance_complete()) {
             uint32_t presented = gui_headless_acceptance_presented_frames();
             sr_driver_boot_event("BOOT_EVENT phase=headless_acceptance status=PASS presented_frames=%u",
                                  presented);
-            return SR_HEADLESS_ACCEPTANCE_EXIT_REACHED;
+            return driver_run_end(SR_HEADLESS_ACCEPTANCE_EXIT_REACHED,
+                                  "the headless acceptance checkpoint was reached");
         }
         sr_driver_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=checkpoint_not_reached presented_frames=%u",
                              gui_headless_acceptance_presented_frames());
-        return SR_HEADLESS_ACCEPTANCE_EXIT_NOT_REACHED;
+        return driver_run_end(SR_HEADLESS_ACCEPTANCE_EXIT_NOT_REACHED,
+                              "the headless acceptance checkpoint was not reached");
     }
 
-    return 0;
+    return driver_run_end(0, "the run returned to the driver");
 }

@@ -25,6 +25,8 @@
     X("FUZZ_CONSTRAINT", "string", "unset (finite floats only)", "vfpu_fuzz.c", "The value allow_nan_inf makes the VFPU fuzzer also generate NaN and infinity operands.") \
     X("FUZZ_SEED", "number", "unset (seed from argv or built-in value)", "vfpu_fuzz.c", "Seeds the random generator of the VFPU fuzz test tool; parsed with strtoul base 0 and overrides the argument.") \
     X("FUZZ_TRIALS", "number", "200 (or first command-line argument)", "vfpu_fuzz.c", "Sets the number of random trials run by the VFPU fuzz test program.") \
+    X("NK_VIDEOREC_FAKE_FFMPEG", "string", "unset (the self-test sets it per case)", "videorec_selftest.c", "How the videorec self-test, run as a fake FFmpeg, ends: enc= and mux= each ok, slow:MS, fail, dead or crash.") \
+    X("PATH", "system", "set by the host", "videorec.c", "Searched, absolute entries only, for the FFmpeg executable a recording encodes with.") \
     X("PSP_ISO", "path", "unset: no ISO path from the environment", "iso_public.c", "Path of the disc image the public ISO reader opens when no image is given another way.") \
     X("PSP_VFPU_TABLES", "path", "assets/vfpu", "vfpu_tables.c", "Directory the runtime loads the VFPU lookup tables from instead of the default one.") \
     X("SCHED_DUMP", "flag-presence", "off", "sched.c", "Diagnostic switch read in sched.c that enables scheduler state dumping in the idle loop.") \
@@ -239,6 +241,11 @@
     X("SR_VERIFY_REPORT", "path", "unset (no report written)", "verify.c", "Verify build only: path of the per-function calls and checks report.") \
     X("SR_VERIFY_STEPS", "number", "1000000", "verify.c", "Verify build only: reference-interpreter step limit for one checked call.") \
     X("SR_VIDEO", "string", "unset: the Vulkan presenter is used", "gui.c,osk_text_entry.c,sched.c", "Selects the presenter: gdi for the Win32 window, offscreen for headless, otherwise Vulkan.") \
+    X("SR_VIDEOREC_CODEC", "string", "ffv1", "videorec.c", "Encoder for a recording: ffv1, x264rgb, nvenc (all lossless) or raw (unencoded, no FFmpeg). Another value or an encoder that cannot run refuses the recording.") \
+    X("SR_VIDEOREC_DIR", "path", "unset (no recording)", "videorec.c", "Records each VBLANK's presented picture and the mixed audio, on one guest timeline, into this folder. Needs SR_DETERMINISTIC_CLOCK=1; refused without it.") \
+    X("SR_VIDEOREC_FFMPEG", "path", "unset (first absolute PATH entry holding ffmpeg)", "videorec.c", "Absolute path of the FFmpeg a recording encodes and muxes with; a path that is not absolute or not an executable file refuses the recording.") \
+    X("SR_VIDEOREC_SIZE", "string", "unset (the window's size at the first recorded present)", "videorec.c", "Output size of a recording as WxH (even numbers), independent of the window; the picture is scaled as the window scales it.") \
+    X("SR_VIDEOREC_START", "number", "0 (from the first presented picture)", "videorec.c", "VBLANK number a recording starts at; earlier pictures and sound are not recorded.") \
     X("SR_VRAMDUMP", "string", "unset (off)", "hle_display.c", "Selection of VRAM dumps to write; requires SR_VRAMDUMP_DIR to name an output directory.") \
     X("SR_VRAMDUMP_DIR", "path", "unset (VRAM dump refused)", "hle_display.c", "Existing output directory required when SR_VRAMDUMP selects VRAM dumps.") \
     X("SR_VSYNC", "number", "1 (vsync on)", "gpu_sdl3vk/sdl3vk.c", "Set to 0 to request presenting without vsync; unset or non-zero keeps vsync.") \

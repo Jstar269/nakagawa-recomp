@@ -29,6 +29,7 @@
 #include "recomp.h"
 #include "gpu_sdl3vk/sdl3vk.h"
 #include "fbcap.h"
+#include "videorec.h"         /* video recording: the CPU presenters hand over their frame */
 #include "osk_overlay.h"        /* the in-window keyboard: keys in, the frame drawn over */
 #include "osk_overlay_paint.h"
 #include "ace.h"             /* Ace Mode: crisp keyboard; refused by the acceptance checkpoint */
@@ -1142,6 +1143,7 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         /* The converted frame is what this sink accepted: an armed capture publishes
          * exactly these pixels, the same host frame the other presenters show. */
         sr_capture_serve_host(s_px, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX);
+        sr_videorec_frame(s_px, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX);
         return 1;
     }
 
@@ -1262,6 +1264,7 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     }
     /* The DIB just blitted is the converted frame: an armed capture publishes it. */
     sr_capture_serve_host(s_px, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX);
+    sr_videorec_frame(s_px, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX);
 #else
     /* No GDI presenter on this host and the SDL3 presenter is not active: gui_init
      * reported that, so there is nothing to present and nothing to claim. */
