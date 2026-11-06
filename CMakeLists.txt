@@ -46,6 +46,7 @@ set(CORE_SOURCES
     src/core/nk_disc_expand.c
     src/core/nk_disc_verify.c
     src/core/nk_zip.c
+    src/core/nk_steam_shortcuts.c
     src/core/generated/nk_title_catalog.c
 )
 
@@ -57,7 +58,7 @@ endif()
 
 add_library(nakagawa_core STATIC ${CORE_SOURCES})
 if(WIN32)
-    target_link_libraries(nakagawa_core PUBLIC shell32 ole32 uuid)
+    target_link_libraries(nakagawa_core PUBLIC shell32 ole32 uuid advapi32)
 endif()
 
 target_include_directories(nakagawa_core PUBLIC
@@ -180,6 +181,13 @@ add_executable(test_nk_zip
 )
 target_link_libraries(test_nk_zip PRIVATE nakagawa_core)
 add_test(NAME nk_zip_test COMMAND test_nk_zip)
+
+add_executable(test_steam_shortcuts
+    tests/native/test_steam_shortcuts.c
+    tests/native/native_test_isolation.c
+)
+target_link_libraries(test_steam_shortcuts PRIVATE nakagawa_core)
+add_test(NAME steam_shortcuts_test COMMAND test_steam_shortcuts)
 
 add_executable(test_xb_parser
     tests/native/test_xb_parser.c

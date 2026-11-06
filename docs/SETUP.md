@@ -95,6 +95,19 @@ choose **Pin to Start**, or send a shortcut to the Desktop. From a source checko
 both shortcuts with the player's taskbar identity, so the launcher and the games it starts share one taskbar
 button. The ZIP itself writes no shortcut.
 
+**Add to Steam** ([#2152](https://github.com/Jstar269/nakagawa-recomp/issues/2152)). The code that adds Nakagawa to a
+Steam library as a non-Steam game is in `src/core/nk_steam_shortcuts.c`; the player button that calls it is not
+wired yet, so until then add the executable in Steam by hand. It works on your PC only and makes no network call or
+download. It edits the binary `shortcuts.vdf` in the `userdata\<account>\config` folder of the Steam account you pick
+(Steam's folder comes from the current user's own registry setting on Windows). It adds one entry with the app name,
+the executable and its start-in folder, and no launch options, and it only adds: entries it did not write are copied
+byte for byte, an entry for the same executable is reported and nothing is written, and a file it cannot read is left
+untouched. Before it writes, it copies the file to `shortcuts.vdf.nakagawa-backup-<date>-<time>` and reads the copy
+back; if that fails it writes nothing. It writes a temporary file and renames it over the original. Steam rewrites
+this file when it exits, so while Steam runs nothing is written: close Steam first (Nakagawa never closes it). In
+portable mode the entry points at the executable's current folder, so moving the folder breaks the shortcut.
+Other platforms are unsupported for now and say so.
+
 **Update.** Check for updates unpacks the new version into a new folder next to the running one and leaves the old
 one. Your data is in the per-user folders below, so the new version finds it. Delete the old folder when you
 are done with it.
