@@ -82,6 +82,50 @@ Measured on a Windows 11 x64 PC building and running Hot Shots Tennis with the p
   release. An update unpacks into a new folder and leaves the data folder alone, so deleting an old release
   folder deletes no games or saves.
 
+## Install, update and uninstall (Windows)
+
+Nakagawa is a portable ZIP today ([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)); there is no
+installer yet. The unpacked folder is the program and holds nothing you create, so installing and removing it
+never touches your games or saves.
+
+**Install.** Unpack `nakagawa-recomp-<version>-windows-x64.zip` into a folder of your choice (a read-only folder
+works) and start `bin\nakagawa_player.exe`. For a Start-menu or Desktop entry, right-click the executable and
+choose **Pin to Start**, or send a shortcut to the Desktop. From a source checkout,
+`python tools/stage_install.py --dest "<folder>" --start-menu-shortcut --desktop-shortcut` stages the same layout and writes
+both shortcuts with the player's taskbar identity, so the launcher and the games it starts share one taskbar
+button. The ZIP itself writes no shortcut.
+
+**Update.** Check for updates unpacks the new version into a new folder next to the running one and leaves the old
+one. Your data is in the per-user folders below, so the new version finds it. Delete the old folder when you
+are done with it.
+
+**Uninstall the program.**
+
+- A ZIP you unpacked: close the player and delete its folder. Nothing was written anywhere else, except any
+  shortcut you made yourself.
+- A folder made by `tools/stage_install.py --dest`: run
+  `python tools/stage_install.py --uninstall --dest "<folder>"` (add `--dry-run` to see the list first). It removes
+  `bin\`, `source\`, the icon, the install marker and the shortcuts and desktop entries it recorded, and it
+  skips any recorded path it would not have written itself. It never reads or deletes the per-user folders,
+  and a file you added to the install folder stays.
+- Portable mode ([below](#portable-mode-portabletxt)): the `data` folder beside the executable is your data. The
+  uninstall keeps `bin\data` and `bin\portable.txt`; delete the folder yourself when you want it gone.
+
+**What stays after an uninstall, and how to remove it.** Everything the player writes is under
+`%LOCALAPPDATA%\Nakagawa` (or the `data` folder in portable mode, or the folder given with `--user-data-root`):
+
+| Folder | Holds | To remove it |
+| --- | --- | --- |
+| `data` | the library, built games and their build cache, imported discs and decrypted files (`titles\<DISC_ID>`, `discs\<DISC_ID>`), imported fonts, downloaded build tools | **Remove from library** on a game removes what Nakagawa built for it; its disc copy and decrypted files go only when you tick them, and the size is shown first. **Settings > Factory reset** moves the folders aside instead of deleting them. |
+| `cache` | the platform cache folder | **Settings > Build tools and cache** deletes the shared library cache; or delete the folder |
+| `saves` | each game's Memory Stick folder | **Remove from library** keeps it unless you tick the saves (it backs them up first); otherwise delete the folder by hand |
+| `config` | `settings.json` | **Factory reset**, or delete the folder |
+| `logs` | the player's, the games' and the builds' logs, in one folder | **Settings** opens it; delete what you like |
+
+Your disc images on your own drives are never touched. To remove everything Nakagawa ever wrote, uninstall the
+program as above and then delete `%LOCALAPPDATA%\Nakagawa`. Factory reset leaves a `-backup-<time>` copy of each
+folder it moved, and those are yours to delete.
+
 ## Wine and Proton
 
 The Windows ZIP is the only player build; there is no Linux build yet ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)).

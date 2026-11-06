@@ -560,8 +560,8 @@ includes is listed.
 
 This section records what the Windows portable ZIP holds today and where the player keeps
 everything it writes ([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)). The
-installer, upgrade and uninstall rules that #324 also asks for are not built yet; the portable
-ZIP is the one supported distribution form.
+installer that #324 also asks for is not built yet; the portable ZIP is the one supported
+distribution form, and the upgrade and uninstall rules are at the end of this section.
 
 ### The install image (read-only)
 
@@ -664,3 +664,21 @@ INSTALL unpacks it into `<folder>.partial` beside the running version, checks ev
 `SHA256SUMS.txt` lists, and renames it into place. It never replaces the running version and
 never touches the per-user folders. Removing an extracted folder removes the install image
 only; the per-user folders above stay until the user deletes them.
+
+### Upgrade and uninstall rules
+
+* **Upgrade is side by side.** A new version is a new folder; the old one keeps running until the user
+  deletes it, so an interrupted update leaves the old version whole and at worst a `.partial` folder
+  that the next update replaces. In-place staging (`tools/stage_install.py --dest`) swaps `bin/` and
+  `source/` by rename and removes the old copy only afterwards.
+* **A runtime or AOT epoch change forces a rebuild, never a stale launch.** Packages live in the
+  per-user data folder and are keyed on the epochs of Section 6. A package built by another epoch
+  is INCOMPATIBLE: the card offers REBUILD PACKAGE and the old code is never started. Saves and
+  title inputs are not keyed on an epoch and survive.
+* **Uninstall removes only what the install wrote.** `python tools/stage_install.py --uninstall --dest
+  <folder>` removes `bin/`, `source/`, the icon, the install marker and the shortcuts and desktop entries the
+  marker records, and nothing else: it never reads or deletes the per-user folders above, a file
+  the user added beside the install survives, a recorded path with a name the tool does not write is skipped, and
+  a folder with no marker is refused. In portable mode `bin/data` and `bin/portable.txt` stay. An unpacked ZIP is
+  removed by deleting its folder. `tools/test_stage_install.py` (`UninstallTests`) covers each rule. An
+  installer's uninstaller (not built; Inno Setup is the chosen wrapper) is to follow the same rule.
