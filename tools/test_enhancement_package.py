@@ -3002,24 +3002,12 @@ def _r(rs: int, rt: int, rd: int, sa: int, fn: int) -> int:
     return (rs << 21) | (rt << 16) | (rd << 11) | (sa << 6) | fn
 
 
-def _i(op: int, rs: int, rt: int, imm: int) -> int:
-    return (op << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
-
-
-def _jal(target: int) -> int:
-    return (3 << 26) | ((target >> 2) & 0x03FFFFFF)
-
-
 def _beq(rs: int, rt: int, pc: int, to: int) -> int:
-    return _i(0x04, rs, rt, (to - pc - 4) >> 2)
+    return _i(0x04, rs, rt, (to - pc - 4) >> 2)   # _i, _jal and _move are defined above
 
 
 ZERO, AT, V0, V1, A0, A1, T0, S0, S1, SP, RA = 0, 1, 2, 3, 4, 5, 8, 16, 17, 29, 31
 NOP, JR_RA = 0, 0x03E00008
-
-
-def _move(rd: int, rs: int) -> int:
-    return _r(rs, ZERO, rd, 0, 0x21)
 
 
 def _addiu(rt: int, rs: int, imm: int) -> int:
@@ -3140,7 +3128,7 @@ class TestAltGateStaticChecks(unittest.TestCase):
         self.assertEqual(resolved[self.SITE]["rewrite"], {"kind": "gate", "alternates": [self.TICK1, self.TICK2]})
 
     def test_schema_refusals(self) -> None:
-        cases = (
+        cases: tuple[tuple[str, list[str], str], ...] = (
             ("none", [], "a list of 1 to 4 function symbols"),
             ("too many", ["tick1", "tick2", "leaf", "other", "target"], "a list of 1 to 4"),
             ("twice", ["tick1", "tick1"], "lists a function twice"),

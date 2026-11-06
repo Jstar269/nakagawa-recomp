@@ -1492,6 +1492,7 @@ def _entry_a0_at_calls(graph: _Graph, site_path: str) -> dict[int, bool]:
         w = graph.words[n]
         uses = _uses(w)
         src = _move_source(w)
+        out: frozenset[int]
         if uses is None:
             out = frozenset()  # an unreadable word: nothing is known to hold the entry $a0 after it
         else:
