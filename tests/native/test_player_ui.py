@@ -2184,11 +2184,12 @@ class NativePlayerUiTests(unittest.TestCase):
         "interface_size": str(0x452D), "high_contrast": str(0x452E),
         "reduce_motion": str(0x4509), "text_size": str(0x452F),
         "ace": str(0x4540), "ace_open": str(0x4541), "ace_mode": str(0x4542),
+        "preset": str(0x4510),
     }
-    # From Resolution, Down runs through the Game card's six rows (the last is the
-    # one Play mode row, which opens Settings > Enhanced) to the button row, which it enters at
+    # From Resolution, Down runs through the Game card's seven rows (Play mode, which opens
+    # Settings > Enhanced, then Graphics preset, #2150) to the button row, which it enters at
     # Third-party notices.
-    TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 6
+    TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 7
 
     def focus_trail(self, run: dict[str, object]) -> list[str]:
         """The controls the next UI focused, with repeats collapsed."""
@@ -2199,6 +2200,84 @@ class NativePlayerUiTests(unittest.TestCase):
             if not trail or trail[-1] != frame["next_focus"]:
                 trail.append(frame["next_focus"])
         return trail
+
+    @staticmethod
+    def preset_lines(run: dict[str, object]) -> list[dict[str, str]]:
+        """The graphics preset row and note the main Settings page drew, in order (#2150)."""
+        stdout = run["stdout"]
+        assert isinstance(stdout, str)
+        prefix = "[PLAYER_UI_TEST] next_ui_settings_preset "
+        lines = []
+        for line in stdout.splitlines():
+            if line.startswith(prefix):
+                value, warns, note = line[len(prefix):].split("|", 2)
+                lines.append({"value": value[len("value="):], "warns": warns[len("warns="):],
+                              "note": note[len("note="):]})
+        return lines
+
+    def test_next_ui_graphics_preset_writes_its_settings(self) -> None:
+        """#2150: the Game card's last row steps the graphics preset from Custom (a new
+        library) to Low, then Medium. A preset is an overlay for Enhanced and Ace sessions, so
+        the choice is saved and the rows keep their values, and the page's notice line says
+        where the preset applies."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + ("KEY_DOWN",) * 6 +
+            ("KEY_RETURN", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
+        )
+        self.assertIn(focus["preset"], self.focus_trail(run), "Down reaches Graphics preset")
+        lines = self.preset_lines(run)
+        self.assertEqual([line["value"] for line in lines], ["Custom", "Low", "Medium"],
+                         run["stdout"])
+        self.assertEqual((lines[0]["warns"], lines[0]["note"]), ("0", ""),
+                         "a new library starts on Custom, with the page's own line")
+        medium = lines[-1]
+        self.assertEqual(medium["warns"], "0")
+        self.assertEqual(medium["note"],
+                         "Medium is used in Enhanced and Ace. Authentic uses your own display "
+                         "settings.")
+        self.assertNotIn("FSR 1", medium["note"])
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("graphics_preset"), "medium", "two steps: Low, then Medium")
+        # The rows are the new library's own, not Medium's 2x: only sessions take a preset.
+        self.assertEqual(settings.get("resolution_scale"), 1, "the Resolution row is unchanged")
+        self.assertEqual(settings.get("present_scaling"), "sharp")
+        self.assertIs(settings.get("vsync"), True)
+        self.assertIs(settings.get("fullscreen"), False)
+
+    def test_next_ui_graphics_preset_ultra_note_and_custom_on_edit(self) -> None:
+        """#2150: Ultra's row and note say its upscaler is not set, in the warning colour;
+        editing a row the preset sets (Resolution) makes it Custom and the note goes."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + ("KEY_DOWN",) * 6 +
+            ("KEY_RETURN", "WAIT_MS=100") * 4 + ("KEY_UP",) * 6 +
+            ("KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
+        )
+        trail = self.focus_trail(run)
+        self.assertIn(focus["preset"], trail)
+        self.assertIn(focus["resolution"], trail[trail.index(focus["preset"]):],
+                      "Up returns to Resolution")
+        lines = self.preset_lines(run)
+        self.assertEqual([line["value"] for line in lines],
+                         ["Custom", "Low", "Medium", "High", "Ultra (no upscaler)", "Custom"],
+                         run["stdout"])
+        ultra = lines[4]
+        self.assertEqual(ultra["warns"], "1", "Ultra's note names what it could not set")
+        self.assertIn("Ultra is used in Enhanced and Ace", ultra["note"])
+        self.assertIn("without its FSR 1 upscaler", ultra["note"])
+        self.assertIn("Authentic uses your own display settings", ultra["note"])
+        self.assertEqual(lines[3]["warns"], "0")
+        self.assertNotIn("FSR 1", lines[3]["note"])
+        self.assertEqual((lines[-1]["warns"], lines[-1]["note"]), ("0", ""),
+                         "an edited row makes the preset Custom and its note goes")
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("graphics_preset"), "custom")
+        self.assertEqual(settings.get("resolution_scale"), 2, "Resolution stepped from 1x to 2x")
 
     def test_next_ui_settings_changes_are_saved_and_done_returns(self) -> None:
         """#1302: Settings in the next UI runs the same handlers and saves each change."""
