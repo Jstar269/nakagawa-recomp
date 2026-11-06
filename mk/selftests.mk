@@ -847,6 +847,19 @@ tex-scale-selftest:
 
 native-core-tests: tex-scale-selftest
 
+# texrepl-selftest - texture replacement packs (src/rt/texrepl.h, #1880): PPSSPP's texture hashes
+# against reference values, the pack's ini and file-name rules, the wildcard lookup order, the
+# palette identity, malformed packs refused whole, and the decoded-image budget. A synthetic pack
+# written by the test; no GPU, no SDL, no game data.
+texrepl-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/core -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		tests/native/texrepl_selftest.c src/rt/texrepl.c $(PLAYER_PLATFORM_SRC) $(PLAYER_PLATFORM_LIBS) \
+		-o $(BUILD_DIR)/texrepl_selftest$(EXE_EXT)
+	$(BUILD_DIR)/texrepl_selftest$(EXE_EXT)
+
+native-core-tests: texrepl-selftest
+
 # tex-scale-gate-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_NO_ACE_GATE, which lets
 # an authentic start read SR_TEX_SCALE and SR_SMART_2D. It passes only when the settings cell fails
 # for that reason, so the Ace gate is under test (contract section 11.2, item 1).

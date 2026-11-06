@@ -24,12 +24,18 @@
  *                    render scale above 1), with it the draw is the unscaled one; a magnified
  *                    draw keeps the copy, identical with the rule on and off. The cells above
  *                    check copies through 1:1 sprites, so they run with the rule off;
+ *   replace          a texture a synthetic replacement pack lists (texrepl.h, #1880) is drawn from the
+ *                    pack's image from the first draw, even at 1:1 with the 1:1 rule on; a rewrite to
+ *                    unlisted content never draws the old image; an image of no whole factor is
+ *                    counted and the texture drawn as made; an authentic start reads no pack;
  *   guest-bytes      after every cell, no guest VRAM byte outside the drawn frame and no CLUT
  *                    byte changes while the scales land;
  *   smart2d          at a render scale above 1, a 1:1 linear sprite samples nearest (every
  *                    device pixel is a whole texel), linear blurs without the filter, and a
  *                    perspective triangle keeps its filter.
  */
+
+#include "../../../tests/native/synthetic_png.h"   /* the pack files the replace cell writes */
 
 #define XST_BASE   (0x04000000u | 0x00160000u)
 #define XST_RTT    (0x04000000u | 0x000C8000u)
@@ -842,6 +848,154 @@ static int xst_cell_smart2d(void) {
     return 1;
 }
 
+/* ---- texture replacement (#1880) ----------------------------------------------------------- */
+
+static int xst_setenv(const char *name, const char *value) {
+#ifdef _WIN32
+    return _putenv_s(name, value ? value : "") == 0;
+#else
+    return value ? setenv(name, value, 1) == 0 : unsetenv(name) == 0;
+#endif
+}
+
+/* The file name a pack gives the 16x16 8888 texture `t` at XST_TEX: cache key, then quick hash. */
+static void xst_repl_name(const uint32_t *t, char *out, size_t cap) {
+    xst_upload(t);
+    const uint64_t key = nk_texrepl_cache_key(XST_TEX, 3u, 4u | (4u << 8), 0u);
+    snprintf(out, cap, "%016llx%08x.png", (unsigned long long)key,
+             nk_texrepl_quick_hash(SR_HOST(XST_TEX), sizeof(uint32_t) * XST_W * XST_H, XST_TEX));
+}
+
+/* What a 1:1 sprite of a texture replaced by `img` (factor rf) reads back: the copy's own lattice. */
+static void xst_repl_expect(const uint32_t *img, int rf, uint32_t *want) {
+    for (int y = 0; y < XST_H; y++)
+        for (int x = 0; x < XST_W; x++)
+            want[y * XST_W + x] = img[xst_readback_texel(0.0f, y, XST_H, rf) * XST_W * (size_t)rf +
+                                      xst_readback_texel(0.0f, x, XST_W, rf)];
+}
+
+/* A pack's image replaces a texture whose hash it lists, from the draw that finds it; a rewritten
+ * texture the pack does not list is never drawn from the old image (it falls back to xBRZ, which
+ * scales what the pack leaves); the replaced content coming back is replaced again; an image that
+ * is no whole factor of the texture is counted and the texture drawn as the game made it; the 1:1
+ * rule that binds guest-resolution textures never applies to a replacement; and an authentic start
+ * reads no pack. */
+static int xst_cell_replace(int f) {
+    const int rf = 3, rw = XST_W * rf, rh = XST_H * rf, ww = 24;
+    uint32_t a[XST_W * XST_H], b[XST_W * XST_H], d[XST_W * XST_H];
+    uint32_t want[XST_W * XST_H], plain[XST_W * XST_H];
+    uint32_t *rimg = (uint32_t *)malloc((size_t)rw * rh * 4u), *wide = (uint32_t *)malloc((size_t)ww * XST_H * 4u);
+    if (!rimg || !wide) { free(rimg); free(wide); return 0; }
+    for (int i = 0; i < rw * rh; i++) rimg[i] = 0xFF000000u | (xst_hash(0x9000u + (uint32_t)i) & 0xFFFFFFu);
+    for (int i = 0; i < ww * XST_H; i++) wide[i] = 0xFF000000u | (xst_hash(0xA000u + (uint32_t)i) & 0xFFFFFFu);
+    xst_pattern(a, 61u);
+    xst_pattern(b, 67u);
+    xst_pattern(d, 71u);
+    char dir[400], path[480], name_a[64], name_d[64], err[200];
+    snprintf(dir, sizeof(dir), "%s/texrepl_gpu_pack", SR_SELFTEST_BUILD_ROOT);
+    nk_platform_mkdir_p(dir);
+    xst_repl_name(a, name_a, sizeof(name_a));
+    xst_repl_name(d, name_d, sizeof(name_d));
+    snprintf(path, sizeof(path), "%s/%s", dir, name_a);
+    int ok = synpng_write(path, rw, rh, rimg);
+    snprintf(path, sizeof(path), "%s/%s", dir, name_d);
+    ok = ok && synpng_write(path, ww, XST_H, wide);
+    if (!ok) { fprintf(stderr, "gpu texscale selftest: FAIL replace: cannot write the synthetic pack\n"); free(rimg); free(wide); return 0; }
+
+    /* The Ace gate: an authentic start (enhanced = 0) names the request and reads no pack. */
+    NkTexRepl *saved = s_repl;
+    s_repl = NULL;
+    xst_setenv("SR_TEX_REPLACE", dir);
+    tex_repl_init(0);
+    const int authentic_read = s_repl != NULL;
+    tex_repl_shutdown();
+    xst_setenv("SR_TEX_REPLACE", NULL);
+    s_repl = saved;
+    if (authentic_read) {
+        fprintf(stderr, "gpu texscale selftest: FAIL replace: an authentic start read SR_TEX_REPLACE\n");
+        free(rimg); free(wide);
+        return 0;
+    }
+
+    xst_reset();
+    nk_tex_scale_set_sync(1);
+    s_repl = nk_texrepl_open(dir, 0, err, sizeof(err));
+    if (!s_repl) { fprintf(stderr, "gpu texscale selftest: FAIL replace: %s\n", err); free(rimg); free(wide); return 0; }
+    NkTexReplStats st0;
+    nk_texrepl_stats(s_repl, &st0);
+    const uint64_t bound0 = s_cnt_repl_bound;
+    const int onetoone_saved = s_xs_onetoone_plain;
+
+    /* 1. Listed content, with the 1:1 rule on: the replacement, from the very first draw. */
+    s_xs_onetoone_plain = 1;
+    xst_upload(a);
+    xst_state(XST_BASE, XST_TEX, 3u, 1, 1);
+    xst_repl_expect(rimg, rf, want);
+    xst_expect(a, 0, 1, plain);
+    ok = xst_draw(20.0f, 140.0f);
+    s_tmpl_ok = 0;
+    ok = ok && xst_draw(60.0f, 140.0f);
+    s_xs_onetoone_plain = onetoone_saved;
+    if (!ok || !xst_report("replace", 20, 140, want, "the first draw of a listed texture is not its replacement") ||
+        !xst_report("replace", 60, 140, want, "a later draw of a listed texture is not its replacement")) goto fail;
+    if (memcmp(want, plain, sizeof(want)) == 0 || s_cnt_repl_bound <= bound0) {
+        fprintf(stderr, "gpu texscale selftest: FAIL replace: the replacement is the texture (vacuous) or no replaced "
+                        "bind was counted\n");
+        goto fail;
+    }
+
+    /* 2. The guest rewrites the texture to content the pack does not list: the old image is never
+     * drawn; the first draw shows the new texture as it is, the next xBRZ's copy of it. */
+    xst_upload(b);
+    s_tmpl_ok = 0;
+    ok = xst_draw(100.0f, 140.0f);
+    xst_expect(b, 0, 1, plain);
+    if (!ok) goto fail;
+    if (xst_matches(100, 140, want)) {
+        fprintf(stderr, "gpu texscale selftest: FAIL replace: the replacement of the previous content was drawn "
+                        "after the guest rewrote the texture\n");
+        goto fail;
+    }
+    if (!xst_report("replace", 100, 140, plain, "an unlisted rewritten texture is not drawn as the game made it")) goto fail;
+    s_tmpl_ok = 0;
+    ok = xst_draw(140.0f, 140.0f);
+    xst_expect(b, f, 1, want);
+    if (!ok || !xst_report("replace", 140, 140, want, "an unlisted rewritten texture did not take xBRZ's copy")) goto fail;
+
+    /* 3. The listed content returns: replaced again at once. */
+    xst_upload(a);
+    s_tmpl_ok = 0;
+    ok = xst_draw(180.0f, 140.0f);
+    xst_repl_expect(rimg, rf, want);
+    if (!ok || !xst_report("replace", 180, 140, want, "listed content that came back is not replaced again")) goto fail;
+
+    /* 4. An image that is not a whole factor (48 wide for 16): counted, the texture drawn as made. */
+    xst_upload(d);
+    s_tmpl_ok = 0;
+    ok = xst_draw(20.0f, 180.0f);
+    xst_expect(d, 0, 1, plain);
+    NkTexReplStats st1;
+    nk_texrepl_stats(s_repl, &st1);
+    if (!ok || !xst_report("replace", 20, 180, plain, "a texture whose replacement is no whole factor is not drawn as made")) goto fail;
+    if (st1.bad_factor <= st0.bad_factor || st1.hits < 2u) {
+        fprintf(stderr, "gpu texscale selftest: FAIL replace: bad_factor %llu -> %llu (want a rise), hits %llu (want 2 or more)\n",
+                (unsigned long long)st0.bad_factor, (unsigned long long)st1.bad_factor, (unsigned long long)st1.hits);
+        goto fail;
+    }
+
+    nk_texrepl_close(s_repl);
+    s_repl = saved;
+    free(rimg); free(wide);
+    printf("gpu texscale selftest: PASS %-12s listed texture replaced at once, an unlisted rewrite never from the old image, "
+           "a bad factor counted\n", "replace");
+    return 1;
+fail:
+    nk_texrepl_close(s_repl);
+    s_repl = saved;
+    free(rimg); free(wide);
+    return 0;
+}
+
 int gegpu_texscale_selftest(void) {
     const int f = s_xs_factor;
     if (!f || !s_xs_smart2d) {
@@ -851,10 +1005,10 @@ int gegpu_texscale_selftest(void) {
     }
     int ok = 1;
     static int (*const cells[])(int) = { xst_cell_scaled_draw, xst_cell_large, xst_cell_upload_cap,
-                                         xst_cell_not_ready, xst_cell_rewrite, xst_cell_clut, xst_cell_budget,
-                                         xst_cell_rtt, xst_cell_onetoone };
+                                         xst_cell_not_ready, xst_cell_rewrite, xst_cell_clut, xst_cell_replace,
+                                         xst_cell_budget, xst_cell_rtt, xst_cell_onetoone };
     static const char *const names[] = { "scaled-draw", "large", "upload-cap", "not-ready", "rewrite", "clut",
-                                         "budget", "rtt", "onetoone" };
+                                         "replace", "budget", "rtt", "onetoone" };
     /* The cells before onetoone check copies through 1:1 sprites, so they run with the 1:1 rule
      * off; onetoone turns it back on. */
     s_xs_onetoone_plain = 0;

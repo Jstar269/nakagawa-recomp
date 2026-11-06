@@ -118,6 +118,7 @@
 #include "../perf.h"
 #include "../ace.h"   /* Ace Mode: the 30 Hz detector counts draws per target (Ace on only) */
 #include "tex_scale.h"   /* texture scaling (xBRZ) and the smart 2D filter (Ace on only) */
+#include "../texrepl.h"  /* texture replacement packs (#1880; Ace on only) */
 
 #include <vulkan/vulkan.h>
 #include <SDL3/SDL_timer.h>
@@ -279,6 +280,8 @@ typedef struct {
         uint64_t made_serial, made_hash;   /* the content the scaled copy holds */
         int state;                         /* XS_NONE, XS_QUEUED, XS_READY */
         int factor;                        /* of the scaled image; 0 = none allocated */
+        int repl_factor;                   /* a replacement pack's image of this content is queued or held
+                                            * at this factor; 0 = the copy (if any) is xBRZ's (#1880) */
         int retry;                         /* XS_RETRY_*: offer it again on a later hit */
         uint64_t retry_present;            /* XS_RETRY_BUDGET: the present it last tried in */
         uint64_t last_bound;               /* the present the copy was last bound or stored in */
@@ -433,7 +436,12 @@ static uint64_t s_cnt_af_samplers = 0;
  * run, and then no scaled image, job or thread is ever made and no draw's filter changes. */
 static int s_xs_factor = 0;
 static int s_xs_smart2d = 0;
-static uint64_t s_xs_serial = 0;           /* content generations handed out */
+/* The texture-replacement pack in force (texrepl.h), opened once at init: NULL in an authentic run
+ * and whenever SR_TEX_REPLACE is unset or names no readable pack. A replacement rides the scaled-
+ * copy machinery: it is an image `repl_factor` times the guest texture, held in the entry's xs copy. */
+static NkTexRepl *s_repl = NULL;
+static uint64_t s_cnt_repl_bound = 0, s_cnt_repl_queued = 0;
+static uint64_t s_xs_serial = 0;          /* content generations handed out */
 static int s_tex_bound_scale = 1;          /* factor of the set tex_get last returned */
 static VkDescriptorSet s_tex_plain_set;    /* with a copy returned: the entry's unscaled set */
 /* A draw that maps one texel to one pixel binds the unscaled texture even when a copy is ready:
@@ -3551,8 +3559,10 @@ static void tex_xs_free(TexEnt *e) {
 /* Free entry `e`'s idle copy but keep its content generation; a later hit offers it again. */
 static void tex_xs_release(TexEnt *e) {
     const uint64_t serial = e->xs.serial;
+    const int repl_factor = e->xs.repl_factor;   /* a retry sizes its room by it */
     tex_xs_free(e);
     e->xs.serial = serial;
+    e->xs.repl_factor = repl_factor;
     e->xs.retry = XS_RETRY_BUDGET;
 }
 
@@ -3604,9 +3614,19 @@ static int tex_xs_reclaim(const TexEnt *keep, uint64_t need) {
     return nk_tex_scale_budget_used() + need <= budget;
 }
 
-/* Bytes entry `e`'s copy takes at the configured factor. */
+/* Whether any scaled image can be made at all: xBRZ is on, or a replacement pack is open. */
+static int xs_enabled(void) { return s_xs_factor || s_repl != NULL; }
+
+/* The factor entry `e`'s copy has now: a replacement's, else the configured xBRZ factor
+ * (0 when neither applies). */
+static int tex_xs_factor(const TexEnt *e) {
+    if (e->xs.repl_factor) return e->xs.repl_factor;
+    return nk_tex_scale_factor_for(s_xs_factor, e->w, e->h);
+}
+
+/* Bytes entry `e`'s copy takes at its factor. */
 static uint64_t tex_xs_need(const TexEnt *e) {
-    const uint64_t f = (uint64_t)nk_tex_scale_factor_for(s_xs_factor, e->w, e->h);
+    const uint64_t f = (uint64_t)tex_xs_factor(e);
     return (uint64_t)e->w * (uint64_t)e->h * f * f * 4u;
 }
 
@@ -3870,8 +3890,8 @@ static void tex_mip_targets_readback(const TexMipKey *mip, const uint32_t *level
  * (s_tex_noscale), and no byte of it lies inside a render target, whose contents stay exactly
  * as the GE drew them. Checked when a copy is offered and again whenever one would be bound. */
 static int tex_xs_eligible(const TexEnt *e, uint32_t levels) {
-    if (!s_xs_factor || s_tex_noscale || levels != 1u) return 0;
-    if (!nk_tex_scale_factor_for(s_xs_factor, e->w, e->h)) return 0;
+    if (!xs_enabled() || s_tex_noscale || levels != 1u) return 0;
+    if (!tex_xs_factor(e)) return 0;
     if (is_vram(e->addr)) {
         const uint64_t a0 = vram_off(e->addr), a1 = a0 + (e->bytes ? e->bytes : 1u);
         for (int t = 0; t < MAX_TGT; t++) {
@@ -3897,15 +3917,152 @@ static int tex_xs_bindable(const TexEnt *e) {
 #endif
 }
 
+static void tex_xs_collect(void);
+
+static int log2_exact(int v) {
+    int n = 0;
+    if (v <= 0 || (v & (v - 1))) return -1;
+    while ((1 << n) < v) n++;
+    return n;
+}
+
+/* The replacement pack's image for entry `e`'s current content, if it has one: hashes the guest
+ * texture as the pack's own tools do (texrepl.h), looks it up, and accepts an image that is a whole
+ * number (2..NK_TEX_SCALE_MAX) times the guest size and fits NK_TEX_SCALE_MAX_DIM (an image of any
+ * other shape is counted and left unused: the texture is drawn as the game made it). On 1, `hit` is
+ * pinned (give it back with nk_texrepl_unpin) and `*factor` is its factor. Reads guest memory only
+ * through tex_source_ptr, so a source it cannot read directly is never replaced. */
+static int tex_repl_find(const TexEnt *e, NkTexReplHit *hit, int *factor) {
+    const int wl = log2_exact(e->w), hl = log2_exact(e->h);
+    if (!s_repl || wl < 0 || hl < 0 || s_ge->tex_fmt > 10u) return 0;
+    const uint32_t bytes = tex_source_size();
+    const uint8_t *p = tex_source_ptr(e->addr, bytes);
+    if (!p) return 0;
+    NkTexReplId id;
+    memset(&id, 0, sizeof(id));
+    id.addr = e->addr;
+    id.format = s_ge->tex_fmt;
+    id.dim = (uint32_t)wl | ((uint32_t)hl << 8);
+    if (s_ge->tex_fmt & 4u) {
+        /* The palette the texture can index: 16 entries for 4-bit indices, else 256. */
+        const uint32_t entries = s_ge->tex_fmt == 4u ? 16u : 256u;
+        uint32_t pal = entries * ((s_ge->clut_fmt & 3u) == 3u ? 4u : 2u);
+        if (pal > sizeof(s_ge->clutram)) pal = (uint32_t)sizeof(s_ge->clutram);
+        id.clut_hash = nk_texrepl_clut_hash(s_ge->clutram, pal);
+    }
+    id.hash = nk_texrepl_hash_texture(s_repl, p, bytes, e->addr, (int)s_ge->tex_bufw, e->w, e->h,
+                                      s_ge->tex_fmt, 0);
+    if (!nk_texrepl_lookup(s_repl, &id, hit)) return 0;
+    const int f = nk_texrepl_factor(hit, e->w, e->h);
+    if (f < 2 || f > NK_TEX_SCALE_MAX || e->w * f > NK_TEX_SCALE_MAX_DIM || e->h * f > NK_TEX_SCALE_MAX_DIM) {
+        nk_texrepl_note_bad_factor(s_repl);
+        nk_texrepl_unpin(s_repl, hit);
+        return 0;
+    }
+    *factor = f;
+    return 1;
+}
+
+/* Texture replacement (#1880), read once when the renderer starts: SR_TEX_REPLACE names the pack's
+ * folder, SR_TEX_REPLACE_BUDGET_MB (1 to 8192, default 256) bounds the decoded images kept. Ace Mode
+ * only, like texture scaling: an authentic run names the request and obeys nothing. Replacement
+ * changes the committed frame, so it is guest-visible (docs/ENHANCEMENT_CONTRACT.md, section 11.3
+ * "Texture Replacement") and says so at start until its launch-line keys exist. A pack that cannot
+ * be read, or whose textures.ini is malformed, is refused whole and the run goes on unreplaced. */
+static void tex_repl_init(int enhanced) {
+    s_repl = NULL;
+    const char *dir = getenv("SR_TEX_REPLACE");
+    if (!dir || !dir[0]) return;
+    if (!enhanced) {
+        fprintf(stderr, "TEX_REPLACE: off (texture replacement needs Ace Mode)\n");
+        return;
+    }
+    uint64_t budget = 0;
+    const char *mb = getenv("SR_TEX_REPLACE_BUDGET_MB");
+    if (mb && mb[0]) {
+        char *end = NULL;
+        const unsigned long v = strtoul(mb, &end, 10);
+        if (!end || *end || mb[0] < '0' || mb[0] > '9' || v < 1ul || v > 8192ul) {
+            fprintf(stderr, "TEX_REPLACE: refused (SR_TEX_REPLACE_BUDGET_MB takes 1 to 8192)\n");
+            return;
+        }
+        budget = (uint64_t)v << 20;
+    }
+    char err[200];
+    s_repl = nk_texrepl_open(dir, budget, err, sizeof(err));
+    if (!s_repl) {
+        fprintf(stderr, "TEX_REPLACE: refused (%s)\n", err);
+        return;
+    }
+    /* The copies' VRAM is the scaled-copy budget, which a refused SR_TEX_SCALE setting leaves at 0. */
+    if (!nk_tex_scale_config()->budget_bytes) {
+        NkTexScaleConfig c = *nk_tex_scale_config();
+        c.budget_bytes = (uint64_t)NK_TEX_SCALE_DEFAULT_BUDGET_MB << 20;
+        nk_tex_scale_configure(&c);
+    }
+    static const char *const kind[] = { "quick", "xxh32", "xxh64" };
+    fprintf(stderr, "TEX_REPLACE: on (hash=%s, entries=%llu, notes=%llu, budget_mb=%llu)\n",
+            kind[nk_texrepl_hash_kind(s_repl)], (unsigned long long)nk_texrepl_entry_count(s_repl),
+            (unsigned long long)nk_texrepl_diag_count(s_repl),
+            (unsigned long long)((budget ? budget : (uint64_t)NK_TEXREPL_DEFAULT_BUDGET_MB << 20) >> 20));
+    fprintf(stderr, "TEX_REPLACE: guest-visible, on through SR_TEX_REPLACE and not admitted under contract "
+                    "section 11.2 (each present commits the frame to guest VRAM; see the contract's "
+                    "\"Texture Replacement\" entry)\n");
+    for (size_t i = 0; i < nk_texrepl_diag_count(s_repl); i++)
+        fprintf(stderr, "TEX_REPLACE: note: %s\n", nk_texrepl_diag(s_repl, i));
+}
+
+static void tex_repl_shutdown(void) {
+    if (!s_repl) return;
+    NkTexReplStats st;
+    nk_texrepl_stats(s_repl, &st);
+    fprintf(stderr, "TEX_REPLACE: exit (lookups=%llu, hits=%llu, misses=%llu, left_alone=%llu, "
+                    "queued=%llu, bound_draws=%llu, loaded=%llu, load_failed=%llu, over_budget=%llu, "
+                    "evicted=%llu, bad_factor=%llu, cache_peak_mb=%llu, decode_ms=%llu)\n",
+            (unsigned long long)st.lookups, (unsigned long long)st.hits, (unsigned long long)st.misses,
+            (unsigned long long)st.left_alone, (unsigned long long)s_cnt_repl_queued,
+            (unsigned long long)s_cnt_repl_bound, (unsigned long long)st.loaded,
+            (unsigned long long)st.load_failed, (unsigned long long)st.over_budget,
+            (unsigned long long)st.evicted, (unsigned long long)st.bad_factor,
+            (unsigned long long)(st.cache_peak >> 20), (unsigned long long)(st.decode_ns / 1000000ull));
+    nk_texrepl_close(s_repl);
+    s_repl = NULL;
+}
+
 /* Offer the content just decoded into s_texscratch (level 0 of entry `e`, hash `hash`) for
  * scaling. A full queue leaves the entry unscaled and marks it to be offered again on a later
  * hit. A copy that would not fit the budget first frees idle copies (tex_xs_reclaim); if it still
  * does not fit, the entry is drawn unscaled and offered again in a later present. */
 static void tex_xs_offer(TexEnt *e, uint64_t hash, uint32_t levels) {
     e->xs.retry = XS_RETRY_NONE;
-    if (!tex_xs_eligible(e, levels)) return;
-    const int f = nk_tex_scale_factor_for(s_xs_factor, e->w, e->h);
+    /* A replacement pack's image for this content comes first (#1880); xBRZ scales what the pack
+     * leaves. The lookup decodes the file the first time, so it runs only for a texture that could
+     * be drawn from a copy at all. */
+    NkTexReplHit hit;
+    int have_hit = 0, repl_f = 0;
+    if (s_repl && levels == 1u && !s_tex_noscale) have_hit = tex_repl_find(e, &hit, &repl_f);
+    if (e->xs.repl_factor != repl_f) {
+        /* The content's replacement changed (or went away): the held copy is the wrong size. */
+        if (e->xs.factor) {
+            if (!submit_pending() || !cmd_drain(GEGPU_BOUNDARY_LIFETIME)) {
+                if (have_hit) nk_texrepl_unpin(s_repl, &hit);
+                e->xs.retry = XS_RETRY_BUDGET;
+                e->xs.retry_present = xs_now();
+                return;
+            }
+            const uint64_t serial = e->xs.serial;
+            tex_xs_free(e);
+            e->xs.serial = serial;
+        }
+        e->xs.repl_factor = repl_f;
+    }
+    if (!tex_xs_eligible(e, levels)) {
+        if (have_hit) nk_texrepl_unpin(s_repl, &hit);
+        return;
+    }
+    const int f = tex_xs_factor(e);
     if (!e->xs.factor && !tex_xs_reclaim(e, tex_xs_need(e))) {
+        if (have_hit) nk_texrepl_unpin(s_repl, &hit);
         tex_xs_budget_wait(e);
         return;
     }
@@ -3914,18 +4071,29 @@ static void tex_xs_offer(TexEnt *e, uint64_t hash, uint32_t levels) {
     e->xs.mag_linear = (filter & 1u) != 0;
     e->xs.clamp_u = s_ge->tex_wrap & 1;
     e->xs.clamp_v = (s_ge->tex_wrap >> 8) & 1;
-    if (!nk_tex_scale_submit(e->xs.serial, hash, s_texscratch, e->w, e->h, f,
-                             e->xs.clamp_u, e->xs.clamp_v)) {
+    int queued;
+    if (have_hit) {
+        queued = nk_tex_scale_submit_ready(e->xs.serial, hash, hit.rgba, e->w, e->h, f);
+        nk_texrepl_unpin(s_repl, &hit);
+        if (queued) s_cnt_repl_queued++;
+    } else {
+        queued = nk_tex_scale_submit(e->xs.serial, hash, s_texscratch, e->w, e->h, f,
+                                     e->xs.clamp_u, e->xs.clamp_v);
+    }
+    if (!queued) {
         e->xs.retry = XS_RETRY_QUEUE;
         return;
     }
     e->xs.state = XS_QUEUED;
+    /* A replacement is finished work: store it now, so the draw that found it is the first to show
+     * it rather than the next. Scaled copies wait for their worker and arrive on a later draw. */
+    if (have_hit) tex_xs_collect();
 }
 
 /* Entry `e`'s guest-resolution image now holds new content (a decode just filled it from
  * s_texscratch): any scaled copy is stale from here on, and the new content is offered. */
 static void tex_xs_note_upload(TexEnt *e, uint32_t levels) {
-    if (!s_xs_factor) return;
+    if (!xs_enabled()) return;
     if (e->xs.state != XS_NONE) s_cnt_xs_stale++;
     e->xs.serial = ++s_xs_serial;
     e->xs.state = XS_NONE;
@@ -4012,7 +4180,7 @@ static int tex_xs_store(TexEnt *e, const NkTexScaleResult *r) {
  * Results past the present's bytes wait in the job table, under its host-memory cap. */
 static uint64_t s_xs_upload_present = UINT64_MAX, s_xs_upload_bytes;
 static void tex_xs_collect(void) {
-    if (!s_xs_factor) return;
+    if (!xs_enabled()) return;
     const uint64_t now = xs_now();
     if (s_xs_upload_present != now) {
         s_xs_upload_present = now;
@@ -4043,7 +4211,7 @@ static void tex_xs_collect(void) {
  * (tex_xs_bindable, tex_xs_eligible), else tex_entry_set's. s_tex_bound_scale reports which. */
 static VkDescriptorSet tex_bind_set(TexEnt *e, uint32_t levels) {
     s_tex_bound_scale = 1;
-    if (!s_xs_factor || !tex_xs_bindable(e) || !tex_xs_eligible(e, levels)) return tex_entry_set(e);
+    if (!xs_enabled() || !tex_xs_bindable(e) || !tex_xs_eligible(e, levels)) return tex_entry_set(e);
     VkDescriptorSet set = e->xs.set;
     if (s_ace_af && (tex_filter_variant(s_ge->tex_filter) & 2u) && !(s_ge->vtype & (1u << 23))) {
         /* Ace Mode's texture filtering applies to the copy as tex_entry_set applies it. */
@@ -4064,10 +4232,14 @@ static VkDescriptorSet tex_bind_set(TexEnt *e, uint32_t levels) {
         }
         if (e->xs.set_af) set = e->xs.set_af;
     }
-    s_tex_plain_set = tex_entry_set(e);
+    /* A replacement is the texture a pack's author drew, not xBRZ's guess at more detail: the
+     * 1:1 draw rule (xs_onetoone_plain, which binds the guest-resolution texture instead) never
+     * applies to it, so no plain set is handed on. */
+    s_tex_plain_set = e->xs.repl_factor ? VK_NULL_HANDLE : tex_entry_set(e);
     s_tex_bound_scale = e->xs.factor;
     e->xs.last_bound = xs_now();
     s_cnt_xs_bound++;
+    if (e->xs.repl_factor) s_cnt_repl_bound++;
     return set;
 }
 
@@ -4077,7 +4249,7 @@ static VkDescriptorSet tex_bind_set(TexEnt *e, uint32_t levels) {
  * only when the copy could fit with the idle copies freed. */
 static void tex_xs_retry(TexEnt *e, uint32_t levels) {
     if (e->xs.retry == XS_RETRY_NONE ||
-        !nk_tex_scale_can_submit(e->w, e->h, nk_tex_scale_factor_for(s_xs_factor, e->w, e->h)))
+        !nk_tex_scale_can_submit(e->w, e->h, tex_xs_factor(e)))
         return;
     if (e->xs.retry == XS_RETRY_BUDGET) {
         const uint64_t now = xs_now();
@@ -4134,7 +4306,7 @@ static VkDescriptorSet tex_get(void) {
         if (e->content_valid && e->hash == hash) {
             if (sr_perf_enabled) sr_perf_texture_cache(1);
             e->pending = 1;
-            if (s_xs_factor) tex_xs_retry(e, levels);
+            if (xs_enabled()) tex_xs_retry(e, levels);
             return tex_bind_set(e, levels);
         }
         if (!e->content_valid && e->hash == hash && tex_shadow_matches(e)) {
@@ -4143,7 +4315,7 @@ static VkDescriptorSet tex_get(void) {
             e->pending = 1;
             s_cnt_shadow_avoided++;
             if (sr_perf_enabled) sr_perf_texture_cache(1);
-            if (s_xs_factor) tex_xs_retry(e, levels);
+            if (xs_enabled()) tex_xs_retry(e, levels);
             return tex_bind_set(e, levels);
         }
         /* same texture state, new contents: update in place (cache stays bounded) */
@@ -6175,7 +6347,8 @@ int gegpu_init(void) {
         s_xs_factor = xs->factor;
         s_xs_smart2d = xs->smart2d;
     }
-    const uint32_t tex_sets = (s_ace_af ? 2u * MAX_TEX : MAX_TEX) * (s_xs_factor ? 2u : 1u);
+    tex_repl_init(g_ace_on);
+    const uint32_t tex_sets = (s_ace_af ? 2u * MAX_TEX : MAX_TEX) * (xs_enabled() ? 2u : 1u);
     s_tex_pool_sets = tex_sets;
     if (s_ace_af) ace_confirm(ACE_FEATURE_AF);   /* the renderer that filters is up */
     VkDescriptorPoolSize dps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_sets };
@@ -6358,6 +6531,9 @@ void gegpu_shutdown(void) {
         tex_xs_free(e);
     }
     s_tex_n = 0;
+    const int had_repl = s_repl != NULL;
+    tex_repl_shutdown();   /* the exit line, the pack closed; the scaled-copy machinery it used goes next */
+    if (had_repl && !s_xs_factor && !s_xs_smart2d) nk_tex_scale_shutdown();
     if (s_xs_factor || s_xs_smart2d) {
         nk_tex_scale_shutdown();
         fprintf(stderr, "TEX_SCALE: draws (scaled_binds=%llu, onetoone_unscaled=%llu, scaled_uploads=%llu, "

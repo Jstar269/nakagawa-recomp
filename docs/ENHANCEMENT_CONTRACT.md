@@ -647,6 +647,71 @@ at `s_twin`).
 - **Stamps.** `TWIN: on (colour=full|native, scale=<n>x)` at start, and `TWIN: exit (ops=, copies=, reseeds=,
   authentic_presents=, alloc_failures=)` at exit. Section 10.4 applies: the run is an Ace run, refused as evidence.
 
+### 10.12. Texture Replacement
+
+A user-supplied texture pack replaces guest textures in the Vulkan GE renderer (#1880), the way PPSSPP's texture
+packs do. It is guest-visible (section 11.1) and not admitted under section 11.2: section 11.3.4 is its entry, and
+this section says how it draws. The code is `src/rt/texrepl.c` (the pack reader and the hashes: no GPU, no guest
+memory, no network) and its hook in `ge_gpu.c`'s scaled-copy path (`tex_xs_offer`, section 10.10).
+
+- **Settings.** `SR_TEX_REPLACE=<folder>` names the pack and `SR_TEX_REPLACE_BUDGET_MB` (1 to 8192, default 256) bounds
+  the host memory its decoded images may hold, both read when the renderer starts. It takes effect only in Ace Mode:
+  in an authentic run the pack is not read whatever the environment says, and a request prints one
+  `TEX_REPLACE: off (texture replacement needs Ace Mode)` line. A folder that cannot be read, or whose
+  `textures.ini` is malformed (a line that is no comment, section or `key = value`, no `hash` type, an unknown one),
+  prints `TEX_REPLACE: refused (<reason>)` and loads nothing: a half-read pack would replace some textures and not
+  others in a way nobody asked for. There is no launch-line key, library setting or per-title setting yet; they come
+  with the launch-line pull request that follows #2074, and only that pull request admits the feature
+  (section 11.3.4).
+- **The pack.** The project ships none and never downloads one: it is a folder the user made or took from a
+  community, kept locally. A `textures.ini` is optional. `[options]` takes `hash = quick | xxh32 | xxh64` (required
+  when the file exists; a folder with no ini reads as `quick`), `ignoreAddress`, `reduceHash`,
+  `skipLastDXT1Blocks128x64` and `skipLastDXT1Blocks128x128`; `[hashes]` maps `<16 hex digits><8 hex digits>` to a
+  file, and an empty value marks a texture to leave alone; `[hashranges]` and `[reducehashranges]` are read as
+  PPSSPP reads them. A PNG named `<16 hex digits><8 hex digits>.png` in the folder's root needs no ini line.
+  Everything else (the `[filtering]`, `[indexed]` and `[games]` sections, `saveIndexed`, `ignoreMipmap`, mip-level
+  files, DDS, KTX2 and ZIM files, and any key or section this reader does not know) is reported, one `TEX_REPLACE:
+  note:` line each, and not applied.
+- **Identity.** A texture is identified as in PPSSPP: its address (30 bits) and size code in the high half of the
+  key, its quick (or xxh) hash of the guest bytes in the low half, and for a palette format the palette's XXH32
+  hash folded into the key. The renderer hashes the 16 (4-bit indices) or 256 palette entries the texture can use;
+  PPSSPP hashes the bytes the guest loaded, so a pack made against a game that loads a larger palette may not
+  match a palette texture here. Lookup tries, in PPSSPP's order, the exact key, the palette alone, the key with
+  no data hash, the data hash with no address, and the address alone.
+- **Which textures.** One level (no mip chain), not a render target, whose guest bytes the renderer can read
+  directly. The image must be a whole factor from 2 to 6 of the texture, the same on both axes, and no side may
+  pass 2048 texels; any other image is counted (`bad_factor`) and the texture is drawn as the game made it. Only PNG
+  is read, and only level 0.
+- **How it draws.** The image is stored as the entry's scaled copy: an image `factor` times the guest texture,
+  sampled on its own texel lattice (section 10.10, "Sampling"). It is finished work, so no worker is involved, and
+  it is stored in the draw that finds it, not a later one. A replacement is tried first; xBRZ scales a texture the
+  pack leaves alone. A draw that maps one texel to one pixel keeps the replacement: the rule that binds the
+  unscaled texture for xBRZ copies never applies to a pack's image, which the pack's author drew.
+- **Never stale.** The copy records the cache entry's upload and the content hash it was made from, as scaled copies
+  do. A texture the guest rewrites is looked up again: its new content is replaced by the image the pack lists for
+  it, or scaled or drawn as made, and the old image is never drawn. Replaced content that returns is replaced again.
+- **Budget.** Decoded images stay in host memory up to `SR_TEX_REPLACE_BUDGET_MB`, the least recently used dropped
+  first and decoded again when next needed; an image the budget cannot hold is counted (`over_budget`) and its
+  texture drawn as made. The copies share the GPU budget of `SR_TEX_SCALE_BUDGET_MB` (512 MiB by default) and its
+  reclamation (section 10.10).
+- **Guest memory and files.** Texture bytes are read through the same host view the cache's content hash reads;
+  nothing is written to guest memory, the CLUT or a texture source. Files are read only from inside the pack folder
+  (a name or `[hashes]` value that leaves it is refused); nothing is uploaded and no network connection is made.
+- **Stamps.** `TEX_REPLACE: on (hash=, entries=, notes=, budget_mb=)` at start, followed by the line section 11.3.4
+  describes and one `TEX_REPLACE: note:` line for each thing read and not applied, and at exit `TEX_REPLACE: exit
+  (lookups=, hits=, misses=, left_alone=, queued=, bound_draws=, loaded=, load_failed=, over_budget=, evicted=,
+  bad_factor=, cache_peak_mb=, decode_ms=)`. Section 10.4 applies: the run is an Ace run.
+- **Not yet.** Decoding a PNG runs on the renderer thread the first time an image is needed (a worker thread, as
+  scaling has, and DDS or KTX2 files come after); the tallest row a game draws is not tracked, so a 512-high texture
+  is hashed whole; same-size replacement (factor 1), mip levels, `[filtering]` and `[indexed]`, a dump switch, ZIP
+  packs and a player toggle or per-title pack folder are not done.
+- **Tests.** `texrepl-selftest` checks the hashes against values taken from PPSSPP's own code and published xxHash
+  vectors, the ini and file-name rules, the lookup order, palette identity, malformed packs, path escapes and the
+  budget, on synthetic packs. `gpu-texscale-selftest`'s `replace` cell runs the production path on a Vulkan device: a
+  listed texture drawn from the pack's image from the first draw, even with the 1:1 rule on; a rewrite to unlisted
+  content never drawn from the old image; the content returning replaced again; an image of no whole factor counted
+  and not used; and an authentic start reading no pack.
+
 ## 11. Guest-Visible Items
 
 Sections 10.3, 10.6, 10.8 and 10.11 describe host-only features: what the guest reads, in its registers, memory and timing, is the
@@ -899,3 +964,33 @@ observe.
 - **Tier:** Enhanced. **Default:** off, and Ace-only: in an authentic run both stay off whatever the environment says.
 - **Nothing worse (section 11.2, item 4):** not shown. *Hot Shots Tennis* and *LittleBigPlanet* keep smart 2D off
   (section 10.10), and neither feature may be on by default before the runs item 4 lists exist.
+
+#### 11.3.4. Texture Replacement (Not Yet Admitted)
+
+The feature of section 10.12 (#1880). Its presentation is described there; this entry is what the guest can observe.
+
+- **Status: guest-visible, not admitted under section 11.2.** Each present commits the frame it shows to guest VRAM,
+  so a frame drawn with a pack's image in place of a guest texture is the frame the guest keeps. The feature stays
+  outside section 11.2 until the requirements below exist. Until then it is reachable only through environment
+  variables, for development.
+- **Key.** None yet. `SR_TEX_REPLACE` and `SR_TEX_REPLACE_BUDGET_MB` are environment variables, not keys on the launch
+  line (section 10.1), and have no library or per-title setting. Those come with the launch-line pull request that
+  follows the Ace settings work (#2074), and only then is the feature admitted. The pack itself is the user's own:
+  the project ships none.
+- **Never silent.** A run with a pack loaded prints, after its `TEX_REPLACE: on` line, one line naming the feature as
+  guest-visible, on through the environment and not admitted under section 11.2.
+- **What it changes:** the frame a present commits, wherever a draw used a pack's image.
+- **VRAM bytes:** differ in those frames, at those draws' pixels.
+- **Readbacks:** differ the same way, for a GE or display readback, save picture or screenshot that covers them.
+  Texture readbacks and render-to-texture results are unchanged: a render target is never replaced.
+- **Timing:** differs. The first use of an image decodes its PNG on the renderer thread, the thread the guest runs
+  on, and storing the image is an upload there (section 10.10, "Never waited on", bounds it to 8 MiB per present
+  for scaled copies; a replacement is stored in the draw that finds it, so a pack of large images can lengthen the
+  frames that first draw them). Not measured on a title. The VBLANK schedule, the GE timing model and the media
+  clocks are unchanged.
+- **I/O speed:** unchanged for the guest. The host reads the pack's files from its own disk, inside the folder only.
+- **Tier:** Enhanced. **Default:** off, and Ace-only: in an authentic run the pack is not read whatever the
+  environment says.
+- **Nothing worse (section 11.2, item 4):** not shown. A pack is the user's own content, so what it does to a title
+  is the pack's; the runs item 4 lists, for a title and a pack, do not exist yet, and the feature may not be on by
+  default before they do.
