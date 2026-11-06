@@ -66,6 +66,11 @@ device tests; a release build keeps that activity private.
    The APK is `android/app/build/outputs/apk/debug/app-debug.apk`. `-Pnk.abis=arm64-v8a` builds
    one ABI only. Without `nk.titles` the APK carries the launcher alone.
 
+Hosted CI's Android launcher build job builds that launcher-only APK for arm64-v8a from a
+clean checkout, with the versions listed under [Prerequisites](#prerequisites), on every change
+that runs the native gates ([`CI.md`](CI.md#android-launcher-build)). It builds and packages;
+it does not run the APK.
+
 ## Run in the emulator
 
 Create an x86_64 Google APIs AVD (API 37.2 was used) and start it headless:

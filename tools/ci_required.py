@@ -14,12 +14,14 @@ _GATES = (
     ("markdown", "MARKDOWN_RESULT", "RUN_MARKDOWN"),
     ("python-tools", "PYTHON_RESULT", "RUN_PYTHON"),
     ("native-tools", "NATIVE_RESULT", "RUN_NATIVE"),
+    # #360: the Android launcher build runs whenever the native gates do.
+    ("android-build", "ANDROID_RESULT", "RUN_NATIVE"),
     ("windows-runtime", "WINDOWS_RESULT", "RUN_WINDOWS"),
     ("main-smoke", "MAIN_SMOKE_RESULT", "RUN_MAIN_SMOKE"),
 )
 
 _SUBSTANTIVE_GATES = frozenset(
-    {"python-tools", "native-tools", "windows-runtime"}
+    {"python-tools", "native-tools", "android-build", "windows-runtime"}
 )
 
 

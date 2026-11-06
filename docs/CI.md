@@ -281,6 +281,22 @@ aggregates the parts, so `CI required` fails when any part fails.
 `tools/test_public_ci_wiring.py` (`NativeToolsPartitionTests`) fails if a serial gate is
 dropped, runs in more than one part, or changes its command.
 
+### Android launcher build
+
+The `android_build` job (#360) runs whenever the native gates do (`run_native`), beside
+them, and `CI required` reads its result (`ANDROID_RESULT`). On `ubuntu-24.04` it installs
+the SDK platform, build-tools, NDK and CMake versions that `android/app/build.gradle.kts`
+names, downloads the Gradle distribution named in
+`android/gradle/wrapper/gradle-wrapper.properties` and checks it against that file's
+`distributionSha256Sum`, then builds the launcher-only debug APK for arm64-v8a
+(`gradle -p android assembleDebug -Pnk.abis=arm64-v8a`) and checks that it carries
+`libmain.so`, `libSDL3.so` and `libSDL3_ttf.so` for that ABI and no other ABI. No title is
+bundled and nothing runs: running needs a device or an emulator
+([`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md)). The repository keeps no Gradle wrapper
+jar or scripts, as it keeps no other generated executable (#1100).
+`tools/test_public_ci_wiring.py` (`AndroidBuildWiringTests`) fails when the job's versions,
+the Gradle files and `ANDROID_DEVELOPMENT.md` disagree.
+
 The full-tree pre-commit run retains the publication audit and the Betterleaks
 current-tree scan; the hook runs Betterleaks in directory mode over the files it
 is given (every tracked file under `--all-files`, the staged files at the commit

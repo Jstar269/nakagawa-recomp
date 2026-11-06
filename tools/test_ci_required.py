@@ -23,6 +23,7 @@ def _results(**overrides: str) -> dict[str, str]:
         "markdown": "skipped",
         "python-tools": "skipped",
         "native-tools": "skipped",
+        "android-build": "skipped",
         "windows-runtime": "skipped",
         "main-smoke": "skipped",
     }
@@ -58,6 +59,35 @@ class CiRequiredTests(unittest.TestCase):
                     required_gate_passes(results, {"native-tools": True}, allow_substantive=True)
                 )
 
+    def test_android_build_failure_fails_whenever_the_native_gates_apply(self) -> None:
+        """#360: the Android launcher build shares RUN_NATIVE, so a broken APK build fails
+        CI required even when every native gate passed."""
+        base = {
+            "CLASSIFY_RESULT": "success",
+            "HYGIENE_RESULT": "success",
+            "PUBLIC_EXPORT_RESULT": "success",
+            "MARKDOWN_RESULT": "skipped",
+            "PYTHON_RESULT": "skipped",
+            "NATIVE_RESULT": "success",
+            "WINDOWS_RESULT": "success",
+            "MAIN_SMOKE_RESULT": "skipped",
+            "RUN_MARKDOWN": "false",
+            "RUN_PYTHON": "false",
+            "RUN_NATIVE": "true",
+            "RUN_WINDOWS": "true",
+            "RUN_MAIN_SMOKE": "false",
+            "ALLOW_SUBSTANTIVE": "true",
+            "DRAFT": "false",
+        }
+        self.assertTrue(evaluate_environment(dict(base, ANDROID_RESULT="success")))
+        for outcome in ("failure", "cancelled", "skipped", ""):
+            with self.subTest(outcome=outcome):
+                self.assertFalse(evaluate_environment(dict(base, ANDROID_RESULT=outcome)))
+        # When the native gates do not apply, a skipped Android build is expected.
+        quiet = dict(base, NATIVE_RESULT="skipped", WINDOWS_RESULT="skipped",
+                     RUN_NATIVE="false", RUN_WINDOWS="false", ANDROID_RESULT="skipped")
+        self.assertTrue(evaluate_environment(quiet))
+
     def test_classifier_and_hygiene_failures_cannot_be_hidden(self) -> None:
         for name in ("classify", "hygiene", "public-export"):
             with self.subTest(name=name):
@@ -91,6 +121,7 @@ class CiRequiredTests(unittest.TestCase):
             "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
+            "ANDROID_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
             "MAIN_SMOKE_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
@@ -108,6 +139,7 @@ class CiRequiredTests(unittest.TestCase):
             {
                 "PYTHON_RESULT": "success",
                 "NATIVE_RESULT": "success",
+                "ANDROID_RESULT": "success",
                 "WINDOWS_RESULT": "success",
                 "ALLOW_SUBSTANTIVE": "true",
                 "DRAFT": "false",
@@ -158,6 +190,7 @@ class CiRequiredTests(unittest.TestCase):
             "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "skipped",
+            "ANDROID_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
             "MAIN_SMOKE_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
@@ -188,6 +221,7 @@ class AllowSubstantiveParsingTests(unittest.TestCase):
             "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
+            "ANDROID_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
             "MAIN_SMOKE_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
@@ -233,6 +267,7 @@ class ApplicabilityParsingTests(unittest.TestCase):
             "MARKDOWN_RESULT": "success",
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "success",
+            "ANDROID_RESULT": "success",
             "WINDOWS_RESULT": "success",
             "MAIN_SMOKE_RESULT": "success",
             "RUN_MARKDOWN": "false",
