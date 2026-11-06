@@ -1286,53 +1286,42 @@ The current registration classes and semantic statuses are in the generated cens
 
 Some titles ship a library on their disc that the runtime also implements as HLE. LLE comes
 first (AGENTS.md section 6): once a disc module has been started, its exports run as the title's
-own translated code (`link_started_export` in `src/rt/hle.c`), and the HLE handler only serves
-NIDs that no started module exports. Where both forms exist, the HLE handler can be checked
-against the module.
+own translated code, and the HLE handler only serves NIDs that no started module exports. The
+rule that decides this is in `src/rt/hle_kernel_module.c`. A staged, translated module is
+*host-served* (its `module_start` is skipped and the host handlers keep its NIDs) when host HLE
+implements any of its exports. Two exceptions run the module instead: a library listed in
+`guest_module_owns_library()`, which today is only `scePsmfPlayer`, and `libfont.prx` (#1645).
 
-First-step inventory. It covers the catalogued title manifests in `assets/titles/` and the module
-names `src/rt/hle_kernel_module.c` recognises. A private title run prints the rest (below).
+The inventory below comes from a survey the standing LLE lane made in November 2026 of every
+title in the maintainer's library that builds. The survey counted 795 titles. The counts are
+titles whose build translates that disc module. The survey itself stays private.
 
-| Library | Disc module (title) | HLE handler | Which runs today | Pair-table rows |
-| --- | --- | --- | --- | --- |
-| `sceLibFont` | `libfont.prx` (Hot Shots Tennis, UCUS98701) | `src/rt/hle_font.c` | The translated module, once its `module_start` has run (#1645) | Host state: every call creates or reads a host library or font handle |
-| `scePsmf` | `psmf.prx` (Hot Shots Tennis, UCUS98701) | `src/rt/hle_mpeg.c`, `src/rt/psmf_producer.c` | HLE: `module_start` is skipped while host HLE serves a named export (section 3.1, item 2) | None yet |
-| `scePsmfPlayer` | `libpsmfplayer.prx` (Hot Shots Tennis, UCUS98701) | `src/rt/hle_mpeg.c` | HLE, as for `scePsmf`; the guest player is #286 | None yet |
+| Disc module (titles) | Library | HLE handler | Which runs today |
+| --- | --- | --- | --- |
+| `libfont.prx` (234) | `sceLibFont` | `src/rt/hle_font.c` | The translated module (#1645) |
+| `libpsmfplayer.prx` (167) | `scePsmfPlayer` | `src/rt/hle_mpeg.c` | The translated module, through the owned-library list (#1782); a few titles with packed modules are still host-served (#1933) |
+| `mpeg.prx` (209) | `sceMpeg` | `src/rt/hle_mpeg.c` | HLE: the module is host-served. Below `sceMpeg` it imports `sceMpegbase` and `sceVideocodec` functions that have no HLE handler, at the Media Engine boundary (`docs/LLE_FIDELITY_ARCHITECTURE.md` section 3.4) |
+| `pspnet*.prx`, `libhttp.prx`, `libssl.prx` | `sceNet*`, `sceHttp`, `sceSsl` | network HLE | HLE, which stays fail-closed (AGENTS.md section 5); this is not LLE work |
 
-`sceAtrac3plus` (`src/rt/hle_audio_codec.c`) and `sceMpeg` are also HLE libraries that a disc can
-ship. No catalogued manifest declares either module, so they are not listed as pairs.
+Disc modules with no HLE handler, such as `psmf.prx` and the small `libccc`, `libdeflt` and
+hash libraries, always run as translated code, so there is nothing to compare for them.
+`sceAtrac3plus`, `sceSasCore` and `sceMp3` are HLE only. No surveyed title translates a disc
+module for them, and their importers would otherwise load the firmware copy, which the project
+never carries. For the same reason HLE is the only path for `sceMpeg` in titles that do not ship
+`mpeg.prx`.
 
-**The check (`SR_HLE_DIFF=1`, off by default).** `src/rt/import_diff.c` runs at the same place the
-export link does. For a NID that a started disc module exports and that also has an HLE
-handler, it:
-
-- reports `NOT_COMPARED` with the reason when there is no pair-table row, when the row says the
-  handler keeps host state, when the registration is a controlled refusal, or when either side
-  makes a nested import call. Such a call is never counted as a match;
-- otherwise snapshots the CPU state and guest memory (RAM, VRAM and the scratchpad), runs the HLE
-  handler, restores the snapshot, and runs the export;
-- compares v0 (and v1 or f0 when the row asks for it) and every byte of guest memory outside the
-  stack below the caller's `sp`, which the export uses for its own frames.
-
-The export's run is the one the game keeps, so a difference never changes what the guest sees. A
-`HLE_DIFF DIFFER` line names the call, its arguments 1 to 8, both results and the first
-differing byte. Every `DIFFER` is printed, up to 32 per NID; the first `MATCH` and the first
-`NOT_COMPARED` of each NID are printed once.
-
-A pair-table row (`k_import_diff_pairs` in `src/rt/import_diff.c`) is added only after the
-handler has been read for host-side state. A handler that keeps any (an object table, a file
-position, a decoder, the scheduler) cannot run beside the export, because later calls would then
-get different answers. Every shipped row is a host-state row today, so a title run with the check
-on lists which calls were paired and why each was not compared. `test_import_diff_harness` and
-the libfont phase of the synthetic module test in `tests/native/hle_thread_selftest.c` cover a
-match, a difference and the `NOT_COMPARED` cases.
+**Comparing the two forms.** Where both forms exist, the HLE handler can be checked against the
+disc module by running both on the same call. That check belongs to the standing LLE lane, as
+the dual-execution mode `SR_MODE_COSIM` reserved in `src/rt/domain_mode.h`. Its pull request for
+#2148 documents what it compares and how it reports. A pair can be compared only after its HLE
+handler has been read for host-side state. A handler that keeps any state (an object table, a
+file position, a decoder, the scheduler) cannot run beside the export, because later calls would
+then get different answers. Every `sceLibFont` handler keeps a host library or font handle, so
+those calls are reported as not compared.
 
 **What a match proves.** Only that the compared call, with those arguments and that guest memory,
 gave the same result in both forms. It says nothing about other inputs, and a private title's
-report proves only that title's calls. The report holds call names, arguments and addresses. It
-copies no module code or game data, and a report from a private title stays private.
-
----
+report proves only that title's calls and stays private.
 
 ## 4. Workaround Elimination & Migration Roadmap
 

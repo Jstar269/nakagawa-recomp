@@ -68,7 +68,6 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "nk_platform.h"        /* per-user data directory override for the font cache */
 #include "audio_resample.h"
 #include "vfpu_tables.h"        /* sr_vfpu_sha256: enhancement data-file digests */
-#include "import_diff.h"        /* SR_HLE_DIFF harness (#2148) */
 
 #include <math.h>
 #include <stdint.h>
@@ -1503,48 +1502,6 @@ static int write_synthetic_libfont_prx(const char *path, uint32_t base) {
     return written == sizeof(image) && close_result == 0;
 }
 
-/* #2148 on the production path: with SR_HLE_DIFF on, sr_syscall's started-export link runs a
- * paired NID's HLE handler beside the libfont export and returns the export's result. */
-static unsigned s_synth_libfont_hle_calls;
-static uint32_t synth_libfont_hle_same(CpuState *s) {
-    (void)s;
-    s_synth_libfont_hle_calls++;
-    return 0x29u;
-}
-
-static void libfont_export_import_diff_phase(void) {
-    static const ImportDiffPair pair[] = {
-        {"sceLibFont", SYNTH_LIBFONT_EXPORT_NID, IMPORT_DIFF_PAIR_COMPARE, "synthetic"},
-    };
-    ImportDiffRegion region = {0x08906000u, 0x1000u, SR_HOST_LINEAR(0x08906000u)};
-    uint32_t match = 0, differ = 0, nc = 0;
-    CpuState cpu;
-    sr_hle_register(SYNTH_LIBFONT_EXPORT_NID, "synthLibFontExport", synth_libfont_hle_same);
-    import_diff_test_reset();
-    import_diff_test_set_pairs(pair, 1u);
-    import_diff_test_set_regions(&region, 1u);
-    import_diff_test_set_enabled(1);
-    unsigned exports = s_synth_libfont_export_calls;
-    memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, SYNTH_LIBFONT_EXPORT_NID) == 0x29u &&
-               s_synth_libfont_export_calls == exports + 1u && s_synth_libfont_hle_calls == 1u,
-           "SR_HLE_DIFF: a paired started export and its HLE handler each run once");
-    import_diff_counts(&match, &differ, &nc);
-    expect(match == 1u && differ == 0u && nc == 0u,
-           "SR_HLE_DIFF: the paired export and handler compare as a MATCH");
-    import_diff_test_set_pairs(NULL, 0u);
-    memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, SYNTH_LIBFONT_EXPORT_NID) == 0x29u &&
-               s_synth_libfont_export_calls == exports + 2u && s_synth_libfont_hle_calls == 1u,
-           "SR_HLE_DIFF: with no pair row only the export runs");
-    import_diff_counts(&match, &differ, &nc);
-    expect(nc == 1u, "SR_HLE_DIFF: an unpaired export with an HLE handler is NOT_COMPARED");
-    s_synth_libfont_export_calls = exports; /* the later phases count their own calls */
-    import_diff_test_set_enabled(0);
-    import_diff_test_set_regions(NULL, 0u);
-    import_diff_test_reset();
-}
-
 static void test_synthetic_libfont_startup(const char *name, const char *guest_path,
                                            uint32_t base, int required) {
     const char *root = getenv("SR_MODULE_DIR");
@@ -1610,7 +1567,6 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
         expect(sr_syscall(&cpu, SYNTH_LIBFONT_EXPORT_NID) == 0x29u &&
                    s_synth_libfont_export_calls == 1u,
                "imports route to the started libfont guest export");
-        libfont_export_import_diff_phase();
     } else {
         expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u,
                "a skipped module_start does not authorize libfont exports");
@@ -19474,158 +19430,6 @@ static uint32_t td24b_dispatch4(uint32_t nid, uint32_t a0, uint32_t a1,
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3;
     return sr_syscall(&cpu, nid);
-}
-
-/* #2148: the import diff harness (src/rt/import_diff.c), driven directly with a synthetic guest
- * export and HLE stand-ins over a small guest range. The guest export is always the run that is
- * kept; the HLE stand-in runs first, on the same starting bytes, and the harness compares v0 and
- * every byte of the covered range outside the dead stack. */
-#define DIFF_BASE  0x08907000u
-#define DIFF_SIZE  0x00001000u
-#define DIFF_OUT   (DIFF_BASE + 0x900u) /* above the caller's sp */
-#define DIFF_STACK (DIFF_BASE + 0x800u)   /* the caller's sp; the export's frame lies below it */
-#define DIFF_NID_PAIRED   0x7e57d1f0u
-#define DIFF_NID_HOST     0x7e57d1f1u
-#define DIFF_NID_UNPAIRED 0x7e57d1f2u
-
-static unsigned s_diff_guest_runs;
-
-/* The "disc module export": out[a0] = a1 + 1, the word below sp is its scratch, v0 = 7. */
-static void diff_guest_export(CpuState *s, void *ctx) {
-    (void)ctx;
-    s_diff_guest_runs++;
-    MEM_W32(s->r[29] - 4u, 0xabcdef01u);
-    MEM_W32(DIFF_OUT + s->r[4] * 4u, s->r[5] + 1u);
-    s->r[2] = 7u;
-    s->pc = s->r[31];
-}
-/* The same export, calling another import on the way (as a module calling the kernel would). */
-static void diff_guest_export_nested(CpuState *s, void *ctx) {
-    import_diff_note_syscall();
-    diff_guest_export(s, ctx);
-}
-static uint32_t diff_hle_same(CpuState *s) {
-    MEM_W32(DIFF_OUT + s->r[4] * 4u, s->r[5] + 1u);
-    return 7u;
-}
-/* Differs in one byte of the output word and in v0. */
-static uint32_t diff_hle_other(CpuState *s) {
-    MEM_W32(DIFF_OUT + s->r[4] * 4u, (s->r[5] + 1u) ^ 0x00ff0000u);
-    return 8u;
-}
-
-static void diff_cpu(CpuState *cpu, uint32_t a0, uint32_t a1) {
-    memset(cpu, 0, sizeof(*cpu));
-    for (int i = 4; i < 12; i++) cpu->r[i] = 0x11110000u + (uint32_t)i;
-    cpu->r[4] = a0;
-    cpu->r[5] = a1;
-    cpu->r[29] = DIFF_STACK;
-    cpu->r[31] = 0x08800040u;
-}
-
-static void test_import_diff_harness(void) {
-    static const ImportDiffPair pairs[] = {
-        {"sceSynthLib", DIFF_NID_PAIRED, IMPORT_DIFF_PAIR_COMPARE, "synthetic: no host state"},
-        {"sceSynthLib", DIFF_NID_HOST, IMPORT_DIFF_PAIR_HOST_STATE, "synthetic: host table"},
-    };
-    ImportDiffRegion region = {DIFF_BASE, DIFF_SIZE, SR_HOST_LINEAR(DIFF_BASE)};
-    ImportDiffResult r;
-    CpuState cpu;
-    char line[512];
-    uint32_t match = 0, differ = 0, nc = 0;
-
-    import_diff_test_reset();
-    import_diff_test_set_pairs(pairs, 2u);
-    import_diff_test_set_regions(&region, 1u);
-    memset(SR_HOST_LINEAR(DIFF_BASE), 0, DIFF_SIZE);
-    s_diff_guest_runs = 0;
-
-    /* Match: same v0, same output word; the export's scratch below sp is not compared. */
-    diff_cpu(&cpu, 1u, 0x41u);
-    expect(import_diff_call(&cpu, DIFF_NID_PAIRED, "sceSynthCall", diff_hle_same, 0u,
-                            diff_guest_export, NULL, DIFF_BASE, DIFF_STACK, &r) ==
-               IMPORT_DIFF_MATCH &&
-               !r.ret_differs && !r.mem_differs && r.guest_v0 == 7u && s_diff_guest_runs == 1u,
-           "import diff: matching HLE and guest runs are a MATCH; the dead stack is left out");
-    expect(cpu.r[2] == 7u && MEM_R32(DIFF_OUT + 4u) == 0x42u &&
-               MEM_R32(DIFF_STACK - 4u) == 0xabcdef01u,
-           "import diff: a MATCH leaves the guest export's state live");
-    import_diff_format(&r, line, sizeof(line));
-    expect(strcmp(line, "HLE_DIFF MATCH nid=0x7e57d1f0 name=sceSynthCall lib=sceSynthLib "
-                        "args=00000001,00000041,11110006,11110007,11110008,11110009,1111000a,"
-                        "1111000b v0=00000007") == 0,
-           "import diff: a MATCH line names the call, the library and arguments 1-8");
-
-    /* The same call without the dead-stack exclusion differs at the scratch word. */
-    diff_cpu(&cpu, 1u, 0x41u);
-    MEM_W32(DIFF_STACK - 4u, 0u);
-    expect(import_diff_call(&cpu, DIFF_NID_PAIRED, "sceSynthCall", diff_hle_same, 0u,
-                            diff_guest_export, NULL, 0u, 0u, &r) == IMPORT_DIFF_DIFFER &&
-               r.mem_differs && r.first_addr == DIFF_STACK - 4u,
-           "import diff: without the dead-stack range the export's frame is a difference");
-
-    /* Difference: v0 and the third byte of the output word. */
-    diff_cpu(&cpu, 2u, 0x1234u);
-    expect(import_diff_call(&cpu, DIFF_NID_PAIRED, "sceSynthCall", diff_hle_other, 0u,
-                            diff_guest_export, NULL, DIFF_BASE, DIFF_STACK, &r) ==
-               IMPORT_DIFF_DIFFER &&
-               r.ret_differs && r.guest_v0 == 7u && r.hle_v0 == 8u && r.mem_differs &&
-               r.first_addr == DIFF_OUT + 8u + 2u && r.guest_byte == 0x00u &&
-               r.hle_byte == 0xffu && r.differing_bytes == 1u,
-           "import diff: a DIFFER names v0 from both runs and the first differing byte");
-    expect(cpu.r[2] == 7u && MEM_R32(DIFF_OUT + 8u) == 0x1235u,
-           "import diff: a DIFFER keeps the guest export's result and memory, not the handler's");
-    import_diff_format(&r, line, sizeof(line));
-    expect(strstr(line, "HLE_DIFF DIFFER nid=0x7e57d1f0 name=sceSynthCall") == line &&
-               strstr(line, "args=00000002,00001234,") != NULL &&
-               strstr(line, " ret guest=00000007:") != NULL &&
-               strstr(line, " hle=00000008:") != NULL &&
-               strstr(line, " first=0x0890790a guest=0x00 hle=0xff bytes=1") != NULL,
-           "import diff: the DIFFER line gives the call, arguments, both results and first byte");
-
-    /* NOT_COMPARED: each reason runs the guest export once and is never a match. */
-    unsigned runs = s_diff_guest_runs;
-    diff_cpu(&cpu, 3u, 5u);
-    expect(import_diff_call(&cpu, DIFF_NID_UNPAIRED, "sceSynthOther", diff_hle_same, 0u,
-                            diff_guest_export, NULL, DIFF_BASE, DIFF_STACK, &r) ==
-               IMPORT_DIFF_NOT_COMPARED &&
-               r.reason && strcmp(r.reason, "no pair-table row") == 0 && cpu.r[2] == 7u &&
-               MEM_R32(DIFF_OUT + 12u) == 6u,
-           "import diff: a NID with no pair row is NOT_COMPARED and the export still runs");
-    import_diff_format(&r, line, sizeof(line));
-    expect(strstr(line, "HLE_DIFF NOT_COMPARED nid=0x7e57d1f2") == line &&
-               strstr(line, "reason=no pair-table row") != NULL,
-           "import diff: the NOT_COMPARED line carries its reason");
-    diff_cpu(&cpu, 3u, 5u);
-    expect(import_diff_call(&cpu, DIFF_NID_HOST, "sceSynthHost", diff_hle_other, 0u,
-                            diff_guest_export, NULL, DIFF_BASE, DIFF_STACK, &r) ==
-               IMPORT_DIFF_NOT_COMPARED &&
-               strcmp(r.reason, "the HLE handler keeps host state") == 0 &&
-               MEM_R32(DIFF_OUT + 12u) == 6u,
-           "import diff: a host-state pair never runs its handler beside the export");
-    diff_cpu(&cpu, 3u, 5u);
-    expect(import_diff_call(&cpu, DIFF_NID_PAIRED, "sceSynthCall", NULL, 0x80020001u,
-                            diff_guest_export, NULL, DIFF_BASE, DIFF_STACK, &r) ==
-               IMPORT_DIFF_NOT_COMPARED &&
-               strcmp(r.reason, "the HLE registration is a controlled refusal") == 0,
-           "import diff: a controlled-refusal registration is NOT_COMPARED");
-    diff_cpu(&cpu, 3u, 9u);
-    expect(import_diff_call(&cpu, DIFF_NID_PAIRED, "sceSynthCall", diff_hle_other, 0u,
-                            diff_guest_export_nested, NULL, DIFF_BASE, DIFF_STACK, &r) ==
-               IMPORT_DIFF_NOT_COMPARED &&
-               strcmp(r.reason, "the guest export made a nested import call") == 0 &&
-               cpu.r[2] == 7u && MEM_R32(DIFF_OUT + 12u) == 10u,
-           "import diff: an export that calls another import is NOT_COMPARED, its result kept");
-    expect(s_diff_guest_runs == runs + 4u,
-           "import diff: every NOT_COMPARED call ran the guest export exactly once");
-
-    import_diff_counts(&match, &differ, &nc);
-    expect(match == 1u && differ == 2u && nc == 4u,
-           "import diff: the counters keep MATCH, DIFFER and NOT_COMPARED apart");
-
-    import_diff_test_set_pairs(NULL, 0u);
-    import_diff_test_set_regions(NULL, 0u);
-    import_diff_test_reset();
 }
 
 /* #1287: the interrupt manager's sub-interrupt answers, measured on a PSP by pspautotests
@@ -48695,7 +48499,6 @@ static int hle_selftest_main(int argc, char **argv) {
     test_atrac_context_abi();
     test_td24b_cheap_hle_batch();
     test_vblank_subintr_measured_codes();
-    test_import_diff_harness();
     test_kernel_devkit_version_measured();
     test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
