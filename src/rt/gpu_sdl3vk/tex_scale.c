@@ -365,8 +365,8 @@ int nk_tex_scale_submit_ready(uint64_t serial, uint64_t hash, const uint32_t *rg
     /* The same figure a scaling job accounts (nk_tex_scale_take gives it back), a little above
      * what this one holds, which is its result alone. */
     const uint64_t host = job_host_bytes(w, h, factor);
-    Job *j = oldest(JOB_FREE);
-    if (!j || (s_host_bytes && s_host_bytes + host > ((uint64_t)NK_TEX_SCALE_HOST_MB << 20))) {
+    Job *j = room_for(host);
+    if (!j) {
         s_stats.refused_full++;
         SDL_UnlockMutex(s_mx);
         return 0;

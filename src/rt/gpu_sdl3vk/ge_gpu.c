@@ -3926,6 +3926,15 @@ static int log2_exact(int v) {
     return n;
 }
 
+/* Print the pack's notes not yet shown, as they appear: a missing file or a PNG that will not
+ * decode is found at its first use, long after the pack opened, and is named here rather than only
+ * counted at exit. */
+static void tex_repl_flush_notes(void) {
+    char line[420];
+    while (s_repl && nk_texrepl_diag_take(s_repl, line, sizeof(line)))
+        fprintf(stderr, "TEX_REPLACE: note: %s\n", line);
+}
+
 /* The replacement pack's image for entry `e`'s current content, if it has one: hashes the guest
  * texture as the pack's own tools do (texrepl.h), looks it up, and accepts an image that is a whole
  * number (2..NK_TEX_SCALE_MAX) times the guest size and fits NK_TEX_SCALE_MAX_DIM (an image of any
@@ -3933,6 +3942,10 @@ static int log2_exact(int v) {
  * pinned (give it back with nk_texrepl_unpin) and `*factor` is its factor. Reads guest memory only
  * through tex_source_ptr, so a source it cannot read directly is never replaced. */
 static int tex_repl_find(const TexEnt *e, NkTexReplHit *hit, int *factor) {
+#ifdef NK_TEXREPL_MUTANT_NO_LOOKUP   /* the selftests' stub: no texture is ever found in the pack */
+    (void)hit; (void)factor; (void)e;
+    return 0;
+#endif
     const int wl = log2_exact(e->w), hl = log2_exact(e->h);
     if (!s_repl || wl < 0 || hl < 0 || s_ge->tex_fmt > 10u) return 0;
     const uint32_t bytes = tex_source_size();
@@ -3944,15 +3957,17 @@ static int tex_repl_find(const TexEnt *e, NkTexReplHit *hit, int *factor) {
     id.format = s_ge->tex_fmt;
     id.dim = (uint32_t)wl | ((uint32_t)hl << 8);
     if (s_ge->tex_fmt & 4u) {
-        /* The palette the texture can index: 16 entries for 4-bit indices, else 256. */
-        const uint32_t entries = s_ge->tex_fmt == 4u ? 16u : 256u;
-        uint32_t pal = entries * ((s_ge->clut_fmt & 3u) == 3u ? 4u : 2u);
-        if (pal > sizeof(s_ge->clutram)) pal = (uint32_t)sizeof(s_ge->clutram);
-        id.clut_hash = nk_texrepl_clut_hash(s_ge->clutram, pal);
+        /* PPSSPP's palette identity: the loaded palette bytes and the CLUTFORMAT word (texrepl.h). */
+        uint32_t last = 0, max = 0;
+        ge_clut_load_extent(&last, &max);
+        id.clut_hash = nk_texrepl_clut_identity(s_ge->clutram, (uint32_t)sizeof(s_ge->clutram),
+                                                s_ge->clut_fmt, s_ge->tex_fmt, last, max);
     }
     id.hash = nk_texrepl_hash_texture(s_repl, p, bytes, e->addr, (int)s_ge->tex_bufw, e->w, e->h,
                                       s_ge->tex_fmt, 0);
-    if (!nk_texrepl_lookup(s_repl, &id, hit)) return 0;
+    const int found = nk_texrepl_lookup(s_repl, &id, hit);
+    tex_repl_flush_notes();
+    if (!found) return 0;
     const int f = nk_texrepl_factor(hit, e->w, e->h);
     if (f < 2 || f > NK_TEX_SCALE_MAX || e->w * f > NK_TEX_SCALE_MAX_DIM || e->h * f > NK_TEX_SCALE_MAX_DIM) {
         nk_texrepl_note_bad_factor(s_repl);
@@ -4008,12 +4023,12 @@ static void tex_repl_init(int enhanced) {
     fprintf(stderr, "TEX_REPLACE: guest-visible, on through SR_TEX_REPLACE and not admitted under contract "
                     "section 11.2 (each present commits the frame to guest VRAM; see the contract's "
                     "\"Texture Replacement\" entry)\n");
-    for (size_t i = 0; i < nk_texrepl_diag_count(s_repl); i++)
-        fprintf(stderr, "TEX_REPLACE: note: %s\n", nk_texrepl_diag(s_repl, i));
+    tex_repl_flush_notes();
 }
 
 static void tex_repl_shutdown(void) {
     if (!s_repl) return;
+    tex_repl_flush_notes();
     NkTexReplStats st;
     nk_texrepl_stats(s_repl, &st);
     fprintf(stderr, "TEX_REPLACE: exit (lookups=%llu, hits=%llu, misses=%llu, left_alone=%llu, "

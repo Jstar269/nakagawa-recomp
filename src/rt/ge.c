@@ -176,6 +176,7 @@ enum {
 
 /* GeState now lives in ge_shared.h (shared with the optional GPU backend). */
 static GeState ge;
+static uint32_t s_clut_last_bytes, s_clut_max_bytes;   /* CLUT loads seen, for ge_clut_load_extent */
 /* Bumped whenever GE state may change (every list command, init, replay restore); state
  * derived from registers and cached between commands is keyed on it (light_consts). */
 static uint32_t s_ge_state_serial;
@@ -776,6 +777,17 @@ void ge_set_gpu_hooks(const GeGpuHooks *h) {
     s_gpu = h;
 }
 GeState *ge_state_ptr(void) { return &ge; }
+
+void ge_clut_note_load(uint32_t bytes) {
+    if (!bytes) return;   /* as PPSSPP's LoadClut: a zero-length load changes nothing */
+    s_clut_last_bytes = bytes;
+    if (bytes > s_clut_max_bytes) s_clut_max_bytes = bytes;
+}
+
+void ge_clut_load_extent(uint32_t *last_bytes, uint32_t *max_bytes) {
+    if (last_bytes) *last_bytes = s_clut_last_bytes;
+    if (max_bytes) *max_bytes = s_clut_max_bytes;
+}
 uint32_t ge_state_serial(void) { return s_ge_state_serial; }
 void ge_state_note_external_write(void) { s_ge_state_serial++; }
 void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) {
@@ -6841,6 +6853,7 @@ static int ge_cmd_texture(uint32_t cmd, uint32_t data) {
              * the hardware (PPSSPP TextureCacheCommon::LoadClut). */
             uint32_t bytes = (data & 0x3F) * 32;
             if (bytes > sizeof(ge.clutram)) bytes = sizeof(ge.clutram);
+            ge_clut_note_load(bytes);
             if (!sr_guest_span_readable(ge.clut_addr, bytes)) {
                 fprintf(stderr, "GE_LOADCLUT: invalid source span addr=0x%08" PRIx32 " bytes=%" PRIu32 "\n",
                         ge.clut_addr, bytes);

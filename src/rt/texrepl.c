@@ -218,6 +218,26 @@ uint32_t nk_texrepl_clut_hash(const void *clut, uint32_t bytes) {
     return nk_texrepl_xxh32(clut, bytes, 0xC0108888u);
 }
 
+uint32_t nk_texrepl_clut_identity(const void *clutram, uint32_t clutram_bytes, uint32_t clut_format,
+                                  uint32_t texture_format, uint32_t last_load_bytes,
+                                  uint32_t max_load_bytes) {
+    const uint32_t entry_bytes = (clut_format & 3u) == 3u ? 4u : 2u;
+    const uint32_t start_bytes = (((clut_format >> 16) & 0x1Fu) << 4) * entry_bytes;
+    uint32_t bytes;
+    if (max_load_bytes) {
+        bytes = last_load_bytes + start_bytes;
+        if (bytes > max_load_bytes) bytes = max_load_bytes;
+    } else {
+        bytes = (texture_format == 4u ? 16u : 256u) * entry_bytes;
+    }
+    if (bytes > clutram_bytes) bytes = clutram_bytes;
+#ifdef NK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR   /* the selftests' mutant: the CLUTFORMAT xor left out */
+    return nk_texrepl_clut_hash(clutram, bytes);
+#else
+    return nk_texrepl_clut_hash(clutram, bytes) ^ (0xC5000000u | (clut_format & 0x00FFFFFFu));
+#endif
+}
+
 uint64_t nk_texrepl_cache_key(uint32_t addr, uint32_t format, uint32_t dim, uint32_t clut_hash) {
     uint64_t key = ((uint64_t)(addr & 0x3FFFFFFFu) << 32) | (dim & 0xFFFFu);
     if (format & 4u) key ^= clut_hash;
@@ -278,6 +298,23 @@ static void diag_add(NkTexRepl *p, const char *fmt, ...) {
     if (!copy) { p->diag_dropped++; return; }
     memcpy(copy, buf, n + 1);
     p->diag[p->diag_n++] = copy;
+}
+
+int nk_texrepl_diag_take(NkTexRepl *p, char *out, size_t cap) {
+    if (!p || !out || !cap) return 0;
+    if (p->diag_n) {
+        snprintf(out, cap, "%s", p->diag[0]);
+        free(p->diag[0]);
+        memmove(&p->diag[0], &p->diag[1], (p->diag_n - 1) * sizeof(p->diag[0]));
+        p->diag_n--;
+        return 1;
+    }
+    if (p->diag_dropped) {
+        snprintf(out, cap, "... and %zu more not listed", p->diag_dropped);
+        p->diag_dropped = 0;
+        return 1;
+    }
+    return 0;
 }
 
 size_t nk_texrepl_diag_count(const NkTexRepl *p) {
@@ -713,7 +750,11 @@ NkTexRepl *nk_texrepl_open(const char *dir, uint64_t budget_bytes, char *err, si
     }
 
     char path[1024];
-    snprintf(path, sizeof(path), "%s/textures.ini", p->dir);
+    if (snprintf(path, sizeof(path), "%s/textures.ini", p->dir) >= (int)sizeof(path)) {
+        snprintf(err, err_cap, "texture pack folder path is too long");
+        nk_texrepl_close(p);
+        return NULL;
+    }
     if (nk_platform_file_exists(path)) {
         size_t size = 0;
         unsigned char *text = read_whole(path, 4u << 20, &size);

@@ -55,6 +55,17 @@ uint32_t nk_texrepl_xxh32(const void *data, size_t len, uint32_t seed);
 uint64_t nk_texrepl_xxh64(const void *data, size_t len, uint64_t seed);
 /* The palette's hash in a texture's identity (XXH32 with the seed packs use). */
 uint32_t nk_texrepl_clut_hash(const void *clut, uint32_t bytes);
+/* The palette part of a palette texture's identity, as PPSSPP's TextureCacheCommon computes it
+ * (UpdateCurrentClut, then "cluthash = clutHash_ ^ gstate.clutformat"): XXH32 of the loaded palette
+ * bytes, then xor the CLUTFORMAT command word with its opcode (0xC5) in the top byte. The bytes
+ * hashed are min(last_load_bytes + start_bytes, max_load_bytes), where `last_load_bytes` is the size
+ * of the last CLUT load, `max_load_bytes` the largest load seen, and `start_bytes` the format's index
+ * start position (in 16-colour units) times the entry size. A game that has loaded no palette yet
+ * (`max_load_bytes` 0, as in a replayed capture) hashes the 16 entries a CLUT4 texture can index,
+ * else 256, instead. `texture_format` is the PSP texture format word (4..7 are the palette ones). */
+uint32_t nk_texrepl_clut_identity(const void *clutram, uint32_t clutram_bytes, uint32_t clut_format,
+                                  uint32_t texture_format, uint32_t last_load_bytes,
+                                  uint32_t max_load_bytes);
 /* The 64-bit cache key of a texture: address (30 bits) and size code, xor the palette hash for a
  * palette format. `dim` is the PSP's size register (log2 width, log2 height << 8). */
 uint64_t nk_texrepl_cache_key(uint32_t addr, uint32_t format, uint32_t dim, uint32_t clut_hash);
@@ -76,6 +87,12 @@ size_t nk_texrepl_entry_count(const NkTexRepl *pack);
 /* What was read but not applied, one line each; the last line says how many more were dropped. */
 size_t nk_texrepl_diag_count(const NkTexRepl *pack);
 const char *nk_texrepl_diag(const NkTexRepl *pack, size_t index);
+/* Take the oldest note not yet taken, so a caller can print notes as they appear (a file that
+ * fails to load shows up at its first use, long after the pack opened). Copies it to `out` and
+ * returns 1, or returns 0 when there are none. Taken notes leave the list and free its room, so
+ * the 40-line cap bounds the notes waiting, not the notes a run can report. When notes were dropped
+ * for lack of room, the last one taken says how many. */
+int nk_texrepl_diag_take(NkTexRepl *pack, char *out, size_t cap);
 
 /* The content hash PPSSPP's replacer takes of a guest texture, with this pack's hash kind and
  * ranges. `data` points at the texture's first byte and `avail` is how many bytes are readable

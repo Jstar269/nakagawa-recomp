@@ -156,8 +156,10 @@ PUBLIC_TARGETS := \
 	tex-scale-selftest \
 	tex-scale-gate-mutant \
 	texrepl-selftest \
+	texrepl-mutant \
 	gpu-texscale-selftest \
 	gpu-texscale-mutant \
+	gpu-texrepl-mutant \
 	ge-replay \
 	run \
 	run_elf \
@@ -333,8 +335,10 @@ HELP_DESCRIPTION_gpu-ace-selftest := run Ace Mode's texture filtering selftest o
 HELP_DESCRIPTION_tex-scale-selftest := run the xBRZ texture scaling selftest against the pinned upstream goldens (no GPU)
 HELP_DESCRIPTION_tex-scale-gate-mutant := prove the texture scaling selftest kills a build without the Ace gate
 HELP_DESCRIPTION_texrepl-selftest := run the texture replacement pack selftest (PPSSPP hashes, pack layout, lookup order, budget; no GPU)
+HELP_DESCRIPTION_texrepl-mutant := prove the texture replacement selftest kills a palette identity without the CLUTFORMAT word
 HELP_DESCRIPTION_gpu-texscale-selftest := run texture scaling and the smart 2D filter on a real Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_gpu-texscale-mutant := prove the texture scaling selftest kills a cache that binds a stale scaled copy
+HELP_DESCRIPTION_gpu-texrepl-mutant := prove the replace cells kill a stub lookup and a palette identity without the CLUTFORMAT word
 HELP_DESCRIPTION_ge-replay := run the graphics-engine replay selftest
 HELP_DESCRIPTION_run := build and launch the current title runtime
 HELP_DESCRIPTION_run_elf := build the reference interpreter runner

@@ -674,9 +674,10 @@ memory, no network) and its hook in `ge_gpu.c`'s scaled-copy path (`tex_xs_offer
   note:` line each, and not applied.
 - **Identity.** A texture is identified as in PPSSPP: its address (30 bits) and size code in the high half of the
   key, its quick (or xxh) hash of the guest bytes in the low half, and for a palette format the palette's XXH32
-  hash folded into the key. The renderer hashes the 16 (4-bit indices) or 256 palette entries the texture can use;
-  PPSSPP hashes the bytes the guest loaded, so a pack made against a game that loads a larger palette may not
-  match a palette texture here. Lookup tries, in PPSSPP's order, the exact key, the palette alone, the key with
+  hash (seed 0xC0108888) folded into the key together with the CLUTFORMAT command word, opcode byte 0xC5
+  included. The bytes hashed are PPSSPP's: the last CLUT load's size plus the format's index start position,
+  capped at the largest load seen. A run in which the game has loaded no palette yet hashes the 16 or 256
+  entries the texture can index, which a replayed capture is the only case of. Lookup tries, in PPSSPP's order, the exact key, the palette alone, the key with
   no data hash, the data hash with no address, and the address alone.
 - **Which textures.** One level (no mip chain), not a render target, whose guest bytes the renderer can read
   directly. The image must be a whole factor from 2 to 6 of the texture, the same on both axes, and no side may
@@ -684,7 +685,10 @@ memory, no network) and its hook in `ge_gpu.c`'s scaled-copy path (`tex_xs_offer
   is read, and only level 0.
 - **How it draws.** The image is stored as the entry's scaled copy: an image `factor` times the guest texture,
   sampled on its own texel lattice (section 10.10, "Sampling"). It is finished work, so no worker is involved, and
-  it is stored in the draw that finds it, not a later one. A replacement is tried first; xBRZ scales a texture the
+  it is normally stored in the draw that finds it. Storing goes through the collect step scaled copies use, which
+  takes the oldest finished job first and stops at the per-present upload cap (section 10.10), so with xBRZ also on,
+  or with several large images first drawn in one scene, a later image waits for a later present; until it is
+  stored the texture is drawn as the game made it, never stale. A replacement is tried first; xBRZ scales a texture the
   pack leaves alone. A draw that maps one texel to one pixel keeps the replacement: the rule that binds the
   unscaled texture for xBRZ copies never applies to a pack's image, which the pack's author drew.
 - **Never stale.** The copy records the cache entry's upload and the content hash it was made from, as scaled copies
@@ -698,7 +702,8 @@ memory, no network) and its hook in `ge_gpu.c`'s scaled-copy path (`tex_xs_offer
   nothing is written to guest memory, the CLUT or a texture source. Files are read only from inside the pack folder
   (a name or `[hashes]` value that leaves it is refused); nothing is uploaded and no network connection is made.
 - **Stamps.** `TEX_REPLACE: on (hash=, entries=, notes=, budget_mb=)` at start, followed by the line section 11.3.4
-  describes and one `TEX_REPLACE: note:` line for each thing read and not applied, and at exit `TEX_REPLACE: exit
+  describes and one `TEX_REPLACE: note:` line for each thing read and not applied (a file that cannot be read or decoded is
+  noted at its first use, when it is found, not only counted), and at exit `TEX_REPLACE: exit
   (lookups=, hits=, misses=, left_alone=, queued=, bound_draws=, loaded=, load_failed=, over_budget=, evicted=,
   bad_factor=, cache_peak_mb=, decode_ms=)`. Section 10.4 applies: the run is an Ace run.
 - **Not yet.** Decoding a PNG runs on the renderer thread the first time an image is needed (a worker thread, as
@@ -706,9 +711,11 @@ memory, no network) and its hook in `ge_gpu.c`'s scaled-copy path (`tex_xs_offer
   is hashed whole; same-size replacement (factor 1), mip levels, `[filtering]` and `[indexed]`, a dump switch, ZIP
   packs and a player toggle or per-title pack folder are not done.
 - **Tests.** `texrepl-selftest` checks the hashes against values taken from PPSSPP's own code and published xxHash
-  vectors, the ini and file-name rules, the lookup order, palette identity, malformed packs, path escapes and the
+  vectors, the ini and file-name rules, the lookup order, palette identity (against PPSSPP's formula worked out
+  separately, with a pack file named the way PPSSPP names it), malformed packs, path escapes and the
   budget, on synthetic packs. `gpu-texscale-selftest`'s `replace` cell runs the production path on a Vulkan device: a
-  listed texture drawn from the pack's image from the first draw, even with the 1:1 rule on; a rewrite to unlisted
+  listed texture drawn from the pack's image from the draw that finds it, even with the 1:1 rule on, with
+  `SR_TEX_REPLACE` alone and with xBRZ also on; a rewrite to unlisted
   content never drawn from the old image; the content returning replaced again; an image of no whole factor counted
   and not used; and an authentic start reading no pack.
 
@@ -985,8 +992,8 @@ The feature of section 10.12 (#1880). Its presentation is described there; this 
   Texture readbacks and render-to-texture results are unchanged: a render target is never replaced.
 - **Timing:** differs. The first use of an image decodes its PNG on the renderer thread, the thread the guest runs
   on, and storing the image is an upload there (section 10.10, "Never waited on", bounds it to 8 MiB per present
-  for scaled copies; a replacement is stored in the draw that finds it, so a pack of large images can lengthen the
-  frames that first draw them). Not measured on a title. The VBLANK schedule, the GE timing model and the media
+  for scaled copies; a replacement is normally stored in the draw that finds it, so a pack of large images can
+  lengthen the frames that first draw them). Not measured on a title. The VBLANK schedule, the GE timing model and the media
   clocks are unchanged.
 - **I/O speed:** unchanged for the guest. The host reads the pack's files from its own disk, inside the folder only.
 - **Tier:** Enhanced. **Default:** off, and Ace-only: in an authentic run the pack is not read whatever the

@@ -325,6 +325,62 @@ static void test_wildcards_and_palette(void) {
     nk_texrepl_close(p);
 }
 
+/* A palette texture's identity as PPSSPP computes it (TextureCacheCommon.cpp, UpdateCurrentClut and
+ * "cluthash = clutHash_ ^ gstate.clutformat"): XXH32 (seed 0xC0108888) of min(last load + start
+ * position, largest load) bytes, xor the CLUTFORMAT word with its 0xC5 opcode. The expected values
+ * below were worked out with a separate XXH32 written from the algorithm's specification (checked
+ * against the empty, "a" and "abc" vectors), not with this project's code, over a palette whose
+ * byte i is (7 * i + 1) & 255. */
+static void test_palette_identity(void) {
+    uint8_t ram[2048];
+    for (size_t i = 0; i < sizeof(ram); i++) ram[i] = (uint8_t)(7u * i + 1u);
+    static const struct {
+        uint32_t clutfmt, texfmt, last, max, want;
+        const char *what;
+    } kCases[] = {
+        {0x010001u, 5u, 32u, 64u, 0x437f0adfu, "4444, start 16 colours (32 bytes): 32 + 32 = 64"},
+        {0x000003u, 5u, 64u, 64u, 0x437e0addu, "8888, no start"},
+        {0x020000u, 5u, 32u, 256u, 0xcf3f0178u, "start 32 colours (64 bytes): 32 + 64 = 96"},
+        {0x010001u, 5u, 32u, 48u, 0xa6c28046u, "the start offset is capped at the largest load (48)"},
+        {0x000000u, 4u, 0u, 0u, 0x171b4f5bu, "no palette loaded yet, CLUT4: 16 entries of 2 bytes"},
+        {0x000000u, 5u, 0u, 0u, 0xd7cba41au, "no palette loaded yet, CLUT8: 256 entries of 2 bytes"},
+        {0x000003u, 5u, 0u, 0u, 0xe9404e3fu, "no palette loaded yet, CLUT8, 8888: 1024 bytes"},
+    };
+    for (size_t i = 0; i < sizeof(kCases) / sizeof(kCases[0]); i++) {
+        uint32_t got = nk_texrepl_clut_identity(ram, sizeof(ram), kCases[i].clutfmt, kCases[i].texfmt,
+                                                kCases[i].last, kCases[i].max);
+        CHECK(got == kCases[i].want, "palette identity (%s): got %08x want %08x", kCases[i].what, got,
+              kCases[i].want);
+    }
+    /* A load larger than the palette RAM never reads past it. */
+    (void)nk_texrepl_clut_identity(ram, sizeof(ram), 0x000003u, 5u, 5000u, 6000u);
+
+    /* A pack file named the way PPSSPP names it (HashName: "%016llx%08x" of the 64-bit key and the data
+     * hash), with the key written out by hand from the formula above: address 0x08807000 and size code
+     * 0x0303 in the key, xor the identity 0xcf3f0178 in its low half. The identity this build computes
+     * for the same palette must find it. */
+    char dir[512], path[600], err[256];
+    make_pack(dir, sizeof(dir), "texrepl_pack_palette");
+    pack_path(path, sizeof(path), "texrepl_pack_palette", "textures.ini");
+    write_text(path, "[options]\nhash = xxh32\n[hashes]\n08807000cf3f027b0badf00d = pal.png\n");
+    pack_path(path, sizeof(path), "texrepl_pack_palette", "pal.png");
+    uint32_t *img = solid(8, 8, 0xFF336699u);
+    write_png(path, 8, 8, img);
+    free(img);
+    NkTexRepl *p = nk_texrepl_open(dir, 0, err, sizeof(err));
+    CHECK(p != NULL, "open: %s", err);
+    if (!p) return;
+    NkTexReplHit hit;
+    NkTexReplId id = {0x08807000u, 5u, 0x0303u,
+                      nk_texrepl_clut_identity(ram, sizeof(ram), 0x020000u, 5u, 32u, 256u), 0x0badf00du};
+    CHECK(nk_texrepl_lookup(p, &id, &hit) == 1, "a PPSSPP-named palette file was not found by the identity this build computes");
+    nk_texrepl_unpin(p, &hit);
+    /* The same palette bytes under another CLUTFORMAT word is another texture (the xor). */
+    id.clut_hash = nk_texrepl_clut_identity(ram, sizeof(ram), 0x020004u, 5u, 32u, 256u);
+    CHECK(nk_texrepl_lookup(p, &id, &hit) == 0, "another CLUTFORMAT word found the same palette file");
+    nk_texrepl_close(p);
+}
+
 /* Hashing a guest texture: contiguous and strided rows, the pack's hash kind, hash ranges. */
 static void test_texture_hash(void) {
     char dir[512], path[600], err[256];
@@ -438,6 +494,7 @@ int main(void) {
     test_malformed_ini();
     test_ini_less_pack();
     test_wildcards_and_palette();
+    test_palette_identity();
     test_texture_hash();
     test_budget();
     if (g_failures) {

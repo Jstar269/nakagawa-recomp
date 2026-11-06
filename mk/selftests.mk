@@ -859,6 +859,21 @@ texrepl-selftest:
 
 native-core-tests: texrepl-selftest
 
+# texrepl-mutant - the selftest above built with NK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR, which leaves
+# the CLUTFORMAT word out of a palette texture's identity. The palette identity cell must fail, and
+# for that reason: its expected values were worked out from PPSSPP's formula, not from this code.
+texrepl-mutant:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	@$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/core -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		-DNK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR tests/native/texrepl_selftest.c src/rt/texrepl.c $(PLAYER_PLATFORM_SRC) \
+		$(PLAYER_PLATFORM_LIBS) -o $(BUILD_DIR)/texrepl_mutant$(EXE_EXT)
+	@rc=0; $(BUILD_DIR)/texrepl_mutant$(EXE_EXT) > $(BUILD_DIR)/texrepl_mutant.log 2>&1 || rc=$$?; \
+	cat $(BUILD_DIR)/texrepl_mutant.log; \
+	if [ $$rc -eq 0 ]; then echo "FAIL texrepl-mutant (the mutant passed: the palette identity is untested)"; exit 1; \
+	elif ! grep -q "palette identity" $(BUILD_DIR)/texrepl_mutant.log; then \
+		echo "FAIL texrepl-mutant (exit $$rc, but not from the palette identity check)"; exit 1; \
+	else echo "PASS texrepl-mutant (killed by the palette identity check, exit $$rc)"; fi
+
 # tex-scale-gate-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_NO_ACE_GATE, which lets
 # an authentic start read SR_TEX_SCALE and SR_SMART_2D. It passes only when the settings cell fails
 # for that reason, so the Ace gate is under test (contract section 11.2, item 1).
@@ -890,10 +905,30 @@ GPU_TEXSCALE_BUILD = $(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_TEXSCA
 gpu-texscale-selftest: shader-verify $(RT_GE_O)
 	$(GPU_TEXSCALE_BUILD) -o $(BUILD_DIR)/gpu_texscale_selftest.exe
 	@for args in "--scale 1" "--scale 4" "--scale 2 --tex-scale 4" "--twin native --scale 1" "--twin native --scale 4" \
-		"--twin native --scale 2 --tex-scale 4" "--twin 1 --scale 4"; do \
+		"--twin native --scale 2 --tex-scale 4" "--twin 1 --scale 4" "--repl-only --scale 1"; do \
 		rc=0; $(BUILD_DIR)/gpu_texscale_selftest.exe $$args || rc=$$?; \
 		if [ $$rc -eq 77 ]; then echo "SKIP gpu-texscale-selftest $$args (exit 77; the reason is printed above)"; \
 		elif [ $$rc -ne 0 ]; then echo "FAIL gpu-texscale-selftest $$args (exit $$rc)"; exit $$rc; fi; \
+	done
+
+# gpu-texrepl-mutant - the selftest above built twice, each time with a change that must fail the
+# replace cells for the intended reason: NK_TEXREPL_MUTANT_NO_LOOKUP, a stub whose texture lookup
+# never finds the pack (the listed texture is then drawn as the game made it), and
+# NK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR, a palette identity without the CLUTFORMAT word (the CLUT8
+# texture a PPSSPP-named file lists is then never found).
+gpu-texrepl-mutant: shader-verify $(RT_GE_O)
+	$(GPU_TEXSCALE_BUILD) -DNK_TEXREPL_MUTANT_NO_LOOKUP -o $(BUILD_DIR)/gpu_texrepl_mutant_lookup.exe
+	$(GPU_TEXSCALE_BUILD) -DNK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR -o $(BUILD_DIR)/gpu_texrepl_mutant_xor.exe
+	@for m in lookup:"FAIL replace: the first draw of a listed texture is not its replacement" \
+		xor:"FAIL replace-palette: a CLUT8 texture a PPSSPP-named file lists is not drawn from the pack"; do \
+		name=$${m%%:*}; want=$${m#*:}; rc=0; \
+		$(BUILD_DIR)/gpu_texrepl_mutant_$$name.exe > $(BUILD_DIR)/gpu_texrepl_mutant_$$name.log 2>&1 || rc=$$?; \
+		cat $(BUILD_DIR)/gpu_texrepl_mutant_$$name.log; \
+		if [ $$rc -eq 77 ]; then echo "SKIP gpu-texrepl-mutant $$name (exit 77; the reason is printed above)"; \
+		elif [ $$rc -eq 0 ]; then echo "FAIL gpu-texrepl-mutant $$name (the mutant passed: the replace cells are untested)"; exit 1; \
+		elif ! grep -q "$$want" $(BUILD_DIR)/gpu_texrepl_mutant_$$name.log; then \
+			echo "FAIL gpu-texrepl-mutant $$name (exit $$rc, but not from the intended check)"; exit 1; \
+		else echo "PASS gpu-texrepl-mutant $$name (killed by the intended check, exit $$rc)"; fi; \
 	done
 
 # gpu-texscale-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_SKIP_CONTENT_CHECK, which

@@ -530,6 +530,12 @@ int       ge_vram_cli_decode(uint32_t addr, uint32_t width, uint32_t height, uin
  * while a GE capture is active, when the texture's bytes are not all readable, when it is
  * larger than GE_VRAM_VIEW_MAX_*, or when `capacity` words cannot hold it. */
 int       ge_vram_decode_bound_texture(uint32_t *out, size_t capacity);
+/* The CLUT loads seen so far: the size of the last one and the largest, in bytes (0 before the
+ * first). PPSSPP's palette identity for texture replacement is built from them. */
+void      ge_clut_load_extent(uint32_t *last_bytes, uint32_t *max_bytes);
+/* Record a CLUT load of `bytes` (what GE_LOADCLUT does first; selftests that fill the palette
+ * directly call it to say how much they loaded). */
+void      ge_clut_note_load(uint32_t bytes);
 void      ge_replay_restore(const GeState *state, const uint16_t *zbuf);
 void      ge_cpu_profile_reset(void);
 void      ge_cpu_profile_get(GeCpuProfileStats *out);

@@ -25,9 +25,14 @@
  *                    draw keeps the copy, identical with the rule on and off. The cells above
  *                    check copies through 1:1 sprites, so they run with the rule off;
  *   replace          a texture a synthetic replacement pack lists (texrepl.h, #1880) is drawn from the
- *                    pack's image from the first draw, even at 1:1 with the 1:1 rule on; a rewrite to
+ *                    pack's image from the draw that finds it, even at 1:1 with the 1:1 rule on; a rewrite to
  *                    unlisted content never draws the old image; an image of no whole factor is
  *                    counted and the texture drawn as made; an authentic start reads no pack;
+ *   replace-pal      a CLUT8 texture a pack file named the way PPSSPP names it lists (key and palette
+ *                    identity written out from PPSSPP's formula in the cell) is drawn from the pack's
+ *                    image; the build with NK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR fails here;
+ *   replace-only     (`--repl-only`) SR_TEX_REPLACE alone, with no texture scaling: the pack is read at
+ *                    start, a listed texture is drawn from its image, an unlisted one as made;
  *   guest-bytes      after every cell, no guest VRAM byte outside the drawn frame and no CLUT
  *                    byte changes while the scales land;
  *   smart2d          at a render scale above 1, a 1:1 linear sprite samples nearest (every
@@ -996,6 +1001,148 @@ fail:
     return 0;
 }
 
+/* A replacement image for a 16x16 texture at factor rf, the same bytes wherever a cell needs it. */
+static uint32_t *xst_repl_image(int rf, uint32_t salt) {
+    const int n = XST_W * rf * XST_H * rf;
+    uint32_t *img = (uint32_t *)malloc((size_t)n * 4u);
+    if (img)
+        for (int i = 0; i < n; i++) img[i] = 0xFF000000u | (xst_hash(salt + (uint32_t)i) & 0xFFFFFFu);
+    return img;
+}
+
+/* A palette texture (CLUT8) listed by a pack file named the way PPSSPP names it: the key and the
+ * palette identity are written out here from PPSSPP's formula (TextureCacheCommon.cpp: XXH32 of the
+ * loaded palette bytes, seed 0xC0108888, xor the CLUTFORMAT word with its 0xC5 opcode) and the
+ * data hash is the quick hash, none of it through nk_texrepl_clut_identity or nk_texrepl_cache_key.
+ * The texture is drawn from the pack's image; the build with NK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR
+ * leaves the xor out of the identity and must fail here, for that reason. */
+static int xst_cell_replace_palette(int f) {
+    (void)f;
+    const int rf = 2, rw = XST_W * rf, rh = XST_H * rf;
+    uint32_t pat[XST_W * XST_H], want[XST_W * XST_H];
+    uint8_t *idx = (uint8_t *)SR_HOST(XST_TEX);
+    uint32_t *rimg = xst_repl_image(rf, 0xB000u);
+    if (!rimg) return 0;
+    xst_reset();
+    nk_tex_scale_set_sync(1);
+    xst_pattern(pat, 9u);
+    for (int i = 0; i < XST_W * XST_H; i++) idx[i] = (uint8_t)(pat[i] & 0x0Fu);
+    sr_gpu_vram_dirty(XST_TEX, XST_W * XST_H);
+    xst_state(XST_BASE, XST_TEX, 5u, 1, 1);          /* CLUT8; the state reset clears the palette */
+    for (uint32_t j = 0; j < 256u; j++) {
+        uint32_t entry = 0xFF000000u | (xst_hash(0xC00u + j * 5u) & 0xFFFFFFu);
+        memcpy(&s_ge->clutram[j * 4u], &entry, 4);
+    }
+    s_ge->clut_fmt = 3u | (0xFFu << 8);              /* 8888, shift 0, mask 0xFF, start 0 */
+    ge_clut_note_load(256u * 4u);                    /* what GE_LOADCLUT records for a 1 KiB load */
+    ge_state_note_external_write();
+
+    uint32_t last = 0, max = 0;
+    ge_clut_load_extent(&last, &max);
+    const uint32_t loaded = last < max ? last : max;
+    const uint32_t cluthash = nk_texrepl_xxh32(s_ge->clutram, loaded, 0xC0108888u) ^ (0xC5000000u | s_ge->clut_fmt);
+    const uint64_t key = (((uint64_t)(XST_TEX & 0x3FFFFFFFu) << 32) | (4u | (4u << 8))) ^ cluthash;
+    char dir[400], path[480], name[64], err[200];
+    snprintf(dir, sizeof(dir), "%s/texrepl_gpu_pal_pack", SR_SELFTEST_BUILD_ROOT);
+    nk_platform_mkdir_p(dir);
+    snprintf(name, sizeof(name), "%016llx%08x.png", (unsigned long long)key,
+             nk_texrepl_quick_hash(idx, XST_W * XST_H, XST_TEX));
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (!synpng_write(path, rw, rh, rimg)) {
+        fprintf(stderr, "gpu texscale selftest: FAIL replace-palette: cannot write the synthetic pack\n");
+        free(rimg);
+        return 0;
+    }
+    NkTexRepl *saved = s_repl;
+    s_repl = nk_texrepl_open(dir, 0, err, sizeof(err));
+    if (!s_repl) {
+        fprintf(stderr, "gpu texscale selftest: FAIL replace-palette: %s\n", err);
+        s_repl = saved;
+        free(rimg);
+        return 0;
+    }
+    xst_repl_expect(rimg, rf, want);
+    int ok = xst_draw(20.0f, 140.0f);
+    s_tmpl_ok = 0;
+    ok = ok && xst_draw(60.0f, 140.0f);
+    NkTexReplStats st;
+    nk_texrepl_stats(s_repl, &st);
+    nk_texrepl_close(s_repl);
+    s_repl = saved;
+    free(rimg);
+    if (!ok || !xst_report("replace-palette", 20, 140, want, "a CLUT8 texture a PPSSPP-named file lists is not drawn from the pack's image")) return 0;
+    if (st.hits < 1u) {
+        fprintf(stderr, "gpu texscale selftest: FAIL replace-palette: no pack hit was counted\n");
+        return 0;
+    }
+    printf("gpu texscale selftest: PASS %-12s a CLUT8 texture a PPSSPP-named file lists is drawn from the pack\n",
+           "replace-pal");
+    return 1;
+}
+
+/* ---- the pack alone (SR_TEX_REPLACE with no texture scaling), the documented default use ------
+ * `--repl-only` in the harness: gegpu_texrepl_only_prepare writes the pack and names it before the
+ * renderer starts, so gegpu_init's own tex_repl_init reads it with s_xs_factor 0 (the pool doubling,
+ * the scaled-copy budget fallback and the shutdown path are what make that work); the cell then
+ * draws a listed texture, which an address-only file lists, and an unlisted one. */
+#define XST_ONLY_TEX_B (XST_TEX + 0x1000u)
+
+int gegpu_texrepl_only_prepare(const char *build_root) {
+    char dir[400], path[480];
+    snprintf(dir, sizeof(dir), "%s/texrepl_gpu_only_pack", build_root);
+    if (!nk_platform_mkdir_p(dir)) return 0;
+    uint32_t *rimg = xst_repl_image(3, 0xD000u);
+    if (!rimg) return 0;
+    /* no hash in the name: the address and size code alone (PPSSPP's "no data hash" alias) */
+    const uint64_t key = ((uint64_t)(XST_TEX & 0x3FFFFFFFu) << 32) | (4u | (4u << 8));
+    snprintf(path, sizeof(path), "%s/%016llx%08x.png", dir, (unsigned long long)key, 0u);
+    const int ok = synpng_write(path, XST_W * 3, XST_H * 3, rimg);
+    free(rimg);
+    return ok && xst_setenv("SR_TEX_REPLACE", dir);
+}
+
+int gegpu_texrepl_only_selftest(void) {
+    const int rf = 3;
+    uint32_t a[XST_W * XST_H], b[XST_W * XST_H], want[XST_W * XST_H], plain[XST_W * XST_H];
+    uint32_t *rimg = xst_repl_image(rf, 0xD000u);
+    if (!rimg) return 0;
+    if (!s_repl || s_xs_factor != 0 || !nk_tex_scale_config()->budget_bytes) {
+        fprintf(stderr, "gpu texscale selftest: FAIL replace-only: the pack was not read at start (pack %p, "
+                        "texture scale factor %d, copy budget %llu)\n", (void *)s_repl, s_xs_factor,
+                (unsigned long long)nk_tex_scale_config()->budget_bytes);
+        free(rimg);
+        return 0;
+    }
+    xst_reset();
+    xst_pattern(a, 61u);
+    xst_pattern(b, 67u);
+    memcpy(SR_HOST(XST_ONLY_TEX_B), b, sizeof(b));
+    sr_gpu_vram_dirty(XST_ONLY_TEX_B, sizeof(b));
+    xst_upload(a);
+    xst_state(XST_BASE, XST_TEX, 3u, 1, 1);
+    xst_repl_expect(rimg, rf, want);
+    xst_expect(a, 0, 1, plain);
+    free(rimg);
+    int ok = xst_draw(20.0f, 140.0f);                /* the first draw that finds the listed texture */
+    if (!ok || !xst_report("replace-only", 20, 140, want, "with SR_TEX_REPLACE alone, the first draw of a listed texture is not its replacement")) return 0;
+    nk_tex_scale_wait_idle();
+    s_tmpl_ok = 0;
+    ok = xst_draw(60.0f, 140.0f);
+    if (!ok || !xst_report("replace-only", 60, 140, want, "with SR_TEX_REPLACE alone, a later draw of a listed texture is not its replacement")) return 0;
+    if (memcmp(want, plain, sizeof(want)) == 0) {
+        fprintf(stderr, "gpu texscale selftest: FAIL replace-only: the replacement is the texture (vacuous)\n");
+        return 0;
+    }
+    /* A texture the pack does not list (another address): drawn as the game made it, no xBRZ. */
+    xst_state(XST_BASE, XST_ONLY_TEX_B, 3u, 1, 1);
+    s_tmpl_ok = 0;
+    ok = xst_draw(100.0f, 140.0f);
+    if (!ok || !xst_report("replace-only", 100, 140, b, "with SR_TEX_REPLACE alone, an unlisted texture is not drawn as made")) return 0;
+    printf("gpu texscale selftest: PASS %-12s SR_TEX_REPLACE alone replaces a listed texture, leaves an unlisted one\n",
+           "replace-only");
+    return 1;
+}
+
 int gegpu_texscale_selftest(void) {
     const int f = s_xs_factor;
     if (!f || !s_xs_smart2d) {
@@ -1006,9 +1153,10 @@ int gegpu_texscale_selftest(void) {
     int ok = 1;
     static int (*const cells[])(int) = { xst_cell_scaled_draw, xst_cell_large, xst_cell_upload_cap,
                                          xst_cell_not_ready, xst_cell_rewrite, xst_cell_clut, xst_cell_replace,
+                                         xst_cell_replace_palette,
                                          xst_cell_budget, xst_cell_rtt, xst_cell_onetoone };
     static const char *const names[] = { "scaled-draw", "large", "upload-cap", "not-ready", "rewrite", "clut",
-                                         "replace", "budget", "rtt", "onetoone" };
+                                         "replace", "replace-pal", "budget", "rtt", "onetoone" };
     /* The cells before onetoone check copies through 1:1 sprites, so they run with the 1:1 rule
      * off; onetoone turns it back on. */
     s_xs_onetoone_plain = 0;
