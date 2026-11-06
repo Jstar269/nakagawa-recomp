@@ -488,7 +488,44 @@ The item's contract entry (section 11.2) names each of these that applies. An it
 host-only and follows sections 10.2 to 10.6 and 10.8, not this section. One existing feature already sits on this line:
 texture filtering changes the frame that every present commits to guest VRAM, so a game that copies its screen keeps
 the filtered picture (the "Pixels" bullet of section 10.3). It keeps that entry, and is not held to items 2 to 5 of
-section 11.2 retroactively; a change to it is. A new item is not admitted by analogy with it.
+section 11.2 retroactively; a change to it is. A new item is not admitted by analogy with it. Render scale, below,
+is the other existing feature on this line, with its own rule for changes.
+
+A render scale above 1x (the player's Internal Render Resolution, not an Enhanced or Ace item) sits on the same line.
+Its off switch is 1x, where the picture and every readback are the PSP's values. A change to how the renderer draws
+above 1x is part of this render-scale item, not a new item or a new class, when it keeps 1x byte-identical and above
+1x moves the picture toward the 1x picture. That is a claim about the picture, not about every pixel: the change's
+pull request traces each device pixel that ends farther from its own 1x value and says why it does. Items 2 to 5 of
+section 11.2 do not apply to such a change; its pull request still carries a test that fails without it and the
+comparison runs that show it. A readback keeps the
+top-left device pixel of each guest pixel, so the guest reads what the device drew there:
+
+- Where the device image holds the PSP's own value, the readback returns it. That covers a target uploaded from
+  guest memory, and a sprite sampled nearest at one texel per pixel in either direction, whatever its origin. Every
+  device pixel of such a sprite shows the PSP's texel (`sprite-scaled` in `gpu-coherence-selftest`).
+- Every other draw samples at each device pixel's own position. The readback returns the top-left device sample,
+  which sits 0.5 - 0.5 / scale of a pixel before the PSP's pixel centre. At 4x that is 0.375 of a pixel: for a 1:1
+  linear sprite or triangle the value moves by up to 0.375 of the step between neighbouring texels, and a minified
+  nearest sprite can return a different texel. The exception is the left and top edge pixels of a clamped primitive
+  (next bullet): there the top-left device sample lies in the clamped band, so the readback returns the PSP's value.
+- At the edges of an axis-aligned through-mode primitive (a sprite, or a strip or quad drawn as screen-aligned
+  rectangles, flipped or not), no device pixel samples outside the texture range the primitive's 1x pixel centres
+  cover. Those centres follow the rasteriser's top-left rule. A device pixel in the outer part of an edge pixel shows
+  that pixel's own sample, as the PSP does, instead of reaching past it (with repeat wrapping, into the texture's
+  opposite edge), and is filtered with the primitive's own footprint. This change is part of the render-scale item
+  above: 1x stays byte-identical, and above 1x it removes the edge bleed, moving the picture toward the 1x picture
+  (`uv-edge-clamp` in `gpu-coherence-selftest`). A pixel that ends farther from its own 1x value comes from
+  interpolation on the axis the clamp leaves free, or from content beneath the primitive; #2104 traces each one on
+  its captures.
+  What it does not do:
+  - Rotated and sheared primitives, a strip half without both a horizontal and a vertical leg (a trapezoid), and
+    transform-mode (3D) geometry are not clamped.
+  - Where two clamped primitives meet with continuous texture coordinates, each keeps its edge pixel's sample over
+    its outer band, so the seam shows the 1x step instead of a smooth upscaled blend across it.
+  - A sprite that samples a render target at device resolution (a screen copy) is clamped the same way, so the copy's
+    one-pixel border shows the guest-pixel sample instead of the upscaled detail.
+
+At 1x the readback is the PSP's value.
 
 ### 11.2. What an Item Must Have
 
