@@ -17,6 +17,7 @@ import tempfile
 import unittest
 from types import ModuleType
 from typing import ClassVar, TypedDict, cast
+from collections.abc import Mapping
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1838,6 +1839,370 @@ def _workflow_job_blocks(name: str) -> dict[str, list[str]]:
     return blocks
 
 
+def _job_if(block: list[str]) -> str:
+    """A job's ``if:`` expression, folded ``>-`` continuation lines joined, ``${{ }}`` removed."""
+    for index, line in enumerate(block):
+        match = re.match(r"^ {4}if:\s*(.*)$", line)
+        if not match:
+            continue
+        parts = [match.group(1)]
+        if parts[0] == ">-":
+            parts = []
+            for continuation in block[index + 1:]:
+                if continuation.strip() and not continuation.startswith(" " * 5):
+                    break
+                parts.append(continuation.strip())
+        expression = " ".join(part for part in parts if part)
+        return _matched(re.fullmatch(r"\$\{\{(.*)\}\}", expression, re.S)).group(1).strip()
+    raise AssertionError("job has no if:")
+
+
+_EXPRESSION_TOKEN = re.compile(r"\s*(\|\||&&|==|!=|!|\(|\)|,|'(?:[^']|'')*'|\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_.-]*)")
+
+
+def _actions_eval(expression: str, context: Mapping[str, object]) -> bool:
+    """Evaluate the GitHub Actions expression subset the job guards use.
+
+    Supported: ``||``, ``&&``, ``!``, ``==``, ``!=``, parentheses, single-quoted strings, number literals,
+    context paths (a missing or null step reads as null), ``startsWith`` and ``always``.
+    As in Actions, ``!`` binds tighter than ``==`` and ``!=``, two strings compare without
+    case, operands of different types compare as numbers (null and '' are 0, a non-numeric
+    string is NaN), and ``startsWith`` reads null as the empty string.
+    """
+    tokens: list[str] = []
+    position = 0
+    while expression[position:].strip():
+        match = _EXPRESSION_TOKEN.match(expression, position)
+        if not match:
+            raise AssertionError(f"unsupported expression text at {expression[position:]!r}")
+        tokens.append(match.group(1))
+        position = match.end()
+    index = 0
+
+    def peek() -> str | None:
+        return tokens[index] if index < len(tokens) else None
+
+    def take(expected: str | None = None) -> str:
+        nonlocal index
+        token = tokens[index]
+        if expected is not None and token != expected:
+            raise AssertionError(f"expected {expected!r}, found {token!r}")
+        index += 1
+        return token
+
+    def truthy(value: object) -> bool:
+        return value not in (None, False, 0, "")
+
+    def lookup(path: str) -> object:
+        value: object = context
+        for part in path.split("."):
+            value = value.get(part) if isinstance(value, dict) else None
+        return value
+
+    def number(value: object) -> float:
+        if value is None:
+            return 0.0
+        if isinstance(value, bool):
+            return float(value)
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).strip()
+        if not text:
+            return 0.0
+        try:
+            return float(text)
+        except ValueError:
+            return float("nan")
+
+    def equal(left: object, right: object) -> bool:
+        if isinstance(left, str) and isinstance(right, str):
+            return left.casefold() == right.casefold()
+        if type(left) is type(right):
+            return left == right
+        return number(left) == number(right)
+
+    def primary() -> object:
+        token = take()
+        if token == "(":
+            value = disjunction()
+            take(")")
+            return value
+        if token.startswith("'"):
+            return token[1:-1].replace("''", "'")
+        if token[0].isdigit():
+            return float(token)
+        if peek() == "(":
+            take("(")
+            arguments: list[object] = []
+            while peek() != ")":
+                arguments.append(disjunction())
+                if peek() == ",":
+                    take(",")
+            take(")")
+            if token == "always" and not arguments:
+                return True
+            if token == "startsWith" and len(arguments) == 2:
+                text, prefix = (str(value or "").casefold() for value in arguments)
+                return text.startswith(prefix)
+            raise AssertionError(f"unsupported function {token}")
+        return lookup(token)
+
+    def negation() -> object:
+        if peek() == "!":
+            take("!")
+            return not truthy(negation())
+        return primary()
+
+    def comparison() -> object:
+        left = negation()
+        if peek() in ("==", "!="):
+            operator = take()
+            right = negation()
+            return equal(left, right) == (operator == "==")
+        return left
+
+    def conjunction() -> object:
+        value = comparison()
+        while peek() == "&&":
+            take("&&")
+            right = comparison()
+            value = right if truthy(value) else value
+        return value
+
+    def disjunction() -> object:
+        value = conjunction()
+        while peek() == "||":
+            take("||")
+            right = conjunction()
+            value = value if truthy(value) else right
+        return value
+
+    result = disjunction()
+    if index != len(tokens):
+        raise AssertionError(f"unparsed expression tokens: {tokens[index:]}")
+    return truthy(result)
+
+
+#: This repository, as ``github.repository`` names it.
+THIS_REPOSITORY = "Jstar269/nakagawa-recomp"
+
+
+class ActionsExpressionEvaluatorTests(unittest.TestCase):
+    """The guard tests below are only as good as the evaluator's Actions semantics."""
+
+    def test_not_binds_tighter_than_equality(self) -> None:
+        context = {"github": {"value": "y"}}
+        # Actions reads (!'y') == 'x', that is false == 'x', which is false.
+        self.assertFalse(_actions_eval("!github.value == 'x'", context))
+        self.assertTrue(_actions_eval("!(github.value == 'x')", context))
+
+    def test_null_equals_the_empty_string_as_in_actions(self) -> None:
+        context = {"github": {"empty": ""}}
+        self.assertTrue(_actions_eval("github.missing == ''", context))
+        self.assertTrue(_actions_eval("github.missing == github.empty", context))
+        self.assertFalse(_actions_eval("github.missing == 'batch/'", context))
+        self.assertFalse(_actions_eval("github.missing != ''", context))
+
+    def test_a_number_literal_compares_as_a_number(self) -> None:
+        self.assertTrue(_actions_eval("run.attempt == 1", {"run": {"attempt": 1}}))
+        self.assertFalse(_actions_eval("run.attempt == 1", {"run": {"attempt": 2}}))
+        self.assertTrue(_actions_eval("run.attempt == 1", {"run": {"attempt": "1"}}))
+        self.assertFalse(_actions_eval("missing == 1", {}))
+
+    def test_strings_compare_without_case(self) -> None:
+        self.assertTrue(_actions_eval("github.repository == 'jstar269/NAKAGAWA-recomp'",
+                                      {"github": {"repository": THIS_REPOSITORY}}))
+
+
+class BatchOnlyCodeqlGuardTests(unittest.TestCase):
+    """Trusted CodeQL analyses a pull request wake only for this repository's batch/ heads.
+
+    Every other trigger (merge group, push to main, schedule, dispatch) still analyses. A
+    skipped prepare skips analyze and upload, so an unscanned head gets no "CodeQL" check
+    and no SARIF, never an empty-results pass (docs/CI.md, "Trusted CodeQL on pull requests").
+    """
+
+    PREPARE_IF = [
+        "    if: >-",
+        "      ${{ github.event_name != 'workflow_run' ||",
+        "          github.event.workflow_run.event == 'merge_group' ||",
+        "          (github.event.workflow_run.event == 'pull_request' &&",
+        "           github.event.workflow_run.head_repository.full_name == github.repository &&",
+        "           startsWith(github.event.workflow_run.head_branch, 'batch/')) }}",
+    ]
+
+    def setUp(self) -> None:
+        self.blocks = _workflow_job_blocks("codeql.yml")
+        self.prepare = _job_if(self.blocks["prepare"])
+
+    @staticmethod
+    def _wake(event: str, branch: str | None, head_repository: object) -> dict[str, object]:
+        return {"github": {
+            "event_name": "workflow_run",
+            "repository": THIS_REPOSITORY,
+            "event": {"workflow_run": {"event": event, "head_branch": branch,
+                                       "head_repository": head_repository}},
+        }}
+
+    def test_a_dispatched_run_is_titled_with_its_pull_request(self) -> None:
+        text = _workflow_text("codeql.yml")
+        header = text[:text.index("\non:\n")]
+        self.assertEqual(header.splitlines()[0], "name: Trusted CodeQL")
+        self.assertEqual(
+            [line for line in header.splitlines() if line.startswith("run-name:")],
+            ["run-name: \"${{ github.event_name == 'workflow_dispatch' && "
+             "format('Trusted CodeQL (PR #{0})', inputs.pull_request_number) || 'Trusted CodeQL' }}\""],
+        )
+        # The input the title names is the dispatch input prepare resolves.
+        self.assertIn("      pull_request_number:\n", text)
+
+    def test_prepare_guard_text_is_pinned(self) -> None:
+        self.assertEqual("\n".join(self.blocks["prepare"]).count("\n".join(self.PREPARE_IF)), 1)
+
+    def test_a_batch_head_of_this_repository_is_analysed(self) -> None:
+        for branch in ("batch/desk-20261105T000000Z", "batch/x"):
+            with self.subTest(branch=branch):
+                context = self._wake("pull_request", branch, {"full_name": THIS_REPOSITORY})
+                self.assertTrue(_actions_eval(self.prepare, context))
+
+    def test_other_pull_request_heads_leave_prepare_skipped(self) -> None:
+        cases = {
+            "fork batch branch": ("batch/desk-20261105T000000Z", {"full_name": "someone/nakagawa-recomp"}),
+            "same-repository non-batch branch": ("fix/codeql-20261105", {"full_name": THIS_REPOSITORY}),
+            "batch/ not at the start": ("fix/batch/x", {"full_name": THIS_REPOSITORY}),
+            "null head repository": ("batch/desk-20261105T000000Z", None),
+            "head repository without a name": ("batch/desk-20261105T000000Z", {}),
+            "null head branch": (None, {"full_name": THIS_REPOSITORY}),
+        }
+        for name, (branch, head_repository) in cases.items():
+            with self.subTest(case=name):
+                context = self._wake("pull_request", branch, head_repository)
+                self.assertFalse(_actions_eval(self.prepare, context))
+
+    def test_a_wake_of_any_other_event_leaves_prepare_skipped(self) -> None:
+        context = self._wake("push", "batch/x", {"full_name": THIS_REPOSITORY})
+        self.assertFalse(_actions_eval(self.prepare, context))
+
+    def test_merge_groups_pushes_schedules_and_dispatches_still_analyse(self) -> None:
+        merge_group = self._wake("merge_group", "gh-readonly-queue/main/pr-1-abc", {"full_name": THIS_REPOSITORY})
+        self.assertTrue(_actions_eval(self.prepare, merge_group))
+        for event_name in ("push", "schedule", "workflow_dispatch"):
+            with self.subTest(event=event_name):
+                context: dict[str, object] = {"github": {"event_name": event_name, "repository": THIS_REPOSITORY, "event": {}}}
+                self.assertTrue(_actions_eval(self.prepare, context))
+
+    def test_a_skipped_prepare_skips_analysis_and_upload(self) -> None:
+        self.assertIn("    needs: prepare", self.blocks["analyze"])
+        self.assertIn("    needs: [prepare, analyze]", self.blocks["upload"])
+        context = self._wake("pull_request", "fix/x", {"full_name": THIS_REPOSITORY})
+        context["needs"] = {"prepare": {"result": "skipped", "outputs": {}},
+                            "analyze": {"result": "skipped"}}
+        for job in ("analyze", "upload"):
+            with self.subTest(job=job):
+                self.assertFalse(_actions_eval(_job_if(self.blocks[job]), context))
+
+
+class BatchOnlyCodeqlWakeTests(unittest.TestCase):
+    """The wake job runs only where codeql.yml would analyse; codeql.yml stays the authority."""
+
+    def setUp(self) -> None:
+        self.guard = _job_if(_workflow_job_blocks("codeql-wake.yml")["wake"])
+
+    @staticmethod
+    def _pull_request(branch: str, head_repository: object) -> dict[str, object]:
+        return {"github": {
+            "event_name": "pull_request",
+            "repository": THIS_REPOSITORY,
+            "head_ref": branch,
+            "event": {"pull_request": {"head": {"repo": head_repository}}},
+        }}
+
+    def test_merge_groups_and_batch_heads_wake(self) -> None:
+        merge_group = {"github": {"event_name": "merge_group", "repository": THIS_REPOSITORY, "event": {}}}
+        self.assertTrue(_actions_eval(self.guard, merge_group))
+        batch = self._pull_request("batch/desk-20261105T000000Z", {"full_name": THIS_REPOSITORY})
+        self.assertTrue(_actions_eval(self.guard, batch))
+
+    def test_other_pull_request_heads_do_not_wake(self) -> None:
+        cases = {
+            "fork batch branch": ("batch/desk-20261105T000000Z", {"full_name": "someone/nakagawa-recomp"}),
+            "same-repository non-batch branch": ("ci/codeql-batch-only-20261105", {"full_name": THIS_REPOSITORY}),
+            "null head repository": ("batch/desk-20261105T000000Z", None),
+        }
+        for name, (branch, head_repository) in cases.items():
+            with self.subTest(case=name):
+                self.assertFalse(_actions_eval(self.guard, self._pull_request(branch, head_repository)))
+
+
+class TrustedVerdictTriggerTests(unittest.TestCase):
+    """The verdict re-judges on a new head and on every label event, but not on ready_for_review.
+
+    tools/ci_trust_verdict.py never reads the draft state, so ready_for_review could only
+    repeat the same verdict. Every label event still re-judges, whatever the label: a newer
+    run in the head's concurrency group replaces a pending one, so a run that skipped the
+    verdict could leave a stale one standing.
+    """
+
+    NEEDS = {"approval": {"result": "skipped"}, "approval_record": {"result": "skipped"}}
+
+    def setUp(self) -> None:
+        self.text = _workflow_text("ci-trust-verdict.yml")
+        self.guard = _job_if(_workflow_job_blocks("ci-trust-verdict.yml")["verdict"])
+
+    def _target(self, action: str, label: str | None = None) -> dict[str, object]:
+        event: dict[str, object] = {
+            "action": action,
+            "pull_request": {"base": {"ref": "main"}},
+            "repository": {"default_branch": "main"},
+        }
+        if label is not None:
+            event["label"] = {"name": label}
+        return {"github": {"event_name": "pull_request_target", "event": event}, "needs": self.NEEDS}
+
+    def test_ready_for_review_is_not_a_trigger_and_the_verifier_ignores_draft_state(self) -> None:
+        self.assertIn(
+            "  pull_request_target:\n    types: [opened, synchronize, reopened, labeled, unlabeled]\n",
+            self.text,
+        )
+        self.assertNotIn("ready_for_review", _uncommented(self.text))
+        verifier = (ROOT / "tools" / "ci_trust_verdict.py").read_text(encoding="utf-8")
+        self.assertNotIn("draft", verifier.lower())
+
+    def test_new_heads_run_the_verdict(self) -> None:
+        for action in ("opened", "synchronize", "reopened"):
+            with self.subTest(action=action):
+                self.assertTrue(_actions_eval(self.guard, self._target(action)))
+
+    def test_a_labeled_or_unlabeled_event_with_any_label_name_runs_the_verdict(self) -> None:
+        self.assertNotIn("github.event.label.name", "\n".join(_workflow_job_blocks("ci-trust-verdict.yml")["verdict"]))
+        for action in ("labeled", "unlabeled"):
+            for label in ("ci-change-approved", "documentation", "batch"):
+                with self.subTest(action=action, label=label):
+                    self.assertTrue(_actions_eval(self.guard, self._target(action, label)))
+
+    def test_a_head_for_another_base_branch_is_not_judged(self) -> None:
+        context = self._target("synchronize")
+        event = cast(dict[str, object], cast(dict[str, object], context["github"])["event"])
+        event["pull_request"] = {"base": {"ref": "release"}}
+        self.assertFalse(_actions_eval(self.guard, context))
+
+    def test_workflow_run_and_dispatch_still_run_the_verdict(self) -> None:
+        workflow_run = {"github": {"event_name": "workflow_run", "event": {"workflow_run": {"event": "pull_request"}}},
+                        "needs": self.NEEDS}
+        self.assertTrue(_actions_eval(self.guard, workflow_run))
+        dispatch = {"github": {"event_name": "workflow_dispatch", "event": {}}, "needs": self.NEEDS}
+        self.assertTrue(_actions_eval(self.guard, dispatch))
+
+    def test_only_a_cancelled_first_ci_attempt_is_skipped(self) -> None:
+        for conclusion, attempt, runs in (("cancelled", 1, False), ("cancelled", 2, True),
+                                          ("success", 1, True), ("failure", 1, True)):
+            with self.subTest(conclusion=conclusion, attempt=attempt):
+                run = {"event": "pull_request", "conclusion": conclusion, "run_attempt": attempt}
+                context = {"github": {"event_name": "workflow_run", "event": {"workflow_run": run}},
+                           "needs": self.NEEDS}
+                self.assertEqual(_actions_eval(self.guard, context), runs)
+
+
 class SelfHostedRunnerWiringTests(unittest.TestCase):
     """Only the classifier's trusted-run decision can send a job to the self-hosted pool.
 
@@ -2263,7 +2628,6 @@ class MergeQueueCodeqlWiringTests(unittest.TestCase):
 
     def test_pull_request_route_text_is_unchanged(self) -> None:
         for fragment in (
-            "if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'merge_group' }}",
             'if (context.eventName === "workflow_run") {',
             'if (!run || run.event !== "pull_request") {',
             "const { data: matches } = await github.rest.pulls.list({",

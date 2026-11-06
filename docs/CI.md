@@ -44,10 +44,10 @@ of 2026-11-02, whole history, hosted runners):
 
 | Workflow | Per push before | Now | Measured cost |
 | --- | --- | --- | --- |
-| `CodeQL wake` then `Trusted CodeQL` | 1 wake + prepare + 3 analyses + upload (6 jobs) | 6 jobs when the diff touches C/C++, Python or workflow files; otherwise 3 (wake, prepare, upload) | `codeql.yml` is 38.5k hosted minutes over 2,732 runs, about 14 minutes a run |
+| `CodeQL wake` then `Trusted CodeQL` | 1 wake + prepare + 3 analyses + upload (6 jobs) | none on a pull request head that is not a `batch/` branch of this repository; on a batch head, 6 jobs when the diff touches C/C++, Python or workflow files, otherwise 3 (wake, prepare, upload) | `codeql.yml` is 38.5k hosted minutes over 2,732 runs, about 14 minutes a run |
 | `ClusterFuzzLite` | 1 job, every pull request | 1 job only when the fuzz target's inputs change; none otherwise | 6.8k minutes over 1,767 runs, about 3.8 minutes a run |
 | `OSV-Scanner`, `Dependency Review`, `Provenance attestation` | 1 job each | unchanged | cheap per run (4.5-5.6k runs) but supply-chain controls |
-| `Trusted CI verdict` | about 4 runs, 1 job each | 2 runs (a new head, CI's completion); none for a superseded head's cancelled CI | 16 s average run |
+| `Trusted CI verdict` | about 4 runs, 1 job each | 2 runs (a new head, CI's completion); none for a superseded head's cancelled CI or for `ready_for_review` | 16 s average run |
 
 #### Tests-only changes
 
@@ -73,10 +73,31 @@ flags (`build_system`, `python_tools`, ...) are unchanged; only `run_native` and
 
 `Trusted CodeQL` is the producer of the required `CodeQL` status: GitHub's code scanning
 creates that check only when a SARIF upload for the pull request's merge commit is
-processed, and no job of ours can post it. A pull request that is never analysed would
-therefore wait for it forever. The workflow keeps its `prepare` and `upload` jobs on every
-pull request and decides in `prepare`, from the default branch's `tools/ci_paths.py
---codeql-scope BASE MERGE`, whether the diff can change a result:
+processed, and no job of ours can post it.
+
+**Batch heads only.** A pull request wake is analysed only when the head is a branch of this
+repository whose name starts with `batch/`. Those are the batch pull requests the
+maintainer lands through. Hosted Actions runs about 20 jobs at once, and an analysis takes
+13 to 75 minutes, so analysing every push of every pull request and then the batch that
+carries it spent the runner budget twice. Each change is now analysed once in its batch,
+and again on the push to `main`. The rule is the `prepare` job's `if:` in the default
+branch's `codeql.yml`; `github.event.workflow_run.head_repository` and `head_branch` come
+from GitHub's run record, not from the candidate. A fork head named `batch/...`, a missing
+head repository and any other branch all skip `prepare`, and with it `analyze` and
+`upload`. Such a head has no `CodeQL` check, not an empty or neutral one, so it cannot be
+merged directly. That rests on the `main-minimal` ruleset requiring `CodeQL` and keeping its
+`bypass_actors` list empty (both read from the ruleset on 2026-11-05;
+[`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md#maintainer-configuration)).
+
+For an early scan of any open pull request, or before landing one outside a batch, run
+`gh workflow run codeql.yml -f pull_request_number=<n>`. That run is titled
+`Trusted CodeQL (PR #<n>)`, so a dispatch can be matched to its pull request; every other
+run is titled `Trusted CodeQL`. A merge-queue group, a push to
+`main`, the weekly schedule and a dispatch always run `prepare`.
+
+On a batch head or a dispatched pull request, `prepare` and `upload` always run, and
+`prepare` decides, from the default branch's `tools/ci_paths.py --codeql-scope BASE
+MERGE`, whether the diff can change a result:
 
 - **Analysed in full:** any added, changed, deleted or renamed C/C++ source or header, Python
   file, workflow, action or `.github/codeql/` file; an unreadable diff or any name that cannot
@@ -91,9 +112,12 @@ pull request and decides in `prepare`, from the default branch's `tools/ci_paths
   real result. The required `CodeQL` check reports on the exact merge commit as before.
 
 The decision is made by the default branch's copy of the workflow and classifier, from git
-objects, so a pull request cannot widen or narrow its own scan. `codeql-wake.yml` is
-unchanged: it is a signal with no path filter, because a candidate-controlled `paths` list
-could drop a pull request's wake and leave its required check missing.
+objects, so a pull request cannot widen or narrow its own scan. `codeql-wake.yml` has no
+path filter. Its `wake` job runs only for a merge group or for a pull request from a
+`batch/` branch of this repository, the same heads `prepare` accepts, so other pushes use
+no runner. That file is candidate-controlled: a pull request that edits the filter can drop
+only its own wake, which leaves its required check missing, and a wake it adds back is still
+refused by `prepare`.
 
 If an empty upload is ever refused, `gh workflow run codeql.yml -f pull_request_number=N
 -f force_scan=true` analyses that pull request in full.
@@ -113,7 +137,11 @@ historical 531 s average is therefore the runner limit (about 20 concurrent jobs
 a property of the workflow: the verdict job is created when a producer finishes, which is
 when the repository's own matrix has most jobs queued, and it waits in the same queue as
 the Windows and Python legs. The way to shorten it is to start fewer jobs per push, which
-is what the path gates above do.
+is what the path gates above do. The verdict no longer runs on `ready_for_review`: the
+verifier never reads the draft state, so that event could only repeat the same verdict. Every
+label event still re-judges, whatever the label. A newer run for a head replaces that head's
+pending run, so a run that judged nothing could leave a verdict standing that a withdrawn
+approval should have changed.
 
 #### Why the verdict waited over an hour (2026-11-05)
 
@@ -157,8 +185,8 @@ a ready pull request. No `Ready for review` transition or manual
 `opened`, `synchronize` and `reopened` - the events that can carry a new head -
 so a `Ready for review` (or back-to-draft) transition, which cannot change the
 head, does not start a second run over a tree that already carries its
-validation. `ci-trust-verdict.yml` and `provenance-attestation.yml` do list
-`ready_for_review`, so marking a pull request Ready re-runs only those two. `ci.yml` still cancels superseded runs, and docs-only or other
+validation. `provenance-attestation.yml` lists `ready_for_review`, so marking a pull
+request Ready re-runs only that workflow. `ci.yml` still cancels superseded runs, and docs-only or other
 irrelevant jobs remain skipped by the classifier. `workflow_dispatch` remains
 available when a maintainer deliberately wants the complete matrix regardless of
 changed paths.
@@ -1036,7 +1064,7 @@ integration, and every Actions job is integration 15368. A name alone cannot tel
 intended job from a candidate's.
 
 **The gate.** The workflow runs only the default branch's copy: `pull_request_target`
-(opened, synchronize, reopened, ready for review, labeled, unlabeled), a `workflow_run` when
+(opened, synchronize, reopened, labeled, unlabeled), a `workflow_run` when
 `CI` completes (CI finishes last; a cancelled first attempt, a superseded head, starts no
 verdict job), and a manual `workflow_dispatch` naming a pull request. It checks out the default branch, fetches `refs/pull/<n>/head` as
 objects only, and never checks out or runs candidate files. The verdict job has `actions`,
