@@ -788,6 +788,7 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
 	@rc=0; $(GPU_COHERENCE_BIN) --twin 1 --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest twin gpu-timestamps (exit 77; the reason is printed above)"; 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest twin gpu-timestamps (exit $$rc)"; exit $$rc; fi
 	@$(MAKE) --no-print-directory gpu-coherence-selftest-snapbar-mutants
+	@$(MAKE) --no-print-directory ge-first-bad-draw-selftest
 
 # gpu-coherence-selftest-snapbar-mutants — the submit-batch case must kill each
 # SR_GPU_SNAPBAR_MUTANT in ge_gpu.c: 1 records one barrier command per image (the stream before
@@ -963,6 +964,47 @@ ge-replay: shader-verify $(RT_GE_O)
 		-o $(BUILD_DIR)/ge_replay.exe \
 		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
+
+# ge-first-bad-draw-selftest — ge_replay --first-bad-draw (#2141) on a generated capture (no game
+# data): the comparison rules without a GPU, NO_DIFFERENCE from the unchanged backend, then each
+# executed SR_GE_FBD_MUTANT (1: a blend draw 3 does not have, 2: draw 3's depth writes off) builds
+# its own binary and must be named as draw 3 in linear and bisect mode, mutant 2 in depth alone.
+# Exit 77 (no Vulkan device) is a SKIP, as for gpu-coherence-selftest.
+GE_FBD_DIR = $(BUILD_DIR)/ge_first_bad_draw
+ge-first-bad-draw-selftest: ge-replay
+	@mkdir -p $(GE_FBD_DIR)
+	@$(BUILD_DIR)/ge_replay.exe --fbd-self-check
+	@$(BUILD_DIR)/ge_replay.exe --write-synthetic $(GE_FBD_DIR)/synthetic.ngef
+	@for mode in linear bisect; do \
+		log=$(GE_FBD_DIR)/clean-$$mode.log; result=0; \
+		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/synthetic.ngef --first-bad-draw --mode $$mode \
+			--report $(GE_FBD_DIR)/clean-$$mode > $$log 2>&1 || result=$$?; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest (exit 77; no Vulkan device)"; exit 77; fi; \
+		if test $$result -ne 0 || ! grep -Fq "result=NO_DIFFERENCE draws=6 " $$log; then \
+			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the unchanged backend did not report NO_DIFFERENCE ($$mode)" >&2; exit 1; fi; \
+		echo "ge-first-bad-draw-selftest: unchanged backend NO_DIFFERENCE ($$mode)"; \
+	done
+	@for m in 1 2; do \
+		bin=$(BUILD_DIR)/ge_replay_fbd_mutant$$m.exe; \
+		$(CC) $(CFLAGS) -DSR_GE_FBD_MUTANT=$$m -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+			-o $$bin src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+			$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS) || exit 1; \
+		for mode in linear bisect; do \
+			log=$(GE_FBD_DIR)/mutant$$m-$$mode.log; result=0; \
+			$$bin $(GE_FBD_DIR)/synthetic.ngef --first-bad-draw --mode $$mode \
+				--report $(GE_FBD_DIR)/mutant$$m-$$mode > $$log 2>&1 || result=$$?; \
+			if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest mutant $$m (no Vulkan device)"; exit 77; fi; \
+			if test $$result -ne 1 || ! grep -Fq "result=FIRST_BAD_DRAW index=3 " $$log || \
+			   ! grep -Fq "GE_FBD_DRAW index=3 command=PRIM" $$log || \
+			   ! grep -Fq "GE_FBD_CROP image=diff" $$log; then \
+				cat $$log; echo "FAIL ge-first-bad-draw-selftest: mutant $$m was not named as draw 3 ($$mode)" >&2; exit 1; fi; \
+			if test $$m -eq 1 && ! grep -Fq "GE_FBD_REGION kind=color" $$log; then \
+				cat $$log; echo "FAIL ge-first-bad-draw-selftest: mutant 1 left colour equal ($$mode)" >&2; exit 1; fi; \
+			if test $$m -eq 2 && { ! grep -Fq "GE_FBD_REGION kind=depth" $$log || grep -Fq "GE_FBD_REGION kind=color" $$log; }; then \
+				cat $$log; echo "FAIL ge-first-bad-draw-selftest: mutant 2 was not a depth-only difference ($$mode)" >&2; exit 1; fi; \
+			echo "ge-first-bad-draw-selftest: mutant $$m named as draw 3 ($$mode)"; \
+		done; \
+	done
 
 # selftest — compile and run the C++ reference interpreter unit tests.
 # Requires g++ with C++17. Exit code 0 = all tests passed.

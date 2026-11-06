@@ -396,7 +396,10 @@ that edge pixel's 1x sample, with linear and nearest filtering and with repeat a
 while a sheared strip stays unclamped.
 Last, `gpu-coherence-selftest-snapbar-mutants` builds three broken variants of
 the destination-snapshot copy's barriers (`SR_GPU_SNAPBAR_MUTANT`), and the submit-batch case must
-fail each one with its own message. The job also runs
+fail each one with its own message. Then `ge-first-bad-draw-selftest` runs
+`ge_replay --first-bad-draw` on a generated capture: the unchanged backend must report
+`NO_DIFFERENCE`, and two executed mutants that change one draw's Vulkan blend or depth state
+(`SR_GE_FBD_MUTANT`) must each be named as that draw, in linear and bisect mode. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by

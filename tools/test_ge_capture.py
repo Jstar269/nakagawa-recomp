@@ -380,5 +380,38 @@ class TestGeCaptureWiring(unittest.TestCase):
         self.assertIn("return ge_cpu_failed ? 4 : 0;", replay)
 
 
+class TestGeFirstBadDrawWiring(unittest.TestCase):
+    """#2141: the first-bad-draw comparison runs in hosted CI with executed mutants."""
+
+    def setUp(self):
+        self.makefile = read_makefile(ROOT)
+        self.rule = self.makefile.split("ge-first-bad-draw-selftest: ge-replay", 1)[1].split(
+            "# selftest", 1)[0]
+
+    def test_selftest_runs_after_the_coherence_selftest(self):
+        coherence = self.makefile.split("gpu-coherence-selftest: $(GPU_COHERENCE_BIN)", 1)[1]
+        coherence = coherence.split("# gpu-coherence-selftest-snapbar-mutants", 1)[0]
+        self.assertIn("$(MAKE) --no-print-directory ge-first-bad-draw-selftest", coherence)
+
+    def test_each_mutant_is_built_and_must_name_its_draw(self):
+        self.assertIn("for m in 1 2; do", self.rule)
+        self.assertIn("-DSR_GE_FBD_MUTANT=$$m", self.rule)
+        self.assertIn("for mode in linear bisect; do", self.rule)
+        self.assertIn('"result=FIRST_BAD_DRAW index=3 "', self.rule)
+        self.assertIn('"result=NO_DIFFERENCE draws=6 "', self.rule)
+        # A skip is reported as a skip with exit 77, never as a pass.
+        self.assertIn("exit 77", self.rule)
+        self.assertIn("--fbd-self-check", self.rule)
+
+    def test_replay_stops_before_a_draw_and_restores_no_observer(self):
+        ge = (RT / "ge.c").read_text(encoding="utf-8")
+        self.assertIn("if (s_draw_observer && ge_draw_observed(op, addr, list_addr)) return addr;", ge)
+        replay = (RT / "ge_replay.c").read_text(encoding="utf-8")
+        self.assertIn("ge_set_draw_observer(fbd_observer, run);", replay)
+        self.assertIn("ge_set_draw_observer(NULL, NULL);", replay)
+        # The mutants exist only in the test build.
+        self.assertIn("#ifdef SR_GE_FBD_MUTANT", replay)
+
+
 if __name__ == "__main__":
     unittest.main()
