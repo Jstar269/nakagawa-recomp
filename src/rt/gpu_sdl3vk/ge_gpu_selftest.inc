@@ -3552,7 +3552,8 @@ static int ts_case_run(const char *name, TsCaseRun *out) {
         }
     }
     Target *t = target_find_by_fba(SB_FBA_A);
-    if (!t || !sdl3vk_wait_image((void *)t->img)) {
+    /* Wait on the image the presents showed: the target's own, or its host twin (#2050). */
+    if (!t || !sdl3vk_wait_image((void *)present_image(t))) {
         fprintf(stderr, "gpu coherence selftest [%s]: could not wait for the presents\n", name);
         coherence_reset_targets();
         return 0;
