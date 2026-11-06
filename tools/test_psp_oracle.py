@@ -5151,8 +5151,6 @@ class HleMeasureProbeTests(unittest.TestCase):
          "HLE_CASE_TIMER_ORDER", "PSP-HLE-TIMER-ORDER-001"),
         ("hle-savedata-getsize", 104, "hle_savedata_getsize", "hle_utility_imports.S",
          "HLE_CASE_SAVEDATA_GETSIZE", "PSP-HLE-SAVEDATA-GETSIZE-001"),
-        ("hle-std-handles", 156, "hle_std_handles", None,
-         "HLE_CASE_STD_HANDLES", "PSP-HLE-STDIO-001"),
     )
     # Families whose cells come from a row table rather than one literal record call each, so
     # the out-word walker cannot read them; HleUtilityNoneProbeTests checks their shape.
@@ -5160,7 +5158,13 @@ class HleMeasureProbeTests(unittest.TestCase):
         ("hle-utility-none", 140, "hle_utility_none", "hle_utility_imports.S",
          "HLE_CASE_UTILITY_NONE", "PSP-HLE-UTILITY-NONE-001"),
     )
-    ALL_FAMILIES = FAMILIES + SINGLE_LAUNCH_FAMILIES + TABLE_FAMILIES
+    # Families added after the 2026-10-15 single-launch set, with literal record calls; the
+    # single-launch class pins only cases 97-104.
+    LATER_FAMILIES = (
+        ("hle-std-handles", 156, "hle_std_handles", None,
+         "HLE_CASE_STD_HANDLES", "PSP-HLE-STDIO-001"),
+    )
+    ALL_FAMILIES = FAMILIES + SINGLE_LAUNCH_FAMILIES + TABLE_FAMILIES + LATER_FAMILIES
     # Every family block: file -> (library, version word, {function: NID}). The
     # version word 0x40010000 is the one the PSPSDK import stubs carry.
     PINNED_BLOCKS = {
@@ -5723,7 +5727,8 @@ class HleMeasureProbeTests(unittest.TestCase):
         """Each cell's out-word count, read from the record call that emits it, equals the
         parser registry's count, and the cells come in registry order, for every family whose
         cells are literal record calls (not TABLE_FAMILIES)."""
-        for case, _cid, _stem, _block, macro, _test in self.FAMILIES + self.SINGLE_LAUNCH_FAMILIES:
+        for case, _cid, _stem, _block, macro, _test in (self.FAMILIES + self.SINGLE_LAUNCH_FAMILIES
+                                                        + self.LATER_FAMILIES):
             with self.subTest(case=case):
                 self.assertEqual(_out_count_mismatches(self.probe, case, macro), [])
 
