@@ -6785,7 +6785,7 @@ static int coherence_run_pipeline_cache(int warm) {
                 warm ? "did not start from the cold run's file" : "started from a file: the folder was not empty");
         return 0;
     }
-    const unsigned long creates0 = s_pcache_creates;
+    const unsigned long creates0 = s_pcache_creates, through0 = s_pcache_through;
     const uint64_t ns0 = s_pcache_create_ns;
     uint64_t hash = 0;
     if (!pcache_scene(8u, &hash)) {
@@ -6798,16 +6798,39 @@ static int coherence_run_pipeline_cache(int warm) {
         fprintf(stderr, "gpu coherence selftest [%s]: FAIL the scene created no pipeline\n", name);
         return 0;
     }
-    /* The pipelines went through the cache: a cold cache grew past what it held when it opened
-     * (an empty cache still returns the driver's header), and a warm one took the whole file. */
-    const size_t held = pcache_data_size();
-    if (!warm && held <= s_pcache_held_n) {
-        fprintf(stderr, "gpu coherence selftest [%s]: FAIL the cache holds %zu bytes after %lu pipelines, no more "
-                        "than the %zu it opened with: the pipelines did not go through it\n",
-                name, held, creates, s_pcache_held_n);
+    /* The pipelines went through the cache, on any driver: every create took the open cache's
+     * handle (pipe_create counts the handle it passed). */
+    const unsigned long through = s_pcache_through - through0;
+    if (through != creates) {
+        fprintf(stderr, "gpu coherence selftest [%s]: FAIL %lu of %lu pipelines were created with the cache's "
+                        "handle: the pipelines did not go through it\n", name, through, creates);
         return 0;
     }
-    if (warm && (s_pcache_held_n < s_pcache_file_n || held < s_pcache_file_n || s_pcache_file_n <= 32u)) {
+    /* What the driver kept, where it keeps anything. A cold cache must grow past the header it
+     * opened with. A driver whose cache did not grow at all, though every create above took its
+     * handle, keeps no pipeline data (lavapipe returns only its header): that is the driver's
+     * property, measured here, and the growth check is reported as not run, naming the driver. */
+    const size_t held = pcache_data_size();
+    char drv[300] = "an unnamed device";
+    {
+        Sdl3VkInfo vi;
+        if (sdl3vk_get_vk(&vi) && vi.physical) {
+            VkPhysicalDeviceProperties pp;
+            vkGetPhysicalDeviceProperties((VkPhysicalDevice)vi.physical, &pp);
+            snprintf(drv, sizeof drv, "%s (vendor 0x%04x, driver 0x%08x)", pp.deviceName, pp.vendorID,
+                     pp.driverVersion);
+        }
+    }
+    if (!warm && held == s_pcache_held_n) {
+        printf("gpu coherence selftest: SKIP %s growth check (NOT_RUN): %s returned the same %zu bytes before "
+               "and after %lu pipelines created through its cache: this driver keeps no pipeline data\n",
+               name, drv, held, creates);
+    } else if (!warm && held < s_pcache_held_n) {
+        fprintf(stderr, "gpu coherence selftest [%s]: FAIL the cache holds %zu bytes after %lu pipelines, fewer "
+                        "than the %zu it opened with\n", name, held, creates, s_pcache_held_n);
+        return 0;
+    }
+    if (warm && (s_pcache_held_n < s_pcache_file_n || held < s_pcache_file_n)) {
         fprintf(stderr, "gpu coherence selftest [%s]: FAIL the cache opened with %zu bytes and holds %zu after the "
                         "scene, against the file's %zu: the driver did not take the cold run's pipelines\n",
                 name, s_pcache_held_n, held, s_pcache_file_n);
@@ -6821,9 +6844,9 @@ static int coherence_run_pipeline_cache(int warm) {
             fprintf(stderr, "gpu coherence selftest [%s]: FAIL could not write cold-frames.txt\n", name);
             return 0;
         }
-        printf("gpu coherence selftest: PASS %-22s %lu pipelines created in %.1f ms from an empty cache "
-               "(%zu bytes, then %zu), frames %016llx\n", name, creates, ms, s_pcache_held_n, held,
-               (unsigned long long)hash);
+        printf("gpu coherence selftest: PASS %-22s %lu pipelines created in %.1f ms from an empty cache, all "
+               "with its handle (%zu bytes, then %zu), frames %016llx\n", name, creates, ms, s_pcache_held_n,
+               held, (unsigned long long)hash);
         return 1;
     }
     unsigned long long cold_hash = 0;

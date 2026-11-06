@@ -800,8 +800,9 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	@$(MAKE) --no-print-directory gpu-coherence-pcache-mutant
 
 # gpu-coherence-pcache-mutant - pipeline-cache-cold must kill SR_PCACHE_SELFTEST_NULL_MUTANT, a
-# build whose pipe_create passes VK_NULL_HANDLE instead of the pipeline cache (#2149): the cache
-# then never grows past the header it opened with. Exit 77 (no Vulkan device) is a SKIP.
+# build whose pipe_create passes VK_NULL_HANDLE instead of the pipeline cache (#2149): no create
+# then takes the cache's handle, on any driver (lavapipe keeps no pipeline data, so the cache's
+# size cannot tell). Exit 77 (no Vulkan device) is a SKIP.
 gpu-coherence-pcache-mutant: shader-verify $(RT_GE_O)
 	@"$(PYTHON)" -c "import shutil; shutil.rmtree('$(BUILD_DIR)/pipeline_cache_mutant', ignore_errors=True)"
 	@bin=$(BUILD_DIR)/gpu_coherence_pcache_mutant.exe; kill="the pipelines did not go through it"; \

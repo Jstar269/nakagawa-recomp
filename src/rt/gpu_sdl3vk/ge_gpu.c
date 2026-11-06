@@ -1622,6 +1622,7 @@ static size_t s_pcache_held_n = 0;         /* the driver's data size right after
 static uint64_t s_pcache_loaded_hash = 0;
 static unsigned long s_pcache_discards = 0;     /* files refused at open (selftest) */
 static unsigned long s_pcache_creates = 0;      /* pipelines created this run... */
+static unsigned long s_pcache_through = 0;      /* ...of them, created with the open cache's handle */
 static uint64_t s_pcache_create_ns = 0;         /* ...and the time vkCreateGraphicsPipelines took */
 
 /* SR_GPU_PIPELINE_CACHE: 1 on, 0 off, -1 refused. */
@@ -1655,6 +1656,7 @@ static void pcache_open(VkPhysicalDevice pdev) {
     s_pcache_held_n = 0;
     s_pcache_loaded_hash = 0;
     s_pcache_creates = 0;
+    s_pcache_through = 0;
     s_pcache_create_ns = 0;
     s_pcache_name[0] = s_pcache_path[0] = 0;
     const char *mv = getenv("SR_GPU_PIPELINE_CACHE");
@@ -1883,12 +1885,16 @@ static VkPipeline pipe_create(const PipeKey *k) {
     const uint64_t create_started = SDL_GetTicksNS();
 #ifdef SR_PCACHE_SELFTEST_NULL_MUTANT
     /* gpu-coherence-pcache-mutant: pipelines bypass the cache; pipeline-cache-cold must fail. */
-    VkResult r = vkCreateGraphicsPipelines(s_dev, VK_NULL_HANDLE, 1, &pci, NULL, &p);
+    const VkPipelineCache cache = VK_NULL_HANDLE;
 #else
-    VkResult r = vkCreateGraphicsPipelines(s_dev, s_pcache, 1, &pci, NULL, &p);
+    const VkPipelineCache cache = s_pcache;
 #endif
+    VkResult r = vkCreateGraphicsPipelines(s_dev, cache, 1, &pci, NULL, &p);
     s_pcache_create_ns += SDL_GetTicksNS() - create_started;
-    if (r == VK_SUCCESS) s_pcache_creates++;
+    if (r == VK_SUCCESS) {
+        s_pcache_creates++;
+        if (cache != VK_NULL_HANDLE && cache == s_pcache) s_pcache_through++;   /* the handle the call took */
+    }
     if (perf_started) sr_perf_vulkan_pipeline(perf_started);
     if (r != VK_SUCCESS) fprintf(stderr, "gegpu: pipeline create failed: %d\n", (int)r);
     if (s_cpu_profile) {
