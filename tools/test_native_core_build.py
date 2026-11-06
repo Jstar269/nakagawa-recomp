@@ -49,6 +49,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/videorec_selftest build/mygame/videorec_selftest",
     "build/mygame/osk_text_entry_selftest",
     "build/mygame/ace_selftest build/mygame",
+    "build/mygame/motion_match_selftest",
     "build/mygame/osk_overlay_selftest",
     "build/mygame/ge_float24_selftest",
     "build/mygame/ge_cpu_profile_validate_selftest",
