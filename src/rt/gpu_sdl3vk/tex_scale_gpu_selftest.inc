@@ -891,5 +891,18 @@ int gegpu_texscale_selftest(void) {
     ok = ok && xst_cell_smart2d();
     xst_reset();
     nk_tex_scale_set_sync(0);
+    /* Under --twin, the host twin (#2050) draws every cell a second time. xst_reset compared each
+     * twin with its image before freeing them. With `--twin native`, the pixels must be equal, so a
+     * scaled copy, its factor and clamp, the one-to-one swap and smart 2D all reach the twin pass. */
+    if (s_twin) {
+        if (s_twin_identity_failures) {
+            fprintf(stderr, "gpu texscale selftest: FAIL twin-identity (%u failures, printed above)\n",
+                    s_twin_identity_failures);
+            ok = 0;
+        } else {
+            printf("gpu texscale selftest: PASS %-12s every twin in step with its image%s\n", "twin-identity",
+                   s_twin_color ? "" : ", pixel for pixel");
+        }
+    }
     return ok;
 }

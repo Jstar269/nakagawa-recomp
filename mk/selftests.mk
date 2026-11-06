@@ -850,14 +850,18 @@ tex-scale-gate-mutant:
 # production path (src/rt/gpu_sdl3vk/tex_scale_gpu_selftest.inc), at render scales 1 and 4: the
 # xBRZ copy is drawn on its own lattice, an unfinished scale draws unscaled, a rewritten or
 # re-paletted texture is rescaled and its old copy never drawn, render targets are never scaled,
-# guest VRAM is untouched, and a 1:1 sprite samples nearest. Exit 77 (SKIP) without Vulkan.
+# guest VRAM is untouched, and a 1:1 sprite samples nearest. It runs again with the host twin (#2050):
+# `--twin native` checks every twin against its image pixel for pixel, so the copies, their factor and
+# the 1:1 swap reach the twin pass, and `--twin 1` checks that every twin keeps in step. Exit 77 (SKIP)
+# without Vulkan.
 GPU_TEXSCALE_BUILD = $(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_TEXSCALE_SELFTEST \
 		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
 gpu-texscale-selftest: shader-verify $(RT_GE_O)
 	$(GPU_TEXSCALE_BUILD) -o $(BUILD_DIR)/gpu_texscale_selftest.exe
-	@for args in "--scale 1" "--scale 4" "--scale 2 --tex-scale 4"; do \
+	@for args in "--scale 1" "--scale 4" "--scale 2 --tex-scale 4" "--twin native --scale 1" "--twin native --scale 4" \
+		"--twin native --scale 2 --tex-scale 4" "--twin 1 --scale 4"; do \
 		rc=0; $(BUILD_DIR)/gpu_texscale_selftest.exe $$args || rc=$$?; \
 		if [ $$rc -eq 77 ]; then echo "SKIP gpu-texscale-selftest $$args (exit 77; the reason is printed above)"; \
 		elif [ $$rc -ne 0 ]; then echo "FAIL gpu-texscale-selftest $$args (exit $$rc)"; exit $$rc; fi; \
