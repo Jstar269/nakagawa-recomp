@@ -1437,7 +1437,9 @@ jobs:
         run: |
           set -euo pipefail
           sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$sdkmanager" --licenses > /dev/null
+          # yes is stopped by SIGPIPE once sdkmanager has read its answers; under pipefail
+          # that status would fail the step, so only sdkmanager's own status counts.
+          { yes || true; } | "$sdkmanager" --licenses > /dev/null
           "$sdkmanager" --install "platforms;android-37.2" "build-tools;37.0.0" \
             "ndk;30.0.16248370" "cmake;4.1.2" > /dev/null
           test -d "$ANDROID_HOME/ndk/30.0.16248370"

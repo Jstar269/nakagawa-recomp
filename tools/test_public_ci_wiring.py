@@ -958,6 +958,11 @@ class NativeToolsPartitionTests(unittest.TestCase):
 class AndroidBuildWiringTests(unittest.TestCase):
     """#360: hosted CI builds the Android launcher APK with the toolchain the Gradle files pin."""
 
+    ci: str
+    job: str
+    gradle: str
+    wrapper: str
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
