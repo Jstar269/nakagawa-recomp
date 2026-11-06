@@ -690,6 +690,98 @@ class UninstallTests(unittest.TestCase):
         stage_install.uninstall(self.dest)
         self.assertEqual((outside / "keep.txt").read_text(encoding="utf-8"), "keep")
 
+    @unittest.skipUnless(os.name == "nt", "directory junctions are a Windows feature")
+    def test_a_junction_inside_the_install_is_removed_not_followed(self):
+        # A junction needs no privilege on Windows, so this runs where the symlink test is skipped.
+        outside = self.root / "junction-target"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep", encoding="utf-8")
+        junction = self.dest / "source" / "escape"
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+                              capture_output=True, text=True, check=False)
+        self.assertEqual(made.returncode, 0, made.stdout + made.stderr)
+        stage_install.uninstall(self.dest)
+        self.assertEqual((outside / "keep.txt").read_text(encoding="utf-8"), "keep")
+        self.assertFalse(junction.exists())
+
+    def _rewrite_marker(self, change):
+        marker = self.dest / stage_install.MARKER
+        record = json.loads(marker.read_text(encoding="utf-8"))
+        change(record)
+        marker.write_text(json.dumps(record), encoding="utf-8")
+
+    def _refused_untouched(self, dest):
+        before = sorted(str(path) for path in dest.rglob("*"))
+        with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_MARKER_INVALID"):
+            stage_install.uninstall(dest)
+        self.assertEqual(sorted(str(path) for path in dest.rglob("*")), before)
+        self.assertTrue(self.lnk.is_file())
+
+    def test_a_marker_that_is_not_json_is_refused_untouched(self):
+        (self.dest / stage_install.MARKER).write_text("not json {", encoding="utf-8")
+        self._refused_untouched(self.dest)
+
+    def test_a_marker_that_is_not_an_object_is_refused_untouched(self):
+        (self.dest / stage_install.MARKER).write_text("[]", encoding="utf-8")
+        self._refused_untouched(self.dest)
+
+    def test_a_marker_without_the_keys_the_installer_writes_is_refused_untouched(self):
+        (self.dest / stage_install.MARKER).write_text("{}", encoding="utf-8")
+        self._refused_untouched(self.dest)
+
+    def test_a_marker_listing_a_path_outside_the_install_is_refused_untouched(self):
+        for change in (
+            lambda r: r.update(player="bin/../../elsewhere.exe"),
+            lambda r: r.update(player="/abs/nakagawa_player.exe"),
+            lambda r: r.update(runtime_files=["..\\..\\evil.dll"]),
+            lambda r: r.update(runtime_files=["sub/evil.dll"]),
+            lambda r: r.update(schema_version="2"),
+            lambda r: r.update(schema_version=stage_install.SCHEMA_VERSION + 1),
+            lambda r: r.update(integration="not-a-list"),
+        ):
+            with self.subTest(change=change):
+                (self.dest / stage_install.MARKER).unlink()
+                stage_install._write_marker(self.dest, {
+                    "schema_version": stage_install.SCHEMA_VERSION, "source_commit": "x",
+                    "platform": "windows", "player": "bin/nakagawa_player.exe",
+                    "runtime_files": [], "integration": [str(self.lnk)]})
+                self._rewrite_marker(change)
+                self._refused_untouched(self.dest)
+
+    def test_a_drive_root_or_the_home_folder_is_refused(self):
+        root = Path(self.root.anchor)
+        for folder in (root, Path.home(), Path.home().parent):
+            with self.subTest(folder=str(folder)), \
+                    self.assertRaisesRegex(stage_install.InstallError, "UNINSTALL_DESTINATION_REFUSED"):
+                stage_install.plan_uninstall(folder)
+
+    def test_portable_data_in_a_leftover_old_bin_stays(self):
+        old = self.dest / "bin.old"
+        (old / "data" / "saves").mkdir(parents=True)
+        (old / "data" / "saves" / "UCUS00000.sav").write_bytes(b"save")
+        (old / "portable.txt").write_text("", encoding="utf-8")
+        (old / "SDL3.dll").write_bytes(b"old")
+        summary = stage_install.uninstall(self.dest)
+        self.assertEqual((old / "data" / "saves" / "UCUS00000.sav").read_bytes(), b"save")
+        self.assertTrue((old / "portable.txt").is_file())
+        self.assertFalse((old / "SDL3.dll").exists())
+        self.assertTrue((self.dest / stage_install.MARKER).is_file())
+        self.assertEqual(sorted(Path(kept).name for kept in summary["kept"]),
+                         ["data", "portable.txt"])
+
+    def test_the_install_goes_before_its_shortcuts(self):
+        order = []
+        real = stage_install._remove_path
+
+        def spy(path):
+            order.append(Path(path))
+            real(path)
+
+        with mock.patch.object(stage_install, "_remove_path", spy):
+            stage_install.uninstall(self.dest)
+        self.assertEqual(order[-1], self.lnk)
+        self.assertEqual(order[0], self.dest / "bin")
+
     def test_the_command_line_reports_json_and_flags_misuse(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

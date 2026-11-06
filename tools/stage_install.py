@@ -258,8 +258,7 @@ def _recorded_integration(dest: Path) -> list[str]:
 
 def record_integration(dest: Path, paths) -> None:
     """Add the paths a shortcut wrote outside ``dest`` to the install marker, keeping the
-    ones recorded before. Nothing reads the list back yet: it says what to delete by hand
-    (docs/SETUP.md), and a later uninstall step can use it."""
+    ones recorded before. ``--uninstall`` reads the list back and removes those files."""
     marker = dest.resolve() / MARKER
     record = json.loads(marker.read_text(encoding="utf-8"))
     kept = [str(path) for path in record.get("integration", [])]
@@ -722,15 +721,83 @@ def _remove_path(path: Path) -> None:
             "the uninstall again") from exc
 
 
+#: The keys every marker this tool wrote has (``stage_install`` writes more; they are checked
+#: when present).
+MARKER_REQUIRED_KEYS = ("schema_version", "source_commit", "platform", "player")
+
+
+def _plain_name(value) -> bool:
+    """A single file name: no folder part, no drive, no ``.`` or ``..``."""
+    return (isinstance(value, str) and value not in ("", ".", "..")
+            and not any(char in value for char in '/\\:\0'))
+
+
+def _read_marker(dest: Path) -> dict:
+    """The marker of ``dest`` once it passes the checks that make it this tool's own.
+
+    A file named ``.nakagawa-install.json`` is not proof by itself: any folder can hold one.
+    It must be a JSON object with the keys ``stage_install`` writes, and every path it lists
+    must stay inside ``dest``. Anything else raises ``INSTALL_MARKER_INVALID`` and nothing
+    has been touched."""
+    marker = dest / MARKER
+
+    def refuse(why: str):
+        raise InstallError(
+            f"INSTALL_MARKER_INVALID: {marker} {why}, so this tool will not trust it; nothing "
+            "was removed. If it is not yours, delete the folder by hand")
+
+    try:
+        record = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        refuse(f"cannot be read as JSON ({exc})")
+    if not isinstance(record, dict):
+        refuse("is not a JSON object")
+    missing = [key for key in MARKER_REQUIRED_KEYS if key not in record]
+    if missing:
+        refuse(f"lacks {', '.join(missing)}")
+    version = record["schema_version"]
+    if not isinstance(version, int) or isinstance(version, bool) or not 1 <= version <= SCHEMA_VERSION:
+        refuse(f"has schema_version {version!r}, not 1 to {SCHEMA_VERSION}")
+    player = record["player"]
+    if not (isinstance(player, str) and player.startswith("bin/") and _plain_name(player[4:])):
+        refuse(f"lists the player {player!r}, not bin/<file name>")
+    files = record.get("runtime_files", [])
+    if not isinstance(files, list) or not all(_plain_name(name) for name in files):
+        refuse("lists a runtime file that is not a plain file name inside bin/")
+    integration = record.get("integration", [])
+    if not isinstance(integration, list) or not all(isinstance(path, str) for path in integration):
+        refuse("lists an integration entry that is not a path")
+    root = dest.resolve()
+    for relative in [player, *(f"bin/{name}" for name in files)]:
+        try:
+            (root / relative).resolve().relative_to(root)
+        except ValueError:
+            refuse(f"lists {relative}, which resolves outside {root}")
+    return record
+
+
+def _check_uninstall_destination(dest: Path) -> None:
+    """Refuse a folder no install of this tool would be in: a drive root, the home folder, or
+    a folder holding the home folder."""
+    home = Path.home().resolve()
+    if dest.parent == dest or dest == home or dest in home.parents:
+        raise InstallError(
+            f"UNINSTALL_DESTINATION_REFUSED: {dest} is a drive root or holds the home folder; "
+            "name the folder the install was staged into")
+
+
 def plan_uninstall(dest: Path) -> dict:
     """What ``uninstall`` would remove and keep, without touching anything.
 
-    Raises ``INSTALL_DESTINATION_NOT_OWNED`` for a folder without this tool's marker."""
+    Raises ``INSTALL_DESTINATION_NOT_OWNED`` for a folder without this tool's marker and
+    ``INSTALL_MARKER_INVALID`` for one whose marker is not what ``stage_install`` writes."""
     dest = dest.resolve()
+    _check_uninstall_destination(dest)
     if not (dest / MARKER).is_file():
         raise InstallError(
             f"INSTALL_DESTINATION_NOT_OWNED: {dest} has no {MARKER}, so this tool did not "
             "create it; remove an unpacked portable ZIP by deleting its folder")
+    record = _read_marker(dest)
     remove: list[Path] = []
     keep: list[Path] = []
     portable = (dest / "bin" / PORTABLE_MARKER).is_file()
@@ -749,11 +816,19 @@ def plan_uninstall(dest: Path) -> dict:
             remove.append(entry)
     leftovers = {f"{name}.old" for name in OWNED_ENTRIES}
     for child in sorted(dest.iterdir()):
-        if child.name.startswith(".staging-") or child.name in leftovers:
+        if child.name == "bin.old" and child.is_dir() and not child.is_symlink():
+            # A crashed update can leave the previous bin/, with the user's portable data in it.
+            inner = sorted(child.iterdir())
+            if any(item.name in (PORTABLE_DATA_LEAF, PORTABLE_MARKER) for item in inner):
+                for item in inner:
+                    (keep if item.name in (PORTABLE_DATA_LEAF, PORTABLE_MARKER) else remove).append(item)
+            else:
+                remove.append(child)
+        elif child.name.startswith(".staging-") or child.name in leftovers:
             remove.append(child)
     integration: list[Path] = []
     skipped: list[str] = []
-    for recorded in _recorded_integration(dest):
+    for recorded in record.get("integration", []):
         path = Path(recorded)
         if (not path.is_absolute() or path.name not in INTEGRATION_NAMES
                 or path.is_dir() or path.is_symlink()):
@@ -770,9 +845,11 @@ def uninstall(dest: Path, *, dry_run: bool = False) -> dict:
     dest = plan["dest"]
     left_in_folder: list[str] = []
     if not dry_run:
-        for path in plan["integration"]:
-            _remove_path(path)
+        # The install first: if it is in use the shortcuts stay, still recorded, and a second
+        # run finishes. The marker goes last so a half-done uninstall can be run again.
         for path in plan["remove"]:
+            _remove_path(path)
+        for path in plan["integration"]:
             _remove_path(path)
         if plan["keep"]:
             # The user's portable data lives here, so the install marker stays with it.

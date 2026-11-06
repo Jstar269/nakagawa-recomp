@@ -64,7 +64,7 @@ const char *nk_steam_status_name(NkSteamStatus status);
 
 typedef struct {
     const char *app_name;        /* shown in the library; required */
-    const char *exe;             /* the executable's full path, unquoted; required */
+    const char *exe;             /* the executable's full path, unquoted (a leading quote is refused) */
     const char *start_dir;       /* its start-in folder; required */
     const char *launch_options;  /* NULL or "" for none (the default) */
 } NkSteamShortcut;
@@ -111,10 +111,17 @@ NkSteamStatus nk_steam_list_accounts(const char *root, NkSteamAccount *accounts,
                                      size_t *count);
 
 /* Whether the Steam client runs now (Windows: the process ID Steam records and keeps current
- * while it runs). False when it cannot tell and when Steam is not running; off Windows always
+ * while it runs). True when it cannot tell (fail closed: the file is only written when Steam is surely closed), false when Steam is not running; off Windows always
  * false: that is not an answer, so nk_steam_add_for_account refuses there (UNSUPPORTED) unless a
  * caller supplies its own probe. */
 bool nk_steam_client_running(void);
+
+/* The fail-closed rules of nk_steam_client_running as functions of a Win32 error number, available
+ * on every host so a test can check them: only "that process does not exist" (87) and "that
+ * registry value does not exist" (2, 3) mean Steam is not running; every other error, access denied
+ * above all, means it may be. */
+bool nk_steam_open_error_means_running(unsigned long error);
+bool nk_steam_registry_error_means_running(unsigned long error);
 
 /* The whole step for one account: `account_id` must be one of the digit-only folder names of
  * nk_steam_list_accounts. `running` is nk_steam_client_running unless a caller (a test) names

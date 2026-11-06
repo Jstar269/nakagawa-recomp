@@ -310,20 +310,49 @@ static void test_corrupt_files_are_refused(void) {
     CHECK_STATUS(nk_steam_vdf_add((const uint8_t *)"text", 4u, &kPlayer, &out, &size),
                  NK_STEAM_ERR_CORRUPT, "plain text");
 
-    /* Single-byte damage must never crash, and a result that is returned must parse. */
+    /* Single-byte damage must never crash. A refused file yields no output and leaves its input as it
+       was; an accepted one parses, lists the executable, and keeps every byte of the damaged input
+       but for the new entry (everything before the last two end markers, and those two). */
     for (size_t at = 0; at < good.size; at++) {
-        Raw flip;
+        Raw flip, before;
         memcpy(&flip, &good, sizeof(flip));
         flip.data[at] ^= 0xFFu;
+        memcpy(&before, &flip, sizeof(before));
+        out = (uint8_t *)0x1;
+        size = 12345u;
         NkSteamStatus s = nk_steam_vdf_add(flip.data, flip.size, &kPlayer, &out, &size);
+        CHECK(memcmp(&before, &flip, sizeof(flip)) == 0, "the input is not modified");
         if (s == NK_STEAM_OK) {
             bool found = false;
             CHECK(nk_steam_vdf_has_exe(out, size, kPlayer.exe, &found) == NK_STEAM_OK && found,
                   "a returned file parses and lists the executable");
+            CHECK(size > flip.size && memcmp(out, flip.data, flip.size - 2u) == 0 &&
+                      memcmp(out + size - 2u, flip.data + flip.size - 2u, 2u) == 0,
+                  "an accepted file keeps every byte it had");
+        } else {
+            CHECK(out == NULL && size == 0u, "a refused file yields no output");
+            out = NULL;
         }
         nk_steam_free(out);
         out = NULL;
     }
+}
+
+static void test_steam_running_fails_closed(void) {
+    CHECK(!nk_steam_open_error_means_running(87ul), "a pid that is gone is not running");
+    CHECK(nk_steam_open_error_means_running(5ul), "access denied (an elevated Steam) is running");
+    CHECK(nk_steam_open_error_means_running(0ul), "an unexplained failure is running");
+    CHECK(nk_steam_open_error_means_running(1450ul), "any other error is running");
+    CHECK(!nk_steam_registry_error_means_running(2ul), "no pid value: Steam never ran");
+    CHECK(!nk_steam_registry_error_means_running(3ul), "no pid key: Steam never ran");
+    CHECK(nk_steam_registry_error_means_running(5ul), "a pid that cannot be read is running");
+    CHECK(nk_steam_registry_error_means_running(234ul), "a short buffer is running");
+    uint8_t *out = NULL;
+    size_t size = 0;
+    NkSteamShortcut quoted = kPlayer;
+    quoted.exe = "\"C:/Games/Nakagawa/nakagawa_player.exe\"";
+    CHECK_STATUS(nk_steam_vdf_add(NULL, 0, &quoted, &out, &size), NK_STEAM_ERR_ARGUMENT,
+                 "a quoted executable is refused: the app ID adds the quotes itself");
 }
 
 static void test_arguments(void) {
@@ -549,6 +578,7 @@ int main(void) {
     test_no_shortcuts_map_gets_one();
     test_corrupt_files_are_refused();
     test_arguments();
+    test_steam_running_fails_closed();
     test_file_add_and_backup();
     test_running_steam_blocks_every_write();
     test_corrupt_file_is_left_alone();

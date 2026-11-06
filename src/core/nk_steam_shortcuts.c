@@ -312,7 +312,7 @@ NkSteamStatus nk_steam_vdf_add(const uint8_t *in, size_t in_len, const NkSteamSh
     if (out_len) *out_len = 0;
     if (!shortcut || !out || !out_len || (!in && in_len)) return NK_STEAM_ERR_ARGUMENT;
     if (!field_ok(shortcut->app_name, false) || !field_ok(shortcut->exe, false) ||
-        !field_ok(shortcut->start_dir, false) ||
+        shortcut->exe[0] == '"' || !field_ok(shortcut->start_dir, false) || shortcut->start_dir[0] == '"' ||
         (shortcut->launch_options && !field_ok(shortcut->launch_options, true))) {
         return NK_STEAM_ERR_ARGUMENT;
     }
@@ -495,6 +495,10 @@ NkSteamStatus nk_steam_add_to_file(const char *vdf_path, const NkSteamShortcut *
             goto done;
         }
     }
+    /* Reported as soon as it is verified: a write that fails after this still leaves the backup. */
+    if (backup_path && backup_cap && backup[0] && strlen(backup) < backup_cap) {
+        memcpy(backup_path, backup, strlen(backup) + 1u);
+    }
     status = NK_STEAM_ERR_WRITE;
     if (!write_file_synced(temp, next, next_size) || !file_equals(temp, next, next_size) ||
         nk_rename_utf8(temp, vdf_path) != 0) {
@@ -502,9 +506,6 @@ NkSteamStatus nk_steam_add_to_file(const char *vdf_path, const NkSteamShortcut *
         goto done;
     }
     if (!file_equals(vdf_path, next, next_size)) goto done;
-    if (backup_path && backup_cap && backup[0] && strlen(backup) < backup_cap) {
-        memcpy(backup_path, backup, strlen(backup) + 1u);
-    }
     status = NK_STEAM_OK;
 done:
     free(current);
@@ -570,6 +571,17 @@ NkSteamStatus nk_steam_list_accounts(const char *root, NkSteamAccount *accounts,
     return list.count ? NK_STEAM_OK : NK_STEAM_ERR_NOT_FOUND;
 }
 
+/* Fail closed (the file is only written when Steam is surely closed): a Win32 error other than "no
+ * such process" and "no such registry value" means Steam may be running where this process cannot
+ * see it, for example elevated (ERROR_ACCESS_DENIED = 5). Host-independent so a test can call it. */
+bool nk_steam_open_error_means_running(unsigned long error) {
+    return error != 87ul; /* ERROR_INVALID_PARAMETER: OpenProcess names a pid that is gone */
+}
+
+bool nk_steam_registry_error_means_running(unsigned long error) {
+    return error != 2ul && error != 3ul; /* ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND: never ran */
+}
+
 #ifdef _WIN32
 
 static bool registry_string(HKEY root, const wchar_t *subkey, const wchar_t *value, char *out,
@@ -607,14 +619,16 @@ NkSteamStatus nk_steam_find_root(char *root, size_t root_cap) {
 bool nk_steam_client_running(void) {
     DWORD pid = 0;
     DWORD size = (DWORD)sizeof(pid);
-    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam\\ActiveProcess", L"pid",
-                     RRF_RT_REG_DWORD, NULL, &pid, &size) != ERROR_SUCCESS || pid == 0u) {
-        return false;
-    }
+    LONG read = RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam\\ActiveProcess", L"pid",
+                             RRF_RT_REG_DWORD, NULL, &pid, &size);
+    if (read != ERROR_SUCCESS) return nk_steam_registry_error_means_running((unsigned long)read);
+    /* Steam writes 0 when it exits cleanly. A pid it left behind after a crash is caught below. */
+    if (pid == 0u) return false;
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!process) return false;
+    if (!process) return nk_steam_open_error_means_running((unsigned long)GetLastError());
     DWORD code = 0;
-    bool alive = GetExitCodeProcess(process, &code) && code == STILL_ACTIVE;
+    /* A handle that cannot report its state is a process that exists. */
+    bool alive = !GetExitCodeProcess(process, &code) || code == STILL_ACTIVE;
     CloseHandle(process);
     return alive;
 }
