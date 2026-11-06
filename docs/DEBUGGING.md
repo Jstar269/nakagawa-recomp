@@ -2204,6 +2204,28 @@ player and game behave as they do for everyone ([#314](https://github.com/Jstar2
   `SR_VIDEOREC_SIZE=3840x2160`, a route
   (`SR_PADSCRIPT`) and `SR_EXIT_AT_VBLANK`; `record.json` says `PASS` and `recording.mkv` holds picture
   and sound ([Recording a video of a run](#recording-a-video-of-a-run)).
+- **Find the first GE draw where Vulkan departs from the software GE.** Build with
+  `mingw32-make ge-replay`, then run `build/ge_replay.exe <capture.ngef> --first-bad-draw` on a GE
+  capture. It replays draw prefixes through both renderers in one process and compares every colour
+  target, depth buffer and block-transfer destination the prefix used. It prints
+  `GE_FIRST_BAD_DRAW result=NO_DIFFERENCE`, or `result=FIRST_BAD_DRAW index=N` followed by a
+  `GE_FBD_DRAW` line with that draw's command-list address and GE state, one `GE_FBD_REGION` line
+  per buffer that differs, with the pixel count, the largest difference and the bounding box, and
+  three crops (`<capture>.first-bad-draw.software.ppm`, `.vulkan.ppm` and `.diff.ppm`; `--report
+  PREFIX` moves them). `--mode linear` checks every prefix. `--mode bisect` halves the prefix and
+  assumes a difference persists to the end of the frame. The default, `auto`, runs linear up to
+  256 draws. A difference `src/rt/gpu_sdl3vk/README.md` allows (fixed-function blends within 2 LSB)
+  is counted under its rule name (`rule=blend-2lsb`), and a frame with only those reports
+  `result=RULE_ONLY`. Each buffer is compared over everything a draw can write there (the scissor,
+  or a transfer's rectangle). When a buffer cannot be compared in full (more than 32 buffers, a
+  stride past 1024, a scissor past the 480x272 that ge.c rasterizes, depth past ge.c's 272 rows),
+  the tool prints `result=INCOMPLETE` with a
+  `GE_FBD_UNCOMPARED` line per buffer and exits 5, and a capture with no draw is `result=NO_DRAWS`
+  (exit 6): neither is ever `NO_DIFFERENCE`. A capture of a title is private, and so are its report
+  and crops.
+  `mingw32-make ge-first-bad-draw-selftest` checks the tool on generated captures against two
+  executed Vulkan mutants and the known overlapping-blend difference (#2109).
+  `ge_replay --write-synthetic <path> [basic|overlap|wide|empty|many|deep]` writes those captures.
 - **Capture frames unattended.** Set `SR_NOINPUT=1` so the automatic START pulse does not reach the game, bound the run
   with `SR_EXIT_AT_VBLANK` ([where it stops](#where-sr_exit_at_vblank-actually-stops)), and capture with
   `SR_FBSNAP_WINDOWS` ([both ends of a transition](#capturing-both-ends-of-a-transition--snapwindows)).
