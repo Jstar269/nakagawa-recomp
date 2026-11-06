@@ -3810,5 +3810,81 @@ class TestProductStatusCopy(unittest.TestCase):
         self.assertNotIn("public font reader in the works (#349)", report_source)
 
 
+# The display-smoke VRAM capture check judges the capture run on its own trace (#2200).
+# generate.py vramdump runs the fixture twice: once for a reference first frame and once with
+# SR_VRAMDUMP asking for the first eight vblanks. Which vblank a run presents first moves with
+# machine load, so the second run cannot be required to present the vblank the first one did;
+# it must still prove that what it dumped was a presented frame.
+
+
+def _vramdump_output(presented, passed=(), failed=(), extra=""):
+    lines = [f"HOST_PRESENT_SUBMITTED f={vblank} buf=0x04000000 fmt=3 stride=512"
+             for vblank in presented]
+    lines += [f"VRAMDUMP vblank={vblank} PASS" for vblank in passed]
+    lines += [f"VRAMDUMP vblank={vblank} FAIL (see diagnostic above)" for vblank in failed]
+    return "\n".join(lines) + extra
+
+
+class DisplaySmokeVramdumpCaptureTests(unittest.TestCase):
+    #: The capture run asks for the first eight vblanks whatever the baseline run did.
+    WINDOW = range(display_generator.VRAMDUMP_FIRST_VBLANK,
+                   display_generator.VRAMDUMP_FIRST_VBLANK + display_generator.VRAMDUMP_WINDOW)
+
+    def failure(self, output):
+        return display_generator.vramdump_capture_failure(output, self.WINDOW)
+
+    def test_a_capture_that_presents_where_the_baseline_did_passes(self):
+        self.assertIsNone(self.failure(_vramdump_output([1, 3, 5], passed=[1, 3, 5])))
+
+    def test_a_capture_run_whose_first_present_is_later_than_the_baselines_passes(self):
+        # The hosted failure: the baseline presented vblank 2 first and the old check demanded
+        # "VRAMDUMP vblank=2 PASS"; under load the capture run presented vblank 3 first and
+        # vblank 2 was never presented.
+        output = _vramdump_output([3, 5, 7], passed=[3, 5, 7])
+        self.assertNotIn("VRAMDUMP vblank=2 PASS", output)
+        self.assertIsNone(self.failure(output))
+
+    def test_a_capture_run_whose_first_present_is_earlier_than_the_baselines_passes(self):
+        self.assertIsNone(self.failure(_vramdump_output([1, 3, 5], passed=[1, 3, 5])))
+
+    def test_a_first_frame_that_was_not_captured_is_refused(self):
+        # Later frames were dumped, but frame_first.ppm is the frame of vblank 3.
+        message = self.failure(_vramdump_output([3, 5], passed=[5]))
+        self.assertIn("first presented vblank 3 produced no VRAM capture", message)
+
+    def test_a_pass_for_a_vblank_that_was_not_presented_is_refused(self):
+        message = self.failure(_vramdump_output([3, 5], passed=[3, 4]))
+        self.assertIn("vblank 4", message)
+        self.assertIn("did not present", message)
+
+    def test_a_pass_outside_the_requested_window_is_refused(self):
+        message = self.failure(_vramdump_output([3, 12], passed=[3, 12]))
+        self.assertIn("vblank 12", message)
+        self.assertIn("not requested", message)
+
+    def test_a_reported_failure_is_refused_even_beside_a_pass(self):
+        message = self.failure(_vramdump_output([3, 5], passed=[3], failed=[5]))
+        self.assertIn("FAIL at vblank 5", message)
+
+    def test_presented_frames_with_no_capture_are_refused(self):
+        message = self.failure(_vramdump_output([3, 5]))
+        self.assertIn("no VRAM capture", message)
+
+    def test_a_run_whose_first_present_is_outside_the_window_is_refused(self):
+        message = self.failure(_vramdump_output([20, 22], passed=[]))
+        self.assertIn("is not in the requested window 1..8", message)
+
+    def test_a_run_that_presents_nothing_is_refused(self):
+        message = self.failure(_vramdump_output([]))
+        self.assertIn("(None)", message)
+
+    def test_a_vblank_that_passes_twice_is_refused(self):
+        self.assertIn("twice", self.failure(_vramdump_output([3], passed=[3, 3])))
+
+    def test_the_window_is_the_runtimes_vramdump_limit(self):
+        limit = (ROOT / "src" / "rt" / "hle_internal.h").read_text(encoding="utf-8")
+        self.assertIn(f"#define SR_VRAMDUMP_MAX_VBLANKS {display_generator.VRAMDUMP_WINDOW}", limit)
+
+
 if __name__ == "__main__":
     unittest.main()
