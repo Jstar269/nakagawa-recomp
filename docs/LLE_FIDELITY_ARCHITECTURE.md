@@ -243,7 +243,9 @@ two can be compared call by call (#2148). The check is the `SR_MODE_COSIM` lane 
 
 - **Guest lane.** The export runs through the production linked-call boundary. An import it
   reaches is refused and unwinds the lane, so no host-side effect (a kernel object, a file
-  position, a device) happens twice.
+  position, a device) happens twice. The unwind also passes computed calls and interpreted
+  handoffs (`dispatch_call_checked`, `dispatch_call_continue`), which honour it only while the
+  guest lane runs; everywhere else they still end the run on a fatal flow.
 - **HLE lane.** Guest memory and CPU state go back to the input state and the handler runs as in
   `SR_MODE_HLE`. Its result is what the guest keeps, so a difference never changes a run.
 - **Compared.** `v0`, the callee-saved registers (`s0`-`s7`, `gp`, `sp`, `fp`) and every byte of
@@ -253,8 +255,19 @@ two can be compared call by call (#2148). The check is the `SR_MODE_COSIM` lane 
 - **Report.** `SR_COSIM_DIFF` names the call, `a0`-`a3`, both `v0` values, the first differing
   register or byte with both values, and the number of differing bytes. `SR_COSIM_NOT_COMPARED`
   names the reason: no guest export, the guest lane reached an import, dispatch refused the
-  export, a cosim call inside another, or no snapshot memory. `SR_COSIM_MATCH` is logged once per
-  NID. None of these is ever counted as another.
+  export, a cosim call inside another, no snapshot memory, or an HLE lane that did not end
+  normally (its guest callback failed or it left a transfer pending). `SR_COSIM_MATCH` is logged
+  once per NID. None of these is ever counted as another.
+- **VRAM.** The eDRAM window is VRAM. The snapshot first reads back what the renderer holds, and
+  every VRAM page the rollback restores is committed to the renderer, so a COSIM call leaves the
+  renderer and the host copy in agreement.
+- **Limits.** Each COSIM call copies and scans about 66 MiB three times, and pacing runs on host
+  time, so guest timing shifts under COSIM; a timing difference is not a handler bug. A handler
+  that switches guest threads inside the call is not a clean comparison: other threads' stores
+  count as the HLE lane's. Arena bytes outside the three windows are neither rolled back nor
+  compared. A started module's export is also what `sr_syscall` runs first
+  (`link_started_export`), so pairing started-module exports needs an HLE-only entry for the HLE
+  lane before it can compare anything.
 - **Scope.** COSIM is off by default and is selected only through the C API, so only the
   synthetic selftest (`domain-mode-selftest`) runs it today. Running it on a title needs a build
   with `--lle-import-seam` and started-module exports in the registry; that is the next step.

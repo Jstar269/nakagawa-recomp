@@ -32,10 +32,27 @@
 #include "domain_mode.c"  /* mode table and seam under test (same TU) */
 
 /* No GE renderer is linked by this domain-mode-only harness. */
+/* A renderer stand-in for the COSIM VRAM cells: while g_sr_vram_read_pending is
+ * set it holds one byte newer than the host copy, and any read or write
+ * preparation reads the render target back (that byte) and clears the flag, as a
+ * framebuffer readback does. Commits of whole 4 KiB pages are counted. */
 volatile int g_sr_vram_read_pending;
-void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+static uint32_t s_vram_truth_addr;     /* guest address of the renderer-held byte */
+static uint8_t s_vram_truth_value;
+static uint32_t s_vram_readbacks;
+static uint32_t s_vram_page_commit_addr;
+static uint32_t s_vram_page_commits;
+static void vram_readback(void) {
+    if (!g_sr_vram_read_pending) return;
+    if (s_vram_truth_addr) *(uint8_t *)SR_HOST(s_vram_truth_addr) = s_vram_truth_value;
+    g_sr_vram_read_pending = 0;
+    s_vram_readbacks++;
+}
+void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; vram_readback(); }
+void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; vram_readback(); }
+void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) {
+    if (width == 4096u) { s_vram_page_commits++; s_vram_page_commit_addr = addr; }
+}
 
 #include <stdlib.h>
 #include <string.h>
@@ -94,6 +111,7 @@ static uint32_t s_syscall_last_a0;
 static uint32_t s_hle_write_addr;
 static uint8_t s_hle_write_value;
 static uint32_t s_hle_reenter_nid;
+static int s_hle_fail_flow;   /* the HLE stand-in's guest callback fails */
 
 int sr_import_call(CpuState *s, uint32_t nid, uint32_t stub_pc);
 
@@ -110,6 +128,10 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         s_hle_reenter_nid = 0u;
         (void)sr_import_call(s, inner, 0x08813100u);
         s_syscall_last_nid = nid;
+    }
+    if (s_hle_fail_flow) {
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = nid;
     }
     return s_syscall_canned;
 }
@@ -145,6 +167,12 @@ static void fresh_state(CpuState *s) {
     s_hle_write_addr = 0u;
     s_hle_write_value = 0u;
     s_hle_reenter_nid = 0u;
+    s_hle_fail_flow = 0;
+    g_sr_vram_read_pending = 0;
+    s_vram_truth_addr = 0u;
+    s_vram_readbacks = 0u;
+    s_vram_page_commits = 0u;
+    s_vram_page_commit_addr = 0u;
     sr_cpu_clear_flow(s);
 }
 
@@ -342,6 +370,11 @@ static void test_cosim_lane(void) {
 #define EXP_V0       (TEST_EXPORT + 0x30u)
 #define EXP_REG      (TEST_EXPORT + 0x40u)
 #define EXP_NESTED   (TEST_EXPORT + 0x50u)
+#define EXP_VRAM     (TEST_EXPORT + 0x60u)
+#define EXP_CHECKED  (TEST_EXPORT + 0x70u)
+#define EXP_HELPER   (TEST_EXPORT + 0x80u)
+#define COSIM_VRAM_A 0x04000100u   /* the renderer holds a newer byte here */
+#define COSIM_VRAM_B 0x04001000u   /* both lanes store here */
 
 /* Same effect as the HLE stand-in, plus a dead-stack frame and a clobbered
  * caller-saved register, neither of which the comparison may count. */
@@ -381,6 +414,38 @@ static void exp_nested(CpuState *s) {
     s->r[2] = s_syscall_canned;
 }
 
+/* An export that reaches the import through a computed call, as a generated
+ * jalr site does (tools/codegen.py emit_checked_dispatch_call). */
+static int s_helper_ran;
+static int s_helper_continued;
+static int s_checked_result;
+
+static void exp_helper(CpuState *s) {
+    s_helper_ran++;
+    sr_import_call(s, NID_HLE, STUB_PC);
+    if (s->flow_kind != 0u) {
+        return;
+    }
+    s_helper_continued++;
+}
+
+static void exp_checked(CpuState *s) {
+    s_export_ran++;
+    MEM_W8(COSIM_DATA, 0xEEu);
+    s_checked_result = dispatch_call_checked(s, EXP_HELPER, EXP_CHECKED + 8u);
+    if (s_checked_result) {
+        return;
+    }
+    s->r[2] = s_syscall_canned;
+}
+
+/* Same VRAM store as the HLE stand-in, made while the renderer holds newer bytes. */
+static void exp_vram(CpuState *s) {
+    s_export_ran++;
+    MEM_W8(COSIM_VRAM_B, 0x55u);
+    s->r[2] = s_syscall_canned;
+}
+
 static void cosim_fixture(CpuState *s, uint32_t export_addr) {
     fresh_state(s);
     MEM_W8(COSIM_DATA, 0u);
@@ -407,6 +472,9 @@ static void test_cosim_dual_run(void) {
     sr_register(EXP_V0, exp_v0);
     sr_register(EXP_REG, exp_reg);
     sr_register(EXP_NESTED, exp_nested);
+    sr_register(EXP_VRAM, exp_vram);
+    sr_register(EXP_CHECKED, exp_checked);
+    sr_register(EXP_HELPER, exp_helper);
 
     /* MATCH: both lanes run from the same input, the HLE lane is kept. */
     cosim_fixture(&s, EXP_SAME);
@@ -453,6 +521,46 @@ static void test_cosim_dual_run(void) {
     CHECK(MEM_R8(COSIM_DATA) == 0xA5u && sr_domain_cosim_diff_count() == 1u,
           "a difference never changes what the guest sees");
 
+    /* VRAM the renderer holds newer bytes for: the snapshot reads it back first,
+     * so equal stores MATCH, and the rolled-back page is committed to the
+     * renderer (review S2 on #2171). Without the readback, the guest lane's
+     * store pulls the renderer's byte into its kept page, the rollback puts the
+     * stale byte back unseen, and the comparison reports a byte neither lane
+     * wrote. */
+    cosim_fixture(&s, EXP_VRAM);
+    MEM_W8(COSIM_VRAM_A, 0x11u);
+    MEM_W8(COSIM_VRAM_B, 0x00u);
+    s_vram_page_commits = 0u;
+    s_vram_truth_addr = COSIM_VRAM_A;
+    s_vram_truth_value = 0x22u;
+    g_sr_vram_read_pending = 1;
+    s_hle_write_addr = COSIM_VRAM_B;
+    s_hle_write_value = 0x55u;
+    rc = sr_import_call(&s, NID_PAIR, STUB_PC);
+    sr_domain_cosim_last_result(&r);
+    CHECK(s_export_ran == 1 && rc == (int)s_syscall_canned, "the VRAM pair runs both lanes");
+    CHECK(r.outcome == SR_COSIM_OUTCOME_MATCH,
+          "equal VRAM stores MATCH while the renderer holds newer bytes (outcome %d, first "
+          "0x%08x g 0x%02x h 0x%02x, %u bytes)", (int)r.outcome, r.first_addr,
+          (unsigned)r.guest_byte, (unsigned)r.hle_byte, r.diff_bytes);
+    CHECK(MEM_R8(COSIM_VRAM_A) == 0x22u && MEM_R8(COSIM_VRAM_B) == 0x55u,
+          "after COSIM the host VRAM holds the renderer's byte and the HLE lane's store "
+          "(A 0x%02x B 0x%02x)", MEM_R8(COSIM_VRAM_A), MEM_R8(COSIM_VRAM_B));
+    CHECK(s_vram_page_commits >= 1u && s_vram_page_commit_addr == (COSIM_VRAM_B & ~0xFFFu),
+          "the rolled-back VRAM page is committed to the renderer (%u page commits)",
+          s_vram_page_commits);
+
+    /* An HLE lane that does not end normally (its guest callback failed) is
+     * not compared (review N2 on #2171). */
+    cosim_fixture(&s, EXP_SAME);
+    s_hle_fail_flow = 1;
+    rc = sr_import_call(&s, NID_PAIR, STUB_PC);
+    sr_domain_cosim_last_result(&r);
+    CHECK(r.outcome == SR_COSIM_OUTCOME_NOT_COMPARED && r.reason == SR_COSIM_REASON_HLE_FLOW,
+          "an HLE lane with a pending flow is NOT_COMPARED (outcome %d reason %d)",
+          (int)r.outcome, (int)r.reason);
+    CHECK(s.flow_kind == SR_FLOW_FATAL, "the HLE lane's flow is what the caller sees");
+
     /* A v0 difference with equal memory. */
     cosim_fixture(&s, EXP_V0);
     s_hle_write_addr = 0u;
@@ -488,6 +596,28 @@ static void test_cosim_dual_run(void) {
     CHECK(MEM_R8(COSIM_DATA) == 0xA5u && s.flow_kind == SR_FLOW_NONE &&
               rc == (int)s_syscall_canned,
           "the refused lane is rolled back and the HLE lane's result kept");
+
+    /* The import is reached under a computed call (dispatch_call_checked, a
+     * generated jalr site): the refusal unwinds through that boundary to the
+     * lane's entry, the call is NOT_COMPARED and the HLE lane runs (review S1
+     * on #2171). Before the fix the checked boundary ended the process. */
+    cosim_fixture(&s, EXP_CHECKED);
+    rc = sr_import_call(&s, NID_PAIR, STUB_PC);
+    sr_domain_cosim_last_result(&r);
+    CHECK(s_export_ran == 1 && s_helper_ran == 1,
+          "the export and its computed callee run in the guest lane (%d, %d)", s_export_ran,
+          s_helper_ran);
+    CHECK(s_helper_continued == 0, "the helper does not run past the refused import");
+    CHECK(s_checked_result == 1, "dispatch_call_checked tells its caller to return (got %d)",
+          s_checked_result);
+    CHECK(r.outcome == SR_COSIM_OUTCOME_NOT_COMPARED &&
+              r.reason == SR_COSIM_REASON_NESTED_IMPORT && r.nested_nid == NID_HLE,
+          "an import under a checked call is NOT_COMPARED nested-import (outcome %d reason %d)",
+          (int)r.outcome, (int)r.reason);
+    CHECK(s_syscall_calls == 1u && s_syscall_last_nid == NID_PAIR && rc == (int)s_syscall_canned &&
+              s.flow_kind == SR_FLOW_NONE && MEM_R8(COSIM_DATA) == 0xA5u,
+          "the HLE lane runs once and its result is kept (%u calls)", s_syscall_calls);
+    CHECK(sr_dispatch_unwind_requested == 0, "the unwind flag is clear after the lane");
 
     /* Dispatch refuses the guest export: NOT_COMPARED, never fatal, HLE kept. */
     cosim_fixture(&s, EXP_SAME);

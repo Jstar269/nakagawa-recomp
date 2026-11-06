@@ -330,6 +330,7 @@ static void sr_cosim_reset(void) {
     s_cosim_dirty_n = 0u;
     s_cosim_active = 0;
     s_cosim_guest_active = 0;
+    sr_dispatch_unwind_requested = 0;
     s_cosim_nested_nid = 0u;
     s_cosim_dead_stack = SR_COSIM_DEAD_STACK_DEFAULT;
     s_cosim_match_n = 0u;
@@ -376,6 +377,25 @@ static uint8_t *sr_cosim_host(uint32_t phys) {
     return g_mem + (int32_t)(phys - SR_RAM_BASE);
 }
 
+/* The eDRAM window is VRAM: the renderer may hold bytes newer than the host
+ * copy (g_sr_vram_read_pending), and a host store it does not hear about leaves
+ * its targets and cached textures stale. Every raw access below keeps the
+ * recomp.h contract that the guest's own bulk copies keep. */
+#define SR_COSIM_VRAM_BASE 0x04000000u
+#define SR_COSIM_VRAM_SIZE 0x00200000u
+
+static int sr_cosim_is_vram(uint32_t phys) {
+    return phys >= SR_COSIM_VRAM_BASE && phys - SR_COSIM_VRAM_BASE < SR_COSIM_VRAM_SIZE;
+}
+
+/* Bring the host copy of VRAM up to date before the snapshot. Later raw reads
+ * need no readback: a lane's own VRAM stores read back the bytes they touch
+ * (write-prepare), and a page neither lane touched still equals the snapshot,
+ * so renderer progress during the call is never counted as a difference. */
+static void sr_cosim_vram_current(void) {
+    sr_guest_vram_read_prepare_bytes(SR_COSIM_VRAM_BASE, SR_COSIM_VRAM_SIZE);
+}
+
 static size_t sr_cosim_total_bytes(void) {
     size_t total = 0u;
     size_t w;
@@ -393,6 +413,7 @@ static const char *sr_cosim_reason_text(SrCosimReason reason) {
     case SR_COSIM_REASON_REENTRY: return "cosim call inside another cosim call";
     case SR_COSIM_REASON_NO_ARENA: return "guest memory is not initialised";
     case SR_COSIM_REASON_NO_MEMORY: return "no memory for the snapshot";
+    case SR_COSIM_REASON_HLE_FLOW: return "the HLE lane did not end normally";
     default: return "unknown";
     }
 }
@@ -434,6 +455,7 @@ static int sr_cosim_snapshot_take(void) {
             return -1;
         }
     }
+    sr_cosim_vram_current();
     for (w = 0; w < SR_COSIM_WINDOW_COUNT; w++) {
         memcpy(s_cosim_snapshot + off, sr_cosim_host(s_cosim_windows[w].base),
                s_cosim_windows[w].size);
@@ -474,14 +496,21 @@ static int sr_cosim_capture_guest_and_restore(void) {
     for (w = 0; w < SR_COSIM_WINDOW_COUNT; w++) {
         uint32_t page;
         for (page = 0; page < s_cosim_windows[w].size; page += SR_COSIM_PAGE) {
-            uint8_t *live = sr_cosim_host(s_cosim_windows[w].base + page);
+            const uint32_t phys = s_cosim_windows[w].base + page;
+            uint8_t *live = sr_cosim_host(phys);
             const uint8_t *before = s_cosim_snapshot + off + page;
             if (memcmp(live, before, SR_COSIM_PAGE) != 0) {
-                if (kept == 0 &&
-                    sr_cosim_dirty_push(s_cosim_windows[w].base + page, live) != 0) {
+                if (kept == 0 && sr_cosim_dirty_push(phys, live) != 0) {
                     kept = -1;
                 }
+                /* A rolled-back VRAM page is a store the renderer must see. */
+                if (sr_cosim_is_vram(phys)) {
+                    sr_guest_vram_write_prepare_bytes(phys, SR_COSIM_PAGE);
+                }
                 memcpy(live, before, SR_COSIM_PAGE);
+                if (sr_cosim_is_vram(phys)) {
+                    sr_guest_vram_write_commit_bytes(phys, SR_COSIM_PAGE);
+                }
             }
         }
         off += s_cosim_windows[w].size;
@@ -611,6 +640,7 @@ static int sr_import_call_cosim(CpuState *s, uint32_t nid, uint32_t stub_pc) {
     s_cosim_guest_active = 1;
     rc = sr_import_call_guest(s, nid, stub_pc, 1);
     s_cosim_guest_active = 0;
+    sr_dispatch_unwind_requested = 0;
     guest = *s;
     int kept = sr_cosim_capture_guest_and_restore();
     *s = input;
@@ -629,6 +659,12 @@ static int sr_import_call_cosim(CpuState *s, uint32_t nid, uint32_t stub_pc) {
     }
     if (kept != 0) {
         sr_cosim_not_compared(SR_COSIM_REASON_NO_MEMORY);
+        return (int)ret;
+    }
+    if (s->flow_kind != SR_FLOW_NONE) {
+        /* A handler whose guest callback failed, or that left a transfer
+         * pending, did not produce a whole result to compare. */
+        sr_cosim_not_compared(SR_COSIM_REASON_HLE_FLOW);
         return (int)ret;
     }
 
@@ -667,6 +703,9 @@ int sr_import_call(CpuState *s, uint32_t nid, uint32_t stub_pc) {
         if (s_cosim_nested_nid == 0u) {
             s_cosim_nested_nid = nid;
         }
+        /* Checked and continued calls between the export and this stub return
+         * through the refusal instead of ending the run (recomp.c). */
+        sr_dispatch_unwind_requested = 1;
         s->flow_kind = SR_FLOW_FATAL;
         s->flow_target = nid;
         return -1;

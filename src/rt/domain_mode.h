@@ -138,12 +138,13 @@ uint32_t sr_domain_last_cosim_nid(void);
  *      runs exactly as SR_MODE_HLE does. Its result is what the guest keeps:
  *      a difference never changes what the guest sees.
  * The two results are compared: v0 and the callee-saved GPRs (s0-s7, gp, sp,
- * fp, ra), then every byte of scratchpad, eDRAM and RAM, except the stack
+ * fp), then every byte of scratchpad, eDRAM and RAM, except the stack
  * below the caller's $sp (dead after either lane returns; its size is
  * sr_domain_cosim_set_dead_stack). v1, caller-saved registers and FPU results
  * are not compared: the HLE lane leaves v1 as the caller had it and poisons
  * the caller-saved set. A float-returning pair is therefore not compared by
- * this slice.
+ * this slice. The eDRAM window is VRAM: the snapshot first reads back what the
+ * renderer holds, and each rolled-back VRAM page is committed to it.
  *
  * Every call ends as MATCH, DIFF or NOT_COMPARED (never a silent match):
  *   SR_COSIM_DIFF: nid, stub PC, a0-a3, both v0 values, the first differing
@@ -151,7 +152,8 @@ uint32_t sr_domain_last_cosim_nid(void);
  *     differing bytes;
  *   SR_COSIM_NOT_COMPARED: nid and reason (no guest export, the guest lane
  *     reached an import, dispatch rejected the export, a cosim call nested in
- *     another, no guest arena, no snapshot memory).
+ *     another, no guest arena, no snapshot memory, the HLE lane did not end
+ *     normally).
  * MATCH is logged once per NID; DIFF and NOT_COMPARED every time. A match
  * proves only the compared call with those inputs. The snapshot is taken
  * only in COSIM mode, which nothing enables by default. */
@@ -169,7 +171,8 @@ typedef enum SrCosimReason {
     SR_COSIM_REASON_GUEST_REJECTED = 3,  /* dispatch refused the export */
     SR_COSIM_REASON_REENTRY = 4,         /* cosim call inside another's lane */
     SR_COSIM_REASON_NO_ARENA = 5,        /* guest memory not initialised */
-    SR_COSIM_REASON_NO_MEMORY = 6        /* snapshot allocation failed */
+    SR_COSIM_REASON_NO_MEMORY = 6,       /* snapshot allocation failed */
+    SR_COSIM_REASON_HLE_FLOW = 7         /* HLE lane left a pending flow */
 } SrCosimReason;
 
 /* Where the first difference was found. */

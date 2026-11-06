@@ -399,6 +399,35 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
                 offenders.append(f"{relative}:{line}")
         self.assertEqual(offenders, [], "a host entry seeds $ra = 0; seed SR_HOST_RETURN_PC")
 
+    def test_only_the_two_call_boundaries_read_the_cosim_unwind_flag(self):
+        """#2148 review S1: the COSIM guest lane's refused import unwinds through
+        dispatch_call_checked and dispatch_call_continue. Those two boundaries are the only
+        readers of the flag; domain_mode.c only sets and clears it; nothing else names it."""
+        flag = re.compile(r"\bsr_dispatch_unwind_requested\b")
+        recomp = _strip_comments_keep_lines((RT / "recomp.c").read_text(encoding="utf-8"))
+        lines = recomp.split("\n")
+        readers = set()
+        for match in flag.finditer(recomp):
+            index = recomp.count("\n", 0, match.start())
+            if lines[index].startswith("volatile int sr_dispatch_unwind_requested;"):
+                continue  # the definition
+            readers.add(_enclosing_function(lines, index))
+        self.assertEqual(readers, {"dispatch_call_checked", "dispatch_call_continue"})
+
+        domain = _strip_comments_keep_lines((RT / "domain_mode.c").read_text(encoding="utf-8"))
+        uses = [domain[m.start():domain.find(";", m.start()) + 1] for m in flag.finditer(domain)]
+        self.assertTrue(uses)
+        self.assertEqual(sorted(set(uses)), ["sr_dispatch_unwind_requested = 0;",
+                                             "sr_dispatch_unwind_requested = 1;"])
+
+        others = []
+        for _, relative, text in self._runtime_sources():
+            if relative in {"src/rt/domain_mode.c", "src/rt/recomp.h"}:
+                continue
+            if flag.search(_strip_comments_keep_lines(text)):
+                others.append(relative)
+        self.assertEqual(others, [], "only recomp.c's call boundaries read the COSIM unwind flag")
+
     def test_every_host_to_guest_entry_is_an_allowed_helper(self):
         call = re.compile(r"(?<![\w.>])(dispatch_from_host|sr_call_body|dispatch_call_try|"
                           r"dispatch_call_checked|dispatch_call_continue|"

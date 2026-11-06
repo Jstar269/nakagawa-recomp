@@ -193,6 +193,29 @@ class DomainSourcesTests(unittest.TestCase):
                       r"SR_COSIM_REASON_UNPAIRED"):
             self.assertRegex(text, proto)
 
+    def test_cosim_keeps_the_vram_contract(self):
+        # Review S2 on #2171: the snapshot reads back what the renderer holds,
+        # and a rolled-back VRAM page is bracketed by write prepare and commit.
+        text = DOMAIN_C.read_text(encoding="utf-8")
+        snap = text.split("static int sr_cosim_snapshot_take(", 1)[1].split("\n}\n", 1)[0]
+        self.assertLess(snap.index("sr_cosim_vram_current();"), snap.index("memcpy("))
+        self.assertIn("sr_guest_vram_read_prepare_bytes(SR_COSIM_VRAM_BASE, SR_COSIM_VRAM_SIZE)", text)
+        cap = text.split("static int sr_cosim_capture_guest_and_restore(", 1)[1].split("\n}\n", 1)[0]
+        prepare = cap.index("sr_guest_vram_write_prepare_bytes(phys, SR_COSIM_PAGE);")
+        copy = cap.index("memcpy(live, before, SR_COSIM_PAGE);")
+        commit = cap.index("sr_guest_vram_write_commit_bytes(phys, SR_COSIM_PAGE);")
+        self.assertLess(prepare, copy)
+        self.assertLess(copy, commit)
+
+    def test_cosim_does_not_compare_an_unfinished_hle_lane(self):
+        # Review N2 on #2171: a pending flow after the HLE lane is NOT_COMPARED.
+        text = DOMAIN_C.read_text(encoding="utf-8")
+        body = text.split("static int sr_import_call_cosim(", 1)[1].split("\nint sr_import_call(", 1)[0]
+        check = body.index("sr_cosim_not_compared(SR_COSIM_REASON_HLE_FLOW);")
+        self.assertLess(body.index("ret = sr_syscall(s, nid);"), check)
+        self.assertLess(check, body.index("sr_cosim_compare_memory("))
+        self.assertIn("SR_COSIM_REASON_HLE_FLOW", DOMAIN_H.read_text(encoding="utf-8"))
+
     def test_selftest_covers_the_dual_run(self):
         selftest = ROOT / "tests" / "native" / "domain_mode_selftest.c"
         self.assertIn("test_cosim_dual_run();", selftest.read_text(encoding="utf-8"))
