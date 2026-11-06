@@ -32046,6 +32046,52 @@ static void test_sas_state_contracts(void) {
            "a non-looping VAG voice ends despite loop markers");
 }
 
+/* #2135: a SAS volume is signed. __sceSasSetVolume accepts |volume| <= 0x1000 on each of its four sides,
+ * and a negative side plays phase-inverted (PPSSPP's sceSasSetVolume checks abs(volume) against 0x1000).
+ * Hot Shots Tennis gives three voices of each title-logo sound one negative side (for example 1886/-455).
+ * Refusing those left the voices at 0/0; KeyOn then raised them to full volume and the logo clipped about
+ * 9 dB above a PSP-3000 capture of the same moment. */
+static void test_sas_set_volume_accepts_negative(void) {
+    CpuState cpu;
+    const uint32_t core = 0x08030000u, out = 0x08010000u, vag = 0x08020000u;
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, core, 0);
+    sas_test_vag(vag, 4u, 0u);
+    cpu.r[4] = core; cpu.r[5] = 4; cpu.r[6] = vag; cpu.r[7] = 64; cpu.r[8] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOICE) == 0, "negative-volume fixture accepts the VAG voice");
+    /* __sceSasSetVolume(core, voice, left, right, effectLeft, effectRight): the last two arrive in t0/t1. */
+    cpu.r[4] = core; cpu.r[5] = 4; cpu.r[6] = 0x1000; cpu.r[7] = (uint32_t)-0x1000;
+    cpu.r[8] = (uint32_t)-0x1000; cpu.r[9] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0,
+           "__sceSasSetVolume accepts a negative side down to -0x1000 (#2135)");
+    cpu.r[4] = core; cpu.r[5] = 4; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (out - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = core; cpu.r[5] = out; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    int audible = 0, inverted = 1;
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN; i++) {
+        int16_t l = (int16_t)MEM_R16(out + i * 4u), r = (int16_t)MEM_R16(out + i * 4u + 2u);
+        if (l) audible = 1;
+        if (r != -l) inverted = 0;
+    }
+    expect(audible && inverted,
+           "a voice at 0x1000/-0x1000 plays the right channel as the phase-inverted left (#2135)");
+
+    /* The bound is the magnitude: one step past -0x1000 is still refused, and refused volumes change nothing. */
+    cpu.r[4] = core; cpu.r[5] = 4; cpu.r[6] = (uint32_t)-0x1001; cpu.r[7] = 0;
+    cpu.r[8] = 0; cpu.r[9] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0x80420018u,
+           "__sceSasSetVolume refuses -0x1001 with SAS_ERROR_VOLUME_VAL");
+    cpu.r[4] = core; cpu.r[5] = 4; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (out - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = core; cpu.r[5] = out; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    int still_inverted = 1, still_audible = 0;
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN; i++) {
+        int16_t l = (int16_t)MEM_R16(out + i * 4u), r = (int16_t)MEM_R16(out + i * 4u + 2u);
+        if (l) still_audible = 1;
+        if (r != -l) still_inverted = 0;
+    }
+    expect(still_audible && still_inverted, "a refused __sceSasSetVolume leaves the previous volume in place");
+}
+
 /* pspsascore.h: "On real hardware, the end flags are refreshed only AFTER __sceSasCore is
  * called", and __sceSasCore "updates end/pause flags".  A voice keyed on between cycles
  * therefore still reads as ended until the next cycle runs, and a drained voice reads as
@@ -48516,6 +48562,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
+    test_sas_set_volume_accepts_negative();
     test_sas_band_limited_resampling();
     test_sas_end_flags_refresh_per_cycle();
     test_sas_reinit_is_a_fresh_init();

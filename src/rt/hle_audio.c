@@ -1213,8 +1213,12 @@ static uint32_t h_SasSetVolume(CpuState *s) {
     int32_t l = (int32_t)A2, r = (int32_t)A3;
     int32_t el = (int32_t)stack_arg(s, 0), er = (int32_t)stack_arg(s, 1);
     if (e) return e;
-    if (l < 0 || l > SAS_VOLUME_MAX || r < 0 || r > SAS_VOLUME_MAX ||
-        el < 0 || el > SAS_VOLUME_MAX || er < 0 || er > SAS_VOLUME_MAX)
+    /* A SAS volume is signed: |volume| <= 0x1000, and a negative side plays phase-inverted (the
+     * mixer multiplies by it). Hot Shots Tennis gives three voices of each title-logo sound one
+     * negative side; refusing them left those voices at 0/0, which KeyOn then raised to full
+     * volume, about 9 dB above a PSP-3000 capture of the same moment (#2135). */
+    if (l < -SAS_VOLUME_MAX || l > SAS_VOLUME_MAX || r < -SAS_VOLUME_MAX || r > SAS_VOLUME_MAX ||
+        el < -SAS_VOLUME_MAX || el > SAS_VOLUME_MAX || er < -SAS_VOLUME_MAX || er > SAS_VOLUME_MAX)
         return SAS_ERROR_VOLUME_VAL;
     v->voll = l; v->volr = r; v->effect_l = el; v->effect_r = er; return 0;
 }
