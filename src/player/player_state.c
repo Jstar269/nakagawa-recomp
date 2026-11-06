@@ -1454,7 +1454,8 @@ static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
     /* Presentation only (contract section 2.2): the window and its recording, never the guest. */
     {"upscale", "Sharper enlarging",
      "AMD FSR 1 sharpens the picture when the window is larger than the game. Only what you see "
-     "changes: the game, its memory and screenshots stay the same.",
+     "changes, in the window and in recordings: the game, its memory and screenshots stay the "
+     "same.",
      2, k_part_switch_values, k_part_upscale_labels, k_part_upscale_words, 0},
 };
 

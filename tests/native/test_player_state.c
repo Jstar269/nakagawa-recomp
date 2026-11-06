@@ -7201,6 +7201,7 @@ static void test_play_mode_upscale_settings(void) {
     /* The row says it is presentation only and when it applies (#2122). */
     assert(strstr(info->sentence, "larger than the game") != NULL &&
            strstr(info->sentence, "Only what you see changes") != NULL &&
+           strstr(info->sentence, "in recordings") != NULL &&
            strstr(info->sentence, "screenshots stay the same") != NULL);
 
     PlayerSettings fresh;
