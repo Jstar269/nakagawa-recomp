@@ -83,6 +83,7 @@ import subprocess
 import sys
 import tarfile
 import time
+from typing import NoReturn
 import zipfile
 import zlib
 
@@ -741,7 +742,7 @@ def _read_marker(dest: Path) -> dict:
     has been touched."""
     marker = dest / MARKER
 
-    def refuse(why: str):
+    def refuse(why: str) -> NoReturn:
         raise InstallError(
             f"INSTALL_MARKER_INVALID: {marker} {why}, so this tool will not trust it; nothing "
             "was removed. If it is not yours, delete the folder by hand")
