@@ -1708,7 +1708,7 @@ HANDLER_METADATA = {
             "tests/native/hle_thread_selftest.c:test_wb_tlspl_vpl_cells",
             "tests/native/hle_thread_selftest.c:test_vpl_nonblocking_roundtrip",
         ],
-        "limitation": "the recorded codes are reproduced; the point where a pool runs out differs because the PSP's per-block header accounting is not modelled, and invalid output pointers are not measured (#341)",
+        "limitation": "the recorded codes are reproduced; the point where a pool runs out differs because the PSP's per-block header accounting is not modelled, and invalid output pointers are unmeasured (#341)",
     },
     # Route-A batch 5: retain only the behaviors named by the existing cells.
     "h_LockMutex": {

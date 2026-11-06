@@ -978,7 +978,7 @@ Semantic handler census: **563** handlers across **27** API families, covering *
   - Limitation: two valid allocations, the measured exhaustion code, and pool status are covered; invalid output pointers, invalid UIDs, and other exhaustion/error precedence are not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-try-alloc-a, fpl-try-alloc-b, and fpl-try-alloc-exhausted)
 - **`h_TryAllocateVpl`** (`sceKernel`): `sceKernelTryAllocateVpl` (0xaf36d708)
-  - Limitation: the recorded codes are reproduced; the point where a pool runs out differs because the PSP's per-block header accounting is not modelled, and invalid output pointers are not measured (#341)
+  - Limitation: the recorded codes are reproduced; the point where a pool runs out differs because the PSP's per-block header accounting is not modelled, and invalid output pointers are unmeasured (#341)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: 1024-byte VPL accounting and high-down allocation placement)
   - Evidence: PSPAutotests tests/threads/vpl/try.expected (0 bytes, -1 bytes and more than the pool 0x800201B7; a request no free block can hold 0x80020190)
   - Evidence: tests/native/hle_thread_selftest.c:test_wb_tlspl_vpl_cells
@@ -1561,8 +1561,8 @@ never carries. For the same reason HLE is the only path for `sceMpeg` in titles 
 
 **Comparing the two forms.** Where both forms exist, the HLE handler can be checked against the
 disc module by running both on the same call. That check belongs to the standing LLE lane, as
-the dual-execution mode `SR_MODE_COSIM` reserved in `src/rt/domain_mode.h`. Its pull request for
-#2148 documents what it compares and how it reports. A pair can be compared only after its HLE
+the dual-execution mode `SR_MODE_COSIM` reserved in `src/rt/domain_mode.h`. Its pull request
+for #2148 documents what it compares and how it reports. A pair can be compared only after its HLE
 handler has been read for host-side state. A handler that keeps any state (an object table, a
 file position, a decoder, the scheduler) cannot run beside the export, because later calls would
 then get different answers. Every `sceLibFont` handler keeps a host library or font handle, so

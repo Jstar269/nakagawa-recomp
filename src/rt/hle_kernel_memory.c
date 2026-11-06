@@ -1249,7 +1249,7 @@ static int volatile_mem_grant_next(void) {
     return 0;
 }
 
-static uint32_t h_VolatileMemLock(CpuState *s) {
+uint32_t h_VolatileMemLock(CpuState *s) {
     if (A0 != 0u) return VOLATILE_MEM_INVALID_MODE;
     if (sched_is_intr_context()) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;   /* L412 */
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;      /* L290-L293 */
@@ -1274,7 +1274,7 @@ static uint32_t h_VolatileMemLock(CpuState *s) {
     return result;
 }
 
-static uint32_t h_VolatileMemTryLock(CpuState *s) {
+uint32_t h_VolatileMemTryLock(CpuState *s) {
     if (A0 != 0u) return VOLATILE_MEM_INVALID_MODE;
     if (s_volatile_locked) return VOLATILE_MEM_HELD;
     if (!volatile_mem_outputs_writable(A1, A2)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
@@ -1282,7 +1282,7 @@ static uint32_t h_VolatileMemTryLock(CpuState *s) {
     return 0;
 }
 
-static uint32_t h_VolatileMemUnlock(CpuState *s) {
+uint32_t h_VolatileMemUnlock(CpuState *s) {
     if (A0 != 0u) return VOLATILE_MEM_INVALID_MODE;   /* unlock.expected "Modes" */
     if (!s_volatile_locked) return VOLATILE_MEM_NOT_HELD;
     s_volatile_locked = 0;
@@ -1365,10 +1365,6 @@ void hle_register_wait_conformance_kernel_memory_2(void) {
     sr_hle_register(0x3e0271d3, "sceKernelVolatileMemLock", h_VolatileMemLock);
     sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemTryLock);
     sr_hle_register(0xa569e425, "sceKernelVolatileMemUnlock", h_VolatileMemUnlock);
-    /* The scePower aliases answer the same cells (unlock/lock/trylock.expected "(scePower)"). */
-    sr_hle_register(0x23c31ffe, "scePowerVolatileMemLock", h_VolatileMemLock);
-    sr_hle_register(0xfa97a599, "scePowerVolatileMemTryLock", h_VolatileMemTryLock);
-    sr_hle_register(0xb3edd801, "scePowerVolatileMemUnlock", h_VolatileMemUnlock);
 }
 
 #ifndef SR_MPEG_MEDIA_SELFTEST
