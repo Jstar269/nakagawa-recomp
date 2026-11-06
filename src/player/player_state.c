@@ -89,8 +89,6 @@ static bool player_disc_id_key(const char *disc_id, char key[PLAYER_DISC_ID_KEY_
     return nk_title_manifest_package_dir_name(disc_id, NULL, key, PLAYER_DISC_ID_KEY_LEN);
 }
 
-static void player_settings_set_title_60hz(PlayerSettings *settings, const char *key,
-                                           bool on);
 
 static const char *player_package_root(const PlayerApp *app, const GameRecord *game) {
     if (app && game && player_game_is_showcase(game) && app->showcase_root[0]) {
@@ -687,6 +685,8 @@ void player_app_sync_library(PlayerApp *app) {
        older Nakagawa built is read again (package.json only; the player's own
        identity is kept for the session). */
     app->outdated.scan_requested = true;
+    /* A title's Settings > Enhanced holds its game by disc: the game gone, the page closes. */
+    player_app_close_enhanced_page_if_title_gone(app);
 }
 
 bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming) {
@@ -1340,7 +1340,7 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_ACCESSIBILITY_SETTINGS:
             return 4; /* interface size, high contrast, reduce motion, back */
         case VIEW_ACE_SETTINGS:
-            return 7; /* Ace Mode, filtering, crisp text, readout, badge, smooth motion, done */
+            return PLAYER_PART_COUNT + 2; /* play mode, each Enhanced part, done */
         case VIEW_PROBLEM_REPORT:
             return 3; /* create, open folder, back */
         case VIEW_ONLINE_SETTINGS:
@@ -1416,6 +1416,93 @@ void player_app_move_focus(PlayerApp *app, int delta, int focus_count) {
     app->focus_index = focus;
 }
 
+/* ---- The play modes' parts (#2055) ----
+   One row per part of Enhanced (PlayerEnhancedPart). Reading, saving, the launch line and both
+   settings pages walk this table, so a new part is one more row. */
+static const int k_part_af_values[] = {16, 8, 4, 2, 0};
+static const char *const k_part_af_labels[] = {"16x", "8x", "4x", "2x", "Off"};
+static const char *const k_part_af_words[] = {"16", "8", "4", "2", "0"};
+static const int k_part_switch_values[] = {1, 0};
+static const char *const k_part_switch_labels[] = {"On", "Off"};
+static const char *const k_part_switch_words[] = {"on", "off"};
+static const char *const k_part_smooth_words[] = {"x2", "off"};
+static const char *const k_part_sas_words[] = {"sinc", "off"};
+
+static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
+    {"af", "Texture filtering",
+     "Keeps slanted surfaces sharp. Save pictures keep the filtering.",
+     5, k_part_af_values, k_part_af_labels, k_part_af_words, 16},
+    {"text", "Crisp system text",
+     "Draws the on-screen keyboard at your screen's resolution.",
+     2, k_part_switch_values, k_part_switch_labels, k_part_switch_words, 1},
+    {"readout", "Speed readout",
+     "The game's speed and frame rate in a corner, over its HUD.",
+     2, k_part_switch_values, k_part_switch_labels, k_part_switch_words, 0},
+    {"notice", "Game badge",
+     "Names the mode for a few seconds when a game starts.",
+     2, k_part_switch_values, k_part_switch_labels, k_part_switch_words, 1},
+    {"smooth", "Smooth motion",
+     "Shows 30 FPS games at 60. Adds about 17 ms of delay.",
+     2, k_part_switch_values, k_part_switch_labels, k_part_smooth_words, 0},
+    /* A guest-visible item (contract 11.3.1): off by default until its "nothing worse" runs
+       exist (11.2 item 4), with its own off switch in the library and each title (item 2). */
+    {"sas", "Clean pitched sound",
+     "Resamples pitched sound effects without aliasing. Changes the samples the game mixes.",
+     2, k_part_switch_values, k_part_switch_labels, k_part_sas_words, 0},
+};
+
+const PlayerEnhancedPartInfo *player_enhanced_part(int part) {
+    return part >= 0 && part < PLAYER_PART_COUNT ? &k_enhanced_parts[part] : NULL;
+}
+
+/* The index of `value` in the part's list, or -1. */
+static int enhanced_part_value_index(int part, int value) {
+    const PlayerEnhancedPartInfo *info = player_enhanced_part(part);
+    for (int i = 0; info && i < info->value_count; i++) {
+        if (info->values[i] == value) return i;
+    }
+    return -1;
+}
+
+/* The value a word names for a part, or -1 when the part has no such word. */
+static int enhanced_part_value_from_word(int part, const char *word) {
+    const PlayerEnhancedPartInfo *info = player_enhanced_part(part);
+    for (int i = 0; info && word && i < info->value_count; i++) {
+        if (strcmp(info->words[i], word) == 0) return info->values[i];
+    }
+    return -1;
+}
+
+/* A part's value as the launch line and the settings file write it; a value the part does
+   not have is written as off. */
+static const char *enhanced_part_word(int part, int value) {
+    const PlayerEnhancedPartInfo *info = player_enhanced_part(part);
+    int index = enhanced_part_value_index(part, value);
+    if (index < 0) index = enhanced_part_value_index(part, 0);
+    return info && index >= 0 ? info->words[index] : "off";
+}
+
+const char *player_enhanced_part_label(int part, int value) {
+    const PlayerEnhancedPartInfo *info = player_enhanced_part(part);
+    int index = enhanced_part_value_index(part, value);
+    if (index < 0) index = enhanced_part_value_index(part, 0);
+    return info && index >= 0 ? info->labels[index] : "Off";
+}
+
+const char *player_play_mode_name(PlayerPlayMode mode) {
+    switch (mode) {
+        case PLAYER_PLAY_AUTHENTIC: return "Authentic";
+        case PLAYER_PLAY_ENHANCED: return "Enhanced";
+        case PLAYER_PLAY_ACE: return "Ace";
+        default: return "Library default";
+    }
+}
+
+static void player_enhanced_defaults(PlayerEnhancedSettings *enhanced) {
+    enhanced->library = PLAYER_PLAY_AUTHENTIC;
+    for (int p = 0; p < PLAYER_PART_COUNT; p++) enhanced->part[p] = k_enhanced_parts[p].fresh;
+}
+
 void player_app_settings_init_default(PlayerSettings *settings) {
     if (!settings) return;
     settings->resolution_scale = 1; /* native 480x272: the verified path; upscaling is opt-in */
@@ -1448,18 +1535,11 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->picker_folder[0] = '\0';
     settings->rebuild_prompt_version[0] = '\0';
     settings->developer_mode = false;
-    memset(settings->enhancement_60hz_discs, 0, sizeof(settings->enhancement_60hz_discs));
-    settings->enhancement_60hz_disc_count = 0;
-    /* Ace Mode is off until the player turns it on; the features it
-       turns on keep their defaults while it is off. */
-    settings->ace.enabled = false;
-    settings->ace.af = 16;
-    settings->ace.text = true;
-    settings->ace.readout = false;
-    settings->ace.notice = true;
-    settings->ace.smooth = 0;
-    memset(settings->ace_titles, 0, sizeof(settings->ace_titles));
-    settings->ace_title_count = 0;
+    /* Authentic until the player chooses Enhanced; the parts keep their values while it
+       is not chosen. */
+    player_enhanced_defaults(&settings->enhanced);
+    memset(settings->title_play, 0, sizeof(settings->title_play));
+    settings->title_play_count = 0;
 }
 
 static bool resolution_scale_valid(int scale) {
@@ -1485,72 +1565,221 @@ static bool text_size_valid(int64_t pct) {
     return pct == 100 || pct == 125 || pct == 150;
 }
 
-/* Ace Mode's texture filtering levels (src/rt/ace.h). */
-static bool ace_af_valid(int64_t af) {
-    return af == 0 || af == 2 || af == 4 || af == 8 || af == 16;
+/* A title entry that follows the library everywhere. */
+static void title_play_blank(PlayerTitlePlay *entry) {
+    memset(entry->key, 0, sizeof(entry->key));
+    entry->mode = PLAYER_PLAY_LIBRARY;
+    for (int p = 0; p < PLAYER_PART_COUNT; p++) entry->part[p] = -1;
+    entry->logic_60 = -1;
 }
 
-/* Smooth motion is saved by name ("off", "x2"), as a PlayerAceSettings.smooth value 0 or 1;
-   -1 for anything else (smooth=match is not offered, so it is not read either). */
-static int ace_smooth_parse(const char *name) {
-    if (!name) return -1;
-    if (strcmp(name, "off") == 0) return 0;
-    if (strcmp(name, "x2") == 0) return 1;
-    return -1;
+static bool title_play_differs(const PlayerTitlePlay *t) {
+    if (t->mode != PLAYER_PLAY_LIBRARY || t->logic_60 >= 0) return true;
+    for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+        if (t->part[p] >= 0) return true;
+    }
+    return false;
 }
 
-static const char *ace_smooth_name(int smooth) {
-    return smooth == 1 ? "x2" : "off";
-}
-
-static bool ace_title_differs(const PlayerAceTitle *t) {
-    return t->mode != PLAYER_ACE_TITLE_LIBRARY || t->af >= 0 || t->text >= 0 ||
-           t->readout >= 0 || t->notice >= 0 || t->smooth >= 0;
-}
-
-static int ace_title_index(const PlayerSettings *settings, const char *key) {
-    for (int i = 0; settings && key && i < settings->ace_title_count; i++) {
-        if (strcmp(settings->ace_titles[i].key, key) == 0) return i;
+static int title_play_index(const PlayerSettings *settings, const char *key) {
+    for (int i = 0; settings && key && i < settings->title_play_count; i++) {
+        if (strcmp(settings->title_play[i].key, key) == 0) return i;
     }
     return -1;
 }
 
 /* Saves `entry` (its key already normalised): replaced, added, or removed when it no longer
    differs from the library. */
-static void ace_title_store(PlayerSettings *settings, const PlayerAceTitle *entry) {
-    int index = ace_title_index(settings, entry->key);
-    if (!ace_title_differs(entry)) {
+static void title_play_store(PlayerSettings *settings, const PlayerTitlePlay *entry) {
+    int index = title_play_index(settings, entry->key);
+    if (!title_play_differs(entry)) {
         if (index >= 0) {
-            int last = --settings->ace_title_count;
-            if (index != last) settings->ace_titles[index] = settings->ace_titles[last];
-            memset(&settings->ace_titles[last], 0, sizeof(settings->ace_titles[last]));
+            int last = --settings->title_play_count;
+            if (index != last) settings->title_play[index] = settings->title_play[last];
+            memset(&settings->title_play[last], 0, sizeof(settings->title_play[last]));
         }
         return;
     }
     if (index >= 0) {
-        settings->ace_titles[index] = *entry;
-    } else if (settings->ace_title_count < MAX_LIBRARY_GAMES) {
-        settings->ace_titles[settings->ace_title_count++] = *entry;
+        settings->title_play[index] = *entry;
+    } else if (settings->title_play_count < MAX_LIBRARY_GAMES) {
+        settings->title_play[settings->title_play_count++] = *entry;
     }
 }
 
-static int ace_tristate(const NkJsonNode *node) {
-    bool b = false;
-    return nk_json_get_bool(node, &b) ? (b ? 1 : 0) : -1;
+/* The title's entry to change: the saved one, or a blank one for its disc. False for a disc ID
+   that is not a PSP disc ID. */
+static bool title_play_entry(const PlayerApp *app, int game_index, PlayerTitlePlay *entry) {
+    const PlayerTitlePlay *saved =
+        player_settings_title_play(&app->settings, app->games[game_index].disc_id);
+    if (saved) {
+        *entry = *saved;
+        return true;
+    }
+    title_play_blank(entry);
+    return player_disc_id_key(app->games[game_index].disc_id, entry->key);
 }
 
-/* One "ace_titles" value; the key is the caller's. Unknown values follow the library. */
-static void ace_title_read(const NkJsonNode *obj, PlayerAceTitle *entry) {
-    const char *mode = nk_json_get_string(nk_json_obj_get(obj, "mode"));
-    int64_t af = -1;
-    entry->mode = mode && strcmp(mode, "ace") == 0 ? PLAYER_ACE_TITLE_ON
-                : mode && strcmp(mode, "authentic") == 0 ? PLAYER_ACE_TITLE_AUTHENTIC
-                : PLAYER_ACE_TITLE_LIBRARY;
-    entry->af = nk_json_get_int64(nk_json_obj_get(obj, "af"), &af) && ace_af_valid(af) ? (int)af : -1;
-    entry->text = ace_tristate(nk_json_obj_get(obj, "text"));
-    entry->readout = ace_tristate(nk_json_obj_get(obj, "readout"));
-    entry->notice = ace_tristate(nk_json_obj_get(obj, "notice"));
-    entry->smooth = ace_smooth_parse(nk_json_get_string(nk_json_obj_get(obj, "smooth")));
+static PlayerPlayMode play_mode_from_word(const char *word) {
+    if (!word) return PLAYER_PLAY_LIBRARY;
+    if (strcmp(word, "authentic") == 0) return PLAYER_PLAY_AUTHENTIC;
+    if (strcmp(word, "enhanced") == 0) return PLAYER_PLAY_ENHANCED;
+    if (strcmp(word, "ace") == 0) return PLAYER_PLAY_ACE;
+    return PLAYER_PLAY_LIBRARY;
+}
+
+static const char *play_mode_word(PlayerPlayMode mode) {
+    switch (mode) {
+        case PLAYER_PLAY_AUTHENTIC: return "authentic";
+        case PLAYER_PLAY_ENHANCED: return "enhanced";
+        case PLAYER_PLAY_ACE: return "ace";
+        default: return "library";
+    }
+}
+
+/* Reads "enhanced" and "title_play" (#2055). A part's word this build does not know reads as
+   off, as does a part missing from a library block that exists, so a part a later build adds
+   stays off for an existing file until the player turns it on; a library default other than
+   "enhanced" is Authentic; a title mode this build does not know follows the library. */
+static void play_settings_read(PlayerSettings *settings, const NkJsonNode *enhanced,
+                               const NkJsonNode *titles) {
+    const char *library = nk_json_get_string(nk_json_obj_get(enhanced, "default"));
+    settings->enhanced.library = library && strcmp(library, "enhanced") == 0
+        ? PLAYER_PLAY_ENHANCED : PLAYER_PLAY_AUTHENTIC;
+    for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+        int value = enhanced_part_value_from_word(
+            p, nk_json_get_string(nk_json_obj_get(enhanced, k_enhanced_parts[p].key)));
+        settings->enhanced.part[p] = value >= 0 ? value : 0;
+    }
+    if (!titles || !nk_json_is_object(titles)) return;
+    for (size_t i = 0; i < titles->u.obj.count; i++) {
+        const NkJsonMember *member = &titles->u.obj.members[i];
+        PlayerTitlePlay entry;
+        title_play_blank(&entry);
+        if (!member->key || !nk_json_is_object(member->val) ||
+            !player_disc_id_key(member->key, entry.key)) {
+            continue;
+        }
+        entry.mode = play_mode_from_word(nk_json_get_string(nk_json_obj_get(member->val, "mode")));
+        for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+            const NkJsonNode *node = nk_json_obj_get(member->val, k_enhanced_parts[p].key);
+            if (!node) continue;
+            int value = enhanced_part_value_from_word(p, nk_json_get_string(node));
+            entry.part[p] = value >= 0 ? value : 0;
+        }
+        {
+            const NkJsonNode *node = nk_json_obj_get(member->val, "logic_60");
+            const char *word = nk_json_get_string(node);
+            if (node) entry.logic_60 = word && strcmp(word, "on") == 0 ? -1 : 0;
+        }
+        title_play_store(settings, &entry);
+    }
+}
+
+/* The development builds' "Ace Mode" settings (before #2055), mapped onto the play modes as
+   docs/ENHANCEMENT_CONTRACT.md section 10.9 says:
+   - "ace" {"enabled": true} is an Enhanced library default, false Authentic; its feature
+     values carry over (a value this build does not know keeps the fresh default, as those
+     builds did);
+   - an "ace_titles" mode "ace" is Enhanced, "authentic" Authentic, and its feature values
+     carry over;
+   - a disc in "enhancement_60hz_discs" becomes plain Ace (owner, 2026-11-04): every Enhanced
+     part as the library has it, the title's own values kept, plus its 60 FPS game logic. A
+     title chosen Authentic stays Authentic: its 60 FPS game logic was not in effect. */
+static void play_settings_read_legacy(PlayerSettings *settings, const NkJsonNode *root) {
+    const NkJsonNode *ace = nk_json_obj_get(root, "ace");
+    if (ace && nk_json_is_object(ace)) {
+        bool b = false;
+        int64_t af = 0;
+        if (nk_json_get_bool(nk_json_obj_get(ace, "enabled"), &b)) {
+            settings->enhanced.library = b ? PLAYER_PLAY_ENHANCED : PLAYER_PLAY_AUTHENTIC;
+        }
+        if (nk_json_get_int64(nk_json_obj_get(ace, "af"), &af) &&
+            enhanced_part_value_index(PLAYER_PART_FILTERING, (int)af) >= 0) {
+            settings->enhanced.part[PLAYER_PART_FILTERING] = (int)af;
+        }
+        if (nk_json_get_bool(nk_json_obj_get(ace, "text"), &b))
+            settings->enhanced.part[PLAYER_PART_TEXT] = b;
+        if (nk_json_get_bool(nk_json_obj_get(ace, "readout"), &b))
+            settings->enhanced.part[PLAYER_PART_READOUT] = b;
+        if (nk_json_get_bool(nk_json_obj_get(ace, "notice"), &b))
+            settings->enhanced.part[PLAYER_PART_NOTICE] = b;
+        int smooth = enhanced_part_value_from_word(
+            PLAYER_PART_SMOOTH, nk_json_get_string(nk_json_obj_get(ace, "smooth")));
+        if (smooth >= 0) settings->enhanced.part[PLAYER_PART_SMOOTH] = smooth;
+    }
+    const NkJsonNode *titles = nk_json_obj_get(root, "ace_titles");
+    if (titles && nk_json_is_object(titles)) {
+        for (size_t i = 0; i < titles->u.obj.count; i++) {
+            const NkJsonMember *member = &titles->u.obj.members[i];
+            const NkJsonNode *obj = member->val;
+            PlayerTitlePlay entry;
+            title_play_blank(&entry);
+            if (!member->key || !nk_json_is_object(obj) ||
+                !player_disc_id_key(member->key, entry.key)) {
+                continue;
+            }
+            const char *mode = nk_json_get_string(nk_json_obj_get(obj, "mode"));
+            entry.mode = mode && strcmp(mode, "ace") == 0 ? PLAYER_PLAY_ENHANCED
+                       : mode && strcmp(mode, "authentic") == 0 ? PLAYER_PLAY_AUTHENTIC
+                       : PLAYER_PLAY_LIBRARY;
+            int64_t af = -1;
+            bool b = false;
+            if (nk_json_get_int64(nk_json_obj_get(obj, "af"), &af) &&
+                enhanced_part_value_index(PLAYER_PART_FILTERING, (int)af) >= 0) {
+                entry.part[PLAYER_PART_FILTERING] = (int)af;
+            }
+            if (nk_json_get_bool(nk_json_obj_get(obj, "text"), &b)) entry.part[PLAYER_PART_TEXT] = b;
+            if (nk_json_get_bool(nk_json_obj_get(obj, "readout"), &b)) entry.part[PLAYER_PART_READOUT] = b;
+            if (nk_json_get_bool(nk_json_obj_get(obj, "notice"), &b)) entry.part[PLAYER_PART_NOTICE] = b;
+            entry.part[PLAYER_PART_SMOOTH] = enhanced_part_value_from_word(
+                PLAYER_PART_SMOOTH, nk_json_get_string(nk_json_obj_get(obj, "smooth")));
+            title_play_store(settings, &entry);
+        }
+    }
+    const NkJsonNode *discs = nk_json_obj_get(root, "enhancement_60hz_discs");
+    size_t count = discs && nk_json_is_array(discs) ? nk_json_array_count(discs) : 0;
+    for (size_t i = 0; i < count; i++) {
+        const char *disc = nk_json_get_string(nk_json_array_get(discs, i));
+        char key[PLAYER_DISC_ID_KEY_LEN];
+        PlayerTitlePlay entry;
+        if (!disc || !player_disc_id_key(disc, key)) continue;
+        const PlayerTitlePlay *saved = player_settings_title_play(settings, key);
+        if (saved) {
+            entry = *saved;
+        } else {
+            title_play_blank(&entry);
+            memcpy(entry.key, key, sizeof(entry.key));
+        }
+        if (entry.mode == PLAYER_PLAY_AUTHENTIC) continue;
+        entry.mode = PLAYER_PLAY_ACE;
+        entry.logic_60 = -1;
+        title_play_store(settings, &entry);
+    }
+}
+
+static void play_settings_write(FILE *f, const PlayerSettings *settings) {
+    fprintf(f, "  \"enhanced\": {\"default\": \"%s\"",
+            settings->enhanced.library == PLAYER_PLAY_ENHANCED ? "enhanced" : "authentic");
+    for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+        fprintf(f, ", \"%s\": \"%s\"", k_enhanced_parts[p].key,
+                enhanced_part_word(p, settings->enhanced.part[p]));
+    }
+    fprintf(f, "},\n");
+    fprintf(f, "  \"title_play\": {");
+    for (int i = 0; i < settings->title_play_count; i++) {
+        const PlayerTitlePlay *t = &settings->title_play[i];
+        fprintf(f, "%s\"%s\": {\"mode\": \"%s\"", i ? ", " : "", t->key, play_mode_word(t->mode));
+        for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+            if (t->part[p] >= 0) {
+                fprintf(f, ", \"%s\": \"%s\"", k_enhanced_parts[p].key,
+                        enhanced_part_word(p, t->part[p]));
+            }
+        }
+        if (t->logic_60 >= 0) fprintf(f, ", \"logic_60\": \"off\"");
+        fprintf(f, "}");
+    }
+    fprintf(f, "},\n");
 }
 
 static const char *player_system_choice_key(PlayerSystemChoice choice) {
@@ -1805,48 +2034,16 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         }
     }
 
-    /* The 60 FPS enhancement is on only for the disc IDs this list names. An
-       entry that is not a PSP disc ID is dropped, and nothing else turns it on:
-       the global "experimental_60hz" switch of earlier builds is not read. */
+    /* The play modes (#2055): "enhanced" and "title_play", else the development builds'
+       "ace", "ace_titles" and "enhancement_60hz_discs". Nothing but a title's Ace turns
+       its 60 FPS game logic on: the global "experimental_60hz" switch of earlier builds is
+       not read. */
     {
-        NkJsonNode *discs = nk_json_obj_get(root, "enhancement_60hz_discs");
-        size_t count = discs && nk_json_is_array(discs) ? nk_json_array_count(discs) : 0;
-        for (size_t i = 0; i < count; i++) {
-            const char *disc = nk_json_get_string(nk_json_array_get(discs, i));
-            char key[PLAYER_DISC_ID_KEY_LEN];
-            if (!disc || !player_disc_id_key(disc, key)) continue;
-            player_settings_set_title_60hz(&app->settings, key, true);
-        }
-    }
-
-    /* Ace Mode. A value this build does not know keeps the default, and an "ace_titles"
-       entry that is not a PSP disc ID, or that differs from the library nowhere, is dropped. */
-    {
-        NkJsonNode *ace = nk_json_obj_get(root, "ace");
-        if (ace && nk_json_is_object(ace)) {
-            bool b = false;
-            int64_t af = 0;
-            if (nk_json_get_bool(nk_json_obj_get(ace, "enabled"), &b)) app->settings.ace.enabled = b;
-            if (nk_json_get_int64(nk_json_obj_get(ace, "af"), &af) && ace_af_valid(af))
-                app->settings.ace.af = (int)af;
-            if (nk_json_get_bool(nk_json_obj_get(ace, "text"), &b)) app->settings.ace.text = b;
-            if (nk_json_get_bool(nk_json_obj_get(ace, "readout"), &b)) app->settings.ace.readout = b;
-            if (nk_json_get_bool(nk_json_obj_get(ace, "notice"), &b)) app->settings.ace.notice = b;
-            int smooth = ace_smooth_parse(nk_json_get_string(nk_json_obj_get(ace, "smooth")));
-            if (smooth >= 0) app->settings.ace.smooth = smooth;
-        }
-        NkJsonNode *titles = nk_json_obj_get(root, "ace_titles");
-        if (titles && nk_json_is_object(titles)) {
-            for (size_t i = 0; i < titles->u.obj.count; i++) {
-                const NkJsonMember *member = &titles->u.obj.members[i];
-                PlayerAceTitle entry;
-                if (!member->key || !nk_json_is_object(member->val) ||
-                    !player_disc_id_key(member->key, entry.key)) {
-                    continue;
-                }
-                ace_title_read(member->val, &entry);
-                ace_title_store(&app->settings, &entry);
-            }
+        NkJsonNode *enhanced = nk_json_obj_get(root, "enhanced");
+        if (enhanced && nk_json_is_object(enhanced)) {
+            play_settings_read(&app->settings, enhanced, nk_json_obj_get(root, "title_play"));
+        } else {
+            play_settings_read_legacy(&app->settings, root);
         }
     }
 
@@ -2106,37 +2303,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"online_news\": %s,\n", app->settings.online_news ? "true" : "false");
     fprintf(f, "  \"online_reports\": %s,\n", app->settings.online_reports ? "true" : "false");
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
-    fprintf(f, "  \"enhancement_60hz_discs\": [");
-    for (int i = 0; i < app->settings.enhancement_60hz_disc_count; i++) {
-        fprintf(f, "%s\"%s\"", i ? ", " : "", app->settings.enhancement_60hz_discs[i]);
-    }
-    fprintf(f, "],\n");
-    /* A key for an Ace feature this build does not carry (wide) is not written. */
-    fprintf(f, "  \"ace\": {\"enabled\": %s, \"af\": %d, \"text\": %s, \"readout\": %s, "
-               "\"notice\": %s, \"smooth\": \"%s\"},\n",
-            app->settings.ace.enabled ? "true" : "false",
-            ace_af_valid(app->settings.ace.af) ? app->settings.ace.af : 16,
-            app->settings.ace.text ? "true" : "false",
-            app->settings.ace.readout ? "true" : "false",
-            app->settings.ace.notice ? "true" : "false",
-            ace_smooth_name(app->settings.ace.smooth));
-    fprintf(f, "  \"ace_titles\": {");
-    for (int i = 0; i < app->settings.ace_title_count; i++) {
-        const PlayerAceTitle *t = &app->settings.ace_titles[i];
-        fprintf(f, "%s\"%s\": {", i ? ", " : "", t->key);
-        bool first = true;
-        if (t->mode != PLAYER_ACE_TITLE_LIBRARY) {
-            fprintf(f, "\"mode\": \"%s\"", t->mode == PLAYER_ACE_TITLE_ON ? "ace" : "authentic");
-            first = false;
-        }
-        if (t->af >= 0) { fprintf(f, "%s\"af\": %d", first ? "" : ", ", t->af); first = false; }
-        if (t->text >= 0) { fprintf(f, "%s\"text\": %s", first ? "" : ", ", t->text ? "true" : "false"); first = false; }
-        if (t->readout >= 0) { fprintf(f, "%s\"readout\": %s", first ? "" : ", ", t->readout ? "true" : "false"); first = false; }
-        if (t->notice >= 0) { fprintf(f, "%s\"notice\": %s", first ? "" : ", ", t->notice ? "true" : "false"); first = false; }
-        if (t->smooth >= 0) { fprintf(f, "%s\"smooth\": \"%s\"", first ? "" : ", ", ace_smooth_name(t->smooth)); }
-        fprintf(f, "}");
-    }
-    fprintf(f, "},\n");
+    play_settings_write(f, &app->settings);
     fprintf(f, "  \"reduce_motion\": %s,\n",
             app->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_ON ? "true" : "false");
     fprintf(f, "  \"reduce_motion_choice\": \"%s\",\n",
@@ -2753,42 +2920,22 @@ bool player_read_title_enhancement(const char *user_root, const GameRecord *game
     return out->available;
 }
 
-/* The settings list's index of a disc, or -1. */
-static int player_settings_title_60hz_index(const PlayerSettings *settings,
-                                            const char *key) {
-    for (int i = 0; settings && key && i < settings->enhancement_60hz_disc_count; i++) {
-        if (strcmp(settings->enhancement_60hz_discs[i], key) == 0) return i;
-    }
-    return -1;
-}
-
-static void player_settings_set_title_60hz(PlayerSettings *settings, const char *key,
-                                           bool on) {
-    int index = player_settings_title_60hz_index(settings, key);
-    if (on && index < 0 && settings->enhancement_60hz_disc_count < MAX_LIBRARY_GAMES) {
-        snprintf(settings->enhancement_60hz_discs[settings->enhancement_60hz_disc_count++],
-                 PLAYER_DISC_ID_KEY_LEN, "%s", key);
-    } else if (!on && index >= 0) {
-        int last = --settings->enhancement_60hz_disc_count;
-        if (index != last) {
-            memcpy(settings->enhancement_60hz_discs[index],
-                   settings->enhancement_60hz_discs[last], PLAYER_DISC_ID_KEY_LEN);
-        }
-        memset(settings->enhancement_60hz_discs[last], 0, PLAYER_DISC_ID_KEY_LEN);
-    }
-}
-
+/* Section 11.2 item 5 of docs/ENHANCEMENT_CONTRACT.md, a per-title off switch carried in a
+   game's package, is not read here: the player reads only a package's id and target title
+   (player_read_title_enhancement), and no section 11 item is admitted yet. The first section
+   11.3 item lands that switch with it. */
 bool player_app_title_60hz_saved(const PlayerApp *app, const char *disc_id) {
-    char key[PLAYER_DISC_ID_KEY_LEN];
-    return app && disc_id && player_disc_id_key(disc_id, key) &&
-           player_settings_title_60hz_index(&app->settings, key) >= 0;
+    const PlayerTitlePlay *title = app ? player_settings_title_play(&app->settings, disc_id) : NULL;
+    return title && title->mode == PLAYER_PLAY_ACE && title->logic_60 != 0;
 }
 
 bool player_app_title_60hz_on(const PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
-    /* Authentic (Ace Mode's per-title choice) is the game as released: no 60 FPS game
-       logic while it is chosen. The saved switch is kept for when it is not. */
-    if (player_app_title_ace_mode(app, game_index) == PLAYER_ACE_TITLE_AUTHENTIC) return false;
+    /* Authentic is the game as released: no 60 FPS game logic while the title resolves to it,
+       by its own choice or the library's, not even from the session flag. */
+    PlayerPlayResolved play;
+    player_play_resolve(&app->settings, app->games[game_index].disc_id, &play);
+    if (play.mode == PLAYER_PLAY_AUTHENTIC) return false;
     return player_app_title_60hz_saved(app, app->games[game_index].disc_id) ||
            (app->experimental_60hz_session &&
             app->title_enhancements[game_index].available);
@@ -2800,8 +2947,8 @@ bool player_app_title_60hz_blocked(const PlayerApp *app, int game_index) {
            !app->title_enhancements[game_index].available;
 }
 
-/* The variant the title launches: its enhanced build when the enhancement is on
-   and its package is usable, else the authentic package. */
+/* The variant the title launches: its enhanced build when its 60 FPS game logic is on and its
+   package is usable, else the authentic package. */
 static void player_app_select_package_variant(PlayerApp *app, int game_index) {
     GameRecord *game = &app->games[game_index];
     const PlayerTitleEnhancement *enhancement = &app->title_enhancements[game_index];
@@ -2824,25 +2971,32 @@ void player_app_refresh_title_enhancements(PlayerApp *app) {
     }
 }
 
-void player_app_set_title_60hz(PlayerApp *app, int game_index, bool on) {
-    if (!app || game_index < 0 || game_index >= app->game_count) return;
-    char key[PLAYER_DISC_ID_KEY_LEN];
-    if (!player_disc_id_key(app->games[game_index].disc_id, key)) return;
-    player_settings_set_title_60hz(&app->settings, key, on);
-    player_dev_log_add(app, "settings",
-                       "60 FPS game logic for %s %s (the original game when off)", key,
-                       on ? "on" : "off");
-    maybe_persist_settings(app);
-    /* Read the package again: the toggle is where a user who just added or
-       fixed it looks. */
+/* After a change to what a title plays: read its package again (the title page is where a
+   user who just added or fixed it looks), re-select its variant, and have the other variant's
+   package checked. */
+static void player_app_title_play_changed(PlayerApp *app, int game_index) {
     char user_root[NK_MAX_PATH];
     bool have_root = player_app_data_root(app, user_root, sizeof(user_root));
     (void)player_read_title_enhancement(have_root ? user_root : NULL,
                                         &app->games[game_index],
                                         &app->title_enhancements[game_index]);
     player_app_select_package_variant(app, game_index);
-    /* The other variant has its own package and its own status. */
     if (game_index == app->selected_game_index) app->request_package_status_retry = true;
+}
+
+void player_app_set_title_60hz(PlayerApp *app, int game_index, bool on) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return;
+    PlayerTitlePlay entry;
+    if (!title_play_entry(app, game_index, &entry)) return;
+    /* On is Ace with its 60 FPS game logic; off keeps Ace and turns that part off. */
+    if (on) entry.mode = PLAYER_PLAY_ACE;
+    entry.logic_60 = on ? -1 : 0;
+    title_play_store(&app->settings, &entry);
+    player_dev_log_add(app, "settings",
+                       "60 FPS game logic for %s %s (the original game when off)", entry.key,
+                       on ? "on" : "off");
+    maybe_persist_settings(app);
+    player_app_title_play_changed(app, game_index);
 }
 
 void player_app_set_experimental_60hz_session(PlayerApp *app, bool on) {
@@ -2856,50 +3010,74 @@ void player_app_set_experimental_60hz_session(PlayerApp *app, bool on) {
     }
 }
 
-/* ---- Ace Mode (src/rt/ace.h) ---- */
+/* ---- The play modes (#2055; src/rt/ace.h) ---- */
 
-const PlayerAceTitle *player_settings_ace_title(const PlayerSettings *settings,
-                                                const char *disc_id) {
+const PlayerTitlePlay *player_settings_title_play(const PlayerSettings *settings,
+                                                 const char *disc_id) {
     char key[PLAYER_DISC_ID_KEY_LEN];
     if (!settings || !disc_id || !player_disc_id_key(disc_id, key)) return NULL;
-    int index = ace_title_index(settings, key);
-    return index >= 0 ? &settings->ace_titles[index] : NULL;
+    int index = title_play_index(settings, key);
+    return index >= 0 ? &settings->title_play[index] : NULL;
 }
 
-void player_ace_resolve(const PlayerSettings *settings, const char *disc_id,
-                        PlayerAceResolved *out) {
+void player_play_resolve(const PlayerSettings *settings, const char *disc_id,
+                         PlayerPlayResolved *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
+    out->mode = PLAYER_PLAY_AUTHENTIC;
     if (!settings) return;
-    const PlayerAceTitle *title = player_settings_ace_title(settings, disc_id);
-    out->mode = title ? title->mode : PLAYER_ACE_TITLE_LIBRARY;
-    if (out->mode == PLAYER_ACE_TITLE_AUTHENTIC) return;
-    out->on = out->mode == PLAYER_ACE_TITLE_ON || settings->ace.enabled;
-    if (!out->on) return;
-    out->af = title && title->af >= 0 ? title->af
-            : ace_af_valid(settings->ace.af) ? settings->ace.af : 16;
-    out->text = title && title->text >= 0 ? title->text == 1 : settings->ace.text;
-    out->readout = title && title->readout >= 0 ? title->readout == 1 : settings->ace.readout;
-    out->notice = title && title->notice >= 0 ? title->notice == 1 : settings->ace.notice;
-    out->smooth = title && title->smooth >= 0 ? title->smooth : settings->ace.smooth == 1;
-}
-
-void player_ace_apply_logic_60(PlayerAceResolved *ace, bool logic_60) {
-    if (ace && logic_60) ace->smooth = 0;
-}
-
-bool player_ace_launch_line(const PlayerAceResolved *ace, char *out, size_t cap) {
-    int n;
-    if (!out || cap == 0) return false;
-    if (!ace || !ace->on) {
-        n = snprintf(out, cap, "off");
-    } else {
-        n = snprintf(out, cap, "v1;af=%d;text=%s;readout=%s;notice=%s;wide=off;smooth=%s;sas=off",
-                     ace_af_valid(ace->af) ? ace->af : 0, ace->text ? "on" : "off",
-                     ace->readout ? "on" : "off", ace->notice ? "on" : "off",
-                     ace->smooth == 1 ? "x2" : "off");
+    const PlayerTitlePlay *title = player_settings_title_play(settings, disc_id);
+    out->chosen = title ? title->mode : PLAYER_PLAY_LIBRARY;
+    out->mode = out->chosen != PLAYER_PLAY_LIBRARY ? out->chosen
+              : settings->enhanced.library == PLAYER_PLAY_ENHANCED ? PLAYER_PLAY_ENHANCED
+              : PLAYER_PLAY_AUTHENTIC;
+    if (out->mode != PLAYER_PLAY_ENHANCED && out->mode != PLAYER_PLAY_ACE) {
+        out->mode = PLAYER_PLAY_AUTHENTIC;
+        return;
     }
+    out->on = true;
+    for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+        int value = title && title->part[p] >= 0 ? title->part[p] : settings->enhanced.part[p];
+        out->part[p] = enhanced_part_value_index(p, value) >= 0 ? value : 0;
+    }
+    out->logic_60 = out->mode == PLAYER_PLAY_ACE && (!title || title->logic_60 != 0);
+}
+
+void player_play_apply_logic_60(PlayerPlayResolved *play, bool logic_60) {
+    if (!play || !logic_60 || !play->on) return;
+    /* A run with its 60 FPS game logic is Ace, also when the session flag turned it on for a
+       title on Enhanced. Smooth motion is off for it: the two may be stacked by contract
+       (docs/ENHANCEMENT_CONTRACT.md 10.5), but this build interpolates only a 30 Hz source. */
+    play->mode = PLAYER_PLAY_ACE;
+    play->logic_60 = true;
+    play->part[PLAYER_PART_SMOOTH] = 0;
+}
+
+bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t cap) {
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    int n;
+    size_t used = 0;
+    if (!play || !play->on) {
+        n = snprintf(out, cap, "off");
+        return n > 0 && (size_t)n < cap;
+    }
+    n = snprintf(out, cap, "v1;tier=%s", play->mode == PLAYER_PLAY_ACE ? "ace" : "enhanced");
     if (n <= 0 || (size_t)n >= cap) { out[0] = '\0'; return false; }
+    used = (size_t)n;
+    for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+        /* Ultrawide is not part of this build: the runtime refuses any value but off, and
+           the key sits where the runtime's own format puts it. */
+        if (p == PLAYER_PART_SMOOTH) {
+            n = snprintf(out + used, cap - used, ";wide=off");
+            if (n <= 0 || (size_t)n >= cap - used) { out[0] = '\0'; return false; }
+            used += (size_t)n;
+        }
+        n = snprintf(out + used, cap - used, ";%s=%s", k_enhanced_parts[p].key,
+                     enhanced_part_word(p, play->part[p]));
+        if (n <= 0 || (size_t)n >= cap - used) { out[0] = '\0'; return false; }
+        used += (size_t)n;
+    }
     return true;
 }
 
@@ -2958,58 +3136,23 @@ bool player_ace_last_session_line(const char *user_root, const char *disc_id, ch
     return out[0] != '\0';
 }
 
-const char *player_ace_filtering_label(int af) {
-    switch (af) {
-        case 16: return "16x";
-        case 8: return "8x";
-        case 4: return "4x";
-        case 2: return "2x";
-        default: return "Off";
-    }
-}
-
-void player_app_toggle_ace(PlayerApp *app) {
+void player_app_toggle_library_play_mode(PlayerApp *app) {
     if (!app) return;
-    app->settings.ace.enabled = !app->settings.ace.enabled;
-    player_dev_log_add(app, "settings", "Ace Mode %s for the library",
-                       app->settings.ace.enabled ? "on" : "off");
+    app->settings.enhanced.library = app->settings.enhanced.library == PLAYER_PLAY_ENHANCED
+        ? PLAYER_PLAY_AUTHENTIC : PLAYER_PLAY_ENHANCED;
+    player_dev_log_add(app, "settings", "library default: %s",
+                       player_play_mode_name(app->settings.enhanced.library));
     maybe_persist_settings(app);
 }
 
-void player_app_cycle_ace_filtering(PlayerApp *app) {
-    static const int levels[] = {16, 8, 4, 2, 0};
-    if (!app) return;
-    size_t next = 0;
-    for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
-        if (levels[i] == app->settings.ace.af) next = (i + 1u) % (sizeof(levels) / sizeof(levels[0]));
-    }
-    app->settings.ace.af = levels[next];
-    maybe_persist_settings(app);
-}
-
-void player_app_toggle_ace_text(PlayerApp *app) {
-    if (!app) return;
-    app->settings.ace.text = !app->settings.ace.text;
-    maybe_persist_settings(app);
-}
-
-void player_app_toggle_ace_readout(PlayerApp *app) {
-    if (!app) return;
-    app->settings.ace.readout = !app->settings.ace.readout;
-    maybe_persist_settings(app);
-}
-
-void player_app_toggle_ace_notice(PlayerApp *app) {
-    if (!app) return;
-    app->settings.ace.notice = !app->settings.ace.notice;
-    maybe_persist_settings(app);
-}
-
-void player_app_toggle_ace_smooth(PlayerApp *app) {
-    if (!app) return;
-    app->settings.ace.smooth = app->settings.ace.smooth == 1 ? 0 : 1;
-    player_dev_log_add(app, "settings", "Ace Mode smooth motion %s",
-                       app->settings.ace.smooth == 1 ? "x2" : "off");
+void player_app_cycle_enhanced_part(PlayerApp *app, int part) {
+    const PlayerEnhancedPartInfo *info = player_enhanced_part(part);
+    if (!app || !info) return;
+    int index = enhanced_part_value_index(part, app->settings.enhanced.part[part]);
+    int next = index < 0 ? 0 : (index + 1) % info->value_count;
+    app->settings.enhanced.part[part] = info->values[next];
+    player_dev_log_add(app, "settings", "Enhanced %s for the library: %s", info->key,
+                       info->words[next]);
     maybe_persist_settings(app);
 }
 
@@ -3023,64 +3166,111 @@ bool player_app_ace_last_session(const PlayerApp *app, int game_index, char *out
     return player_ace_last_session_line(user_root, app->games[game_index].disc_id, out, cap);
 }
 
-PlayerAceTitleMode player_app_title_ace_mode(const PlayerApp *app, int game_index) {
-    if (!app || game_index < 0 || game_index >= app->game_count) return PLAYER_ACE_TITLE_LIBRARY;
-    const PlayerAceTitle *title =
-        player_settings_ace_title(&app->settings, app->games[game_index].disc_id);
-    return title ? title->mode : PLAYER_ACE_TITLE_LIBRARY;
+PlayerPlayMode player_app_title_play_mode(const PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return PLAYER_PLAY_LIBRARY;
+    const PlayerTitlePlay *title =
+        player_settings_title_play(&app->settings, app->games[game_index].disc_id);
+    return title ? title->mode : PLAYER_PLAY_LIBRARY;
 }
 
-void player_app_cycle_title_ace_mode(PlayerApp *app, int game_index) {
+void player_app_cycle_title_play_mode(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return;
-    PlayerAceTitle entry;
-    const PlayerAceTitle *saved =
-        player_settings_ace_title(&app->settings, app->games[game_index].disc_id);
-    if (saved) {
-        entry = *saved;
-    } else {
-        memset(&entry, 0, sizeof(entry));
-        if (!player_disc_id_key(app->games[game_index].disc_id, entry.key)) return;
-        entry.af = entry.text = entry.readout = entry.notice = entry.smooth = -1;
-    }
-    entry.mode = entry.mode == PLAYER_ACE_TITLE_LIBRARY ? PLAYER_ACE_TITLE_ON
-               : entry.mode == PLAYER_ACE_TITLE_ON ? PLAYER_ACE_TITLE_AUTHENTIC
-               : PLAYER_ACE_TITLE_LIBRARY;
-    ace_title_store(&app->settings, &entry);
-    player_dev_log_add(app, "settings", "Ace Mode for %s: %s", entry.key,
-                       entry.mode == PLAYER_ACE_TITLE_ON ? "on"
-                       : entry.mode == PLAYER_ACE_TITLE_AUTHENTIC ? "authentic"
-                       : "library default");
+    PlayerTitlePlay entry;
+    if (!title_play_entry(app, game_index, &entry)) return;
+    /* Ace is offered only for a title with a usable package; a saved Ace whose package has
+       gone is stepped past like the others. */
+    bool ace = app->title_enhancements[game_index].available;
+    entry.mode = entry.mode == PLAYER_PLAY_LIBRARY ? PLAYER_PLAY_AUTHENTIC
+               : entry.mode == PLAYER_PLAY_AUTHENTIC ? PLAYER_PLAY_ENHANCED
+               : entry.mode == PLAYER_PLAY_ENHANCED && ace ? PLAYER_PLAY_ACE
+               : PLAYER_PLAY_LIBRARY;
+    title_play_store(&app->settings, &entry);
+    player_dev_log_add(app, "settings", "play mode for %s: %s", entry.key,
+                       player_play_mode_name(entry.mode));
     maybe_persist_settings(app);
-    /* Authentic turns 60 FPS game logic off, which selects the other package variant. */
-    player_app_select_package_variant(app, game_index);
-    if (game_index == app->selected_game_index) app->request_package_status_retry = true;
+    /* Ace and Authentic turn 60 FPS game logic on and off, which selects the other variant. */
+    player_app_title_play_changed(app, game_index);
 }
 
-int player_app_title_ace_smooth(const PlayerApp *app, int game_index) {
-    if (!app || game_index < 0 || game_index >= app->game_count) return -1;
-    const PlayerAceTitle *title =
-        player_settings_ace_title(&app->settings, app->games[game_index].disc_id);
-    return title ? title->smooth : -1;
+int player_app_title_part(const PlayerApp *app, int game_index, int part) {
+    if (!app || game_index < 0 || game_index >= app->game_count ||
+        part < 0 || part >= PLAYER_PART_COUNT) {
+        return -1;
+    }
+    const PlayerTitlePlay *title =
+        player_settings_title_play(&app->settings, app->games[game_index].disc_id);
+    return title ? title->part[part] : -1;
 }
 
-void player_app_cycle_title_ace_smooth(PlayerApp *app, int game_index) {
+void player_app_cycle_title_part(PlayerApp *app, int game_index, int part) {
+    const PlayerEnhancedPartInfo *info = player_enhanced_part(part);
+    if (!app || !info || game_index < 0 || game_index >= app->game_count) return;
+    PlayerTitlePlay entry;
+    if (!title_play_entry(app, game_index, &entry)) return;
+    /* Library default, then each of the part's values in order, then the library's again. */
+    int index = entry.part[part] < 0 ? -1 : enhanced_part_value_index(part, entry.part[part]);
+    entry.part[part] = index + 1 < info->value_count ? info->values[index + 1] : -1;
+    title_play_store(&app->settings, &entry);
+    player_dev_log_add(app, "settings", "Enhanced %s for %s: %s", info->key, entry.key,
+                       entry.part[part] < 0 ? "library default"
+                                            : enhanced_part_word(part, entry.part[part]));
+    maybe_persist_settings(app);
+}
+
+void player_app_open_title_enhanced(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return;
-    PlayerAceTitle entry;
-    const PlayerAceTitle *saved =
-        player_settings_ace_title(&app->settings, app->games[game_index].disc_id);
-    if (saved) {
-        entry = *saved;
-    } else {
-        memset(&entry, 0, sizeof(entry));
-        if (!player_disc_id_key(app->games[game_index].disc_id, entry.key)) return;
-        entry.af = entry.text = entry.readout = entry.notice = entry.smooth = -1;
+    /* The page holds the game by its disc, not by its place in the list. */
+    char key[PLAYER_DISC_ID_KEY_LEN];
+    if (!player_disc_id_key(app->games[game_index].disc_id, key)) return;
+    player_app_set_view(app, VIEW_ACE_SETTINGS);
+    memcpy(app->enhanced_page_disc, key, sizeof(key));
+}
+
+/* The page is a title's (whether or not its game is still listed). */
+static bool player_app_enhanced_page_is_title(const PlayerApp *app) {
+    return app && app->active_view == VIEW_ACE_SETTINGS && app->enhanced_page_disc[0] != '\0';
+}
+
+int player_app_enhanced_page_title(const PlayerApp *app) {
+    if (!player_app_enhanced_page_is_title(app)) return -1;
+    for (int i = 0; i < app->game_count; i++) {
+        char key[PLAYER_DISC_ID_KEY_LEN];
+        if (player_disc_id_key(app->games[i].disc_id, key) &&
+            strcmp(key, app->enhanced_page_disc) == 0) {
+            return i;
+        }
     }
-    /* Library default, then On (x2), then Off, then back to the library's. */
-    entry.smooth = entry.smooth < 0 ? 1 : entry.smooth == 1 ? 0 : -1;
-    ace_title_store(&app->settings, &entry);
-    player_dev_log_add(app, "settings", "Ace Mode smooth motion for %s: %s", entry.key,
-                       entry.smooth < 0 ? "library default" : ace_smooth_name(entry.smooth));
-    maybe_persist_settings(app);
+    return -1;
+}
+
+void player_app_close_enhanced_page(PlayerApp *app) {
+    if (!app) return;
+    /* The title page is still the library's screen under Settings: the library view shows it
+       again, with the Enhanced options button focused. */
+    player_app_set_view(app, player_app_enhanced_page_is_title(app) ? VIEW_LIBRARY
+                                                                    : VIEW_SETTINGS);
+}
+
+void player_app_close_enhanced_page_if_title_gone(PlayerApp *app) {
+    if (player_app_enhanced_page_is_title(app) && player_app_enhanced_page_title(app) < 0) {
+        player_app_close_enhanced_page(app);
+    }
+}
+
+/* A title's page whose game is gone changes nothing: it closes, back to the library, and the
+   press reaches neither another game nor the library's defaults. */
+void player_app_enhanced_page_cycle_mode(PlayerApp *app) {
+    int title = player_app_enhanced_page_title(app);
+    if (title >= 0) player_app_cycle_title_play_mode(app, title);
+    else if (player_app_enhanced_page_is_title(app)) player_app_close_enhanced_page(app);
+    else player_app_toggle_library_play_mode(app);
+}
+
+void player_app_enhanced_page_cycle_part(PlayerApp *app, int part) {
+    int title = player_app_enhanced_page_title(app);
+    if (title >= 0) player_app_cycle_title_part(app, title, part);
+    else if (player_app_enhanced_page_is_title(app)) player_app_close_enhanced_page(app);
+    else player_app_cycle_enhanced_part(app, part);
 }
 
 void player_app_toggle_update_check_at_start(PlayerApp *app) {
@@ -3675,6 +3865,7 @@ void player_app_set_view(PlayerApp *app, PlayerView view) {
     if (view == VIEW_LIBRARY && app->drop_notice[0] && app->drop_next >= app->drop_count) {
         app->drop_notice_visible = true;
     }
+    if (view != VIEW_ACE_SETTINGS) app->enhanced_page_disc[0] = '\0';
     app->active_view = view;
     app->focus_index = 0;
 }
@@ -4832,7 +5023,7 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
         /* 60 FPS game logic is on and its package is gone: the original game
            is not started in its place. */
         player_app_set_error(
-            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS Enhancement Unavailable",
+            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS enhancement unavailable",
             "60 FPS game logic is on for this game, but its enhancement package is missing "
             "or not valid. Turn the enhancement off on the game's page to play the original "
             "game, or put the package back.",
@@ -4942,17 +5133,18 @@ void player_launch_work_run(PlayerLaunchWork *work) {
     }
     session->config.headless_accept_presented_frames =
         work->headless_accept_presented_frames;
-    /* Ace Mode (src/rt/ace.h): this title's SR_ACE line, and with Ace on the folder of the
-       runtime's per-run report. The acceptance checkpoint is evidence, so it runs authentic. */
+    /* The play mode (#2055, src/rt/ace.h): this title's SR_ACE line, and in Enhanced or Ace the
+       folder of the runtime's per-run report. The acceptance checkpoint is evidence, so it runs
+       authentic. */
     {
-        PlayerAceResolved ace;
-        player_ace_resolve(&work->settings, game->disc_id, &ace);
+        PlayerPlayResolved ace;
+        player_play_resolve(&work->settings, game->disc_id, &ace);
         /* This build interpolates only a 30 Hz source, so the enhanced 60 FPS build runs
            without smooth motion (contract section 10.5). */
-        player_ace_apply_logic_60(&ace, game->enhancement_package_id[0] != '\0');
+        player_play_apply_logic_60(&ace, game->enhancement_package_id[0] != '\0');
         if (work->headless_accept_presented_frames > 0u) ace.on = false;
-        if (!player_ace_launch_line(&ace, session->config.ace_spec,
-                                    sizeof(session->config.ace_spec))) {
+        if (!player_play_launch_line(&ace, session->config.ace_spec,
+                                     sizeof(session->config.ace_spec))) {
             snprintf(session->config.ace_spec, sizeof(session->config.ace_spec), "off");
             ace.on = false;
         }
@@ -5636,7 +5828,7 @@ static bool player_app_start_package_build_view(PlayerApp *app, int game_index,
     if (game_index < 0 || game_index >= app->game_count) return false;
     if (player_app_title_60hz_blocked(app, game_index)) {
         player_app_set_error(
-            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS Enhancement Unavailable",
+            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS enhancement unavailable",
             "60 FPS game logic is on for this game, but its enhancement package is missing "
             "or not valid. Turn the enhancement off on the game's page to build the "
             "original game, or put the package back.",
@@ -5680,7 +5872,7 @@ static bool player_app_start_package_build_view(PlayerApp *app, int game_index,
         snprintf(unavailable, sizeof(unavailable),
                  "%s before building the package or installing tools.",
                  player_data_dir_unavailable_text(nk_platform_host_kind()));
-        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Data folder not found",
                              unavailable, "Back to library", VIEW_LIBRARY);
         return false;
     }
@@ -5976,7 +6168,7 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
         char unavailable[256];
         snprintf(unavailable, sizeof(unavailable), "%s before inspecting installed tools.",
                  player_data_dir_unavailable_text(nk_platform_host_kind()));
-        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Data folder not found",
                              unavailable, "Back to settings", VIEW_SETTINGS);
         return false;
     }
@@ -6056,7 +6248,7 @@ bool player_app_request_user_folder(PlayerApp *app, NkPathType kind) {
         char unavailable[256];
         (void)snprintf(unavailable, sizeof(unavailable), "%s before showing this folder.",
                        player_data_dir_unavailable_text(nk_platform_host_kind()));
-        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Data folder not found",
                              unavailable, "Back to settings", VIEW_SETTINGS);
         return false;
     }

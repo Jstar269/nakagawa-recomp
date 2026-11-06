@@ -763,9 +763,10 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
                        app->active_view == VIEW_ONLINE_SETTINGS ||
                        app->active_view == VIEW_ACCESSIBILITY_SETTINGS ||
-                       app->active_view == VIEW_PROBLEM_REPORT ||
-                       app->active_view == VIEW_ACE_SETTINGS) {
+                       app->active_view == VIEW_PROBLEM_REPORT) {
                 player_app_set_view(app, VIEW_SETTINGS);
+            } else if (app->active_view == VIEW_ACE_SETTINGS) {
+                player_app_close_enhanced_page(app);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
                 player_app_close_developer_log(app);
             } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
@@ -934,9 +935,10 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
                        app->active_view == VIEW_ONLINE_SETTINGS ||
                        app->active_view == VIEW_ACCESSIBILITY_SETTINGS ||
-                       app->active_view == VIEW_PROBLEM_REPORT ||
-                       app->active_view == VIEW_ACE_SETTINGS) {
+                       app->active_view == VIEW_PROBLEM_REPORT) {
                 player_app_set_view(app, VIEW_SETTINGS);
+            } else if (app->active_view == VIEW_ACE_SETTINGS) {
+                player_app_close_enhanced_page(app);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
                 player_app_close_developer_log(app);
             } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
@@ -1698,7 +1700,7 @@ static void player_report_shutdown(void) {
 
 /* The Settings controls: the same handlers the existing renderer's Settings
    buttons call. Each change is saved as it is made. */
-static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
+static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op, size_t arg) {
     switch (op) {
         case PLAYER_UI_SETTINGS_CHECK_UPDATES:
             player_app_set_view(app, VIEW_UPDATES);
@@ -1786,12 +1788,10 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
         case PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE: player_app_cycle_interface_size(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE: player_app_cycle_text_size(app); break;
         case PLAYER_UI_SETTINGS_OPEN_ACE: player_app_set_view(app, VIEW_ACE_SETTINGS); break;
-        case PLAYER_UI_SETTINGS_TOGGLE_ACE: player_app_toggle_ace(app); break;
-        case PLAYER_UI_SETTINGS_CYCLE_ACE_FILTERING: player_app_cycle_ace_filtering(app); break;
-        case PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT: player_app_toggle_ace_text(app); break;
-        case PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT: player_app_toggle_ace_readout(app); break;
-        case PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE: player_app_toggle_ace_notice(app); break;
-        case PLAYER_UI_SETTINGS_TOGGLE_ACE_SMOOTH: player_app_toggle_ace_smooth(app); break;
+        case PLAYER_UI_SETTINGS_CYCLE_PLAY_MODE: player_app_enhanced_page_cycle_mode(app); break;
+        case PLAYER_UI_SETTINGS_CYCLE_ENHANCED_PART:
+            if (arg < (size_t)PLAYER_PART_COUNT) player_app_enhanced_page_cycle_part(app, (int)arg);
+            break;
         case PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST: player_app_cycle_high_contrast_focus(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION: player_app_cycle_reduce_motion(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN:
@@ -1809,7 +1809,10 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             player_app_save_settings(app, NULL);
             player_app_set_view(app, VIEW_LIBRARY);
             break;
-        case PLAYER_UI_SETTINGS_BACK: player_app_set_view(app, VIEW_SETTINGS); break;
+        case PLAYER_UI_SETTINGS_BACK:
+            if (app->active_view == VIEW_ACE_SETTINGS) player_app_close_enhanced_page(app);
+            else player_app_set_view(app, VIEW_SETTINGS);
+            break;
         case PLAYER_UI_SETTINGS_TOGGLE_ONLINE:
             player_app_set_online_mode(app, !app->settings.online_mode);
             break;
@@ -1971,7 +1974,7 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_SETTINGS) {
-        player_ui_settings_apply(app, (PlayerUiSettingsOp)action->primary);
+        player_ui_settings_apply(app, (PlayerUiSettingsOp)action->primary, action->title_index);
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_CONTROLLER) {
@@ -4569,7 +4572,7 @@ static void player_apply_test_view(PlayerApp *app, const char *test_view) {
                      sizeof(app->wizard.extraction_current_file),
                      "xbdata/menu.xb");
             snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                     "Decoding the selected synthetic XB assets...");
+                     "Extracting game assets into local application data…");
         } else if (strcmp(test_view, "wizard4") == 0) {
             player_app_start_setup_wizard(app);
             app->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
@@ -4627,11 +4630,11 @@ static void player_apply_test_view(PlayerApp *app, const char *test_view) {
             app->build_session.current_stage = PACKAGE_BUILD_STAGE_COMPILE;
             snprintf(app->build_session.current_stage_name, sizeof(app->build_session.current_stage_name), "compile");
             snprintf(app->build_session.current_message, sizeof(app->build_session.current_message),
-                     "Compiling translated native host C sources into package binary...");
+                     "Compiling the translated code");
             app->build_session.elapsed_ms = 1420;
-            package_builder_add_output_line(&app->build_session, "[preflight] PASS: Disc preflight inspection succeeded.");
-            package_builder_add_output_line(&app->build_session, "[extract] PASS: Staged plaintext guest modules to cache.");
-            package_builder_add_output_line(&app->build_session, "[compile] RUNNING: Compiling translated native C sources...");
+            package_builder_add_output_line(&app->build_session, "[preflight] PASS: The game and its title file are in order");
+            package_builder_add_output_line(&app->build_session, "[extract] PASS: The game's program files are ready");
+            package_builder_add_output_line(&app->build_session, "[compile] START: Compiling the translated code");
             if (strcmp(test_view, "building-parts") == 0) {
                 /* The compile stage's part count, through the same parser and state
                    machine as a line nk_cli writes. */

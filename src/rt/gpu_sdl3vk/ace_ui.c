@@ -336,7 +336,8 @@ void ace_ui_layout(NkUi *ui, const AceUiFrame *f) {
                                                  faded(theme->paper, f->notice_alpha));
                 head.wrap = false;
                 words.wrap = false;
-                nk_ui_text(ui, ACE_UI_ID_NOTICE_HEAD, one_line(ui, "Ace Mode"), &head);
+                nk_ui_text(ui, ACE_UI_ID_NOTICE_HEAD,
+                           one_line(ui, f->notice_head ? f->notice_head : "Enhanced"), &head);
                 nk_ui_text(ui, ACE_UI_ID_NOTICE_TEXT,
                            one_line(ui, nk_ui_text_clamp(ui, f->notice, &words, room * 0.5f, 1)),
                            &words);

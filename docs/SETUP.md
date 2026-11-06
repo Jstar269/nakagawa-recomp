@@ -924,7 +924,7 @@ connections, listed below; any future online feature will be opt-in and added he
 A release folder that carries a verified `prereqs/` tree never makes the build-tool
 download ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
 
-Ace Mode (Settings > Ace Mode, in builds after v0.0.1) makes no network connection: its features run on this PC, and its per-game report
+Enhanced and Ace (Settings > Enhanced, in builds after v0.0.1) make no network connection: its features run on this PC, and its per-game report
 stays in the user data folder.
 
 Links the player shows, such as a release page, **Report this game**, **See existing reports** and a
