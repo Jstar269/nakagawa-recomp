@@ -657,8 +657,9 @@ Behavioral side effects, waits, wakeups, callbacks, outputs, and error values ar
 
 The source-owned PSP DMAC matrix also keeps the copy boundary explicit. Fully valid RAM/VRAM
 requests are copied at their requested size through 1 MiB; the measured `0xC000` prefix is an
-allocator-boundary observation, not an API-wide size cap. The runtime copies the measured
-one-byte arena-end prefix shape and keeps larger or wrapped overruns fail-closed. A guest thread
+allocator-boundary observation, not an API-wide size cap. A source or destination span that runs
+past the end of the guest arena, or wraps, is refused whole with nothing copied; that is a runtime
+safety boundary, since the PSP's answer past the end of RAM is unmeasured. A guest thread
 that starts a channel transfer stays blocked in the call for the transfer's measured duration
 (a timing table by size and by main-RAM/VRAM source and destination, with surcharges when source
 and destination differ modulo 16); meanwhile another thread's `sceDmacTryMemcpy` returns BUSY
@@ -835,6 +836,34 @@ cannot move guest time backward or jump it. In turbo mode (`SR_NOVBPACE=1`) time
 deterministically at scheduler boundaries and is never host-dependent. SDL monotonic time is used
 for pacing/profiling only; the one host wall-clock read is the RTC epoch init.
 
+**Deterministic clock** ([#2037](https://github.com/Jstar269/nakagawa-recomp/issues/2037)). Paced
+guest time includes whatever the host spent between two scheduler boundaries, so two identical
+scripted runs saw different guest times (one run's disc-index walk took 5.4 s, the other's 2.2 s,
+and the guest's first display flip landed on VBLANK 8 in one and 6 in the other) and, from there,
+different frames. Turbo is host-independent but charges a flat 10 ms per scheduler boundary, about
+a hundred times what the yield points just executed stand for, so a title that computes between
+VBLANKs is outrun by the display and never gets to present. Turbo also jumps the clock to the
+nearest sleeper's deadline at a running thread's yield, so a main thread that computes while the
+audio thread sleeps 23 ms is charged 23 ms for every slice it runs (Hot Shots Tennis never finished
+its start-up this way; explicit `SR_NOVBPACE=1` keeps that jump). The deterministic clock is the
+turbo virtual clock charged at the rate of the guest's work: a scheduler boundary adds
+`SR_DETERMINISTIC_SLICE_US` (default 100 µs, 1000 yield points at 10 million yield points per
+second; an estimate of about 33 cycles per yield point, not a measurement, and it decides guest
+results), a sleeper's deadline is reached by that work, an idle scheduler (no thread can run)
+advances one display period at a time as turbo's does, so it wakes a short sleeper up to 16.7 ms
+late but identically on every run, and no vblank watchdog reads the host clock. The
+RTC starts at 2012-01-01 00:00:00 UTC instead of the host's date, and the audio queue the guest
+paces against (`sceAudioOutput*Blocking`, `sceAudioGetChannelRestLength`, the PSMF player's audio
+lead) is a model that plays 44100 frames a second of guest time from the first push, not the host
+mixer's depth, which drains in host time and so would make the length of a blocking output depend
+on the host. It is on only when the caller sets `SR_DETERMINISTIC_CLOCK=1` (the picture gate
+does); a pad script or a frame-capture window alone keeps the clock a run always had, because
+recorded routes and the showcase smoke are qualified under paced timing. Guest time and the RTC
+are then a function of the guest's own work, so two runs with the same inputs give the same
+frames. Host inputs that remain: whether the host has an audio device, the Memory Stick volume's
+free space, a random console MAC and PSID on fresh user data, and the mixer's 262144-frame cap,
+which drops audio when a run is faster than real time.
+
 **Runtime host-thread audit.** Guest threads, HLE handlers, the window's event pump and the
 pause loop all run on the runtime thread. Work that runs elsewhere, and why a paused guest
 cannot observe it ([#1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159)):
@@ -866,12 +895,15 @@ the maintained references for exact behavior.
 | Variable | Values | Purpose |
 | --- | --- | --- |
 | `SR_NOVBPACE` | unset, empty, `0` / `1` | Vblank pacing mode: unset, empty, or `0` = paced (default); `1` = turbo. Other values fail closed |
+| `SR_DETERMINISTIC_CLOCK` | unset, empty, `0` / `1` | Deterministic guest clock: `1` = on; unset, empty or `0` = off (paced, or turbo with `SR_NOVBPACE=1`). `1` with `SR_NOVBPACE=0` and other values fail closed |
+| `SR_DETERMINISTIC_SLICE_US` | `1`..`100000` | Guest microseconds the deterministic clock charges per scheduler boundary (default 100). Other values fail closed |
 | `SR_PAUSE_SCRIPT` | `<vcount>:<host_ms>[,...]` | Test-only scheduler pause source for showcase checks. Append `:user` to exercise an interactive refusal; malformed values fail closed |
 | `SR_GPU_GE` | `0` / `1` | Software vs Vulkan GE path |
 | `SR_GPU_TNL` | unset / `1` | With the Vulkan GE path, transform, skinning, fog and diffuse lighting of eligible transform-mode triangle draws run in the Vulkan vertex shader, with the same bits as ge.c's T&L ([#318](https://github.com/Jstar269/nakagawa-recomp/issues/318)), on a device that keeps fp32 subnormals in shaders (`shaderDenormPreserveFloat32`; elsewhere ge.c keeps T&L); any other value keeps ge.c's T&L |
 | `SR_GPU_LOG` | present/unset | GPU diagnostics where implemented |
 | `SR_VIDEO` | e.g. `gdi` | Select host fallback video path |
 | `SR_PRESENT_SCALING` | `sharp` (default) / `integer` / `bilinear` | How the Vulkan presenter scales game frames into the window: sharp bilinear (nearest to the next integer multiple, then linear), the largest integer multiple letterboxed, or plain linear; an exact integer fit is a nearest blit in every mode ([#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129)). The player's Settings set it |
+| `SR_PRESENT_UPSCALE` | `off` (default) / `fsr1` | The presentation upscaler: with `fsr1` the Vulkan presenter scales the shown picture to its place in the window with AMD FidelityFX Super Resolution 1 (EASU, then RCAS sharpening; `src/rt/gpu_sdl3vk/fsr1_pass.c`, the FidelityFX SDK v2.4.0 MIT headers in `third_party/fidelityfx_sdk/`) in place of `SR_PRESENT_SCALING`'s filter, on whatever frame the presenter shows: movies are not a separate path ([#2111](https://github.com/Jstar269/nakagawa-recomp/issues/2111)). Presentation only: the guest's frame, guest VRAM and captures are untouched. Used only when the picture is enlarged |
 | `SR_LAUNCHER_DISPLAY_BOUNDS` | `<x>,<y>,<w>,<h>` or empty | Desktop bounds of the display that holds the launcher window, set by the launcher. The game window, windowed or fullscreen, opens on the display that contains the centre of that rectangle; empty, malformed or off-screen values use the primary display, and the last two are reported on stderr |
 | `SR_FBSNAP` | positive integer | Rotating PPM snapshot interval |
 | `SR_HLELOG` | present/unset | HLE dispatch diagnostics |

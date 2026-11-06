@@ -17,6 +17,7 @@
 #ifndef SR_SDL3VK_H
 #define SR_SDL3VK_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include "nk_input_profile.h"
@@ -39,6 +40,23 @@ bool sdl3vk_raise_window(void);
  * IMMEDIATE, then FIFO as the guaranteed fallback. available may be NULL when
  * count == 0. */
 int sdl3vk_pick_present_mode(int vsync, const int *available, int count);
+
+/* The stderr line the presenter prints when it creates the first swapchain and when a
+ * recreation changes the mode (sdl3vk_present_mode_log_due); pure and Vulkan-free like the
+ * picker. It names the present mode in use, why it was chosen (the SR_VSYNC setting and
+ * what the surface offers) and the surface's full mode list, so a tearing report can be
+ * classified from the log. `chosen` is the mode the swapchain was created with, `recreated`
+ * is nonzero when an earlier swapchain was replaced. Writes a NUL-terminated line without a
+ * newline and returns its length, truncated to cap - 1. */
+int sdl3vk_present_mode_line(int vsync, const int *available, int count, int chosen,
+                             int recreated, char *out, size_t cap);
+
+/* Whether the presenter prints the present-mode line for a new swapchain: always for the
+ * first, and for a recreation only when the mode or the SR_VSYNC setting differs from the
+ * last line printed, so a window resize that keeps the mode prints nothing. `last_mode` and
+ * `last_vsync` hold the last printed values (-1 before the first line); when the function
+ * returns nonzero it stores `mode` and `vsync` in them. */
+int sdl3vk_present_mode_log_due(int *last_mode, int *last_vsync, int mode, int vsync);
 
 /* Surface-format choice for the swapchain (pure, no device needed), Vulkan-free like the
  * present-mode picker. `query` is the VkResult of vkGetPhysicalDeviceSurfaceFormatsKHR as an
@@ -134,6 +152,16 @@ void sdl3vk_set_show_pass(Sdl3VkShowPass pass);
  * other presents do, and 0 with nothing to show or no pass. */
 int sdl3vk_present_held(void);
 
+/* The presentation upscaler (src/rt/gpu_sdl3vk/fsr1_pass.h, SR_PRESENT_UPSCALE). Called on a
+ * present whose shown image (w x h, in TRANSFER_SRC_OPTIMAL) is smaller than its place in the
+ * window, after the show pass and before the frame blit. It may record into the command buffer,
+ * and returns an image of exactly out_w x out_h, in TRANSFER_SRC_OPTIMAL, that is copied 1:1 into
+ * that place, or NULL to scale as SR_PRESENT_SCALING says. A capture always reads the guest's
+ * frame, so what it returns is never captured. Registered only when SR_PRESENT_UPSCALE asks for
+ * it; NULL removes it. Handles are Vulkan's, passed as void pointers. */
+typedef void *(*Sdl3VkUpscalePass)(void *cmd, void *src, int w, int h, int out_w, int out_h);
+void sdl3vk_set_upscale_pass(Sdl3VkUpscalePass pass);
+
 /* Pumps the SDL event loop without presenting a frame. Returns 0 on quit, 1 otherwise. */
 int  sdl3vk_poll(void);
 
@@ -171,6 +199,10 @@ int  sdl3vk_renderer_terminal(void);
  * stays vulkan.h-free (pass VkResult value). */
 void     sdl3vk_present_fault_inject(int vk_result);
 void     sdl3vk_present_fault_clear(void);
+/* SR_GPU_TIMESTAMPS: 1 when the presenter's timestamp query pool exists (the switch was set at init
+ * and the queue has timestamps). *timed and *ns, when given, receive how many presentation command
+ * buffers have been read back since init and their GPU time in ns. */
+int      sdl3vk_present_timestamps(uint64_t *timed, uint64_t *ns);
 uint64_t sdl3vk_swapchain_generation(void);
 uint64_t sdl3vk_frame_semaphore_generation(void);
 

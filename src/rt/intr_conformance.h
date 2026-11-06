@@ -807,9 +807,10 @@ static int ic_dispatch_intercept(uint32_t target) {
     return 1;
 }
 
-static uint64_t ic_run_in_interrupt(const IcProbe *p) {
-    if (!ic_arrange(p, &s_ic_probe_cpu)) return IC_SETUPFAIL;
-
+/* Call p->nid with s_ic_probe_cpu as its arguments from inside a VBLANK
+ * sub-interrupt handler. ic_run_in_interrupt() arranges the matrix fixture first;
+ * a test outside the matrix fills s_ic_probe_cpu itself and calls this. */
+static uint64_t ic_call_in_interrupt(const IcProbe *p) {
     CpuState ctl;
     memset(&ctl, 0, sizeof ctl);
     ctl.r[4] = 30u;                    /* PSP_VBLANK_INT */
@@ -842,6 +843,11 @@ static uint64_t ic_run_in_interrupt(const IcProbe *p) {
     ctl.r[4] = 30u; ctl.r[5] = 1u;
     (void)sr_syscall(&ctl, NID_IC_RELEASE_SUBINTR);
     return s_ic_intr_ran ? s_ic_intr_result : IC_SETUPFAIL;
+}
+
+static uint64_t ic_run_in_interrupt(const IcProbe *p) {
+    if (!ic_arrange(p, &s_ic_probe_cpu)) return IC_SETUPFAIL;
+    return ic_call_in_interrupt(p);
 }
 
 /* -------------------------------------------------------------------------

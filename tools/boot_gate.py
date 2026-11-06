@@ -38,6 +38,10 @@ FAULT_MARKERS = ("ERROR:", "MEM OOR", "Unhandled")
 # phase=ace_mode boot event. Its pictures are enhanced, so it is never boot evidence, whatever
 # else the log shows.
 ACE_ON_RE = re.compile(r"(?:^|\s)ACE_MODE: on \(")
+# A run with the presentation upscaler on (SR_PRESENT_UPSCALE, #1273) is stamped the same way: an
+# "ACE_MODE: present upscale <mode>" line and a phase=present_upscale boot event. Its window is
+# enhanced, so it is never boot evidence either.
+PRESENT_UPSCALE_RE = re.compile(r"(?:^|\s)ACE_MODE: present upscale (\S+)")
 
 
 def _parse_nonnegative_int(value: str | None) -> tuple[int, bool]:
@@ -73,6 +77,7 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
     malformed_paths = 0
     faults: list[str] = []
     ace_mode = False
+    present_upscale: str | None = None
     with open(path, "r", encoding="utf-8", errors="replace") as handle:
         for line_number, line in enumerate(handle, 1):
             match = EVENT_RE.search(line)
@@ -86,10 +91,17 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
                 faults.append(line.strip())
             if ACE_ON_RE.search(line):
                 ace_mode = True
+            upscale = PRESENT_UPSCALE_RE.search(line)
+            if upscale and present_upscale is None:
+                present_upscale = upscale.group(1)
 
     phases = [event.get("phase", "unknown") for event in events]
     # The structured event says it as well, for a run whose stderr was silenced.
     ace_mode = ace_mode or "ace_mode" in phases
+    if present_upscale is None:
+        upscale_event = next((event for event in events if event.get("phase") == "present_upscale"), None)
+        if upscale_event is not None:
+            present_upscale = upscale_event.get("mode") or "unknown"
     reached = {phase: phase in phases for phase in EXPECTED}
     sequence_ok = milestones_in_order(phases, EXPECTED)
 
@@ -139,6 +151,8 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
         reasons.append("frame-content-unvalidated")
     if ace_mode:
         reasons.append("ace-mode-run")
+    if present_upscale is not None:
+        reasons.append("present-upscale-run")
 
     ok = not reasons
     last_phase = phases[-1] if phases else "not-started"
@@ -158,6 +172,7 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
         "faultCount": len(faults),
         "faults": faults[-20:],
         "aceMode": ace_mode,
+        "presentUpscale": present_upscale,
         "disqualifyingReasons": reasons,
         "events": events,
         "logPath": os.path.abspath(path),

@@ -345,14 +345,20 @@ bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
     return true;
 }
 
-bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
+/* Both directory walks. With skipped NULL this is nk_platform_list_dir; with it,
+   every entry left out is counted and a listing that stops on an error fails. */
+static bool win32_list_dir(const char *dir, NkDirEntryFn fn, void *ctx, size_t *skipped) {
     if (!dir || !*dir || !fn) return false;
     /* Extended-length buffers stay off the stack: a caller walking a tree may
        hold several of its own frames. */
     enum { WIDE_PATTERN_CHARS = 32768 };
+    /* A cloud file that is not on this computer: reading it would download it. */
+    const DWORD cloud = FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN |
+                        FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
     char *pattern = (char *)malloc(WIDE_PATTERN_CHARS);
     WCHAR *wpattern = (WCHAR *)malloc(sizeof(WCHAR) * WIDE_PATTERN_CHARS);
     bool ok = false;
+    if (skipped) *skipped = 0;
     if (pattern && wpattern) {
         int written = snprintf(pattern, WIDE_PATTERN_CHARS, "%s\\*", dir);
         if (written > 0 && written < WIDE_PATTERN_CHARS &&
@@ -362,17 +368,27 @@ bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
             if (find == INVALID_HANDLE_VALUE) {
                 ok = GetLastError() == ERROR_FILE_NOT_FOUND;
             } else {
+                bool stopped = false;
                 ok = true;
                 do {
-                    if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
                     if (wcscmp(data.cFileName, L".") == 0 ||
                         wcscmp(data.cFileName, L"..") == 0) continue;
+                    if ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+                        (skipped && (data.dwFileAttributes & cloud))) {
+                        if (skipped) ++*skipped;
+                        continue;
+                    }
                     char name[1024];
-                    if (!wide_to_utf8(data.cFileName, name, sizeof(name))) continue;
+                    if (!wide_to_utf8(data.cFileName, name, sizeof(name))) {
+                        if (skipped) ++*skipped;
+                        continue;
+                    }
                     if (!fn(name, (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0, ctx)) {
+                        stopped = true;
                         break;
                     }
                 } while (FindNextFileW(find, &data));
+                if (skipped && !stopped && GetLastError() != ERROR_NO_MORE_FILES) ok = false;
                 FindClose(find);
             }
         }
@@ -380,6 +396,27 @@ bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
     free(pattern);
     free(wpattern);
     return ok;
+}
+
+bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
+    return win32_list_dir(dir, fn, ctx, NULL);
+}
+
+bool nk_platform_list_dir_counted(const char *dir, NkDirEntryFn fn, void *ctx,
+                                  size_t *skipped) {
+    size_t none = 0;
+    return win32_list_dir(dir, fn, ctx, skipped ? skipped : &none);
+}
+
+bool nk_platform_sync_file(FILE *f) {
+    if (!f || fflush(f) != 0) return false;
+    intptr_t os = _get_osfhandle(_fileno(f));
+    if (os == -1) return false;
+    return FlushFileBuffers((HANDLE)os) != 0;
+}
+
+bool nk_platform_sync_dir(const char *dir) {
+    return nk_platform_dir_exists(dir);
 }
 
 void nk_platform_list_drive_roots(NkDirFileFn fn, void *ctx) {
@@ -520,6 +557,86 @@ void nk_platform_file_lock_release(NkFileLock *lock) {
     CloseHandle((HANDLE)lock->native_handle);
     lock->native_handle = NULL;
     lock->held = false;
+}
+
+/* FNV-1a over the name as Windows compares paths: ASCII case folded, '/' read as '\\', and
+   trailing separators dropped. */
+static unsigned long long single_instance_hash(const char *name) {
+    unsigned long long hash = 1469598103934665603ull;
+    size_t length = strlen(name);
+    while (length > 1u && (name[length - 1u] == '\\' || name[length - 1u] == '/')) --length;
+    for (size_t i = 0; i < length; ++i) {
+        unsigned char c = (unsigned char)name[i];
+        if (c == '/') c = '\\';
+        else if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+        hash ^= c;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+NkInstanceResult nk_platform_single_instance_acquire(NkSingleInstance *instance,
+                                                     const char *name) {
+    if (!instance) return NK_INSTANCE_UNAVAILABLE;
+    memset(instance, 0, sizeof(*instance));
+    if (!name || !*name) return NK_INSTANCE_UNAVAILABLE;
+    char narrow[96];
+    WCHAR mutex_name[96];
+    WCHAR mapping_name[96];
+    unsigned long long hash = single_instance_hash(name);
+    (void)snprintf(narrow, sizeof(narrow), "Local\\NakagawaRecomp.Instance.%016llx", hash);
+    if (!utf8_to_wide(narrow, mutex_name, sizeof(mutex_name) / sizeof(mutex_name[0]))) {
+        return NK_INSTANCE_UNAVAILABLE;
+    }
+    (void)snprintf(narrow, sizeof(narrow), "Local\\NakagawaRecomp.Instance.%016llx.owner", hash);
+    if (!utf8_to_wide(narrow, mapping_name, sizeof(mapping_name) / sizeof(mapping_name[0]))) {
+        return NK_INSTANCE_UNAVAILABLE;
+    }
+    HANDLE mutex = CreateMutexW(NULL, FALSE, mutex_name);
+    if (!mutex) return NK_INSTANCE_UNAVAILABLE;
+    DWORD wait = WaitForSingleObject(mutex, 0);
+    /* The owner's process ID; a fresh page reads 0 until the holder writes it. */
+    HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
+                                        (DWORD)sizeof(LONG), mapping_name);
+    if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
+        /* WAIT_ABANDONED: the last holder ended without releasing it, as a crash does. The
+           mutex is this thread's now, so a crashed launcher never blocks the next start. */
+        if (mapping) {
+            LONG *owner = (LONG *)MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(LONG));
+            if (owner) {
+                InterlockedExchange(owner, (LONG)GetCurrentProcessId());
+                UnmapViewOfFile(owner);
+            }
+        }
+        instance->mutex = mutex;
+        instance->mapping = mapping;
+        instance->held = true;
+        return NK_INSTANCE_ACQUIRED;
+    }
+    NkInstanceResult result = NK_INSTANCE_UNAVAILABLE;
+    if (wait == WAIT_TIMEOUT) {
+        result = NK_INSTANCE_RUNNING;
+        if (mapping) {
+            /* A plain aligned read: an interlocked one writes, and this view is read-only. */
+            const volatile LONG *owner =
+                (const volatile LONG *)MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(LONG));
+            if (owner) {
+                instance->owner_pid = (int)*owner;
+                UnmapViewOfFile((LPCVOID)owner);
+            }
+        }
+    }
+    if (mapping) CloseHandle(mapping);
+    CloseHandle(mutex);
+    return result;
+}
+
+void nk_platform_single_instance_release(NkSingleInstance *instance) {
+    if (!instance) return;
+    if (instance->held && instance->mutex) ReleaseMutex((HANDLE)instance->mutex);
+    if (instance->mapping) CloseHandle((HANDLE)instance->mapping);
+    if (instance->mutex) CloseHandle((HANDLE)instance->mutex);
+    memset(instance, 0, sizeof(*instance));
 }
 
 /* Reads an environment variable through the wide API as UTF-8. The narrow CRT
@@ -1210,6 +1327,13 @@ void nk_platform_terminate_process(NkProcessHandle *process) {
     }
     if (process->native_handle) {
         TerminateProcess((HANDLE)process->native_handle, 1);
+        /* TerminateProcess only starts the end; wait for it, as the POSIX backend reaps
+           its child, so the caller never goes on while it may still be writing. */
+        if (WaitForSingleObject((HANDLE)process->native_handle,
+                                NK_PLATFORM_TERMINATE_WAIT_MS) != WAIT_OBJECT_0) {
+            process->is_active = true;
+            return;
+        }
     }
     process->is_active = false;
 }

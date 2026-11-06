@@ -380,8 +380,8 @@ still needs them. Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`
 pill and tag (YOUR DISC, BETA / UNOFFICIAL or the disc check's word, as on the card), then for a checked disc
 one `BODY_S` `muted` sentence on what the check found (for UNKNOWN DUMP: not shown to be retail, not modified,
 since Redump's PSP list names no disc IDs), one action row on the column's left edge with every button 52 px (the primary action, PLAY when
-the package is ready, STARTING… while the launch starts, STOP GAME while a game runs, then OPEN SAVE FOLDER and
-BACK), and the WHAT TO EXPECT card. Its eyebrow carries a player tier chip (PERFECT and PLAYABLE `ready`, IN-GAME
+the package is ready, STARTING… while the launch starts, STOP GAME while a game runs, then SAVES (the
+[Saves](#saves-built) dialog) and BACK), and the WHAT TO EXPECT card. Its eyebrow carries a player tier chip (PERFECT and PLAYABLE `ready`, IN-GAME
 and MENU `info`, TITLE SCREEN `warning`, WON'T BOOT `error`; no chip for a title no one has tried). Below it come
 one or two plain sentences on what to expect on this PC in `BODY_S` `paper`, then the known issues in `muted`
 when there are any. The tier comes from the title's own player record, or else from its `docs/COMPATIBILITY.md`
@@ -413,7 +413,10 @@ what Nakagawa built for the game, each item with its size: the built package, th
 bring-up), and the disc files Nakagawa copied. A `warning` FREES line gives the total. A `ready` line says the disc
 image on the user's PC is not touched. The game's saves are the copied disc's Memory Stick folder and its
 per-user save folder. They get their own box, unticked every time the dialog opens; under it, "Your saves stay." in
-`muted`, or in `error` once the box is ticked, "Your saves for this game will be deleted too." A game with nothing
+`muted`, or in `error` once the box is ticked, "Your saves for this game will be deleted too. A backup of them is
+kept first: Saves can restore it if you add the game again." REMOVE backs those folders up before it deletes
+anything, into the backup folder [Saves](#saves-built) lists, which a removal leaves alone; when a backup can't be
+written, nothing is removed and the error card says why. A game with nothing
 built and no saves says so. A second box, also unticked every time, reads "Also delete the decrypted files and disc
 copy (*size*)" (#2003): the decrypted files the disc check wrote (`titles/<DISC_ID>/decrypted`, the folder where a
 user may also put their own) and the disc image Nakagawa expanded or converted (`<user data>/discs/<DISC_ID>`).
@@ -426,6 +429,36 @@ never on the list. Those folders and saves are the disc ID's, so while another i
 disc ID stays in the library (a retail disc beside its fan translation), the boxes are left out and the lead says
 what Nakagawa built for it and its saves stay, because the other image uses them; only the record goes. Prompt bar:
 MOVE, SELECT, CANCEL.
+
+### Saves (built)
+
+SAVES on the title page opens a flow card, 640 px wide, over it (#1883). The eyebrow is SAVES with an
+`accent_dark` diamond, then the game's name in `TITLE` and one `BODY_S` `muted` line: "Its saves and game data take
+*size*. Backups are copies kept on this PC.", or, with nothing saved yet, "No saves yet. Add a save copies one in
+from a folder you pick." One row of buttons follows, wrapping at a larger text size: BACK UP SAVES (`PRIMARY`, off
+with no saves), ADD A SAVE, OPEN SAVE FOLDER (the folder the old title-page button opened) and BACK. A `BODY_S` line
+under them says what the last action did, in `ready` when it worked. A `LABEL_S` `muted` line counts the backups
+("BACKUPS 1-4 OF 9, NEWEST FIRST", or NO BACKUPS YET), then a box lists four at a time, each row its date and time in
+`paper`, what made it (Backed up, Before a restore, Before adding a save, Before a removal) and its size in `DATA`
+`muted`, and a small RESTORE button that is never the default focus. NEWER and OLDER under the box turn the page.
+
+RESTORE asks first, in the same card: "Restore the backup from *date*?" in `BODY` `paper`, "Your saves now are
+backed up first and kept, so you can go back to them." in `muted`, then CANCEL (first focus) and RESTORE
+(`PRIMARY`). ADD A SAVE opens the system's folder picker; the folder picked is a save's own folder, the one holding
+its `PARAM.SFO` inside a `SAVEDATA` folder, and it is copied into the game's `PSP/SAVEDATA`. A save of the same name
+already there asks "A save named *name* is already here. Replace it?" with CANCEL (first focus) and REPLACE
+(`DANGER`). Back answers a question with Cancel; with no question up, Back closes the card.
+
+Every change backs the saves up first. A restore checks the whole backup before it touches anything, writes it into
+a new folder beside the save folder, and only then renames the save folder to `<folder>-backup-<date>` and puts the
+new one in its place; any failure before that swap leaves the saves as they were, and a failed swap puts the old
+folder back. A failure shows the error card ("Your saves were not backed up", "Your saves were not restored" or "The
+save was not added") with the reason in plain words, and BACK returns to the card. While the game starts or runs, every
+button that changes the saves is off and a `warning` line says "Stop the game first: it uses its save folder while it
+runs." The save folder is `<saves>/<DISC_ID>`, the game's Memory Stick; backups are store-only ZIP files in
+`<user data>/titles/<DISC_ID>/save-backups`, named `<DISC_ID>-saves-<date>-<time>.zip` with a `-before-restore`,
+`-before-add` or `-before-remove` ending for the automatic ones. Nothing is uploaded and nothing is deleted
+automatically. Prompt bar: MOVE, SELECT, BACK.
 
 ### About (built)
 
@@ -630,9 +663,13 @@ Drawn by the runtime over the frozen game frame under the `scrim` while the game
 - Menu (480 px card): `GAME PAUSED` eyebrow in `muted`, the game's name in `TITLE` (two lines at most, else
   "Paused"), the disc ID in `DATA` `muted`, then a full-width column of buttons: RESUME (primary, 52 px, the
   default focus), SETTINGS, CONTROLS, QUIT TO LIBRARY. Prompts: MOVE, SELECT, RESUME.
-- Settings (640 px): Settings rows as in C6. Game scaling is a segmented control (SHARP, INTEGER, SMOOTH; left and
-  right step it, Confirm cycles it), the performance HUD a toggle. A `FOOTNOTE` says the changes apply now and last
-  until the game closes; the player's Settings keep the saved values. BACK.
+- Settings (640 px, or 880 px with shorter rows when the window is under 720 px high): Settings rows as in C6, in
+  this order. Fullscreen is a toggle, shown only when the game window can change mode. Game scaling is a segmented
+  control (SHARP, INTEGER, SMOOTH; left and right step it, Confirm cycles it). Frame pacing is a segmented control
+  with the library's two choices (PSP TIMING, NO EXTRA CAP), shown only when one of them is in force, so a
+  developer's numeric `SR_FPS_CAP` gets no row. The performance HUD is a toggle, and Ace Mode's speed readout one
+  more in an Ace run that can draw it. A `FOOTNOTE` says the changes apply now and last until the game closes; the
+  player's Settings keep the saved values. BACK.
 - Controls (640 px, or 880 px in two side-by-side tables when the window is under 720 px high and there are more
   than six rows): a PSP / KEYBOARD / CONTROLLER header in `EYEBROW` and 38 px rows (34 px when split) with `line`
   dividers; an unbound control shows an em dash. The rows describe the mapping in force: the window's own key

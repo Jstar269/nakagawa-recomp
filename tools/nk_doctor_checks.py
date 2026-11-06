@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+from typing import Any
 import time
 import uuid
 
@@ -41,13 +43,12 @@ from vulkan_sdk import VulkanSdkError, discover_vulkan_sdk
 # $IsWindows variable (PowerShell 6.0): no ternary, null-coalescing/null-
 # conditional, pipeline-chain, -Parallel, -AsHashtable, Join-Path
 # -AdditionalChildPath, Test-Json, Get-Error, clean-block, or -ProgressAction
-# usage exists. 7.4 is the oldest release line Microsoft still supports (LTS,
-# end of support 2026-11-10), and 337's non-goals exclude EOL lines and Windows
-# PowerShell 5.1, so the enforced floor is 7.4 rather than the static 6.0
-# maximum. Runtime evidence (2026-09-24): every PowerShell-backed test passed on
-# 7.4.20, 7.5.11 and 7.6.6. 7.4 and 7.5 both reach end of support 2026-11-10;
-# raise this floor to (7, 6) then.
-MINIMUM_POWERSHELL: tuple[int, int] = (7, 4)
+# usage exists. 337's non-goals exclude EOL lines and Windows PowerShell 5.1, so
+# the enforced floor is the oldest release line Microsoft still supports rather
+# than the static 6.0 maximum. 7.4 and 7.5 reach end of support on 2026-11-10;
+# 7.6 is the LTS line supported until 2028-11-14. Runtime evidence (2026-09-24):
+# every PowerShell-backed test passed on 7.4.20, 7.5.11 and 7.6.6.
+MINIMUM_POWERSHELL: tuple[int, int] = (7, 6)
 MINIMUM_POWERSHELL_TEXT = ".".join(str(part) for part in MINIMUM_POWERSHELL)
 
 #: Advisory worktree-accumulation bounds (#368 item 8). These are not gates:
@@ -135,7 +136,8 @@ def _windows_version_info() -> tuple[int | None, int | None]:
     if os.name != "nt":
         return None, None
     try:
-        version = sys.getwindowsversion()
+        win_sys: Any = sys  # getwindowsversion exists on Windows only
+        version = win_sys.getwindowsversion()
         return int(version.build), int(version.product_type)
     except (AttributeError, OSError, TypeError, ValueError):
         return None, None
@@ -309,7 +311,7 @@ def query_windows_long_paths_enabled() -> bool | None:
     if os.name != "nt":
         return None
     try:
-        import winreg
+        winreg = importlib.import_module("winreg")  # Windows-only module
 
         with winreg.OpenKey(
             winreg.HKEY_LOCAL_MACHINE,
@@ -1344,7 +1346,6 @@ def check_toolchain(
             detail=str(exc),
             remediation="Install mingw-w64-ucrt-x86_64-sdl3 in MSYS2 UCRT64.",
         )
-        sdl_provider = None
     else:
         report.pass_(
             "SDL3_PROVIDER",
@@ -1714,7 +1715,7 @@ def check_private_inputs(
         else:
             elf_meta = _check_elf_file(report, "INPUT_EBOOT_ELF", elf_path, "decrypted title EBOOT ELF")
 
-    psp_meta: dict[str, object] | None = None
+    psp_meta: dict[str, Any] | None = None
     if context.requires_psp_header:
         psp_header_path = context.psp_header_path or (root / "EBOOT.BIN")
         if psp_header_path.is_file():

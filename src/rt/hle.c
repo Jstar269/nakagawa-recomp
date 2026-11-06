@@ -34,6 +34,7 @@
 
 #include "hle_internal.h"
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
+#define SR_EVIDENCE_NO_VFPU /* this file reads the NID table only */
 #include "hle_evidence.h" /* generated: NIDs with no recorded evidence (docs/HLE_COVERAGE.md) */
 int sr_thread_has_pending_callbacks(uint32_t thread_uid);
 int sr_thread_dispatch_callbacks(void);    /* internal pump count; public CheckCallback is Boolean */
@@ -464,8 +465,17 @@ uint32_t alloc_block(uint32_t size) {
         return 0xFFFFFFFFu;
     }
 
+    /* The slot is the size rounded up to 256 bytes. A size within 255 of 4 GB has no such slot:
+     * the rounding would wrap to a 256-byte slot that a small free block satisfies, so it is
+     * refused here like any other request the partition cannot hold. */
+    if (size > 0xFFFFFF00u) {
+        if (guard) {
+            fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) rounds past 4 GB\n", size, size);
+            fflush(stderr);
+        }
+        return 0xFFFFFFFFu;
+    }
     uint32_t needed_slot = (size + 0xFFu) & ~0xFFu;
-    if (needed_slot == 0) needed_slot = 0x100u;
 
     uint32_t addr = 0;
     uint32_t slot_size = 0;
@@ -1944,6 +1954,13 @@ uint32_t sr_hle_unmodelled_stop(const char *import_name, const char *detail) {
     return hle_unmodelled_stop(import_name, "%s", detail);
 }
 
+/* The import a NID names, for a stop raised outside its handler (hle_ge.c names the call
+ * that ran a display list). nid_names.h is not included twice: its table is static. */
+const char *hle_import_name(uint32_t nid) {
+    const char *name = sr_nid_name(nid);
+    return name ? name : "unknown-import";
+}
+
 int guest_cstr(uint32_t addr, char *out, int max);
 uint32_t free_block(uint32_t uid) {
     for (int i = 0; i < s_nblocks; i++) {
@@ -2910,6 +2927,11 @@ uint64_t rtc_now_tick(void) {
          * first RTC query made after boot-time work does not double-count the
          * elapsed scheduler time.  Subsequent reads are guest-time only. */
         uint64_t host_tick = RTC_FILETIME_EPOCH_TICK + sr_host_filetime_ticks() / 10u;
+        /* A deterministic run (#2037) starts the calendar at a fixed date, so two identical
+         * runs see the same time of day: a game that seeds a random generator from the RTC, or
+         * shows the date, does the same thing each time. */
+        if (sched_clock_deterministic())
+            host_tick = RTC_UNIX_EPOCH_TICK + 1325376000ull * 1000000ull;   /* 2012-01-01 00:00:00 UTC */
         uint64_t elapsed = now_usec();
         s_rtc_epoch_tick = host_tick >= elapsed ? host_tick - elapsed : 0u;
         s_rtc_last_tick = host_tick;
@@ -3114,7 +3136,8 @@ static void io_cwd_release_thread(uint32_t thread_uid) {
 
 /* PSP relative file-manager paths resolve against the calling thread's CWD.
  * Device-qualified paths keep their explicit device and never pass through the
- * host filesystem before the existing contained VFS validates them. */
+ * host filesystem before the existing contained VFS validates them. A resolved path
+ * on a device the game unassigned is NO_SUCH_DEVICE (hle_io_assign_path_check). */
 uint32_t io_guest_path(uint32_t guest_addr, char *out, size_t capacity) {
     char input[512];
     if (!out || capacity == 0u || !guest_cstr(guest_addr, input, (int)sizeof(input)))
@@ -3123,7 +3146,7 @@ uint32_t io_guest_path(uint32_t guest_addr, char *out, size_t capacity) {
         size_t len = strlen(input);
         if (len >= capacity) return 0x80010024u;
         memcpy(out, input, len + 1u);
-        return 0u;
+        return hle_io_assign_path_check(out);
     }
     IoCwd *cwd = io_cwd_find(sched_current_uid(), 1);
     if (!cwd) return 0x8001000cu;
@@ -3136,7 +3159,7 @@ uint32_t io_guest_path(uint32_t guest_addr, char *out, size_t capacity) {
     size_t at = cwd_len;
     if (separator) out[at++] = '/';
     memcpy(out + at, input, input_len + 1u);
-    return 0u;
+    return hle_io_assign_path_check(out);
 }
 
 void hle_fd_init(void) {
@@ -3152,6 +3175,7 @@ void hle_fd_init(void) {
     s_io_dispatch_epoch = 0;
     s_io_async_sequence = 0;
     atomic_store_explicit(&s_io_raw_device_boundary_reported, 0u, memory_order_release);
+    hle_io_assign_reset();
     for (uint8_t stream = 0; stream < 3; stream++) {
         Fd *f = &s_fds[stream];
         f->used = 1;
@@ -3208,7 +3232,12 @@ int hle_fd_allocate(void) {
     }
     return -1;
 }
-/* Destination of a seek on a file descriptor (#1380). A Memory Stick seek to a destination
+/* Destination of a seek on a file descriptor (#1380). A disc0: (UMD) file's position stays
+ * inside [0, size]: a destination before the start or past the end answers 0x80010005, with
+ * sceIoLseek's high word 0xFFFFFFFF and the position unchanged, through sceIoLseek and
+ * sceIoLseek32 and from every whence, and a destination at the end is accepted (measured on a
+ * PSP-3000 6.61 by PSP-IO-EOF-002 umd-eof-*-seek-past, -seek-negative and -seek-wide,
+ * 2026-11-04). A Memory Stick seek to a destination
  * before the start answers EINVAL (0x80010016; sceIoLseek's high word 0xFFFFFFFF) with the
  * position unchanged, from SEEK_SET, SEEK_CUR and SEEK_END and through sceIoLseek32, on
  * read-write and read-only descriptors (measured on a PSP-3000 6.61 by PSP-IO-EOF-001

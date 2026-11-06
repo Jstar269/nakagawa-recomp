@@ -24,11 +24,31 @@ extern "C" {
 #define NK_LAUNCH_EXIT_ACCEPTANCE_PRESENTER_UNAVAILABLE 43
 #define NK_LAUNCH_EXIT_ACCEPTANCE_NOT_REACHED 44
 
+/* One identity for the launcher and every game it starts (#2006), so the desktop shows
+ * them as one app: one taskbar group on Windows, one application on Linux.
+ * NK_APP_USER_MODEL_ID is the Windows AppUserModelID; tools/stage_install.py writes it on
+ * the shortcuts too, so a pinned shortcut groups with the running windows.
+ * NK_APP_DESKTOP_ID is SDL's app identifier (the Wayland app ID and X11 class), the name
+ * of the .desktop entry stage_install.py writes. The game window sets the same two from
+ * src/rt/gpu_sdl3vk/sdl3vk.c, which does not include this header; the copies must stay
+ * equal, and tools/test_stage_install.py checks that they do. */
+#define NK_APP_USER_MODEL_ID "Nakagawa.Recomp"
+#define NK_APP_DESKTOP_ID "nakagawa-recomp"
+#define NK_APP_NAME "Nakagawa Recomp"
+
 /* How the child scales game frames into its window (SR_PRESENT_SCALING, issue #1129). */
 enum {
     NK_PRESENT_SCALING_SHARP = 0,    /* nearest to the next integer multiple, then linear */
     NK_PRESENT_SCALING_INTEGER = 1,  /* largest integer multiple, letterboxed */
     NK_PRESENT_SCALING_BILINEAR = 2, /* linear fit, as before issue #1129 */
+};
+
+/* The presentation upscaler (SR_PRESENT_UPSCALE, #1273). Always exported: "off" for an authentic
+   session whatever the setting, so neither the setting nor an inherited value can turn it on
+   there; an enhanced or Ace Mode session exports the setting. */
+enum {
+    NK_PRESENT_UPSCALE_OFF = 0,   /* SR_PRESENT_UPSCALE=off: the frame scaling alone */
+    NK_PRESENT_UPSCALE_FSR1 = 1,  /* SR_PRESENT_UPSCALE=fsr1: AMD FSR 1 EASU + RCAS */
 };
 
 /* The player's Reduce motion choice, as the runtime's in-game overlay is told it
@@ -44,6 +64,7 @@ enum {
 typedef struct {
     int resolution_scale;
     int present_scaling;  /* NK_PRESENT_SCALING_*; prepare_session defaults to SHARP */
+    int present_upscale;  /* NK_PRESENT_UPSCALE_*; prepare_session defaults to OFF */
     int fps_cap; /* -1 = PSP scanout pacing, 0 = uncapped host presentation */
     bool fullscreen;
     bool vsync;

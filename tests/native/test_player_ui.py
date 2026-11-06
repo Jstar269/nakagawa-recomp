@@ -3236,6 +3236,62 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         self.assert_rebuild_started(frames, run["stdout"])
 
+    # A stand-in for tools/nk_cli.py that builds nothing: it records that it
+    # started, then writes a heartbeat until it is stopped or 8 s pass.
+    SLOW_BUILD_CLI = (
+        "import os, pathlib, time\n"
+        "witness = pathlib.Path(os.environ['NK_UI_TEST_BUILD_WITNESS'])\n"
+        "(witness / 'started').write_text(str(os.getpid()), encoding='utf-8')\n"
+        "deadline = time.monotonic() + 8.0\n"
+        "with open(witness / 'heartbeat', 'a', encoding='utf-8') as beat:\n"
+        "    while time.monotonic() < deadline:\n"
+        "        beat.write('.')\n"
+        "        beat.flush()\n"
+        "        time.sleep(0.05)\n"
+        "(witness / 'finished').write_text('outlived the player', encoding='utf-8')\n"
+    )
+
+    def test_closing_the_player_stops_a_running_package_build(self) -> None:
+        # The player used to exit with a package build still running. On Linux
+        # the build ran on as an orphan and kept writing into the data folder,
+        # which is how test_incompatible_card_offers_rebuild_package_in_the_
+        # legacy_renderer failed hosted CI with "Directory not empty" when its
+        # scratch folder was removed. A slow stand-in build makes that certain.
+        with tempfile.TemporaryDirectory(
+            prefix=".slow-build-", dir=ROOT, ignore_cleanup_errors=True
+        ) as tmp:
+            install_root = Path(tmp) / "install"
+            (install_root / "tools").mkdir(parents=True)
+            (install_root / "tools" / "nk_cli.py").write_text(self.SLOW_BUILD_CLI,
+                                                              encoding="utf-8")
+            witness = Path(tmp) / "witness"
+            witness.mkdir()
+            run = self.run_player(
+                "ready",
+                ("WAIT_PACKAGE_STATUS=INCOMPATIBLE,10000", "KEY_RETURN", "WAIT_MS=1500"),
+                incompatible_package=True,
+                wait_background=True,
+                ui_mode="legacy",
+                env_extra={
+                    "NK_INSTALL_ROOT": str(install_root),
+                    "NK_UI_TEST_BUILD_WITNESS": str(witness),
+                },
+            )
+            frames = run["frames"]
+            assert isinstance(frames, list)
+            if frames[-1]["view"] != "building_package":
+                self.skipTest("no build started: this host lacks the build tools")
+            self.assertTrue((witness / "started").exists(), run["stdout"])
+            heartbeat = witness / "heartbeat"
+            size_at_exit = heartbeat.stat().st_size
+            time.sleep(1.0)
+            self.assertEqual(heartbeat.stat().st_size, size_at_exit,
+                             "the package build kept running after the player closed")
+            self.assertFalse((witness / "finished").exists())
+            # Windows ended the build with the player's job object even before
+            # the fix; the player now stops it itself, and says so.
+            self.assertIn("[PLAYER] Closing: the package build was stopped.", run["stderr"])
+
     def test_incompatible_title_offers_rebuild_package_in_the_next_ui(self) -> None:
         shown = self.run_player(
             "ready", ("WAIT_MS=100",), incompatible_package=True, wait_background=True,
@@ -3525,9 +3581,22 @@ class NativePlayerUiTests(unittest.TestCase):
         )
 
     def test_worker_start_failure_automatically_retries_after_bounded_backoff(self) -> None:
+        """The first worker start fails; once the 5 s backoff expires the title is retried on
+        its own, and the retry's result replaces the failure.
+
+        Why the old fixed 6.2 s wait could miss: the backoff runs 5 s from the failure
+        (player_state.c), and only the periodic rescan (every 2 s with no check running,
+        main.c) starts a due retry. The retry therefore starts between 5 s and 7 s after the
+        failure, and its check then takes time of its own. A run that ended at 6.2 s saw
+        either no retry yet (hosted CI: attempts 1 at the last frame, 6.4 s) or a retry in
+        flight with its result not in (status 4, unknown, where 1 was expected). Both are
+        correct product behaviour inside the documented bound. The run now waits for the
+        event the contract is about, the retry's result (WAIT_PACKAGE_STATUS), with a
+        deadline well past the 7 s bound, and asserts on the frames: the failure was shown,
+        no retry started before the backoff, and the retry came."""
         run = self.run_player(
             "ready",
-            events=("WAIT_MS=6200",),
+            events=("WAIT_PACKAGE_STATUS=MISSING,20000",),
             wait_background=True,
             env_extra={
                 "NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_AT": "1"
@@ -3535,12 +3604,19 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         frames = run["frames"]
         assert isinstance(frames, list)
+        self.assertIn("[PLAYER_UI_TEST] wait_package_status result=PASS", run["stdout"])
+        first_attempt = [frame for frame in frames
+                         if frame["package_status_thread_attempts"] == "1"]
+        self.assertTrue(first_attempt, run["stdout"])
         self.assertTrue(
-            any(frame["package_status_thread_attempts"] == "1" and
-                int(frame["ticks_ms"]) < 5000
-                for frame in frames),
+            any(frame["selected_package_check_failed"] == "1" for frame in first_attempt),
             run["stdout"],
         )
+        retried = [frame for frame in frames
+                   if int(frame["package_status_thread_attempts"]) >= 2]
+        self.assertTrue(retried, run["stdout"])
+        # The backoff is 5 s from the failure, which is no earlier than start.
+        self.assertGreaterEqual(int(retried[0]["ticks_ms"]), 5000, run["stdout"])
         self.assertGreaterEqual(
             int(frames[-1]["package_status_thread_attempts"]), 2,
             run["stdout"],
@@ -5088,6 +5164,71 @@ class NativePlayerUiTests(unittest.TestCase):
         # The game stopped from the question, which then closed.
         self.assertEqual(steps[stopped[0] - 1][0], self.STOP_ROUTE)
         self.assertEqual(steps[stopped[0]][0], "2")
+
+    def game_exit_steps(self, exit_code: int,
+                        before_exit: tuple[str, ...] = ()) -> list[tuple[str, str, str, str, str]]:
+        """Each change of (route, focus, running, view, error) while a game run from its
+        title page ends with `exit_code`, then Esc twice. `before_exit` runs on the page
+        first."""
+        run = self.run_player(
+            "ready",
+            ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=700",  # open the running game's title page
+             *before_exit,
+             f"GAME_EXIT={exit_code}", "WAIT_MS=300",  # the game ends on its own
+             "KEY_ESCAPE", "WAIT_MS=300", "KEY_ESCAPE", "WAIT_MS=300", "CLOSE"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_GAME_RUNNING": "TEST00006"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        self.assertIn(f"game_exit code={exit_code} result=PASS", str(run["stdout"]))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        steps: list[tuple[str, str, str, str, str]] = []
+        for frame in frames:
+            step = (frame["next_route"], frame["next_focus"], frame["game_running"],
+                    frame["view"], frame["error"])
+            if not steps or steps[-1] != step:
+                steps.append(step)
+        return steps
+
+    def test_a_game_that_ends_returns_to_its_title_page(self) -> None:
+        """#2002: Quit to library ends the game cleanly, and the launcher is still on that
+        game's page, with its focus: the run never left the page, and the exit is reaped
+        without a view change (player_app_monitor_game_session). Focus is moved off the
+        page's first control before the exit, so a reset to it cannot pass as kept."""
+        steps = self.game_exit_steps(0, ("KEY_DOWN", "WAIT_MS=200"))
+        ended = [i for i, step in enumerate(steps) if step[2] == "0"]
+        self.assertTrue(ended, f"the game never ended: {steps}")
+        running = steps[ended[0] - 1]
+        after = steps[ended[0]]
+        opened = next(step for step in steps if step[0] == "2")
+        self.assertEqual(running[0], "2", f"the game was not run from its page: {steps}")
+        self.assertNotEqual(running[1], opened[1], f"Down did not move the focus: {steps}")
+        self.assertEqual(after[0], "2", f"the title page did not survive the exit: {steps}")
+        self.assertEqual(after[1], running[1], f"the page lost its focus: {steps}")
+        self.assertEqual(after[3], running[3], f"a clean exit changed the view: {steps}")
+        self.assertEqual(after[4], "NONE", f"a clean exit raised a card: {steps}")
+        # Esc then leaves the page for the library, and the second Esc stays there.
+        later = steps[ended[0] + 1:]
+        self.assertTrue(later, f"Esc did not leave the page: {steps}")
+        self.assertEqual(later[0][0], "1", f"Esc did not return to the library: {steps}")
+        self.assertEqual(later[-1][0], "1", f"the second Esc left the library: {steps}")
+        self.assertTrue(all(step[2] == "0" for step in later), steps)
+
+    def test_a_game_that_crashes_shows_its_card_over_its_title_page(self) -> None:
+        """#2002: a game that exits with an error shows its card, and leaving the card
+        lands on the same game's page."""
+        steps = self.game_exit_steps(3)
+        ended = [i for i, step in enumerate(steps) if step[2] == "0"]
+        self.assertTrue(ended, f"the game never ended: {steps}")
+        after = steps[ended[0]]
+        self.assertEqual(after[3], "error", f"a crash showed no card: {steps}")
+        self.assertEqual(after[4], "RUNTIME_ERROR_EXIT", f"the wrong card: {steps}")
+        self.assertEqual(after[0], "2", f"the title page went under the card: {steps}")
+        dismissed = [step for step in steps[ended[0]:] if step[3] != "error"]
+        self.assertTrue(dismissed, f"Esc did not leave the card: {steps}")
+        self.assertEqual(dismissed[0][0], "2", f"leaving the card left the page: {steps}")
 
     def test_preflight_refusal_is_not_a_build_failure(self) -> None:
         """#1286: a build refused at preflight never started, so its card is not

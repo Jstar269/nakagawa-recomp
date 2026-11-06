@@ -76,9 +76,11 @@ void sreg_build_font_registry(void) {
             continue;
         }
         if (getenv("SR_FONTLOG"))
-            fprintf(stderr, "sceReg: font index %u is served from the %s source as %s%s\n", index,
+            fprintf(stderr, "sceReg: font index %u is served from the %s source as %s%s%s\n", index,
                     info.source, info.file_name,
-                    info.served_as_regular ? " (its measured bold or italic style is served as regular)" : "");
+                    info.served_as_regular ? " (its measured bold or italic style is served as regular)" : "",
+                    info.served_as_other_family
+                        ? " (its measured family is served by a face of the other family)" : "");
         ok = sreg_add_font_info(prop, index, &info);
     }
     if (!ok) {
@@ -965,7 +967,43 @@ static void archive_candidates_destroy(ArchiveCandidate *items, size_t count) {
     free(items);
 }
 
+/* Archive discovery does not descend into an unpack folder: a directory named
+ * "<archive>.d" beside the archive file "<archive>" it was unpacked from (the
+ * layout setup staging and tools/extract_xb.py write,
+ * <data-root>/<archive>.xb[0-9].d/<member>). Its files are copies of members the
+ * mounted outer archive already serves, and on the disc a member inside an archive
+ * is never a top-level archive, so an archive among them is not mounted. Walking
+ * them was most of the discovery time on a staged title: a player staging of HST
+ * holds its 2354 archives in 35 directories and their unpacked members in about
+ * 17,400 more. Only this walk skips them. In archive mode no file under the primary
+ * root's unpack folders is served (a loose root may not overlap the primary root),
+ * and the loose-content walk (data_walk) still indexes and serves the unpack folders
+ * of loose roots exactly as before. A ".d" directory with no archive file of that
+ * name beside it is walked as any other directory. */
 #ifdef _WIN32
+static int archive_unpack_folder_skipped(const wchar_t *child) {
+    size_t length = child ? wcslen(child) : 0u;
+    if (length < 3u || child[length - 2u] != L'.' ||
+        (child[length - 1u] != L'd' && child[length - 1u] != L'D')) return 0;
+    if (length - 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
+    wchar_t *stem = (wchar_t *)malloc((length - 1u) * sizeof(*stem));
+    if (!stem) return 0;
+    memcpy(stem, child, (length - 2u) * sizeof(*stem));
+    stem[length - 2u] = L'\0';
+    char *stem_utf8 = NULL;
+    int variant = -1;
+    int skipped = 0;
+    if (sr_wide_to_utf8_alloc(stem, &stem_utf8) &&
+        sr_archive_variant_from_name(stem_utf8, &variant)) {
+        DWORD attributes = GetFileAttributesW(stem);
+        skipped = attributes != INVALID_FILE_ATTRIBUTES &&
+                  !(attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+    }
+    free(stem_utf8);
+    free(stem);
+    return skipped;
+}
+
 static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
                                  size_t *archive_count_out) {
     if (!root || !vfs || !archive_count_out) return -1;
@@ -1024,6 +1062,8 @@ static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
                 } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                     if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
                         ok = 0;
+                    } else if (archive_unpack_folder_skipped(child)) {
+                        /* An unpack folder beside its archive: not walked here. */
                     } else if (!data_walk_push(&stack, &stack_count, &stack_capacity,
                                                child, NULL)) {
                         ok = 0;
@@ -1112,6 +1152,22 @@ static int data_root_validate(const wchar_t *root, int configured) {
     return 1;
 }
 #else /* !_WIN32: archive discovery and root validation over POSIX stat ----- */
+static int archive_unpack_folder_skipped(const char *child) {
+    size_t length = child ? strlen(child) : 0u;
+    if (length < 3u || child[length - 2u] != '.' ||
+        (child[length - 1u] != 'd' && child[length - 1u] != 'D')) return 0;
+    char *stem = (char *)malloc(length - 1u);
+    if (!stem) return 0;
+    memcpy(stem, child, length - 2u);
+    stem[length - 2u] = '\0';
+    int variant = -1;
+    struct stat st;
+    int skipped = sr_archive_variant_from_name(stem, &variant) &&
+                  lstat(stem, &st) == 0 && S_ISREG(st.st_mode);
+    free(stem);
+    return skipped;
+}
+
 static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
                                  size_t *archive_count_out) {
     if (!root || !vfs || !archive_count_out) return -1;
@@ -1183,7 +1239,9 @@ static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
                 } else if (S_ISLNK(st.st_mode)) {
                     ok = 0;
                 } else if (S_ISDIR(st.st_mode)) {
-                    if (!data_walk_push(&stack, &stack_count, &stack_capacity, child, NULL)) {
+                    if (archive_unpack_folder_skipped(child_utf8)) {
+                        /* An unpack folder beside its archive: not walked here. */
+                    } else if (!data_walk_push(&stack, &stack_count, &stack_capacity, child, NULL)) {
                         ok = 0;
                     } else {
                         child = NULL;
@@ -2294,10 +2352,28 @@ typedef struct {
     uint8_t stock_sha256[32];
     const uint8_t *data;
     uint32_t size;
+    int served;                  /* opened by path and served rewritten at least once */
 } HleEnhancementFile;
 
 static HleEnhancementFile s_enhancement_files[128];
 static size_t s_enhancement_file_count;
+/* Set the first time a file registers: the report is added to the end-of-process list once per
+ * process, so a test reset of the file list never adds it a second time. */
+static int s_enhancement_report_registered;
+
+/* End of run: a title that reads its data through raw UMD sectors or its own archive reader
+ * never opens these paths, so their rewrites never apply. Each such file is named. */
+static void hle_enhancement_report(void) {
+    unsigned served = 0;
+    for (size_t i = 0; i < s_enhancement_file_count; i++) {
+        if (s_enhancement_files[i].served)
+            served++;
+        else
+            fprintf(stderr, "ENHANCEMENT_DATA_NOT_SERVED: %s was never opened by path, so the title "
+                            "read none of its rewritten bytes\n", s_enhancement_files[i].key);
+    }
+    fprintf(stderr, "ENHANCEMENT_DATA_REPORT: served=%u/%u\n", served, (unsigned)s_enhancement_file_count);
+}
 
 int sr_enhancement_file_register(const char *disc_path, const uint8_t stock_sha256[32],
                                  const uint8_t *data, uint32_t size) {
@@ -2315,6 +2391,11 @@ int sr_enhancement_file_register(const char *disc_path, const uint8_t stock_sha2
     memcpy(entry->stock_sha256, stock_sha256, 32u);
     entry->data = data;
     entry->size = size;
+    entry->served = 0;
+    if (!s_enhancement_report_registered) {
+        s_enhancement_report_registered = 1;
+        sr_at_process_end(hle_enhancement_report);
+    }
     return 1;
 }
 
@@ -2367,12 +2448,13 @@ static int hle_enhancement_attach(int slot, const char *path, uint32_t flags) {
     if (read_ok) sr_vfpu_sha256(stock, f->size, digest);
     free(stock);
     for (size_t i = 0; read_ok && i < s_enhancement_file_count; i++) {
-        const HleEnhancementFile *entry = &s_enhancement_files[i];
+        HleEnhancementFile *entry = &s_enhancement_files[i];
         if (strcmp(entry->key, key) != 0 || memcmp(entry->stock_sha256, digest, 32u) != 0)
             continue;
         f->enhancement_data = entry->data;
         f->size = entry->size;
         f->off = 0;
+        entry->served = 1;
         if (getenv("SR_IOLOG"))
             fprintf(stderr, "Open(%s) -> enhancement data file size=%u\n", path, entry->size);
         free(key);
@@ -2421,6 +2503,14 @@ uint32_t io_seek_destination(const Fd *f, int64_t offset, uint32_t whence,
                                     const char *api, uint32_t *position) {
     static atomic_flag reported = ATOMIC_FLAG_INIT;
     int64_t base = whence == 1u ? (int64_t)f->off : whence == 2u ? (int64_t)f->size : 0;
+    if (sr_vfs_strnicmp(f->guest_path, "disc0:", 6) == 0) {
+        /* A UMD file's position stays inside [0, size]: a destination before the start or past
+         * the end, through sceIoLseek or sceIoLseek32 and from any whence, answers 0x80010005
+         * with the position unchanged (PSP-IO-EOF-002, measured). */
+        if (offset < -base || offset > (int64_t)f->size - base) return 0x80010005u;
+        *position = (uint32_t)(base + offset);
+        return 0u;
+    }
     if (offset < -base)   /* before the start: EINVAL on the Memory Stick (measured) */
         return f->host && loadexec_ms0_path(f->guest_path) ? 0x80010016u : 0xffffffffu;
     if (offset <= (int64_t)UINT32_MAX - base) {

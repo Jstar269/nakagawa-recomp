@@ -11,6 +11,7 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 import contextlib
+import copy
 import errno
 import hashlib
 import io
@@ -3587,6 +3588,10 @@ BRINGUP_SCHEMA_PATH = ROOT / "assets" / "bringup_report.schema.json"
 # --launch-timeout against the same range.
 BRINGUP_LAUNCH_TIMEOUT_DEFAULT_SECONDS = 20
 BRINGUP_LAUNCH_TIMEOUT_MAX_SECONDS = 120
+# How many build-and-launch rounds one bring-up may take while its run keeps stopping at code
+# the game installed at run time (#1933, --capture-rounds). Round 1 is the first launch.
+BRINGUP_CAPTURE_ROUNDS_DEFAULT = 4
+BRINGUP_CAPTURE_ROUNDS_MAX = 16
 
 
 def _schema_at_pointer(schema: dict, pointer: str) -> dict:
@@ -4008,6 +4013,12 @@ def _write_private_sweep_import_report(
 
 
 def _bringup_human_summary(report: dict) -> str:
+    summary = _bringup_stage_summary(report)
+    capture_rounds = _bringup_capture_summary(report)
+    return f"{summary}\n{capture_rounds}" if capture_rounds else summary
+
+
+def _bringup_stage_summary(report: dict) -> str:
     uses_cfw_original = any(
         check.get("code") == "MODIFIED_DUMP_CFW_LOADER"
         and check.get("status") == "IN_PROGRESS"
@@ -4792,6 +4803,7 @@ class _Bringup:
     fail_stage: Any = None
     game_name: Any = None
     iso_path: Any = None
+    launch_output: Any = None
     manifest: Any = None
     metadata: Any = None
     module_dir: Any = None
@@ -5384,6 +5396,12 @@ def _bringup_launch(st):
         if not executable.is_file():
             raise PackageBuildError("The generated package executable is missing.")
         env = _bringup_child_environment(user_root)
+        # The title's code-capture folder (#1933): a call into code the game installed at run
+        # time writes a capture there, which the next round's build translates. Always this
+        # folder, so an inherited one cannot hide a capture from the rounds.
+        capture_dir = bringup_capture_dir(user_root, metadata.disc_id)
+        capture_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        env["SR_CODE_CAPTURE"] = str(capture_dir)
         # The package ships the guest modules it was compiled against in
         # <package>/modules; the runtime loads them from SR_MODULE_DIR, as a
         # player launch of the same package does. Without it the runtime falls
@@ -5476,6 +5494,7 @@ def _bringup_launch(st):
         )
         try:
             launch_output, _ = process.communicate(timeout=timeout)
+            st.launch_output = launch_output
             _write_bringup_launch_log(work_dir, launch_output)
             presentation_evidence_ok = _set_bringup_presentation(report, launch_output)
             report["runtime_imports"] = _runtime_import_rows(launch_output, unsupported_imports)
@@ -5568,6 +5587,7 @@ def _bringup_launch(st):
         except subprocess.TimeoutExpired:
             process.kill()
             launch_output, _ = process.communicate()
+            st.launch_output = launch_output
             _write_bringup_launch_log(work_dir, launch_output)
             _set_bringup_presentation(report, launch_output, stopped=True)
             report["exit_classification"] = "TIMED_OUT"
@@ -5587,6 +5607,174 @@ def _bringup_finish(st: Any) -> int:
     if not report_written:
         return 1
     return 0 if report["failure_class"] == "NONE" else 1
+
+
+def bringup_capture_dir(user_root: Path, disc_id: str) -> Path:
+    """The title's code-capture folder (#1933), beside its bring-up cache.
+
+    The player's launcher names the same folder to the runtime as SR_CODE_CAPTURE
+    (src/core/nk_launch.c launch_code_capture_dir), so a capture a player run wrote is
+    translated by the title's next bring-up. It is removed with the title's build cache.
+    """
+    return user_root / "cache" / "bringup" / disc_id.upper() / "captures"
+
+
+def _bringup_captures(folder: Path) -> list[Path]:
+    """The complete captures in ``folder``, by name (a ``.part`` file is still being written)."""
+    if not folder.is_dir():
+        return []
+    return sorted(path for path in folder.glob("code_capture_*.nkcap") if path.is_file())
+
+
+_CODE_CAPTURE_STOP_RE = re.compile(
+    r"CODE_CAPTURE: (?:wrote|already holds) (code_capture_[0-9a-f]{8}_[0-9a-f]{16}\.nkcap) "
+)
+
+
+def _bringup_capture_stop(launch_output: str | None) -> str | None:
+    """The capture the run stopped at (src/rt/recomp.c code_capture_note), or None."""
+    names = _CODE_CAPTURE_STOP_RE.findall(launch_output or "")
+    return names[-1] if names else None
+
+
+@contextlib.contextmanager
+def _bringup_codegen_captures(captures: list[Path]):
+    """Translate ``captures`` in the package build: each one is a ``--code-capture`` codegen
+    option in CODEGEN_USER_ARGS, the codegen argument route every package build reads and its
+    cache key names. Each file is named, not the folder, so the key changes with the set of
+    captures (a capture's name carries its target and a hash of its bytes) and a build of a
+    larger set is never served from the cache of a smaller one. A value the caller set is
+    kept, and it is restored afterwards."""
+    if not captures:
+        yield
+        return
+    previous = os.environ.get("CODEGEN_USER_ARGS")
+    added = " ".join(f"--code-capture={path.as_posix()}" for path in captures)
+    os.environ["CODEGEN_USER_ARGS"] = f"{previous} {added}" if previous else added
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("CODEGEN_USER_ARGS", None)
+        else:
+            os.environ["CODEGEN_USER_ARGS"] = previous
+
+
+_CAPTURE_OUTCOME_TEXT = {
+    "NO_CAPTURE_STOP": "did not stop at a capture",
+    "NEW_CAPTURE": "stopped at a new capture",
+    "CAPTURE_ALREADY_TRANSLATED": "stopped at a capture its build translated",
+    "CAPTURE_MISSING": "stopped at a capture the folder does not hold",
+}
+
+
+def _bringup_capture_summary(report: dict) -> str:
+    """The human lines for the report's code-capture rounds; empty when it has none."""
+    rounds = report.get("code_capture")
+    if not rounds:
+        return ""
+    lines = [f"Code capture rounds (at most {rounds['round_limit']}):"]
+    for entry in rounds["rounds"]:
+        lines.append(
+            f"  round {entry['round']}: translated {entry['captures_translated']} capture(s); "
+            f"the run {_CAPTURE_OUTCOME_TEXT[entry['outcome']]} ({entry['failure_class']})"
+        )
+    if rounds["stop"] != "NONE":
+        lines.append(f"  stopped: {rounds['stop']}")
+    return "\n".join(lines)
+
+
+def _bringup_capture_rounds(st: Any) -> int:
+    """Build and launch; while the run stops at a new code capture, build again with it (#1933).
+
+    A run that calls code the game installed at run time stops, and the runtime writes a capture
+    of that code to the title's capture folder. The next round's build translates every capture
+    in the folder, and the run goes on to the next such call or to the end. A title whose folder
+    holds no capture and whose run writes none takes one round, exactly as before: its report
+    has no ``code_capture`` field. The rounds are bounded by ``--capture-rounds``; a run that
+    still stops at a new capture in the last round is the named stop BRINGUP_CAPTURE_BOUND, and a
+    run that stops at a capture its own build translated is BRINGUP_CAPTURE_NOT_BOUND, since
+    another round would build the same thing. Either exits non-zero, never as success.
+    """
+    limit = getattr(st.args, "capture_rounds", BRINGUP_CAPTURE_ROUNDS_DEFAULT)
+    folder = bringup_capture_dir(st.user_root, st.metadata.disc_id)
+    # Every round starts from the report as analysis left it; earlier rounds are kept as rows.
+    analyzed_report = copy.deepcopy(st.report)
+    rounds: list[dict] = []
+    round_number = 0
+    while True:
+        round_number += 1
+        translated = _bringup_captures(folder)
+        if round_number > 1:
+            st.report = copy.deepcopy(analyzed_report)
+        if rounds or translated:
+            st.report["code_capture"] = {"round_limit": limit, "stop": "NONE", "rounds": rounds}
+        st.launch_output = None
+        with _bringup_codegen_captures(translated):
+            rc: int | None = _bringup_codegen(st)
+            if rc is None:
+                rc = _bringup_package(st)
+        if rc is not None:
+            return rc
+        rc = _bringup_launch(st)
+        if rc is not None:
+            return rc
+        stopped = _bringup_capture_stop(st.launch_output)
+        if stopped is None and "code_capture" not in st.report:
+            return _bringup_finish(st)
+        named_stop, message = "NONE", None
+        if stopped is None:
+            outcome = "NO_CAPTURE_STOP"
+        elif stopped in {path.name for path in translated}:
+            outcome = "CAPTURE_ALREADY_TRANSLATED"
+            named_stop = "BRINGUP_CAPTURE_NOT_BOUND"
+            message = (
+                f"{named_stop}: round {round_number} stopped at {stopped}, which its build "
+                "translated; the translation did not bind (guest memory did not hold the captured "
+                "words when the game called them), so another round would stop there again"
+            )
+        elif not (folder / stopped).is_file():
+            outcome = "CAPTURE_MISSING"
+            named_stop = "BRINGUP_CAPTURE_MISSING"
+            message = (
+                f"{named_stop}: round {round_number} stopped at {stopped}, which {folder} does "
+                "not hold, so no round can translate it"
+            )
+        else:
+            outcome = "NEW_CAPTURE"
+            if round_number >= limit:
+                named_stop = "BRINGUP_CAPTURE_BOUND"
+                message = (
+                    f"{named_stop}: {round_number} rounds reached; last capture {stopped} "
+                    "(raise --capture-rounds to translate it)"
+                )
+        rounds.append({
+            "round": round_number,
+            "captures_translated": len(translated),
+            "outcome": outcome,
+            "failure_class": st.report["failure_class"],
+        })
+        st.report["code_capture"] = {"round_limit": limit, "stop": named_stop, "rounds": rounds}
+        if outcome == "NEW_CAPTURE" and named_stop == "NONE":
+            continue
+        status = _bringup_finish(st)
+        if message is not None:
+            print(message)
+            return status or 1
+        return status
+
+
+def _capture_rounds_argument(value: str) -> int:
+    """``--capture-rounds``: 1..BRINGUP_CAPTURE_ROUNDS_MAX launches."""
+    try:
+        rounds = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {value!r}") from None
+    if not 1 <= rounds <= BRINGUP_CAPTURE_ROUNDS_MAX:
+        raise argparse.ArgumentTypeError(
+            f"must be 1..{BRINGUP_CAPTURE_ROUNDS_MAX}, not {rounds}"
+        )
+    return rounds
 
 
 def cmd_bringup(args: argparse.Namespace) -> int:
@@ -5630,16 +5818,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     rc = _bringup_analyze(st)
     if rc is not None:
         return rc
-    rc = _bringup_codegen(st)
-    if rc is not None:
-        return rc
-    rc = _bringup_package(st)
-    if rc is not None:
-        return rc
-    rc = _bringup_launch(st)
-    if rc is not None:
-        return rc
-    return _bringup_finish(st)
+    return _bringup_capture_rounds(st)
 
 
 def _use_utf8_standard_streams() -> None:
@@ -5801,6 +5980,12 @@ def main() -> int:
                                 f"default {BRINGUP_LAUNCH_TIMEOUT_DEFAULT_SECONDS})")
     p_bringup.add_argument("--instruction-trace", action="store_true",
                            help="Write guest instruction trace under --work-dir")
+    p_bringup.add_argument("--capture-rounds", type=_capture_rounds_argument,
+                           default=BRINGUP_CAPTURE_ROUNDS_DEFAULT,
+                           help="Build-and-launch rounds while the run stops at code the game "
+                                "installed at run time, each translating the captures so far "
+                                f"(1..{BRINGUP_CAPTURE_ROUNDS_MAX}; "
+                                f"default {BRINGUP_CAPTURE_ROUNDS_DEFAULT})")
     p_bringup.add_argument("--private-sweep-import-report", type=Path, default=None,
                            help=argparse.SUPPRESS)
     p_bringup.add_argument("--sweep-progress-report", type=Path, default=None,

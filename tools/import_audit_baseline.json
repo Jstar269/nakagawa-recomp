@@ -175,11 +175,10 @@
     "status": "partial"
   },
   "0x0bf0a3ae": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_NetGetLocalEtherAddr",
     "name": "sceNetGetLocalEtherAddr",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x0bf608fb": {
     "classification": "controlled_unsupported",
@@ -655,11 +654,10 @@
     "status": "partial"
   },
   "0x281928a9": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_NetTerm",
     "name": "sceNetTerm",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x289d82fe": {
     "classification": "dedicated",
@@ -1040,11 +1038,10 @@
     "status": "unreviewed"
   },
   "0x39af39a6": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_NetInit",
     "name": "sceNetInit",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x3a20a200": {
     "classification": "controlled_unsupported",
@@ -1849,6 +1846,12 @@
     "handler": "h_UmdDriveStat",
     "name": "sceUmdGetDriveStat",
     "status": "partial"
+  },
+  "0x6d08a871": {
+    "classification": "dedicated",
+    "handler": "h_IoUnassign",
+    "name": "sceIoUnassign",
+    "status": "unreviewed"
   },
   "0x6d212bac": {
     "classification": "dedicated",
@@ -2953,6 +2956,12 @@
     "name": "sceIoDopen",
     "status": "partial"
   },
+  "0xb2a628c1": {
+    "classification": "dedicated",
+    "handler": "h_IoAssign",
+    "name": "sceIoAssign",
+    "status": "unreviewed"
+  },
   "0xb3a59970": {
     "classification": "dedicated",
     "handler": "h_GetVTimerBase",
@@ -3469,8 +3478,8 @@
   },
   "0xd5c28cc0": {
     "classification": "dedicated",
-    "handler": "h_AtracReleaseResources",
-    "name": "sceAtracReleaseResources",
+    "handler": "h_AtracEndEntry",
+    "name": "sceAtracEndEntry",
     "status": "unreviewed"
   },
   "0xd5ebbbcd": {
@@ -3618,11 +3627,10 @@
     "status": "unreviewed"
   },
   "0xded9d28e": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_NetAdhocctlGetParameter",
     "name": "sceNetAdhocctlGetParameter",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0xdf089680": {
     "classification": "dedicated",

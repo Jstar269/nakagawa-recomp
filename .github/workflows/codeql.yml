@@ -1,4 +1,8 @@
 name: Trusted CodeQL
+# A dispatched run names its pull request, so a dispatch can be matched to the pull request
+# it scans (docs/CI.md, "Trusted CodeQL on pull requests"). Quoted: unquoted, " #" starts a
+# YAML comment and cuts the title at "(PR".
+run-name: "${{ github.event_name == 'workflow_dispatch' && format('Trusted CodeQL (PR #{0})', inputs.pull_request_number) || 'Trusted CodeQL' }}"
 
 on:
   # The "CodeQL wake" workflow (codeql-wake.yml) is a signal only. Its pull_request and
@@ -6,6 +10,11 @@ on:
   # definition comes from the trusted default branch for both kinds of wake, reads the exact
   # pull request or merge-queue group from GitHub's API, and analyses the current tree
   # independently. CI is not a trigger, so the analysis no longer waits for the slowest CI job.
+  # A pull request wake is analysed only for a batch head: a branch named batch/... in this
+  # repository, which is how the maintainer lands pull requests. Any other pull request head
+  # runs no job, so it gets no SARIF and no "CodeQL" check, and cannot merge until a
+  # workflow_dispatch analyses it (docs/CI.md, "Trusted CodeQL on pull requests"). Merge
+  # groups, pushes to main, the schedule and dispatches always analyse.
   workflow_run:
     workflows: ["CodeQL wake"]
     types: [completed]
@@ -40,7 +49,15 @@ concurrency:
 jobs:
   prepare:
     name: Prepare trusted CodeQL source
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'merge_group' }}
+    # A pull request wake proceeds only for this repository's batch/ branches. The head
+    # repository and branch come from GitHub's run record, not from the candidate; a fork, a
+    # missing head repository or any other branch compares false and skips every job.
+    if: >-
+      ${{ github.event_name != 'workflow_run' ||
+          github.event.workflow_run.event == 'merge_group' ||
+          (github.event.workflow_run.event == 'pull_request' &&
+           github.event.workflow_run.head_repository.full_name == github.repository &&
+           startsWith(github.event.workflow_run.head_branch, 'batch/')) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
@@ -67,7 +84,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
 
       # The analyses run on the maintainer's self-hosted pool only for a target that is
       # already trusted (a push to main, a merge group, a desk batch) and only while the
@@ -301,10 +318,12 @@ jobs:
           print(f"materialized {len(blobs)} regular files from tree {os.environ['TREE_SHA']}")
           PY
 
-      # Whether the change can alter an analysis result. Only a pull request whose diff touches
-      # no C/C++, Python or workflow file skips the three analyses; the upload job then posts
-      # empty results under the same categories, so the required "CodeQL" check still reports
-      # on this exact merge commit (docs/CI.md, "Trusted CodeQL on pull requests"). The
+      # Whether the change can alter an analysis result. Only a pull request target (a batch
+      # head, or a dispatched pull request) whose diff touches no C/C++, Python or workflow
+      # file skips the three analyses; the upload job then posts empty results under the same
+      # categories, so the required "CodeQL" check still reports on this exact merge commit
+      # (docs/CI.md, "Trusted CodeQL on pull requests"). A pull request head that this job's
+      # if: skipped is not scanned and gets no check at all, never an empty result. The
       # classifier is the default branch's copy, like this definition, and reads the diff of
       # the merge commit already fetched above as git objects. A merge group, a push to the
       # default branch, the schedule and a forced dispatch always analyse in full.
@@ -367,7 +386,7 @@ jobs:
           path: codeql-source
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: ${{ matrix.language }}
           build-mode: none
@@ -382,7 +401,7 @@ jobs:
             disable-default-queries: false
 
       - name: Analyze source data without uploading partial results
-        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           output: ${{ runner.temp }}/codeql-sarif
           upload: never

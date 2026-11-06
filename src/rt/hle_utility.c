@@ -285,7 +285,9 @@ enum { SR_UTILITY_STORAGE_GAMEDATA = 1, SR_UTILITY_STORAGE_GAMESHARING = 2 };
  * winds down, so that type's own GetStatus then reports NONE (0) rather than WRONG_TYPE: a
  * game spinning "while (sceUtilityOskGetStatus() != 0)" after name entry would otherwise wait
  * forever. A call for any other type returns WRONG_TYPE (0x80110005), the OSK's PSP-measured
- * result with no keyboard (#363), which the #1386 contract applies to every dialog. An
+ * result with no keyboard (#363). With no dialog ever started, a PSP-3000 6.61 answers it to
+ * every GetStatus, Update and ShutdownStart of savedata, the message dialog, netconf, gamedata
+ * install and game sharing too (PSP-HLE-UTILITY-NONE-001, 2026-11-04). An
  * InitStart while the holder is still active returns INVALID_STATUS (0x80110001) and changes
  * nothing: the code the #1386 contract names, and the OSK's measured code for a call in the
  * wrong state. What a PSP returns for a second InitStart is unmeasured, so the slot fails
@@ -1096,6 +1098,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_exit_request_deadline_us = 0u;
     memset(s_utility_module_loaded, 0, sizeof(s_utility_module_loaded));
     s_utility_usb_loaded = 0u;
+    hle_net_reset();                     /* the new program starts with sceNet uninitialized */
     s_volatile_locked = 0;
     g_sdk_version = 0u;
     s_loadexec_boot_uid = 0u;

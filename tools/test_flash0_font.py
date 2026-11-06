@@ -240,6 +240,9 @@ def write_latin_index_fixture(root: Path) -> dict[str, bytes]:
     project_small = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Project Latin Second", 3 * 64)
     (project / "nkltn.pgf").write_bytes(project_latin)
     (project / "nkltns.pgf").write_bytes(project_small)
+    # #2005: one per-style project face, the small serif bold (Latin index 13).
+    (project / "nkltn13.pgf").write_bytes(
+        synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Project Latin Serif Bold", 3 * 64))
     payloads = {"nkltn.pgf": legacy, "ltn0.pgf": first, "ltn4.pgf": bold, "ltn8.pgf": ninth}
     for name, data in payloads.items():
         (cache / name).write_bytes(data)
@@ -962,6 +965,8 @@ class Flash0FontDeviceTests(unittest.TestCase):
                 latin_request_line(15, project_small, "project", "project"),
                 latin_request_line(1, project_latin, "project", "project"),
                 latin_request_line(9, project_small, "project", "project"),
+                latin_request_line(13, "nkltn13.pgf", "project", "project"),
+                latin_request_line(12, project_small, "project", "project"),
                 latin_request_line(14, project_small, "project", "project"),
             ])
             # The registry lines cover every font the game could ask for; this one, what it opened.

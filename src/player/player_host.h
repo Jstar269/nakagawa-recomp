@@ -22,12 +22,14 @@ extern "C" {
 /* What a file picker is for; each kind has its own filters. */
 typedef enum {
     PLAYER_HOST_PICK_DISC = 0,  /* a disc image or PSN package; one file */
-    PLAYER_HOST_PICK_FONTS      /* the PSP .pgf fonts; any number, one folder */
+    PLAYER_HOST_PICK_FONTS,     /* the PSP .pgf fonts; any number, one folder */
+    PLAYER_HOST_PICK_SAVE       /* Add a save (#1883): one save's folder, a folder picker */
 } PlayerHostPick;
 
-/* Show the host's open-file picker for `what`, starting in start_folder (NULL:
- * the host's choice), and call callback(userdata, files, filter) when the user
- * picks or cancels. start_folder must stay valid until the callback runs. */
+/* Show the host's open-file picker for `what` (the folder picker for a save),
+ * starting in start_folder (NULL: the host's choice), and call
+ * callback(userdata, files, filter) when the user picks or cancels. SDL may call
+ * it on another thread. start_folder must stay valid until the callback runs. */
 void player_host_show_picker(PlayerHostPick what, SDL_Window *window,
                              const char *start_folder,
                              SDL_DialogFileCallback callback, void *userdata);
@@ -42,6 +44,12 @@ bool player_host_open_folder(const char *path);
  * the executable. Windows needs nothing: the executable carries the icon
  * (assets/brand/nakagawa.rc). */
 void player_host_set_window_icon(SDL_Window *window);
+
+/* Give this process the player's identity (#2006, NK_APP_* in src/core/nk_launch.h) before
+ * SDL starts and before any window exists: the Windows AppUserModelID, so the launcher, every
+ * game it starts and a pinned shortcut share one taskbar group, and SDL's app metadata (the
+ * Wayland app ID and X11 class elsewhere). A refusal only costs the grouping; it is logged. */
+void player_host_set_app_identity(void);
 
 #ifdef __cplusplus
 }

@@ -85,10 +85,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
 
       - name: Install Playwright and its headless Chromium
-        # Exact CPython 3.15.1 / Ubuntu 26.04 x86_64 closure, hash-pinned. Playwright 1.64.1 lists
+        # Exact CPython 3.15.2 / Ubuntu 26.04 x86_64 closure, hash-pinned. Playwright 1.64.1 lists
         # ubuntu26.04-x64 as a supported host, so --with-deps installs the browser's system libraries.
         run: |
           set -euo pipefail

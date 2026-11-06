@@ -41,7 +41,7 @@ pull request.
 
 ### Build and test
 
-**Windows 11** is the supported desktop platform. You need PowerShell 7.4 or later, MSYS2 UCRT64
+**Windows 11** is the supported desktop platform. You need PowerShell 7.6 or later, MSYS2 UCRT64
 (GCC, GNU Make, SDL3, SDL3_ttf, the Vulkan headers and loader), CPython 3.15 (3.14 is also accepted) and the Vulkan SDK.
 [`docs/SETUP.md`](docs/SETUP.md) has the full steps, including the
 [`PATH` order](docs/SETUP.md#path-order) that matters on Windows. From the repository root, with

@@ -713,12 +713,60 @@ static void test_exec_share(void) {
     CHECK(value > 0.0 && value < 0.5, "interp_time_share=%f", value);
 }
 
+/* End-of-process reports (sr_at_process_end): sr_perf_shutdown() runs each registered report
+ * once, in registration order, and a second shutdown (an ordinary exit after an _Exit-path
+ * call, say) must not run them again. */
+static int s_end_log[8];
+static int s_end_count;
+static void end_report_first(void) { if (s_end_count < 8) s_end_log[s_end_count++] = 1; }
+static void end_report_second(void) { if (s_end_count < 8) s_end_log[s_end_count++] = 2; }
+
+static void test_process_end_reports(void) {
+    s_end_count = 0;
+    sr_at_process_end(end_report_first);
+    sr_at_process_end(end_report_second);
+    CHECK(s_end_count == 0, "a report ran at registration (%d runs)", s_end_count);
+    sr_perf_shutdown();
+    CHECK(s_end_count == 2 && s_end_log[0] == 1 && s_end_log[1] == 2,
+          "first shutdown ran %d reports, order %d,%d (expected 2 in registration order 1,2)",
+          s_end_count, s_end_log[0], s_end_log[1]);
+    sr_perf_shutdown();
+    CHECK(s_end_count == 2, "second shutdown re-ran reports (%d runs in total, expected 2)",
+          s_end_count);
+}
+
+/* Does the line that ends at `nl` (its '\n') end with `suffix`? A text-mode stream may write '\r'. */
+static int line_ends_with(const char *start, const char *nl, const char *suffix) {
+    if (!start || !nl) return 0;
+    if (nl > start && nl[-1] == '\r') nl--;
+    size_t n = strlen(suffix);
+    return (size_t)(nl - start) >= n && strncmp(nl - n, suffix, n) == 0;
+}
+
+/* The number of comma-separated fields on the line from `start` to `nl` (its '\n'). */
+static int line_fields(const char *start, const char *nl) {
+    if (!start || !nl) return 0;
+    int n = 1;
+    for (const char *c = start; c < nl; c++) n += *c == ',';
+    return n;
+}
+
+/* The SR_PERF_FRAMES header as it is with SR_GPU_TIMESTAMPS off: the same 25 columns as before the
+ * switch existed. */
+static const char k_frames_header_off[] =
+    "vcount,vblanks,work_ms,wall_ms,guest_ms,aot_ms,interp_ms,ge_cpu_ms,ge_cpu_calls,ge_wait_ms,ge_waits,"
+    "readback_waits,vk_submit_ms,vk_wait_ms,vk_readback_ms,vk_pipeline_ms,vk_pipeline_creations,"
+    "texture_decode_ms,texture_decodes,storage_ms,atrac_ms,h264_ms,audio_mix_ms,present_ms,"
+    "sched_switches";
+
 /* SR_PERF_FRAMES: one row per new frame with what that frame cost. A re-present adds no row, the
- * first new frame has nothing to measure from, and GE CPU time lands in the frame it ran in. */
-static void test_per_frame_rows(void) {
+ * first new frame has nothing to measure from, and GE CPU time lands in the frame it ran in. Run
+ * with SR_GPU_TIMESTAMPS unset and set to 0: either way the file has no gpu_* columns. */
+static void per_frame_rows_case(const char *timestamps) {
     const uint32_t a = 0x04000000u, b = 0x04044000u;
     char path[600];
     snprintf(path, sizeof path, "%.*s.frames.csv", (int)(strlen(s_csv_path) - 4u), s_csv_path);
+    set_env("SR_GPU_TIMESTAMPS", timestamps);
     set_env("SR_PERF_FRAMES", path);
     s_fake_wall_ns = 30000000000ull;
     s_fake_cpu_ns = 3000000000ull;
@@ -734,12 +782,17 @@ static void test_per_frame_rows(void) {
     flip(b, 205u, 5.0);
     sr_perf_test_set_clocks(NULL, NULL);
     set_env("SR_PERF_FRAMES", NULL);
+    set_env("SR_GPU_TIMESTAMPS", NULL);
     sr_perf_test_reinit();                       /* closes the file */
     static char text[4096];
+    const char *ts = timestamps ? timestamps : "unset";
     CHECK(read_file(path, text, sizeof text) > 0, "SR_PERF_FRAMES wrote %s", path);
-    const char *header = "vcount,vblanks,work_ms,wall_ms,guest_ms,aot_ms,interp_ms,ge_cpu_ms,ge_cpu_calls,";
-    CHECK(strncmp(text, header, strlen(header)) == 0, "per-frame header: %.120s", text);
     const char *rows = strchr(text, '\n');
+    const size_t header_len = rows ? (size_t)(rows - text) - (rows > text && rows[-1] == '\r') : 0u;
+    CHECK(header_len == strlen(k_frames_header_off) &&
+              strncmp(text, k_frames_header_off, header_len) == 0,
+          "SR_GPU_TIMESTAMPS %s: the per-frame header is the 25 columns it had before the switch: %.500s",
+          ts, text);
     int count = 0;
     for (const char *r = rows; r && r[1]; r = strchr(r + 1, '\n')) count++;
     CHECK(count == 3, "per-frame rows: %d (expected 3)\n%s", count, text);
@@ -751,6 +804,93 @@ static void test_per_frame_rows(void) {
     const char *third = second ? strchr(second + 1, '\n') : NULL;
     CHECK(third && strncmp(third + 1, "205,2,6.000,8.000,", 18) == 0,
           "third row (across the re-present): %.80s", third ? third + 1 : "");
+    /* No gpu_* fields either: every row has the header's 25. */
+    const char *end = third ? strchr(third + 1, '\n') : NULL;
+    const int f1 = rows && second ? line_fields(rows + 1, second) : 0;
+    const int f2 = second && third ? line_fields(second + 1, third) : 0;
+    const int f3 = third && end ? line_fields(third + 1, end) : 0;
+    CHECK(f1 == 25 && f2 == 25 && f3 == 25,
+          "SR_GPU_TIMESTAMPS %s: rows have %d, %d and %d fields (want 25 each)", ts, f1, f2, f3);
+    remove(path);
+}
+
+static void test_per_frame_rows(void) {
+    per_frame_rows_case(NULL);
+    per_frame_rows_case("0");
+}
+
+/* SR_GPU_TIMESTAMPS=1 before the GPU has timestamp queries (sr_perf_gpu_timestamps_on not called):
+ * the header has the seven gpu_* columns and every row has them empty, not zero. */
+static void test_per_frame_gpu_columns_no_queries(void) {
+    const uint32_t a = 0x04000000u, b = 0x04044000u;
+    char path[600];
+    snprintf(path, sizeof path, "%.*s.gpuq.csv", (int)(strlen(s_csv_path) - 4u), s_csv_path);
+    set_env("SR_GPU_TIMESTAMPS", "1");
+    set_env("SR_PERF_FRAMES", path);
+    s_fake_wall_ns = 35000000000ull;
+    s_fake_cpu_ns = 3500000000ull;
+    sr_perf_test_set_clocks(fake_wall, fake_cpu);
+    sr_perf_test_reinit();
+    flip(a, 250u, 0.0);
+    flip(b, 251u, 10.0);
+    sr_perf_test_set_clocks(NULL, NULL);
+    set_env("SR_PERF_FRAMES", NULL);
+    set_env("SR_GPU_TIMESTAMPS", NULL);
+    sr_perf_test_reinit();
+    static char text[4096];
+    CHECK(read_file(path, text, sizeof text) > 0, "SR_PERF_FRAMES wrote %s", path);
+    const char *header_end = strchr(text, '\n');
+    const char *row_end = header_end ? strchr(header_end + 1, '\n') : NULL;
+    CHECK(line_fields(text, header_end) == 32 &&
+              line_ends_with(text, header_end, ",sched_switches,gpu_ms,gpu_render_ms,gpu_snapshot_ms,"
+                                               "gpu_upload_ms,gpu_readback_ms,gpu_other_ms,gpu_present_ms"),
+          "switch set, no queries: header has the gpu_* columns: %.500s", text);
+    CHECK(line_fields(header_end + 1, row_end) == 32 && line_ends_with(header_end, row_end, ",,,,,,,"),
+          "switch set, no queries: the row ends with seven empty gpu_* fields: %.300s",
+          header_end ? header_end + 1 : "");
+    remove(path);
+}
+
+/* SR_GPU_TIMESTAMPS: GPU time credited in a frame lands in that frame's row, by kind, and the kinds
+ * add up to gpu_ms. Runs last: the timestamps switch stays on for the process. */
+static void test_per_frame_gpu_columns(void) {
+    const uint32_t a = 0x04000000u, b = 0x04044000u;
+    char path[600];
+    snprintf(path, sizeof path, "%.*s.gpu.csv", (int)(strlen(s_csv_path) - 4u), s_csv_path);
+    set_env("SR_GPU_TIMESTAMPS", "1");
+    set_env("SR_PERF_FRAMES", path);
+    s_fake_wall_ns = 40000000000ull;
+    s_fake_cpu_ns = 4000000000ull;
+    sr_perf_test_set_clocks(fake_wall, fake_cpu);
+    sr_perf_test_reinit();
+    sr_perf_gpu_timestamps_on();
+    flip(a, 300u, 0.0);                          /* the first new frame: no row */
+    sr_perf_gpu_time(SR_PERF_GE_RENDER_BATCH, 3000000u);
+    sr_perf_gpu_time(SR_PERF_GE_SNAPSHOT_COPY, 1000000u);
+    sr_perf_gpu_time(SR_PERF_GE_TEXTURE_UPLOAD, 250000u);
+    sr_perf_gpu_time(SR_PERF_GE_TARGET_UPLOAD, 250000u);
+    sr_perf_gpu_time(SR_PERF_GE_DEPTH_READBACK, 125000u);
+    sr_perf_gpu_time(SR_PERF_GE_MIXED_DRAIN, 125000u);
+    sr_perf_gpu_present_time(500000u);
+    flip(b, 301u, 10.0);
+    flip(a, 302u, 10.0);                         /* no GPU time in this one */
+    sr_perf_test_set_clocks(NULL, NULL);
+    set_env("SR_PERF_FRAMES", NULL);
+    set_env("SR_GPU_TIMESTAMPS", NULL);
+    sr_perf_test_reinit();                       /* closes the file */
+    static char text[4096];
+    CHECK(read_file(path, text, sizeof text) > 0, "SR_PERF_FRAMES wrote %s", path);
+    const char *header_end = strchr(text, '\n');
+    CHECK(line_ends_with(text, header_end, ",sched_switches,gpu_ms,gpu_render_ms,gpu_snapshot_ms,"
+                                           "gpu_upload_ms,gpu_readback_ms,gpu_other_ms,gpu_present_ms"),
+          "per-frame header ends with the gpu_* columns: %.400s", text);
+    const char *first = header_end;
+    const char *second = first ? strchr(first + 1, '\n') : NULL;
+    const char *third = second ? strchr(second + 1, '\n') : NULL;
+    CHECK(line_ends_with(first, second, ",4.750,3.000,1.000,0.500,0.125,0.125,0.500"),
+          "first row carries its GPU time by kind: %.200s", first ? first + 1 : "");
+    CHECK(line_ends_with(second, third, ",0.000,0.000,0.000,0.000,0.000,0.000,0.000"),
+          "second row has no GPU time: %.200s", second ? second + 1 : "");
     remove(path);
 }
 
@@ -775,7 +915,10 @@ int main(void) {
     test_files_only_counters();
     test_thread_clock();
     test_per_frame_rows();
+    test_per_frame_gpu_columns_no_queries();
+    test_per_frame_gpu_columns();
     sr_perf_shutdown();
+    test_process_end_reports();
     {
         char json_path[600];
         snprintf(json_path, sizeof json_path, "%.*s.json", (int)(strlen(s_csv_path) - 4u), s_csv_path);

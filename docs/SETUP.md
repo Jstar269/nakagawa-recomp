@@ -13,26 +13,26 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
 
 1. **Windows 11 x64** with a Vulkan-capable GPU and its current graphics driver. The player loads the
    driver's `vulkan-1.dll`.
-2. **PowerShell 7.4+** (`pwsh`), the shell you type commands into. Windows PowerShell 5.1 is not
+2. **PowerShell 7.6+** (`pwsh`), the shell you type commands into. Windows PowerShell 5.1 is not
    supported for that.
 3. **MSYS2 UCRT64** with the packages in [section 1](#1-install-the-core-toolchain): GCC, GNU Make,
    SDL3, SDL3_ttf, and the Vulkan headers and loader.
 4. **CPython 3.15.x** (3.14.x is also accepted) on `PATH`. Read [PATH order](#path-order) before you install the Python tooling.
 5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
-   LunarG Vulkan SDK 1.4.363.0 is recommended for Windows development.
+   LunarG Vulkan SDK 1.4.363.1 is recommended for Windows development.
 6. **Git for Windows**, to clone the repository and fetch optional third-party source.
 7. **Your own copy of the game** as an `.iso`, or as a compressed `.cso`, `.zso` or `.chd`
    ([Compressed disc images](#compressed-disc-images)). If its executable is encrypted, the player decrypts it
    locally; see [Encrypted executables](#encrypted-executables).
    Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
 
-For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20261001**; see
+For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20261101**; see
 [Showcase demos on Windows](#showcase-demos-on-windows-wsl-2-and-pspdev).
 
 The player's **BUILD PACKAGE** can download pinned build tools on first use. A consent card lists each
 download first ([details](#player-build-package-prerequisites)).
 
-**Which PowerShell.** Type the PowerShell commands in this guide into PowerShell 7.4+ (`pwsh`). The
+**Which PowerShell.** Type the PowerShell commands in this guide into PowerShell 7.6+ (`pwsh`). The
 build itself still calls the built-in Windows PowerShell 5.1 (`powershell.exe`) for one step,
 copying the build assets (`tools/copy_build_assets.ps1`, through `POWERSHELL` in the
 `Makefile`). That script supports 5.1, so you do not need to change or install anything for it.
@@ -134,7 +134,7 @@ player and your own game.
    Open Ubuntu once and create your Linux user. Make Ubuntu the default distribution, because the build
    runs `wsl -e` without naming one: `wsl --set-default Ubuntu`. `wsl -l -v` marks the default with `*`.
 
-2. In Ubuntu, download `pspdev-ubuntu-latest-x86_64.tar.gz` from the `v20261001` release at
+2. In Ubuntu, download `pspdev-ubuntu-latest-x86_64.tar.gz` from the `v20261101` release at
    <https://github.com/pspdev/pspdev/releases>. The asset name, release and archive hash are recorded in
    [`assets/upstream/pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
 
@@ -173,7 +173,7 @@ player and your own game.
 
 Linux can build and run the two source-owned showcase packages through the runtime.
 The route needs GCC, GNU Make, Python 3.15 (3.14 is also accepted), CMake, Ninja, `libvulkan-dev`, SDL3 3.4.20,
-and PSPDEV v20261001 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
+and PSPDEV v20261101 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
 3.4.20 release commit and verifies the PSPDEV archive against
 [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
 
@@ -193,8 +193,8 @@ consumer ISO compatibility and interactive Linux presentation remain in the work
 The supported and tested core development environment is:
 
 - Windows 11 x64. Older or unsupported Windows versions may work, but receive no compatibility guarantee.
-- PowerShell 7.4+ (`pwsh`) as the shell you type into. Windows PowerShell 5.1 is not supported for that.
-- CPython 3.15.x (3.14.x is also accepted, `>=3.14,<3.16`), with `python` resolving to that feature line. 3.15 is the default: hosted CI and the pinned prerequisite use 3.15.1.
+- PowerShell 7.6+ (`pwsh`) as the shell you type into. Windows PowerShell 5.1 is not supported for that.
+- CPython 3.15.x (3.14.x is also accepted, `>=3.14,<3.16`), with `python` resolving to that feature line. 3.15 is the default: the pinned prerequisite uses 3.15.2 and hosted CI uses 3.15.1.
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages. The release
   manifest's `toolchain_policy` records only the floors the code actually needs: a C11 compiler
   (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.15 (the manifest says `>=3.15,<3.16`; the tooling itself also accepts 3.14, see the first bullet). The rolling
@@ -202,13 +202,12 @@ The supported and tested core development environment is:
   candidate was really built with (#367).
 - A current Vulkan SDK and Vulkan-capable GPU.
 
-PowerShell 7.4 is the current floor and the oldest line Microsoft still supports;
-[issue #337](https://github.com/Jstar269/nakagawa-recomp/issues/337) records the
-source inventory and cross-version test evidence. Scripts treat empty and absent
-environment values alike so the supported 7.4/7.5/7.6 lines behave consistently.
-
-Microsoft ends support for both 7.4 and 7.5 on 2026-11-10. After that date the floor
-moves to 7.6 (LTS, supported until 2028-11-14).
+PowerShell 7.6 is the current floor: it is the LTS line Microsoft supports until 2028-11-14,
+and Microsoft ends support for both 7.4 and 7.5 on 2026-11-10.
+[Issue #337](https://github.com/Jstar269/nakagawa-recomp/issues/337) records the
+source inventory and the cross-version test evidence (every PowerShell-backed test passed on
+7.4, 7.5 and 7.6). Scripts treat empty and absent environment values alike. The doctor and each
+script's `#requires -Version 7.6` header refuse an older line.
 
 The environment doctor is the executable form of this contract:
 
@@ -573,7 +572,7 @@ The import copies each accepted file into the per-user cache and writes `manifes
 └── nkkr.pgf    (Korean slot)
 ```
 
-Japanese and Korean keep their existing imported-file-then-project-file resolution. Each Latin index uses its exact imported `ltnN.pgf` first. If it is absent or invalid, the runtime uses the nearest valid indexed import in that index's eight-file size group (the lower index wins an equal-distance tie). A cache containing only the older single-file Latin import continues to serve that file for all indices, preserving pre-index behavior. Other caches fall back to the project font of that size, `nkltn.pgf` for `ltn0` to `ltn7` and `nkltns.pgf` for `ltn8` to `ltn15`, then to the legacy import only when the project Latin font is unavailable. The player status and one startup log line per index identify every fallback, including an absent exact file. Those lines list every font a game could ask for; a `flash0: game opened` line, once per file, names each font the game does open, with the file that serves it and its source. The log line names the requested PSP file, the file that backs it and its source: `selection=exact` for the user's own file, `selection=substitute fallback=same-size`, `fallback=legacy` or `fallback=project` for a stand-in, and `backing=none fallback=missing` when nothing serves the index. The Japanese and Korean fonts (registry indices 0 and 17, `jpn0.pgf` and `kr0.pgf` on a PSP) get one such line each, where the project font is a substitute. `fonts remove --slot latin` removes the generic Latin import and all sixteen indexed files; the other slot removals are unchanged.
+Japanese and Korean keep their existing imported-file-then-project-file resolution. Each Latin index uses its exact imported `ltnN.pgf` first. If it is absent or invalid, the runtime uses the nearest valid indexed import in that index's eight-file size group (the lower index wins an equal-distance tie). A cache containing only the older single-file Latin import continues to serve that file for all indices, preserving pre-index behavior. Other caches fall back to the project's face for that index, which has its family, style and size (`nkltn.pgf` for `ltn0`, `nkltn1.pgf` to `nkltn7.pgf` for `ltn1` to `ltn7`, `nkltns.pgf` for `ltn8` and `nkltn9.pgf` to `nkltn15.pgf` for `ltn9` to `ltn15`), then to the project's regular face of that size, then to the legacy import only when no project Latin font is available. What the project fonts still do differently from a PSP's is listed in [`font/README.md`](../font/README.md#without-your-psps-fonts-what-changes). The player status and one startup log line per index identify every fallback, including an absent exact file. Those lines list every font a game could ask for; a `flash0: game opened` line, once per file, names each font the game does open, with the file that serves it and its source. The log line names the requested PSP file, the file that backs it and its source: `selection=exact` for the user's own file, `selection=substitute fallback=same-size`, `fallback=legacy` or `fallback=project` for a stand-in, and `backing=none fallback=missing` when nothing serves the index. The Japanese and Korean fonts (registry indices 0 and 17, `jpn0.pgf` and `kr0.pgf` on a PSP) get one such line each, where the project font is a substitute. `fonts remove --slot latin` removes the generic Latin import and all sixteen indexed files; the other slot removals are unchanged.
 
 The per-user data directory is the one font root. The import, the status and the preflight in the player, the launcher, and the runtime all read `<user data>/fonts/v2`; the launcher hands that root to the runtime as `SR_USER_DATA_ROOT`. A runtime root (`--runtime-root`) does not hold fonts, so an import written under `<runtime root>/fonts/v2` by an earlier build is no longer read. The launcher's old lookup under a showcase demo's `<demos>/fonts/v2` is removed for the same reason: the demos read the per-user directory too, so an import placed there is no longer read. To use it again, run `python tools/nk_cli.py fonts import <folder>` on the original `.pgf` folder (with the same `--user-data-root` you use for the player), or copy that `fonts/v2` folder unchanged to `<user data>/fonts/v2`. The manifest's size and SHA-256 are checked on use, so a copy that does not match is refused rather than served.
 
@@ -748,6 +747,22 @@ flips once per VBLANK therefore keeps every frame when its flips reach the host 
 scheduling jitter, while a second submission inside the same slot is still dropped and the
 long-run present rate never exceeds the cap (`gui-present-selftest`).
 
+### Presentation upscaler (`SR_PRESENT_UPSCALE`)
+
+`SR_PRESENT_UPSCALE=fsr1` makes the Vulkan presenter enlarge the picture to its place in the
+window with AMD FidelityFX Super Resolution 1: EASU, an edge-adaptive upscaler, then RCAS
+sharpening. `off`, the default, keeps the `SR_PRESENT_SCALING` filter. It runs only when the
+picture is enlarged on both axes, on whatever frame the presenter shows. It is presentation only:
+the guest's frame, guest VRAM and captures are byte for byte what they are with it off
+(`gpu-capture-selftest` and, with a Vulkan device and a display, `display-smoke-fsr1`). The pause
+overlay is drawn at the window's size on the CPU, so the paused picture is not upscaled and looks
+softer than the running one. Its cost is small: from 1920x1088 to 3840x2160, EASU and RCAS took
+0.40 ms per present on an RTX 3080 (`fsr1-selftest`). An unknown value, or a device without
+compute, leaves it off with a line in the log; so does a size whose images cannot be made, which
+is then not tried again. The launcher turns it off for an authentic session, and a run with it on
+is stamped as enhanced (`ACE_MODE: present upscale fsr1`), which `boot_gate.py` reads. The picture
+gate and the library sweep set it `off` for their own runs.
+
 Runtime logs are written under `logs/`. Use `SR_DEBUG=0xFF` for all categories or consult [DEBUGGING.md](DEBUGGING.md) for targeted logging.
 On Windows, runtime output redirected to a file or pipe is buffered: a line reaches the log within 50 ms,
 and everything is written when the game exits, aborts or writes a crash report. A process killed from
@@ -837,15 +852,16 @@ automatically. Named error cards explain offline, redirect, size, hash, and disk
 errors and offer a retry.
 
 The pinned candidate download set is recorded in
-[`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.15.1
+[`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.15.2
 and 34 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3 and `SDL3_ttf` with the
 readable-font runtime closure — FreeType, HarfBuzz, Graphite2, libpng, bzip2,
 Brotli, GLib, and PCRE2 — Vulkan headers/loader, and their runtime dependencies),
-totaling 101,848,305 bytes. Package hashes and
+totaling 101,892,265 bytes. Package hashes and
 sizes come from the signed MSYS2 repository database; the Python hash is from
 python.org's release page. The manifest's `source_snapshot_date` dates the MSYS2
 package pins only, and a package re-pinned after that snapshot (Brotli 1.2.1 for
-CVE-2026-111497) records its own `sha256_source.retrieved_utc`; the locked developer-tool pins carry their own retrieval
+CVE-2026-111497; SDL3, the mingw-w64 CRT, headers and winpthreads, libiconv, libpng, tzdata and
+zlib on 2026-11-05) records its own `sha256_source.retrieved_utc`; the locked developer-tool pins carry their own retrieval
 date in `assets/pypi_tool_metadata_*.json`. `tools/requirements-lock.txt` contains developer and
 build-generation tools; the consumer `build-package` path needs no third-party
 Python packages, and `glslc` is only used by opt-in shader regeneration.

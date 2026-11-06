@@ -191,6 +191,40 @@ claim it.
 - **Hardware.** Nothing here runs on a PSP. Hardware claims need the oracle route
   in [`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md).
 
+## Picture gate
+
+`tools/picture_gate.py` compares one headless frame with a reference picture
+([#1845](https://github.com/Jstar269/nakagawa-recomp/issues/1845)). It is a regression
+tripwire for a menu's text or colours, not a correctness claim. The frame comes from the
+runtime's own offscreen capture (`SR_VIDEO=offscreen`, `SR_FBSNAP_WINDOWS`), never from the
+desktop.
+
+```powershell
+mingw32-make --no-print-directory display-smoke-picture-gate   # public proof, no game needed
+python tools/picture_gate.py check <private route.json>        # one title route
+python tools/picture_gate.py accept <frame.ppm> <reference.ppm> # store a new reference
+```
+
+A route file is private JSON next to the title's other private inputs: `command`, `reference`,
+`vblank` (or none for the first frame), optional `pad`, `env`, `threshold`, `max_percent` and
+`timeout`. References are game pixels: they stay in the title's private folder, and `accept`
+refuses a path inside the checkout. Verdicts are `PASS`, `FAIL` (too many pixels over the
+threshold, a size mismatch, or runs that differ under `--runs N`), `SKIP no-reference` and
+`NOT_RUN <reason>`. SKIP and NOT_RUN are never a pass; `--strict` exits 3 on them. A runtime that
+starts and then exits nonzero or times out is a `FAIL` (exit 1); `NOT_RUN` is for a run that could
+not start or published no frame. `check --accept` captures at least twice and stores the frame
+only when the runs agree. `display-smoke --work-dir` clears only a folder it made.
+
+The gate sets `SR_DETERMINISTIC_CLOCK=1` and `SR_FPS_CAP=0` for every run
+([#2037](https://github.com/Jstar269/nakagawa-recomp/issues/2037)), whatever the route's `env` or
+the shell says. The deterministic clock makes guest time a function of the guest's work instead of
+the host's speed, and `SR_FPS_CAP=0` publishes every present of the window. A route can set
+`SR_DETERMINISTIC_SLICE_US` (default 100): the slice decides guest results, so `accept` records it
+in the reference's `.json` sidecar and a `FAIL` against a reference taken with another slice says
+`slice-differs`. A reference accepted before this change was taken under paced timing and has no
+`slice_us` in its sidecar: re-accept it with `check --accept`. Outside the gate, a pad script or
+a capture window does not turn the clock on; those runs keep their paced timing.
+
 ## Local presented-frame acceptance
 
 For a locally authorized title run using an already prepared library entry, the

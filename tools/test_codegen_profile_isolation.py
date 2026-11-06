@@ -108,10 +108,11 @@ def _addiu_sp(imm: int) -> int:
 HST_SV_ONLY = (0x0010433C, 0x0006E9BC)
 HST_FASTPATHS = (0x0006EA1C, 0x00108630)
 HST_ABORT = (0x00000A1C,)
+# 0x000011B0, 0x0000260C, 0x0000FE3C, 0x00015EA0 and 0x000149A8 left this list when their
+# stubs were retired (#363): each now translates as written in both profiles.
 HST_CUSTOM_STUBS = (
-    0x000011B0, 0x0000260C, 0x0000FE3C, 0x0000F538, 0x000101C4, 0x00010738,
-    0x00013524, 0x00015EA0, 0x000143B0, 0x000468C8,
-    0x00011090, 0x000110DC, 0x000114A8, 0x000114C0, 0x000149A8,
+    0x0000F538, 0x000101C4, 0x00010738, 0x00013524, 0x000143B0,
+    0x00011090, 0x000110DC, 0x000114A8, 0x000114C0,
 )
 HST_GUEST_PATCHES = tuple(sorted(codegen.GUEST_PATCHES))
 HST_SIMPLE_STUB_ADDRS = tuple(sorted(HST_SIMPLE_STUBS))
@@ -446,7 +447,6 @@ class ProfileHstLegacyTests(unittest.TestCase):
             "ARRSHIFT_FASTPATH",
             "GUEST_ABORT",
             "_Exit(9)",
-            "custom stub: __register_frame_info bypass",
         )
         missing = [s for s in expected if s not in self.combined]
         self.assertEqual(missing, [], "profile=hst lost legacy HST emission")
@@ -582,7 +582,6 @@ ADDRESS_TABLES = {
     "_HST_INLINE_SITES": "hst_profile",
     "SIMPLE_STUBS": "empty-under-none",
     "HST_CUSTOM_STUBS": "hst_profile",
-    "HST_GAME_LOOP_ADDR": "hst_profile",
     "HST_MANUAL_CALLABLES": "catalog-early-return",
     "HST_RESUME_OWNERS": "catalog-early-return",
 }

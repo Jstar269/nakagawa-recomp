@@ -792,13 +792,13 @@ static void test_pinned_prerequisite_manifest(void) {
     assert(package_builder_find_cli(NULL, cli_path, sizeof(cli_path)));
     assert(package_builder_load_prerequisites(cli_path, &list, error, sizeof(error)));
     assert(list.count == 35);
-    assert(list.total_bytes == UINT64_C(101848305));
+    assert(list.total_bytes == UINT64_C(101892265));
     assert(strcmp(list.items[0].id, "cpython-embed-amd64") == 0);
     assert(strcmp(list.items[0].host, "www.python.org") == 0);
-    assert(strcmp(list.items[0].version, "3.15.1") == 0);
+    assert(strcmp(list.items[0].version, "3.15.2") == 0);
     assert(strcmp(list.items[0].license, "PSF-2.0") == 0);
     assert(strcmp(list.items[0].sha256,
-                  "352e232f25b5120508f11a6dfc1bd9076d3e70c30977d552a63338838c2ae8fb") == 0);
+                  "d012f3aa29cf07436dae8aea1fec0fd195c2612a0b059b1f915ae0afb9ad1f62") == 0);
 }
 
 #if defined(_WIN32) || defined(_WIN64)

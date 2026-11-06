@@ -76,6 +76,7 @@
 #define SCE_MPEG_ERROR_BAD_VERSION   0x806100A0u
 #define SCE_MPEG_ERROR_NO_DATA       0x80618001u
 #define SCE_MPEG_ERROR_NO_MEMORY     0x80610022u
+#define SCE_MPEG_ERROR_NOT_YET_INIT  0x80618009u   /* MEASURED: pspautotests video/mpeg/ringbuffer/avail.expected:10 */
 
 static const int videoTimestampStep = 3003;   /* mpegTimestampPerSecond / 29.97 */
 static const int audioTimestampStep = 4180;   /* 2048 samples / 44100 Hz */
@@ -195,6 +196,11 @@ typedef struct {
     int atracAlign, atracChannels;
     int16_t *audioPcm;
     uint64_t audioAusOut, audioDecoded, audioRejected, audioSkipped;
+    /* What became of each picture the host decoder gave (h264Frames), #279: handed to the guest,
+     * overwritten by a newer one in the same catching-up call, dropped as a unit taken before a
+     * stop or flush, or decoded but refused by the guest-visible checks.  The four add up to
+     * h264Frames. */
+    uint64_t picDelivered, picSuperseded, picStale, picRejected;
 } Mpeg;
 
 static Mpeg s_mpeg[8];
@@ -615,6 +621,9 @@ uint32_t mpeg_ringbuffer_construct(uint32_t ring, uint32_t numPackets, uint32_t 
     return 0;
 }
 
+static void mpeg_pictures_report_all(const char *reason);
+void sr_psmf_av_set_pictures_report(void (*report)(const char *reason));
+
 uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_t ringAddr,
                      uint32_t frameWidth, uint32_t mode, uint32_t ddrTop) {
     (void)mode; (void)ddrTop;
@@ -644,12 +653,48 @@ uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_
     ctx->defaultFrameWidth = (int)frameWidth; ctx->pixelMode = 3; ctx->isAnalyzed = 0;
     ctx->lastAuPts = -1;
     ctx->h264 = -1;
+    sr_psmf_av_set_pictures_report(mpeg_pictures_report_all);
     return 0;
+}
+
+/* #279: one line per context with what became of its access units and pictures.  units: video
+ * units handed out to be decoded; decoded: pictures the host decoder gave, each delivered,
+ * superseded, stale or rejected (see the Mpeg fields); held: units whose picture the decoder had
+ * not given (a host decoder's own delay, or the held unit at a stop).  Audio: ATRAC access units
+ * handed out, blocks decoded, frames rejected, frames skipped. */
+static int mpeg_pictures_line(const Mpeg *ctx, const char *reason, char *line, size_t cap) {
+    const int held = ctx->h264Units > ctx->h264Frames ? ctx->h264Units - ctx->h264Frames : 0;
+    return snprintf(line, cap,
+                    "MPEG_PICTURES: reason=%s mpeg=0x%08" PRIx32 " units=%d decoded=%d delivered=%llu"
+                    " superseded=%llu stale=%llu rejected=%llu held=%d audio_units=%llu audio_decoded=%llu"
+                    " audio_rejected=%llu audio_skipped=%llu\n",
+                    reason, ctx->guestAddr, ctx->h264Units, ctx->h264Frames,
+                    (unsigned long long)ctx->picDelivered, (unsigned long long)ctx->picSuperseded,
+                    (unsigned long long)ctx->picStale, (unsigned long long)ctx->picRejected, held,
+                    (unsigned long long)ctx->audioAusOut, (unsigned long long)ctx->audioDecoded,
+                    (unsigned long long)ctx->audioRejected, (unsigned long long)ctx->audioSkipped);
+}
+
+/* Printed with SR_MPEGAV (the presentation-boundary measurement), for a context that decoded or
+ * handed out anything. */
+static void mpeg_pictures_report(const Mpeg *ctx, const char *reason) {
+    if (!ctx || !ctx->used || !sr_psmf_av_active()) return;
+    if (!ctx->h264Units && !ctx->h264Frames && !ctx->audioAusOut) return;
+    char line[512];
+    int n = mpeg_pictures_line(ctx, reason, line, sizeof(line));
+    if (n > 0 && (size_t)n < sizeof(line)) fputs(line, stderr);
+}
+
+/* Every live context's line, from the end-of-run A/V report (hle_mpeg.c psmf_av_final, which
+ * mpeg_create registers this with). */
+static void mpeg_pictures_report_all(const char *reason) {
+    for (int i = 0; i < 8; i++) mpeg_pictures_report(&s_mpeg[i], reason);
 }
 
 uint32_t mpeg_delete(uint32_t mpegAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
+    mpeg_pictures_report(ctx, "delete");
 #ifdef SR_SDL3VK
     if (ctx->h264 >= 0) { sr_h264_destroy(ctx->h264); ctx->h264 = -1; }
 #endif
@@ -752,6 +797,11 @@ uint32_t mpeg_unregist_stream(uint32_t mpegAddr, uint32_t sid) {
 uint32_t mpeg_ringbuffer_available_size(uint32_t ring) {
     RingState state;
     if (!rb_read_valid(ring, &state, 0)) return 0;
+    /* The PSP answers through the ring's sceMpeg context: once that context is deleted it returns
+     * NOT_YET_INIT (pspautotests video/mpeg/ringbuffer/avail.expected:10), as PPSSPP does through
+     * getMpegCtx. A ring never handed to sceMpegCreate crashes the PSP (avail.cpp); it is refused
+     * here the same way rather than answered from its counters. */
+    if (!mpeg_find(rb_get(ring, RB_mpeg))) return SCE_MPEG_ERROR_NOT_YET_INIT;
     return state.packets - state.avail;
 }
 
@@ -1108,7 +1158,7 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
         target.frame_width = (int)width;
         target.pixel_mode = ctx->pixelMode;
         gotFrame = sr_h264_frame_ex(ctx->h264, eos, &target, &info);
-        if (gotFrame > 0) ctx->h264Frames++;
+        if (gotFrame > 0) { ctx->h264Frames++; ctx->picDelivered++; }
         else if (eos) ctx->h264Units = ctx->h264Frames;
     }
 #endif
@@ -1533,8 +1583,14 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
     SrH264FrameInfo info = {0};
     int eos = ctx->streamEnded;
 #ifdef SR_SDL3VK
+    /* A host decoder behind the PSP's one-unit lag (the guest took units before their data reached
+     * it) catches up here, several pictures in one call.  Each pull has its own info: a pull that
+     * finds no picture clears only its own, never the size of the picture already in the scratch
+     * planes.  The newest picture is handed over, and each one it overwrote goes with its unit's
+     * time, so later pictures keep their own units' times. */
     while (ctx->h264Frames < want) {
         SrH264FrameTarget target;
+        SrH264FrameInfo pulled;
         memset(&target, 0, sizeof(target));
         target.kind = SR_H264_TARGET_HOST_YUV;
         target.host_buffer = s_ycbcr_y;
@@ -1544,15 +1600,22 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
         target.host_cb = s_ycbcr_cb;
         target.host_cr = s_ycbcr_cr;
         target.host_c_stride = (int)(YCBCR_SCRATCH_W / 2u);
-        int r = sr_h264_frame_ex(ctx->h264, eos, &target, &info);
+        int r = sr_h264_frame_ex(ctx->h264, eos, &target, &pulled);
         if (r > 0) {
             ctx->h264Frames++;
             if (ctx->ycbcrStale > 0) {   /* a unit taken before a stop or flush */
                 ctx->ycbcrStale--;
+                ctx->picStale++;
                 continue;
             }
+            if (got) {                          /* the picture this one overwrote, and its time */
+                (void)ycbcr_au_pop(ctx);
+                ctx->picSuperseded++;
+            }
+            info = pulled;
             got = r;
         } else if (r < 0) {
+            if (got) ctx->picRejected++;        /* the picture already pulled is not handed over */
             MEM_W32(initAddr, 0u);
             return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "H.264 backend rejected the access unit", SCE_MPEG_ERROR_NO_DATA);
         } else {
@@ -1572,9 +1635,11 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
     uint64_t bytes = 0;
     uint32_t stored = ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height, &bytes);
     if (stored) {
+        ctx->picRejected++;
         MEM_W32(initAddr, 0u);
         return stored;
     }
+    ctx->picDelivered++;
     ycbcr_picture_set(mpegAddr, bytes, pts);
     MEM_W32(initAddr, 1u);
     if (getenv("SR_MPEGLOG")) {
@@ -1626,6 +1691,7 @@ uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t bufPtr, uint32_t
             ctx->h264Frames++;
             if (ctx->ycbcrStale > 0) {   /* a unit taken before an earlier stop or flush */
                 ctx->ycbcrStale--;
+                ctx->picStale++;
                 continue;
             }
             got = 1;
@@ -1639,9 +1705,11 @@ uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t bufPtr, uint32_t
         uint64_t bytes = 0;
         uint32_t stored = ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height, &bytes);
         if (stored) {
+            ctx->picRejected++;
             MEM_W32(statusAddr, 0u);
             return stored;
         }
+        ctx->picDelivered++;
         ycbcr_picture_set(mpegAddr, bytes, pts);
     }
     MEM_W32(statusAddr, got ? 1u : 0u);

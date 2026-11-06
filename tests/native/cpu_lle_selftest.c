@@ -727,6 +727,83 @@ static void test_hw_psp_a3_08_11_vfpu_through_interpreter(void) {
     CHECK(s.flow_kind == SR_FLOW_NONE, "interp lvr.q at +4 must not set flow");
 }
 
+/* #1877: a VFPU form with no recorded evidence is named once in the run log, and a form with
+ * evidence is never named. The floor reports the first executed word of each generated
+ * pattern; translated code reports the words codegen listed. Both print to the test seam. */
+static unsigned count_log_lines(FILE *log, const char *needle) {
+    char line[1024];
+    unsigned n = 0u;
+    rewind(log);
+    while (fgets(line, sizeof line, log)) {
+        if (strstr(line, needle)) n++;
+    }
+    fseek(log, 0, SEEK_END); /* a read, then the next write, needs a seek between */
+    return n;
+}
+
+static void test_unverified_vfpu_forms_are_logged_once(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    FILE *log = tmpfile();
+    CHECK(log != NULL, "tmpfile for the evidence log");
+    if (!log) return;
+    sr_vfpu_evidence_log = log;
+    sr_vfpu_evidence_reset(); /* independent of any earlier test that ran a base-zero VFPU access */
+    /* lv.s with base $zero (0xc8000000) is in an unverified pattern; with base t5 it is not.
+     * The access faults (address 0 or 0x08856580 + 2); the log is written before that. */
+    for (int run = 0; run < 2; run++) {
+        fresh_state(&s);
+        sr_cpu_lle_set_enabled(1);
+        MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x32u, 0u, 0u, 0u), TEST_BASE);
+        s.pc = TEST_BASE;
+        s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+        (void)sr_guest_interp_run(&s, TEST_BASE, &fault);
+    }
+    CHECK(count_log_lines(log, "VFPU: unverified: first use of ") == 1u,
+          "two lv.s base-zero runs must log one line (got %u)",
+          count_log_lines(log, "VFPU: unverified: first use of "));
+    CHECK(count_log_lines(log, "first use of lv.s [vfpu-32-c8000000-") == 1u,
+          "the line must name the mnemonic and the lv.s form");
+    for (int run = 0; run < 2; run++) {
+        fresh_state(&s);
+        sr_cpu_lle_set_enabled(1);
+        MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x32u, 13u, 0u, 0u), TEST_BASE);
+        s.pc = TEST_BASE;
+        s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+        s.r[13] = 0x08856580u + 2u;
+        (void)sr_guest_interp_run(&s, TEST_BASE, &fault);
+    }
+    CHECK(count_log_lines(log, "VFPU: unverified: first use of ") == 1u,
+          "a form with evidence must log nothing more");
+    /* A second pattern (sv.q, base $zero) adds exactly one line. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x3Eu, 0u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    (void)sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(count_log_lines(log, "VFPU: unverified: first use of ") == 2u,
+          "a second unverified pattern must add one line");
+
+    /* Translated code: the list codegen made, printed once per pattern. */
+    {
+        const SrVfpuUse uses[] = {
+            { enc_vfpu(0x32u, 0u, 0u, 0u), 0x08804000u },
+            { enc_vfpu(0x32u, 0u, 0u, 0u), 0x08804010u },
+            { enc_vfpu(0x32u, 13u, 0u, 0u), 0x08804020u },
+            { enc_vfpu(0x36u, 0u, 0u, 0u), 0x08804030u },
+        };
+        sr_vfpu_report_unverified_uses(uses, 4u);
+        sr_vfpu_report_unverified_uses(uses, 4u);
+    }
+    CHECK(count_log_lines(log, "VFPU: unverified: translated code uses ") == 2u,
+          "the build list must print one line per unverified pattern, once (got %u)",
+          count_log_lines(log, "VFPU: unverified: translated code uses "));
+    CHECK(count_log_lines(log, "at 0x08804000") == 1u, "the first word of the pattern is the one named");
+    sr_vfpu_evidence_log = NULL;
+    fclose(log);
+}
+
 /* PSP-A3-12/13/14/15: VFPU remaining alignment cells (PSP-3000 / 6.61,
  * THREAD_ATTR_USER | THREAD_ATTR_VFPU probes via PSPLink;
  * fixtures exception-a3-vfpu-svs/svq8/lvq-delay/lvl-odd, cells in
@@ -2749,6 +2826,7 @@ int main(int argc, char **argv) {
     test_hw_psp_a3_06_unaligned_no_fault();
     test_hw_psp_a3_08_11_vfpu_alignment();
     test_hw_psp_a3_08_11_vfpu_through_interpreter();
+    test_unverified_vfpu_forms_are_logged_once();
     test_hw_psp_a3_12_15_vfpu_remaining();
     test_hw_psp_a3_14_vfpu_delay_slot();
     test_hw_psp_a3_15_lvl_odd_no_fault();

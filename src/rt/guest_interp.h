@@ -25,6 +25,10 @@ typedef enum SrGuestInterpResult {
     /* jr/jalr read 0 from its target register (#1375): a null code pointer, even on
      * an image whose offset-0 function has guest address 0. */
     SR_GUEST_INTERP_NULL_CODE_POINTER = -10,
+    /* An interpreted `jr $ra` returned past the linked call the interpreter runs for, to an
+     * enclosing call's resume PC (#2016): a longjmp that call's caller cannot honour, since it
+     * runs its own continuation. fault.pc is the `jr`, fault.address its target. */
+    SR_GUEST_INTERP_RETURN_TARGET_MISMATCH = -11,
 } SrGuestInterpResult;
 
 typedef struct SrGuestInterpFault {

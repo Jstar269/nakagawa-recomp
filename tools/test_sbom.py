@@ -67,7 +67,7 @@ class TestSBOMTooling(unittest.TestCase):
         by_name = {package["name"]: package for package in packages}
         # The coverage measurement pins its own closure the same way the other tools
         # do: every published wheel and the sdist, for the exact release.
-        self.assertEqual(by_name["coverage"]["version"], "7.17.0")
+        self.assertEqual(by_name["coverage"]["version"], "7.17.2")
         self.assertEqual(len(by_name["coverage"]["declared_sha256"]), 119)
         # License resolution reads installed dist metadata for the exact pins
         # (generate_sbom._resolve_python_package_license).  CI installs
@@ -292,14 +292,14 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertEqual(ruff_source["retrieved_utc"], "2026-11-03")
         # A source added after the document snapshot records its own retrieval date.
         coverage_source = next(s for s in metadata["sources"] if s["name"] == "coverage")
-        self.assertEqual(coverage_source["retrieved_utc"], "2026-10-23")
+        self.assertEqual(coverage_source["retrieved_utc"], "2026-11-05")
         self.assertEqual(
             [source["url"] for source in metadata["sources"]],
             [
                 "https://pypi.org/pypi/bashlex/0.18/json",
                 "https://pypi.org/pypi/click/8.5.0/json",
                 "https://pypi.org/pypi/compiledb/0.10.7/json",
-                "https://pypi.org/pypi/coverage/7.17.0/json",
+                "https://pypi.org/pypi/coverage/7.17.2/json",
                 "https://pypi.org/pypi/ruff/0.17.3/json",
             ],
         )
