@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 132)
+        self.assertEqual(len(routes), 133)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
-                         | {150, 151, 152, 153, 154},
+                         | {150, 151, 152, 153, 154, 155},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -2516,6 +2516,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(routes.get("at3-delay-sweep"), "150")
         self.assertEqual(routes.get("mpeg-ycbcr"), "151")
         self.assertEqual(routes.get("sas-adsr"), "152")
+        self.assertEqual(routes.get("sas-mix"), "155")
 
     def test_sas_adsr_case_links_sascore_and_covers_the_adsr_calls(self) -> None:
         # The case's own LIBS block links the SAS and utility stubs; without them the PRX
@@ -2537,6 +2538,36 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.assertIn(call, section)
         self.assertIn('"sas-adsr-done", sascore_ok ? "RC" : "SKIP"', section)
         self.assertNotIn('"PASS"', section)
+
+    def test_sas_mix_case_links_sascore_and_records_every_cell(self) -> None:
+        # The case's own LIBS block links the SAS and utility stubs (#2135, #2054).
+        block = re.search(r"(?ms)^ifeq \(\$\(CASE\),sas-mix\)\n(.*?)^endif$", self.makefile)
+        if block is None:
+            self.fail("fixtures/psp_oracle/Makefile has no sas-mix LIBS block")
+        self.assertIn("-lpspsascore", block.group(1))
+        self.assertIn("-lpsputility", block.group(1))
+        probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        self.assertIn("#define PSP_ORACLE_CASE_SAS_MIX 155", probe)
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/sas_mix_log.txt"', probe)
+        start = probe.index("#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_MIX\n#include <pspsascore.h>")
+        section = probe[start:probe.index("#endif\n", probe.index("static void run_sas_mix", start))]
+        for call in ("__sceSasSetVolume(", "__sceSasCoreWithMix(", "__sceSasSetPitch(",
+                     "__sceSasSetVoicePCM(", "PSP_SAS_OUTPUTMODE_MULTICHANNEL",
+                     '"e-sr-m1001", 1u, 2u', '"reinit", 0u, 3u', '"extreme", 0u, 0u, 0x7fffffff',
+                     '"vag-1800", 0u, 0x1800, 4u', '"pcm-2000", 1u, 0x2000, 2u'):
+            self.assertIn(call, section)
+        # Every loop is bounded by a constant or a table size; nothing waits on device state.
+        self.assertNotIn("while (", section)
+        for banned in ("for (;;)", "goto ", "sceKernelDelayThread", "sceIoWrite"):
+            self.assertNotIn(banned, section)
+        # Twelve edge SetVolume cells: each of the four sides at -0x1000, 0x1001 and -0x1001.
+        edges = re.findall(r'\{"e-(l|r|sl|sr)-(m1000|1001|m1001)", [01]u, 2u,', section)
+        self.assertEqual(len(edges), 12)
+        self.assertEqual(len(set(edges)), 12)
+        self.assertIn('"sas-mix-done", sascore_ok ? "RC" : "SKIP"', section)
+        self.assertNotIn('"PASS"', section)
+        # Raw mode writes four planar grains; the buffer holds twice that, filled with the sentinel.
+        self.assertIn("#define SAS_MIX_OUT_SHORTS (SAS_MIX_GRAIN * 8)", section)
 
     def test_thread_k0_block_route_has_its_own_case_id(self) -> None:
         routes = dict(re.findall(

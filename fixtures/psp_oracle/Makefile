@@ -293,6 +293,9 @@ CASE_ID = 117
 # 152: the #1296 SimpleADSR envelope heights per grain (probe.c, run_sas_adsr).
 else ifeq ($(CASE),sas-adsr)
 CASE_ID = 152
+# 155: the #2135/#2054 SAS volume, WithMix and pitch cells (probe.c, run_sas_mix).
+else ifeq ($(CASE),sas-mix)
+CASE_ID = 155
 # 118: the #303 DMAC transfer-time and busy-channel cells (probe_dmac_timing.c).
 else ifeq ($(CASE),dma-timing)
 CASE_ID = 118
@@ -659,6 +662,10 @@ LIBS += -lpspsascore -lpsputility
 endif
 # #1296: the SimpleADSR envelope probe links the same stubs.
 ifeq ($(CASE),sas-adsr)
+LIBS += -lpspsascore -lpsputility
+endif
+# #2135, #2054: the SAS volume and pitch probe links the same stubs.
+ifeq ($(CASE),sas-mix)
 LIBS += -lpspsascore -lpsputility
 endif
 # Fake-success audit: the OSK calls live in libpsputility; the volatile-memory calls are in SuspendForUser.

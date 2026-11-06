@@ -156,6 +156,8 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_MPEG_YCBCR 151
 /* #1296: the SimpleADSR envelope, its height read once per grain; see run_sas_adsr. */
 #define PSP_ORACLE_CASE_SAS_ADSR 152
+/* #2135, #2054: SAS voice and WithMix volumes, pitch over VAG block ends and in PCM; see run_sas_mix. */
+#define PSP_ORACLE_CASE_SAS_MIX 155
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -399,6 +401,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/sas_init_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_ADSR
 #define PROBE_HOST0_LOG "host0:/sas_adsr_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_MIX
+#define PROBE_HOST0_LOG "host0:/sas_mix_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -11999,6 +12003,383 @@ static void run_sas_adsr(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_MIX
+#include <pspsascore.h>
+#include <psputility_avmodules.h>
+/* #2135 and #2054: SAS voice volumes, __sceSasCoreWithMix volumes, and pitch stepping over VAG
+   block ends and in a PCM voice. One core (grain 256, 32 voices) initialised fresh for each cell,
+   output mode 0 (interleaved stereo) unless a cell says raw (mode 1: four planar buffers, dry L,
+   dry R, send L, send R). The envelope is held at its top: every curve linear, attack 0x40000000
+   (the top in one sample), the sustain level 0x40000000, sustain rate 0. Voice 0 plays one of
+   three synthetic sources: a looping VAG whose every sample is 0x0700 (filter 0, shift 4, nibble
+   7), a looping VAG whose block b holds the one value ((b % 15) - 7) << 8 in all 28 samples, or a
+   16-bit PCM ramp, sample i = 8 i. Cells ask what the PSP answers; status RC, or SKIP with the
+   same shape when SASCORE does not load.
+
+   Records (test_id PSP-SAS-003):
+   - sas-mix-load (4 words: AVCODEC load, SASCORE load, init, grain).
+   - Volume cells sas-mix-v-<name>-calls (16 words, the call answers in the order the cell makes
+     them, then zeros) and sas-mix-v-<name>-out: the summary of the grain after SAS_MIX_WARM warm-up
+     grains. In mode 0: peak |L|, peak |R|, the sums of L and of R (low 32 bits), then frames 64..75
+     as (L & 0xffff) | (R << 16). In raw mode: the peak of each of the four planes, sample 64 of
+     each, the highest short index the call changed from the sentinel, then zeros.
+   - WithMix cells sas-mix-w-<name>-calls and three window records sas-mix-w-<name>-sN (shorts
+     0..31, 240..271 and 480..511 of the caller buffer after the call, two shorts per word, low
+     half first). The buffer holds the ramp (short)((i - 256) * 97) for i < 512 before the call.
+   - Pitch cells sas-mix-p-<name>-calls and the left channel of the first grains after KeyOn,
+     sas-mix-p-<name>-gGG, 16 words (32 left samples, two per word) each.
+   - sas-mix-done (out0: the record count before it), status RC.
+   Every output is buffered and written after the cell's last __sceSasCore, so the host0 writes
+   never fall between two grains. Synthetic data only. Ends in the normal teardown. */
+#define SAS_MIX_GRAIN 256
+#define SAS_MIX_VAG_BLOCKS 64u
+#define SAS_MIX_PCM_SAMPLES 2048u
+#define SAS_MIX_WARM 4u
+#define SAS_MIX_WORDS 16u
+#define SAS_MIX_SENTINEL 0x5a5a
+#define SAS_MIX_OUT_SHORTS (SAS_MIX_GRAIN * 8)
+#define SAS_MIX_MAX_GRAINS 4u
+#define SAS_MIX_TEST_ID "PSP-SAS-003"
+#define SAS_MIX_LINE_MAX 640
+_Static_assert(sizeof("NAKAGAWA_PSP_TEST schema=1 test_id=" SAS_MIX_TEST_ID " case_id= status=SKIP "
+                      "result=0x00000000") + 40u + SAS_MIX_WORDS * sizeof(" out15=0x00000000") + 2u
+                   <= SAS_MIX_LINE_MAX, "a sas-mix record fits its line buffer");
+
+static SceSasCore s_sas_mix_core __attribute__((aligned(64)));
+static unsigned char s_sas_mix_flat[SAS_MIX_VAG_BLOCKS * 16u] __attribute__((aligned(64)));
+static unsigned char s_sas_mix_steps[SAS_MIX_VAG_BLOCKS * 16u] __attribute__((aligned(64)));
+static short s_sas_mix_pcm[SAS_MIX_PCM_SAMPLES] __attribute__((aligned(64)));
+static short s_sas_mix_out[SAS_MIX_OUT_SHORTS] __attribute__((aligned(64)));
+static short s_sas_mix_left[SAS_MIX_MAX_GRAINS * SAS_MIX_GRAIN];
+static uint32_t s_sas_mix_records;
+
+static void sas_mix_record(int emulated, const char *case_id, const char *status,
+                           const uint32_t *out, uint32_t count) {
+    char line[SAS_MIX_LINE_MAX];
+    int used = snprintf(line, sizeof(line),
+                        "NAKAGAWA_PSP_TEST schema=1 test_id=" SAS_MIX_TEST_ID " case_id=%s "
+                        "status=%s result=0x00000000",
+                        case_id, status);
+    for (uint32_t i = 0; i < count && used > 0 && used < (int)sizeof(line) - 24; i++) {
+        used += snprintf(line + used, sizeof(line) - (size_t)used, " out%u=0x%08x",
+                         (unsigned int)i, (unsigned int)out[i]);
+    }
+    if (used <= 0 || used >= (int)sizeof(line) - 2) return;
+    line[used++] = '\n';
+    line[used] = '\0';
+    s_sas_mix_records++;
+    probe_emit_durable(emulated, line, (size_t)used);
+}
+
+static uint32_t sas_mix_abs(int v) {
+    return (uint32_t)(v < 0 ? -v : v);
+}
+
+static void sas_mix_fill(short value) {
+    for (uint32_t i = 0; i < SAS_MIX_OUT_SHORTS; i++) s_sas_mix_out[i] = value;
+}
+
+/* The envelope held at its top (see the block comment). Returns the first failing answer, or 0. */
+static int sas_mix_envelope(void) {
+    int rc = __sceSasSetADSRmode(&s_sas_mix_core, 0, PSP_SAS_ADSR_EVERYTHING,
+                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_INCREASE,
+                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_DECREASE,
+                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_DECREASE,
+                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_DECREASE);
+    if (rc == 0) {
+        rc = __sceSasSetADSR(&s_sas_mix_core, 0, PSP_SAS_ADSR_EVERYTHING, 0x40000000, 0x00100000, 0,
+                             0x00040000);
+    }
+    if (rc == 0) rc = __sceSasSetSL(&s_sas_mix_core, 0, 0x40000000);
+    return rc;
+}
+
+/* The mode-0 or raw summary of s_sas_mix_out (see the block comment). */
+static void sas_mix_summary(int raw, uint32_t *out) {
+    for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) out[i] = 0u;
+    if (!raw) {
+        uint32_t peak_l = 0u, peak_r = 0u, sum_l = 0u, sum_r = 0u;
+        for (uint32_t f = 0; f < (uint32_t)SAS_MIX_GRAIN; f++) {
+            const int l = s_sas_mix_out[2u * f], r = s_sas_mix_out[2u * f + 1u];
+            if (sas_mix_abs(l) > peak_l) peak_l = sas_mix_abs(l);
+            if (sas_mix_abs(r) > peak_r) peak_r = sas_mix_abs(r);
+            sum_l += (uint32_t)l;
+            sum_r += (uint32_t)r;
+        }
+        out[0] = peak_l;
+        out[1] = peak_r;
+        out[2] = sum_l;
+        out[3] = sum_r;
+        for (uint32_t i = 0; i < 12u; i++) {
+            out[4u + i] = ((uint32_t)(uint16_t)s_sas_mix_out[2u * (64u + i)]) |
+                          ((uint32_t)(uint16_t)s_sas_mix_out[2u * (64u + i) + 1u] << 16);
+        }
+        return;
+    }
+    for (uint32_t p = 0; p < 4u; p++) {
+        uint32_t peak = 0u;
+        for (uint32_t s = 0; s < (uint32_t)SAS_MIX_GRAIN; s++) {
+            const int v = s_sas_mix_out[p * SAS_MIX_GRAIN + s];
+            if (sas_mix_abs(v) > peak) peak = sas_mix_abs(v);
+        }
+        out[p] = peak;
+        out[4u + p] = (uint32_t)(uint16_t)s_sas_mix_out[p * SAS_MIX_GRAIN + 64u];
+    }
+    uint32_t extent = 0u;
+    for (uint32_t i = 0; i < SAS_MIX_OUT_SHORTS; i++) {
+        if (s_sas_mix_out[i] != (short)SAS_MIX_SENTINEL) extent = i + 1u;
+    }
+    out[8] = extent;
+}
+
+/* Volume cells (#2135 R2-1). vol_set: 0 none, 1 SetVolume(vol), 2 SetVolume(0x800 x4) then the edge
+   call SetVolume(edge), 3 SetVolume(0x800 x4), __sceSasInit again, SetVoice, no SetVolume. */
+typedef struct {
+    const char *name;
+    uint32_t raw, vol_set;
+    int l, r, sl, sr;
+} SasMixVolumeCell;
+static const SasMixVolumeCell k_sas_mix_volume[] = {
+    {"def-m0", 0u, 0u, 0, 0, 0, 0},
+    {"def-m1", 1u, 0u, 0, 0, 0, 0},
+    {"zero", 0u, 1u, 0, 0, 0, 0},
+    {"half", 0u, 1u, 0x800, 0x800, 0x800, 0x800},
+    {"full-m1", 1u, 1u, 0x1000, 0x1000, 0x1000, 0x1000},
+    {"send-only-m1", 1u, 1u, 0, 0, 0x1000, 0x1000},
+    {"e-l-m1000", 0u, 2u, -0x1000, 0x800, 0x800, 0x800},
+    {"e-r-m1000", 0u, 2u, 0x800, -0x1000, 0x800, 0x800},
+    {"e-sl-m1000", 1u, 2u, 0x800, 0x800, -0x1000, 0x800},
+    {"e-sr-m1000", 1u, 2u, 0x800, 0x800, 0x800, -0x1000},
+    {"e-l-1001", 0u, 2u, 0x1001, 0x800, 0x800, 0x800},
+    {"e-r-1001", 0u, 2u, 0x800, 0x1001, 0x800, 0x800},
+    {"e-sl-1001", 1u, 2u, 0x800, 0x800, 0x1001, 0x800},
+    {"e-sr-1001", 1u, 2u, 0x800, 0x800, 0x800, 0x1001},
+    {"e-l-m1001", 0u, 2u, -0x1001, 0x800, 0x800, 0x800},
+    {"e-r-m1001", 0u, 2u, 0x800, -0x1001, 0x800, 0x800},
+    {"e-sl-m1001", 1u, 2u, 0x800, 0x800, -0x1001, 0x800},
+    {"e-sr-m1001", 1u, 2u, 0x800, 0x800, 0x800, -0x1001},
+    {"reinit", 0u, 3u, 0, 0, 0, 0},
+};
+#define SAS_MIX_VOLUME_CELLS (sizeof(k_sas_mix_volume) / sizeof(k_sas_mix_volume[0]))
+
+static void sas_mix_volume_cell(int emulated, uint32_t idx, int sascore_ok) {
+    const SasMixVolumeCell *c = &k_sas_mix_volume[idx];
+    char case_id[48];
+    uint32_t calls[SAS_MIX_WORDS];
+    uint32_t summary[SAS_MIX_WORDS];
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) calls[i] = 0u;
+    for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) summary[i] = 0u;
+    if (sascore_ok) {
+        probe_step(emulated, "sas-mix", c->name);
+        const PspSasOutputModes mode = c->raw ? PSP_SAS_OUTPUTMODE_MULTICHANNEL : PSP_SAS_OUTPUTMODE_STEREO;
+        calls[n++] = (uint32_t)__sceSasInit(&s_sas_mix_core, SAS_MIX_GRAIN, 32, mode, PSP_SAS_SAMPLE_RATE);
+        calls[n++] = (uint32_t)__sceSasSetVoice(&s_sas_mix_core, 0, s_sas_mix_flat,
+                                                (int)sizeof(s_sas_mix_flat), 1);
+        if (c->vol_set == 1u) {
+            calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, c->l, c->r, c->sl, c->sr);
+        } else if (c->vol_set == 2u) {
+            calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, 0x800, 0x800, 0x800, 0x800);
+            calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, c->l, c->r, c->sl, c->sr);
+        } else if (c->vol_set == 3u) {
+            calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, 0x800, 0x800, 0x800, 0x800);
+            calls[n++] = (uint32_t)__sceSasInit(&s_sas_mix_core, SAS_MIX_GRAIN, 32, mode, PSP_SAS_SAMPLE_RATE);
+            calls[n++] = (uint32_t)__sceSasSetVoice(&s_sas_mix_core, 0, s_sas_mix_flat,
+                                                    (int)sizeof(s_sas_mix_flat), 1);
+        }
+        calls[n++] = (uint32_t)sas_mix_envelope();
+        calls[n++] = (uint32_t)__sceSasSetKeyOn(&s_sas_mix_core, 0);
+        for (uint32_t g = 0; g < SAS_MIX_WARM; g++) {
+            (void)__sceSasCore(&s_sas_mix_core, s_sas_mix_out);
+        }
+        sas_mix_fill((short)SAS_MIX_SENTINEL);
+        calls[n++] = (uint32_t)__sceSasCore(&s_sas_mix_core, s_sas_mix_out);
+        calls[n++] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_mix_core, 0);
+        sas_mix_summary((int)c->raw, summary);
+    }
+    const char *status = sascore_ok ? "RC" : "SKIP";
+    (void)snprintf(case_id, sizeof(case_id), "sas-mix-v-%s-calls", c->name);
+    sas_mix_record(emulated, case_id, status, calls, SAS_MIX_WORDS);
+    (void)snprintf(case_id, sizeof(case_id), "sas-mix-v-%s-out", c->name);
+    sas_mix_record(emulated, case_id, status, summary, SAS_MIX_WORDS);
+}
+
+/* WithMix cells (#2135 R2-1 items 5 and 6). keyed: voice 0 plays the flat VAG at volume 0x1000 and
+   is keyed on first. raw: output mode 1 (then the windows read the four planes' first shorts). */
+typedef struct {
+    const char *name;
+    uint32_t raw, keyed;
+    int l, r;
+} SasMixWithMixCell;
+static const SasMixWithMixCell k_sas_mix_withmix[] = {
+    {"unity", 0u, 0u, 0x1000, 0x1000},
+    {"half", 0u, 0u, 0x800, 0x800},
+    {"zero-neg", 0u, 0u, 0, -0x1000},
+    {"over", 0u, 0u, 0x2000, 0x3000},
+    {"extreme", 0u, 0u, 0x7fffffff, (int)0x80000000u},
+    {"keyed-zero", 0u, 1u, 0, 0},
+    {"keyed-unity", 0u, 1u, 0x1000, 0x1000},
+    {"raw-unity", 1u, 0u, 0x1000, 0x1000},
+};
+#define SAS_MIX_WITHMIX_CELLS (sizeof(k_sas_mix_withmix) / sizeof(k_sas_mix_withmix[0]))
+static const uint32_t k_sas_mix_windows[3] = {0u, 240u, 480u};
+
+static void sas_mix_withmix_cell(int emulated, uint32_t idx, int sascore_ok) {
+    const SasMixWithMixCell *c = &k_sas_mix_withmix[idx];
+    char case_id[48];
+    uint32_t calls[SAS_MIX_WORDS];
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) calls[i] = 0u;
+    calls[n++] = (uint32_t)c->l;
+    calls[n++] = (uint32_t)c->r;
+    if (sascore_ok) {
+        probe_step(emulated, "sas-mix", c->name);
+        const PspSasOutputModes mode = c->raw ? PSP_SAS_OUTPUTMODE_MULTICHANNEL : PSP_SAS_OUTPUTMODE_STEREO;
+        calls[n++] = (uint32_t)__sceSasInit(&s_sas_mix_core, SAS_MIX_GRAIN, 32, mode, PSP_SAS_SAMPLE_RATE);
+        if (c->keyed) {
+            calls[n++] = (uint32_t)__sceSasSetVoice(&s_sas_mix_core, 0, s_sas_mix_flat,
+                                                    (int)sizeof(s_sas_mix_flat), 1);
+            calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, 0x1000, 0x1000, 0, 0);
+            calls[n++] = (uint32_t)sas_mix_envelope();
+            calls[n++] = (uint32_t)__sceSasSetKeyOn(&s_sas_mix_core, 0);
+            for (uint32_t g = 0; g < SAS_MIX_WARM; g++) {
+                (void)__sceSasCore(&s_sas_mix_core, s_sas_mix_out);
+            }
+        }
+        sas_mix_fill((short)SAS_MIX_SENTINEL);
+        for (uint32_t i = 0; i < 2u * (uint32_t)SAS_MIX_GRAIN; i++) {
+            s_sas_mix_out[i] = (short)(((int)i - 256) * 97);
+        }
+        calls[n++] = (uint32_t)__sceSasCoreWithMix(&s_sas_mix_core, s_sas_mix_out, c->l, c->r);
+    }
+    const char *status = sascore_ok ? "RC" : "SKIP";
+    (void)snprintf(case_id, sizeof(case_id), "sas-mix-w-%s-calls", c->name);
+    sas_mix_record(emulated, case_id, status, calls, SAS_MIX_WORDS);
+    for (uint32_t w = 0; w < 3u; w++) {
+        uint32_t words[SAS_MIX_WORDS];
+        for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) {
+            const uint32_t s = k_sas_mix_windows[w] + 2u * i;
+            words[i] = sascore_ok ? (((uint32_t)(uint16_t)s_sas_mix_out[s]) |
+                                     ((uint32_t)(uint16_t)s_sas_mix_out[s + 1u] << 16))
+                                  : 0u;
+        }
+        (void)snprintf(case_id, sizeof(case_id), "sas-mix-w-%s-s%u", c->name, (unsigned int)w);
+        sas_mix_record(emulated, case_id, status, words, SAS_MIX_WORDS);
+    }
+}
+
+/* Pitch cells (#2054 R2-2): the stepped VAG (pcm 0) or the PCM ramp (pcm 1) at one pitch, the left
+   channel of the first `grains` grains after KeyOn. */
+typedef struct {
+    const char *name;
+    uint32_t pcm;
+    int pitch;
+    uint32_t grains;
+} SasMixPitchCell;
+static const SasMixPitchCell k_sas_mix_pitch[] = {
+    {"vag-1000", 0u, 0x1000, 4u},
+    {"vag-1800", 0u, 0x1800, 4u},
+    {"vag-2a00", 0u, 0x2a00, 4u},
+    {"pcm-2000", 1u, 0x2000, 2u},
+    {"pcm-0800", 1u, 0x0800, 2u},
+};
+#define SAS_MIX_PITCH_CELLS (sizeof(k_sas_mix_pitch) / sizeof(k_sas_mix_pitch[0]))
+_Static_assert((SAS_MIX_GRAIN % 32) == 0, "whole 32-sample left-channel records per grain");
+
+static void sas_mix_pitch_cell(int emulated, uint32_t idx, int sascore_ok) {
+    const SasMixPitchCell *c = &k_sas_mix_pitch[idx];
+    char case_id[48];
+    uint32_t calls[SAS_MIX_WORDS];
+    uint32_t n = 0;
+    const uint32_t grains = c->grains <= SAS_MIX_MAX_GRAINS ? c->grains : SAS_MIX_MAX_GRAINS;
+    for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) calls[i] = 0u;
+    for (uint32_t i = 0; i < SAS_MIX_MAX_GRAINS * (uint32_t)SAS_MIX_GRAIN; i++) s_sas_mix_left[i] = 0;
+    calls[n++] = (uint32_t)c->pitch;
+    calls[n++] = grains;
+    if (sascore_ok) {
+        probe_step(emulated, "sas-mix", c->name);
+        calls[n++] = (uint32_t)__sceSasInit(&s_sas_mix_core, SAS_MIX_GRAIN, 32, PSP_SAS_OUTPUTMODE_STEREO,
+                                            PSP_SAS_SAMPLE_RATE);
+        if (c->pcm) {
+            calls[n++] = (uint32_t)__sceSasSetVoicePCM(&s_sas_mix_core, 0, s_sas_mix_pcm,
+                                                       (int)SAS_MIX_PCM_SAMPLES, -1);
+        } else {
+            calls[n++] = (uint32_t)__sceSasSetVoice(&s_sas_mix_core, 0, s_sas_mix_steps,
+                                                    (int)sizeof(s_sas_mix_steps), 1);
+        }
+        calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, 0x1000, 0x1000, 0, 0);
+        calls[n++] = (uint32_t)__sceSasSetPitch(&s_sas_mix_core, 0, c->pitch);
+        calls[n++] = (uint32_t)sas_mix_envelope();
+        calls[n++] = (uint32_t)__sceSasSetKeyOn(&s_sas_mix_core, 0);
+        for (uint32_t g = 0; g < grains; g++) {
+            calls[n] = (uint32_t)__sceSasCore(&s_sas_mix_core, s_sas_mix_out);
+            if (calls[n] != 0u && calls[n + 1u] == 0u) calls[n + 1u] = g + 1u;   /* first failing grain */
+            for (uint32_t f = 0; f < (uint32_t)SAS_MIX_GRAIN; f++) {
+                s_sas_mix_left[g * (uint32_t)SAS_MIX_GRAIN + f] = s_sas_mix_out[2u * f];
+            }
+        }
+        n += 2u;
+        calls[n++] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_mix_core, 0);
+        calls[n++] = (uint32_t)__sceSasGetEndFlag(&s_sas_mix_core);
+    }
+    const char *status = sascore_ok ? "RC" : "SKIP";
+    (void)snprintf(case_id, sizeof(case_id), "sas-mix-p-%s-calls", c->name);
+    sas_mix_record(emulated, case_id, status, calls, SAS_MIX_WORDS);
+    for (uint32_t r = 0; r < grains * (uint32_t)SAS_MIX_GRAIN / 32u; r++) {
+        uint32_t words[SAS_MIX_WORDS];
+        for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) {
+            const uint32_t s = 32u * r + 2u * i;
+            words[i] = ((uint32_t)(uint16_t)s_sas_mix_left[s]) |
+                       ((uint32_t)(uint16_t)s_sas_mix_left[s + 1u] << 16);
+        }
+        (void)snprintf(case_id, sizeof(case_id), "sas-mix-p-%s-g%02x", c->name, (unsigned int)r);
+        sas_mix_record(emulated, case_id, status, words, SAS_MIX_WORDS);
+    }
+}
+
+static void run_sas_mix(int emulated) {
+    /* The flat VAG: filter 0, shift 4, every nibble 7, so every sample is 7 << 12 >> 4 = 0x0700. The
+       stepped VAG: block b holds ((b % 15) - 7) << 8 in all 28 samples, so a sample names its block.
+       Both loop: the first block starts the loop (flag 0x06), the last ends and repeats it (0x03). */
+    for (uint32_t b = 0; b < SAS_MIX_VAG_BLOCKS; b++) {
+        unsigned char *flat = s_sas_mix_flat + b * 16u;
+        unsigned char *step = s_sas_mix_steps + b * 16u;
+        const unsigned char flag = b == 0u ? 0x06 : (b + 1u == SAS_MIX_VAG_BLOCKS ? 0x03 : 0x00);
+        const unsigned nibble = (unsigned)(((int)(b % 15u) - 7) & 0xf);
+        flat[0] = 0x04;
+        step[0] = 0x04;
+        flat[1] = flag;
+        step[1] = flag;
+        for (int i = 2; i < 16; i++) {
+            flat[i] = 0x77;
+            step[i] = (unsigned char)(nibble | (nibble << 4));
+        }
+    }
+    for (uint32_t i = 0; i < SAS_MIX_PCM_SAMPLES; i++) s_sas_mix_pcm[i] = (short)(8u * i);
+    uint32_t load[4] = {0u, 0u, 0u, 0u};
+    probe_step(emulated, "sas-mix", "load-avcodec");
+    load[0] = (uint32_t)sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+    probe_step(emulated, "sas-mix", "load-sascore");
+    load[1] = (uint32_t)sceUtilityLoadAvModule(PSP_AV_MODULE_SASCORE);
+    const int sascore_ok = load[1] == 0u;
+    if (sascore_ok) {
+        probe_step(emulated, "sas-mix", "init");
+        load[2] = (uint32_t)__sceSasInit(&s_sas_mix_core, SAS_MIX_GRAIN, 32, PSP_SAS_OUTPUTMODE_STEREO,
+                                         PSP_SAS_SAMPLE_RATE);
+        load[3] = (uint32_t)__sceSasGetGrain(&s_sas_mix_core);
+    }
+    sas_mix_record(emulated, "sas-mix-load", "RC", load, 4u);
+    for (uint32_t i = 0; i < SAS_MIX_VOLUME_CELLS; i++) sas_mix_volume_cell(emulated, i, sascore_ok);
+    for (uint32_t i = 0; i < SAS_MIX_WITHMIX_CELLS; i++) sas_mix_withmix_cell(emulated, i, sascore_ok);
+    for (uint32_t i = 0; i < SAS_MIX_PITCH_CELLS; i++) sas_mix_pitch_cell(emulated, i, sascore_ok);
+    const uint32_t done[1] = {s_sas_mix_records};
+    /* RC: the run completed. It is not a correctness verdict; nothing here is compared. */
+    sas_mix_record(emulated, "sas-mix-done", sascore_ok ? "RC" : "SKIP", done, 1u);
+    probe_step(emulated, "sas-mix", "park");
+    probe_teardown(emulated);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
 #include <pspsuspend.h>
 #include <psputility.h>
@@ -13216,6 +13597,8 @@ int main(int argc, char *argv[]) {
     run_mpeg_ycbcr(emulated); /* ends in probe_teardown, which parks until modstop */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_ADSR
     run_sas_adsr(emulated); /* ends in probe_teardown, which parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_MIX
+    run_sas_mix(emulated); /* ends in probe_teardown, which parks until modstop */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
