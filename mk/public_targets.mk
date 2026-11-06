@@ -137,6 +137,8 @@ PUBLIC_TARGETS := \
 	ace-selftest \
 	fsr3-host-selftest \
 	fsr3-mutants \
+	fsr3-fg-host-selftest \
+	fsr3-fg-mutants \
 	fsr3-shader-verify \
 	fsr3-shader-repro-verify \
 	fsr3-pass-selftest \
@@ -309,6 +311,8 @@ HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-mach
 HELP_DESCRIPTION_ace-selftest := run Ace Mode's CPU-only selftest (launch line, 30 Hz detector, readout, report; pure C)
 HELP_DESCRIPTION_fsr3-host-selftest := run FSR 3's host selftest against the record of AMD's host code (pure C)
 HELP_DESCRIPTION_fsr3-mutants := run the FSR 3 host mutation campaign (each defect must build and fail the selftest)
+HELP_DESCRIPTION_fsr3-fg-host-selftest := run FSR 3 frame generation's host selftest against the record of AMD's host code (pure C)
+HELP_DESCRIPTION_fsr3-fg-mutants := run the FSR 3 frame generation host mutation campaign (each defect must build and fail the selftest)
 HELP_DESCRIPTION_fsr3-shader-verify := verify the FSR 3 upscaler and frame-generation shader sets against their schema 2 manifests
 HELP_DESCRIPTION_fsr3-shader-repro-verify := recompile both FSR 3 shader sets with the pinned DXC (DXC=...) and compare bytes
 HELP_DESCRIPTION_fsr3-pass-selftest := run FSR 3's passes on a headless Vulkan device against synthetic scenes

@@ -5,6 +5,9 @@
 * fsr3_pass_layout (src/rt/fsr3_host.c) against each embedded module's own decorations: every
   descriptor's binding, kind and name, which SRVs are sampled through s_LinearClamp, the local size,
   and the constant buffers' member order and offsets against the C structs in fsr3_host.h.
+* fsr3_fg_pass_layout (src/rt/fsr3_fg_host.c), row by row against the frame-generation manifest, the
+  same way: binding, kind (storage buffers read-only or writable), name, linear sampling, local size,
+  the optical-flow and subgroup flags, each constant buffer row's stage and its C struct.
 * The storage images that declare a format are exactly the atomic ones, as R32ui (the LOCAL DELTA),
   in the upscaler set and, image by image across passes, in the frame-generation set.
 * Only frame generation's optical-flow search uses subgroup operations, the one pass that needs a
@@ -38,7 +41,7 @@ OP_NAME, OP_MEMBER_NAME, OP_EXECUTION_MODE, OP_TYPE_IMAGE, OP_TYPE_SAMPLER = 5, 
 OP_TYPE_STRUCT, OP_TYPE_POINTER, OP_VARIABLE, OP_LOAD, OP_IMAGE_TEXEL_POINTER = 30, 32, 59, 61, 60
 OP_SAMPLED_IMAGE, OP_DECORATE, OP_MEMBER_DECORATE, OP_CAPABILITY = 86, 71, 72, 17
 CAP_GROUP_NON_UNIFORM = 61
-DEC_BINDING, DEC_DESCRIPTOR_SET, DEC_OFFSET = 33, 34, 35
+DEC_BINDING, DEC_DESCRIPTOR_SET, DEC_OFFSET, DEC_BUFFER_BLOCK, DEC_NON_WRITABLE = 33, 34, 35, 3, 24
 MODE_LOCAL_SIZE, FORMAT_UNKNOWN, FORMAT_R32UI = 17, 0, 33
 
 
@@ -57,6 +60,7 @@ def reflect(words: list[int]) -> dict:
         raise ValueError("not SPIR-V")
     names, binding, dset, types, pointers, variables = {}, {}, {}, {}, {}, {}
     member_names, offsets, loads, sampled, texel_pointers = {}, {}, {}, set(), set()
+    buffer_blocks, read_only = set(), set()
     local = None
     caps = set()
     i = 5
@@ -73,8 +77,12 @@ def reflect(words: list[int]) -> dict:
             binding[a[0]] = a[2]
         elif op == OP_DECORATE and a[1] == DEC_DESCRIPTOR_SET:
             dset[a[0]] = a[2]
+        elif op == OP_DECORATE and a[1] == DEC_BUFFER_BLOCK:
+            buffer_blocks.add(a[0])
         elif op == OP_MEMBER_DECORATE and a[2] == DEC_OFFSET:
             offsets[(a[0], a[1])] = a[3]
+        elif op == OP_MEMBER_DECORATE and a[2] == DEC_NON_WRITABLE:
+            read_only.add(a[0])
         elif op == OP_EXECUTION_MODE and a[1] == MODE_LOCAL_SIZE:
             local = tuple(a[2:5])
         elif op == OP_TYPE_IMAGE:
@@ -104,6 +112,10 @@ def reflect(words: list[int]) -> dict:
             formats[name] = (kind[2], var in texel_pointers)
         elif kind[0] == "sampler":
             what = "SAMPLER"
+        elif pointee in buffer_blocks:
+            # A structured buffer (the Uniform class with BufferBlock, as DXC emits it), read-only
+            # when its member is NonWritable.
+            what = "SRV_BUFFER" if pointee in read_only else "UAV_BUFFER"
         else:
             what = "CBV"
             cbuffers[name] = [(member_names.get((pointee, m)), offsets.get((pointee, m))) for m in range(kind[1])]
@@ -112,14 +124,21 @@ def reflect(words: list[int]) -> dict:
     return {"local": local, "rows": sorted(rows), "formats": formats, "cbuffers": cbuffers, "caps": caps}
 
 
-def c_tables() -> dict[str, list[tuple[int, str, str, bool]]]:
-    text = HOST_C.read_text(encoding="utf-8")
+def c_tables(path: Path = HOST_C, struct: str = "Fsr3Binding",
+             prefix: str = "FSR3_BIND_") -> dict[str, list[tuple[int, str, str, bool]]]:
+    return {name: [(b, kind, n, linear) for b, kind, _id, linear, n in rows]
+            for name, rows in c_table_rows(path, struct, prefix).items()}
+
+
+def c_table_rows(path: Path, struct: str, prefix: str) -> dict[str, list[tuple[int, str, str, bool, str]]]:
+    """Each binding table's rows: (binding, kind, id text, linear, name)."""
+    text = path.read_text(encoding="utf-8")
     tables = {}
-    for name, body in re.findall(r"static const Fsr3Binding (\w+)\[\] = \{\n(.*?)\n\};", text, re.S):
-        rows = re.findall(r'\{ (\d+), FSR3_BIND_(\w+), [^,]+, ([01]), "(\w+)" \}', body)
+    for name, body in re.findall(rf"static const {struct} (\w+)\[\] = \{{\n(.*?)\n\}};", text, re.S):
+        rows = re.findall(rf'\{{ (\d+), {prefix}(\w+), ([^,]+), ([01]), "(\w+)" \}}', body)
         if len(rows) != body.count("{"):
             raise ValueError(f"{name}: unreadable row")
-        tables[name] = [(int(b), kind, n, linear == "1") for b, kind, linear, n in rows]
+        tables[name] = [(int(b), kind, ident, linear == "1", n) for b, kind, ident, linear, n in rows]
     return tables
 
 
@@ -129,9 +148,9 @@ def c_layouts() -> list[tuple[str, int, int, str]]:
             for label, x, y, table in re.findall(r'LAYOUT\("([\w-]+)", (\d+), (\d+), (\w+)\)', text)]
 
 
-def c_struct_fields(name: str) -> list[tuple[str, int]]:
-    """(field, bytes) of a typedef'd struct of 4-byte scalars and arrays in fsr3_host.h."""
-    text = HOST_H.read_text(encoding="utf-8")
+def c_struct_fields(name: str, header: Path = HOST_H) -> list[tuple[str, int]]:
+    """(field, bytes) of a typedef'd struct of 4-byte scalars and arrays in a header."""
+    text = header.read_text(encoding="utf-8")
     body = re.search(r"typedef struct \{\n([^{}]*)\n\} " + name + ";", text)
     if not body:
         raise ValueError(f"no struct {name}")
@@ -153,6 +172,28 @@ def c_name(hlsl: str) -> str:
         return HLSL_RENAMED[hlsl]
     stripped = re.sub(r"^[ifu](?=[A-Z])", "", hlsl)
     return stripped[0].lower() + stripped[1:]
+
+
+FG_HOST_C = ROOT / "src/rt/fsr3_fg_host.c"
+FG_HOST_H = ROOT / "src/rt/fsr3_fg_host.h"
+# Frame generation's constant buffers: the stage the CBV row reads and the C struct it is.
+FG_CBUFFER = {"cbFI": ("CB_FI", "Fsr3FgConstants"), "cbInpaintingPyramid": ("CB_INPAINTING", "Fsr3FgInpaintingConstants"),
+              "cbOF": ("CB_OF", "Fsr3OfConstants")}
+# HLSL member names that c_name does not turn into the C field's, which keeps AMD's C++ spelling
+# (FrameInterpolationConstants, InpaintingPyramidConstants in ffx_frameinterpolation_private.h).
+FG_HLSL_RENAMED = {"Mode": "Mode", "reset": "Reset", "HUDLessAttachedFactor": "HUDLessAttachedFactor",
+                   "fTanHalfFOV": "fTanHalfFOV", "fJitter": "jitter", "numWorkGroups": "numworkGroups"}
+
+
+def fg_c_name(hlsl: str) -> str:
+    return FG_HLSL_RENAMED.get(hlsl) or c_name(hlsl)
+
+
+def c_fg_layouts() -> list[tuple[str, tuple[int, int, int], bool, bool, str]]:
+    text = FG_HOST_C.read_text(encoding="utf-8")
+    return [(label, (int(x), int(y), int(z)), of == "1", s32 == "1", table)
+            for label, x, y, z, of, s32, table in
+            re.findall(r'LAYOUT\("(\w+)", (\d+), (\d+), (\d+), ([01]), ([01]), (\w+)\)', text)]
 
 
 def module_for(table: str) -> Path:
@@ -248,6 +289,45 @@ class FrameGenerationShaderTests(unittest.TestCase):
         users = {m for m, facts in self.modules.items() if CAP_GROUP_NON_UNIFORM in facts["caps"]}
         self.assertEqual(users, {"fsr3fg_of_compute_optical_flow_advanced_v5_comp.inc"})
 
+    def test_layouts_follow_the_manifest_and_match_the_spirv(self) -> None:
+        """fsr3_fg_pass_layout (src/rt/fsr3_fg_host.c), row n against manifest entry n: every
+        descriptor's binding, kind (storage buffers read-only or not), name and linear sampling, the
+        local size, the optical-flow flag and the subgroup flag."""
+        tables = c_tables(FG_HOST_C, "Fsr3FgBinding", "FSR3FG_BIND_")
+        layouts = c_fg_layouts()
+        self.assertEqual(len(layouts), len(shader_embed.FSR3FG_SHADERS))
+        for (label, local, of, s32, table), (_, _, emb) in zip(layouts, shader_embed.FSR3FG_SHADERS, strict=True):
+            name = Path(emb).name
+            with self.subTest(label=label, module=name):
+                facts = self.modules[name]
+                self.assertTrue(all(s == 0 for _, s, *_ in facts["rows"]), "every descriptor is in set 0")
+                self.assertEqual(tables[table], [(b, kind, n, linear) for b, _s, kind, n, linear in facts["rows"]])
+                self.assertEqual(facts["local"], local)
+                self.assertEqual(of, name.startswith("fsr3fg_of_"))
+                self.assertEqual(s32, CAP_GROUP_NON_UNIFORM in facts["caps"])
+
+    def test_constant_buffer_rows_name_their_stage_and_match_the_c_structs(self) -> None:
+        rows = c_table_rows(FG_HOST_C, "Fsr3FgBinding", "FSR3FG_BIND_")
+        layouts = c_fg_layouts()
+        seen = set()
+        for (label, *_, table), (_, _, emb) in zip(layouts, shader_embed.FSR3FG_SHADERS, strict=True):
+            cbuffers = self.modules[Path(emb).name]["cbuffers"]
+            for binding, kind, ident, _linear, cb in rows[table]:
+                if kind != "CBV":
+                    continue
+                with self.subTest(label=label, cbuffer=cb):
+                    self.assertEqual(ident, FG_CBUFFER[cb][0])
+                    fields = c_struct_fields(FG_CBUFFER[cb][1], FG_HOST_H)
+                    members = cbuffers[cb]
+                    self.assertEqual([fg_c_name(m) for m, _ in members], [f for f, _ in fields])
+                    offset = 0
+                    for (member, spirv_offset), (_, size) in zip(members, fields, strict=True):
+                        self.assertEqual(spirv_offset, offset, member)
+                        offset += size
+                    seen.add(cb)
+        # cbOF_SPD is staged but no compiled pass declares it (fsr3_fg_host.h).
+        self.assertEqual(seen, set(FG_CBUFFER))
+
     def test_the_manifest_pins_the_shader_options(self) -> None:
         for define in ("FFX_FRAMEINTERPOLATION_OPTION_INVERTED_DEPTH=1",
                        "FFX_FRAMEINTERPOLATION_OPTION_LOW_RES_MOTION_VECTORS=1",
@@ -259,9 +339,9 @@ class FrameGenerationShaderTests(unittest.TestCase):
 
 class NoticeTests(unittest.TestCase):
     DERIVED = ("src/rt/fsr3_host.c", "src/rt/fsr3_host.h", "src/rt/fsr3_jitter.c", "src/rt/fsr3_jitter.h",
-               "src/rt/gpu_sdl3vk/fsr3_pass.c")
+               "src/rt/gpu_sdl3vk/fsr3_pass.c", "src/rt/fsr3_fg_host.c", "src/rt/fsr3_fg_host.h")
     PROJECT = ("src/rt/gpu_sdl3vk/fsr3_pass.h", "src/rt/gpu_sdl3vk/fsr3_pass_selftest.c",
-               "tests/native/fsr3_host_selftest.c", "tools/fsr3_mutants.py")
+               "tests/native/fsr3_host_selftest.c", "tests/native/fsr3_fg_host_selftest.c", "tools/fsr3_mutants.py")
 
     def test_derived_files_keep_amds_notice_and_say_they_were_modified(self) -> None:
         licence = (ROOT / "third_party/fidelityfx_sdk/LICENSE-AMD.md").read_text(encoding="utf-8")
@@ -290,6 +370,7 @@ class MutantTextTests(unittest.TestCase):
         rows = [(m[0], m[1], m[2]) for m in fsr3_mutants.MUTANTS]
         rows += [(m[0], m[1], m[2]) for m in fsr3_mutants.PASS_MUTANTS]
         rows += [(m[0], m[1], m[2]) for m in fsr3_mutants.PASS_RECORDED]
+        rows += [(m[0], m[1], m[2]) for m in fsr3_mutants.FG_MUTANTS]
         for name, path, old in rows:
             with self.subTest(mutant=name):
                 self.assertEqual((ROOT / path).read_text(encoding="utf-8").count(old), 1)
@@ -303,7 +384,7 @@ class MutantTextTests(unittest.TestCase):
 
 
 class InertTests(unittest.TestCase):
-    """F-A-lite's static half: PR-A adds no FSR 3 code to what the player builds or runs."""
+    """F-A-lite's static half: no FSR 3 code is in what the player builds or runs."""
 
     def test_no_fsr3_file_in_the_runtime_or_player_sources(self) -> None:
         for mk in ("mk/runtime_sources.mk", "mk/pipeline.mk"):
@@ -312,7 +393,7 @@ class InertTests(unittest.TestCase):
 
     def test_no_runtime_or_player_source_refers_to_fsr3(self) -> None:
         own = {"fsr3_host.c", "fsr3_host.h", "fsr3_jitter.c", "fsr3_jitter.h", "fsr3_pass.c", "fsr3_pass.h",
-               "fsr3_pass_selftest.c"}
+               "fsr3_pass_selftest.c", "fsr3_fg_host.c", "fsr3_fg_host.h"}
         for path in sorted((ROOT / "src").rglob("*")):
             if path.suffix not in {".c", ".h", ".cpp", ".inc"} or path.name in own:
                 continue

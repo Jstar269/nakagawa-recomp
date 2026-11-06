@@ -172,6 +172,22 @@ fsr3-host-selftest:
 fsr3-mutants: fsr3-host-selftest
 	"$(PYTHON)" tools/fsr3_mutants.py --build-dir $(BUILD_DIR)/fsr3-mutants --cc "$(CC)"
 
+# fsr3-fg-host-selftest - FSR 3 frame generation's CPU side (src/rt/fsr3_fg_host.c) against the record
+# of AMD's own frame interpolation and optical flow, driven as AMD's frame generation provider drives
+# them (tests/native/fsr3_fg_host_oracle.md): every staged constant buffer, clear, barrier, discard,
+# copy and dispatch, and the resource behind each binding, line for line; then the refusals. Pure C, no
+# GPU and no game data. fsr3-fg-mutants then requires 25 semantic defects in copies of the port to
+# build and fail it on the line each one changes.
+native-core-tests: fsr3-fg-host-selftest fsr3-fg-mutants
+.PHONY: fsr3-fg-host-selftest fsr3-fg-mutants
+fsr3-fg-host-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-Ithird_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu \
+		-o $(BUILD_DIR)/fsr3_fg_host_selftest$(EXE_EXT) tests/native/fsr3_fg_host_selftest.c src/rt/fsr3_fg_host.c -lm
+	$(BUILD_DIR)/fsr3_fg_host_selftest$(EXE_EXT) tests/native/fsr3_fg_host_oracle.txt
+fsr3-fg-mutants: fsr3-fg-host-selftest
+	"$(PYTHON)" tools/fsr3_mutants.py --fg --build-dir $(BUILD_DIR)/fsr3-fg-mutants --cc "$(CC)"
+
 # fsr3-shader-verify - the FSR 3 shader sets, the upscaler (fsr3) and frame generation (fsr3fg)
 # (schema 2: sources, include closures, embeddings, the pinned DXC's options and defines).
 # fsr3-shader-repro-verify also recompiles both with DXC and requires the same bytes; a DXC that is

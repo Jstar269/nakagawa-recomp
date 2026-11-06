@@ -6,6 +6,8 @@ Each mutant below is one semantic defect in a copy of the FSR 3 code, never in t
 
 * Host mutants (the default) change the host (src/rt/fsr3_host.c, src/rt/fsr3_jitter.c). The
   driver builds tests/native/fsr3_host_selftest.c against the copy and runs it on the AMD record.
+* Frame generation's host mutants (--fg) change src/rt/fsr3_fg_host.c; the driver builds
+  tests/native/fsr3_fg_host_selftest.c against the copy and runs it on AMD's frame generation record.
 * GPU mutants (--pass) change the pass (src/rt/gpu_sdl3vk/fsr3_pass.c), the jitter, or the scenes
   in src/rt/gpu_sdl3vk/fsr3_pass_selftest.c, which is built against the copy and run on a Vulkan
   device for the one cell the mutant targets. Recorded mutants are run and their measurements
@@ -23,7 +25,7 @@ Every judged mutant must fail for the stated reason:
 --calibrate (with --pass) runs every mutant and prints its measurements even when the unmutated
 cell fails, for choosing bars on a new device; it always exits 1. --cell limits --pass to one cell.
 
-usage: python tools/fsr3_mutants.py --build-dir build/fsr3-mutants [--cc gcc] [--pass [--calibrate] [--cell F-R]]
+usage: python tools/fsr3_mutants.py --build-dir build/fsr3-mutants [--cc gcc] [--fg | --pass [--calibrate] [--cell F-R]]
 """
 from __future__ import annotations
 
@@ -125,6 +127,115 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
      "out[0] = 2.0f * jx / viewport_w;",
      "out[0] = -2.0f * jx / viewport_w;",
      "J: clip offset"),
+]
+
+# Frame generation's host (src/rt/fsr3_fg_host.c) against tests/native/fsr3_fg_host_selftest.c (G-K).
+FG_HOST = "src/rt/fsr3_fg_host.c"
+FG_SELFTEST = "tests/native/fsr3_fg_host_selftest.c"
+FG_RECORD = "tests/native/fsr3_fg_host_oracle.txt"
+FG_INCLUDES = ["-Isrc/rt", "-Ithird_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu"]
+# Each AMD record line the defect changes is named as the selftest prints it ("AMD:  <line>").
+FG_MUTANTS: list[tuple[str, str, str, str, str]] = [
+    ("optical flow's ping-pong parity swapped", FG_HOST,
+     "const int odd_frame = (h->of_resource_frame_index & 1u) != 0;",
+     "const int odd_frame = (h->of_resource_frame_index & 1u) == 0;",
+     "AMD:    uav rw_optical_flow_input "),
+    ("a frame configured under another ID is not disjoint", FG_HOST,
+     "const int disjoint = decreased || skipped || d->frame_id != h->last_configure_frame_id;",
+     "const int disjoint = decreased || skipped;",
+     "AMD:  clear 95"),
+    ("a skipped frame ID is not disjoint", FG_HOST,
+     "const int disjoint = decreased || skipped || d->frame_id != h->last_configure_frame_id;",
+     "const int disjoint = decreased || (skipped & 0) || d->frame_id != h->last_configure_frame_id;",
+     "AMD:  clear 95"),
+    ("the prepare's reset ignored", FG_HOST,
+     "const int reset = d->reset || p->reset || disjoint;",
+     "const int reset = d->reset || disjoint;",
+     "AMD:  clear 95"),
+    ("the shared prepared set never flips", FG_HOST,
+     "    h->shared_toggle = (h->shared_toggle + 1) & 1u;\n",
+     "",
+     "AMD:  clear 140"),
+    ("the dispatch reads the other frame's prepare", FG_HOST,
+     "const Fsr3FgHostPrepare *p = &h->prepared[d->frame_id % PROVIDER_MAX_QUEUED_FRAMES];",
+     "const Fsr3FgHostPrepare *p = &h->prepared[h->shared_toggle ^ 1u];",
+     "AMD:  stage"),
+    ("optical flow's level 0 kept off the shared vector", FG_HOST,
+     "        if (level == 0) uav[OFB_OPTICAL_FLOW] = uav[OFB_SHARED_OPTICAL_FLOW_VECTOR];\n",
+     "",
+     "AMD:    uav rw_optical_flow 133"),
+    ("optical flow reads the colour with its HUD", FG_HOST,
+     "h->has_hudless ? FSR3FG_RES_HUDLESS_COLOR : FSR3FG_RES_PRESENT_COLOR, reset,",
+     "FSR3FG_RES_PRESENT_COLOR, reset,",
+     "AMD:    srv r_input_color 131"),
+    ("the HUD-less factor dropped", FG_HOST,
+     "c->HUDLessAttachedFactor = h->has_hudless ? 1 : 0;",
+     "c->HUDLessAttachedFactor = 0;",
+     "AMD:  stage"),
+    ("the preparation passes run on a reset", FG_HOST,
+     "    if (!c->Reset) {",
+     "    if (1) {",
+     "AMD:  dispatch INTERPOLATION"),
+    ("the previous source copied from the colour with its HUD", FG_HOST,
+     "job_copy(h, srv[FI(CURRENT_INTERPOLATION_SOURCE)],",
+     "job_copy(h, srv[FI(PRESENT_BACKBUFFER)],",
+     "AMD:  copy"),
+    ("the counters left in UAV state", FG_HOST,
+     "internal[i] == FI(COUNTERS) ? STATE_COPY_DEST : STATE_UNORDERED_ACCESS",
+     "internal[i] == FI(COUNTERS) ? STATE_UNORDERED_ACCESS : STATE_UNORDERED_ACCESS",
+     "AMD:  barrier 32"),
+    ("the aliasable images not discarded", FG_HOST,
+     "i++) job_discard(h, uav[aliasable[i]]);",
+     "i++) if (0) job_discard(h, uav[aliasable[i]]);",
+     "AMD:  discard"),
+    ("optical flow's frame index kept on a reset", FG_HOST,
+     "c->frameIndex = reset_accumulation ? 0 : c->frameIndex + 1;",
+     "c->frameIndex = c->frameIndex + 1;",
+     "AMD:  stage"),
+    ("optical flow's search in groups of 32", FG_HOST,
+     "((luma_w + 3) / 4 * 16 + 63) / 64",
+     "((luma_w + 3) / 4 * 16 + 31) / 32",
+     "AMD:  dispatch Opticalflow_Search"),
+    ("the scene-change strata from half the width", FG_HOST,
+     "const uint32_t strata_width = (width / 4) / OF_HISTOGRAMS_PER_DIM;",
+     "const uint32_t strata_width = (width / 2) / OF_HISTOGRAMS_PER_DIM;",
+     "AMD:  dispatch Opticalflow_SCD_Histogram"),
+    ("the inpainting pyramid's mip count fixed", FG_HOST,
+     "fsr3_fg_spd_setup(groups, offset, wg_mips, rect, -1);",
+     "fsr3_fg_spd_setup(groups, offset, wg_mips, rect, 12);",
+     "AMD:  stage"),
+    ("a metres factor of 0 or below used as given", FG_HOST,
+     "h->rd_meters = p->view_space_to_meters_factor > 0.0f ? p->view_space_to_meters_factor : 1.0f;",
+     "h->rd_meters = p->view_space_to_meters_factor;",
+     "AMD:  stage"),
+    ("depth to view space without the inverted swap", FG_HOST,
+     "    if (inverted) {\n        const float t = fmin;",
+     "    if (!inverted) {\n        const float t = fmin;",
+     "AMD:  stage"),
+    ("the horizontal FOV without the aspect ratio", FG_HOST,
+     "atanf(tanf(p->camera_fov_angle_vertical / 2.0f) * aspect_ratio) * 2.0f",
+     "atanf(tanf(p->camera_fov_angle_vertical / 2.0f) * (aspect_ratio / aspect_ratio)) * 2.0f",
+     "AMD:  stage"),
+    ("the motion-vector scale not divided by the render size", FG_HOST,
+     "c->motionVectorScale[0] = p->motion_vector_scale_x / (float)c->renderSize[0];",
+     "c->motionVectorScale[0] = p->motion_vector_scale_x;",
+     "AMD:  stage 0"),
+    ("reconstruct and dilate in 16x16 groups", FG_HOST,
+     "(p->render_width + 7) / 8, (p->render_height + 7) / 8, 1);",
+     "(p->render_width + 15) / 16, (p->render_height + 15) / 16, 1);",
+     "AMD:  dispatch RECONSTRUCT_AND_DILATE"),
+    ("r_counters bound as a sampled image", FG_HOST,
+     '{ 16, FSR3FG_BIND_SRV_BUFFER, FI(COUNTERS), 0, "r_counters" },',
+     '{ 16, FSR3FG_BIND_SRV, FI(COUNTERS), 0, "r_counters" },',
+     "AMD:    srvbuf r_counters"),
+    ("a generation rectangle past the right edge accepted", FG_HOST,
+     "r[2] > h->desc.display_width - r[0] ||",
+     "",
+     "refusals: rectangle"),
+    ("depth that is not inverted accepted", FG_HOST,
+     "if ((desc->flags & ~accepted) || !(desc->flags & FSR3FG_HOST_ENABLE_DEPTH_INVERTED)) return -1;",
+     "if (desc->flags & ~accepted) return -1;",
+     "depth that is not inverted accepted"),
 ]
 
 # The GPU cells (src/rt/gpu_sdl3vk/fsr3_pass_selftest.c), one cell a mutant:
@@ -336,12 +447,52 @@ def main_pass(args: argparse.Namespace, work: Path) -> int:
     return 1 if failures else 0
 
 
+def main_fg(args: argparse.Namespace, work: Path) -> int:
+    def build_and_run_fg(host: Path, lane: Path, tag: str) -> tuple[str, int, str]:
+        exe = lane / f"fsr3_fg_host_selftest_{tag}{'.exe' if os.name == 'nt' else ''}"
+        cmd = [args.cc, *CFLAGS, *FG_INCLUDES, "-o", str(exe), FG_SELFTEST, str(host), "-lm"]
+        built = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=300)
+        if built.returncode != 0:
+            return "BUILD", built.returncode, built.stderr
+        ran = subprocess.run([str(exe), FG_RECORD], cwd=ROOT, capture_output=True, text=True, timeout=300)
+        return "RAN", ran.returncode, ran.stdout + ran.stderr
+
+    status, rc, out = build_and_run_fg(ROOT / FG_HOST, work, "base")
+    if status != "RAN" or rc != 0:
+        print(f"FAIL fsr3-fg-mutants: the unmutated cell does not pass ({status}, exit {rc})\n{out}")
+        return 1
+    failures = 0
+    for index, (name, path, old, new, expect) in enumerate(FG_MUTANTS):
+        mutated, why = mutate(work, index, path, old, new)
+        if mutated is None:
+            print(f"INVALID {name}: {why}")
+            failures += 1
+            continue
+        status, rc, out = build_and_run_fg(mutated, mutated.parent, f"m{index:02d}")
+        if status == "BUILD":
+            print(f"INVALID {name}: the mutant does not build\n{out}")
+            failures += 1
+        elif rc == 0:
+            print(f"SURVIVED {name}")
+            failures += 1
+        elif expect not in out:
+            first = next((line for line in out.splitlines() if "FAIL" in line or "AMD:" in line), out[:200])
+            print(f"WRONG_REASON {name}: expected {expect!r}, first failure: {first}")
+            failures += 1
+        else:
+            print(f"KILLED {name}")
+    print(f"fsr3-fg-mutants: {len(FG_MUTANTS) - failures} of {len(FG_MUTANTS)} killed for the stated reason")
+    return 1 if failures else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--build-dir", required=True, type=Path)
     parser.add_argument("--cc", default=os.environ.get("CC", "gcc"))
     parser.add_argument("--pass", dest="gpu", action="store_true",
                         help="run the GPU cells' mutants (fsr3_pass_selftest.c) instead of the host's")
+    parser.add_argument("--fg", action="store_true",
+                        help="run frame generation's host mutants (fsr3_fg_host_selftest.c) instead of the upscaler's")
     parser.add_argument("--calibrate", action="store_true",
                         help="with --pass: run every mutant and print its measurements even when the unmutated "
                              "cell fails (for choosing bars on a new device; never a pass)")
@@ -353,6 +504,8 @@ def main() -> int:
     work.mkdir(parents=True)
     if args.gpu:
         return main_pass(args, work)
+    if args.fg:
+        return main_fg(args, work)
 
     status, rc, out = build_and_run(args.cc, work, ROOT / HOST, ROOT / JITTER, "base")
     if status != "RAN" or rc != 0:
