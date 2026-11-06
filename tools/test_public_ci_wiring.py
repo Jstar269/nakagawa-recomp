@@ -797,6 +797,8 @@ _NATIVE_SERIAL_GATES = {
     "Run GPU texture scaling selftest on lavapipe": "make CC=gcc gpu-texscale-selftest gpu-texscale-mutant",
     "Configure, build, and test CMake Linux player": 'ctest --test-dir "$player_build" --output-on-failure',
     "Build and run the Linux showcase headlessly": "make CC=gcc showcase-linux",
+    "Build and run the profile-zero production route on Linux":
+        "run: make --no-print-directory CC=gcc profile-zero-e2e",
     "Smoke the CMake Linux player headlessly": '"$player_build/nakagawa_player" "--iso=$iso" --stage-only)',
     "Stage the installed Linux player and smoke the installed binary":
         'python tools/stage_install.py --dest "$install_dir"',
