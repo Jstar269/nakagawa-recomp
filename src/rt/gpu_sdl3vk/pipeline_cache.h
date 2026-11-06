@@ -134,7 +134,9 @@ static int nk_pcache_check(const uint8_t *buf, size_t n, const NkPcacheKey *k,
 }
 
 /* Reads a whole file. 1: *buf (malloc'd) and *n. 0: *why; "none yet" when there is no file. */
-static int nk_pcache_read_file(const char *path, uint8_t **buf, size_t *n, const char **why) {
+/* Reads at most `limit` bytes, and one more to learn that a file is longer: a longer file is
+ * refused without reading the rest of it, and the buffer never grows past limit + 1. */
+static int nk_pcache_read_file_max(const char *path, uint8_t **buf, size_t *n, const char **why, size_t limit) {
     *buf = NULL; *n = 0;
     if (nk_platform_path_missing(path)) { *why = "none yet"; return 0; }
     FILE *f = nk_fopen_utf8(path, "rb");
@@ -143,8 +145,9 @@ static int nk_pcache_read_file(const char *path, uint8_t **buf, size_t *n, const
     size_t len = 0, cap = 0;
     for (;;) {
         if (len == cap) {
-            if (cap >= NK_PCACHE_HEADER + NK_PCACHE_MAX_DATA) { *why = "larger than any cache this build writes"; break; }
+            if (cap > limit) { *why = "larger than any cache this build writes"; break; }
             size_t nc = cap ? cap * 2 : 65536u;
+            if (nc > limit + 1u) nc = limit + 1u;
             uint8_t *nb = (uint8_t *)realloc(b, nc);
             if (!nb) { *why = "out of memory"; break; }
             b = nb; cap = nc;
@@ -161,6 +164,10 @@ static int nk_pcache_read_file(const char *path, uint8_t **buf, size_t *n, const
     fclose(f);
     free(b);
     return 0;
+}
+
+static int nk_pcache_read_file(const char *path, uint8_t **buf, size_t *n, const char **why) {
+    return nk_pcache_read_file_max(path, buf, n, why, (size_t)NK_PCACHE_HEADER + NK_PCACHE_MAX_DATA);
 }
 
 /* SR_USER_DATA_ROOT, the data root the launcher resolved for this run (portable mode and

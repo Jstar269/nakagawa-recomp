@@ -1607,8 +1607,9 @@ static ReadbackSlot *readback_acquire(void) {
  *   SR_USER_DATA_ROOT      the data root the launcher passes (portable mode included); unset,
  *                          the platform's per-user cache folder holds gegpu/ instead.
  *
- * Stamps: one start line (loaded, none yet, discarded with its reason, off, or unavailable)
- * and one exit line (saved, unchanged or not saved, and the time pipeline creation took).
+ * Stamps: one start line (loaded, ignored by the driver, none yet, discarded with its reason,
+ * off, or unavailable) and one exit line (saved, unchanged, kept the file, or not saved, and
+ * the time pipeline creation took). A file is never replaced by less data than it held.
  * A file that fails a check is never handed to the driver; a run never stops for the cache. */
 static VkPipelineCache s_pcache = VK_NULL_HANDLE;
 static NkPcacheKey s_pcache_key;
@@ -1616,6 +1617,8 @@ static char s_pcache_name[64];             /* the file name, for stamps (never t
 static char s_pcache_path[4096];
 static int s_pcache_loaded = 0;            /* the cache started from the file's data */
 static size_t s_pcache_loaded_n = 0;
+static size_t s_pcache_file_n = 0;         /* the driver data the file held (0: no file passed) */
+static size_t s_pcache_held_n = 0;         /* the driver's data size right after the cache opened */
 static uint64_t s_pcache_loaded_hash = 0;
 static unsigned long s_pcache_discards = 0;     /* files refused at open (selftest) */
 static unsigned long s_pcache_creates = 0;      /* pipelines created this run... */
@@ -1638,9 +1641,18 @@ static uint64_t pcache_shader_set(void) {
     return nk_pcache_fnv1a64(h, k_tnl_vert_spv, sizeof(k_tnl_vert_spv));
 }
 
+/* How much data the driver's cache holds now (0 if it cannot say). */
+static size_t pcache_data_size(void) {
+    size_t sz = 0;
+    if (!s_pcache || vkGetPipelineCacheData(s_dev, s_pcache, &sz, NULL) != VK_SUCCESS) return 0;
+    return sz;
+}
+
 static void pcache_open(VkPhysicalDevice pdev) {
     s_pcache_loaded = 0;
     s_pcache_loaded_n = 0;
+    s_pcache_file_n = 0;
+    s_pcache_held_n = 0;
     s_pcache_loaded_hash = 0;
     s_pcache_creates = 0;
     s_pcache_create_ns = 0;
@@ -1669,22 +1681,28 @@ static void pcache_open(VkPhysicalDevice pdev) {
      * launcher's, so portable mode reaches the game process), or, unset, the platform's
      * per-user cache folder holds gegpu/. A data root that is set but unusable is never
      * replaced by another folder: the run goes without the cache. */
-    char dir[4096], root[4096];
+    char dir[4096] = "", root[4096];
     const char sep = nk_platform_path_separator();
-    const char *dir_why = "its folder could not be made";
-    int dir_ok;
+    const char *dir_why = NULL;
     const int root_rc = nk_pcache_user_data_root(root, sizeof root);
     if (root_rc > 0) {
-        dir_ok = snprintf(dir, sizeof dir, "%s%ccache%cgegpu", root, sep, sep) < (int)sizeof dir;
+        if (snprintf(dir, sizeof dir, "%s%ccache%cgegpu", root, sep, sep) >= (int)sizeof dir)
+            dir_why = "the folder's path is too long";
     } else if (root_rc == 0) {
-        dir_ok = nk_platform_get_path(NK_PATH_CACHE, root, sizeof root) &&
-                 snprintf(dir, sizeof dir, "%s%cgegpu", root, sep) < (int)sizeof dir;
+        if (!nk_platform_get_path(NK_PATH_CACHE, root, sizeof root))
+            dir_why = "the platform has no cache folder";
+        else if (snprintf(dir, sizeof dir, "%s%cgegpu", root, sep) >= (int)sizeof dir)
+            dir_why = "the folder's path is too long";
     } else {
-        dir_ok = 0;
         dir_why = "SR_USER_DATA_ROOT is set but is not an absolute folder";
     }
-    if (!dir_ok || !nk_platform_mkdir_p(dir) || !nk_pcache_file_name(&s_pcache_key, s_pcache_name, sizeof s_pcache_name) ||
-        snprintf(s_pcache_path, sizeof s_pcache_path, "%s%c%s", dir, sep, s_pcache_name) >= (int)sizeof s_pcache_path) {
+    if (!dir_why && !nk_platform_mkdir_p(dir)) dir_why = "its folder could not be made";
+    if (!dir_why && !nk_pcache_file_name(&s_pcache_key, s_pcache_name, sizeof s_pcache_name))
+        dir_why = "the file name could not be formed";
+    if (!dir_why &&
+        snprintf(s_pcache_path, sizeof s_pcache_path, "%s%c%s", dir, sep, s_pcache_name) >= (int)sizeof s_pcache_path)
+        dir_why = "the file's path is too long";
+    if (dir_why) {
         fprintf(stderr, "gegpu: pipeline cache: unavailable (%s): running without it\n", dir_why);
         s_pcache_name[0] = s_pcache_path[0] = 0;
         return;
@@ -1711,11 +1729,19 @@ static void pcache_open(VkPhysicalDevice pdev) {
         free(buf);
         return;
     }
-    if (have) {
+    /* A driver may ignore initial data it does not like and still succeed, so what it holds
+     * now says whether it took the file: a cache that took it holds at least as much. */
+    s_pcache_held_n = pcache_data_size();
+    if (have) s_pcache_file_n = dn;
+    if (have && s_pcache_held_n >= dn) {
         s_pcache_loaded = 1;
         s_pcache_loaded_n = dn;
         s_pcache_loaded_hash = nk_pcache_fnv1a64(0, data, dn);
         fprintf(stderr, "gegpu: pipeline cache: loaded %zu bytes (%s)\n", dn, s_pcache_name);
+    } else if (have) {
+        fprintf(stderr, "gegpu: pipeline cache: ignored by the driver (%s: it holds %zu of the file's %zu "
+                        "bytes): starting empty; the file is kept unless this run's cache grows past it\n",
+                s_pcache_name, s_pcache_held_n, dn);
     } else if (strcmp(why, "none yet") == 0) {
         fprintf(stderr, "gegpu: pipeline cache: none yet (%s): starting empty\n", s_pcache_name);
     } else {
@@ -1745,6 +1771,10 @@ static void pcache_close(int save) {
         } else if (s_pcache_loaded && sz == s_pcache_loaded_n &&
                    nk_pcache_fnv1a64(0, data, sz) == s_pcache_loaded_hash) {
             snprintf(result, sizeof result, "unchanged, %zu bytes", sz);
+        } else if (sz <= s_pcache_file_n) {
+            /* Never replace a file with less data than it held: the driver ignored the file, or
+             * this run made no more than it had, and a short run must not shrink a good cache. */
+            snprintf(result, sizeof result, "kept the file's %zu bytes over this run's %zu", s_pcache_file_n, sz);
         } else {
             size_t fn = 0;
             uint8_t *file = nk_pcache_pack(&s_pcache_key, data, sz, &fn);
@@ -1851,7 +1881,12 @@ static VkPipeline pipe_create(const PipeKey *k) {
     VkPipeline p = VK_NULL_HANDLE;
     uint64_t perf_started = sr_perf_now_ns();
     const uint64_t create_started = SDL_GetTicksNS();
+#ifdef SR_PCACHE_SELFTEST_NULL_MUTANT
+    /* gpu-coherence-pcache-mutant: pipelines bypass the cache; pipeline-cache-cold must fail. */
+    VkResult r = vkCreateGraphicsPipelines(s_dev, VK_NULL_HANDLE, 1, &pci, NULL, &p);
+#else
     VkResult r = vkCreateGraphicsPipelines(s_dev, s_pcache, 1, &pci, NULL, &p);
+#endif
     s_pcache_create_ns += SDL_GetTicksNS() - create_started;
     if (r == VK_SUCCESS) s_pcache_creates++;
     if (perf_started) sr_perf_vulkan_pipeline(perf_started);

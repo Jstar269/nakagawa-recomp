@@ -185,6 +185,32 @@ int main(int argc, char **argv) {
             printf("pipeline cache selftest: PASS %-28s written, replaced, read back, no temporary file left\n",
                    "file round trip");
         }
+        /* The read is bounded: a file one byte over the limit is refused after reading limit + 1
+         * bytes, not read whole. The limits here sit below and above the first 64 KiB step. */
+        if (ok) {
+            const size_t limits[] = { n2, n2 - 1u, 100u };
+            int bound_ok = 1;
+            for (size_t i = 0; i < sizeof limits / sizeof limits[0]; i++) {
+                uint8_t *b = NULL;
+                size_t bn = 0;
+                const char *bwhy = NULL;
+                const int fits = limits[i] >= n2;
+                const int read = nk_pcache_read_file_max(path, &b, &bn, &bwhy, limits[i]);
+                if (fits ? !(read && bn == n2) :
+                           (read || !bwhy || strcmp(bwhy, "larger than any cache this build writes") != 0)) {
+                    fprintf(stderr, "pipeline cache selftest: FAIL bounded read: a %zu-byte file at a limit of "
+                                    "%zu bytes %s\n", n2, limits[i],
+                            read ? "was read" : (bwhy ? bwhy : "was refused without a reason"));
+                    bound_ok = 0;
+                }
+                free(b);
+            }
+            if (bound_ok)
+                printf("pipeline cache selftest: PASS %-28s at its limit read, one byte over refused\n",
+                       "bounded read");
+            else
+                s_fail++;
+        }
         free(buf); free(good2); free(drv2);
         (void)nk_remove_utf8(path);
     }

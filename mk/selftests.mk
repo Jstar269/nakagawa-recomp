@@ -797,6 +797,23 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --pipeline-cache $(BUILD_DIR)/pipeline_cache_test --case pipeline-cache-warm
 	$(GPU_COHERENCE_BIN) --pipeline-cache $(BUILD_DIR)/pipeline_cache_test --case pipeline-cache-reject
 	@$(MAKE) --no-print-directory gpu-coherence-selftest-snapbar-mutants
+	@$(MAKE) --no-print-directory gpu-coherence-pcache-mutant
+
+# gpu-coherence-pcache-mutant - pipeline-cache-cold must kill SR_PCACHE_SELFTEST_NULL_MUTANT, a
+# build whose pipe_create passes VK_NULL_HANDLE instead of the pipeline cache (#2149): the cache
+# then never grows past the header it opened with. Exit 77 (no Vulkan device) is a SKIP.
+gpu-coherence-pcache-mutant: shader-verify $(RT_GE_O)
+	@"$(PYTHON)" -c "import shutil; shutil.rmtree('$(BUILD_DIR)/pipeline_cache_mutant', ignore_errors=True)"
+	@bin=$(BUILD_DIR)/gpu_coherence_pcache_mutant.exe; kill="the pipelines did not go through it"; \
+	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_PCACHE_SELFTEST_NULL_MUTANT -ffunction-sections -fdata-sections \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(LDFLAGS) -Wl,--gc-sections -o $$bin \
+		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS) || exit 1; \
+	$$bin --pipeline-cache $(BUILD_DIR)/pipeline_cache_mutant --case pipeline-cache-cold > $$bin.log 2>&1; result=$$?; \
+	if test $$result -eq 77; then echo "pcache mutant: SKIP (no Vulkan device)"; exit 77; fi; \
+	if test $$result -eq 0; then cat $$bin.log; echo "pcache mutant unexpectedly passed" >&2; exit 1; fi; \
+	if ! grep -Fq "$$kill" $$bin.log; then cat $$bin.log; echo "pcache mutant failed for another reason" >&2; exit 1; fi; \
+	echo "gpu-coherence-pcache-mutant: mutant killed ($$kill)"
 
 # gpu-coherence-selftest-snapbar-mutants — the submit-batch case must kill each
 # SR_GPU_SNAPBAR_MUTANT in ge_gpu.c: 1 records one barrier command per image (the stream before

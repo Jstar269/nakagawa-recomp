@@ -6798,6 +6798,21 @@ static int coherence_run_pipeline_cache(int warm) {
         fprintf(stderr, "gpu coherence selftest [%s]: FAIL the scene created no pipeline\n", name);
         return 0;
     }
+    /* The pipelines went through the cache: a cold cache grew past what it held when it opened
+     * (an empty cache still returns the driver's header), and a warm one took the whole file. */
+    const size_t held = pcache_data_size();
+    if (!warm && held <= s_pcache_held_n) {
+        fprintf(stderr, "gpu coherence selftest [%s]: FAIL the cache holds %zu bytes after %lu pipelines, no more "
+                        "than the %zu it opened with: the pipelines did not go through it\n",
+                name, held, creates, s_pcache_held_n);
+        return 0;
+    }
+    if (warm && (s_pcache_held_n < s_pcache_file_n || held < s_pcache_file_n || s_pcache_file_n <= 32u)) {
+        fprintf(stderr, "gpu coherence selftest [%s]: FAIL the cache opened with %zu bytes and holds %zu after the "
+                        "scene, against the file's %zu: the driver did not take the cold run's pipelines\n",
+                name, s_pcache_held_n, held, s_pcache_file_n);
+        return 0;
+    }
     if (!warm) {
         FILE *f = nk_fopen_utf8(ref, "w");
         int ok = f && fprintf(f, "%016llx %lu %.3f\n", (unsigned long long)hash, creates, ms) > 0;
@@ -6806,8 +6821,9 @@ static int coherence_run_pipeline_cache(int warm) {
             fprintf(stderr, "gpu coherence selftest [%s]: FAIL could not write cold-frames.txt\n", name);
             return 0;
         }
-        printf("gpu coherence selftest: PASS %-22s %lu pipelines created in %.1f ms from an empty cache, "
-               "frames %016llx\n", name, creates, ms, (unsigned long long)hash);
+        printf("gpu coherence selftest: PASS %-22s %lu pipelines created in %.1f ms from an empty cache "
+               "(%zu bytes, then %zu), frames %016llx\n", name, creates, ms, s_pcache_held_n, held,
+               (unsigned long long)hash);
         return 1;
     }
     unsigned long long cold_hash = 0;
