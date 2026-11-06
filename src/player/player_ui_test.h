@@ -199,6 +199,7 @@ void player_ui_test_report_post_build_validation(int status, const char *reason,
 void player_ui_test_report_post_build_transition(PlayerApp *app, const char *disc_id,
                                                  int current_index);
 void player_ui_test_hold_disc_check(void);
+void player_ui_test_delay_screenshot(void);
 /* The raw NK_UI_TEST_SLOW_START_MS setting, or NULL. */
 const char *player_ui_test_slow_start_text(void);
 void player_ui_test_slow_start(const PlayerUiTestLaunch *launch);
@@ -310,6 +311,7 @@ static inline void player_ui_test_report_post_build_transition(PlayerApp *app,
     (void)app; (void)disc_id; (void)current_index;
 }
 static inline void player_ui_test_hold_disc_check(void) {}
+static inline void player_ui_test_delay_screenshot(void) {}
 static inline const char *player_ui_test_slow_start_text(void) { return NULL; }
 static inline void player_ui_test_slow_start(const PlayerUiTestLaunch *launch) {
     (void)launch;
