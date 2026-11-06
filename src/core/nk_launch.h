@@ -92,7 +92,7 @@ typedef struct {
        authentic run, and an empty value exports "off" too. With Ace on, ace_report_path names
        the runtime's per-run report (SR_ACE_REPORT, always exported, empty when there is none);
        the player creates its folder. */
-    char ace_spec[96];
+    char ace_spec[192];  /* SR_ACE, as long as src/rt/ace.h ACE_SPEC_MAX */
     char ace_report_path[NK_MAX_PATH];
 } NkRuntimeConfig;
 
