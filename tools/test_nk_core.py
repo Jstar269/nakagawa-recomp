@@ -489,7 +489,7 @@ class NkCoreTests(unittest.TestCase):
         path.write_bytes(bytes(header) + b"".join(sections))
 
     def test_pbp_classification_names_homebrew_and_each_refused_kind(self) -> None:
-        from nk_core.iso_inspect import classify_pbp_package, homebrew_library_key
+        from nk_core.iso_inspect import classify_pbp_package
         from test_iso_parity import build_plain_mips_elf
         import hashlib
 
@@ -501,18 +501,16 @@ class NkCoreTests(unittest.TestCase):
         self.assertEqual(found.title, "My Homebrew")
         self.assertEqual(found.icon0_size, len(b"\x89PNG-icon"))
         self.assertEqual(found.data_psp_sha256, hashlib.sha256(elf).hexdigest())
-        self.assertEqual(found.library_key, homebrew_library_key(found.data_psp_sha256))
-        self.assertRegex(found.library_key, r"^[A-Z]{4}[0-9]{5}$")
-        # A reused DISC_ID does not decide the key: the program's bytes do.
+        # A reused DISC_ID does not decide the game: the program's bytes do.
         other = self.temp_dir / "other.PBP"
         self._pbp_with_sections(other, title="My Homebrew", data_psp=elf + b"\x00" * 8)
-        self.assertNotEqual(classify_pbp_package(other).library_key, found.library_key)
+        self.assertNotEqual(classify_pbp_package(other).data_psp_sha256, found.data_psp_sha256)
 
         prx = self.temp_dir / "prx.PBP"
         self._pbp_with_sections(prx, title="Plugin", data_psp=build_plain_mips_elf(e_type=0xFFA0))
         self.assertEqual(classify_pbp_package(prx).kind, "homebrew")
 
-        cases = {
+        cases: dict[str, dict[str, Any]] = {
             "encrypted-executable": {"data_psp": b"~PSP" + b"\x00" * 200},
             "psone-classic": {"data_psar": b"PSISOIMG0000" + b"\x00" * 16},
             "updater": {"data_psar": b"PSAR" + b"\x00" * 16},
@@ -523,7 +521,7 @@ class NkCoreTests(unittest.TestCase):
             refused = self.temp_dir / f"{kind}.PBP"
             self._pbp_with_sections(refused, title="Other", **sections)
             self.assertEqual(classify_pbp_package(refused).kind, kind, kind)
-            self.assertEqual(classify_pbp_package(refused).library_key, "", kind)
+            self.assertEqual(classify_pbp_package(refused).data_psp_sha256, "", kind)
         # A big-endian or non-MIPS ELF is not homebrew this build can run.
         wrong = bytearray(elf)
         struct.pack_into("<H", wrong, 18, 3)
@@ -539,7 +537,7 @@ class NkCoreTests(unittest.TestCase):
         )
         from test_iso_parity import build_module_start_elf, build_plain_mips_elf
 
-        def refusal(name: str, **sections: bytes):
+        def refusal(name: str, **sections: Any):
             path = self.temp_dir / f"{name}.PBP"
             self._pbp_with_sections(path, title="Some Program", **sections)
             return pbp_homebrew_refusal(path, classify_pbp_package(path))

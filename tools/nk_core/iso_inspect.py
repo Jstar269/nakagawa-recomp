@@ -807,7 +807,6 @@ def _non_retail_identity(
     return non_retail_disc_key(value), value.hex()
 
 
-HOMEBREW_KEY_DOMAIN = b"nakagawa-homebrew-key-v1\0"
 # What DATA.PSAR starts with, by package kind (the same tests nk_pbp_identify makes).
 _PSAR_UPDATER_MAGICS = (b"PSAR", b"\x00PSAR")
 _PSAR_PSONE_MAGICS = (b"PSISOIMG", b"PSTITLEIMG")
@@ -823,8 +822,8 @@ class PbpPackage:
     ``kind`` is one of:
 
     * ``homebrew``: DATA.PSP is a plain little-endian MIPS ELF32 executable or PRX, so
-      the program needs no key. ``data_psp_sha256`` names it, and ``library_key`` is the
-      ``[A-Z]{4}[0-9]{5}`` key the library files it under;
+      the program needs no key. ``data_psp_sha256`` names it. The library key comes from the
+      disc image made from the package (#2143), as for any non-retail disc;
     * ``encrypted-executable``: DATA.PSP is a ``~PSP`` container, which holds a signed
       program that homebrew does not use;
     * ``psn-umd``: a PSN release of a UMD game (the player converts those to a disc image);
@@ -841,18 +840,6 @@ class PbpPackage:
     data_psp_size: int = 0
     icon0_size: int = 0
     elf_type: int = 0
-    library_key: str = ""
-
-
-def homebrew_library_key(data_psp_sha256: str) -> str:
-    """The library key of a homebrew program, from the SHA-256 of its DATA.PSP.
-
-    Homebrew IDs are often missing or reused, so the program is keyed by its contents,
-    the way a non-retail disc is. The domain separator keeps the key apart from a
-    non-retail disc's even for the same bytes.
-    """
-    digest = hashlib.sha256(HOMEBREW_KEY_DOMAIN + bytes.fromhex(data_psp_sha256)).digest()
-    return non_retail_disc_key(digest)
 
 
 def classify_pbp_package(pbp_path: Path | str) -> PbpPackage:
@@ -931,7 +918,7 @@ def classify_pbp_package(pbp_path: Path | str) -> PbpPackage:
                     remaining -= len(chunk)
                 return PbpPackage(
                     kind="homebrew", elf_type=e_type, data_psp_sha256=digest.hexdigest(),
-                    library_key=homebrew_library_key(digest.hexdigest()), **common,
+                    **common,
                 )
         return PbpPackage(kind="unknown", **common)
 
