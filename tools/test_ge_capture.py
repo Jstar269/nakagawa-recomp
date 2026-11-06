@@ -406,8 +406,8 @@ class TestGeFirstBadDrawWiring(unittest.TestCase):
         self.assertIn('"result=NO_DIFFERENCE draws=6 "', self.rule)
         # A skip is reported as a skip (exit 77 run alone), never as a pass.
         self.assertIn("GE_FBD_SKIP_STATUS ?= 77", self.makefile)
-        self.assertNotIn("exit 77", self.rule)
-        self.assertEqual(self.rule.count("exit $(GE_FBD_SKIP_STATUS); fi"), 5)
+        self.assertNotIn("exit 77; fi", self.rule)
+        self.assertEqual(self.rule.count("exit $(GE_FBD_SKIP_STATUS); fi"), 4)
         self.assertIn("--fbd-self-check", self.rule)
 
     def test_known_overlap_difference_is_pinned(self):

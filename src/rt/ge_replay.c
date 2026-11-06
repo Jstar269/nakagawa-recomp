@@ -133,6 +133,8 @@ static void usage(const char *exe) {
 #define FBD_MAX_SIDE 1024u      /* scissor and transfer coordinates are 10 bits */
 #define FBD_DEPTH_STRIDE 512u   /* ge.c's software depth buffer: 272 rows of 512 */
 #define FBD_DEPTH_ROWS 272u
+#define FBD_RASTER_W 480u       /* ge.c rasterizes inside x 0..479, y 0..271 (the scissor */
+#define FBD_RASTER_H 272u       /* clamp in tri, sprite and the clear fill) */
 
 enum { FBD_KIND_COLOR, FBD_KIND_DEPTH, FBD_KIND_XFER };
 
@@ -287,7 +289,14 @@ static int fbd_observer(void *ctx, unsigned long index, uint32_t op, uint32_t cm
                        need_w, need_h);
         return 0;
     }
-    const uint32_t need_w = fbd_extent(st->scis_x2), need_h = fbd_extent(st->scis_y2);
+    /* ge.c, the reference, rasterizes only inside 480x272, so a scissor past that has pixels
+     * with no reference to compare (the Vulkan backend draws them): a gap, not a difference. */
+    const uint32_t scis_w = fbd_extent(st->scis_x2), scis_h = fbd_extent(st->scis_y2);
+    const uint32_t need_w = scis_w < FBD_RASTER_W ? scis_w : FBD_RASTER_W;
+    const uint32_t need_h = scis_h < FBD_RASTER_H ? scis_h : FBD_RASTER_H;
+    if (scis_w > FBD_RASTER_W || scis_h > FBD_RASTER_H)
+        fbd_gap(run, FBD_KIND_COLOR, fb_addr(st), st->fbw, scis_w, scis_h, need_w, need_h,
+                "raster-bound");
     fbd_add_region(run, FBD_KIND_COLOR, fb_addr(st), st->fbw, st->fbfmt & 3u, need_w, need_h);
     /* Depth only where the draw can write it (ge.c: the clear's depth bit, else the depth
      * test with writes on). */
@@ -719,9 +728,9 @@ static int fbd_run(const GeCaptureFixture *fixture, const char *mode, const char
 /* The comparison rules on hand-made pixels, without a GPU (make ge-first-bad-draw-selftest). */
 static int fbd_self_check(void) {
     int fails = 0;
-    FbdRegion c8888 = { FBD_KIND_COLOR, 0, 512, 3, 480, 272 };
-    FbdRegion c5650 = { FBD_KIND_COLOR, 0, 512, 0, 480, 272 };
-    FbdRegion depth = { FBD_KIND_DEPTH, 0, 512, 0, 480, 272 };
+    FbdRegion c8888 = { FBD_KIND_COLOR, 0, 512, 3, 480, 272, 480, 272 };
+    FbdRegion c5650 = { FBD_KIND_COLOR, 0, 512, 0, 480, 272, 480, 272 };
+    FbdRegion depth = { FBD_KIND_DEPTH, 0, 512, 0, 480, 272, 480, 272 };
     uint32_t diff;
 #define FBD_EXPECT(cond, what) \
     do { if (!(cond)) { fails++; fprintf(stderr, "FAIL %s\n", what); } } while (0)
@@ -751,7 +760,8 @@ static int fbd_self_check(void) {
  * - "overlap": a 5650 target, a clear, then ONE PRIM of two overlapping 50% alpha blends
  *   (draw 1). ge.c blends the second sprite over the first; a backend that blends every
  *   primitive of a batch against one pre-batch copy of the target does not (#2109).
- * - "wide": a 512-wide scissor and four draws; draw 3, the mutants' draw, lies right of x 480.
+ * - "wide": a 512-wide scissor and four draws; draw 3, the mutants' draw, lies right of x 480,
+ *   where ge.c does not rasterize.
  * - "empty": a list with no draw.
  * - "many": 33 colour targets, one sprite each: one more than the tool compares.
  * - "deep": one sprite into a target of stride 1088, past the widest the tool compares. */

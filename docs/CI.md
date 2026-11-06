@@ -403,8 +403,8 @@ fail each one with its own message. Then `ge-first-bad-draw-selftest` runs
 capture holds one PRIM of two overlapping translucent sprites on a 16-bit target, and the tool must
 find exactly its overlap as the first bad draw: the known shader-blend batch-order difference
 (#2109), which that fix turns into `NO_DIFFERENCE`. Four more generated captures check that the
-tool fails closed: a difference right of x 480 is found, a capture with no draw is `NO_DRAWS`, and
-33 targets or a stride of 1088 are `INCOMPLETE`. The job also runs
+tool fails closed: a 512-wide scissor (ge.c rasterizes inside 480x272), 33 targets or a stride of
+1088 are `INCOMPLETE`, and a capture with no draw is `NO_DRAWS`. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by
