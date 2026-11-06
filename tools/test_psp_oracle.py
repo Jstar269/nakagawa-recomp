@@ -5577,6 +5577,24 @@ class HleMeasureProbeTests(unittest.TestCase):
         callback_start = self.probe.index("static void hle_timer_order_capture(")
         callback_end = self.probe.index("\n}\n", callback_start)
         callback_clock_line = "const uint64_t now = (uint64_t)sceKernelGetSystemTimeWide();"
+        # hle-audio-rest (#279) times back-to-back blocking outputs: a host0 write between two
+        # of them can take longer than a block and would starve the channel. One step names the
+        # whole run, written before the reserve, and nothing reaches host0 until the release.
+        arest_start = self.probe.index("static void hle_arest_size(")
+        arest_end = self.probe.index("
+}
+", arest_start)
+        arest = self.probe[arest_start:arest_end]
+        reserve = arest.index("sceAudioChReserve(")
+        release = arest.index("sceAudioChRelease(")
+        self.assertIn("hle_step(step);", arest[:reserve])
+        self.assertEqual(arest[:reserve].count("hle_step("), 1)
+        for writer in ("hle_step(", "hle_write(", "hle_record(", "hle_skip("):
+            self.assertNotIn(writer, arest[reserve:release])
+        arest_lines = (self.probe.count("
+", 0, arest_start + reserve),
+                       self.probe.count("
+", 0, arest_start + release))
         checked = 0
         for index, line in enumerate(lines):
             if not self.MEASURED_CALL_RE.search(line):
@@ -5585,6 +5603,8 @@ class HleMeasureProbeTests(unittest.TestCase):
                 continue  # a whole-line prototype, not a call
             if callback_start <= self.probe.find(line) < callback_end and callback_clock_line in line:
                 continue  # the callback samples time; host logging is unsafe there
+            if arest_lines[0] <= index <= arest_lines[1]:
+                continue  # covered by the run's one step (above)
             checked += 1
             window = lines[max(0, index - 3):index]
             self.assertTrue(any("hle_step(" in previous for previous in window),
