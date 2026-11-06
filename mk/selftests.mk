@@ -855,8 +855,7 @@ texrepl-selftest:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/core -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		tests/native/texrepl_selftest.c src/rt/texrepl.c $(PLAYER_PLATFORM_SRC) $(PLAYER_PLATFORM_LIBS) \
-		-o $(BUILD_DIR)/texrepl_selftest$(EXE_EXT)
-	$(BUILD_DIR)/texrepl_selftest$(EXE_EXT)
+		-o $(BUILD_DIR)/texrepl_selftest$(EXE_EXT) && $(BUILD_DIR)/texrepl_selftest$(EXE_EXT)
 
 native-core-tests: texrepl-selftest
 
