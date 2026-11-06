@@ -775,6 +775,20 @@ void sr_vram_mark_renderer_pending(void) {
 void ge_set_gpu_hooks(const GeGpuHooks *h) {
     s_gpu = h;
 }
+const GeGpuHooks *ge_get_gpu_hooks(void) { return s_gpu; }
+
+/* Draw observer (ge_shared.h, #2141): ge_replay --first-bad-draw replays a prefix of a
+ * captured frame's draws through each renderer. NULL, the default, costs one branch per list
+ * command and changes nothing. */
+static GeDrawObserver s_draw_observer;
+static void *s_draw_observer_ctx;
+static unsigned long s_draw_observer_index;
+
+void ge_set_draw_observer(GeDrawObserver fn, void *ctx) {
+    s_draw_observer = fn;
+    s_draw_observer_ctx = ctx;
+    s_draw_observer_index = 0;
+}
 GeState *ge_state_ptr(void) { return &ge; }
 uint32_t ge_state_serial(void) { return s_ge_state_serial; }
 void ge_state_note_external_write(void) { s_ge_state_serial++; }
@@ -7080,6 +7094,18 @@ static void ge_list_begin(uint32_t list_addr, int resume) {
     g_ge_list_commands=0; s_ge_run_clk=0.0; s_ge_run_tail_words=0; s_ge_prim_vtx_share=0.0;
 }
 
+/* The commands ge_set_draw_observer counts as draws: each can write the framebuffer or depth. */
+static int ge_draw_observed(uint32_t op, uint32_t cmd_addr, uint32_t list_addr) {
+    switch (op >> 24) {
+        case GE_PRIM: case GE_BEZIER: case GE_SPLINE: case GE_VAP: case GE_TRANSFERSTART: break;
+        default: return 0;
+    }
+    if (s_draw_observer(s_draw_observer_ctx, s_draw_observer_index, op, cmd_addr, list_addr))
+        return 1;
+    s_draw_observer_index++;
+    return 0;
+}
+
 static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     if (!s_ge_inited) ge_state_init();
     if (!resume) {
@@ -7125,7 +7151,10 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             s_ge_run_stopped = 1;
             return addr;
         }
-        uint32_t op=MEM_R32(addr); addr+=4;
+        uint32_t op=MEM_R32(addr);
+        /* A draw observer may stop the run before a draw command: nothing of it has run. */
+        if (s_draw_observer && ge_draw_observed(op, addr, list_addr)) return addr;
+        addr+=4;
         uint32_t cmd=op>>24, data=op&0xFFFFFF;
         s_ge_state_serial++;   /* any command may change state that light_consts() caches */
         s_ge_command[cmd] = data;

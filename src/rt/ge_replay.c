@@ -8,6 +8,7 @@
 #include "gpu_sdl3vk/sdl3vk.h"
 
 #include <SDL3/SDL_timer.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,7 +100,799 @@ static int write_ppm(const char *path, const GeState *state) {
 }
 
 static void usage(const char *exe) {
-    fprintf(stderr, "usage: %s <fixture.ngef> [--backend software|vulkan] [--repeat N] [--output frame.ppm]\n", exe);
+    fprintf(stderr, "usage: %s <fixture.ngef> [--backend software|vulkan] [--repeat N] [--output frame.ppm]\n"
+                    "       %s <fixture.ngef> --first-bad-draw [--mode auto|linear|bisect] [--report PREFIX]\n"
+                    "       %s --write-synthetic <fixture.ngef> [basic|overlap|wide|empty|many|deep]\n"
+                    "       %s --fbd-self-check\n", exe, exe, exe, exe);
+}
+
+/* ---- --first-bad-draw (#2141) ---------------------------------------------------------------
+ * The software GE in ge.c is the Vulkan backend's reference (gpu_sdl3vk/README.md). This mode
+ * replays a prefix of the capture's draws through each renderer in turn, in this one process,
+ * and compares guest VRAM afterwards: every colour target, depth buffer and block-transfer
+ * destination the prefix used. A prefix stops before a draw command (ge_set_draw_observer), so
+ * the Vulkan backend batches and flushes exactly as in a full replay up to that point and
+ * materializes there, as it does at every flush point.
+ *
+ * - linear: prefixes 0, 1, 2, ... until one differs; exact for any frame.
+ * - bisect: halves the prefix, about log2(draws) replays per renderer. It finds a draw whose
+ *   prefix differs while the prefix before it does not, which is the first bad draw when a
+ *   difference persists to the end of the frame; a later draw can paint one over, and linear
+ *   mode checks every prefix.
+ * - auto (the default): linear up to FBD_AUTO_LINEAR_MAX draws, bisect above.
+ *
+ * A difference gpu_sdl3vk/README.md documents is counted under that rule's name, never as a
+ * pass or a failure. One rule exists: "blend-2lsb", fixed-function blends differ from the
+ * software blender's truncating products by at most 2 LSB. It covers a colour pixel only when
+ * the prefix ran a blended draw, its alpha (stencil) is equal, and each colour channel is
+ * within 2 LSB on an 8-bit channel or 1 LSB on a narrower one (a 2 LSB change of the 8-bit
+ * result moves a truncated narrower channel by at most 1). Every other difference counts. */
+#define FBD_AUTO_LINEAR_MAX 256ul
+#define FBD_MAX_REGIONS 32
+#define FBD_MAX_GAPS 8
+#define FBD_MAX_SIDE 1024u      /* scissor and transfer coordinates are 10 bits */
+#define FBD_DEPTH_STRIDE 512u   /* ge.c's software depth buffer: 272 rows of 512 */
+#define FBD_DEPTH_ROWS 272u
+#define FBD_RASTER_W 480u       /* ge.c rasterizes inside x 0..479, y 0..271 (the scissor */
+#define FBD_RASTER_H 272u       /* clamp in tri, sprite and the clear fill) */
+
+enum { FBD_KIND_COLOR, FBD_KIND_DEPTH, FBD_KIND_XFER };
+
+typedef struct FbdRegion {
+    int kind;
+    uint32_t base;       /* guest address */
+    uint32_t stride;     /* pixels per row */
+    uint32_t fmt;        /* colour: GE pixel format 0-3; transfer: bytes per pixel */
+    uint32_t need_w, need_h;   /* the extent the prefix's draws can write (scissor, transfer) */
+    uint32_t width, rows;      /* the extent compared (fbd_finalize) */
+} FbdRegion;
+
+/* A buffer a draw can write that the tool does not compare, or compares only in part: the
+ * result is then INCOMPLETE, never NO_DIFFERENCE. */
+typedef struct FbdGap {
+    int kind;
+    uint32_t base, stride, need_w, need_h, width, rows;
+    const char *reason;
+} FbdGap;
+
+typedef struct FbdRun {
+    unsigned long limit;
+    unsigned long seen;
+    int stopped;
+    uint32_t list_index;
+    int have_last;
+    unsigned long last_index;
+    uint32_t last_op, last_cmd_addr, last_list_addr, last_list_index;
+    GeState last_state;
+    FbdRegion regions[FBD_MAX_REGIONS];
+    int nregions;
+    FbdGap gaps[FBD_MAX_GAPS];
+    int ngaps;
+    int gaps_more;   /* gaps past FBD_MAX_GAPS: counted, not listed */
+    int blended;
+} FbdRun;
+
+typedef struct FbdShot {
+    uint32_t *px[FBD_MAX_REGIONS];
+} FbdShot;
+
+typedef struct FbdRegionDiff {
+    unsigned long pixels, rule_pixels;
+    uint32_t max_diff, rule_max_diff;
+    uint32_t x0, y0, x1, y1;
+} FbdRegionDiff;
+
+typedef struct FbdDiff {
+    unsigned long pixels, rule_pixels;
+    FbdRegionDiff region[FBD_MAX_REGIONS];
+} FbdDiff;
+
+/* The draw that is running, for the test-only mutant hooks below. */
+static unsigned long s_fbd_current = (unsigned long)-1;
+
+static uint32_t fbd_bpp(const FbdRegion *r) {
+    if (r->kind == FBD_KIND_DEPTH) return 2u;
+    if (r->kind == FBD_KIND_XFER) return r->fmt;
+    return r->fmt == 3u ? 4u : 2u;
+}
+
+static void fbd_gap(FbdRun *run, int kind, uint32_t base, uint32_t stride, uint32_t need_w,
+                    uint32_t need_h, uint32_t width, uint32_t rows, const char *reason) {
+    for (int i = 0; i < run->ngaps; i++) {
+        const FbdGap *g = &run->gaps[i];
+        if (g->kind == kind && g->base == base && g->stride == stride && g->reason == reason) return;
+    }
+    if (run->ngaps == FBD_MAX_GAPS) { run->gaps_more++; return; }
+    FbdGap g = { kind, base, stride, need_w, need_h, width, rows, reason };
+    run->gaps[run->ngaps++] = g;
+}
+
+/* Records that the running draw can write `need_w` x `need_h` pixels of a buffer. A region
+ * grows to the largest extent any draw of the prefix reaches; fbd_finalize fixes what is
+ * compared once the prefix has run. */
+static void fbd_add_region(FbdRun *run, int kind, uint32_t base, uint32_t stride, uint32_t fmt,
+                           uint32_t need_w, uint32_t need_h) {
+    const uint32_t max_stride = kind == FBD_KIND_DEPTH ? FBD_DEPTH_STRIDE : FBD_MAX_SIDE;
+    if (stride == 0u || stride > max_stride) {
+        fbd_gap(run, kind, base, stride, need_w, need_h, 0u, 0u, "stride");
+        return;
+    }
+    /* Writes past the stride land on the following rows. */
+    if (need_w > stride) { need_h += (need_w - 1u) / stride; need_w = stride; }
+    for (int i = 0; i < run->nregions; i++) {
+        FbdRegion *r = &run->regions[i];
+        if (r->kind == kind && r->base == base && r->stride == stride && r->fmt == fmt) {
+            if (need_w > r->need_w) r->need_w = need_w;
+            if (need_h > r->need_h) r->need_h = need_h;
+            return;
+        }
+    }
+    if (run->nregions == FBD_MAX_REGIONS) {
+        fbd_gap(run, kind, base, stride, need_w, need_h, 0u, 0u, "region-limit");
+        return;
+    }
+    FbdRegion r = { kind, base, stride, fmt, need_w, need_h, 0u, 0u };
+    run->regions[run->nregions++] = r;
+}
+
+/* The compared extent of each region: all it needs, except depth past ge.c's 272 rows and rows
+ * outside guest memory, each recorded as a gap. */
+static void fbd_finalize(FbdRun *run) {
+    for (int i = 0; i < run->nregions; i++) {
+        FbdRegion *r = &run->regions[i];
+        uint32_t rows = r->need_h;
+        const char *reason = NULL;
+        if (r->kind == FBD_KIND_DEPTH && rows > FBD_DEPTH_ROWS) { rows = FBD_DEPTH_ROWS; reason = "depth-rows"; }
+        const uint32_t bpp = fbd_bpp(r);
+        while (rows && !sr_inrange_n(r->base, ((rows - 1u) * r->stride + r->need_w) * bpp)) {
+            rows--;
+            reason = "memory";
+        }
+        r->width = r->need_w;
+        r->rows = rows;
+        if (reason) fbd_gap(run, r->kind, r->base, r->stride, r->need_w, r->need_h, r->width, rows, reason);
+    }
+}
+
+/* The scissor's extent from the buffer's origin: the pixels a draw can write. */
+static uint32_t fbd_extent(int last) {
+    if (last < 0) return 1u;
+    return (uint32_t)last + 1u > FBD_MAX_SIDE ? FBD_MAX_SIDE : (uint32_t)last + 1u;
+}
+
+static uint32_t fbd_depth_base(const GeState *st) {
+    uint32_t base = st->zbp ? SR_PHYS(st->zbp) : SR_VRAM_CPU_BASE;
+    return base < 0x00200000u ? base + SR_VRAM_CPU_BASE : base;
+}
+
+static int fbd_observer(void *ctx, unsigned long index, uint32_t op, uint32_t cmd_addr,
+                        uint32_t list_addr) {
+    FbdRun *run = (FbdRun *)ctx;
+    if (index >= run->limit) { run->stopped = 1; return 1; }
+    const GeState *st = ge_state_ptr();
+    run->seen = index + 1u;
+    run->have_last = 1;
+    run->last_index = index;
+    run->last_op = op;
+    run->last_cmd_addr = cmd_addr;
+    run->last_list_addr = list_addr;
+    run->last_list_index = run->list_index;
+    run->last_state = *st;
+    s_fbd_current = index;
+    if ((op >> 24) == 0xEAu) {   /* TRANSFERSTART: the destination rectangle's buffer */
+        uint32_t dst = (st->xf_dst & 0xFFFFF0u) | ((st->xf_dstw & 0xFF0000u) << 8);
+        dst = dst < 0x00200000u ? dst | SR_VRAM_CPU_BASE : dst;
+        /* The rectangle as ge.c decodes it (TRANSFERDSTPOS, TRANSFERSIZE). */
+        uint32_t need_w = (st->xf_dpos & 0x3FFu) + (st->xf_size & 0x3FFu) + 1u;
+        uint32_t need_h = ((st->xf_dpos >> 10) & 0x3FFu) + ((st->xf_size >> 10) & 0x3FFu) + 1u;
+        fbd_add_region(run, FBD_KIND_XFER, dst, st->xf_dstw & 0x7F8u, (op & 1u) ? 4u : 2u,
+                       need_w, need_h);
+        return 0;
+    }
+    /* ge.c, the reference, rasterizes only inside 480x272, so a scissor past that has pixels
+     * with no reference to compare (the Vulkan backend draws them): a gap, not a difference. */
+    const uint32_t scis_w = fbd_extent(st->scis_x2), scis_h = fbd_extent(st->scis_y2);
+    const uint32_t need_w = scis_w < FBD_RASTER_W ? scis_w : FBD_RASTER_W;
+    const uint32_t need_h = scis_h < FBD_RASTER_H ? scis_h : FBD_RASTER_H;
+    if (scis_w > FBD_RASTER_W || scis_h > FBD_RASTER_H)
+        fbd_gap(run, FBD_KIND_COLOR, fb_addr(st), st->fbw, scis_w, scis_h, need_w, need_h,
+                "raster-bound");
+    fbd_add_region(run, FBD_KIND_COLOR, fb_addr(st), st->fbw, st->fbfmt & 3u, need_w, need_h);
+    /* Depth only where the draw can write it (ge.c: the clear's depth bit, else the depth
+     * test with writes on). */
+    const int writes_depth = st->clear ? (st->clear_mode & 0x400u) != 0
+                                       : st->ztest_enable && !st->zwrite_disable;
+    if (writes_depth)
+        fbd_add_region(run, FBD_KIND_DEPTH, fbd_depth_base(st), st->zbw, 0u, need_w, need_h);
+    if (st->blend_enable && !st->clear) run->blended = 1;
+    return 0;
+}
+
+/* Depth sits in VRAM with the 0x2040 address swizzle ge.c's ge_zbuf_guest_address applies. */
+static uint32_t fbd_addr(const FbdRegion *r, uint32_t x, uint32_t y) {
+    uint32_t addr = r->base + (y * r->stride + x) * fbd_bpp(r);
+    return r->kind == FBD_KIND_DEPTH ? addr ^ 0x2040u : addr;
+}
+
+static uint32_t fbd_load(const FbdRegion *r, uint32_t x, uint32_t y) {
+    uint32_t addr = fbd_addr(r, x, y);
+    if (!sr_inrange_n(addr, fbd_bpp(r))) return 0;
+    if (fbd_bpp(r) == 4u) { uint32_t v; memcpy(&v, SR_HOST_LINEAR(addr), 4); return v; }
+    uint16_t v; memcpy(&v, SR_HOST_LINEAR(addr), 2); return v;
+}
+
+static int fbd_snapshot(const FbdRun *regions, FbdShot *shot) {
+    for (int i = 0; i < regions->nregions; i++) {
+        const FbdRegion *r = &regions->regions[i];
+        shot->px[i] = (uint32_t *)malloc((size_t)r->width * r->rows * sizeof(uint32_t));
+        if (!shot->px[i]) return 0;
+        for (uint32_t y = 0; y < r->rows; y++)
+            for (uint32_t x = 0; x < r->width; x++)
+                shot->px[i][y * r->width + x] = fbd_load(r, x, y);
+    }
+    return 1;
+}
+
+static void fbd_shot_free(FbdShot *shot) {
+    for (int i = 0; i < FBD_MAX_REGIONS; i++) { free(shot->px[i]); shot->px[i] = NULL; }
+}
+
+/* Channel layout of a region's words: shift and width of up to four channels; the last
+ * channel of a colour format with alpha is alpha (stencil). */
+typedef struct FbdLayout { int n; int alpha; uint8_t shift[4], bits[4]; } FbdLayout;
+
+static FbdLayout fbd_layout(const FbdRegion *r) {
+    static const FbdLayout color[4] = {
+        { 3, -1, { 0, 5, 11, 0 }, { 5, 6, 5, 0 } },
+        { 4, 3, { 0, 5, 10, 15 }, { 5, 5, 5, 1 } },
+        { 4, 3, { 0, 4, 8, 12 }, { 4, 4, 4, 4 } },
+        { 4, 3, { 0, 8, 16, 24 }, { 8, 8, 8, 8 } },
+    };
+    if (r->kind == FBD_KIND_COLOR) return color[r->fmt & 3u];
+    FbdLayout one = { 1, -1, { 0, 0, 0, 0 }, { (uint8_t)(fbd_bpp(r) * 8u), 0, 0, 0 } };
+    return one;
+}
+
+/* Classifies one differing pixel: returns 1 when blend-2lsb covers it. *diff gets the
+ * largest per-channel difference in the region's own units. */
+static int fbd_classify(const FbdRegion *r, uint32_t a, uint32_t b, int blended, uint32_t *diff) {
+    FbdLayout l = fbd_layout(r);
+    int covered = blended && r->kind == FBD_KIND_COLOR;
+    *diff = 0;
+    for (int c = 0; c < l.n; c++) {
+        uint32_t mask = l.bits[c] >= 32 ? 0xFFFFFFFFu : ((1u << l.bits[c]) - 1u);
+        uint32_t ca = (a >> l.shift[c]) & mask, cb = (b >> l.shift[c]) & mask;
+        uint32_t d = ca > cb ? ca - cb : cb - ca;
+        if (d > *diff) *diff = d;
+        if (c == l.alpha) { if (d) covered = 0; }
+        else if (d > (l.bits[c] >= 8 ? 2u : 1u)) covered = 0;
+    }
+    return covered;
+}
+
+static void fbd_compare(const FbdRun *regions, const FbdShot *sw, const FbdShot *vk, FbdDiff *out) {
+    memset(out, 0, sizeof(*out));
+    for (int i = 0; i < regions->nregions; i++) {
+        const FbdRegion *r = &regions->regions[i];
+        FbdRegionDiff *d = &out->region[i];
+        d->x0 = d->y0 = UINT32_MAX;
+        for (uint32_t y = 0; y < r->rows; y++) {
+            for (uint32_t x = 0; x < r->width; x++) {
+                uint32_t a = sw->px[i][y * r->width + x], b = vk->px[i][y * r->width + x];
+                if (a == b) continue;
+                uint32_t diff;
+                if (fbd_classify(r, a, b, regions->blended, &diff)) {
+                    d->rule_pixels++;
+                    if (diff > d->rule_max_diff) d->rule_max_diff = diff;
+                    continue;
+                }
+                d->pixels++;
+                if (diff > d->max_diff) d->max_diff = diff;
+                if (x < d->x0) d->x0 = x;
+                if (y < d->y0) d->y0 = y;
+                if (x > d->x1) d->x1 = x;
+                if (y > d->y1) d->y1 = y;
+            }
+        }
+        out->pixels += d->pixels;
+        out->rule_pixels += d->rule_pixels;
+    }
+}
+
+/* One renderer, one prefix. hooks NULL is ge.c's software rasterizer. `regions` NULL records
+ * the prefix's buffers into run; otherwise the snapshot covers those regions. */
+static int fbd_pass(const GeCaptureFixture *fixture, const GeGpuHooks *hooks, unsigned long limit,
+                    FbdRun *run, const FbdRun *regions, FbdShot *shot) {
+    ge_set_gpu_hooks(hooks);
+    if (hooks && !gegpu_replay_reset()) return 0;
+    memset(run, 0, sizeof(*run));
+    run->limit = limit;
+    if (!ge_capture_apply(fixture, ge_state_ptr(), ge_zbuf_ptr())) return 0;
+    ge_replay_restore(&fixture->initial_state, fixture->initial_zbuf);
+    ge_set_draw_observer(fbd_observer, run);
+    int ok = 1;
+    for (uint32_t list = 0; ok && list < fixture->list_count; list++) {
+        run->list_index = list;
+        uint32_t next = ge_run_list(fixture->list_addrs[list], 0);
+        if (run->stopped) break;
+        if (next != 0) {
+            fprintf(stderr, "ge_replay: list %u did not terminate\n", list);
+            ok = 0;
+        }
+    }
+    ge_set_draw_observer(NULL, NULL);
+    s_fbd_current = (unsigned long)-1;
+    if (ok && !regions) fbd_finalize(run);
+    if (ok && hooks && !gegpu_capture_materialize()) ok = 0;
+    if (ok && !ge_zbuf_materialize_current()) ok = 0;
+    if (ok) ok = fbd_snapshot(regions ? regions : run, shot);
+    return ok;
+}
+
+/* Evaluates prefix `limit`: software, then Vulkan. Returns -1 on a replay failure, else the
+ * count of differing pixels no rule covers. */
+static long fbd_eval(const GeCaptureFixture *fixture, const GeGpuHooks *vk_hooks,
+                     unsigned long limit, FbdRun *sw_run, FbdShot *sw, FbdShot *vk, FbdDiff *diff) {
+    static FbdRun vk_run;
+    fbd_shot_free(sw);
+    fbd_shot_free(vk);
+    if (!fbd_pass(fixture, NULL, limit, sw_run, NULL, sw)) return -1;
+    if (!fbd_pass(fixture, vk_hooks, limit, &vk_run, sw_run, vk)) return -1;
+    if (vk_run.seen != sw_run->seen) {
+        fprintf(stderr, "ge_replay: the renderers ran %lu and %lu draws of prefix %lu\n",
+                sw_run->seen, vk_run.seen, limit);
+        return -1;
+    }
+    fbd_compare(sw_run, sw, vk, diff);
+    return diff->pixels > (unsigned long)LONG_MAX ? LONG_MAX : (long)diff->pixels;
+}
+
+static const char *fbd_cmd_name(uint32_t op) {
+    switch (op >> 24) {
+        case 0x04: return "PRIM";
+        case 0x05: return "BEZIER";
+        case 0x06: return "SPLINE";
+        case 0xF7: return "VAP";
+        case 0xEA: return "TRANSFERSTART";
+        default: return "OTHER";
+    }
+}
+
+static const char *fbd_kind_name(int kind) {
+    return kind == FBD_KIND_COLOR ? "color" : kind == FBD_KIND_DEPTH ? "depth" : "transfer";
+}
+
+/* An 8-bit RGB view of one word, for the crops. */
+static void fbd_rgb(const FbdRegion *r, uint32_t raw, unsigned char rgb[3]) {
+    if (r->kind == FBD_KIND_COLOR) { unpack(raw, r->fmt, rgb); return; }
+    unsigned char v = (unsigned char)(fbd_bpp(r) == 4u ? raw >> 24 : raw >> 8);
+    rgb[0] = rgb[1] = rgb[2] = v;
+}
+
+static int fbd_write_crop(const char *path, const FbdRegion *r, const uint32_t *a,
+                          const uint32_t *b, int mode, uint32_t x0, uint32_t y0,
+                          uint32_t x1, uint32_t y1) {
+    FILE *file = fopen(path, "wb");
+    if (!file) return 0;
+    int ok = fprintf(file, "P6\n%u %u\n255\n", x1 - x0 + 1u, y1 - y0 + 1u) > 0;
+    for (uint32_t y = y0; ok && y <= y1; y++) {
+        for (uint32_t x = x0; ok && x <= x1; x++) {
+            unsigned char rgb[3];
+            uint32_t va = a[y * r->width + x], vb = b[y * r->width + x];
+            if (mode == 0) fbd_rgb(r, va, rgb);
+            else if (mode == 1) fbd_rgb(r, vb, rgb);
+            else {   /* differing pixels white, equal ones a dim copy of the software image */
+                fbd_rgb(r, va, rgb);
+                for (int c = 0; c < 3; c++) rgb[c] = va == vb ? (unsigned char)(rgb[c] / 4) : 255;
+            }
+            ok = fwrite(rgb, 1, 3, file) == 3;
+        }
+    }
+    if (fclose(file) != 0) ok = 0;
+    return ok;
+}
+
+static void fbd_print_regions(const FbdRun *run, const FbdDiff *diff) {
+    for (int i = 0; i < run->nregions; i++) {
+        const FbdRegion *r = &run->regions[i];
+        const FbdRegionDiff *d = &diff->region[i];
+        if (!d->pixels && !d->rule_pixels) continue;
+        printf("GE_FBD_REGION kind=%s base=0x%08x stride=%u fmt=%u pixels=%lu max_diff=%u",
+               fbd_kind_name(r->kind), r->base, r->stride, r->fmt, d->pixels, d->max_diff);
+        if (d->pixels) printf(" bbox=%u,%u,%u,%u", d->x0, d->y0, d->x1, d->y1);
+        if (d->rule_pixels) printf(" rule=blend-2lsb rule_pixels=%lu rule_max_diff=%u",
+                                   d->rule_pixels, d->rule_max_diff);
+        putchar('\n');
+    }
+    if (diff->rule_pixels)
+        printf("GE_FBD_RULE rule=blend-2lsb pixels=%lu source=src/rt/gpu_sdl3vk/README.md\n",
+               diff->rule_pixels);
+}
+
+static void fbd_print_gaps(const FbdRun *run) {
+    for (int i = 0; i < run->ngaps; i++) {
+        const FbdGap *g = &run->gaps[i];
+        printf("GE_FBD_UNCOMPARED kind=%s base=0x%08x stride=%u need=%ux%u compared=%ux%u reason=%s\n",
+               fbd_kind_name(g->kind), g->base, g->stride, g->need_w, g->need_h, g->width, g->rows,
+               g->reason);
+    }
+    if (run->gaps_more) printf("GE_FBD_UNCOMPARED more=%d\n", run->gaps_more);
+}
+
+static void fbd_print_draw(const FbdRun *run) {
+    const GeState *st = &run->last_state;
+    uint32_t op = run->last_op;
+    printf("GE_FBD_DRAW index=%lu command=%s op=0x%08x list=%u list_addr=0x%08x cmd_addr=0x%08x "
+           "list_offset=0x%x",
+           run->last_index, fbd_cmd_name(op), op, run->last_list_index, run->last_list_addr,
+           run->last_cmd_addr, run->last_cmd_addr - run->last_list_addr);
+    if ((op >> 24) == 0x04u) printf(" prim=%u count=%u", (op >> 16) & 7u, op & 0xFFFFu);
+    printf(" vtype=0x%06x through=%u clear=%d clear_mode=0x%x fbp=0x%08x fbw=%u fbfmt=%u "
+           "zbp=0x%08x zbw=%u tex=%d tex_fmt=%u tex_addr=0x%08x tex_func=0x%x "
+           "blend=%d blend_mode=0x%06x fixa=0x%06x fixb=0x%06x "
+           "ztest=%d zfunc=%u zwrite_disable=%d atest=%d atest_word=0x%06x "
+           "stencil=%d stencil_test=0x%06x stencil_op=0x%06x dither=%d logic_op=%d "
+           "mask_rgb=0x%06x mask_alpha=0x%02x\n",
+           st->vtype, (st->vtype >> 23) & 1u, st->clear, st->clear_mode, fb_addr(st), st->fbw,
+           st->fbfmt, st->zbp, st->zbw, st->tex_enable, st->tex_fmt, st->tex_addr, st->tex_func,
+           st->blend_enable, st->blend_mode, st->blend_fixa, st->blend_fixb,
+           st->ztest_enable, st->ztest, st->zwrite_disable, st->atest_enable, st->atest,
+           st->stencil_enable, st->stencil_test, st->stencil_op, st->dither_enable,
+           st->logic_op_enable, st->mask_rgb, (unsigned)st->mask_alpha & 0xFFu);
+}
+
+/* Crops of the region with the most uncovered pixels: software, Vulkan and a difference map,
+ * written as <prefix>.software.ppm, .vulkan.ppm and .diff.ppm. */
+static void fbd_write_crops(const char *prefix, const FbdRun *run, const FbdShot *sw,
+                            const FbdShot *vk, const FbdDiff *diff) {
+    int best = -1;
+    for (int i = 0; i < run->nregions; i++)
+        if (diff->region[i].pixels &&
+            (best < 0 || diff->region[i].pixels > diff->region[best].pixels))
+            best = i;
+    if (best < 0) return;
+    const FbdRegion *r = &run->regions[best];
+    const FbdRegionDiff *d = &diff->region[best];
+    uint32_t x0 = d->x0 > 8u ? d->x0 - 8u : 0u, y0 = d->y0 > 8u ? d->y0 - 8u : 0u;
+    uint32_t x1 = d->x1 + 8u < r->width ? d->x1 + 8u : r->width - 1u;
+    uint32_t y1 = d->y1 + 8u < r->rows ? d->y1 + 8u : r->rows - 1u;
+    static const char *names[3] = { "software", "vulkan", "diff" };
+    for (int mode = 0; mode < 3; mode++) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s.%s.ppm", prefix, names[mode]);
+        if (fbd_write_crop(path, r, sw->px[best], vk->px[best], mode, x0, y0, x1, y1))
+            printf("GE_FBD_CROP image=%s region=%s base=0x%08x rect=%u,%u,%u,%u path=%s\n",
+                   names[mode], fbd_kind_name(r->kind), r->base, x0, y0, x1, y1, path);
+        else
+            fprintf(stderr, "ge_replay: could not write %s\n", path);
+    }
+}
+
+#ifdef SR_GE_FBD_MUTANT
+/* Test-only executed mutants for --first-bad-draw (make ge-first-bad-draw-selftest): the
+ * Vulkan backend draws one draw with a changed state, so the renderers differ from that draw
+ * on and the tool must name it. 1 = a blend the draw does not have (FIX 0x808080 on each
+ * side), 2 = depth writes off. */
+#ifndef SR_GE_FBD_MUTANT_DRAW
+#define SR_GE_FBD_MUTANT_DRAW 3
+#endif
+static const GeGpuHooks *s_mut_real;
+static GeGpuHooks s_mut_hooks;
+static int s_mut_blend, s_mut_zwrite;
+static uint32_t s_mut_mode, s_mut_fixa, s_mut_fixb;
+
+static int mut_begin(void) {
+    if (s_fbd_current != (unsigned long)SR_GE_FBD_MUTANT_DRAW) return 0;
+    GeState *st = ge_state_ptr();
+    s_mut_blend = st->blend_enable; s_mut_mode = st->blend_mode;
+    s_mut_fixa = st->blend_fixa; s_mut_fixb = st->blend_fixb; s_mut_zwrite = st->zwrite_disable;
+#if SR_GE_FBD_MUTANT == 1
+    st->blend_enable = 1;
+    st->blend_mode = 10u | (10u << 4);
+    st->blend_fixa = st->blend_fixb = 0x808080u;
+#elif SR_GE_FBD_MUTANT == 2
+    st->zwrite_disable = 1;
+#else
+#error unknown SR_GE_FBD_MUTANT
+#endif
+    ge_state_note_external_write();
+    return 1;
+}
+
+static void mut_end(int on) {
+    if (!on) return;
+    GeState *st = ge_state_ptr();
+    st->blend_enable = s_mut_blend; st->blend_mode = s_mut_mode;
+    st->blend_fixa = s_mut_fixa; st->blend_fixb = s_mut_fixb; st->zwrite_disable = s_mut_zwrite;
+    ge_state_note_external_write();
+}
+
+static int mut_tri(const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp) {
+    int on = mut_begin(); int r = s_mut_real->tri(a, b, c, persp); mut_end(on); return r;
+}
+static int mut_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
+    int on = mut_begin(); int r = s_mut_real->sprite(p0, p1, persp); mut_end(on); return r;
+}
+static int mut_tnl_prim(const struct GeTnlPrim *p) {
+    int on = mut_begin(); int r = s_mut_real->tnl_prim(p); mut_end(on); return r;
+}
+
+static const GeGpuHooks *fbd_vulkan_hooks(void) {
+    s_mut_real = ge_get_gpu_hooks();
+    if (!s_mut_real) return NULL;
+    s_mut_hooks = *s_mut_real;
+    if (s_mut_hooks.tri) s_mut_hooks.tri = mut_tri;
+    if (s_mut_hooks.sprite) s_mut_hooks.sprite = mut_sprite;
+    if (s_mut_hooks.tnl_prim) s_mut_hooks.tnl_prim = mut_tnl_prim;
+    printf("GE_FBD_MUTANT mutant=%d draw=%d\n", SR_GE_FBD_MUTANT, SR_GE_FBD_MUTANT_DRAW);
+    return &s_mut_hooks;
+}
+#else
+static const GeGpuHooks *fbd_vulkan_hooks(void) { return ge_get_gpu_hooks(); }
+#endif
+
+/* Returns 0 for NO_DIFFERENCE or RULE_ONLY, 1 for a first bad draw (or INITIAL_STATE), 3 when
+ * a replay fails, 5 for INCOMPLETE (a buffer a draw can write was not compared in full, so no
+ * answer is given) and 6 for NO_DRAWS (the capture has nothing to compare). */
+static int fbd_run(const GeCaptureFixture *fixture, const char *mode, const char *report) {
+    const GeGpuHooks *vk_hooks = fbd_vulkan_hooks();
+    if (!vk_hooks) {
+        fprintf(stderr, "ge_replay: the Vulkan backend registered no hooks\n");
+        return 3;
+    }
+    static FbdRun sw_run, bad_run;
+    static FbdShot sw, vk, bad_sw, bad_vk;
+    static FbdDiff diff, bad_diff;
+    /* The whole frame first: its draw count, and the answer when nothing differs. */
+    long full = fbd_eval(fixture, vk_hooks, (unsigned long)-1, &sw_run, &sw, &vk, &diff);
+    if (full < 0) return 3;
+    unsigned long draws = sw_run.seen;
+    if (draws == 0) {
+        printf("GE_FIRST_BAD_DRAW result=NO_DRAWS draws=0\n");
+        return 6;
+    }
+    /* Every prefix's buffers and extents are within the whole frame's, so a complete frame
+     * means complete prefixes. */
+    if (sw_run.ngaps) {
+        printf("GE_FIRST_BAD_DRAW result=INCOMPLETE draws=%lu regions=%d uncompared=%d pixels=%lu\n",
+               draws, sw_run.nregions, sw_run.ngaps + sw_run.gaps_more, diff.pixels);
+        fbd_print_gaps(&sw_run);
+        fbd_print_regions(&sw_run, &diff);
+        return 5;
+    }
+    int linear = strcmp(mode, "linear") == 0 ||
+                 (strcmp(mode, "auto") == 0 && draws <= FBD_AUTO_LINEAR_MAX);
+    const char *ran = linear ? "linear" : "bisect";
+    unsigned long first_bad = (unsigned long)-1;   /* the smallest bad prefix length */
+    unsigned long prefixes = 1;
+    if (linear) {
+        for (unsigned long n = 0; n <= draws; n++) {
+            long bad = full;
+            if (n != draws) {
+                bad = fbd_eval(fixture, vk_hooks, n, &bad_run, &bad_sw, &bad_vk, &bad_diff);
+                prefixes++;
+            }
+            if (bad < 0) return 3;
+            if (bad > 0) { first_bad = n; break; }
+        }
+    } else if (full > 0) {
+        unsigned long lo = 0, hi = draws;   /* prefix hi is bad; prefix lo is good once checked */
+        long bad0 = fbd_eval(fixture, vk_hooks, 0, &bad_run, &bad_sw, &bad_vk, &bad_diff);
+        prefixes++;
+        if (bad0 < 0) return 3;
+        if (bad0 > 0) hi = 0;
+        while (hi > lo + 1u) {
+            unsigned long mid = lo + (hi - lo) / 2u;
+            long bad = fbd_eval(fixture, vk_hooks, mid, &bad_run, &bad_sw, &bad_vk, &bad_diff);
+            prefixes++;
+            if (bad < 0) return 3;
+            if (bad > 0) hi = mid; else lo = mid;
+        }
+        first_bad = hi;
+    }
+    if (first_bad == (unsigned long)-1) {
+        printf("GE_FIRST_BAD_DRAW result=%s draws=%lu mode=%s prefixes=%lu rule_pixels=%lu\n",
+               diff.rule_pixels ? "RULE_ONLY" : "NO_DIFFERENCE", draws, ran, prefixes,
+               diff.rule_pixels);
+        fbd_print_regions(&sw_run, &diff);
+        return 0;
+    }
+    /* The bad prefix's own replay, for the report and the crops. */
+    FbdRun *run = &sw_run;
+    FbdShot *a = &sw, *b = &vk;
+    FbdDiff *d = &diff;
+    if (first_bad != draws) {
+        if (fbd_eval(fixture, vk_hooks, first_bad, &bad_run, &bad_sw, &bad_vk, &bad_diff) <= 0) {
+            fprintf(stderr, "ge_replay: prefix %lu did not reproduce its difference\n", first_bad);
+            return 3;
+        }
+        run = &bad_run; a = &bad_sw; b = &bad_vk; d = &bad_diff;
+    }
+    if (first_bad == 0) {
+        printf("GE_FIRST_BAD_DRAW result=INITIAL_STATE draws=%lu mode=%s prefixes=%lu pixels=%lu\n",
+               draws, ran, prefixes, d->pixels);
+    } else {
+        printf("GE_FIRST_BAD_DRAW result=FIRST_BAD_DRAW index=%lu draws=%lu mode=%s prefixes=%lu "
+               "pixels=%lu rule_pixels=%lu\n",
+               first_bad - 1u, draws, ran, prefixes, d->pixels, d->rule_pixels);
+        fbd_print_draw(run);
+    }
+    if (!linear)
+        printf("GE_FBD_NOTE bisect assumes a difference persists to the end of the frame; "
+               "--mode linear checks every prefix\n");
+    fbd_print_regions(run, d);
+    fbd_write_crops(report, run, a, b, d);
+    return 1;
+}
+
+/* The comparison rules on hand-made pixels, without a GPU (make ge-first-bad-draw-selftest). */
+static int fbd_self_check(void) {
+    int fails = 0;
+    FbdRegion c8888 = { FBD_KIND_COLOR, 0, 512, 3, 480, 272, 480, 272 };
+    FbdRegion c5650 = { FBD_KIND_COLOR, 0, 512, 0, 480, 272, 480, 272 };
+    FbdRegion depth = { FBD_KIND_DEPTH, 0, 512, 0, 480, 272, 480, 272 };
+    uint32_t diff;
+#define FBD_EXPECT(cond, what) \
+    do { if (!(cond)) { fails++; fprintf(stderr, "FAIL %s\n", what); } } while (0)
+    FBD_EXPECT(fbd_classify(&c8888, 0xFF102030u, 0xFF121E31u, 1, &diff) == 1 && diff == 2,
+               "8888: 2 LSB per channel after a blended draw is blend-2lsb");
+    FBD_EXPECT(fbd_classify(&c8888, 0xFF102030u, 0xFF132030u, 1, &diff) == 0 && diff == 3,
+               "8888: 3 LSB is a difference");
+    FBD_EXPECT(fbd_classify(&c8888, 0xFF102030u, 0xFF121E31u, 0, &diff) == 0,
+               "8888: without a blended draw no rule applies");
+    FBD_EXPECT(fbd_classify(&c8888, 0xFF102030u, 0xFE102030u, 1, &diff) == 0 && diff == 1,
+               "8888: an alpha (stencil) difference is never covered");
+    FBD_EXPECT(fbd_classify(&c5650, 0x0001u, 0x0000u, 1, &diff) == 1,
+               "5650: 1 LSB of a 5-bit channel is blend-2lsb");
+    FBD_EXPECT(fbd_classify(&c5650, 0x0002u, 0x0000u, 1, &diff) == 0 && diff == 2,
+               "5650: 2 LSB of a 5-bit channel is a difference");
+    FBD_EXPECT(fbd_classify(&depth, 0x1000u, 0x1001u, 1, &diff) == 0 && diff == 1,
+               "depth: any difference counts");
+#undef FBD_EXPECT
+    if (fails) return 1;
+    puts("ge first-bad-draw self-check: OK");
+    return 0;
+}
+
+/* Synthetic captures for the selftest, generated bytes only, each one through-mode list.
+ * - "basic": an 8888 target with depth, a clear and five opaque sprites. Draw 3 is the
+ *   mutants' draw, and draw 4 covers part of it.
+ * - "overlap": a 5650 target, a clear, then ONE PRIM of two overlapping 50% alpha blends
+ *   (draw 1). ge.c blends the second sprite over the first; a backend that blends every
+ *   primitive of a batch against one pre-batch copy of the target does not (#2109).
+ * - "wide": a 512-wide scissor and four draws; draw 3, the mutants' draw, lies right of x 480,
+ *   where ge.c does not rasterize.
+ * - "empty": a list with no draw.
+ * - "many": 33 colour targets, one sprite each: one more than the tool compares.
+ * - "deep": one sprite into a target of stride 1088, past the widest the tool compares. */
+static void fbd_put32(uint32_t addr, uint32_t value) { memcpy(SR_HOST_LINEAR(addr), &value, 4); }
+static void fbd_putf(uint32_t addr, float value) { memcpy(SR_HOST_LINEAR(addr), &value, 4); }
+
+typedef struct FbdSprite { float x0, y0, x1, y1, z; uint32_t abgr; } FbdSprite;
+
+static int fbd_write_synthetic(const char *path, const char *variant) {
+    /* Synthetic placement at the start of the user partition; no game is involved. */
+    const uint32_t list = 0x08800000u, verts = list + 0x10000u, init = list + 0x20000u;
+    static const FbdSprite basic[6] = {
+        { 0, 0, 480, 272, 0, 0xFF202020u },                 /* 0: clear colour and depth */
+        { 40, 40, 200, 160, 30000, 0xFF0000E0u },           /* 1 */
+        { 120, 100, 320, 220, 20000, 0xFF00E000u },         /* 2: partly behind 1 */
+        { 250, 30, 440, 140, 40000, 0xFFE00000u },          /* 3: the mutants' draw */
+        { 300, 120, 460, 250, 50000, 0x8000E0E0u },         /* 4: over part of 3 */
+        { 10, 180, 110, 260, 10000, 0xFFE0E000u },          /* 5 */
+    };
+    static const FbdSprite overlap[3] = {
+        { 0, 0, 480, 272, 0, 0xFF404040u },                 /* 0: clear */
+        { 40, 40, 240, 200, 0, 0x800000FFu },               /* 1: red at alpha 0x80 ... */
+        { 140, 100, 340, 240, 0, 0x8000FF00u },             /* ... and green over it, one PRIM */
+    };
+    static const FbdSprite wide[4] = {
+        { 0, 0, 512, 272, 0, 0xFF202020u },                 /* 0: clear colour */
+        { 40, 40, 200, 160, 0, 0xFF0000E0u },               /* 1 */
+        { 120, 100, 320, 220, 0, 0xFF00E000u },             /* 2 */
+        { 488, 40, 508, 200, 0, 0xFFE00000u },              /* 3: the mutants' draw */
+    };
+    static const FbdSprite one[1] = { { 0, 0, 16, 16, 0, 0xFF00E0E0u } };
+    const uint32_t sprite = (0x04u << 24) | (6u << 16) | 2u;
+    const uint32_t two_sprites = (0x04u << 24) | (6u << 16) | 4u;
+    const uint32_t head[] = {
+        0x9C000000u, 0x9D000000u | 512u,                        /* FBP 0x04000000, stride 512 */
+        0x9E088000u, 0x9F000000u | 512u,                        /* ZBP 0x04088000, 512 */
+        0xD4000000u, 0xD5000000u | 479u | (271u << 10),         /* scissor 480x272 */
+        0x12000000u | (1u << 23) | (7u << 2) | (3u << 7),       /* through, 8888 colour, float xyz */
+        0x10000000u | ((verts >> 24) << 16), 0x01000000u | (verts & 0xFFFFFFu),
+    };
+    const uint32_t basic_tail[] = {
+        0xD2000003u,                                            /* 8888 */
+        0xD3000701u, sprite, 0xD3000000u,                       /* 0: clear */
+        0x23000001u, 0xDE000007u, 0xE7000000u,                  /* depth test GEQUAL, writes on */
+        sprite, sprite, sprite, sprite, sprite,                 /* 1-5 */
+        0x0F000000u, 0x0C000000u,
+    };
+    const uint32_t overlap_tail[] = {
+        0xD2000000u,                                            /* 5650 */
+        0xD3000701u, sprite, 0xD3000000u,                       /* 0: clear */
+        0x21000001u, 0xDF000000u | 2u | (3u << 4),              /* blend SRC_ALPHA, 1-SRC_ALPHA, ADD */
+        two_sprites,                                            /* 1 */
+        0x0F000000u, 0x0C000000u,
+    };
+    const uint32_t wide_tail[] = {
+        0xD2000003u,                                            /* 8888 */
+        0xD5000000u | 511u | (271u << 10),                      /* scissor 512x272 */
+        0xD3000301u, sprite, 0xD3000000u,                       /* 0: clear colour and stencil */
+        sprite, sprite, sprite,                                 /* 1-3 */
+        0x0F000000u, 0x0C000000u,
+    };
+    const uint32_t empty_tail[] = { 0xD2000003u, 0x0F000000u, 0x0C000000u };
+    const uint32_t deep_tail[] = {
+        0xD2000003u, 0x9D000000u | 1088u,                       /* stride 1088 */
+        0xD5000000u | 15u | (15u << 10), sprite,
+        0x0F000000u, 0x0C000000u,
+    };
+    /* "many": target i at VRAM offset i * 0x4000, stride 64, a 16x16 scissor, one sprite. */
+    enum { FBD_MANY = FBD_MAX_REGIONS + 1 };
+    static uint32_t many_tail[3 + FBD_MANY * 4 + 2];
+    unsigned nmany = 0;
+    many_tail[nmany++] = 0xD2000003u;
+    many_tail[nmany++] = 0xD4000000u;
+    many_tail[nmany++] = 0xD5000000u | 15u | (15u << 10);
+    for (unsigned i = 0; i < FBD_MANY; i++) {
+        many_tail[nmany++] = 0x9C000000u | ((i * 0x4000u) & 0xFFFFFFu);
+        many_tail[nmany++] = 0x9D000000u | 64u;
+        many_tail[nmany++] = 0x01000000u | (verts & 0xFFFFFFu);
+        many_tail[nmany++] = sprite;
+    }
+    many_tail[nmany++] = 0x0F000000u;
+    many_tail[nmany++] = 0x0C000000u;
+    const FbdSprite *sprites;
+    unsigned nsprites, ntail;
+    const uint32_t *tail;
+    if (strcmp(variant, "basic") == 0) {
+        sprites = basic; nsprites = 6; tail = basic_tail;
+        ntail = (unsigned)(sizeof basic_tail / sizeof basic_tail[0]);
+    } else if (strcmp(variant, "overlap") == 0) {
+        sprites = overlap; nsprites = 3; tail = overlap_tail;
+        ntail = (unsigned)(sizeof overlap_tail / sizeof overlap_tail[0]);
+    } else if (strcmp(variant, "wide") == 0) {
+        sprites = wide; nsprites = 4; tail = wide_tail;
+        ntail = (unsigned)(sizeof wide_tail / sizeof wide_tail[0]);
+    } else if (strcmp(variant, "empty") == 0) {
+        sprites = one; nsprites = 0; tail = empty_tail;
+        ntail = (unsigned)(sizeof empty_tail / sizeof empty_tail[0]);
+    } else if (strcmp(variant, "many") == 0) {
+        sprites = one; nsprites = 1; tail = many_tail; ntail = nmany;
+    } else if (strcmp(variant, "deep") == 0) {
+        sprites = one; nsprites = 1; tail = deep_tail;
+        ntail = (unsigned)(sizeof deep_tail / sizeof deep_tail[0]);
+    } else {
+        fprintf(stderr, "ge_replay: unknown synthetic capture %s\n", variant);
+        return 0;
+    }
+    /* ge.c's own power-on state: run an empty list once. */
+    fbd_put32(init, 0x0F000000u);
+    fbd_put32(init + 4u, 0x0C000000u);
+    if (ge_run_list(init, 0) != 0) return 0;
+    GeState initial = *ge_state_ptr();
+    for (unsigned i = 0; i < nsprites; i++) {
+        uint32_t v = verts + i * 32u;
+        fbd_put32(v, sprites[i].abgr);
+        fbd_putf(v + 4u, sprites[i].x0);
+        fbd_putf(v + 8u, sprites[i].y0);
+        fbd_putf(v + 12u, sprites[i].z);
+        fbd_put32(v + 16u, sprites[i].abgr);
+        fbd_putf(v + 20u, sprites[i].x1);
+        fbd_putf(v + 24u, sprites[i].y1);
+        fbd_putf(v + 28u, sprites[i].z);
+    }
+    const unsigned nhead = (unsigned)(sizeof head / sizeof head[0]);
+    for (unsigned i = 0; i < nhead; i++) fbd_put32(list + i * 4u, head[i]);
+    for (unsigned i = 0; i < ntail; i++) fbd_put32(list + (nhead + i) * 4u, tail[i]);
+    memset(SR_HOST_LINEAR(GE_CAPTURE_VRAM_BASE), 0, GE_CAPTURE_VRAM_SIZE);
+    static uint16_t zbuf[GE_CAPTURE_ZBUF_WORDS];
+    if (!ge_capture_begin(path, 1, list, &initial, zbuf)) return 0;
+    ge_capture_note_memory(list, (nhead + ntail) * 4u);
+    if (nsprites) ge_capture_note_memory(verts, nsprites * 32u);
+    return ge_capture_end(&initial);
 }
 
 typedef enum ReplayWallPhase {
@@ -152,15 +945,37 @@ static uint64_t primitive_profile_adjusted_estimate_ns(uint64_t raw_ns, uint64_t
 
 int main(int argc, char **argv) {
     if (argc < 2) { usage(argv[0]); return 2; }
+    if (strcmp(argv[1], "--fbd-self-check") == 0) return argc == 2 ? fbd_self_check() : 2;
+    if (strcmp(argv[1], "--write-synthetic") == 0) {
+        if (argc != 3 && argc != 4) { usage(argv[0]); return 2; }
+        uint8_t *arena = (uint8_t *)calloc(0x0c000000u, 1);
+        if (!arena) return 2;
+        g_mem = arena + 0x08000000u;
+        int ok = fbd_write_synthetic(argv[2], argc == 4 ? argv[3] : "basic");
+        free(arena);
+        if (!ok) { fprintf(stderr, "ge_replay: could not write %s\n", argv[2]); return 3; }
+        printf("GE_REPLAY_SYNTHETIC path=%s\n", argv[2]);
+        return 0;
+    }
     const char *fixture_path = argv[1];
     const char *backend = "software";
     const char *output = "ge_replay.ppm";
+    const char *fbd_mode = NULL;
+    const char *fbd_report = NULL;
     unsigned long repeat = 1;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) backend = argv[++i];
         else if (strcmp(argv[i], "--repeat") == 0 && i + 1 < argc) repeat = strtoul(argv[++i], NULL, 10);
         else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) output = argv[++i];
+        else if (strcmp(argv[i], "--first-bad-draw") == 0) { if (!fbd_mode) fbd_mode = "auto"; }
+        else if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) fbd_mode = argv[++i];
+        else if (strcmp(argv[i], "--report") == 0 && i + 1 < argc) fbd_report = argv[++i];
         else { usage(argv[0]); return 2; }
+    }
+    if (fbd_mode) {
+        if (strcmp(fbd_mode, "auto") != 0 && strcmp(fbd_mode, "linear") != 0 &&
+            strcmp(fbd_mode, "bisect") != 0) { usage(argv[0]); return 2; }
+        backend = "vulkan";
     }
     int vulkan = strcmp(backend, "vulkan") == 0;
     if ((!vulkan && strcmp(backend, "software") != 0) || repeat == 0 || repeat > 1000000ul) {
@@ -180,9 +995,22 @@ int main(int argc, char **argv) {
     if (vulkan) {
         if (!sdl3vk_init("Nakagawa GE replay") || !gegpu_init()) {
             fprintf(stderr, "ge_replay: Vulkan initialization failed\n");
-            ge_capture_free(&fixture); free(arena); return 2;
+            ge_capture_free(&fixture); free(arena);
+            /* --first-bad-draw has nothing to compare without Vulkan: a skip, not a pass. */
+            if (fbd_mode) { puts("GE_FIRST_BAD_DRAW result=SKIP reason=no-vulkan"); return 77; }
+            return 2;
         }
         gegpu_replay_stats_reset();
+    }
+    if (fbd_mode) {
+        char report[1024];
+        if (fbd_report) snprintf(report, sizeof report, "%s", fbd_report);
+        else snprintf(report, sizeof report, "%s.first-bad-draw", fixture_path);
+        int rc = fbd_run(&fixture, fbd_mode, report);
+        gegpu_shutdown(); sdl3vk_shutdown();
+        ge_capture_free(&fixture);
+        free(arena);
+        return rc;
     }
     ge_cpu_profile_reset();
 
