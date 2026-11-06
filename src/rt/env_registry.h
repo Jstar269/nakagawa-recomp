@@ -121,6 +121,7 @@
     X("SR_GPU_SUBMIT_BATCH", "number", "SUBMIT_BATCH_MAX", "gpu_sdl3vk/ge_gpu.c", "Number of GPU ops per submit batch; values outside 1 to the maximum are ignored.") \
     X("SR_GPU_SYNC_SUBMIT", "flag-nonzero", "off (asynchronous submit)", "gpu_sdl3vk/ge_gpu.c", "When enabled, GPU command submission is synchronous instead of asynchronous.") \
     X("SR_GPU_TEX_SHADOW_DISABLE", "flag-nonzero", "off (texture shadow enabled)", "gpu_sdl3vk/ge_gpu.c", "Disables the GPU texture shadow when set to a non-empty value other than 0.") \
+    X("SR_GPU_TIMESTAMPS", "flag-nonzero", "off", "gpu_sdl3vk/ge_gpu.c,gpu_sdl3vk/sdl3vk.c", "Times GE command buffers by op kind and the presentation blit with GPU timestamp queries (GEGPU_TS lines, SR_PERF_FRAMES gpu_* columns).") \
     X("SR_GPU_TNL", "string", "off", "ge.c", "Set to exactly 1 to hand eligible transform-mode triangles to the GPU backend for vertex transform.") \
     X("SR_GPU_XFER_RING_KB", "number", "built-in default ring size", "gpu_sdl3vk/ge_gpu.c", "Transfer ring size in KiB (0 disables, above 65536 ignored).") \
     X("SR_HEADLESS", "flag-nonzero", "off", "audio_sdl3.c,gui.c,sched.c", "Marks the run headless: silent audio, headless presenter and no pause UI (audio check wants exactly 1).") \
