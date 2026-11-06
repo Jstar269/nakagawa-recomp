@@ -891,5 +891,28 @@ int gegpu_texscale_selftest(void) {
     ok = ok && xst_cell_smart2d();
     xst_reset();
     nk_tex_scale_set_sync(0);
+    /* Under --twin, the host twin (#2050) draws every cell a second time. xst_reset compared each
+     * twin with its image before freeing them. With `--twin native`, the pixels must be equal, so a
+     * scaled copy, its factor and clamp, the one-to-one swap and smart 2D all reach the twin pass.
+     * As in gegpu_coherence_selftest, a twin found behind its image and re-seeded also fails, and a
+     * requested twin must have run to the end: unavailable or turned off fails, never a quiet OK. */
+    const char *twin_env = getenv("SR_GPU_TWIN_COLOR");
+    if (twin_mode_parse(twin_env) > 0 && !s_twin) {
+        fprintf(stderr, "gpu texscale selftest: FAIL twin-identity: the host twin was requested "
+                        "(SR_GPU_TWIN_COLOR=%s) but %s\n", twin_env,
+                s_twin_unavailable ? "this device refused it"
+                : s_cnt_twin_alloc_fail ? "it turned off after a failed allocation" : "it is off");
+        ok = 0;
+    } else if (s_twin) {
+        if (s_twin_identity_failures || s_cnt_twin_reseed) {
+            fprintf(stderr, "gpu texscale selftest: FAIL twin-identity (%u identity failure(s), printed above; "
+                            "%lu re-seed(s), last lag: %s)\n", s_twin_identity_failures, s_cnt_twin_reseed,
+                    s_twin_lag_cause ? s_twin_lag_cause : "none");
+            ok = 0;
+        } else {
+            printf("gpu texscale selftest: PASS %-12s every twin in step with its image%s\n", "twin-identity",
+                   s_twin_color ? "" : ", pixel for pixel");
+        }
+    }
     return ok;
 }

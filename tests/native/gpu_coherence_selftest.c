@@ -105,14 +105,25 @@ static int set_env(const char *name, const char *value) {
 }
 
 /* `--scale N`, `--case NAME`, `--readback-full 1` and `--gpu-timestamps VALUE|unset` set SR_GPU_SCALE,
- * SR_GPU_COHERENCE_CASE, SR_GPU_READBACK_FULL and SR_GPU_TIMESTAMPS before the backend starts. Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does not accept. */
+ * SR_GPU_COHERENCE_CASE, SR_GPU_READBACK_FULL and SR_GPU_TIMESTAMPS before the backend starts;
+ * `--twin 1|native` and `--twin-ref PATH` set SR_GPU_TWIN_COLOR (the host twin, #2050) and
+ * SR_GPU_TWIN_REF (a file the twin cases write in a twin-off run and compare against in a
+ * twin-on run). The twin is an Ace Mode feature, so `--twin` also turns Ace Mode on (with no
+ * Ace item of its own), unless `--authentic` keeps it off to show that an authentic run
+ * ignores the switch. Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does
+ * not accept. */
 int main(int argc, char **argv) {
+    int twin_arg = 0, authentic = 0;
     for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--authentic") == 0) { authentic = 1; continue; }
+        if (strcmp(argv[i], "--twin") == 0) twin_arg = 1;
         const char *name = strcmp(argv[i], "--scale") == 0 ? "SR_GPU_SCALE"
                          : strcmp(argv[i], "--case") == 0  ? "SR_GPU_COHERENCE_CASE"
                          : strcmp(argv[i], "--readback-full") == 0 ? "SR_GPU_READBACK_FULL"
                          : strcmp(argv[i], "--tex-scale") == 0 ? "SR_TEX_SCALE"
-                         : strcmp(argv[i], "--gpu-timestamps") == 0 ? "SR_GPU_TIMESTAMPS" : NULL;
+                         : strcmp(argv[i], "--gpu-timestamps") == 0 ? "SR_GPU_TIMESTAMPS"
+                         : strcmp(argv[i], "--twin") == 0 ? "SR_GPU_TWIN_COLOR"
+                         : strcmp(argv[i], "--twin-ref") == 0 ? "SR_GPU_TWIN_REF" : NULL;
         if (!name || i + 1 >= argc || !set_env(name, argv[++i])) {
             fprintf(stderr, "usage: gpu_coherence_selftest [--scale N] [--case scaled-upload|mip-lod]\n");
             return 2;
@@ -127,6 +138,13 @@ int main(int argc, char **argv) {
     /* Ace Mode with 16x texture filtering, read before the device is made (src/rt/ace.h). */
     if (!ace_init_spec("v1;af=16;text=off;readout=off;notice=off;wide=off;smooth=off;sas=off", NULL)) {
         fprintf(stderr, "gpu ace selftest: FAIL the Ace line was refused\n");
+        free(arena);
+        return 1;
+    }
+#else
+    if (twin_arg && !authentic &&
+        !ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=off;smooth=off;sas=off", NULL)) {
+        fprintf(stderr, "gpu coherence selftest: FAIL the Ace line for the host twin was refused\n");
         free(arena);
         return 1;
     }

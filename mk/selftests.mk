@@ -731,7 +731,12 @@ asset-index-selftest:
 # case (#323, also on its SR_GPU_READBACK_FULL reference path), the undrawn-rows case and the
 # widescreen Fill case (#1881) run again alone at render scales 2 and 4; the sprite-scaled and
 # uv-edge-clamp cases (#2110) run alone at scales 2, 3 and 4. Each is selected by arguments: a
-# VAR=value prefix needs a POSIX shell, and cmd.exe does not take one.
+# VAR=value prefix needs a POSIX shell, and cmd.exe does not take one. The host twin (#2050) runs
+# after them: twin-off runs of twin-scene write reference files that the twin-on runs at the
+# same scale check (guest VRAM always, the shown images for the native twin), `--twin native`
+# runs the whole suite with every twin checked against its image after each case, twin-gate
+# checks the switch's values and its Ace gate (`--authentic`), and twin-alloc-fail injects a
+# failed twin allocation, and gpu-timestamps runs once more with the twin shown.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
@@ -765,6 +770,23 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 2 --case uv-edge-clamp
 	$(GPU_COHERENCE_BIN) --scale 3 --case uv-edge-clamp
 	$(GPU_COHERENCE_BIN) --scale 4 --case uv-edge-clamp
+	$(GPU_COHERENCE_BIN) --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s1.txt
+	$(GPU_COHERENCE_BIN) --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
+	$(GPU_COHERENCE_BIN) --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
+	$(GPU_COHERENCE_BIN) --twin native
+	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
+	$(GPU_COHERENCE_BIN) --twin native --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
+	$(GPU_COHERENCE_BIN) --twin 1 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s1.txt
+	$(GPU_COHERENCE_BIN) --twin 1 --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
+	$(GPU_COHERENCE_BIN) --twin 1 --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
+	$(GPU_COHERENCE_BIN) --twin 1 --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin native --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin 1 --authentic --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin off --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin yes --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin 1 --scale 4 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
+	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
+	@rc=0; $(GPU_COHERENCE_BIN) --twin 1 --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest twin gpu-timestamps (exit 77; the reason is printed above)"; 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest twin gpu-timestamps (exit $$rc)"; exit $$rc; fi
 	@$(MAKE) --no-print-directory gpu-coherence-selftest-snapbar-mutants
 
 # gpu-coherence-selftest-snapbar-mutants — the submit-batch case must kill each
@@ -793,7 +815,9 @@ gpu-coherence-selftest-snapbar-mutants: shader-verify $(RT_GE_O)
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
-# target-scoped synchronization closes the generation gap and rejects unsafe geometry.
+# target-scoped synchronization closes the generation gap and rejects unsafe geometry. It runs
+# again with the host twin (#2050) shown, at scales 1 and 2, so the Ace HUD mask stays keyed by
+# the image the present showed.
 # gpu-ace-selftest - Ace Mode's texture filtering (src/rt/ace.h) on a real device: SR_ACE asks for
 # 16x before the device is made; through-mode draws keep the measured PSP sample points and get
 # no anisotropic sampler, a transformed linear draw gets one, a nearest one does not. Exit 77
@@ -843,14 +867,18 @@ tex-scale-gate-mutant:
 # production path (src/rt/gpu_sdl3vk/tex_scale_gpu_selftest.inc), at render scales 1 and 4: the
 # xBRZ copy is drawn on its own lattice, an unfinished scale draws unscaled, a rewritten or
 # re-paletted texture is rescaled and its old copy never drawn, render targets are never scaled,
-# guest VRAM is untouched, and a 1:1 sprite samples nearest. Exit 77 (SKIP) without Vulkan.
+# guest VRAM is untouched, and a 1:1 sprite samples nearest. It runs again with the host twin (#2050):
+# `--twin native` checks every twin against its image pixel for pixel, so the copies, their factor and
+# the 1:1 swap reach the twin pass, and `--twin 1` checks that every twin keeps in step. Exit 77 (SKIP)
+# without Vulkan.
 GPU_TEXSCALE_BUILD = $(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_TEXSCALE_SELFTEST \
 		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
 gpu-texscale-selftest: shader-verify $(RT_GE_O)
 	$(GPU_TEXSCALE_BUILD) -o $(BUILD_DIR)/gpu_texscale_selftest.exe
-	@for args in "--scale 1" "--scale 4" "--scale 2 --tex-scale 4"; do \
+	@for args in "--scale 1" "--scale 4" "--scale 2 --tex-scale 4" "--twin native --scale 1" "--twin native --scale 4" \
+		"--twin native --scale 2 --tex-scale 4" "--twin 1 --scale 4"; do \
 		rc=0; $(BUILD_DIR)/gpu_texscale_selftest.exe $$args || rc=$$?; \
 		if [ $$rc -eq 77 ]; then echo "SKIP gpu-texscale-selftest $$args (exit 77; the reason is printed above)"; \
 		elif [ $$rc -ne 0 ]; then echo "FAIL gpu-texscale-selftest $$args (exit $$rc)"; exit $$rc; fi; \
@@ -877,6 +905,8 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
 	$(BUILD_DIR)/gpu_snapsync_selftest.exe
+	$(BUILD_DIR)/gpu_snapsync_selftest.exe --twin 1
+	$(BUILD_DIR)/gpu_snapsync_selftest.exe --twin 1 --scale 2
 
 # gpu-capture-selftest — deterministic present-source capture regression (issue #57): the
 # production present path is armed and driven with synthetic pixels; the published P6 PPMs
