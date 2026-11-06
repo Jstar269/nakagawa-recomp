@@ -176,16 +176,24 @@ fsr3-mutants: fsr3-host-selftest
 # of AMD's own frame interpolation and optical flow, driven as AMD's frame generation provider drives
 # them (tests/native/fsr3_fg_host_oracle.md): every staged constant buffer, clear, barrier, discard,
 # copy and dispatch, and the resource behind each binding, line for line; then the refusals. Pure C, no
-# GPU and no game data. fsr3-fg-mutants then requires 25 semantic defects in copies of the port to
-# build and fail it on the line each one changes.
-native-core-tests: fsr3-fg-host-selftest fsr3-fg-mutants
-.PHONY: fsr3-fg-host-selftest fsr3-fg-mutants
+# GPU and no game data.
+# fsr3-fg-state-selftest - G-S: frame generation's state machine (src/rt/fsr3_fg_state.c), when it runs,
+# its frame IDs and resets, and which image each flip and VBLANK presents, against a table written
+# from the FSR 3 design (section 10.2) and Smooth Motion's pacing. Pure C.
+# fsr3-fg-mutants then requires 35 semantic defects in copies of the two to build and fail their
+# cell on the line each one changes.
+native-core-tests: fsr3-fg-host-selftest fsr3-fg-state-selftest fsr3-fg-mutants
+.PHONY: fsr3-fg-host-selftest fsr3-fg-state-selftest fsr3-fg-mutants
 fsr3-fg-host-selftest:
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
 		-Ithird_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu \
 		-o $(BUILD_DIR)/fsr3_fg_host_selftest$(EXE_EXT) tests/native/fsr3_fg_host_selftest.c src/rt/fsr3_fg_host.c -lm
 	$(BUILD_DIR)/fsr3_fg_host_selftest$(EXE_EXT) tests/native/fsr3_fg_host_oracle.txt
-fsr3-fg-mutants: fsr3-fg-host-selftest
+fsr3-fg-state-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/fsr3_fg_state_selftest$(EXE_EXT) tests/native/fsr3_fg_state_selftest.c src/rt/fsr3_fg_state.c
+	$(BUILD_DIR)/fsr3_fg_state_selftest$(EXE_EXT)
+fsr3-fg-mutants: fsr3-fg-host-selftest fsr3-fg-state-selftest
 	"$(PYTHON)" tools/fsr3_mutants.py --fg --build-dir $(BUILD_DIR)/fsr3-fg-mutants --cc "$(CC)"
 
 # fsr3-shader-verify - the FSR 3 shader sets, the upscaler (fsr3) and frame generation (fsr3fg)

@@ -134,6 +134,10 @@ FG_HOST = "src/rt/fsr3_fg_host.c"
 FG_SELFTEST = "tests/native/fsr3_fg_host_selftest.c"
 FG_RECORD = "tests/native/fsr3_fg_host_oracle.txt"
 FG_INCLUDES = ["-Isrc/rt", "-Ithird_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu"]
+FG_STATE = "src/rt/fsr3_fg_state.c"
+FG_STATE_SELFTEST = "tests/native/fsr3_fg_state_selftest.c"
+# Each mutated file's cell: its selftest and the record it replays, if any.
+FG_CELLS = {FG_HOST: (FG_SELFTEST, [FG_RECORD]), FG_STATE: (FG_STATE_SELFTEST, [])}
 # Each AMD record line the defect changes is named as the selftest prints it ("AMD:  <line>").
 FG_MUTANTS: list[tuple[str, str, str, str, str]] = [
     ("optical flow's ping-pong parity swapped", FG_HOST,
@@ -236,6 +240,49 @@ FG_MUTANTS: list[tuple[str, str, str, str, str]] = [
      "if ((desc->flags & ~accepted) || !(desc->flags & FSR3FG_HOST_ENABLE_DEPTH_INVERTED)) return -1;",
      "if (desc->flags & ~accepted) return -1;",
      "depth that is not inverted accepted"),
+    # G-S: the state machine (src/rt/fsr3_fg_state.c) against tests/native/fsr3_fg_state_selftest.c.
+    ("G-S: a midpoint across a cut", FG_STATE,
+     "    } else if (f->cut) {\n        d.why = FSR3FG_WHY_CUT;\n",
+     "",
+     "FAIL cut row 3: present"),
+    ("G-S: a midpoint shown on a 60 Hz title", FG_STATE,
+     "const int at_30 = f->rate == ACE_RATE_K2;",
+     "const int at_30 = f->rate == ACE_RATE_K2 || f->rate == ACE_RATE_K1;",
+     "FAIL refused_60 row 0: why"),
+    ("G-S: a frame after a gap in frame generation does not reset", FG_STATE,
+     "    s->ran_previous = d.run;\n",
+     "    s->ran_previous = 1;\n",
+     "FAIL fsr1_fallback row 5: present"),
+    ("G-S: the frame ID steps only on frames frame generation runs on", FG_STATE,
+     "    const uint64_t id = s->next_frame_id++;\n    const int at_30 = f->rate == ACE_RATE_K2;\n"
+     "    d.run = at_30 && f->fsr3;\n",
+     "    const int at_30 = f->rate == ACE_RATE_K2;\n    d.run = at_30 && f->fsr3;\n"
+     "    const uint64_t id = d.run ? s->next_frame_id++ : s->next_frame_id;\n",
+     "FAIL fsr1_fallback row 5: frame id"),
+    ("G-S: the camera ignored", FG_STATE,
+     "d.reset = !s->ran_previous || f->cut || !f->camera;",
+     "d.reset = !s->ran_previous || f->cut;",
+     "FAIL camera row 1: reset"),
+    ("G-S: the 60 Hz refusal printed at every flip", FG_STATE,
+     "if (d.why == FSR3FG_WHY_REFUSED_60 && !s->refused_line_said) {",
+     "if (d.why == FSR3FG_WHY_REFUSED_60) {",
+     "FAIL refused_60 row 2: line"),
+    ("G-S: a pair with no midpoint shown as it comes at 30 Hz", FG_STATE,
+     "    } else if (at_30 && s->have_previous) {",
+     "    } else if (at_30 && s->have_previous && 0) {",
+     "FAIL enter_30 row 4: present"),
+    ("G-S: the held frame shown at its own flip's VBLANK", FG_STATE,
+     "    if (!s->held || vcount == s->held_after) return 0;",
+     "    (void)vcount;\n    if (!s->held) return 0;",
+     "FAIL steady_30 row 4: vblank due"),
+    ("G-S: a new flip keeps the held frame", FG_STATE,
+     "    if (s->held) {\n        d.superseded = 1;",
+     "    if (0) {\n        d.superseded = 1;",
+     "FAIL superseded row 2: superseded"),
+    ("G-S: a repeat flip leaves the frame held", FG_STATE,
+     "        if (s->held) s->held_shown++;\n        s->held = 0;\n",
+     "        if (s->held) s->held_shown++;\n",
+     "FAIL repeat row 3: vblank due"),
 ]
 
 # The GPU cells (src/rt/gpu_sdl3vk/fsr3_pass_selftest.c), one cell a mutant:
@@ -448,19 +495,21 @@ def main_pass(args: argparse.Namespace, work: Path) -> int:
 
 
 def main_fg(args: argparse.Namespace, work: Path) -> int:
-    def build_and_run_fg(host: Path, lane: Path, tag: str) -> tuple[str, int, str]:
-        exe = lane / f"fsr3_fg_host_selftest_{tag}{'.exe' if os.name == 'nt' else ''}"
-        cmd = [args.cc, *CFLAGS, *FG_INCLUDES, "-o", str(exe), FG_SELFTEST, str(host), "-lm"]
+    def build_and_run_fg(path: str, source: Path, lane: Path, tag: str) -> tuple[str, int, str]:
+        selftest, run_args = FG_CELLS[path]
+        exe = lane / f"{Path(selftest).stem}_{tag}{'.exe' if os.name == 'nt' else ''}"
+        cmd = [args.cc, *CFLAGS, *FG_INCLUDES, "-o", str(exe), selftest, str(source), "-lm"]
         built = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=300)
         if built.returncode != 0:
             return "BUILD", built.returncode, built.stderr
-        ran = subprocess.run([str(exe), FG_RECORD], cwd=ROOT, capture_output=True, text=True, timeout=300)
+        ran = subprocess.run([str(exe), *run_args], cwd=ROOT, capture_output=True, text=True, timeout=300)
         return "RAN", ran.returncode, ran.stdout + ran.stderr
 
-    status, rc, out = build_and_run_fg(ROOT / FG_HOST, work, "base")
-    if status != "RAN" or rc != 0:
-        print(f"FAIL fsr3-fg-mutants: the unmutated cell does not pass ({status}, exit {rc})\n{out}")
-        return 1
+    for path in FG_CELLS:
+        status, rc, out = build_and_run_fg(path, ROOT / path, work, f"base_{Path(path).stem}")
+        if status != "RAN" or rc != 0:
+            print(f"FAIL fsr3-fg-mutants: the unmutated {FG_CELLS[path][0]} does not pass ({status}, exit {rc})\n{out}")
+            return 1
     failures = 0
     for index, (name, path, old, new, expect) in enumerate(FG_MUTANTS):
         mutated, why = mutate(work, index, path, old, new)
@@ -468,7 +517,7 @@ def main_fg(args: argparse.Namespace, work: Path) -> int:
             print(f"INVALID {name}: {why}")
             failures += 1
             continue
-        status, rc, out = build_and_run_fg(mutated, mutated.parent, f"m{index:02d}")
+        status, rc, out = build_and_run_fg(path, mutated, mutated.parent, f"m{index:02d}")
         if status == "BUILD":
             print(f"INVALID {name}: the mutant does not build\n{out}")
             failures += 1

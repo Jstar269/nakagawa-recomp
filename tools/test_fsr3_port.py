@@ -341,7 +341,8 @@ class NoticeTests(unittest.TestCase):
     DERIVED = ("src/rt/fsr3_host.c", "src/rt/fsr3_host.h", "src/rt/fsr3_jitter.c", "src/rt/fsr3_jitter.h",
                "src/rt/gpu_sdl3vk/fsr3_pass.c", "src/rt/fsr3_fg_host.c", "src/rt/fsr3_fg_host.h")
     PROJECT = ("src/rt/gpu_sdl3vk/fsr3_pass.h", "src/rt/gpu_sdl3vk/fsr3_pass_selftest.c",
-               "tests/native/fsr3_host_selftest.c", "tests/native/fsr3_fg_host_selftest.c", "tools/fsr3_mutants.py")
+               "tests/native/fsr3_host_selftest.c", "tests/native/fsr3_fg_host_selftest.c", "tools/fsr3_mutants.py",
+               "src/rt/fsr3_fg_state.c", "src/rt/fsr3_fg_state.h", "tests/native/fsr3_fg_state_selftest.c")
 
     def test_derived_files_keep_amds_notice_and_say_they_were_modified(self) -> None:
         licence = (ROOT / "third_party/fidelityfx_sdk/LICENSE-AMD.md").read_text(encoding="utf-8")
@@ -393,7 +394,7 @@ class InertTests(unittest.TestCase):
 
     def test_no_runtime_or_player_source_refers_to_fsr3(self) -> None:
         own = {"fsr3_host.c", "fsr3_host.h", "fsr3_jitter.c", "fsr3_jitter.h", "fsr3_pass.c", "fsr3_pass.h",
-               "fsr3_pass_selftest.c", "fsr3_fg_host.c", "fsr3_fg_host.h"}
+               "fsr3_pass_selftest.c", "fsr3_fg_host.c", "fsr3_fg_host.h", "fsr3_fg_state.c", "fsr3_fg_state.h"}
         for path in sorted((ROOT / "src").rglob("*")):
             if path.suffix not in {".c", ".h", ".cpp", ".inc"} or path.name in own:
                 continue
