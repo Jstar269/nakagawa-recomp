@@ -1098,8 +1098,11 @@ static uint32_t h_ReferTlsplStatus(CpuState *s) {
  *  - Lock and TryLock accept only type 0: types 1, 2 and -1 answer INVALID_MODE (0x80000107) and
  *    write neither output, Lock as TryLock, while the lock is free (measured on a PSP-3000 6.61 by
  *    PSP-KERNEL-SEM-001 vmem-trylock-type-* and vmem-lock-type-1, 2026-10-31, probe 0c3cf0da). The
- *    type is checked first; its order against the other checks is UNMEASURED. Unlock's argument is
- *    not checked: Unlock keeps its measured route.
+ *    type is checked first; its order against the other checks is UNMEASURED.
+ *  - Unlock takes the same mode argument: pspautotests tests/power/volatile/unlock.expected
+ *    "Modes" (recorded on a PSP) answers 0x80000107 for -2, -1, 1..7, 0x10, 0x100, 0x1000 and
+ *    0x7FFFFFFF and 0 for mode 0; a refused Unlock leaves the lock held. The mode is checked
+ *    before the not-locked 0x800201ae; the file does not measure that order (UNMEASURED).
  *  - The lock has no owning thread: Unlock from any thread releases it, as the semaphore overflow
  *    code above suggests (an inference). Terminating or deleting the thread that took the lock
  *    therefore leaves it held. A waiting thread that is terminated, deleted or released by
@@ -1230,7 +1233,7 @@ static uint32_t h_VolatileMemTryLock(CpuState *s) {
 }
 
 static uint32_t h_VolatileMemUnlock(CpuState *s) {
-    (void)s;
+    if (A0 != 0u) return VOLATILE_MEM_INVALID_MODE;   /* unlock.expected "Modes" */
     if (!s_volatile_locked) return VOLATILE_MEM_NOT_HELD;
     s_volatile_locked = 0;
     if (volatile_mem_grant_next()) sched_preempt();   /* a stronger new holder runs now */
@@ -1312,6 +1315,10 @@ void hle_register_wait_conformance_kernel_memory_2(void) {
     sr_hle_register(0x3e0271d3, "sceKernelVolatileMemLock", h_VolatileMemLock);
     sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemTryLock);
     sr_hle_register(0xa569e425, "sceKernelVolatileMemUnlock", h_VolatileMemUnlock);
+    /* The scePower aliases answer the same cells (unlock/lock/trylock.expected "(scePower)"). */
+    sr_hle_register(0x23c31ffe, "scePowerVolatileMemLock", h_VolatileMemLock);
+    sr_hle_register(0xfa97a599, "scePowerVolatileMemTryLock", h_VolatileMemTryLock);
+    sr_hle_register(0xb3edd801, "scePowerVolatileMemUnlock", h_VolatileMemUnlock);
 }
 
 #ifndef SR_MPEG_MEDIA_SELFTEST

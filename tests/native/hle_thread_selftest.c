@@ -12872,13 +12872,13 @@ static void test_umd_unregister_callback(void) {
     expect(sr_syscall(&cpu, NID_UMD_REGISTER_CALLBACK) == 0u,
            "sceUmdRegisterUMDCallBack records the callback");
     cpu.r[4] = cbid;
-    expect(sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK) == 0u,
+    expect(sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK) == cbid,
            "sceUmdUnRegisterUMDCallBack removes a registered callback");
     cpu.r[4] = cbid;
-    expect(sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK) == 0x800201a1u,
+    expect(sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK) == 0x80010016u,
            "sceUmdUnRegisterUMDCallBack rejects an already unregistered callback");
     cpu.r[4] = UNKNOWN_CALLBACK;
-    expect(sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK) == 0x800201a1u,
+    expect(sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK) == 0x80010016u,
            "sceUmdUnRegisterUMDCallBack rejects an unknown callback id");
 
     memset(&cpu, 0, sizeof(cpu));
@@ -12918,8 +12918,11 @@ static void test_umd_unregister_callback(void) {
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = cbid;
-    expect(sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK) == 0u,
-           "UMD callback test unregisters its final registration");
+    {
+        /* The answer is the uid below SDK 0x3000001 and 0 from it; earlier tests may have set one. */
+        uint32_t unreg = sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK);
+        expect(unreg == cbid || unreg == 0u, "UMD callback test unregisters its final registration");
+    }
     cpu.r[4] = cbid;
     expect(sr_syscall(&cpu, 0xedba5844u) == 0u,
            "UMD callback test deletes its production callback object");
@@ -30761,11 +30764,11 @@ static void test_td24d_hle_batch(void) {
            "sceCtrlSetSamplingCycle returns previous cycle 5555");
 
     /* Thresholds round-trip */
-    expect(td24b_dispatch4(NID_SCE_CTRL_SET_IDLE_CANCEL_THRESHOLD, 123u, 456u, 0u, 0u) == 0u,
+    expect(td24b_dispatch4(NID_SCE_CTRL_SET_IDLE_CANCEL_THRESHOLD, 123u, 126u, 0u, 0u) == 0u,
            "sceCtrlSetIdleCancelThreshold accepts custom thresholds");
     expect(td24b_dispatch4(NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD, TD24D_CTRL_OUT, TD24D_CTRL_OUT + 4u, 0u, 0u) == 0u &&
                MEM_R32(TD24D_CTRL_OUT) == 123u &&
-               MEM_R32(TD24D_CTRL_OUT + 4u) == 456u,
+               MEM_R32(TD24D_CTRL_OUT + 4u) == 126u,
            "sceCtrlGetIdleCancelThreshold reflects set thresholds");
     sr_hle_test_ctrl_sampling_reset();
 
@@ -38254,7 +38257,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_msgpipe_parks;
         extern int s_vm_parks;
         extern int s_ctrlc_parks;
-        int expected_parks = 1 /* MultiCB waiter */ + 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
+        int expected_parks = 1 /* MultiCB waiter */ + 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + 5 + 2 /* wc waiters */ + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
         char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -38262,6 +38265,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 3 cancel/release waiters + 5 UMD cancel waiters + 3 second-round waiters + 6 liveness waiters "
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
+                 "+ 2 w-hle-c waiters (a cancelled UMD wait, a WaitVblankStartCB) "
                  "+ 1 vblank multi waiter + 1 zero-period vblank waiter body "
                  "+ 1 ReferSemaStatus waiter "
                  "+ 3 rotate peers + 2 suspended-waiter bodies + 5 released-wait bodies "
@@ -43164,6 +43168,368 @@ static void test_power_unregister_callback_slots(void) {
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = (uint32_t)-1;
     expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000102u,
            "power unregister: slot -1 returns 0x80000102 (PSP-measured)");
+}
+
+/* ---- w-hle-c: cells read from pspautotests against the production dispatch (#341) ---- */
+
+/* scePowerRegisterCallback error cells, pspautotests tests/power/power.expected (PSP-recorded):
+ * the 17th registration 0x80000022; callback 0 -> 0x80000100 even on an occupied slot; slot -4
+ * -> 0x80000102; slot 31 -> 0x80000023; slot 32 -> 0x80000102; an occupied slot -> 0x80000020. */
+static void test_wc_power_register_callback_errors(void) {
+    CpuState cpu;
+    uint32_t cb;
+    reset_fixture();
+    sr_hle_init();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = WSV_NAMEBUF;
+    cb = sr_syscall(&cpu, NID_WSV_CREATE_CALLBACK);
+    expect(cb != 0u && sr_callback_is_valid(cb), "wc power register: a callback exists");
+    for (uint32_t slot = 0; slot < 16u; slot++) {
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = slot;
+        (void)sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK);
+    }
+    int filled = 1;
+    for (uint32_t i = 0; i < 16u; i++) {
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = (uint32_t)-1; cpu.r[5] = cb;
+        if (sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) != i) filled = 0;
+    }
+    expect(filled, "wc power register: slot -1 takes slots 0..15 in order");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = (uint32_t)-1; cpu.r[5] = cb;
+    expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0x80000022u,
+           "wc power register: the 17th registration returns 0x80000022 (PSP-measured)");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0u; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0x80000100u,
+           "wc power register: callback 0 returns 0x80000100 before the slot is checked (PSP-measured)");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = (uint32_t)-4; cpu.r[5] = cb;
+    expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0x80000102u,
+           "wc power register: slot -4 returns 0x80000102 (PSP-measured)");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 31u; cpu.r[5] = cb;
+    expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0x80000023u,
+           "wc power register: slot 31 returns 0x80000023 (PSP-measured)");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 32u; cpu.r[5] = cb;
+    expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0x80000102u,
+           "wc power register: slot 32 returns 0x80000102 (PSP-measured)");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0u; cpu.r[5] = cb;
+    expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0x80000020u,
+           "wc power register: an occupied slot returns 0x80000020 (PSP-measured)");
+    for (uint32_t slot = 0; slot < 16u; slot++) {
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = slot;
+        (void)sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK);
+    }
+}
+
+/* sceKernelVolatileMemUnlock(mode) and the scePower aliases, pspautotests
+ * tests/power/volatile/unlock.expected "Modes" and "Modes (scePower)". */
+static void test_wc_volatile_unlock_mode(void) {
+    enum { NID_PWR_LOCK = 0x23c31ffeu, NID_PWR_TRYLOCK = 0xfa97a599u, NID_PWR_UNLOCK = 0xb3edd801u };
+    static const int32_t bad_modes[] = { -2, -1, 1, 2, 3, 4, 5, 6, 7, 16, 256, 4096, 0x7FFFFFFF };
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_volatile_mem_reset();
+    (void)volatile_mem_current_thread(0x2b02u, 32);
+    expect(sr_hle_test_is_registered(NID_PWR_LOCK) && sr_hle_test_is_registered(NID_PWR_TRYLOCK) &&
+               sr_hle_test_is_registered(NID_PWR_UNLOCK),
+           "wc volatile: scePowerVolatileMemLock, TryLock and Unlock are registered");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "wc volatile: TryLock takes the lock");
+    for (size_t i = 0; i < sizeof(bad_modes) / sizeof(bad_modes[0]); i++) {
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = (uint32_t)bad_modes[i];
+        expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0x80000107u,
+               "wc volatile: Unlock with a mode other than 0 returns 0x80000107 (PSP-measured)");
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = (uint32_t)bad_modes[i];
+        expect(sr_syscall(&cpu, NID_PWR_UNLOCK) == 0x80000107u,
+               "wc volatile: scePowerVolatileMemUnlock with a mode other than 0 returns 0x80000107");
+    }
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0x802b0200u,
+           "wc volatile: refused Unlock calls left the lock held");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_PWR_UNLOCK) == 0u,
+           "wc volatile: scePowerVolatileMemUnlock mode 0 releases the lock");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_PWR_UNLOCK) == 0x800201aeu,
+           "wc volatile: scePowerVolatileMemUnlock while not locked returns 0x800201ae");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_PWR_TRYLOCK) == 0u &&
+               MEM_R32(VM_PTR_OUT) == 0x08400000u,
+           "wc volatile: scePowerVolatileMemTryLock takes the lock and writes the region");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_PWR_TRYLOCK) == 0x802b0200u,
+           "wc volatile: scePowerVolatileMemTryLock while held returns 0x802b0200");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "wc volatile: Unlock mode 0 releases the lock");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_PWR_LOCK) == 0u && MEM_R32(VM_SIZE_OUT) == 0x00400000u,
+           "wc volatile: scePowerVolatileMemLock takes the free lock and writes the size");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "wc volatile: Unlock releases the alias lock");
+    sr_hle_test_volatile_mem_reset();
+    s_cur = -1;
+}
+
+/* sceCtrlSet/GetIdleCancelThreshold, pspautotests tests/ctrl/idle/idle.expected. */
+static void test_wc_ctrl_idle_cancel_threshold(void) {
+    enum { OUT = 0x08007300u };
+    static const struct { int32_t a, b; uint32_t want; } sets[] = {
+        { -127, -127, 0x800001FEu }, { -65535, 65536, 0x800001FEu }, { 128, 128, 0u },
+        { 0, -1, 0u }, { -2, -2, 0x800001FEu }, { 129, 129, 0x800001FEu }, { 1, 129, 0x800001FEu },
+    };
+    sr_hle_test_ctrl_sampling_reset();
+    reset_fixture();
+    sr_hle_init();
+    expect(td24b_dispatch4(NID_SCE_CTRL_SET_IDLE_CANCEL_THRESHOLD, 0u, 0u, 0u, 0u) == 0u &&
+               td24b_dispatch4(NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD, OUT, OUT + 4u, 0u, 0u) == 0u &&
+               MEM_R32(OUT) == 0u && MEM_R32(OUT + 4u) == 0u,
+           "wc ctrl idle: Set (0, 0) returns 0 and reads back (0, 0)");
+    for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++) {
+        uint32_t before_a, before_b;
+        (void)td24b_dispatch4(NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD, OUT, OUT + 4u, 0u, 0u);
+        before_a = MEM_R32(OUT); before_b = MEM_R32(OUT + 4u);
+        expect(td24b_dispatch4(NID_SCE_CTRL_SET_IDLE_CANCEL_THRESHOLD, (uint32_t)sets[i].a,
+                               (uint32_t)sets[i].b, 0u, 0u) == sets[i].want,
+               "wc ctrl idle: Set answers the PSP-measured code for the pair");
+        (void)td24b_dispatch4(NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD, OUT, OUT + 4u, 0u, 0u);
+        if (sets[i].want != 0u)
+            expect(MEM_R32(OUT) == before_a && MEM_R32(OUT + 4u) == before_b,
+                   "wc ctrl idle: a refused Set stores nothing");
+    }
+    expect(td24b_dispatch4(NID_SCE_CTRL_SET_IDLE_CANCEL_THRESHOLD, 0u, (uint32_t)-1, 0u, 0u) == 0u &&
+               td24b_dispatch4(NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD, OUT, OUT + 4u, 0u, 0u) == 0u &&
+               MEM_R32(OUT) == 0u && MEM_R32(OUT + 4u) == 0xFFFFFFFFu,
+           "wc ctrl idle: Set (0, -1) reads back (0, -1)");
+    MEM_W32(OUT, 0x11111111u);
+    expect(td24b_dispatch4(NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD, OUT, 0u, 0u, 0u) == 0u &&
+               MEM_R32(OUT) == 0u,
+           "wc ctrl idle: Get with a NULL second pointer answers 0");
+    expect(td24b_dispatch4(NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD, 0u, 0u, 0u, 0u) == 0u,
+           "wc ctrl idle: Get (NULL, NULL) answers 0");
+    MEM_W32(OUT, 0x22222222u);
+    expect(td24b_dispatch4(NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD, OUT, 0xDEADBEEFu, 0u, 0u) ==
+                   0x80000023u && MEM_R32(OUT) == 0x22222222u,
+           "wc ctrl idle: Get with a bad pointer answers 0x80000023 before writing anything");
+    expect(td24b_dispatch4(NID_SCE_CTRL_GET_IDLE_CANCEL_THRESHOLD, 0xDEADBEEFu, 0xDEADBEEFu, 0u, 0u) ==
+               0x80000023u,
+           "wc ctrl idle: Get (0xDEADBEEF, 0xDEADBEEF) answers 0x80000023");
+    sr_hle_test_ctrl_sampling_reset();
+}
+
+extern uint32_t g_sdk_version;
+
+typedef struct {
+    uint32_t nid, a0, a1, ret;
+    int returned;
+} WcUmdWaitCtx;
+
+static void wc_umd_waiter_body(void *arg) {
+    WcUmdWaitCtx *ctx = (WcUmdWaitCtx *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = ctx->a0;
+    cpu.r[5] = ctx->a1;
+    ctx->ret = sr_syscall(&cpu, ctx->nid);
+    ctx->returned = 1;
+    selftest_park_on_scheduler();
+}
+
+/* sceUmdWaitDriveStat / WithTimer / CB, pspautotests tests/umd/api/api.expected: "Wait stat
+ * validation", "Dispatch disabled", "Timeouts" (5, 20, 100, 200 -> ~250 us) and "Zero timeout"
+ * (0 waits until cancelled). */
+static void test_wc_umd_wait_drive_stat(void) {
+    enum { NID_WAIT = 0x8ef08fceu, NID_WAIT_TIMER = 0x56202973u, NID_WAIT_CB = 0x4a9e5e29u,
+           NID_CANCEL = 0x6af9b50au, UMD_OBJ = 0x554D44u };
+    static const uint32_t nids[3] = { NID_WAIT, NID_WAIT_TIMER, NID_WAIT_CB };
+    static const uint32_t bad_stats[] = { 0u, 0x04u, 0x40u, 0x80u, 0xffffffc4u };
+    static const uint32_t good_stats[] = { 0x02u, 0x10u, 0x20u };   /* bits the active drive (0x32) holds */
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_umd_reset();
+    s_cur = -1;
+    for (int n = 0; n < 3; n++) {
+        for (size_t i = 0; i < sizeof(bad_stats) / sizeof(bad_stats[0]); i++) {
+            memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = bad_stats[i]; cpu.r[5] = 1000u;
+            expect(sr_syscall(&cpu, nids[n]) == 0x80010016u,
+                   "wc umd wait: a stat with an invalid bit or no bit answers 0x80010016");
+        }
+    }
+    TCB *owner = fixture_thread(0x2c01u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t token = sr_syscall(&cpu, NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD);
+    expect(token == 1u && !sched_dispatch_enabled(), "wc umd wait: dispatch is disabled");
+    for (int n = 0; n < 3; n++) {
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x20u; cpu.r[5] = 1000u;
+        expect(sr_syscall(&cpu, nids[n]) == 0x800201a7u,
+               "wc umd wait: a satisfied wait with dispatch disabled answers 0x800201a7");
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x08u; cpu.r[5] = 1000u;
+        expect(sr_syscall(&cpu, nids[n]) == 0x800201a7u,
+               "wc umd wait: an unsatisfied wait with dispatch disabled answers 0x800201a7");
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x04u; cpu.r[5] = 1000u;
+        expect(sr_syscall(&cpu, nids[n]) == 0x80010016u,
+               "wc umd wait: the invalid stat is checked before the dispatch state");
+    }
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = token;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_RESUME_DISPATCH_THREAD);
+    for (size_t i = 0; i < sizeof(good_stats) / sizeof(good_stats[0]); i++) {
+        for (int n = 0; n < 3; n++) {
+            memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = good_stats[i]; cpu.r[5] = 1000u;
+            expect(sr_syscall(&cpu, nids[n]) == 0u,
+                   "wc umd wait: a valid stat the drive already holds returns 0");
+        }
+    }
+
+    /* Timeouts: WithTimer rounds 5, 20, 100 and 200 up to 250 us; 0 waits with no deadline. */
+    static const struct { uint32_t nid, req, expect_us; } waits[] = {
+        { NID_WAIT_TIMER, 5u, 250u }, { NID_WAIT_TIMER, 20u, 250u }, { NID_WAIT_TIMER, 100u, 250u },
+        { NID_WAIT_TIMER, 200u, 250u }, { NID_WAIT_TIMER, 400u, 400u }, { NID_WAIT_TIMER, 1000u, 1000u },
+        { NID_WAIT_TIMER, 0u, 0u }, { NID_WAIT, 0u, 0u }, { NID_WAIT_CB, 0u, 0u },
+    };
+    for (size_t i = 0; i < sizeof(waits) / sizeof(waits[0]); i++) {
+        reset_fixture();
+        sr_hle_init();
+        sr_hle_test_umd_reset();
+        TCB *own = fixture_thread(0x2c02u, TH_RUNNING, 32);
+        own->started = 1;
+        TCB *waiter = fixture_thread(0x2c03u, TH_READY, 40);
+        waiter->started = 1;
+        WcUmdWaitCtx ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.nid = waits[i].nid;
+        ctx.a0 = 0x08u;                 /* a bit the active drive does not hold */
+        ctx.a1 = waits[i].req;
+        waiter->coro = sr_coro_create(wc_umd_waiter_body, &ctx, (size_t)4 << 20);
+        s_cur = (int)(waiter - s_tcb);
+        uint64_t t0 = s_vtime_us;
+        if (waiter->coro) sr_coro_switch(waiter->coro);
+        expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == UMD_OBJ && !ctx.returned,
+               "wc umd wait: an unsatisfied wait blocks on the UMD object");
+        if (waits[i].expect_us == 0u)
+            expect(waiter->wake == SCHED_WAIT_FOREVER,
+                   "wc umd wait: timeout 0 is an untimed wait, not a substituted deadline");
+        else
+            expect(waiter->wake == t0 + waits[i].expect_us,
+                   "wc umd wait: the timeout is rounded as the PSP does (5..215 us -> 250 us)");
+        if (waits[i].expect_us == 0u && waits[i].nid == NID_WAIT_TIMER) {
+            s_cur = (int)(own - s_tcb);
+            memset(&cpu, 0, sizeof(cpu));
+            expect(sr_syscall(&cpu, NID_CANCEL) == 0u, "wc umd wait: CancelWaitDriveStat returns 0");
+            s_cur = (int)(waiter - s_tcb);
+            if (waiter->coro) sr_coro_switch(waiter->coro);
+            expect(ctx.returned && ctx.ret == 0x800201a9u,
+                   "wc umd wait: a cancelled untimed wait returns 0x800201a9");
+        }
+        if (waiter->coro) {
+            sr_coro_destroy(waiter->coro);
+            waiter->coro = NULL;
+        }
+    }
+    s_cur = -1;
+}
+
+/* sceUmdUnRegisterUMDCallBack, pspautotests tests/umd/register.expected. */
+static void test_wc_umd_unregister_callback(void) {
+    enum { NID_REG = 0xaee7404du, NID_UNREG = 0xbd2bde07u };
+    CpuState cpu;
+    uint32_t cb;
+    uint32_t saved_sdk = g_sdk_version;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_umd_reset();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = WSV_NAMEBUF;
+    cb = sr_syscall(&cpu, NID_WSV_CREATE_CALLBACK);
+    for (int pass = 0; pass < 3; pass++) {
+        g_sdk_version = pass == 0 ? 0u : (pass == 1 ? 0x3000000u : 0x3000001u);
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = (uint32_t)-1;
+        expect(sr_syscall(&cpu, NID_UNREG) == 0x80010016u,
+               "wc umd unregister: uid -1 answers 0x80010016");
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0u;
+        expect(sr_syscall(&cpu, NID_UNREG) == 0x80010016u,
+               "wc umd unregister: uid 0 with nothing registered answers 0x80010016");
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = cb;
+        expect(sr_syscall(&cpu, NID_REG) == 0u, "wc umd unregister: the callback registers");
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = cb;
+        expect(sr_syscall(&cpu, NID_UNREG) == (pass == 2 ? 0u : cb),
+               "wc umd unregister: a matching uid answers the uid below SDK 0x3000001 and 0 from it");
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = cb;
+        expect(sr_syscall(&cpu, NID_UNREG) == 0x80010016u,
+               "wc umd unregister: a second unregister answers 0x80010016");
+    }
+    g_sdk_version = saved_sdk;
+}
+
+/* sceDisplayWaitVblankStartMulti / MultiCB, pspautotests tests/display/vblankmulti.expected: counts
+ * 0, -1 and 0x80000000 answer 0x800001fe (the count is a signed int). */
+static void test_wc_display_multi_count_signed(void) {
+    static const uint32_t counts[] = { 0u, 0xffffffffu, 0x80000000u };
+    static const uint32_t nids[2] = { NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI,
+                                      NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB };
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    s_cur = -1;
+    for (int n = 0; n < 2; n++)
+        for (size_t i = 0; i < sizeof(counts) / sizeof(counts[0]); i++) {
+            memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = counts[i];
+            expect(sr_syscall(&cpu, nids[n]) == 0x800001feu,
+                   "wc display multi: a count <= 0 as a signed int answers 0x800001fe");
+        }
+}
+
+/* sceDisplayGetMode (tests/display/setmode.expected: mode=0, 480x272) and sceDisplayWaitVblankStartCB
+ * (tests/display/vblankmulti.expected "StartCB": vcount advances by one per call). */
+static void test_wc_display_getmode_and_start_cb(void) {
+    enum { NID_GET_MODE = 0xdea197d4u, NID_GET_VCOUNT = 0x9c6eaad7u, OUT = 0x08007400u };
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    s_cur = -1;
+    MEM_W32(OUT, 0x11111111u); MEM_W32(OUT + 4u, 0x22222222u); MEM_W32(OUT + 8u, 0x33333333u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OUT; cpu.r[5] = OUT + 4u; cpu.r[6] = OUT + 8u;
+    expect(sr_syscall(&cpu, NID_GET_MODE) == 0u && MEM_R32(OUT) == 0u &&
+               MEM_R32(OUT + 4u) == 480u && MEM_R32(OUT + 8u) == 272u,
+           "wc display: sceDisplayGetMode reads back mode 0 and 480x272");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x2c04u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *waiter = fixture_thread(0x2c05u, TH_READY, 40);
+    waiter->started = 1;
+    WcUmdWaitCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.nid = NID_SCE_DISPLAY_WAIT_VBLANK_START_CB;
+    waiter->coro = sr_coro_create(wc_umd_waiter_body, &ctx, (size_t)4 << 20);
+    s_cur = (int)(owner - s_tcb);
+    memset(&cpu, 0, sizeof(cpu));
+    (void)NID_GET_VCOUNT;
+    uint32_t before = s_vbl_count;
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    s_cur = (int)(owner - s_tcb);
+    memset(&cpu, 0, sizeof(cpu));
+    /* The fixture's delivered-VBLANK count is the scheduler edge the wait consumes; the guest
+     * VCOUNT register itself advances on the scheduler's source-edge path, which this fixture
+     * does not drive (deliver_vblank bumps s_vbl_count only). */
+    expect(ctx.returned && ctx.ret == 0u && s_vbl_count == before + 1u,
+           "wc display: sceDisplayWaitVblankStartCB returns 0 after exactly one delivered vblank");
+    if (waiter->coro) {
+        sr_coro_destroy(waiter->coro);
+        waiter->coro = NULL;
+    }
+    s_cur = -1;
 }
 
 static void test_psmf_rejected_stream_names_the_boundary(void) {
@@ -48780,6 +49146,13 @@ static int hle_selftest_main(int argc, char **argv) {
     test_volatile_partition_allocator();
     test_late_prx_unload_keeps_module_owned_objects();
     test_power_unregister_callback_slots();
+    test_wc_power_register_callback_errors();
+    test_wc_volatile_unlock_mode();
+    test_wc_ctrl_idle_cancel_threshold();
+    test_wc_umd_wait_drive_stat();
+    test_wc_umd_unregister_callback();
+    test_wc_display_multi_count_signed();
+    test_wc_display_getmode_and_start_cb();
     test_psmf_rejected_stream_names_the_boundary();
     test_psmf_get_current_pts_after_stop_stops_by_name();
     test_psmf_start_reads_init_pts_from_the_third_argument();
