@@ -158,13 +158,14 @@ ed25519-verify-selftest:
 # The RetroAchievements bridge (src/core/nk_achievements.c, #1316) on the vendored rcheevos
 # rc_client, against an in-process fake server: login, game load, a softcore unlock on synthetic
 # guest memory, the PSP memory map's bounds and the retroachievements.org-only request gate.
-# No socket and no network.
+# No socket and no network. gnu99, not c99: rcheevos calls strdup and strcasecmp, which glibc
+# declares only outside strict ISO mode; its runtime needs libm (fmod).
 ACHIEVEMENTS_SELFTEST_SRCS := src/core/nk_achievements.c $(wildcard third_party/rcheevos/src/*.c) \
 	$(wildcard third_party/rcheevos/src/rapi/*.c) $(wildcard third_party/rcheevos/src/rcheevos/*.c) \
 	third_party/rcheevos/src/rhash/md5.c tests/native/test_nk_achievements.c
 define ACHIEVEMENTS_SELFTEST_CMD
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Ithird_party/rcheevos/include $(ACHIEVEMENTS_SELFTEST_SRCS) \
-		-o $(BUILD_ROOT)/test_nk_achievements$(EXE_EXT)
+	$(CC) -std=gnu99 -Wall -Wextra -Isrc/core -Ithird_party/rcheevos/include $(ACHIEVEMENTS_SELFTEST_SRCS) \
+		-lm -o $(BUILD_ROOT)/test_nk_achievements$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_nk_achievements$(EXE_EXT)
 endef
 
