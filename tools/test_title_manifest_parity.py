@@ -333,6 +333,55 @@ class TitleManifestParityTests(unittest.TestCase):
             self.assertIn("boolean", py_message)
             self.assertIn("boolean", c_message)
 
+    def test_disc_builds_parity(self):
+        """disc.builds (#2140): both parsers accept a valid list and refuse every malformed one alike."""
+        manifest = json.loads(
+            (ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
+        )
+        manifest["kind"] = "retail"
+        manifest.pop("profile_zero", None)
+        good = {
+            "executable_sha256": "a" * 64, "status": "supported", "label": "DISC_VERSION 1.00",
+        }
+        bad_cases = {
+            "uppercase digest": [dict(good, executable_sha256="A" * 64)],
+            "short digest": [dict(good, executable_sha256="a" * 63)],
+            "non-hex digest": [dict(good, executable_sha256="g" * 64)],
+            "unknown status": [dict(good, status="mostly-fine")],
+            "known-bad without reason": [dict(good, status="known-bad")],
+            "empty label": [dict(good, label="")],
+            "non-ASCII label": [dict(good, label="v1.00 é")],
+            "unknown field": [dict(good, extra=1)],
+            "duplicate digest": [good, dict(good, label="again")],
+            "empty list": [],
+            "too many": [dict(good, executable_sha256=f"{i:064x}") for i in range(17)],
+            "not a list": dict(good),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "builds.json"
+
+            def verdict(builds):
+                manifest["disc"] = {
+                    "id": "TEST00001", "region": "OTHER",
+                    "revision_policy": "exact-disc-id", "builds": builds,
+                }
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                return self._run_python(path), self._run_native(path, allow_override=True)
+
+            valid = [
+                good,
+                dict(good, executable_sha256="b" * 64, status="experimental", label="APP_VER 1.01"),
+                dict(good, executable_sha256="c" * 64, status="known-bad", label="patched",
+                     reason="A patched executable; its addresses differ."),
+            ]
+            (py_ok, py_message), (c_ok, c_message) = verdict(valid)
+            self.assertTrue(py_ok, py_message)
+            self.assertTrue(c_ok, c_message)
+            for label, builds in bad_cases.items():
+                (py_ok, py_message), (c_ok, c_message) = verdict(builds)
+                self.assertFalse(py_ok, f"Python accepted {label}: {py_message}")
+                self.assertFalse(c_ok, f"Native accepted {label}: {c_message}")
+
     def test_hostile_mutations_parity(self):
         """Both parsers must fail closed on hostile mutations."""
         valid_json = {

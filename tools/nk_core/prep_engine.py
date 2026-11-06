@@ -16,7 +16,12 @@ import tempfile
 import time
 from typing import Callable, Optional
 
-from .iso_inspect import IsoInspectionError, inspect_iso, select_boot_executable_source
+from .iso_inspect import (
+    IsoInspectionError,
+    inspect_iso,
+    iso_executable_sha256,
+    select_boot_executable_source,
+)
 from .title_registry import TitleRegistry, get_default_registry
 from .types import (
     CancellationToken,
@@ -200,6 +205,75 @@ def _sha256_file(path: Path) -> str:
         while chunk := handle.read(65536):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+#: The file in the per-title folder that records which build of the executable
+#: was imported and what that means for it (#2140).
+BUILD_RECORD_NAME = "build.json"
+
+
+def identify_build(profile: TitleProfile, executable_name: Optional[str], executable_sha256: Optional[str]) -> dict:
+    """Name the executable build a copy holds against the builds its title records (#2140).
+
+    ``status`` is one of:
+
+    * ``supported`` or ``experimental``: the digest is in the title's list;
+    * ``known-bad``: the digest is listed as a build that must not be imported;
+    * ``unlisted``: the title lists builds and this copy matches none of them, or
+      the image holds no executable to hash. The copy imports as experimental and
+      the title's runtime bindings, which are addresses inside one exact
+      executable, are not applied to it;
+    * ``untracked``: the title records no builds, so the copy is neither
+      confirmed nor questioned and behaves as it did before builds were recorded.
+
+    A digest is not game data, so it may appear in the record and in messages.
+    """
+    listed = [dict(build) for build in profile.builds]
+    build: dict = {
+        "executable": executable_name or "",
+        "executable_sha256": executable_sha256 or "",
+        "status": "untracked",
+        "label": "",
+        "reason": "",
+        "bindings_applied": True,
+        "supported_builds": [b["label"] for b in listed if b["status"] == "supported"],
+    }
+    if not listed:
+        return build
+    match = next((b for b in listed if executable_sha256 and b["executable_sha256"] == executable_sha256), None)
+    if match is None:
+        build["status"] = "unlisted"
+        build["bindings_applied"] = False
+        return build
+    build["status"] = match["status"]
+    build["label"] = match["label"]
+    build["reason"] = match.get("reason", "")
+    return build
+
+
+def _unlisted_build_message(profile: TitleProfile, build: dict) -> str:
+    supported = build["supported_builds"]
+    if build["executable_sha256"]:
+        found = f"This copy's executable (SHA-256 {build['executable_sha256'][:16]}...) is not a build"
+    else:
+        found = "This copy has no executable that can be identified, so it is not a build"
+    known = (
+        " The supported build is: " + "; ".join(supported) + "."
+        if len(supported) == 1
+        else " The supported builds are: " + "; ".join(supported) + "." if supported else ""
+    )
+    return (
+        f"{found} Nakagawa has recorded for {profile.name}. It is imported as experimental, "
+        f"and the title's recorded addresses are not applied to it.{known}"
+    )
+
+
+def _write_build_record(directory: Path, build: dict) -> None:
+    """Write the per-title build record atomically."""
+    target = directory / BUILD_RECORD_NAME
+    temporary = directory / (BUILD_RECORD_NAME + ".tmp")
+    temporary.write_text(json.dumps(build, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, target)
 
 
 class PreparationEngine:
@@ -401,6 +475,33 @@ class PreparationEngine:
 
             profile = iso_meta.matched_profile
             boot_executable_source = select_boot_executable_source(iso)
+            build = identify_build(
+                profile,
+                boot_executable_source,
+                iso_executable_sha256(iso, boot_executable_source) if boot_executable_source else None,
+            )
+            if build["status"] == "known-bad":
+                message = (
+                    f"This copy of {profile.name} holds a build Nakagawa refuses"
+                    f" ({build['label']}): {build['reason']}"
+                )
+                emit(PrepStage.FAILED, message, severity=EventSeverity.ERROR)
+                return PreparationResult(
+                    success=False,
+                    disc_id=iso_meta.disc_id,
+                    error_code="BUILD_KNOWN_BAD",
+                    error_message=message,
+                    build=build,
+                )
+            if build["status"] == "unlisted":
+                emit(
+                    PrepStage.INSPECTING_ISO,
+                    "Unlisted executable build",
+                    completed=100,
+                    total=100,
+                    message=_unlisted_build_message(profile, build),
+                    severity=EventSeverity.WARN,
+                )
             emit(
                 PrepStage.INSPECTING_ISO,
                 f"Identified {profile.name} ({iso_meta.disc_id})",
@@ -428,9 +529,13 @@ class PreparationEngine:
             # native staging transaction, never by a Python copy of it. Without
             # a stager the route refuses before any filesystem mutation.
             if profile.archive_format not in SUPPORTED_ARCHIVE_FORMATS:
-                return self._prepare_with_native_staging(
+                staged = self._prepare_with_native_staging(
                     iso, disc_id, profile, destination_root, emit, start_time
                 )
+                staged.build = build
+                if staged.success and staged.prepared_root is not None and staged.prepared_root.is_dir():
+                    _write_build_record(staged.prepared_root, build)
+                return staged
 
             games_root = destination_root or (self.base_dir / "games")
             target_dir = games_root / disc_id
@@ -492,6 +597,7 @@ class PreparationEngine:
             manifest_path = staging_dir / "manifest.json"
             with open(manifest_path, "w", encoding="utf-8") as f:
                 json.dump(manifest, f, indent=2)
+            _write_build_record(staging_dir, build)
 
             cancel_token.check()
 
@@ -534,6 +640,7 @@ class PreparationEngine:
                 prepared_root=target_dir,
                 manifest_path=final_manifest,
                 elapsed_ms=elapsed_ms,
+                build=build,
             )
 
         except InterruptedError:

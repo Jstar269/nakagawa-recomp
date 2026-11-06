@@ -248,6 +248,97 @@ static bool is_valid_disc_id(const char *s) {
     return true;
 }
 
+/* A build digest: 64 lowercase hexadecimal digits (#2140). */
+static bool is_build_sha256(const char *s) {
+    if (!s || strlen(s) != 64) return false;
+    for (int i = 0; i < 64; i++) {
+        if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f'))) return false;
+    }
+    return true;
+}
+
+/* Printable ASCII with no leading or trailing space, 1..max bytes. */
+static bool is_build_text(const char *s, size_t max) {
+    if (!s) return false;
+    size_t len = strlen(s);
+    if (len < 1 || len > max || s[0] == ' ' || s[len - 1] == ' ') return false;
+    for (size_t i = 0; i < len; i++) {
+        if ((unsigned char)s[i] < 0x20 || (unsigned char)s[i] > 0x7E) return false;
+    }
+    return true;
+}
+
+#define MAX_DISC_BUILDS 16
+
+static bool check_object_keys(const JsonNode *node, const char *path,
+                              const char * const *allowed_keys,
+                              const char * const *required_keys,
+                              char *err_buf, size_t err_len);
+
+/* disc.builds: the executable builds a title records, each named by a digest,
+   a status and a label (#2140). Mirrors validate_disc_builds in
+   tools/title_manifest.py. */
+static bool manifest_parse_disc_builds(const JsonNode *builds, char *error_buf, size_t error_buf_len) {
+    if (!builds || builds->type != JSON_ARRAY) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.builds: must be an array");
+        return false;
+    }
+    if (builds->u.arr.count < 1 || builds->u.arr.count > MAX_DISC_BUILDS) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.builds: must contain 1..%d items", MAX_DISC_BUILDS);
+        return false;
+    }
+    static const char * const build_allowed[] = {"executable_sha256", "status", "label", "reason", NULL};
+    static const char * const build_required[] = {"executable_sha256", "status", "label", NULL};
+    for (size_t b = 0; b < builds->u.arr.count; b++) {
+        JsonNode *item = builds->u.arr.items[b];
+        char item_path[48];
+        snprintf(item_path, sizeof(item_path), "$.disc.builds[%zu]", b);
+        if (!check_object_keys(item, item_path, build_allowed, build_required, error_buf, error_buf_len)) {
+            return false;
+        }
+        JsonNode *digest = obj_get(item, "executable_sha256");
+        if (digest->type != JSON_STRING || !is_build_sha256(digest->u.str_val)) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "%s.executable_sha256: must be 64 lowercase hexadecimal digits", item_path);
+            return false;
+        }
+        for (size_t prev = 0; prev < b; prev++) {
+            JsonNode *other = obj_get(builds->u.arr.items[prev], "executable_sha256");
+            if (strcmp(other->u.str_val, digest->u.str_val) == 0) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%s.executable_sha256: duplicate build digest", item_path);
+                return false;
+            }
+        }
+        JsonNode *status = obj_get(item, "status");
+        if (status->type != JSON_STRING ||
+            (strcmp(status->u.str_val, "supported") != 0 &&
+             strcmp(status->u.str_val, "experimental") != 0 &&
+             strcmp(status->u.str_val, "known-bad") != 0)) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "%s.status: unsupported build status", item_path);
+            return false;
+        }
+        JsonNode *label = obj_get(item, "label");
+        if (label->type != JSON_STRING || !is_build_text(label->u.str_val, 64)) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "%s.label: must be 1..64 printable ASCII characters", item_path);
+            return false;
+        }
+        JsonNode *reason = obj_get(item, "reason");
+        if (reason && (reason->type != JSON_STRING || !is_build_text(reason->u.str_val, 200))) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "%s.reason: must be 1..200 printable ASCII characters", item_path);
+            return false;
+        }
+        if (!reason && strcmp(status->u.str_val, "known-bad") == 0) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "%s.reason: is required for a known-bad build", item_path);
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool is_valid_filename(const char *s) {
     if (!s || !*s) return false;
     size_t len = strlen(s);
@@ -610,7 +701,7 @@ static bool manifest_parse_disc(ManifestParse *mp) {
         }
         static const char * const allowed_disc_keys[] = {
             "id", "region", "revision_policy", "compatible_revisions",
-            "require_local_compatibility_record", NULL
+            "require_local_compatibility_record", "builds", NULL
         };
         static const char * const required_disc_keys[] = {"id", "region", "revision_policy", NULL};
         if (!check_object_keys(mp->disc_node, "$.disc", allowed_disc_keys, required_disc_keys, error_buf, error_buf_len)) {
@@ -649,6 +740,11 @@ static bool manifest_parse_disc(ManifestParse *mp) {
         if (local_record_node && local_record_node->type != JSON_BOOL) {
             if (error_buf) snprintf(error_buf, error_buf_len,
                 "$.disc.require_local_compatibility_record: must be a boolean");
+            return false;
+        }
+
+        JsonNode *builds_node = obj_get(mp->disc_node, "builds");
+        if (builds_node && !manifest_parse_disc_builds(builds_node, error_buf, error_buf_len)) {
             return false;
         }
 

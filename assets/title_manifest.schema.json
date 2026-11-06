@@ -167,6 +167,25 @@
         "require_local_compatibility_record": {
           "description": "Require an exact user-local title input identity record before this revision can build or launch.",
           "type": "boolean"
+        },
+        "builds": {
+          "description": "Executable builds this title records, each named by the SHA-256 of the executable file as the disc image holds it (#2140). A digest names a build and is not game data.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["executable_sha256", "status", "label"],
+            "properties": {
+              "executable_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "status": {"enum": ["supported", "experimental", "known-bad"]},
+              "label": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[ -~]+$"},
+              "reason": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[ -~]+$"}
+            },
+            "if": {"properties": {"status": {"const": "known-bad"}}},
+            "then": {"required": ["reason"]}
+          }
         }
       },
       "allOf": [

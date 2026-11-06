@@ -91,6 +91,7 @@ def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
         loose_content_roots=tuple(
             dict(root) for root in filesystem.get("loose_content_roots", [])
         ),
+        builds=tuple(dict(build) for build in manifest.get("disc", {}).get("builds", [])),
     )
 
 

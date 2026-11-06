@@ -499,6 +499,89 @@ class NkCoreTests(unittest.TestCase):
             manifest = json.load(stream)
         self.assertEqual(manifest["boot_executable"], "EBOOT.BIN")
 
+    def _registry_with_builds(self, elf: bytes, statuses: dict[str, str]) -> TitleRegistry:
+        """The synthetic title with a build list; ``statuses`` maps a label to a status for ``elf``'s digest."""
+        import dataclasses
+        import hashlib
+
+        registry = TitleRegistry(include_defaults=True)
+        base = registry.lookup_by_disc_id("TEST00001")
+        digest = hashlib.sha256(elf).hexdigest()
+        builds = []
+        for index, (label, status) in enumerate(statuses.items()):
+            entry = {
+                "executable_sha256": digest if index == 0 else f"{index:064x}",
+                "status": status,
+                "label": label,
+            }
+            if status == "known-bad":
+                entry["reason"] = "A patched executable; the recorded addresses differ."
+            builds.append(entry)
+        registry.register(dataclasses.replace(base, builds=tuple(builds)), allow_override=True)
+        return registry
+
+    def _prepare_with_elf(self, registry: TitleRegistry, elf: bytes):
+        from test_iso_parity import create_test_iso_with_executables
+
+        iso_file = self.temp_dir / "build-identity.iso"
+        create_test_iso_with_executables(iso_file, elf, disc_id="TEST00001")
+        events: list[ProgressEvent] = []
+        result = PreparationEngine(base_dir=self.temp_dir, registry=registry).prepare_game(
+            iso_file, on_progress=events.append, destination_root=self.temp_dir / "installed_games"
+        )
+        return result, events
+
+    def test_build_identity_records_a_listed_supported_build(self) -> None:
+        from test_iso_parity import build_plain_mips_elf
+
+        elf = build_plain_mips_elf()
+        registry = self._registry_with_builds(elf, {"DISC_VERSION 1.00": "supported"})
+        result, _events = self._prepare_with_elf(registry, elf)
+        self.assertTrue(result.success, result.error_message)
+        self.assertEqual(result.build["status"], "supported")
+        self.assertEqual(result.build["label"], "DISC_VERSION 1.00")
+        self.assertTrue(result.build["bindings_applied"])
+        record = json.loads((result.prepared_root / "build.json").read_text(encoding="utf-8"))
+        self.assertEqual(record, result.build)
+        self.assertEqual(record["executable"], "EBOOT.BIN")
+        self.assertRegex(record["executable_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_build_identity_imports_an_unlisted_build_as_experimental(self) -> None:
+        from test_iso_parity import build_plain_mips_elf
+
+        listed = build_plain_mips_elf()
+        registry = self._registry_with_builds(listed, {"DISC_VERSION 1.00": "supported"})
+        other = listed + b"\x00" * 16  # a different executable under the same disc ID
+        result, events = self._prepare_with_elf(registry, other)
+        self.assertTrue(result.success, result.error_message)
+        self.assertEqual(result.build["status"], "unlisted")
+        self.assertFalse(result.build["bindings_applied"])
+        self.assertEqual(result.build["supported_builds"], ["DISC_VERSION 1.00"])
+        warnings = [e.message for e in events if e.severity.value == "WARN"]
+        self.assertTrue(any("not applied" in m and "DISC_VERSION 1.00" in m for m in warnings), warnings)
+        record = json.loads((result.prepared_root / "build.json").read_text(encoding="utf-8"))
+        self.assertFalse(record["bindings_applied"])
+
+    def test_build_identity_refuses_a_known_bad_build_before_writing_anything(self) -> None:
+        from test_iso_parity import build_plain_mips_elf
+
+        elf = build_plain_mips_elf()
+        registry = self._registry_with_builds(elf, {"patched copy": "known-bad"})
+        result, _events = self._prepare_with_elf(registry, elf)
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "BUILD_KNOWN_BAD")
+        self.assertIn("patched copy", result.error_message)
+        self.assertIn("addresses differ", result.error_message)
+        self.assertFalse((self.temp_dir / "installed_games").exists())
+
+    def test_build_identity_leaves_a_title_without_builds_untracked(self) -> None:
+        from test_iso_parity import build_plain_mips_elf
+
+        result, _events = self._prepare_with_elf(TitleRegistry(include_defaults=True), build_plain_mips_elf())
+        self.assertTrue(result.success, result.error_message)
+        self.assertEqual(result.build["status"], "untracked")
+        self.assertTrue(result.build["bindings_applied"])
+
     def test_preparation_preserves_compatible_revision_identity(self) -> None:
         """A disc matched through a compatible revision keeps its own identity.
 
