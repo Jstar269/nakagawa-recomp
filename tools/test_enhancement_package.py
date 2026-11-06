@@ -3178,8 +3178,8 @@ class TestAltGateStaticChecks(unittest.TestCase):
                 _move(A0, S1), _jal(self.TICK1), NOP, _jal(self.TICK2), NOP,
                 _lw(S1, 8, SP), _lw(RA, 12, SP), JR_RA, _addiu(SP, SP, 16)])},
              "does not pass alternate 0x00004100 its own entry"),
-            ("a table out of the body", {"table": [self.TARGET + 0x38, self.TARGET + 0x44, self.OTHER]},
-             "outside its body"),
+            ("a table arm in another function", {"table": [self.TARGET + 0x38, self.TARGET + 0x44, self.OTHER]},
+             "has a path that returns without calling alternate 0x00004000"),
             ("a table entry in a delay slot", {"table": [self.TARGET + 0x38, self.TARGET + 0x40, self.TARGET + 0x4C]},
              "branches into the delay slot at 0x00002040"),
         )

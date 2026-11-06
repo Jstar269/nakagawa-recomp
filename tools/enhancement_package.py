@@ -28,6 +28,7 @@ Contract rules enforced:
 from __future__ import annotations
 
 import argparse
+import bisect
 from collections.abc import Mapping, Sequence
 import hashlib
 import json
@@ -1264,14 +1265,36 @@ def _uses(w: int) -> tuple[frozenset[int], frozenset[int]] | None:
 
 
 def _function_end(fn_addr: int, known_sorted: Sequence[int], where: str, site_path: str) -> int:
-    """The first known function start after ``fn_addr``: the end of its body."""
+    """The end of the window a function's code is read in: ALT_GATE_MAX_FUNCTION_WORDS from its entry.
+
+    A body is the code reachable from its entry, not the run up to the next known start: codegen's
+    known starts include entries inside a function (the arms of its table switches), and its own
+    bodies run through them."""
     if fn_addr not in known_sorted:
         fail(site_path, f"{where} is not a known function start (fail-closed refusal)")
-    later = [a for a in known_sorted if a > fn_addr]
-    if not later or later[0] - fn_addr > 4 * ALT_GATE_MAX_FUNCTION_WORDS:
-        fail(site_path, f"{where} has no known end within {ALT_GATE_MAX_FUNCTION_WORDS} instructions "
-                        f"(fail-closed refusal)")
-    return later[0]
+    return fn_addr + 4 * ALT_GATE_MAX_FUNCTION_WORDS
+
+
+class _LazyWords(dict):  # type: ignore[type-arg]
+    """Guest words read on demand, one at a time; ``get`` gives None for an unreadable word."""
+
+    def __init__(self, read_words_fn: Any) -> None:
+        super().__init__()
+        self._read = read_words_fn
+
+    def __missing__(self, addr: int) -> int:
+        got = self._read(addr, 1)
+        if not got:
+            raise KeyError(addr)
+        value = int(got[0]) & 0xFFFFFFFF
+        self[addr] = value
+        return value
+
+    def get(self, addr: int, default: Any = None) -> Any:  # type: ignore[override]
+        try:
+            return self[addr]
+        except KeyError:
+            return default
 
 
 def _jump_table(pc: int, w: int, fn_addr: int, words: Mapping[int, int], read_words_fn: Any,
@@ -1346,10 +1369,9 @@ class _Graph:
                  known_sorted: Sequence[int] = ()) -> None:
         self.fn, self.end, self.where = fn_addr, end, where
         starts = frozenset(known_sorted)
-        got = read_words_fn(fn_addr, (end - fn_addr) // 4)
-        if not got or len(got) != (end - fn_addr) // 4:
+        self.words = _LazyWords(read_words_fn)
+        if self.words.get(fn_addr) is None:
             fail(site_path, f"{where} cannot be read (fail-closed refusal)")
-        self.words = {fn_addr + 4 * i: int(x) & 0xFFFFFFFF for i, x in enumerate(got)}
         self.succ: dict[int, list[int]] = {}
         self.calls: dict[int, int | None] = {}  # delay-slot node -> callee (None through a register)
         self.slots: set[int] = set()
@@ -1363,8 +1385,14 @@ class _Graph:
             if pc == _EXIT or pc in self.succ:
                 continue
             if not fn_addr <= pc < end:
-                fail(site_path, f"{where} runs or transfers to 0x{pc:08x}, outside its body (fail-closed refusal)")
-            w = self.words[pc]
+                fail(site_path, f"{where} runs or transfers to 0x{pc:08x}, more than "
+                                f"{ALT_GATE_MAX_FUNCTION_WORDS} instructions from its entry (fail-closed refusal)")
+            if len(self.succ) >= ALT_GATE_MAX_FUNCTION_WORDS:
+                fail(site_path, f"{where} has more than {ALT_GATE_MAX_FUNCTION_WORDS} reachable instructions "
+                                f"(fail-closed refusal)")
+            w = self.words.get(pc)
+            if w is None:
+                fail(site_path, f"{where} cannot be read at 0x{pc:08x} (fail-closed refusal)")
             op, rs, rt, fn = w >> 26, (w >> 21) & 31, (w >> 16) & 31, w & 0x3F
             slot = pc + 4
             branch = _branch_target(w, pc)
@@ -1376,7 +1404,9 @@ class _Graph:
                 fail(site_path, f"{where} ends inside the delay slot of 0x{pc:08x} (fail-closed refusal)")
             if slot in self.succ:
                 fail(site_path, f"{where} branches into the delay slot at 0x{slot:08x} (fail-closed refusal)")
-            s = self.words[slot]
+            s = self.words.get(slot)
+            if s is None:
+                fail(site_path, f"{where} cannot be read at 0x{slot:08x} (fail-closed refusal)")
             if _branch_target(s, slot) is not None or _is_jump(s):
                 fail(site_path, f"{where} has a transfer in a delay slot at 0x{slot:08x} (fail-closed refusal)")
             self.slots.add(slot)
@@ -1608,8 +1638,12 @@ def _alt_inputs(site_path: str, fn: int, entry: frozenset[int], read_words_fn: A
 
 
 def _direct_call_tree(site_path: str, root: int, read_words_fn: Any, known_sorted: Sequence[int]) -> set[int]:
-    """Every function reachable from ``root`` through direct calls (``jal``), read word by word over
-    each body; calls through a register are not followed."""
+    """Every function reachable from ``root`` through direct calls (``jal``) and tail jumps (``j`` to a
+    known start more than the read window away). Each body is the code reachable from its entry
+    through branches, jumps and fall-through; after a ``jr`` through a register that is not a table
+    switch this check can read, every word up to the next known start is taken as reachable, and
+    calls through a register are not followed."""
+    starts = sorted(set(known_sorted))
     tree: set[int] = set()
     todo = [root]
     while todo:
@@ -1622,13 +1656,48 @@ def _direct_call_tree(site_path: str, root: int, read_words_fn: Any, known_sorte
         tree.add(fn)
         where = f"gate_30hz_alt alternate call tree function 0x{fn:08x}"
         end = _function_end(fn, known_sorted, where, site_path)
-        got = read_words_fn(fn, (end - fn) // 4)
-        if not got:
-            fail(site_path, f"{where} cannot be read (fail-closed refusal)")
-        for i, w in enumerate(got):
-            w = int(w) & 0xFFFFFFFF
-            if w >> 26 == 0x03:
-                todo.append(((fn + 4 * i + 4) & 0xF0000000) | ((w & 0x03FFFFFF) << 2))
+        words = _LazyWords(read_words_fn)
+        seen: set[int] = set()
+        pcs = [fn]
+        while pcs:
+            pc = pcs.pop()
+            if pc in seen:
+                continue
+            if not fn <= pc < end or len(seen) >= ALT_GATE_MAX_FUNCTION_WORDS:
+                fail(site_path, f"{where} runs more than {ALT_GATE_MAX_FUNCTION_WORDS} instructions from its "
+                                f"entry (fail-closed refusal)")
+            w = words.get(pc)
+            if w is None:
+                fail(site_path, f"{where} cannot be read at 0x{pc:08x} (fail-closed refusal)")
+            seen.add(pc)
+            op, rs, fnc = w >> 26, (w >> 21) & 31, w & 0x3F
+            dest = ((pc + 4) & 0xF0000000) | ((w & 0x03FFFFFF) << 2)
+            branch = _branch_target(w, pc)
+            transfer = op in (0x02, 0x03) or branch is not None or (op == 0x00 and fnc in (0x08, 0x09))
+            if transfer:
+                seen.add(pc + 4)  # the delay slot runs with the transfer; it has no successor of its own
+            if op == 0x03:
+                todo.append(dest)
+                pcs.append(pc + 8)
+            elif op == 0x02:
+                if dest in starts and not fn <= dest < end:
+                    todo.append(dest)
+                else:
+                    pcs.append(dest)
+            elif branch is not None:
+                pcs += [pc + 8, branch]
+            elif op == 0x00 and fnc == 0x09:
+                pcs.append(pc + 8)
+            elif op == 0x00 and fnc == 0x08:
+                if rs != 31:
+                    try:
+                        pcs += _jump_table(pc, w, fn, words, read_words_fn, where, site_path)
+                    except EnhancementPackageError:
+                        nxt = bisect.bisect_right(starts, pc)
+                        stop = starts[nxt] if nxt < len(starts) else end
+                        pcs += range(pc + 8, min(stop, end), 4)
+            elif not (op == 0x00 and fnc == 0x0D):
+                pcs.append(pc + 4)
     return tree
 
 
