@@ -32049,8 +32049,10 @@ static void test_sas_state_contracts(void) {
 /* #2135: a SAS volume is signed. __sceSasSetVolume accepts |volume| <= 0x1000 on each of its four sides,
  * and a negative side plays phase-inverted (PPSSPP's sceSasSetVolume checks abs(volume) against 0x1000).
  * Hot Shots Tennis gives three voices of each title-logo sound one negative side (for example 1886/-455).
- * Refusing those left the voices at 0/0; KeyOn then raised them to full volume and the logo clipped about
- * 9 dB above a PSP-3000 capture of the same moment. */
+ * Refusing those left the voices at 0/0; KeyOn then raised them to full volume and the logo clipped. Over a
+ * 4 s title-logo window within the first 3,000 vblanks (about 49 s), against a PSP-3000 capture of the same
+ * moment: 11,491 full-scale samples against 126, RMS -9.2 against -13.3 dBFS, and the first voice group's
+ * power -7.7 against -16.8 dBFS. */
 static void test_sas_set_volume_accepts_negative(void) {
     CpuState cpu;
     const uint32_t core = 0x08030000u, out = 0x08010000u, vag = 0x08020000u;
@@ -32080,6 +32082,14 @@ static void test_sas_set_volume_accepts_negative(void) {
     cpu.r[8] = 0; cpu.r[9] = 0;
     expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0x80420018u,
            "__sceSasSetVolume refuses -0x1001 with SAS_ERROR_VOLUME_VAL");
+    /* Every one of the eight edges: one step past +-0x1000 on any side is refused. */
+    for (uint32_t side = 0; side < 4u; side++)
+        for (int sign = -1; sign <= 1; sign += 2) {
+            cpu.r[4] = core; cpu.r[5] = 4; cpu.r[6] = cpu.r[7] = cpu.r[8] = cpu.r[9] = 0;
+            cpu.r[6 + side] = (uint32_t)(sign * 0x1001);
+            expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0x80420018u,
+                   "__sceSasSetVolume refuses +-0x1001 on each of its four sides (#2135)");
+        }
     cpu.r[4] = core; cpu.r[5] = 4; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
     memset(g_mem + (out - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
     cpu.r[4] = core; cpu.r[5] = out; (void)sr_syscall(&cpu, NID_SAS_CORE);

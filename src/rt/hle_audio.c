@@ -1118,6 +1118,9 @@ static void sas_mix_stateful(uint32_t out, int add, int32_t in_gain_l, int32_t i
         if (add) {
             l = sas_add_scaled_input(l, sas_output_read(out, (uint32_t)i, 0), in_gain_l);
             r = sas_add_scaled_input(r, sas_output_read(out, (uint32_t)i, 1), in_gain_r);
+            /* Raw mode adds the caller's send planes unscaled. No reference covers this: PPSSPP
+             * refuses __sceSasCoreWithMix in raw mode (SCE_KERNEL_ERROR_BAD_ARGUMENT), and this
+             * runtime accepted raw mode before #2135. Unmeasured on a PSP. */
             if (s_sas_core.output_mode) {
                 sl += sas_output_read(out, (uint32_t)i, 2);
                 sr += sas_output_read(out, (uint32_t)i, 3);
@@ -1232,7 +1235,10 @@ static uint32_t h_SasSetVolume(CpuState *s) {
     /* A SAS volume is signed: |volume| <= 0x1000, and a negative side plays phase-inverted (the
      * mixer multiplies by it). Hot Shots Tennis gives three voices of each title-logo sound one
      * negative side; refusing them left those voices at 0/0, which a KeyOn rule (since removed)
-     * raised to full volume, about 9 dB above a PSP-3000 capture of the same moment (#2135). */
+     * raised to full volume (#2135). Measured over a 4 s title-logo window within the first 3,000
+     * vblanks (about 49 s), against a PSP-3000 capture of the same moment: 11,491 full-scale samples
+     * against 126, RMS -9.2 against -13.3 dBFS, and the first voice group's power -7.7 against
+     * -16.8 dBFS. */
     if (l < -SAS_VOLUME_MAX || l > SAS_VOLUME_MAX || r < -SAS_VOLUME_MAX || r > SAS_VOLUME_MAX ||
         el < -SAS_VOLUME_MAX || el > SAS_VOLUME_MAX || er < -SAS_VOLUME_MAX || er > SAS_VOLUME_MAX)
         return SAS_ERROR_VOLUME_VAL;
