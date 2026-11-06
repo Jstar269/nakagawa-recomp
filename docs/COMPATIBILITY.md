@@ -31,6 +31,24 @@ recorded evidence supports. Every other retail disc is **Experimental** or **Unt
 **EXPERIMENTAL** badge the player puts on an imported disc only means no one knows yet how well it runs; it doesn't
 set a status here.
 
+## Homebrew limits
+
+PSP homebrew is unencrypted and needs no keys, so it is the one kind of program Nakagawa can take from an
+`EBOOT.PBP` package. Adding it from the launcher is tracked in
+[#2143](https://github.com/Jstar269/nakagawa-recomp/issues/2143); the package check below already exists. Homebrew is **Experimental**: nobody has checked it unless a row below says so. Some kinds of homebrew
+cannot run, and each stops with a named refusal rather than a silent failure:
+
+| Kind | Result | Why |
+| :--- | :--- | :--- |
+| Kernel-mode homebrew and custom-firmware plugins (PRX plugins, the old 1.50-era kernel programs) | Refused at import: `HOMEBREW_KERNEL_MODE_UNSUPPORTED` | They need the PSP's kernel and firmware, which the project deliberately doesn't emulate or carry. The check reads the module's kernel-mode attribute and its custom-firmware-only imports. |
+| Homebrew that generates code at run time, such as an emulator with a JIT dynamic recompiler | The run stops at `target-not-executable` | Only code the analyzer found ahead of time runs, plus the fail-closed interpreter inside analyzer-owned spans. Generated code is outside both. An emulator's interpreter mode may still work. |
+| Script engines (Lua players and similar) | Fine | Scripts are data, not code. |
+| Network homebrew | The ad hoc and infrastructure network functions are refused | Network access is refused until opt-in online play exists. |
+| An encrypted program in a package, a PSOne Classic, a firmware updater | Refused at import: `PBP_ENCRYPTED_EXECUTABLE_UNSUPPORTED`, `PSONE_CLASSIC_UNSUPPORTED`, `FIRMWARE_OUT_OF_SCOPE` | Not homebrew. A PSN release of a UMD game is converted to a disc image instead. |
+
+`tools/nk_core/iso_inspect.py` classifies a package (`classify_pbp_package`) and names the refusal
+(`pbp_homebrew_refusal`); `tools/test_nk_core.py` covers each kind.
+
 ## Title compatibility
 
 The table lists the project's own test programs, the two showcase demos, the game the project is built around, and
