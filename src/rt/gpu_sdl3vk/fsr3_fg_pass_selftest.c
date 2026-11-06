@@ -12,10 +12,21 @@
  *   G-0  the seventeen pipelines at six size pairs with no validation message, the refused sizes, and
  *        whole frames recorded and run (prepare, configure, dispatch; with and without a HUD-less
  *        colour; a reset) with no validation message, the refused calls leaving the context as it was
+ *   G-M  a textured quad at constant velocity: each generated frame is far nearer the scene at its
+ *        midpoint than repeating the last frame or blending the two, and the quad sits at the midpoint
+ *   G-D  the pixels a near quad uncovers show the background behind it
+ *   G-H  a static HUD over a pan: with its HUD-less colour the HUD stays sharp, far better than
+ *        without, and the pan around it is interpolated
+ *   G-C  a cut with a reset: the generated frames keep nothing of the old scene, and the one at the
+ *        reset is the new frame (the same cut without the reset is printed, not checked)
+ *
+ * The bars beside each cell were measured on an RTX 3080 and set between the unmutated values and
+ * the nearest of tools/fsr3_mutants.py --fg-pass's defects.
  *
  * usage: fsr3_fg_pass_selftest [--cell NAME]...    (default: every cell)
- * Exit 77 (SKIP) without a Vulkan loader or device or, for G-0, without the validation layer or on a
- * device the pass refuses (G-R still runs there: that refusal is what it checks).
+ * Exit 77 (SKIP) without a Vulkan loader or device or, for G-0, without the validation layer, and for
+ * every cell but G-R on a device the pass refuses (G-R still runs there: that refusal is what it
+ * checks).
  */
 #include "fsr3_fg_pass.h"
 
@@ -55,6 +66,9 @@ typedef struct {
     VkCommandPool pool;
     VkCommandBuffer cb;
     VkFence fence;
+    VkBuffer up, down; /* host-visible: the scenes' inputs in, the output out */
+    VkDeviceMemory up_memory, down_memory;
+    unsigned char *up_map, *down_map;
     Fsr3FgDeviceFacts facts;
     const char *refusal; /* fsr3_fg_pass_refusal of this device's facts */
     int features_enabled;
@@ -81,6 +95,8 @@ GPU_FN(DestroyDescriptorSetLayout); GPU_FN(CreatePipelineLayout); GPU_FN(Destroy
 GPU_FN(CreateComputePipelines); GPU_FN(DestroyPipeline); GPU_FN(CreateDescriptorPool);
 GPU_FN(DestroyDescriptorPool); GPU_FN(AllocateDescriptorSets); GPU_FN(UpdateDescriptorSets);
 GPU_FN(CmdBindPipeline); GPU_FN(CmdBindDescriptorSets); GPU_FN(CmdDispatch);
+GPU_FN(CreateBuffer); GPU_FN(DestroyBuffer); GPU_FN(GetBufferMemoryRequirements); GPU_FN(BindBufferMemory);
+GPU_FN(MapMemory); GPU_FN(CmdCopyBufferToImage); GPU_FN(CmdCopyImageToBuffer);
 GPU_FN(CreateDebugUtilsMessengerEXT); GPU_FN(DestroyDebugUtilsMessengerEXT);
 #undef GPU_FN
 
@@ -124,6 +140,33 @@ static int has_extension(const char *layer, const char *name) {
         if (!strcmp(ep[i].extensionName, name)) return 1;
     return 0;
 }
+
+static int make_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer *b, VkDeviceMemory *m,
+                       unsigned char **map) {
+    VkBufferCreateInfo bi;
+    memset(&bi, 0, sizeof(bi));
+    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size = size;
+    bi.usage = usage;
+    if (CreateBuffer(g.device, &bi, NULL, b) != VK_SUCCESS) return 0;
+    VkMemoryRequirements mr;
+    GetBufferMemoryRequirements(g.device, *b, &mr);
+    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size,
+                                 memory_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) };
+    return mai.memoryTypeIndex != UINT32_MAX && AllocateMemory(g.device, &mai, NULL, m) == VK_SUCCESS &&
+           BindBufferMemory(g.device, *b, *m, 0) == VK_SUCCESS &&
+           MapMemory(g.device, *m, 0, VK_WHOLE_SIZE, 0, (void **)map) == VK_SUCCESS;
+}
+
+/* The upload: the present and HUD-less colours (display size, RGBA8), then depth and vectors (render
+ * size, R32 and R16G16 float). The readback: the output. */
+#define PRESENT_OFFSET ((VkDeviceSize)0)
+#define HUDLESS_OFFSET ((VkDeviceSize)DISPLAY_W * DISPLAY_H * 4u)
+#define DEPTH_OFFSET ((VkDeviceSize)DISPLAY_W * DISPLAY_H * 8u)
+#define MV_OFFSET (DEPTH_OFFSET + (VkDeviceSize)RENDER_W * RENDER_H * 4u)
+#define UP_BYTES (MV_OFFSET + (VkDeviceSize)RENDER_W * RENDER_H * 4u)
+#define DOWN_BYTES ((VkDeviceSize)DISPLAY_W * DISPLAY_H * 4u)
 
 /* 1, or 0 with the reason for a skip. A device the pass refuses is opened too: G-R runs on it. */
 static int gpu_open(char *why, size_t cap) {
@@ -292,6 +335,8 @@ static int gpu_open(char *why, size_t cap) {
     DEV(CreateComputePipelines); DEV(DestroyPipeline); DEV(CreateDescriptorPool);
     DEV(DestroyDescriptorPool); DEV(AllocateDescriptorSets); DEV(UpdateDescriptorSets);
     DEV(CmdBindPipeline); DEV(CmdBindDescriptorSets); DEV(CmdDispatch);
+    DEV(CreateBuffer); DEV(DestroyBuffer); DEV(GetBufferMemoryRequirements); DEV(BindBufferMemory);
+    DEV(MapMemory); DEV(CmdCopyBufferToImage); DEV(CmdCopyImageToBuffer);
 #undef DEV
     GetDeviceQueue(g.device, g.family, 0, &g.queue);
     VkCommandPoolCreateInfo pci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL,
@@ -302,7 +347,9 @@ static int gpu_open(char *why, size_t cap) {
     if (CreateCommandPool(g.device, &pci, NULL, &g.pool) != VK_SUCCESS) return -1;
     cai.commandPool = g.pool;
     if (AllocateCommandBuffers(g.device, &cai, &g.cb) != VK_SUCCESS ||
-        CreateFence(g.device, &fci, NULL, &g.fence) != VK_SUCCESS)
+        CreateFence(g.device, &fci, NULL, &g.fence) != VK_SUCCESS ||
+        !make_buffer(UP_BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &g.up, &g.up_memory, &g.up_map) ||
+        !make_buffer(DOWN_BYTES, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &g.down, &g.down_memory, &g.down_map))
         return -1;
     return 1;
 }
@@ -311,6 +358,10 @@ static void gpu_close(void) {
     if (g.device) {
         DeviceWaitIdle(g.device);
         if (g.fence) DestroyFence(g.device, g.fence, NULL);
+        if (g.up) DestroyBuffer(g.device, g.up, NULL);
+        if (g.up_memory) FreeMemory(g.device, g.up_memory, NULL);
+        if (g.down) DestroyBuffer(g.device, g.down, NULL);
+        if (g.down_memory) FreeMemory(g.device, g.down_memory, NULL);
         if (g.pool) DestroyCommandPool(g.device, g.pool, NULL);
         DestroyDevice(g.device, NULL);
     }
@@ -910,13 +961,495 @@ static void cell_g0(void) {
     run_close(&r);
 }
 
+/* ---- the scenes ------------------------------------------------------------------------------ */
+
+/* Scenes are drawn in display pixels. The colours are the display size, as the upscaler's output is;
+ * depth and vectors are the render size, as the game's are. */
+#define SS 2          /* colour samples per display pixel and axis */
+#define SCALE_X ((double)DISPLAY_W / RENDER_W)
+#define SCALE_Y ((double)DISPLAY_H / RENDER_H)
+#define BORDER 32.0   /* display pixels at each edge no measurement reads: a pan brings new content in there */
+#define FRAME_BYTES ((size_t)DISPLAY_W * DISPLAY_H * 4u)
+#define HUD_X0 64.0   /* the HUD's rectangle, display pixels */
+#define HUD_Y0 424.0
+#define HUD_X1 400.0
+#define HUD_Y1 496.0
+
+static const double TAU = 6.283185307179586;
+
+static double fract(double v) {
+    return v - floor(v);
+}
+
+enum { TEX_GREEN, TEX_RED, TEX_BLUE, TEX_HUD };
+
+/* Source-owned textures, in display pixels from the surface's origin. */
+static void texel(int tex, double u, double v, double rgb[3]) {
+    const double check = (((int)floor(u / 12) + (int)floor(v / 12)) & 1) ? 1.0 : -1.0;
+    switch (tex) {
+    case TEX_GREEN:
+        rgb[0] = 0.2 + 0.15 * sin(TAU * (u + v) / 23.0);
+        rgb[1] = 0.5 + 0.3 * sin(TAU * u / 14.6) * sin(TAU * v / 11.8) + 0.12 * check;
+        rgb[2] = 0.3;
+        return;
+    case TEX_RED:
+        rgb[0] = 0.7 + 0.25 * sin(TAU * u / 12.2) * sin(TAU * v / 16.6);
+        rgb[1] = 0.15 + 0.1 * check;
+        rgb[2] = 0.25 + 0.2 * sin(TAU * (u - v) / 19.4);
+        return;
+    case TEX_BLUE:
+        rgb[0] = 0.1 + 0.08 * sin(TAU * v / 9.4);
+        rgb[1] = 0.25 + 0.2 * sin(TAU * (u * 0.6 + v) / 13.4);
+        rgb[2] = 0.75 + 0.2 * sin(TAU * u / 10.6) + 0.05 * check;
+        return;
+    default: { /* TEX_HUD: bright bars on a dark plate, as a HUD's text */
+        const int on = fract(u / 9.0) < 0.45 && fract(v / 12.0) < 0.7;
+        rgb[0] = on ? 1.0 : 0.08;
+        rgb[1] = on ? 0.95 : 0.06;
+        rgb[2] = on ? 0.4 : 0.18;
+        return;
+    }
+    }
+}
+
+typedef struct {
+    double x0, y0, x1, y1; /* display pixels at t = 0 */
+    double vx, vy;         /* display pixels a frame */
+    double w;              /* view depth */
+    int tex;
+} Quad;
+
+typedef struct {
+    int bg_tex;
+    double bg_w;   /* the background's view depth */
+    double pan;    /* the background's motion in x, display pixels a frame: a camera pan */
+    double bg_u0;  /* the background texture's offset in x: a cut moves it */
+    int nq;
+    Quad q[2];
+    int hud;       /* a static HUD over everything, in the present colour only */
+} Scene;
+
+typedef struct {
+    double c[3];
+    double depth; /* inverted infinite depth, near 1: 1 / w */
+    double mv[2]; /* prev - cur, render pixels */
+} Px;
+
+static int in_quad(const Quad *q, double x, double y, double t) {
+    return x >= q->x0 + q->vx * t && x < q->x1 + q->vx * t && y >= q->y0 + q->vy * t && y < q->y1 + q->vy * t;
+}
+
+static int in_hud(double x, double y) {
+    return x >= HUD_X0 && x < HUD_X1 && y >= HUD_Y0 && y < HUD_Y1;
+}
+
+static void scene_at(const Scene *s, double x, double y, double t, int hud, Px *o) {
+    texel(s->bg_tex, x - s->pan * t + s->bg_u0, y, o->c);
+    double w = s->bg_w;
+    o->mv[0] = -s->pan / SCALE_X;
+    o->mv[1] = 0.0;
+    for (int i = 0; i < s->nq; i++) {
+        const Quad *q = &s->q[i];
+        if (!in_quad(q, x, y, t) || q->w >= w) continue;
+        texel(q->tex, x - (q->x0 + q->vx * t), y - (q->y0 + q->vy * t), o->c);
+        w = q->w;
+        o->mv[0] = -q->vx / SCALE_X;
+        o->mv[1] = -q->vy / SCALE_Y;
+    }
+    o->depth = 1.0 / w;
+    if (hud && s->hud && in_hud(x, y)) texel(TEX_HUD, x - HUD_X0, y - HUD_Y0, o->c);
+}
+
+static uint8_t unorm8(double v) {
+    v = v < 0 ? 0 : v > 1 ? 1 : v;
+    return (uint8_t)(v * 255.0 + 0.5);
+}
+
+/* IEEE half, rounded to nearest even; the scenes' vectors are 0 or in the normal range. */
+static uint16_t half(float f) {
+    uint32_t x;
+    memcpy(&x, &f, sizeof(x));
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    const int e = (int)((x >> 23) & 0xffu) - 127 + 15;
+    const uint32_t m = x & 0x7fffffu;
+    if (e <= 0) return (uint16_t)sign;
+    if (e >= 31) return (uint16_t)(sign | 0x7c00u);
+    uint32_t h = sign | ((uint32_t)e << 10) | (m >> 13);
+    const uint32_t rest = m & 0x1fffu;
+    if (rest > 0x1000u || (rest == 0x1000u && (h & 1u))) h++;
+    return (uint16_t)h;
+}
+
+/* Scene s at time t, SS x SS samples a pixel, as RGBA8 at the display size. */
+static void draw(const Scene *s, double t, int hud, uint8_t *rgba) {
+    for (int v = 0; v < DISPLAY_H; v++)
+        for (int u = 0; u < DISPLAY_W; u++) {
+            double acc[3] = { 0, 0, 0 };
+            for (int j = 0; j < SS; j++)
+                for (int i = 0; i < SS; i++) {
+                    Px p;
+                    scene_at(s, u + (i + 0.5) / SS, v + (j + 0.5) / SS, t, hud, &p);
+                    for (int c = 0; c < 3; c++) acc[c] += p.c[c];
+                }
+            const size_t k = ((size_t)v * DISPLAY_W + u) * 4;
+            for (int c = 0; c < 3; c++) rgba[k + c] = unorm8(acc[c] / (SS * SS));
+            rgba[k + 3] = 255;
+        }
+}
+
+static uint8_t s_out[FRAME_BYTES];      /* the last generated frame */
+static uint8_t s_shown[2][FRAME_BYTES]; /* the present colours of the last two frames, by t & 1 */
+static uint8_t s_truth[FRAME_BYTES];    /* the scene at the generated frame's time */
+static uint8_t s_old[FRAME_BYTES];      /* G-C: the old scene's last frame */
+
+static void copy_in(const Tex *t, VkDeviceSize offset, uint32_t w, uint32_t h) {
+    VkBufferImageCopy c;
+    memset(&c, 0, sizeof(c));
+    c.bufferOffset = offset;
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    c.imageSubresource.layerCount = 1;
+    c.imageExtent.width = w;
+    c.imageExtent.height = h;
+    c.imageExtent.depth = 1;
+    CmdCopyBufferToImage(g.cb, g.up, t->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+}
+
+/* Frame t of scene s presented (with its HUD-less colour when `hudless`); the frame generated between
+ * t - 1 and t lands in s_out. */
+static int fg_frame(Run *r, const Scene *s, int t, int hudless, int reset) {
+    uint8_t *present = g.up_map + PRESENT_OFFSET;
+    draw(s, t, 1, present);
+    if (s->hud)
+        draw(s, t, 0, g.up_map + HUDLESS_OFFSET);
+    else
+        memcpy(g.up_map + HUDLESS_OFFSET, present, FRAME_BYTES);
+    memcpy(s_shown[t & 1], present, FRAME_BYTES);
+    float *depth = (float *)(g.up_map + DEPTH_OFFSET);
+    uint16_t *mv = (uint16_t *)(g.up_map + MV_OFFSET);
+    for (int y = 0; y < RENDER_H; y++)
+        for (int x = 0; x < RENDER_W; x++) {
+            Px p;
+            scene_at(s, (x + 0.5) * SCALE_X, (y + 0.5) * SCALE_Y, t, 0, &p);
+            const size_t i = (size_t)y * RENDER_W + x;
+            depth[i] = (float)p.depth;
+            mv[i * 2] = half((float)p.mv[0]);
+            mv[i * 2 + 1] = half((float)p.mv[1]);
+        }
+    const uint64_t id = (uint64_t)t + 1;
+    const Fsr3FgPassPrepare pf = prepare_for(r, id, reset, (uint32_t)t % 2u);
+    const Fsr3FgPassDispatch df = dispatch_for(r, id, hudless, (uint32_t)t % 2u);
+    cmd_begin();
+    barrier_all(); /* the last frame's reads of the inputs and of the output's copy */
+    copy_in(&r->present, PRESENT_OFFSET, DISPLAY_W, DISPLAY_H);
+    copy_in(&r->hudless, HUDLESS_OFFSET, DISPLAY_W, DISPLAY_H);
+    copy_in(&r->depth, DEPTH_OFFSET, RENDER_W, RENDER_H);
+    copy_in(&r->mv, MV_OFFSET, RENDER_W, RENDER_H);
+    barrier_all();
+    const int a = fsr3_fg_pass_prepare(r->pass, g.cb, &pf);
+    fsr3_fg_pass_configure(r->pass, id, hudless);
+    const int b = fsr3_fg_pass_dispatch(r->pass, g.cb, &df);
+    barrier_all();
+    VkBufferImageCopy c;
+    memset(&c, 0, sizeof(c));
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    c.imageSubresource.layerCount = 1;
+    c.imageExtent.width = DISPLAY_W;
+    c.imageExtent.height = DISPLAY_H;
+    c.imageExtent.depth = 1;
+    CmdCopyImageToBuffer(g.cb, r->out.image, VK_IMAGE_LAYOUT_GENERAL, g.down, 1, &c);
+    cmd_end();
+    memcpy(s_out, g.down_map, FRAME_BYTES);
+    CHECK(a == 0 && b == 0, "frame %d was refused (prepare %d, dispatch %d)", t, a, b);
+    return a == 0 && b == 0;
+}
+
+/* A region of display pixels, decided at the pixel's centre. */
+typedef int (*Region)(const Scene *s, int t, double x, double y);
+
+/* Mean absolute error in 8-bit levels over a region inside the border, of a (or of (1 - k) a + k b)
+ * against s_truth. */
+static double mae(const uint8_t *a, const uint8_t *b, double k, const Scene *s, int t, Region in,
+                  unsigned *count) {
+    double sum = 0;
+    unsigned n = 0;
+    for (int v = 0; v < DISPLAY_H; v++)
+        for (int u = 0; u < DISPLAY_W; u++) {
+            const double x = u + 0.5, y = v + 0.5;
+            if (x < BORDER || y < BORDER || x > DISPLAY_W - BORDER || y > DISPLAY_H - BORDER) continue;
+            if (in && !in(s, t, x, y)) continue;
+            const size_t i = ((size_t)v * DISPLAY_W + u) * 4;
+            for (int c = 0; c < 3; c++) {
+                const double got = b ? a[i + c] * (1.0 - k) + b[i + c] * k : a[i + c];
+                sum += fabs(got - s_truth[i + c]);
+            }
+            n++;
+        }
+    if (count) *count = n;
+    return n ? sum / (3.0 * n) : 0.0;
+}
+
+/* The centre of the red quad's pixels (red above 0.4: the green and blue textures stay below it). */
+static int red_centre(const uint8_t *img, double *cx, double *cy) {
+    double sx = 0, sy = 0;
+    unsigned n = 0;
+    for (int v = 0; v < DISPLAY_H; v++)
+        for (int u = 0; u < DISPLAY_W; u++)
+            if (img[((size_t)v * DISPLAY_W + u) * 4] > 102) {
+                sx += u + 0.5;
+                sy += v + 0.5;
+                n++;
+            }
+    *cx = n ? sx / n : 0.0;
+    *cy = n ? sy / n : 0.0;
+    return n > 0;
+}
+
+/* The old scene's share of s_out: the least-squares k in out = truth + k (old - truth), over the
+ * pixels inside the border where old and the truth differ by more than 24 levels in some channel. */
+static double old_share(const uint8_t *old) {
+    double num = 0, den = 0;
+    for (int v = (int)BORDER; v < DISPLAY_H - (int)BORDER; v++)
+        for (int u = (int)BORDER; u < DISPLAY_W - (int)BORDER; u++) {
+            const size_t i = ((size_t)v * DISPLAY_W + u) * 4;
+            int differs = 0;
+            for (int c = 0; c < 3; c++) differs |= abs((int)old[i + c] - (int)s_truth[i + c]) > 24;
+            if (!differs) continue;
+            for (int c = 0; c < 3; c++) {
+                const double d = (double)old[i + c] - s_truth[i + c];
+                num += ((double)s_out[i + c] - s_truth[i + c]) * d;
+                den += d * d;
+            }
+        }
+    return den > 0 ? num / den : 0.0;
+}
+
+static int quality_ready(const char *cell) {
+    if (g.refusal) {
+        printf("SKIP %s (the pass refuses this device: %s)\n", cell, g.refusal);
+        s_skip = 1;
+        return 0;
+    }
+    return 1;
+}
+
+/* ---- G-M: a quad at constant velocity -------------------------------------------------------- */
+
+/* RTX 3080: the worst frame 0.136 of the better baseline, the centre 0.00 pixels off; the vector mutants
+ * 1.000 to 1.741, the x scale left in UV 5.57 pixels off. */
+#define GM_RATIO_BAR 0.40
+#define GM_SHIFT_BAR 1.0
+
+static const Scene k_gm = { TEX_GREEN, 50.0, 0.0, 0.0, 1, { { 300, 160, 420, 280, 12, 6, 5.0, TEX_RED } }, 0 };
+
+/* Inside the quad at t - 1 or at t, or within 4 pixels of it. */
+static int moving(const Scene *s, int t, double x, double y) {
+    for (int dy = -4; dy <= 4; dy += 8)
+        for (int dx = -4; dx <= 4; dx += 8)
+            if (in_quad(&s->q[0], x + dx, y + dy, t - 1) || in_quad(&s->q[0], x + dx, y + dy, t)) return 1;
+    return 0;
+}
+
+static void cell_gm(void) {
+    if (!quality_ready("G-M")) return;
+    Run r;
+    if (!run_open(&r, RENDER_W, RENDER_H, DISPLAY_W, DISPLAY_H, 2)) {
+        run_close(&r);
+        return;
+    }
+    double worst_ratio = 0, worst_shift = 0, sum_fg = 0, sum_rep = 0, sum_blend = 0;
+    int measured = 0;
+    for (int t = 0; t < 20; t++) {
+        if (!fg_frame(&r, &k_gm, t, 0, t == 0)) break;
+        if (t < 2) continue;
+        draw(&k_gm, t - 0.5, 1, s_truth);
+        const double fg = mae(s_out, NULL, 0, &k_gm, t, moving, NULL);
+        const double rep = mae(s_shown[(t - 1) & 1], NULL, 0, &k_gm, t, moving, NULL);
+        const double blend = mae(s_shown[(t - 1) & 1], s_shown[t & 1], 0.5, &k_gm, t, moving, NULL);
+        const double ratio = fg / fmin(rep, blend);
+        double ox, oy, tx, ty;
+        const int found = red_centre(s_out, &ox, &oy) && red_centre(s_truth, &tx, &ty);
+        const double shift = found ? hypot(ox - tx, oy - ty) : 1e9;
+        worst_ratio = fmax(worst_ratio, ratio);
+        worst_shift = fmax(worst_shift, shift);
+        sum_fg += fg;
+        sum_rep += rep;
+        sum_blend += blend;
+        measured++;
+    }
+    if (measured) {
+        printf("G-M: error %.2f levels on the moving region (repeating %.2f, blending %.2f), the worst frame %.3f "
+               "of the better; the quad's centre off by %.2f pixels at worst\n",
+               sum_fg / measured, sum_rep / measured, sum_blend / measured, worst_ratio, worst_shift);
+        CHECK(worst_ratio < GM_RATIO_BAR, "G-M: the generated frame's error is not below %.2f of repeating or "
+              "blending (%.3f)", GM_RATIO_BAR, worst_ratio);
+        CHECK(worst_shift < GM_SHIFT_BAR, "G-M: the quad is not at the midpoint (off by %.2f pixels)", worst_shift);
+    }
+    run_close(&r);
+}
+
+/* ---- G-D: disocclusion ----------------------------------------------------------------------- */
+
+#define GD_UNCOVER_BAR 6.0 /* levels; RTX 3080: 0.00, the depth mutants 42.21 */
+
+static const Scene k_gd = { TEX_GREEN, 50.0, 0.0, 0.0, 1, { { 200, 200, 320, 320, 24, 0, 5.0, TEX_RED } }, 0 };
+
+/* Covered at t - 1 and uncovered at t - 0.5, 2 pixels in from that strip's edges. */
+static int uncovered(const Scene *s, int t, double x, double y) {
+    static const double d[5][2] = { { 0, 0 }, { -2, 0 }, { 2, 0 }, { 0, -2 }, { 0, 2 } };
+    for (int k = 0; k < 5; k++)
+        if (!in_quad(&s->q[0], x + d[k][0], y + d[k][1], t - 1) || in_quad(&s->q[0], x + d[k][0], y + d[k][1], t - 0.5))
+            return 0;
+    return 1;
+}
+
+static void cell_gd(void) {
+    if (!quality_ready("G-D")) return;
+    Run r;
+    if (!run_open(&r, RENDER_W, RENDER_H, DISPLAY_W, DISPLAY_H, 2)) {
+        run_close(&r);
+        return;
+    }
+    double worst = 0, sum = 0, sum_blend = 0;
+    unsigned pixels = 0;
+    int measured = 0;
+    for (int t = 0; t < 14; t++) {
+        if (!fg_frame(&r, &k_gd, t, 0, t == 0)) break;
+        if (t < 2) continue;
+        draw(&k_gd, t - 0.5, 1, s_truth);
+        const double fg = mae(s_out, NULL, 0, &k_gd, t, uncovered, &pixels);
+        sum_blend += mae(s_shown[(t - 1) & 1], s_shown[t & 1], 0.5, &k_gd, t, uncovered, NULL);
+        worst = fmax(worst, fg);
+        sum += fg;
+        measured++;
+    }
+    if (measured) {
+        printf("G-D: error %.2f levels on the uncovered pixels (%u a frame; blending %.2f), %.2f at worst\n",
+               sum / measured, pixels, sum_blend / measured, worst);
+        CHECK(worst < GD_UNCOVER_BAR, "G-D: the uncovered pixels do not show the background (%.2f levels)", worst);
+    }
+    run_close(&r);
+}
+
+/* ---- G-H: a static HUD over a pan ------------------------------------------------------------ */
+
+/* RTX 3080: the HUD 0.00 levels with its HUD-less colour, 108.21 without, the mutants 108.21 to 110.05; the
+ * pan 0.00 against 31.54 for repeating the last frame. */
+#define GH_HUD_BAR 4.0
+#define GH_RATIO_BAR 0.25
+#define GH_PAN_RATIO_BAR 0.25
+
+static const Scene k_gh = { TEX_BLUE, 50.0, 8.0, 0.0, 0, { { 0, 0, 0, 0, 0, 0, 0, TEX_BLUE } }, 1 };
+
+static int on_hud(const Scene *s, int t, double x, double y) {
+    (void)s;
+    (void)t;
+    return in_hud(x - 2, y - 2) && in_hud(x + 2, y + 2);
+}
+
+static int off_hud(const Scene *s, int t, double x, double y) {
+    (void)s;
+    (void)t;
+    return !in_hud(x - 8, y - 8) && !in_hud(x + 8, y + 8) && !in_hud(x - 8, y + 8) && !in_hud(x + 8, y - 8);
+}
+
+/* The mean errors on and off the HUD over a run, and off it for repeating the last frame. */
+static int gh_run(int hudless, double *hud, double *pan, double *pan_repeat) {
+    Run r;
+    if (!run_open(&r, RENDER_W, RENDER_H, DISPLAY_W, DISPLAY_H, 2)) {
+        run_close(&r);
+        return 0;
+    }
+    int measured = 0;
+    *hud = *pan = *pan_repeat = 0;
+    for (int t = 0; t < 14; t++) {
+        if (!fg_frame(&r, &k_gh, t, hudless, t == 0)) break;
+        if (t < 2) continue;
+        draw(&k_gh, t - 0.5, 1, s_truth);
+        *hud += mae(s_out, NULL, 0, &k_gh, t, on_hud, NULL);
+        *pan += mae(s_out, NULL, 0, &k_gh, t, off_hud, NULL);
+        *pan_repeat += mae(s_shown[(t - 1) & 1], NULL, 0, &k_gh, t, off_hud, NULL);
+        measured++;
+    }
+    run_close(&r);
+    if (!measured) return 0;
+    *hud /= measured;
+    *pan /= measured;
+    *pan_repeat /= measured;
+    return 1;
+}
+
+static void cell_gh(void) {
+    if (!quality_ready("G-H")) return;
+    double hud, pan, rep, hud_without, pan_without, rep_without;
+    if (!gh_run(1, &hud, &pan, &rep) || !gh_run(0, &hud_without, &pan_without, &rep_without)) return;
+    printf("G-H: on the HUD %.2f levels with its HUD-less colour, %.2f without; off it %.2f (%.2f without, "
+           "repeating %.2f)\n", hud, hud_without, pan, pan_without, rep);
+    CHECK(hud < GH_HUD_BAR, "G-H: the HUD is not sharp with its HUD-less colour (%.2f levels)", hud);
+    CHECK(hud < GH_RATIO_BAR * hud_without, "G-H: the HUD-less colour does not help the HUD (%.2f, %.2f without)",
+          hud, hud_without);
+    CHECK(pan < GH_PAN_RATIO_BAR * rep, "G-H: the pan around the HUD is not interpolated (%.2f, repeating %.2f)",
+          pan, rep);
+}
+
+/* ---- G-C: a cut ------------------------------------------------------------------------------ */
+
+/* RTX 3080: shares 0.000 and 0.002, the reset frame 0.00 levels from the new one; the reset mutants 0.502 and
+ * 16.25 levels. */
+#define GC_OLD_BAR 0.05
+#define GC_RESET_BAR 1.0 /* levels */
+
+/* The cut lands in the same world (the same background, moved) so that scene-change detection has
+ * little to see: the reset is what must clear the old scene. */
+static const Scene k_gc_old = { TEX_GREEN, 50.0, 0.0, 0.0, 1, { { 300, 160, 420, 280, 12, 6, 5.0, TEX_RED } }, 0 };
+static const Scene k_gc_new = { TEX_GREEN, 50.0, 0.0, 173.7, 1, { { 600, 250, 720, 370, -10, 0, 5.0, TEX_BLUE } }, 0 };
+#define GC_CUT 6
+
+/* The old scene's share of the frame generated at the cut and of the one after it; the error of the
+ * one at the cut against the new frame. */
+static int gc_run(int reset, double share[2], double *at_cut) {
+    Run r;
+    if (!run_open(&r, RENDER_W, RENDER_H, DISPLAY_W, DISPLAY_H, 2)) {
+        run_close(&r);
+        return 0;
+    }
+    int ok = 1;
+    for (int t = 0; t < GC_CUT + 2 && ok; t++) {
+        const Scene *s = t < GC_CUT ? &k_gc_old : &k_gc_new;
+        ok = fg_frame(&r, s, t, 0, t == 0 || (reset && t == GC_CUT));
+        if (ok && t == GC_CUT - 1) memcpy(s_old, s_shown[t & 1], FRAME_BYTES);
+        if (!ok || t < GC_CUT) continue;
+        /* At the cut the frame is the new one; after it, the new scene between its frames. */
+        draw(s, t == GC_CUT ? (double)t : t - 0.5, 1, s_truth);
+        share[t - GC_CUT] = old_share(s_old);
+        if (t == GC_CUT) *at_cut = mae(s_out, NULL, 0, s, t, NULL, NULL);
+    }
+    run_close(&r);
+    return ok;
+}
+
+static void cell_gc(void) {
+    if (!quality_ready("G-C")) return;
+    double share[2] = { 0, 0 }, at_cut = 0, share_no_reset[2] = { 0, 0 }, at_cut_no_reset = 0;
+    if (!gc_run(1, share, &at_cut)) return;
+    printf("G-C: the old scene's share %.3f at the cut and %.3f after it; %.2f levels from the new frame at the cut\n",
+           share[0], share[1], at_cut);
+    CHECK(share[0] < GC_OLD_BAR && share[1] < GC_OLD_BAR,
+          "G-C: the old scene's share of the generated frames is %.3f at the cut and %.3f after it", share[0], share[1]);
+    CHECK(at_cut < GC_RESET_BAR, "G-C: the frame generated at the reset is not the new frame (%.2f levels)", at_cut);
+    /* Recorded, not checked: the same cut without the reset, left to scene-change detection. */
+    if (gc_run(0, share_no_reset, &at_cut_no_reset))
+        printf("G-C without the reset (recorded): the old scene's share %.3f at the cut and %.3f after it\n",
+               share_no_reset[0], share_no_reset[1]);
+}
+
 /* ---- main ------------------------------------------------------------------------------------ */
 
 static const struct {
     const char *name;
     void (*run)(void);
 } k_cells[] = {
-    { "G-R", cell_gr }, { "G-0", cell_g0 },
+    { "G-R", cell_gr }, { "G-0", cell_g0 }, { "G-M", cell_gm }, { "G-D", cell_gd }, { "G-H", cell_gh },
+    { "G-C", cell_gc },
 };
 #define CELL_COUNT (sizeof(k_cells) / sizeof(k_cells[0]))
 

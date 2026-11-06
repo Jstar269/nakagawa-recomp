@@ -409,6 +409,8 @@ class MutantTextTests(unittest.TestCase):
         rows += [(m[0], m[1], m[2]) for m in fsr3_mutants.PASS_MUTANTS]
         rows += [(m[0], m[1], m[2]) for m in fsr3_mutants.PASS_RECORDED]
         rows += [(m[0], m[1], m[2]) for m in fsr3_mutants.FG_MUTANTS]
+        rows += [(m[0], m[1], m[2]) for m in fsr3_mutants.FG_PASS_MUTANTS]
+        rows += [(m[0], m[1], m[2]) for m in fsr3_mutants.FG_PASS_RECORDED]
         for name, path, old in rows:
             with self.subTest(mutant=name):
                 self.assertEqual((ROOT / path).read_text(encoding="utf-8").count(old), 1)
@@ -419,6 +421,15 @@ class MutantTextTests(unittest.TestCase):
         self.assertEqual(cells, {"P-0", "F-S", "F-M", "F-R", "F-T", "F-C", "F-D"})
         for mutant in fsr3_mutants.PASS_MUTANTS + fsr3_mutants.PASS_RECORDED:
             self.assertIn(mutant[4], cells, mutant[0])
+
+    def test_every_frame_generation_gpu_mutant_names_a_cell(self) -> None:
+        text = (ROOT / fsr3_mutants.FG_PASS_SELFTEST).read_text(encoding="utf-8")
+        cells = set(re.findall(r'\{ "([A-Z]-[0-9A-Z]+)", cell_', text))
+        self.assertEqual(cells, {"G-R", "G-0", "G-M", "G-D", "G-H", "G-C"})
+        for mutant in fsr3_mutants.FG_PASS_MUTANTS + fsr3_mutants.FG_PASS_RECORDED:
+            self.assertIn(mutant[4], cells, mutant[0])
+        # Every quality cell has a mutant: a cell no defect can fail proves nothing.
+        self.assertEqual({m[4] for m in fsr3_mutants.FG_PASS_MUTANTS}, cells - {"G-R"})
 
 
 class InertTests(unittest.TestCase):

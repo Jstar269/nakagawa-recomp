@@ -237,6 +237,36 @@ fsr3-pass-selftest: fsr3-shader-verify
 fsr3-pass-mutants: fsr3-shader-verify
 	"$(PYTHON)" tools/fsr3_mutants.py --pass --build-dir $(BUILD_DIR)/fsr3-pass-mutants --cc "$(CC)"
 
+# fsr3-fg-pass-selftest - FSR 3 frame generation's seventeen passes (src/rt/gpu_sdl3vk/fsr3_fg_pass.c)
+# on a headless Vulkan device under the validation layers, synchronisation validation of shader
+# accesses included: G-R refuses devices without what optical flow needs (subgroups of 32) with one
+# reason and no Vulkan call, G-0 creates the pipelines and runs whole frames, and G-M, G-D, G-H and
+# G-C generate frames of synthetic scenes (a moving quad, what it uncovers, a static HUD over a pan
+# with and without its HUD-less colour, a cut) against their truth. Linked from the pass, its host and
+# the C library alone. Skips (exit 77) as fsr3-pass-selftest does, and on a device the pass refuses,
+# where G-R still runs; FSR3FG_PASS_ARGS="--cell G-R" runs that cell alone, which a refused device
+# passes. fsr3-fg-pass-mutants runs each cell's mutants on a GPU, so it is not part of
+# native-core-tests.
+native-core-tests: fsr3-fg-pass-selftest
+.PHONY: fsr3-fg-pass-selftest fsr3-fg-pass-mutants
+FSR3FG_PASS_ARGS ?=
+fsr3-fg-pass-selftest: fsr3-shader-verify
+	@if ! printf '%s\n' '#include <vulkan/vulkan.h>' | $(CC) -E -x c $(VULKAN_INC_FLAGS) - >/dev/null 2>&1; then \
+		echo "SKIP fsr3-fg-pass-selftest (the Vulkan headers were not found)"; \
+		if [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then exit 1; fi; exit 0; \
+	fi; \
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -Isrc/rt/gpu_sdl3vk \
+		-Ithird_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu $(VULKAN_INC_FLAGS) \
+		src/rt/gpu_sdl3vk/fsr3_fg_pass.c src/rt/gpu_sdl3vk/fsr3_fg_pass_selftest.c src/rt/fsr3_fg_host.c \
+		-lm $(NK_UI_VK_SELFTEST_LIBS) -o $(BUILD_DIR)/fsr3_fg_pass_selftest$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_DIR)/fsr3_fg_pass_selftest$(EXE_EXT) $(FSR3FG_PASS_ARGS) || rc=$$?; \
+	if [ $$rc -eq 77 ] && [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then \
+		echo "FAIL fsr3-fg-pass-selftest (skipped, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
+	elif [ $$rc -eq 77 ]; then echo "SKIP fsr3-fg-pass-selftest (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL fsr3-fg-pass-selftest (exit $$rc)"; exit $$rc; fi
+fsr3-fg-pass-mutants: fsr3-shader-verify
+	"$(PYTHON)" tools/fsr3_mutants.py --fg-pass --build-dir $(BUILD_DIR)/fsr3-fg-pass-mutants --cc "$(CC)"
+
 # osk-overlay-selftest - the in-window on-screen keyboard's state machine (src/rt/osk_overlay.c):
 # navigation, typing, the guest's length bound with UTF-16 pairs, backspace, confirm and cancel,
 # the UTF-16 answer, the inputtype rules, edge-based pad input and the session the HLE keyboard

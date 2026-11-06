@@ -12,6 +12,9 @@ Each mutant below is one semantic defect in a copy of the FSR 3 code, never in t
   in src/rt/gpu_sdl3vk/fsr3_pass_selftest.c, which is built against the copy and run on a Vulkan
   device for the one cell the mutant targets. Recorded mutants are run and their measurements
   printed, but not judged: they show a behaviour, such as a value moved to another input.
+* Frame generation's GPU mutants (--fg-pass) do the same for frame generation's pass
+  (src/rt/gpu_sdl3vk/fsr3_fg_pass.c), its host, or the scenes in
+  src/rt/gpu_sdl3vk/fsr3_fg_pass_selftest.c.
 
 Every judged mutant must fail for the stated reason:
 
@@ -22,10 +25,12 @@ Every judged mutant must fail for the stated reason:
   another reason is reported as WRONG_REASON, not counted as a kill.
 * The unmutated sources must pass first, in the same build directory and with the same flags.
 
---calibrate (with --pass) runs every mutant and prints its measurements even when the unmutated
-cell fails, for choosing bars on a new device; it always exits 1. --cell limits --pass to one cell.
+--calibrate (with --pass or --fg-pass) runs every mutant and prints its measurements even when the
+unmutated cell fails, for choosing bars on a new device; it always exits 1. --cell limits either to
+one cell.
 
-usage: python tools/fsr3_mutants.py --build-dir build/fsr3-mutants [--cc gcc] [--fg | --pass [--calibrate] [--cell F-R]]
+usage: python tools/fsr3_mutants.py --build-dir build/fsr3-mutants [--cc gcc]
+           [--fg | --pass [--calibrate] [--cell F-R] | --fg-pass [--calibrate] [--cell G-M]]
 """
 from __future__ import annotations
 
@@ -378,6 +383,88 @@ PASS_RECORDED: list[tuple[str, str, str, str, str]] = [
 ]
 PASS_SOURCES = [PASS, PASS_SELFTEST, HOST, JITTER]
 PASS_INCLUDES = ["-Isrc/rt", "-Isrc/rt/gpu_sdl3vk", "-Ithird_party/fidelityfx_sdk/upscalers/fsr3/include/gpu"]
+
+# Frame generation's GPU cells (src/rt/gpu_sdl3vk/fsr3_fg_pass_selftest.c), in the same form.
+FG_PASS = "src/rt/gpu_sdl3vk/fsr3_fg_pass.c"
+FG_PASS_SELFTEST = "src/rt/gpu_sdl3vk/fsr3_fg_pass_selftest.c"
+FG_PASS_MUTANTS: list[tuple[str, str, str, str, str, str]] = [
+    ("G-0: no barrier before a dispatch", FG_PASS,
+     "            const Pipe *pp = &p->pipe[j->pass];\n            barrier_all(p, cmd);\n",
+     "            const Pipe *pp = &p->pipe[j->pass];\n",
+     "G-0", "validation messages"),
+    ("G-0: no barrier before a clear", FG_PASS,
+     "            barrier_all(p, cmd);\n            clear(p, cmd, &p->img[j->resource], j->value);",
+     "            clear(p, cmd, &p->img[j->resource], j->value);",
+     "G-0", "validation messages"),
+    ("G-M: the vectors' sign flipped", FG_PASS_SELFTEST,
+     "        o->mv[0] = -q->vx / SCALE_X;\n        o->mv[1] = -q->vy / SCALE_Y;",
+     "        o->mv[0] = q->vx / SCALE_X;\n        o->mv[1] = q->vy / SCALE_Y;",
+     "G-M", "G-M:"),
+    ("G-M: the vectors' y flipped", FG_PASS_SELFTEST,
+     "        o->mv[1] = -q->vy / SCALE_Y;",
+     "        o->mv[1] = q->vy / SCALE_Y;",
+     "G-M", "G-M:"),
+    ("G-M: the vectors in UV, not pixels", FG_PASS_SELFTEST,
+     "    f.params.motion_vector_scale_x = 1.0f;\n    f.params.motion_vector_scale_y = 1.0f;",
+     "    f.params.motion_vector_scale_x = 1.0f / RENDER_W;\n    f.params.motion_vector_scale_y = 1.0f / RENDER_H;",
+     "G-M", "G-M:"),
+    ("G-M: the vectors' x scale not divided by the render width", FG_HOST,
+     "c->motionVectorScale[0] = p->motion_vector_scale_x / (float)c->renderSize[0];",
+     "c->motionVectorScale[0] = p->motion_vector_scale_x;",
+     "G-M", "G-M:"),
+    ("G-M: the interpolation source not kept for the next frame", FG_PASS,
+     "            p->CmdCopyImage(cmd, j->resource == FSR3FG_RES_PRESENT_COLOR ? v->present_image : v->hudless_image,\n"
+     "                            VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);",
+     "            (void)v;",
+     "G-M", "G-M:"),
+    ("G-D: the quad's depth the background's", FG_PASS_SELFTEST,
+     "    o->depth = 1.0 / w;",
+     "    o->depth = 1.0 / s->bg_w;",
+     "G-D", "G-D:"),
+    ("G-D: forward depth given as inverted", FG_PASS_SELFTEST,
+     "    o->depth = 1.0 / w;",
+     "    o->depth = 1.0 - 1.0 / w;",
+     "G-D", "G-D:"),
+    ("G-H: the HUD-less colour's factor dropped", FG_HOST,
+     "c->HUDLessAttachedFactor = h->has_hudless ? 1 : 0;",
+     "c->HUDLessAttachedFactor = 0;",
+     "G-H", "G-H:"),
+    ("G-H: the present colour interpolated with a HUD-less colour attached", FG_HOST,
+     "        srv[FI(CURRENT_INTERPOLATION_SOURCE)] = FSR3FG_RES_HUDLESS_COLOR;",
+     "        srv[FI(CURRENT_INTERPOLATION_SOURCE)] = FSR3FG_RES_PRESENT_COLOR;",
+     "G-H", "G-H:"),
+    ("G-H: the HUD drawn into the HUD-less colour", FG_PASS_SELFTEST,
+     "        draw(s, t, 0, g.up_map + HUDLESS_OFFSET);",
+     "        draw(s, t, 1, g.up_map + HUDLESS_OFFSET);",
+     "G-H", "G-H:"),
+    ("G-H: every dispatch a reset (the present colour shown again)", FG_HOST,
+     "    c->Reset = reset || decreased || skipped;",
+     "    c->Reset = 1 || reset || decreased || skipped;",
+     "G-H", "the pan around the HUD is not interpolated"),
+    ("G-C: the reset dropped from the prepare", FG_PASS,
+     "    if (fsr3_fg_host_prepare(&p->host, &f->params) != 0",
+     "    Fsr3FgHostPrepare mp = f->params;\n    mp.reset = 0;\n    if (fsr3_fg_host_prepare(&p->host, &mp) != 0",
+     "G-C", "G-C:"),
+    ("G-C: the prepared reset not passed to the dispatch", FG_HOST,
+     "const int reset = d->reset || p->reset || disjoint;",
+     "const int reset = d->reset || disjoint;",
+     "G-C", "G-C:"),
+    ("G-C: the interpolation source not replaced at a reset", FG_PASS,
+     "            p->CmdCopyImage(cmd, j->resource == FSR3FG_RES_PRESENT_COLOR ? v->present_image : v->hudless_image,",
+     "            if (!h->fi.Reset)\n"
+     "            p->CmdCopyImage(cmd, j->resource == FSR3FG_RES_PRESENT_COLOR ? v->present_image : v->hudless_image,",
+     "G-C", "after it"),
+]
+FG_PASS_RECORDED: list[tuple[str, str, str, str, str]] = []
+FG_PASS_SOURCES = [FG_PASS, FG_PASS_SELFTEST, FG_HOST]
+FG_PASS_INCLUDES = ["-Isrc/rt", "-Isrc/rt/gpu_sdl3vk", "-Ithird_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu"]
+
+# The two GPU campaigns: the make target's name, the selftest, its sources and includes, the mutants.
+GPU_SUITES = {
+    "pass": ("fsr3-pass-mutants", PASS_SELFTEST, PASS_SOURCES, PASS_INCLUDES, PASS_MUTANTS, PASS_RECORDED),
+    "fg-pass": ("fsr3-fg-pass-mutants", FG_PASS_SELFTEST, FG_PASS_SOURCES, FG_PASS_INCLUDES, FG_PASS_MUTANTS,
+                FG_PASS_RECORDED),
+}
 SKIP = 77
 
 
@@ -403,11 +490,12 @@ def vulkan_includes() -> list[str]:
 
 
 def build_and_run_pass(cc: str, work: Path, sources: dict[str, Path], tag: str, cell: str,
-                       includes: list[str]) -> tuple[str, int, str]:
-    exe = work / f"fsr3_pass_selftest_{tag}{'.exe' if os.name == 'nt' else ''}"
+                       includes: list[str], suite: str = "pass") -> tuple[str, int, str]:
+    _, selftest, order, base_includes, _, _ = GPU_SUITES[suite]
+    exe = work / f"{Path(selftest).stem}_{tag}{'.exe' if os.name == 'nt' else ''}"
     libs = [] if os.name == "nt" else ["-ldl"]
-    cmd = [cc, *CFLAGS, *PASS_INCLUDES, *includes, "-o", str(exe),
-           *(str(sources[path]) for path in PASS_SOURCES), "-lm", *libs]
+    cmd = [cc, *CFLAGS, *base_includes, *includes, "-o", str(exe),
+           *(str(sources[path]) for path in order), "-lm", *libs]
     built = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=300)
     if built.returncode != 0:
         return "BUILD", built.returncode, built.stderr
@@ -432,27 +520,28 @@ def mutate(work: Path, index: int, path: str, old: str, new: str) -> tuple[Path 
     return mutated, ""
 
 
-def main_pass(args: argparse.Namespace, work: Path) -> int:
+def main_pass(args: argparse.Namespace, work: Path, suite: str = "pass") -> int:
+    label, selftest, order, _, all_mutants, all_recorded = GPU_SUITES[suite]
     includes = vulkan_includes()
-    base = {path: ROOT / path for path in PASS_SOURCES}
-    mutants = [(i, m) for i, m in enumerate(PASS_MUTANTS) if not args.cell or m[4] == args.cell]
-    recorded = [(i, m) for i, m in enumerate(PASS_RECORDED, start=len(PASS_MUTANTS))
+    base = {path: ROOT / path for path in order}
+    mutants = [(i, m) for i, m in enumerate(all_mutants) if not args.cell or m[4] == args.cell]
+    recorded = [(i, m) for i, m in enumerate(all_recorded, start=len(all_mutants))
                 if not args.cell or m[4] == args.cell]
     cells = sorted({m[4] for _, m in mutants} | {m[4] for _, m in recorded})
     if not cells:
-        print(f"FAIL fsr3-pass-mutants: no mutant targets the cell {args.cell!r}")
+        print(f"FAIL {label}: no mutant targets the cell {args.cell!r}")
         return 1
     require = os.environ.get("NK_UI_VK_REQUIRE") == "1"
     for cell in cells:
-        status, rc, out = build_and_run_pass(args.cc, work, base, f"base_{cell}", cell, includes)
+        status, rc, out = build_and_run_pass(args.cc, work, base, f"base_{cell}", cell, includes, suite)
         if status == "BUILD":
-            print(f"SKIP fsr3-pass-mutants: the pass selftest does not build here (no Vulkan headers?)\n{out}")
+            print(f"SKIP {label}: {Path(selftest).name} does not build here (no Vulkan headers?)\n{out}")
             return 1 if require else 0
         if rc == SKIP:
-            print(f"SKIP fsr3-pass-mutants: the unmutated {cell} skips\n{out}")
+            print(f"SKIP {label}: the unmutated {cell} skips\n{out}")
             return 1 if require else 0
         if rc != 0 and not args.calibrate:
-            print(f"FAIL fsr3-pass-mutants: the unmutated {cell} does not pass (exit {rc})\n{out}")
+            print(f"FAIL {label}: the unmutated {cell} does not pass (exit {rc})\n{out}")
             return 1
         print(f"BASE {cell} (exit {rc})\n{measurements(out, cell)}")
 
@@ -464,7 +553,7 @@ def main_pass(args: argparse.Namespace, work: Path) -> int:
             failures += 1
             continue
         status, rc, out = build_and_run_pass(args.cc, mutated.parent, {**base, path: mutated}, f"m{index:02d}", cell,
-                                             includes)
+                                             includes, suite)
         if status == "BUILD":
             print(f"INVALID {name}: the mutant does not build\n{out}")
             failures += 1
@@ -483,13 +572,13 @@ def main_pass(args: argparse.Namespace, work: Path) -> int:
             failures += 1
             continue
         status, rc, out = build_and_run_pass(args.cc, mutated.parent, {**base, path: mutated}, f"m{index:02d}", cell,
-                                             includes)
+                                             includes, suite)
         print(f"RECORDED {name} ({'build failed' if status == 'BUILD' else f'exit {rc}'})\n{measurements(out, cell)}")
     count = len(mutants)
     scope = f" (the {args.cell} cell only)" if args.cell else ""
-    print(f"fsr3-pass-mutants: {count - failures} of {count} killed for the stated reason{scope}")
+    print(f"{label}: {count - failures} of {count} killed for the stated reason{scope}")
     if args.calibrate:
-        print("fsr3-pass-mutants: calibration run, not a result")
+        print(f"{label}: calibration run, not a result")
         return 1
     return 1 if failures else 0
 
@@ -542,17 +631,21 @@ def main() -> int:
                         help="run the GPU cells' mutants (fsr3_pass_selftest.c) instead of the host's")
     parser.add_argument("--fg", action="store_true",
                         help="run frame generation's host mutants (fsr3_fg_host_selftest.c) instead of the upscaler's")
+    parser.add_argument("--fg-pass", dest="fg_gpu", action="store_true",
+                        help="run frame generation's GPU cells' mutants (fsr3_fg_pass_selftest.c)")
     parser.add_argument("--calibrate", action="store_true",
-                        help="with --pass: run every mutant and print its measurements even when the unmutated "
-                             "cell fails (for choosing bars on a new device; never a pass)")
-    parser.add_argument("--cell", help="with --pass: only the mutants of this cell, for example F-R (never the "
-                                       "complete result)")
+                        help="with --pass or --fg-pass: run every mutant and print its measurements even when the "
+                             "unmutated cell fails (for choosing bars on a new device; never a pass)")
+    parser.add_argument("--cell", help="with --pass or --fg-pass: only the mutants of this cell, for example F-R "
+                                       "(never the complete result)")
     args = parser.parse_args()
     work = args.build_dir.resolve()
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     if args.gpu:
         return main_pass(args, work)
+    if args.fg_gpu:
+        return main_pass(args, work, "fg-pass")
     if args.fg:
         return main_fg(args, work)
 

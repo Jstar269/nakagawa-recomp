@@ -1059,6 +1059,22 @@ jobs:
           export VK_ICD_FILENAMES="$lvp_icd"
           NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-pass-selftest
 
+      # FSR 3 frame generation's device refusal (G-R in src/rt/gpu_sdl3vk/fsr3_fg_pass_selftest.c) on
+      # lavapipe: the refusal table, then lavapipe itself, which optical flow's 32-lane subgroups rule
+      # out, refused with one reason and no Vulkan call. The frame cells need a device the pass
+      # accepts, so they run on a GPU (make fsr3-fg-pass-selftest). An exit 77 skip fails the step.
+      - name: Run the FSR 3 frame generation refusal on lavapipe
+        if: matrix.part == 'translation'
+        run: |
+          set -euo pipefail
+          lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$lvp_icd" || {
+            echo "mesa-vulkan-drivers did not install a lavapipe ICD" >&2
+            exit 1
+          }
+          export VK_ICD_FILENAMES="$lvp_icd"
+          NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-fg-pass-selftest FSR3FG_PASS_ARGS="--cell G-R"
+
       # The embedded FSR 3 SPIR-V must be what the pinned DirectXShaderCompiler release makes of AMD's
       # HLSL (tools/shader_embed.py, DXC_RELEASE). The Linux archive is checked against its pinned
       # SHA-256 before it runs, and the tool is run directly, so a SKIP (exit 77) fails the step.

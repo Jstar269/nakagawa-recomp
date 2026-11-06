@@ -336,7 +336,10 @@ readback-rows case, where guest memory must get the top-left device pixel of eac
 rows it does not keep stay out of the staging buffer, then once more on the `SR_GPU_READBACK_FULL`
 reference path. `fsr3-pass-selftest` runs FSR 3's eight compute passes on lavapipe, headless, under
 the validation layer with synchronisation validation of shader accesses, and an exit 77 skip fails
-it, including one for synchronisation validation that is not active. A further step downloads the
+it, including one for synchronisation validation that is not active. `fsr3-fg-pass-selftest` runs
+frame generation's device refusal (G-R) there: lavapipe's subgroups are too small for optical flow,
+so the pass must refuse it with one reason and no Vulkan call; the frame cells need a GPU the pass
+accepts and run locally (`make fsr3-fg-pass-selftest`, `make fsr3-fg-pass-mutants`). A further step downloads the
 DirectXShaderCompiler release that `tools/shader_embed.py` pins, checks its SHA-256 before use, and
 recompiles every FSR 3 pass from the imported HLSL: any byte that differs from the embedded SPIR-V,
 or a compiler that is not the pinned one, fails it. The job also runs

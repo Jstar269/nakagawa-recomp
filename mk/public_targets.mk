@@ -144,6 +144,8 @@ PUBLIC_TARGETS := \
 	fsr3-shader-repro-verify \
 	fsr3-pass-selftest \
 	fsr3-pass-mutants \
+	fsr3-fg-pass-selftest \
+	fsr3-fg-pass-mutants \
 	ace-smooth-selftest \
 	ace-ui-selftest \
 	osk-overlay-paint-selftest \
@@ -319,6 +321,8 @@ HELP_DESCRIPTION_fsr3-shader-verify := verify the FSR 3 upscaler and frame-gener
 HELP_DESCRIPTION_fsr3-shader-repro-verify := recompile both FSR 3 shader sets with the pinned DXC (DXC=...) and compare bytes
 HELP_DESCRIPTION_fsr3-pass-selftest := run FSR 3's passes on a headless Vulkan device against synthetic scenes
 HELP_DESCRIPTION_fsr3-pass-mutants := run the FSR 3 pass mutation campaign on a Vulkan device (each defect must fail its cell)
+HELP_DESCRIPTION_fsr3-fg-pass-selftest := run FSR 3 frame generation's passes on a headless Vulkan device against synthetic scenes
+HELP_DESCRIPTION_fsr3-fg-pass-mutants := run the FSR 3 frame generation pass mutation campaign on a Vulkan device (each defect must fail its cell)
 HELP_DESCRIPTION_ace-smooth-selftest := run Ace Mode's in-between frames selftest on a headless Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_ace-ui-selftest := run Ace Mode's in-game UI selftest (layout, then a headless Vulkan render; SKIPs the GPU leg without Vulkan)
 HELP_DESCRIPTION_osk-overlay-paint-selftest := run the in-window keyboard painter's exact-pixel selftest

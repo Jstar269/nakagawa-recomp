@@ -35,12 +35,14 @@ Nakagawa has since substantially extended and modified that codebase. This repos
   Rich Geldreich; MIT), the Zstandard 1.5.7 decompressor (Meta Platforms; BSD-3-Clause), the LZMA SDK decoder
   (Igor Pavlov; public domain) and dr_flac (David Reid; public domain, Unlicense elected). It reads CHD disc images
   when the player expands them at import, in [`third_party/libchdr/`](third_party/libchdr/PROVENANCE.md).
-- **AMD FidelityFX SDK (FSR 3) — Advanced Micro Devices, Inc.** — MIT. The FSR 3.1.6 upscaler's eight compute passes
-  and the headers they include, from FidelityFX SDK v2.4.0 (commit `7539ae8b6568ad29ed78a753404351daf3b5cca7`), in
+- **AMD FidelityFX SDK (FSR 3) — Advanced Micro Devices, Inc.** — MIT. The FSR 3.1.6 upscaler's eight compute passes,
+  frame generation's seventeen (frame interpolation and optical flow) and the headers they include, from FidelityFX
+  SDK v2.4.0 (commit `7539ae8b6568ad29ed78a753404351daf3b5cca7`), in
   [`third_party/fidelityfx_sdk/`](third_party/fidelityfx_sdk/PROVENANCE.md): each file is on the SDK's MIT list, which
-  [`LICENSE-AMD.md`](third_party/fidelityfx_sdk/LICENSE-AMD.md) carries, and is imported byte-identical, except one
-  header with a recorded local change. The C host in `src/rt/fsr3_host.c`,
-  `src/rt/fsr3_jitter.c` and `src/rt/gpu_sdl3vk/fsr3_pass.c` is translated from the SDK's C++ and keeps AMD's notice.
+  [`LICENSE-AMD.md`](third_party/fidelityfx_sdk/LICENSE-AMD.md) carries, and is imported byte-identical, except three
+  headers with recorded local changes. The C host in `src/rt/fsr3_host.c`, `src/rt/fsr3_jitter.c`,
+  `src/rt/fsr3_fg_host.c`, `src/rt/gpu_sdl3vk/fsr3_pass.c` and `src/rt/gpu_sdl3vk/fsr3_fg_pass.c` is translated from
+  the SDK's C++ and keeps AMD's notice.
 - **Monocypher 4.0.3 — Loup Vaillant, Michael Savage, Fabio Scotoni and contributors** — dual BSD-2-Clause or
   CC0-1.0; the project uses it under CC0-1.0. The Ed25519 signature check in
   [`third_party/monocypher/`](third_party/monocypher/).
