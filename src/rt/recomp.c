@@ -2149,8 +2149,11 @@ static int dispatch_run_interp(
     const SrGuestInterpCallBoundary *call_boundary,
     int drain) {
     SrGuestInterpFault fault;
+    /* Without a call boundary, a segment drain's run is a TAIL step (dispatch_tail_step): it
+     * leaves its handoff to the drain it runs in, as a native body does (#1935). */
     SrGuestInterpResult interp_result = call_boundary
         ? sr_guest_interp_run_with_boundary(s, target, call_boundary, &fault)
+        : drain == SR_DRAIN_SEGMENT ? sr_guest_interp_run_tail_step(s, target, &fault)
         : sr_guest_interp_run(s, target, &fault);
     if (interp_result == SR_GUEST_INTERP_AOT_HANDOFF ||
         interp_result == SR_GUEST_INTERP_CALL_RETURN) {
