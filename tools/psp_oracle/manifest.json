@@ -2202,6 +2202,84 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-GE-WEIGHT-001",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "f32-w1-*",
+          "u8-w1-*",
+          "u16-w1-*",
+          "u8-hi-*",
+          "u16-hi-*",
+          "f32-neg-*",
+          "f32-c1-*",
+          "f32-c3-*",
+          "f32-c4-*",
+          "f32-c5-*",
+          "f32-c6-*",
+          "f32-c7-*",
+          "f32-c8-*",
+          "u8-c3-*",
+          "u8-c5-*",
+          "u16-c3-*",
+          "ge-weight-done"
+        ],
+        "measurement_note": "Measured by the 2026-11-06 PSP-3000 launch (system software 6.61, ARK-5.1.0 (owner); pspver 6.6.0, declared to the runner; boot 136, XMB context) of commit d5fed0ba, case ge-weight after the transport-write preflight: 288 records and the done record (out0 288), all PASS, acceptance-eligible with 0 blockers; every one of the 16 lists reached GE idle. In every cell each of the 16 samples lands on exactly the row the cell's model gives and nowhere else: the GE reads a u8 weight as w / 128 and a u16 weight as w / 32768, both unsigned and both usable above 1.0 (u8 to 0xf8, u16 to 0xf800), and a float weight as it is, negative included; the weight count field (VTYPE bits 14-16) gives 1 to 8 weights, slot k selects bone k, and a weighted vertex is the weights, then the colour aligned to 4 bytes, then the position, its size a multiple of 4 (three and five u8 weights, three u16 weights). The raw stream stays in the private campaign directory.",
+        "group": "ge",
+        "source": "fixtures/psp_oracle/probe_ge_sample.c",
+        "prx": "ge_weight.prx",
+        "apis": [
+          "sceGeListEnQueue",
+          "sceGeListSync",
+          "sceGeDrawSync",
+          "sceGeBreak",
+          "sceGeEdramGetAddr",
+          "sceKernelDcacheWritebackAll",
+          "sceKernelDelayThread",
+          "sceKernelGetSystemTimeLow",
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "PSP GE vertex weights and bone matrices in transform mode"
+        ],
+        "diagnostic_case_ids": [
+          "ge-weight"
+        ],
+        "case_ids": [
+          "f32-w1-*",
+          "u8-w1-*",
+          "u16-w1-*",
+          "u8-hi-*",
+          "u16-hi-*",
+          "f32-neg-*",
+          "f32-c1-*",
+          "f32-c3-*",
+          "f32-c4-*",
+          "f32-c5-*",
+          "f32-c6-*",
+          "f32-c7-*",
+          "f32-c8-*",
+          "u8-c3-*",
+          "u8-c5-*",
+          "u16-c3-*",
+          "ge-weight-done"
+        ],
+        "invariant": "#343: per cell (weight format u8, u16 or float; 1 to 8 weights; the target slot; its weight per sample), the raw 8888 pixels of a 16x17 window (x 16..31, y 8..24 of a 64x32 buffer at VRAM 0x100000) after one transform-mode draw of sixteen one-pixel quads whose slot 0 carries weight 1.0 through bone 0 (identity plus a y translation) and whose target slot moves the quad through a zero bone plus a 16-pixel translation; every other bone is zero plus 64 pixels and its slot 0; lighting, texturing, fog, dither, blending, culling and every test are off",
+        "issues": [
+          343
+        ],
+        "risk": "low; raw display lists into an 8 KiB colour block at VRAM offset 0x100000 that the CPU clears first; depth test and writes are off; every GE wait is bounded and a list that does not finish resets the queues; no display, callback or device state is changed",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-TRACE-001",
         "status": "implemented",
         "hardware_evidence": "MEASURED",
@@ -2632,6 +2710,46 @@
           1386
         ],
         "risk": "low; no dialog is started and nothing is written outside the host0 log",
+        "reset": "one PRX launch; a fresh boot before the next launch"
+      },
+      {
+        "id": "PSP-HLE-STDIO-001",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "stdio-handles",
+          "stdio-write-stdout",
+          "stdio-write-stderr",
+          "stdio-close-stdout",
+          "hle-std-handles-done"
+        ],
+        "measurement_note": "Measured by the 2026-11-06 PSP-3000 launch (system software 6.61, ARK-5.1.0 (owner); pspver 6.6.0, declared to the runner; boot 135, XMB context) of commit d5fed0ba, case hle-std-handles after the transport-write preflight: 4 records and the done record (out0 4), all PASS, acceptance-eligible with 0 blockers. sceKernelStdin, sceKernelStdout and sceKernelStderr return three distinct kernel UIDs (0x0093a513, 0x00938a15 and 0x00936f17 on that boot), not 1. A one-byte sceIoWrite returns 1 on Stdout and on Stderr. sceIoClose of the Stdout UID returns 0x800200d1 and closes nothing: a write after it returns 1 and sceKernelStdout returns the same UID. A read from Stdin is not run (it would wait on PSPLink's tty). The raw stream stays in the private campaign directory.",
+        "group": "system",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_std_handles.prx",
+        "apis": [
+          "sceKernelStdin",
+          "sceKernelStdout",
+          "sceKernelStderr",
+          "sceIoWrite",
+          "sceIoClose"
+        ],
+        "diagnostic_case_ids": [
+          "hle-std-handles"
+        ],
+        "case_ids": [
+          "stdio-handles",
+          "stdio-write-stdout",
+          "stdio-write-stderr",
+          "stdio-close-stdout",
+          "hle-std-handles-done"
+        ],
+        "invariant": "#341: in the probe's launch context, the three standard handles; the answer of a one-byte sceIoWrite to Stdout and to Stderr and each handle read again afterwards; the answer of sceIoClose of the Stdout handle, a one-byte write to it afterwards and sceKernelStdout read again",
+        "issues": [
+          341
+        ],
+        "risk": "low; the family log goes to host0 only, the close comes last, and no read waits on a device",
         "reset": "one PRX launch; a fresh boot before the next launch"
       },
       {

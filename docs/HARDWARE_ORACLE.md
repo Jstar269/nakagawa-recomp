@@ -1336,6 +1336,35 @@ One console is one data point; see §11. Nothing here closes issue #70
     matches neither table.
   - Pixel x of level L reads texel x >> L, as `ge-mip` measured.
 
+- **PSP-3000 single-case runs of the `hle-std-handles` and `ge-weight` probes on commit `d5fed0ba`
+  (2026-11-06)**: system software 6.61, ARK-5.1.0 (owner); `pspver` 6.6.0, the firmware declared to the runner.
+  PSPLink 3.2.1, operator-declared model PSP-3000, XMB context. `hle-std-handles` (case 156,
+  `fixtures/psp_oracle/probe_hle_measure.c`) on boot 135 and `ge-weight` (case 157,
+  `fixtures/psp_oracle/probe_ge_sample.c`) on boot 136, each after the `transport-write` preflight
+  (PSP-TRANSPORT-001 is not re-cited). All four envelopes are acceptance-eligible with 0 blockers: evidence class
+  `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict golden sequence
+  (`hle-std-handles` 4 records and the done record, `ge-weight` 288 and the done record), all PASS; every
+  `ge-weight` list reached GE idle. The raw envelopes and host0 logs stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-06, `d5fed0ba`) |
+  | --- | --- | --- | --- |
+  | `PSP-HLE-STDIO-001` | `stdio-handles`, `stdio-write-stdout`, `stdio-write-stderr`, `stdio-close-stdout`, `hle-std-handles-done` (boot 135) | a read from Stdin, the handles in the game context, the UID values on other boots | MEASURED (`hle-std-handles`) |
+  | `PSP-GE-WEIGHT-001` | `f32-w1-*`, `u8-w1-*`, `u16-w1-*`, `u8-hi-*`, `u16-hi-*`, `f32-neg-*`, `f32-c1-*`, `f32-c3-*` to `f32-c8-*`, `u8-c3-*`, `u8-c5-*`, `u16-c3-*`, `ge-weight-done` (boot 136) | sub-pixel rounding of weighted positions, weights with lighting or normals, morph targets, the wait timings | MEASURED (`ge-weight`) |
+
+  `hle-std-handles` (#341): `sceKernelStdin`, `sceKernelStdout` and `sceKernelStderr` return three distinct
+  kernel UIDs, not 1. A one-byte `sceIoWrite` returns 1 on Stdout and on Stderr. `sceIoClose` of the Stdout UID
+  returns `0x800200d1` and closes nothing: a write afterwards returns 1 and `sceKernelStdout` returns the same UID.
+
+  `ge-weight` (#343): sixteen transform-mode draws whose slot 0 carries each one-pixel quad through bone 0 at
+  weight 1.0 while the target slot moves it by 16 w pixels, so the row a sample lands on reads the weight the GE
+  used. Every sample of every cell lands on the modelled row:
+  - *Scale:* u8 weights are w / 128 and u16 weights w / 32768, both unsigned and both usable above 1.0
+    (u8 to `0xf8`, u16 to `0xf800`); float weights are used as they are, negative included.
+  - *Count and slots:* VTYPE bits 14-16 give 1 to 8 weights, and slot k selects bone k; no decoy bone (every
+    unused slot's) moved a quad.
+  - *Layout:* weights, then the colour aligned to 4 bytes, then the position, with the vertex size a multiple of
+    4, for three and five u8 weights and three u16 weights.
+
 - **PSP-3000 single-case run of the `insn-trace` probe on commit `84568280` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000, case 119 in `fixtures/psp_oracle/probe_insn_trace.c` with
   `insn_trace_tramp.S` and `insn_trace_fixtures.h`. One launch on its own boot after the `transport-write`

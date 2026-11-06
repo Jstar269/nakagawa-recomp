@@ -3271,6 +3271,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 # The 2026-11-06 acceptance-eligible ge-light (#1732, boot 133) and ge-clut-mip
                 # (#2031, boot 134) runs.
                 "PSP-GE-LIGHT-001", "PSP-GE-MIP-002",
+                # The 2026-11-06 acceptance-eligible hle-std-handles (#341, boot 135) and ge-weight
+                # (#343, boot 136) runs.
+                "PSP-HLE-STDIO-001", "PSP-GE-WEIGHT-001",
             },
         )
         self.assertEqual(
