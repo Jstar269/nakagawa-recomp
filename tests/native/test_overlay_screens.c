@@ -268,10 +268,12 @@ static void test_ace(void) {
     if (ui == NULL) return;
     memset(&state, 0, sizeof(state));
     nk_overlay_open(&state, NK_OVERLAY_OPEN_USER);
-    CHECK(!frame_has_text(ui, &state, &model, "Ace Mode"), "an authentic run's menu says nothing of Ace Mode");
-    model.ace_caption = "Ace Mode on: 16x filtering \xC2\xB7 crisp keyboard";
-    CHECK(frame_has_text(ui, &state, &model, "Ace Mode on: 16x filtering"),
-          "an Ace run's menu says what Ace Mode does");
+    CHECK(!frame_has_text(ui, &state, &model, "Enhanced") &&
+              !frame_has_text(ui, &state, &model, "Ace Mode"),
+          "an Authentic run's menu says nothing of Enhanced or Ace");
+    model.ace_caption = "Enhanced: 16x filtering \xC2\xB7 crisp keyboard";
+    CHECK(frame_has_text(ui, &state, &model, "Enhanced: 16x filtering"),
+          "an Enhanced run's menu names the mode and what it does");
     state.screen = NK_OVERLAY_SCREEN_SETTINGS;
     model.ace_readout = 0;
     CHECK(!frame_has_text(ui, &state, &model, "Speed readout"),
@@ -299,7 +301,7 @@ static void test_ace(void) {
             NkOverlayModel full = base_model((float)sizes[s].w / sizes[s].scale,
                                              (float)sizes[s].h / sizes[s].scale);
             if (fit == NULL) continue;
-            full.ace_caption = "Ace Mode on: 16x filtering \xC2\xB7 crisp keyboard \xC2\xB7 speed readout";
+            full.ace_caption = "Enhanced: 16x filtering \xC2\xB7 crisp keyboard \xC2\xB7 speed readout";
             full.ace_readout = 2;
             for (int screen = NK_OVERLAY_SCREEN_MENU; screen <= NK_OVERLAY_SCREEN_SETTINGS; ++screen) {
                 NkOverlayState st;

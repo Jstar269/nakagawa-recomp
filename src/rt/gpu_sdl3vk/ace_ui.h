@@ -43,6 +43,7 @@ typedef struct {
     double now_s;
     int reduce_motion;                   /* the player's choice: the notice cuts */
     int high_contrast;                   /* paper on surface_high with a strong edge */
+    const char *notice_head;             /* the mode: "Enhanced" or "Ace" (#2055); NULL is Enhanced */
     const char *notice;                  /* the active features in words, or NULL */
     float notice_alpha;                  /* 0 to 1 */
     const char *readout;                 /* "100%  30 FPS", or NULL */
