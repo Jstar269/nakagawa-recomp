@@ -936,8 +936,8 @@ static void test_filters(const char *root) {
     CHECK(sr_videorec_finish() == 1, "a recording made two ways reports PASS");
     read_record_text(dir, text, sizeof text);
     CHECK(strstr(text, "\"filter\": \"mixed\"") != NULL, "frames made two ways read mixed");
-    CHECK(strstr(text, "\"filter_frames\": {\"none\": 0, \"sharp\": 1, \"integer\": 0, "
-                       "\"bilinear\": 0, \"fsr1\": 2}") != NULL, "and record.json counts each");
+    CHECK(strstr(text, "\"filter_frames\": {\"none\": 0, \"nearest\": 0, \"sharp\": 1, "
+                       "\"linear\": 0, \"fsr1\": 2}") != NULL, "and record.json counts each");
 
     snprintf(dir, sizeof dir, "%s/filter-fsr1", root);
     CHECK(sr_videorec_test_start(dir, "raw"), "the fsr1 recording starts");
@@ -964,7 +964,8 @@ static void test_filters(const char *root) {
     CHECK(sr_videorec_finish() == 0, "an unknown filter fails the recording");
     CHECK(record_says(dir, "FAIL", "unknown filter"), "and record.json says why");
     CHECK(sr_videorec_filter_name(SR_VIDEOREC_FILTER_COUNT) == NULL &&
-          strcmp(sr_videorec_filter_name(SR_VIDEOREC_FILTER_BILINEAR), "bilinear") == 0,
+          strcmp(sr_videorec_filter_name(SR_VIDEOREC_FILTER_NEAREST), "nearest") == 0 &&
+          strcmp(sr_videorec_filter_name(SR_VIDEOREC_FILTER_LINEAR), "linear") == 0,
           "filter names");
     sr_videorec_test_reset();
 }

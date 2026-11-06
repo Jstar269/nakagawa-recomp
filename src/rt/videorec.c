@@ -867,7 +867,7 @@ int sr_videorec_requested_size(uint32_t *w, uint32_t *h) {
 /* ---- frames ---------------------------------------------------------------------------- */
 
 static const char *const k_vr_filter_names[SR_VIDEOREC_FILTER_COUNT] = {
-    "none", "sharp", "integer", "bilinear", "fsr1"
+    "none", "nearest", "sharp", "linear", "fsr1"
 };
 
 const char *sr_videorec_filter_name(int filter) {

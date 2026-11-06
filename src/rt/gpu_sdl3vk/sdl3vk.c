@@ -1993,17 +1993,12 @@ static int rec_record(VkCommandBuffer cmd, PresentFrame *f, VkImage show, int sh
     if (s_rec_upscale_pass && plan.w >= showw && plan.h >= showh && (plan.w > showw || plan.h > showh))
         upscaled = (VkImage)s_rec_upscale_pass((void *)cmd, (void *)show, showw, showh, plan.w,
                                                plan.h);
-    /* What record.json says made this picture: a 1:1 copy is no filter; a sharp enlargement
-     * whose prescale image could not be made is the bilinear blit it falls back to. */
-    int filter = s_scaling == SDL3VK_SCALING_INTEGER ? SR_VIDEOREC_FILTER_INTEGER
-               : s_scaling == SDL3VK_SCALING_BILINEAR ? SR_VIDEOREC_FILTER_BILINEAR
-               : SR_VIDEOREC_FILTER_SHARP;
+    int prescaled = 0;
     if (upscaled) {
         blit_src = upscaled;
         bw = plan.w;
         bh = plan.h;
         plan.nearest = 1;
-        filter = SR_VIDEOREC_FILTER_FSR1;
     } else if (plan.prescale > 1 &&
         rec_image_ensure(&s_rec_pre, plan.prescale * showw, plan.prescale * showh,
                          VK_FORMAT_R8G8B8A8_UNORM)) {
@@ -2022,9 +2017,15 @@ static int rec_record(VkCommandBuffer cmd, PresentFrame *f, VkImage show, int sh
         blit_src = s_rec_pre.img;
         bw = s_rec_pre.w;
         bh = s_rec_pre.h;
-    } else if (plan.prescale > 1) {
-        filter = SR_VIDEOREC_FILTER_BILINEAR;  /* sharp's prescale image could not be made */
+        prescaled = 1;
     }
+    /* What record.json says made this picture: the blits issued here, never the scaling
+     * setting's name. Sharp at an exact multiple, and bilinear there too, are one nearest blit;
+     * sharp shrinking, or without its prescale image, is one linear blit. A 1:1 copy is none. */
+    int filter = upscaled ? SR_VIDEOREC_FILTER_FSR1
+               : prescaled ? SR_VIDEOREC_FILTER_SHARP
+               : plan.nearest ? SR_VIDEOREC_FILTER_NEAREST
+               : SR_VIDEOREC_FILTER_LINEAR;
     if (plan.w == showw && plan.h == showh) filter = SR_VIDEOREC_FILTER_NONE;
     if (plan.w > 0 && plan.h > 0) {
         blt.srcOffsets[1].x = bw;              blt.srcOffsets[1].y = bh;

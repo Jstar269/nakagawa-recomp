@@ -47,7 +47,7 @@ Presentation enhancements operate strictly after or alongside the host graphics 
   nearest filter. It reads the shown image and writes private images only; captures still hold
   the guest's frame (`gpu-capture-selftest`, run by hosted CI on lavapipe, presents through the
   real pass and checks both). A run recording, which holds the picture the window shows, is
-  enlarged by its own FSR 1 pass at the recording's size and names the filter in `record.json`
+  enlarged by its own FSR 1 pass at the recording's size and names the scaling it used in `record.json`
   (the same selftest compares it with the pass's output, byte for byte), and guest VRAM and every
   guest flight event match with it off (`display-smoke-fsr1`, which needs a Vulkan device and a
   display, so it is a local gate). In the player it is the Enhanced part "Sharper enlarging"

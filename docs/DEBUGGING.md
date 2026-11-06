@@ -2246,11 +2246,16 @@ recording's own size and through its own pass, so `SR_VIDEOREC_SIZE` never makes
 rebuild its images ([#2138](https://github.com/Jstar269/nakagawa-recomp/issues/2138);
 `gpu-capture-selftest` checks a 960x544 recording against a separate FSR 1 pass's output, byte for
 byte). As in the window, FSR 1 only enlarges: a recording no larger than the picture uses the
-scaling mode's filter. `record.json` names the filter: `"filter"` is `fsr1`, `sharp`, `integer`,
-`bilinear` or `none` (a picture at its own size, as the CPU presenters record), or `mixed` when the
-written frames were made in more than one way, and `"filter_frames"` counts the written frames by
-filter. When the recording's FSR 1 pass cannot be made, the log says so once and the frames are
-counted under the scaling mode's filter. It is a clean capture:
+scaling mode. `record.json` names the scaling that made each picture, not the setting that asked
+for it: `"filter"` is `fsr1`; `sharp` (a nearest prescale to a whole multiple, then a linear
+shrink); `nearest` (one nearest-neighbour blit, which is what any mode draws at an exact multiple
+such as 960x544, and what `integer` draws when a multiple fits); `linear` (one linear blit, as
+`bilinear` draws at other sizes and every mode draws when the recording is smaller than the
+picture); `none` (a picture at its own size, as the CPU presenters record); or `mixed` when the
+written frames were made in more than one way. `"filter_frames"` counts the written frames by
+filter. When the recording's FSR 1 pass cannot be made, the log says so once and each frame is
+named by the scaling mode's blits. `gpu-capture-selftest` checks the name at 960x544, at a
+letterboxed 1000x600 and at a shrinking 320x180, in each mode. It is a clean capture:
 no host overlay reaches it, neither the HUD and its frame-rate readout nor the player's notices nor
 the pause overlay. `SR_VIDEOREC_SIZE=3840x2160` records 4K whatever the window's size. The CPU
 presenters (GDI, offscreen) record their 480x272 frame.

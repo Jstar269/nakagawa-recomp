@@ -642,7 +642,7 @@ static unsigned long long s_fsr1_rec_presents;  /* recorded presents the upscale
 
 /* The recording's upscale (sdl3vk_set_record_upscale_pass): its own pass, so the window's size and
  * the recording's never make one rebuild its images for the other. Without it the recording is
- * scaled as SR_PRESENT_SCALING says, and record.json names that filter. */
+ * scaled as SR_PRESENT_SCALING says, and record.json names the blits that made it. */
 static void *gui_record_upscale_pass(void *cmd, void *src, int w, int h, int out_w, int out_h) {
     if (!s_fsr1_rec && !s_fsr1_rec_failed) {
         char error[160] = "";
@@ -650,7 +650,7 @@ static void *gui_record_upscale_pass(void *cmd, void *src, int w, int h, int out
         if (!s_fsr1_rec) {
             s_fsr1_rec_failed = 1;
             fprintf(stderr, "sdl3vk: FSR 1 is unavailable for the recording (%s); it is scaled as "
-                            "SR_PRESENT_SCALING says, and record.json names that filter\n",
+                            "SR_PRESENT_SCALING says, and record.json names the blits that made it\n",
                     error[0] ? error : "unknown");
         }
     }

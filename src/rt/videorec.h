@@ -66,18 +66,20 @@ void sr_videorec_frame(const void *px, uint32_t w, uint32_t h, uint32_t row_byte
 
 /* How a presenter made the picture it hands over (#2138). record.json names the filter of the
  * frames it wrote ("filter", or "mixed" when they differ) and counts each ("filter_frames").
- * NONE is a picture at its own size; SHARP, INTEGER and BILINEAR are SR_PRESENT_SCALING's modes;
- * FSR1 is the presentation upscaler (SR_PRESENT_UPSCALE=fsr1). */
+ * Each names the scaling that was carried out, not the setting that asked for it: NONE is a
+ * picture at its own size; NEAREST is one nearest-neighbour scale; SHARP is a nearest prescale
+ * to a whole multiple, then one linear scale; LINEAR is one linear scale; FSR1 is the
+ * presentation upscaler (SR_PRESENT_UPSCALE=fsr1). */
 typedef enum {
     SR_VIDEOREC_FILTER_NONE = 0,
+    SR_VIDEOREC_FILTER_NEAREST,
     SR_VIDEOREC_FILTER_SHARP,
-    SR_VIDEOREC_FILTER_INTEGER,
-    SR_VIDEOREC_FILTER_BILINEAR,
+    SR_VIDEOREC_FILTER_LINEAR,
     SR_VIDEOREC_FILTER_FSR1,
     SR_VIDEOREC_FILTER_COUNT
 } SrVideoRecFilter;
 
-/* The name record.json gives a filter ("none", "sharp", "integer", "bilinear", "fsr1"), or NULL
+/* The name record.json gives a filter ("none", "nearest", "sharp", "linear", "fsr1"), or NULL
  * for a value that is not one. */
 const char *sr_videorec_filter_name(int filter);
 
