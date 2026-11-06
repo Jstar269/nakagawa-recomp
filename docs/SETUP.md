@@ -1068,9 +1068,21 @@ same on Windows and Linux; it is not a pre-push hook, because pre-commit passes 
 that stage and directory mode would then scan the whole working tree, including the private input
 directories (the pushed history is scanned in hosted CI); its upstream git mode sets `GIT_CONFIG_GLOBAL=NUL`,
 which Git for Windows rejects, so that mode scanned nothing on Windows. C formatting is defined by
-`.clang-format` but is not currently an automatic pre-commit hook. A mypy configuration remains in
-`pyproject.toml`, but mypy is **not** a shared gate while the pre-existing Python typing baseline is being corrected. Do not describe a known-failing type check as a required
-contributor hook. These tools are not core runtime dependencies.
+`.clang-format` but is not currently an automatic pre-commit hook. Mypy 2.4.1 is a shared check for
+the issue #1391 import/VFPU scope. Before this work, the full `tools/` scan used
+`python -m mypy --no-incremental --no-error-summary --no-pretty --python-version 3.15 --platform linux --explicit-package-bases tools`
+and reported 353 errors in 120 modules. The full-tree per-module ratchet remains in
+`tools/mypy_baseline.json`; its entries outside the clean scope are existing typing debt, not
+suppressed errors. The current full-tree residual is 318 errors in 106 modules; their per-module
+counts are listed in `tools/mypy_baseline.json` and remain guarded by that ratchet. The clean scope
+directly checks `tools/verify_vfpu_provenance.py`,
+`tools/hle_manifest.py`, `tools/psp_import_table.py`, `tools/import_audit_gate.py`,
+`tools/vfpu_fuzz_gen.py`, `tools/test_import_audit.py`, `tools/test_hle_manifest.py`,
+`tools/test_enhancement_package.py` and `tools/mypy_baseline.py`; mypy also checks their imports.
+The historical `tools/test_pgd_malformed.py` path is not present in this checkout. Run the focused
+shared check with `python tools/mypy_baseline.py --scope issue-1391`. The local hook requires
+`python -m pip install mypy==2.4.1`; it rejects any other installed version. These tools are not
+core runtime dependencies.
 
 ### Optional LLVM backend
 

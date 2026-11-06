@@ -23,7 +23,7 @@ import struct
 import subprocess
 import sys
 import tempfile
-from typing import Callable
+from typing import Callable, ClassVar
 import unittest
 from unittest import mock
 
@@ -557,6 +557,8 @@ class SpawnPathContractTests(unittest.TestCase):
 
 class MutationKillTests(unittest.TestCase):
     """Deliberate genericity/title-coupling mutations must flip the gate."""
+
+    workloads: ClassVar[Path]  # Shared workload root assigned once in setUpClass.
 
     @classmethod
     def setUpClass(cls):

@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
+from typing import ClassVar
 import unittest
 import unittest.mock
 
@@ -1174,6 +1175,8 @@ tail_region = 0x{TAIL_REGION:08x}; // type:func size:0x10
 
 class SymbolMapContainmentTests(unittest.TestCase):
     """An entry inside a sized map function, past its start, is f_<addr>_in_<name>."""
+
+    inside: ClassVar[dict[str, str]]  # Generated files are shared by the class's tests.
 
     @classmethod
     def setUpClass(cls):

@@ -71,6 +71,13 @@ repos:
 
   - repo: local
     hooks:
+      # The helper rejects any system mypy version other than the shared pin.
+      - id: mypy-tools
+        name: mypy clean tools scope
+        entry: python tools/mypy_baseline.py --scope issue-1391
+        language: system
+        files: ^tools/.*\.py$
+        pass_filenames: false
       - id: staged-whitespace-check
         name: reject new trailing whitespace
         entry: git diff --cached --check

@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import struct
 import sys
+from typing import Any
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,7 +48,8 @@ SIMPLE_LIBS = [
 
 # A synthetic manifest exercising all four classifications without depending
 # on the live hle.c contents.
-SYNTH_MANIFEST = {
+# The malformed-input cases mutate this dynamic JSON-shaped fixture.
+SYNTH_MANIFEST: dict[str, Any] = {
     "schema": 1,
     "source": "synthetic",
     "registrations": [
@@ -193,6 +195,7 @@ class ExportTableTests(unittest.TestCase):
     def test_entries_split_function_and_variable_nids(self) -> None:
         table = parse_export_table(build_module_elf(self.KERNEL_EXPORTS, module_attributes=0x1006))
         self.assertIsNotNone(table)
+        assert table is not None
         self.assertEqual(table.module_attributes, 0x1006)
         self.assertTrue(table.kernel_mode)
         self.assertEqual(
@@ -206,8 +209,10 @@ class ExportTableTests(unittest.TestCase):
 
     def test_user_callable_libraries_follow_the_module_mode(self) -> None:
         kernel = parse_export_table(build_module_elf(self.KERNEL_EXPORTS, module_attributes=0x1006))
+        assert kernel is not None
         self.assertEqual([lib.name for lib in kernel.user_callable_libraries()], ["SynthCodec"])
         user = parse_export_table(build_module_elf(self.KERNEL_EXPORTS, module_attributes=0x0006))
+        assert user is not None
         self.assertFalse(user.kernel_mode)
         self.assertEqual(
             [lib.name for lib in user.user_callable_libraries()],
@@ -217,6 +222,8 @@ class ExportTableTests(unittest.TestCase):
     def test_sectionless_prx_convention_parses_identically(self) -> None:
         sectioned = parse_export_table(build_module_elf(self.KERNEL_EXPORTS))
         sectionless = parse_export_table(build_module_elf(self.KERNEL_EXPORTS, sectionless=True))
+        assert sectioned is not None
+        assert sectionless is not None
         self.assertEqual(sectioned, sectionless)
 
     def test_image_without_module_info_declares_no_export_table(self) -> None:
@@ -228,6 +235,7 @@ class ExportTableTests(unittest.TestCase):
         table = parse_export_table(
             build_module_elf(self.KERNEL_EXPORTS, e_type=2, base_vaddr=BASE_VADDR)
         )
+        assert table is not None
         self.assertEqual(table.libraries[1].function_nids, (0x51000001, 0x51000002))
 
     def test_malformed_export_tables_fail_for_the_intended_reason(self) -> None:
