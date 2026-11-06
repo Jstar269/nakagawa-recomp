@@ -213,6 +213,19 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn('export VK_ICD_FILENAMES="$lvp_icd"', text)
         self.assertRegex(text, r"(?m)^\s+NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-pass-selftest$")
         self.assertNotIn("continue-on-error", text)
+
+    def test_fsr3_fg_refusal_runs_on_lavapipe_and_a_skip_fails(self) -> None:
+        """Frame generation's device refusal (G-R) runs on lavapipe, which it refuses; a skip must not pass."""
+        native_tools = _ci_job_blocks()["native_tools"]
+        step = _ci_step(native_tools, "Run the FSR 3 frame generation refusal on lavapipe")
+        self.assertIsNotNone(step, "native_tools must run fsr3-fg-pass-selftest's G-R")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertIn("set -euo pipefail", text)
+        self.assertIn('export VK_ICD_FILENAMES="$lvp_icd"', text)
+        self.assertRegex(
+            text, r'(?m)^\s+NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-fg-pass-selftest FSR3FG_PASS_ARGS="--cell G-R"$')
+        self.assertNotIn("continue-on-error", text)
         self.assertEqual([line.strip() for line in step if line.strip().startswith("if:")],
                          ["if: matrix.part == 'translation'"])
 
@@ -831,6 +844,8 @@ _NATIVE_SERIAL_GATES = {
     "Verify lavapipe and run GPU capture selftest": "make CC=gcc gpu-capture-selftest",
     "Run GPU coherence selftest on lavapipe": "make CC=gcc gpu-coherence-selftest",
     "Run the FSR 3 pass selftest on lavapipe": "NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-pass-selftest",
+    "Run the FSR 3 frame generation refusal on lavapipe":
+        'NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-fg-pass-selftest FSR3FG_PASS_ARGS="--cell G-R"',
     "Reproduce the FSR 3 shaders with the pinned DXC":
         'python tools/shader_embed.py verify --shader-set fsr3 --recompile --dxc "$dxc_dir/bin/dxc"',
     "Configure, build, and test CMake Linux player": 'ctest --test-dir "$player_build" --output-on-failure',

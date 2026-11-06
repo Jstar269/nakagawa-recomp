@@ -347,7 +347,7 @@ class FrameGenerationShaderTests(unittest.TestCase):
         seen = set()
         for (label, *_, table), (_, _, emb) in zip(layouts, shader_embed.FSR3FG_SHADERS, strict=True):
             cbuffers = self.modules[Path(emb).name]["cbuffers"]
-            for binding, kind, ident, _linear, cb in rows[table]:
+            for _binding, kind, ident, _linear, cb in rows[table]:
                 if kind != "CBV":
                     continue
                 with self.subTest(label=label, cbuffer=cb):

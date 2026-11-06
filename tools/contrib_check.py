@@ -156,6 +156,15 @@ STRICT_C_UNITS: dict[str, StrictUnit] = {
         recipes=("fsr3-pass-selftest",),
         includes=("third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu",),
     ),
+    # So do frame generation's, from its own headers.
+    "src/rt/fsr3_fg_host.c": StrictUnit(
+        recipes=("fsr3-fg-host-selftest",),
+        includes=("third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu",),
+    ),
+    "src/rt/gpu_sdl3vk/fsr3_fg_pass.c": StrictUnit(
+        recipes=("fsr3-fg-pass-selftest",),
+        includes=("third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu",),
+    ),
     "src/rt/title_config.c": StrictUnit(
         recipes=("$(BUILD_DIR)/title_config.o",),
         generated=(GeneratedHeader(
