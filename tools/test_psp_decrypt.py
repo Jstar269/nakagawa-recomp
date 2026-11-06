@@ -923,9 +923,12 @@ class TestSyntheticEndToEnd(unittest.TestCase):
 BUILTIN_TABLE = ROOT / "src" / "core" / "nk_psp_builtin_keys.c"
 # A game EBOOT tag from the built-in table, and the firmware containers the
 # boundary must refuse by name (updater, DATA.PSAR, Media Engine image, the
-# system menu's index.dat).
+# system menu's index.dat). 0x06000000 (1.00 updater DATA.PSAR block) and
+# 0x0B2B10F0 (3.60 index.dat) are the tags PPSSPP added in fb371af6b and
+# 6a9b84a71: refused by name like the rest, their keys never carried.
 BUILTIN_GAME_TAG = 0xD91613F0
-FIRMWARE_TAGS = (0x0B000000, 0x0E000000, 0x0F000000, 0x862648D1, 0x07000000, 0x0B2B92F0)
+FIRMWARE_TAGS = (0x0B000000, 0x0E000000, 0x0F000000, 0x862648D1, 0x07000000, 0x0B2B92F0,
+                 0x06000000, 0x0B2B10F0)
 
 
 def builtin_table() -> tuple[dict, dict, dict]:

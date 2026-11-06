@@ -42,7 +42,9 @@ A route file is private JSON next to the title's other private inputs:
 Relative paths resolve against the route file's folder. The gate adds the offscreen
 presenter, dummy SDL drivers and the capture window; ``{run}`` in the command and in env
 values is the run's fresh scratch folder (``mkdirs`` creates folders in it); it removes inherited ``SR_FBSNAP*``,
-``SR_PADSCRIPT``, ``SR_FLIGHT*`` and ``SR_DATAROOT`` so the route file alone decides them.
+``SR_PADSCRIPT``, ``SR_FLIGHT*``, ``SR_DATAROOT`` and ``SR_PRESENT_UPSCALE`` so the route file alone decides
+them. The presentation upscaler (#1273) is ``off`` unless the route's ``env`` asks for it, and a reference
+records the value its run used.
 """
 
 from __future__ import annotations
@@ -76,9 +78,12 @@ DEFAULT_SLICE_US = 100
 MIN_ACCEPT_RUNS = 2
 MAX_RGB_DISTANCE = 442  # sqrt(3 * 255^2) rounded up
 DEFAULT_TIMEOUT_SECONDS = 600
-# Inherited selectors that would change what the run captures or where it reads input.
+# Inherited selectors that would change what the run captures or where it reads input, or would
+# enhance its presentation (SR_PRESENT_UPSCALE, #1273: only the route may ask for it).
 _STRIPPED_ENV = re.compile(r"^(SR_FBSNAP.*|SR_FBDUMP|SR_PADSCRIPT.*|SR_FLIGHT.*|SR_DATAROOT|"
-                           r"SR_EXIT_AT_VBLANK|SR_FIRST_FRAME_DUMP)$")
+                           r"SR_EXIT_AT_VBLANK|SR_FIRST_FRAME_DUMP|SR_PRESENT_UPSCALE)$")
+# The presentation upscaler a run uses when its route does not name one: off, as Authentic is.
+DEFAULT_PRESENT_UPSCALE = "off"
 _FRAME_V = re.compile(r"^frame_v(\d+)\.ppm$")
 
 
@@ -250,8 +255,13 @@ def slice_us_of(env: Mapping[str, str]) -> int:
     return int(value) if value.isdigit() else DEFAULT_SLICE_US
 
 
+def present_upscale_of(env: Mapping[str, str]) -> str:
+    """The presentation upscaler a run uses: the route's value, else off."""
+    return env.get("SR_PRESENT_UPSCALE", DEFAULT_PRESENT_UPSCALE)
+
+
 def accept(frame: Path, reference: Path, commit: str | None = None,
-           slice_us: int = DEFAULT_SLICE_US) -> dict:
+           slice_us: int = DEFAULT_SLICE_US, present_upscale: str | None = None) -> dict:
     """Store ``frame`` as the reference. Only an explicit command ever replaces one."""
     reference = Path(reference)
     if _inside_checkout(reference):
@@ -269,6 +279,8 @@ def accept(frame: Path, reference: Path, commit: str | None = None,
     os.replace(tmp, reference)
     meta = {"commit": commit or _head_commit(), "width": got.width, "height": got.height,
             "sha256": hashlib.sha256(data).hexdigest(), "slice_us": slice_us}
+    if present_upscale is not None:  # known only for a frame this gate captured
+        meta["present_upscale"] = present_upscale
     sidecar_path(reference).write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return meta
 
@@ -287,6 +299,7 @@ def sandbox_env(base: Mapping[str, str], extra: Mapping[str, str], vblank: int |
         # present of the window must be published, as the showcase capture does.
         "SR_DETERMINISTIC_CLOCK": "1", "SR_FPS_CAP": "0",
     })
+    env.setdefault("SR_PRESENT_UPSCALE", DEFAULT_PRESENT_UPSCALE)
     if vblank is not None:
         env["SR_FBSNAP_WINDOWS"] = f"{vblank}-{vblank + window - 1}"
         env["SR_EXIT_AT_VBLANK"] = str(vblank + window)
@@ -464,7 +477,8 @@ def run_route(route_path: Path, runs: int = 1, work_root: Path | None = None,
                                           pct.over, pct.differing, pct.total, pct.max_delta)
         if accept_frame:
             try:
-                meta = accept(frames[0], reference, slice_us=slice_us_of(env))
+                meta = accept(frames[0], reference, slice_us=slice_us_of(env),
+                              present_upscale=present_upscale_of(env))
             except PictureError as exc:
                 return title, Verdict(NOT_RUN, f"accept-refused ({exc})")
             return title, Verdict(ACCEPTED, f"{meta['width']}x{meta['height']} "

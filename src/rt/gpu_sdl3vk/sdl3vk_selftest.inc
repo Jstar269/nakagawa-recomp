@@ -15,6 +15,8 @@
  * (#1377); the entry point is sdl3vk_capture_selftest(), run by gpu_capture_selftest.c.
  */
 
+#include "fsr1_pass.h"
+
 /* ---- capture selftest (issue #57) ---------------------------------------------------- */
 
 /* Scratch root for the files the capture selftest writes (see sdl3vk_capture_selftest). The
@@ -933,6 +935,23 @@ static int sdl3vk_lifecycle_selftest(void) {
     return 0;
 }
 
+/* The presentation upscaler as gui.c registers it (SR_PRESENT_UPSCALE=fsr1), remembering what
+ * it was asked for and what it returned. */
+static Fsr1Pass *s_test_fsr;
+static VkImage s_test_fsr_out;
+static int s_test_fsr_calls, s_test_fsr_args[4];
+
+static void *test_fsr_pass(void *cmd, void *src, int w, int h, int out_w, int out_h) {
+    s_test_fsr_calls++;
+    s_test_fsr_args[0] = w;
+    s_test_fsr_args[1] = h;
+    s_test_fsr_args[2] = out_w;
+    s_test_fsr_args[3] = out_h;
+    s_test_fsr_out = fsr1_record(s_test_fsr, (VkCommandBuffer)cmd, (VkImage)src, w, h, out_w,
+                                 out_h, FSR1_SHARPNESS_DEFAULT);
+    return (void *)s_test_fsr_out;
+}
+
 static int sdl3vk_capture_selftest_body(void) {
     int ok = 1;
 
@@ -1165,6 +1184,85 @@ static int sdl3vk_capture_selftest_body(void) {
         ok = 0;
     }
     remove("selftest_cpu.ppm");
+
+    /* ---- presentation upscaler (#1273, SR_PRESENT_UPSCALE=fsr1) ------------------------
+     * The real FSR 1 pass on the present path, under the validation layer. A 480x272 frame in the
+     * larger window runs the pass at its place's size, and the frame blit reads the pass's image
+     * 1:1 at that size with nearest filtering: what the window shows is the FSR output, not the
+     * bilinear blit of the frame. A capture of the same present still holds the guest's frame. */
+    {
+        Sdl3VkInfo vi;
+        memset(&vi, 0, sizeof(vi));
+        char err[160] = "";
+        s_test_fsr = NULL;
+        if (sdl3vk_get_vk(&vi) && vi.get_instance_proc_addr) {
+            Fsr1Init init;
+            memset(&init, 0, sizeof(init));
+            init.get_instance_proc_addr = (PFN_vkGetInstanceProcAddr)vi.get_instance_proc_addr;
+            init.instance = (VkInstance)vi.instance;
+            init.physical_device = (VkPhysicalDevice)vi.physical;
+            init.device = (VkDevice)vi.device;
+            init.queue_family = vi.queue_family;
+            s_test_fsr = fsr1_create(&init, err, sizeof(err));
+        }
+        Sdl3VkPresentPlan plan = sdl3vk_present_plan(s_scaling, PSP_W, PSP_H, (int)s_swap_ext.width,
+                                                     (int)s_swap_ext.height, (int)s_max_image_dim);
+        if (!s_test_fsr) {
+            fprintf(stderr, "upscale: fsr1_create failed (%s)\n", err[0] ? err : "no device");
+            ok = 0;
+        } else if (plan.w <= PSP_W || plan.h <= PSP_H) {
+            fprintf(stderr, "upscale: the %ux%u window gives a %dx%d place, not an enlargement\n",
+                    s_swap_ext.width, s_swap_ext.height, plan.w, plan.h);
+            ok = 0;
+        } else {
+            s_test_fsr_out = VK_NULL_HANDLE;
+            s_test_fsr_calls = 0;
+            memset(&s_last_blit, 0, sizeof(s_last_blit));
+            sdl3vk_set_upscale_pass(test_fsr_pass);
+            if (!sr_capture_arm("selftest_fsr.ppm")) {
+                fprintf(stderr, "upscale: capture arm refused\n"); ok = 0;
+            }
+            if (sdl3vk_present_rgba(px) != 1) {
+                fprintf(stderr, "upscale: present failed\n"); ok = 0;
+            }
+            sdl3vk_set_upscale_pass(NULL);
+            if (s_test_fsr_calls != 1 || s_test_fsr_args[0] != PSP_W || s_test_fsr_args[1] != PSP_H ||
+                s_test_fsr_args[2] != plan.w || s_test_fsr_args[3] != plan.h) {
+                fprintf(stderr, "upscale: the pass ran %d times for %dx%d to %dx%d (want once, "
+                                "%dx%d to %dx%d)\n", s_test_fsr_calls, s_test_fsr_args[0],
+                        s_test_fsr_args[1], s_test_fsr_args[2], s_test_fsr_args[3], PSP_W, PSP_H,
+                        plan.w, plan.h);
+                ok = 0;
+            }
+            if (s_test_fsr_out == VK_NULL_HANDLE || s_last_blit.src != s_test_fsr_out) {
+                fprintf(stderr, "upscale: the window's blit did not read the FSR 1 image\n"); ok = 0;
+            }
+            if (s_last_blit.sw != plan.w || s_last_blit.sh != plan.h || s_last_blit.dx != plan.x ||
+                s_last_blit.dy != plan.y || s_last_blit.dw != plan.w || s_last_blit.dh != plan.h ||
+                s_last_blit.filter != VK_FILTER_NEAREST) {
+                fprintf(stderr, "upscale: the blit is %dx%d to %dx%d at %d,%d, filter %d; want the "
+                                "FSR image 1:1, %dx%d at %d,%d, nearest\n", s_last_blit.sw,
+                        s_last_blit.sh, s_last_blit.dw, s_last_blit.dh, s_last_blit.dx,
+                        s_last_blit.dy, (int)s_last_blit.filter, plan.w, plan.h, plan.x, plan.y);
+                ok = 0;
+            }
+            if (sr_capture_result() != 1 || !cap_test_verify_ppm("selftest_fsr.ppm", PSP_W, PSP_H)) {
+                fprintf(stderr, "upscale: the capture is not the guest's 480x272 frame\n"); ok = 0;
+            }
+            remove("selftest_fsr.ppm");
+            /* Without the pass the same present blits the frame itself again. */
+            memset(&s_last_blit, 0, sizeof(s_last_blit));
+            if (sdl3vk_present_rgba(px) != 1 || s_last_blit.src == VK_NULL_HANDLE ||
+                s_last_blit.src == s_test_fsr_out) {
+                fprintf(stderr, "upscale: with the pass removed, the blit still read its image\n");
+                ok = 0;
+            }
+        }
+        fsr1_destroy(s_test_fsr);
+        s_test_fsr = NULL;
+        if (ok) printf("gpu capture selftest: FSR 1 present path OK (%dx%d to %dx%d)\n", PSP_W,
+                       PSP_H, plan.w, plan.h);
+    }
 
     /* ---- pause overlay (#1159): shown, repeated without an upload, never captured ------ */
     {

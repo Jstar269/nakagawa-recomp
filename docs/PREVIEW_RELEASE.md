@@ -53,7 +53,7 @@ This is the limitations section, not a footnote:
 The verified native host contract is the Windows contract in [`SETUP.md`](SETUP.md):
 
 - Windows 11 x64.
-- PowerShell 7.4 or newer; Windows PowerShell 5.1 is not supported.
+- PowerShell 7.6 or newer; Windows PowerShell 5.1 is not supported.
 - CPython 3.15.x (3.14.x is also accepted).
 - MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages.
 - Explicit SDL3 dependency discovery ([#331](https://github.com/Jstar269/nakagawa-recomp/issues/331)).
@@ -85,7 +85,7 @@ mingw32-make --no-print-directory display-smoke
 
 The binary staging step passes `-ExcludeOptionalFonts` to `tools/copy_build_assets.ps1`, so the optional repository font directory is not copied into the attested bundle.
 
-The attestation workflow runs `"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts --runtime-manifest` (Windows CPython 3.15.1) under `set -euo pipefail`, then checks the result with `--verify-runtime-manifest`; a nonzero exit aborts the job before artifact upload. The runtime manifest, `bin/runtime-manifest.json`, is attested with the binaries ([layout](RUNTIME_PACKAGING_ARCHITECTURE.md#8-portable-layout-runtime-identity-and-user-state)). Packaging copies the verified runtime files byte-for-byte and does not run the stager again.
+The attestation workflow runs `"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts --runtime-manifest` (Windows CPython 3.15.2) under `set -euo pipefail`, then checks the result with `--verify-runtime-manifest`; a nonzero exit aborts the job before artifact upload. The runtime manifest, `bin/runtime-manifest.json`, is attested with the binaries ([layout](RUNTIME_PACKAGING_ARCHITECTURE.md#8-portable-layout-runtime-identity-and-user-state)). Packaging copies the verified runtime files byte-for-byte and does not run the stager again.
 
 Complete the exact candidate's local release gates and hosted CI before packaging. The binary bundle must come from the [Trusted provenance attestation workflow](../.github/workflows/provenance-attestation.yml), which runs on `main` only after a maintainer freezes the exact candidate SHA. It checks that the required `candidate_sha` equals the workflow's checked-out commit, builds `nakagawa_player.exe` and `production_smoke.exe`, stages their runtime files and `toolchain.json`, builds the two showcase demos into `dist/bin/demos/` (where the player finds them and lists them under **Test this PC**), creates SLSA Build L2 attestations for every file under `dist/`, and uploads a workflow artifact. The demos' PSP programs need PSPDEV, so its `showcase_prx` job first builds them on Linux with the PSPDEV pinned in `assets/upstream/pspdev.lock.json` (`fixtures/showcase/showcase.py build-prx`); the Windows job then builds their packages from those PRXs with its own toolchain (`showcase.py build --prebuilt-prx-dir`). This workflow does not create a tag, release, or release asset.
 
@@ -376,7 +376,7 @@ The policy agreed on [#1285](https://github.com/Jstar269/nakagawa-recomp/issues/
 - **Documentation.** The GFDL-licensed manuals in `share/doc`, `share/info` and `share/man` are not needed to build, so the staged tree does not carry them; the source archive holds the full upstream documentation. Every package's licence and copying files stay in `prereqs/notices`, including the ones a package keeps only under `share/doc`, such as MPFR's `COPYING.LESSER`. Five MSYS2 packages carry no licence file in their binary package (`cc-libs`, `gmp`, `isl`, `mpc`, `windows-default-manifest`): staging copies the licence files named in their `source_notices`, each pinned by member path, size and SHA-256, out of their pinned source packages into `prereqs/notices/<artifact>/sources/`. `windows-default-manifest` has no licence file at all; its PKGBUILD, which declares `license=('custom:Public Domain')`, is copied instead. `prereqs/notices/SOURCES.txt`, the same text as the archive's `SOURCES.txt`, names each artifact's source file with its size and SHA-256.
 - **Network.** Only these maintainer staging commands download: the binaries and MSYS2 sources from the hosts of the per-user download (`www.python.org`, `repo.msys2.org`), and the runtime libraries' sources from their official hosts (`github.com`, `www.sqlite.org`, `sourceware.org`, `www.bytereef.org`). The player never passes them, and a release with `prereqs/` makes no connection ([`SETUP.md`](SETUP.md#network-use)).
 
-The CPython 3.15.1 embeddable runtime contains third-party libraries besides CPython itself. Their versions come from CPython's `PCbuild/get_externals.bat` and were checked against the shipped binaries' version resources and strings:
+The CPython 3.15.2 embeddable runtime contains third-party libraries besides CPython itself. Their versions come from CPython's `PCbuild/get_externals.bat` and were checked against the shipped binaries' version resources and strings:
 
 | Library | Version | In the runtime | Source pinned from | Checked by |
 | --- | --- | --- | --- | --- |

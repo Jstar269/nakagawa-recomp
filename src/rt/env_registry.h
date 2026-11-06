@@ -32,6 +32,8 @@
     X("SDL_VIDEO_DRIVER", "system", "unset", "gui.c", "Alias of SDL_VIDEODRIVER; a value of offscreen makes headless acceptance fail because a real presenter is required.") \
     X("SR_ACE", "string", "off", "ace.c", "Spec string that turns on the optional enhancements (filtering, text, readout, notice, wide, smooth, band-limited SAS resampling).") \
     X("SR_ACE_REPORT", "path", "unset (no report written)", "ace.c", "Output path for the per-run Ace Mode JSON report.") \
+    X("SR_ACE_SMOOTH_DEPTH", "string", "on", "gpu_sdl3vk/ace_hud.c", "Exactly 0 stops Ace Smooth reading the GE's depth for its in-betweens.") \
+    X("SR_ACE_SMOOTH_HUD", "string", "on", "gpu_sdl3vk/ace_hud.c", "Exactly 0 stops Ace Smooth reading the HUD mask of through-mode draws for its in-betweens.") \
     X("SR_ALLOC_GUARD", "flag-nonzero", "on (guard enabled when unset)", "hle.c", "Allocator guard stays on unless set with a value starting with 0, which disables it.") \
     X("SR_ALLOC_MAX", "number", "0xFFFFFFFF (no extra cap)", "hle.c", "Hexadecimal optional stricter cap on the size of a user-partition allocation request.") \
     X("SR_ALLOC_TRACE", "flag-presence", "off", "hle.c,recomp.c", "When set, prints a trace line for guest memory allocations and partition frees to stderr.") \
@@ -121,6 +123,7 @@
     X("SR_GPU_SUBMIT_BATCH", "number", "SUBMIT_BATCH_MAX", "gpu_sdl3vk/ge_gpu.c", "Number of GPU ops per submit batch; values outside 1 to the maximum are ignored.") \
     X("SR_GPU_SYNC_SUBMIT", "flag-nonzero", "off (asynchronous submit)", "gpu_sdl3vk/ge_gpu.c", "When enabled, GPU command submission is synchronous instead of asynchronous.") \
     X("SR_GPU_TEX_SHADOW_DISABLE", "flag-nonzero", "off (texture shadow enabled)", "gpu_sdl3vk/ge_gpu.c", "Disables the GPU texture shadow when set to a non-empty value other than 0.") \
+    X("SR_GPU_TIMESTAMPS", "flag-nonzero", "off", "gpu_sdl3vk/ge_gpu.c,gpu_sdl3vk/sdl3vk.c", "Times GE command buffers by op kind and the presentation blit with GPU timestamp queries (GEGPU_TS lines, SR_PERF_FRAMES gpu_* columns).") \
     X("SR_GPU_TNL", "string", "off", "ge.c", "Set to exactly 1 to hand eligible transform-mode triangles to the GPU backend for vertex transform.") \
     X("SR_GPU_TWIN_CAPTURE", "string", "unset (captures follow the shown image)", "gpu_sdl3vk/ge_gpu.c", "Set to authentic to make the presenter show, and so capture, the authentic image while the host twin is on.") \
     X("SR_GPU_TWIN_COLOR", "string", "off", "gpu_sdl3vk/ge_gpu.c", "Host twin (#2050), Ace Mode only: 1 presents full 32-bit colour without dither, native keeps authentic colour; other values but 0 and off are refused.") \
@@ -180,6 +183,7 @@
     X("SR_PPM_DUMP", "path", "unset (no dump)", "driver.c", "Output file path for a 64x64 PPM dump of the framebuffer at exit.") \
     X("SR_PRESENT_SCALING", "string", "sharp", "gpu_sdl3vk/sdl3vk.c", "Present scaling mode: sharp, integer or bilinear; unknown values warn and use sharp.") \
     X("SR_PRESENT_TRACE", "flag-presence", "off", "gui.c,hle_display.c", "Emits a boot event for each presented frame on the offscreen sink and traces display presents.") \
+    X("SR_PRESENT_UPSCALE", "string", "off", "gui.c", "Presentation upscaler: off or fsr1 (AMD FSR 1 EASU + RCAS to the picture's place in the window; presentation only). Unknown values warn, stay off.") \
     X("SR_PROFILE", "flag-nonzero", "off", "recomp.c", "When set and not 0, enables hot-path profiling with a dump at exit.") \
     X("SR_PROFILE_DUMP_VBLANKS", "number", "0 (no periodic dump)", "hle_display.c", "Dumps the profile every N vertical blanks.") \
     X("SR_PSMF_MEDIA_DEBUG", "flag-presence", "off", "psmf_media_selftest.c", "Prints media chain counters in the PSMF media selftest.") \

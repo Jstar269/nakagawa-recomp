@@ -834,6 +834,13 @@ struct PlayerApp {
     /* The Fonts & System step requests the host folder dialog for PSP font import through
        this flag; the event loop in main.c opens it. */
     bool request_font_folder_picker;
+    /* Saves > Add a save (#1883) asks for the host folder dialog for games[saves_pick_index];
+       main.c opens it, and the folder picked waits in saves_picked (saves_pick_ready) until
+       the Saves dialog takes it. A cancelled dialog leaves nothing. */
+    bool request_save_folder_picker;
+    int saves_pick_index;
+    bool saves_pick_ready;
+    char saves_picked[NK_MAX_PATH];
     /* The library card requests a package-status worker retry through this
        flag; worker creation and queue ownership stay on the main event loop. */
     bool request_package_status_retry;
@@ -1071,6 +1078,91 @@ bool player_app_logs_dir(char *out, size_t out_size);
  * entry stays and error says what was left; the rest may already be deleted. */
 bool player_app_remove_game_and_data(PlayerApp *app, int game_index, unsigned also,
                                      char *error, size_t error_size);
+
+/* ---- Saves: back up, restore, add a save (#1883) ----
+ *
+ * A title's saves are its Memory Stick folder, <saves>/<disc ID> (NK_PATH_SAVES): the folder
+ * a package launch hands the runtime as SR_MEMSTICK (nk_launch.c) and the one Open save
+ * folder shows. PSP/SAVEDATA in it holds the saves and game-data installs, and the game may
+ * write anywhere else under it, so the whole folder is one backup. A backup is a store-only
+ * ZIP (src/core/nk_zip.h) in <user data>/titles/<disc ID>/save-backups, a folder Remove from
+ * library and a disc-copy removal leave alone; its name is
+ * "<disc ID>-saves-<YYYYMMDD-HHMMSS>[-before-restore|-before-add|-before-remove][-n].zip".
+ * Nothing is uploaded: saves never leave this PC (AGENTS.md section 5). */
+typedef enum {
+    PLAYER_SAVE_BACKUP_MANUAL = 0,      /* Back up saves */
+    PLAYER_SAVE_BACKUP_BEFORE_RESTORE,  /* the saves a restore replaced */
+    PLAYER_SAVE_BACKUP_BEFORE_ADD,      /* the saves before Add a save replaced one */
+    PLAYER_SAVE_BACKUP_BEFORE_REMOVE    /* the saves Remove from library deleted */
+} PlayerSaveBackupKind;
+
+#define PLAYER_SAVE_BACKUP_KIND_COUNT 4
+
+typedef struct {
+    char path[NK_MAX_PATH];
+    char name[128];         /* the file name */
+    char stamp[16];         /* YYYYMMDD-HHMMSS, local time */
+    unsigned sequence;      /* 1, or n for a later backup in the same second */
+    PlayerSaveBackupKind kind;
+    uint64_t bytes;
+} PlayerSaveBackup;
+
+typedef enum {
+    PLAYER_SAVES_DONE = 0,
+    PLAYER_SAVES_NOTHING,   /* there are no saves to back up */
+    PLAYER_SAVES_EXISTS,    /* Add a save: a save of that name is there; ask before replacing */
+    PLAYER_SAVES_FAILED     /* error says what, in plain words */
+} PlayerSavesResult;
+
+#if defined(NK_SAVES_TEST_SEAMS)
+/* Test seam (player-state test build only): the nth rename the saves code makes from now
+   fails, as a rename refused by the system would; 0 turns it off. */
+void player_saves_test_fail_rename(unsigned nth);
+/* The same for the folder syncs the saves code makes (not nk_zip's own): the nth from now
+   fails, as a folder that cannot be put on the disk would; 0 turns it off. */
+void player_saves_test_fail_sync_dir(unsigned nth);
+#endif
+
+/* The title's Memory Stick folder (not created): <saves>/<disc ID>, or the title ID or
+ * "unidentified" for a record without one, as nk_launch.c chooses. */
+bool player_app_save_folder(const GameRecord *game, char *out, size_t out_size);
+/* The title's backup folder (not created). False without a disc ID that names a folder. */
+bool player_app_save_backup_folder(const GameRecord *game, char *out, size_t out_size);
+/* Why the title's saves can't be changed now, or NULL: a disc ID that can't name a folder,
+ * or a game that starts or runs (it has the folder open). */
+const char *player_app_saves_blocker(const PlayerApp *app, int game_index);
+/* The current local time as a backup stamp, YYYYMMDD-HHMMSS. */
+void player_app_save_stamp_now(char *out, size_t out_size);
+/* Writes a backup of the title's save folder, named with `stamp`, and reads it back whole
+ * before keeping it. NOTHING when the folder is missing or empty. out_path gets the new
+ * file's path. */
+PlayerSavesResult player_app_back_up_saves(PlayerApp *app, int game_index, const char *stamp,
+                                           PlayerSaveBackupKind kind, char *out_path,
+                                           size_t out_path_size, char *error,
+                                           size_t error_size);
+/* The title's backups, newest first: up to `cap` in out, and the number found in *out_total.
+ * Files in the folder that are not named as backups are not listed. */
+size_t player_app_list_save_backups(const PlayerApp *app, int game_index, PlayerSaveBackup *out,
+                                    size_t cap, size_t *out_total);
+/* Restores one of the title's backups. The archive is checked whole first (nk_zip.h); the
+ * current saves are backed up (BEFORE_RESTORE); the backup goes into a new folder beside the
+ * save folder; only then is the save folder renamed to "<folder>-backup-<stamp>" (its path
+ * in `kept`, empty when there were no saves) and the new one put in its place. Any failure
+ * before that swap deletes the new folder and leaves the saves as they were; a failed swap
+ * puts the old folder back. A swap that cannot be confirmed on the disk afterwards still returns
+ * DONE (the saves are restored, and the old ones kept), with `error` saying so. */
+PlayerSavesResult player_app_restore_saves(PlayerApp *app, int game_index,
+                                           const char *backup_path, const char *stamp,
+                                           char *kept, size_t kept_size, char *error,
+                                           size_t error_size);
+/* Copies the save folder the user picked (a SAVEDATA/<ID> folder holding PARAM.SFO) into the
+ * title's PSP/SAVEDATA. A save of that name already there is replaced only when `replace`
+ * is true, after a backup (BEFORE_ADD); otherwise EXISTS and nothing changes. `added` gets
+ * the save's folder name. On DONE, error may hold a note about something left behind. */
+PlayerSavesResult player_app_add_save(PlayerApp *app, int game_index, const char *picked_folder,
+                                      bool replace, const char *stamp, char *added,
+                                      size_t added_size, char *error, size_t error_size);
+
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
 /* player_app_set_error, plus the technical text a plain card keeps in its

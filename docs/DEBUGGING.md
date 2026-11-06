@@ -94,7 +94,12 @@ the frame spent in one area, from the same counters as the one-second rows: `gue
 `interp_ms`, `ge_cpu_ms` with `ge_cpu_calls`, `ge_wait_ms` with `ge_waits`, `readback_waits`, the
 Vulkan `vk_submit_ms`, `vk_wait_ms`, `vk_readback_ms`, `vk_pipeline_ms` and
 `vk_pipeline_creations`, `texture_decode_ms` with `texture_decodes`, `storage_ms` (disc image and
-file reads), `atrac_ms`, `h264_ms`, `audio_mix_ms`, `present_ms` and `sched_switches`. The first
+file reads), `atrac_ms`, `h264_ms`, `audio_mix_ms`, `present_ms` and `sched_switches`. With
+`SR_GPU_TIMESTAMPS=1` the file has seven more columns, holding the GPU time that finished during the
+frame: `gpu_ms` (all GE work), then `gpu_render_ms`, `gpu_snapshot_ms`, `gpu_upload_ms`,
+`gpu_readback_ms` and `gpu_other_ms`, which add up to it, and `gpu_present_ms` (the presentation
+blit). They are empty when the GPU has no timestamp queries. Without the switch the file has no
+`gpu_*` columns at all. The first
 new frame starts the clock and writes no row, and a re-present of the same buffer adds its work to
 the next new frame. Join the rows with an `SR_SAMPLE_SPEC` file of the same run by VBlank to see
 which game phase the slow frames come from.
@@ -606,6 +611,7 @@ coverage classes, such as `unverified` and `synthetic`, are defined in [`HLE_COV
 | `SR_GEMATW=1` | Log GE matrix writes |
 | `SR_NO2DZ=1` | Disable 2D Z-buffer |
 | `SR_GPU_STATS=1` | Emit bounded Vulkan submission/batch/texture/snapshot counters without per-submit logging |
+| `SR_GPU_TIMESTAMPS=1` | Measure GPU time with Vulkan timestamp queries: each GE command buffer split by op kind (render batch, snapshot copy, upload, readback, other), printed as a `GEGPU_TS` line every 60 presents and a `GEGPU_TS_TOTAL` line at exit, and the presentation blit; with `SR_PERF_FRAMES` the times also fill the `gpu_*` columns. Ops overlap on the GPU, so the split is an attribution and the sum is the whole execution span. It changes no rendering, guest memory or wait |
 | `SR_GPU_TWIN_COLOR=1\|native` | Host twin (#2050), Ace Mode only: `1` presents full 32-bit colour without dither, `native` keeps the authentic colour (for identity checks). Any other value except `0` and `off` is refused. Guest VRAM is unchanged ([ENHANCEMENT_CONTRACT.md 10.11](ENHANCEMENT_CONTRACT.md#1011-full-32-bit-colour-the-host-twin)). Prints `TWIN:` lines at start and exit |
 | `SR_GPU_TWIN_CAPTURE=authentic` | With the twin on, present and capture the authentic image instead of the twin |
 | `SR_GPU_TWIN_DUMP=PREFIX` | `gpu-coherence-selftest` twin-scene: write each shown image as `PREFIX_t<n>_s<scale>.raw` (RGBA) |

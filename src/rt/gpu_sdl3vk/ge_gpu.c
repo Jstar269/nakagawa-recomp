@@ -105,6 +105,7 @@
  */
 #include "ge_gpu.h"
 #include "sdl3vk.h"
+#include "ace_hud.h"      /* Ace smooth motion: HUD boxes and depth per presented frame */
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "../recomp.h"
@@ -281,6 +282,7 @@ typedef struct {
     VkImage timg; VkDeviceMemory tmem; VkImageView tview;
     VkImageLayout tlayout;
     uint64_t wgen, tgen;
+    uint32_t hud_zgen;                     /* batches that wrote it (Ace smooth motion, ace_hud.h) */
 } DepthEnt;
 
 /* CPU writes into a resident target are held as up to this many byte spans and applied
@@ -382,6 +384,11 @@ typedef struct {
     VkDescriptorSet tset;
     uint32_t tused, pused;
     int in_flight;
+    /* SR_GPU_TIMESTAMPS: timestamps written into this recording (its start, one after each
+     * recorded op, its end; 0 when none), and the submit reason of the work between query i and
+     * query i + 1. */
+    uint32_t ts_n;
+    uint8_t ts_kind[SUBMIT_BATCH_MAX + 1];
 } SubmitSlot;
 
 /* ---- backend state -------------------------------------------------------------------- */
@@ -620,12 +627,41 @@ static PipeEnt *s_pipes = NULL;
 static int s_pipe_n = 0, s_pipe_cap = 0;
 
 static Target   s_tgts[MAX_TGT];
+/* 1 for a target in s_tgts, 0 for a widescreen wing canvas's (WingEnt::t). Addresses compared as
+ * integers: the two live in different arrays. */
+static int target_in_slots(const Target *t) {
+    uintptr_t a = (uintptr_t)t, lo = (uintptr_t)s_tgts, hi = (uintptr_t)(s_tgts + MAX_TGT);
+    return a >= lo && a < hi;
+}
 static DepthEnt s_deps[MAX_DEP];
 static Target  *s_cur = NULL;              /* target of the pending batches */
 static uint64_t s_lru = 1;
 
 static Batch    s_batch[MAX_BATCH];
 static uint32_t s_nbatch = 0, s_nverts = 0;
+
+/* Widescreen Fill's wing canvases (#1881, ge_shared.h ge_wide_*): one host-only colour and
+ * depth image per display framebuffer, the size of a target. They are never in s_tgts or
+ * s_deps, so no readback, upload, coherence or texture path reaches them. ge.c sends their
+ * primitives through hook_wing_tri / hook_wing_sprite; those record into s_wbatch, which
+ * submit_pending submits after the target's own batches, so every resource a pending batch
+ * names is released at the same boundaries as before. */
+#define MAX_WING 2
+typedef struct {
+    int used;
+    uint32_t fb;                           /* ge.c's display framebuffer address */
+    uint32_t epoch;                        /* ge_wide_epoch the contents belong to */
+    uint64_t lru;
+    Target t;                              /* t.dep = &dep; never in s_tgts */
+    DepthEnt dep;                          /* never in s_deps */
+} WingEnt;
+static WingEnt  s_wings[MAX_WING];
+static WingEnt *s_wing_dst = NULL;         /* set while a wing hook records a primitive */
+static int      s_wing_x0, s_wing_x1;      /* its canvas columns, inclusive */
+static Batch    s_wbatch[MAX_BATCH];
+static WingEnt *s_wbatch_w[MAX_BATCH];
+static uint32_t s_nwbatch = 0;
+static unsigned long s_cnt_wing = 0, s_cnt_wing_drop = 0;
 
 static int s_log = 0;
 static int s_stats = 0;
@@ -931,12 +967,143 @@ static void replay_note_wait(GeGpuReplayBoundaryKind boundary, uint64_t elapsed)
     if (s_cpu_profile_hook_depth > 0) s_cpu_profile_stats.hook_wait_ns += elapsed;
 }
 
+/* SR_GPU_TIMESTAMPS=1: GPU execution time of the GE's command buffers, from timestamp queries.
+ * Each recording gets one at its start (top of pipe), one after every op it records
+ * (cmd_batch_record: a render batch, a snapshot copy, a ring upload) and one at its end, each at
+ * the bottom of the pipe: the GPU writes it once all earlier work in the buffer has finished. The
+ * time between two neighbouring queries is charged to the op that ends it, and the end segment to
+ * the buffer's submit reason, so a buffer that mixes render batches and snapshot copies splits by
+ * kind. Ops overlap on the GPU, so the split is an attribution; the sum is the buffer's whole
+ * execution span. Times are collected when the slot's fence has signalled (cmd_wait_slot,
+ * cmd_drain) and also reach the SR_PERF_FRAMES rows (sr_perf_gpu_time). A diagnostic: it adds
+ * query writes to the command stream and changes no rendering, no guest memory and no wait.
+ * Presentation's own blit is timed by sdl3vk (sr_perf_gpu_present_time). */
+#define TS_PER_SLOT (SUBMIT_BATCH_MAX + 2u)
+static int s_ts_on = 0;
+static VkQueryPool s_ts_pool = VK_NULL_HANDLE;
+static double s_ts_period_ns = 1.0;
+static uint64_t s_ts_mask = ~0ull;
+static uint64_t s_ts_ns[SR_PERF_GE_REASON_COUNT];
+static uint64_t s_ts_total_ns[SR_PERF_GE_REASON_COUNT];
+static uint64_t s_ts_buffers = 0;   /* recordings whose times were collected (selftest) */
+static uint64_t s_ts_presents = 0, s_ts_total_presents = 0;
+static int s_ts_unavailable = 0;    /* the switch was set but the queue has no timestamps */
+
+static const char *const s_ts_reason_name[SR_PERF_GE_REASON_COUNT] = {
+    "render", "snapshot", "tex_upload", "target_upload", "depth_upload", "depth_readback",
+    "readback_transition", "transfer_blit", "init", "mixed",
+};
+
+/* Creates the query pool; 0 when the queue has no timestamps. Called before any recording. */
+static int ts_setup(uint32_t queue_family) {
+    if (s_ts_on) return 1;
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(s_pdev, &props);
+    uint32_t nq = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(s_pdev, &nq, NULL);
+    VkQueueFamilyProperties qf[16];
+    if (nq > 16u) nq = 16u;
+    vkGetPhysicalDeviceQueueFamilyProperties(s_pdev, &nq, qf);
+    uint32_t bits = queue_family < nq ? qf[queue_family].timestampValidBits : 0u;
+    VkQueryPoolCreateInfo qpc = { .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+    qpc.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    qpc.queryCount = SUBMIT_FRAMES * TS_PER_SLOT;
+    if (!bits || !(props.limits.timestampPeriod > 0.0f) ||
+        vkCreateQueryPool(s_dev, &qpc, NULL, &s_ts_pool) != VK_SUCCESS) {
+        s_ts_pool = VK_NULL_HANDLE;
+        s_ts_unavailable = 1;
+        fprintf(stderr, "gegpu: SR_GPU_TIMESTAMPS: this queue has no timestamps\n");
+        return 0;
+    }
+    s_ts_on = 1;
+    s_ts_period_ns = (double)props.limits.timestampPeriod;
+    s_ts_mask = bits >= 64u ? ~0ull : ((1ull << bits) - 1ull);
+    sr_perf_gpu_timestamps_on();
+    fprintf(stderr, "gegpu: GPU timestamps on (period %.3f ns, %u valid bits)\n", s_ts_period_ns, bits);
+    return 1;
+}
+
+static uint32_t ts_base(const SubmitSlot *slot) { return (uint32_t)(slot - s_submit) * TS_PER_SLOT; }
+
+static void ts_begin(SubmitSlot *slot) {
+    slot->ts_n = 0;
+    if (!s_ts_on) return;
+    vkCmdResetQueryPool(slot->cmd, s_ts_pool, ts_base(slot), TS_PER_SLOT);
+    vkCmdWriteTimestamp(slot->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, s_ts_pool, ts_base(slot));
+    slot->ts_n = 1;
+}
+
+/* After an op of kind `reason` is recorded. The last query of the slot is kept for ts_end. */
+static void ts_mark(SubmitSlot *slot, SrPerfGeReason reason) {
+    if (!s_ts_on || !slot->ts_n || slot->ts_n >= TS_PER_SLOT - 1u) return;
+    vkCmdWriteTimestamp(slot->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s_ts_pool,
+                        ts_base(slot) + slot->ts_n);
+    slot->ts_kind[slot->ts_n - 1u] = (uint8_t)reason;
+    slot->ts_n++;
+}
+
+static void ts_end(SubmitSlot *slot, SrPerfGeReason reason) {
+    if (!s_ts_on || !slot->ts_n) return;
+    vkCmdWriteTimestamp(slot->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s_ts_pool,
+                        ts_base(slot) + slot->ts_n);
+    slot->ts_kind[slot->ts_n - 1u] = (uint8_t)reason;
+    slot->ts_n++;
+}
+
+/* After the slot's fence has signalled: every query it wrote is available. */
+static void ts_collect(SubmitSlot *slot) {
+    if (!s_ts_on || slot->ts_n < 2u) { slot->ts_n = 0; return; }
+    uint64_t v[TS_PER_SLOT];
+    const uint32_t n = slot->ts_n;
+    slot->ts_n = 0;
+    if (vkGetQueryPoolResults(s_dev, s_ts_pool, ts_base(slot), n, sizeof(v[0]) * n, v, sizeof v[0],
+                              VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) return;
+    for (uint32_t i = 1; i < n; i++) {
+        uint64_t ticks = ((v[i] & s_ts_mask) - (v[i - 1u] & s_ts_mask)) & s_ts_mask;
+        unsigned r = slot->ts_kind[i - 1u] < SR_PERF_GE_REASON_COUNT ? slot->ts_kind[i - 1u]
+                                                                     : (unsigned)SR_PERF_GE_MIXED_DRAIN;
+        uint64_t ns = (uint64_t)((double)ticks * s_ts_period_ns);
+        s_ts_ns[r] += ns;
+        sr_perf_gpu_time((SrPerfGeReason)r, ns);
+    }
+    s_ts_buffers++;
+}
+
+static void ts_report(int final) {
+    if (!s_ts_on) return;
+    uint64_t *ns = final ? s_ts_total_ns : s_ts_ns;
+    uint64_t presents = final ? s_ts_total_presents : s_ts_presents;
+    uint64_t sum = 0;
+    for (int i = 0; i < SR_PERF_GE_REASON_COUNT; i++) sum += ns[i];
+    double per = presents ? (double)presents : 1.0;
+    fprintf(stderr, "GEGPU_TS%s presents=%llu scale=%d gpu_ms_per_present=%.3f", final ? "_TOTAL" : "",
+            (unsigned long long)presents, s_scale, (double)sum / 1e6 / per);
+    for (int i = 0; i < SR_PERF_GE_REASON_COUNT; i++)
+        if (ns[i]) fprintf(stderr, " %s=%.3f", s_ts_reason_name[i], (double)ns[i] / 1e6 / per);
+    if (final) fprintf(stderr, " gpu_ms_total=%.3f", (double)sum / 1e6);
+    fprintf(stderr, "\n");
+}
+
+static void ts_note_present(void) {
+    if (!s_ts_on) return;
+    s_ts_presents++;
+    s_ts_total_presents++;
+    if (s_ts_presents < 60u) return;
+    ts_report(0);
+    for (int i = 0; i < SR_PERF_GE_REASON_COUNT; i++) {
+        s_ts_total_ns[i] += s_ts_ns[i];
+        s_ts_ns[i] = 0;
+    }
+    s_ts_presents = 0;
+}
+
 static int cmd_wait_slot(SubmitSlot *slot, GeGpuReplayBoundaryKind boundary) {
     if (!slot || !slot->in_flight) return 1;
     uint64_t perf_started = sr_perf_now_ns();
     uint64_t wait_started = SDL_GetTicksNS();
     VKC(vkWaitForFences(s_dev, 1, &slot->fence, VK_TRUE, UINT64_MAX));
     uint64_t waited = SDL_GetTicksNS() - wait_started;
+    ts_collect(slot);
     replay_note_wait(boundary, waited);
     if (perf_started) {
         sr_perf_vulkan_wait(perf_started, slot->reason == SR_PERF_GE_DEPTH_READBACK ||
@@ -1000,6 +1167,7 @@ static int cmd_drain(GeGpuReplayBoundaryKind boundary) {
     VKC(vkResetFences(s_dev, count, fences));
     for (uint32_t i = 0; i < count; i++) {
         SubmitSlot *slot = &s_submit[slots[i]];
+        ts_collect(slot);
         slot->in_flight = 0;
         slot->reason_mask = 0;
         slot->recorded_ops = 0;
@@ -1029,12 +1197,14 @@ static int cmd_begin_fresh(void) {
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VKC(vkBeginCommandBuffer(s_cmd, &bi));
+    ts_begin(slot);
     return 1;
 }
 
 static int cmd_finish_submit(SrPerfGeReason reason, int defer) {
     SubmitSlot *slot = s_cmd_slot;
     if (!slot) return 0;
+    ts_end(slot, reason);
     VKC(vkEndCommandBuffer(s_cmd));
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1; si.pCommandBuffers = &s_cmd;
@@ -1095,6 +1265,7 @@ static int cmd_batch_record(SrPerfGeReason reason) {
     if (!s_cmd_slot) return 0;
     s_cmd_slot->reason_mask |= 1u << reason;
     s_cmd_slot->recorded_ops++;
+    ts_mark(s_cmd_slot, reason);
     if (!s_async_submit || s_cmd_slot->recorded_ops >= s_submit_batch_ops)
         return cmd_batch_flush();
     return 1;
@@ -1559,6 +1730,7 @@ static uint32_t s_pend_batches, s_pend_count;
 
 static void batches_reset(void) {
     s_nbatch = 0; s_nverts = 0;
+    s_nwbatch = 0;
     s_ntnl = 0; s_ntnlp = 0;
     s_pend_box = k_snap_rect_empty;
     s_pend_batches = s_pend_count = 0;
@@ -1794,8 +1966,10 @@ static int snapshot_copy_op(Target *t) {
     return 1;
 }
 
-/* One render op's batches, as submit_range gathered them. */
+/* One render op's batches, as submit_range gathered them: [b0, b1) of `arr` (s_batch, or a wing
+ * canvas's run of s_wbatch). */
 typedef struct {
+    const Batch *arr;
     uint32_t b0, b1, v0, tv0, p0, param_base, ntverts;
     VkDeviceSize vertex_offset, tvertex_offset;
 } RangeRec;
@@ -1841,7 +2015,7 @@ static void record_range(Target *t, const RangeRec *r, int twin) {
     VkPipeline cur = VK_NULL_HANDLE;
     VkDescriptorSet cur_set = VK_NULL_HANDLE;
     for (uint32_t i = b0; i < b1; i++) {
-        Batch *b = &s_batch[i];
+        const Batch *b = &r->arr[i];
         VkPipeline p = pipe_get(&b->key);
         if (!p) {
             /* Not expected once the cache grows; say so rather than dropping silently. */
@@ -1895,12 +2069,12 @@ static void record_range(Target *t, const RangeRec *r, int twin) {
 }
 
 /* Record batches [b0, b1) as one render op into `t`. Leaves the color image SHADER_READ_ONLY. */
-static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
+static int submit_range(Target *t, const Batch *arr, uint32_t b0, uint32_t b1) {
     /* Captured vertices and T&L references are two arrays; batches of each kind are in
      * order within it. */
     uint32_t v0 = UINT32_MAX, v1 = 0, tv0 = UINT32_MAX, tv1 = 0;
     for (uint32_t i = b0; i < b1; i++) {
-        const Batch *b = &s_batch[i];
+        const Batch *b = &arr[i];
         uint32_t *lo = b->key.tnl ? &tv0 : &v0, *hi = b->key.tnl ? &tv1 : &v1;
         if (b->first < *lo) *lo = b->first;
         if (b->first + b->count > *hi) *hi = b->first + b->count;
@@ -1942,7 +2116,7 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
 
     VkDeviceSize vertex_offset = (VkDeviceSize)vertex_base * sizeof(GpuVert);
     VkDeviceSize tvertex_offset = (VkDeviceSize)tvertex_base * sizeof(GeTnlVtx);
-    RangeRec rr = { b0, b1, v0, tv0, p0, param_base, ntverts, vertex_offset, tvertex_offset };
+    RangeRec rr = { arr, b0, b1, v0, tv0, p0, param_base, ntverts, vertex_offset, tvertex_offset };
     /* The host twin's pass draws on the twin's copy of what this op starts from: a twin that
      * is behind (some write did not reach it) is first re-seeded from the authentic image. */
     int twin_pass = s_twin && t->tfb && t->dep && t->dep->timg;
@@ -1957,8 +2131,12 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
         record_range(t, &rr, 1);
         s_cnt_twin_ops++;
     }
-    twin_note_write(&t->wgen, &t->tgen, twin_pass, "a render op without its twin pass");
-    if (t->dep) twin_note_write(&t->dep->wgen, &t->dep->tgen, twin_pass, "a render op without its twin pass");
+    /* A widescreen wing canvas (WingEnt: never in s_tgts, its depth never in s_deps) has no twin,
+     * by design: the presenter shows it as it is, so its writes leave no twin behind. */
+    if (target_in_slots(t)) {
+        twin_note_write(&t->wgen, &t->tgen, twin_pass, "a render op without its twin pass");
+        if (t->dep) twin_note_write(&t->dep->wgen, &t->dep->tgen, twin_pass, "a render op without its twin pass");
+    }
 #endif
     if (s_cpu_profile) {
         uint64_t total = SDL_GetTicksNS() - command_started;
@@ -1986,8 +2164,8 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
      * makes the depth surface newer than guest VRAM. A title that writes no depth may leave zbp on
      * a colour buffer, and writing the untouched surface back would overwrite those pixels. */
     int zwrite = 0;
-    for (uint32_t i = b0; i < b1 && !zwrite; i++) zwrite = s_batch[i].key.zwrite;
-    if (t->dep && zwrite) t->dep->guest_dirty = 1;
+    for (uint32_t i = b0; i < b1 && !zwrite; i++) zwrite = arr[i].key.zwrite;
+    if (t->dep && zwrite) { t->dep->guest_dirty = 1; t->dep->hud_zgen++; }
     sr_vram_mark_renderer_pending();
     s_cnt_submit++;
     if (s_stats) {
@@ -1995,7 +2173,7 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
         s_cnt_verts += nverts;
     }
     for (uint32_t i = b0; i < b1; i++) {
-        if (batch_reads_dst(&s_batch[i]) && sr_perf_enabled)
+        if (batch_reads_dst(&arr[i]) && sr_perf_enabled)
             sr_perf_ge_event(SR_PERF_GE_SHBLEND_BATCH, 1);
     }
     if (s_log)
@@ -2019,14 +2197,12 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
  * batches before that batch and the batch itself, which is what a copy taken when its state was
  * built held; every other shader-blend batch reads the snapshot unchanged, because nothing drawn
  * since its copy touches the pixels it reads. Leaves the color image SHADER_READ_ONLY. */
-static int submit_pending(void) {
-    if (!s_nbatch || !s_cur) { if (s_nbatch == 0) batches_reset(); return 1; }
-    Target *t = s_cur;
+static int submit_list(Target *t, const Batch *arr, uint32_t n) {
     int ok = 1;
     uint32_t i = 0;
-    while (ok && i < s_nbatch) {
-        SnapRect box = batch_rect(&s_batch[i]);
-        if (batch_reads_dst(&s_batch[i])) {
+    while (ok && i < n) {
+        SnapRect box = batch_rect(&arr[i]);
+        if (batch_reads_dst(&arr[i])) {
             if (snapshot_stale_for(t, &box, &k_snap_rect_empty)) {
                 if (!snapshot_copy_op(t)) { ok = 0; break; }
             } else if (sr_perf_enabled) {
@@ -2035,16 +2211,16 @@ static int submit_pending(void) {
         }
         SnapRect drawn = box;
         uint32_t j = i + 1u;
-        for (; j < s_nbatch; j++) {
-            box = batch_rect(&s_batch[j]);
-            if (batch_reads_dst(&s_batch[j])) {
+        for (; j < n; j++) {
+            box = batch_rect(&arr[j]);
+            if (batch_reads_dst(&arr[j])) {
                 if (snapshot_stale_for(t, &box, &drawn)) break;
                 if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_CACHE_HIT, 1);
             }
             snap_rect_union(&drawn, &box);
         }
         const int tracked = s_snap_src == t && s_snap_tracked && s_snap_dirty_gen == t->render_gen;
-        ok = submit_range(t, i, j);
+        ok = submit_range(t, arr, i, j);
         target_note_drawn(t, drawn.y0, drawn.y1);
         if (ok && tracked) {
             /* Outside what this op drew, the snapshot still holds the target. */
@@ -2054,6 +2230,34 @@ static int submit_pending(void) {
         }
         i = j;
     }
+    return ok;
+}
+
+/* The wing batches, each run of one canvas submitted like a target's own (snapshots for
+ * destination reads included: the snapshot then holds the canvas, and s_snap_src says so). */
+static int submit_wings(void) {
+    int ok = 1;
+    uint32_t i = 0;
+    while (ok && i < s_nwbatch) {
+        uint32_t j = i + 1u;
+        while (j < s_nwbatch && s_wbatch_w[j] == s_wbatch_w[i]) j++;
+        ok = submit_list(&s_wbatch_w[i]->t, s_wbatch + i, j - i);
+        i = j;
+    }
+    s_nwbatch = 0;
+    return ok;
+}
+
+static int submit_pending(void) {
+    if (__builtin_expect(s_nwbatch != 0, 0)) {
+        int ok = 1;
+        if (s_nbatch && s_cur) ok = submit_list(s_cur, s_batch, s_nbatch);
+        if (!submit_wings()) ok = 0;
+        if (!s_nbatch || s_cur) batches_reset();
+        return ok;
+    }
+    if (!s_nbatch || !s_cur) { if (s_nbatch == 0) batches_reset(); return 1; }
+    int ok = submit_list(s_cur, s_batch, s_nbatch);
     batches_reset();
     return ok;
 }
@@ -2919,12 +3123,16 @@ static DepthEnt *depth_acquire(uint32_t zba, uint32_t zstride) {
         }
     DepthEnt *d = NULL;
     for (int i = 0; i < MAX_DEP; i++) if (!s_deps[i].used) { d = &s_deps[i]; break; }
-    if (!d) {   /* evict slot 0 arbitrarily (depth contents are transient frame data) */
+    if (!d) {   /* evict slot 0 */
         /* Render submissions are fenced by cmd_submit_wait; flush only batches that
          * can still reference this depth attachment. */
         if (!submit_pending()) return NULL;
-        if (!cmd_drain(GEGPU_BOUNDARY_LIFETIME)) return NULL;
         d = &s_deps[0];
+        /* Depth a draw wrote since the surface was loaded is newer than guest VRAM (#1967):
+         * commit it before the image goes, or a CPU read and the surface's next use (seeded
+         * from VRAM) would see the older values. */
+        if (!depth_readback_to_guest(d)) return NULL;
+        if (!cmd_drain(GEGPU_BOUNDARY_LIFETIME)) return NULL;
         vkDestroyImageView(s_dev, d->view, NULL);
         vkDestroyImage(s_dev, d->img, NULL);
         vkFreeMemory(s_dev, d->mem, NULL);
@@ -3013,8 +3221,13 @@ static int begin_target(void) {
     if (!is_vram(s_ge->fbp)) return 0;       /* render-to-RAM: software path owns it */
     uint32_t fba = vram_off(s_ge->fbp);
     uint32_t stride = s_ge->fbw ? s_ge->fbw : 512;
+    /* The depth surface is part of the key: a title may move zbp (or zbw) and keep the colour
+     * target, and its next draws then test and write the other depth buffer. */
+    uint32_t zba = vram_off(s_ge->zbp);
+    uint32_t zstride = s_ge->zbw ? s_ge->zbw : stride;
     if (s_cur && s_cur->used && s_cur->fba == fba &&
-        s_cur->fmt == (s_ge->fbfmt & 3) && s_cur->stride == stride && s_cur->gpu_valid) {
+        s_cur->fmt == (s_ge->fbfmt & 3) && s_cur->stride == stride && s_cur->gpu_valid &&
+        s_cur->dep && s_cur->dep->zba == zba && s_cur->dep->zstride == zstride) {
         if (!target_sync_cpu_writes(s_cur)) return 0;
         if (!ge_zbuf_prepare_current()) return 0;
         s_zbuf = ge_zbuf_ptr();
@@ -4165,7 +4378,29 @@ static int stencil_reads_own_writes(const Batch *b) {
  * writes (append). */
 static SnapRect s_tail_prims;
 
+/* A wing primitive's batch: the wing list, merged with the previous one when it continues
+ * it on the same canvas. A stencil batch that reads its own writes is never merged. */
+static void append_wing(Batch *b, uint32_t first, uint32_t count) {
+    if (b->sw <= 0 || count == 0) return;
+    s_cnt_wing++;
+    if (s_nwbatch && s_wbatch_w[s_nwbatch - 1] == s_wing_dst && !stencil_reads_own_writes(b)) {
+        Batch *last = &s_wbatch[s_nwbatch - 1];
+        if (last->first + last->count == first &&
+            !memcmp(&last->key, &b->key, sizeof(b->key)) &&
+            last->sx == b->sx && last->sy == b->sy && last->sw == b->sw && last->sh == b->sh &&
+            !memcmp(last->bconst, b->bconst, sizeof(b->bconst)) &&
+            !memcmp(&last->pc, &b->pc, sizeof(b->pc)) && last->dset == b->dset) {
+            last->count += count;
+            return;
+        }
+    }
+    b->first = first; b->count = count;
+    s_wbatch_w[s_nwbatch] = s_wing_dst;
+    s_wbatch[s_nwbatch++] = *b;
+}
+
 static void append(Batch *b, uint32_t first, uint32_t count) {
+    if (__builtin_expect(s_wing_dst != NULL, 0)) { append_wing(b, first, count); return; }
     if (s_cpu_profile) s_cpu_profile_stats.append_calls++;
     if (b->sw <= 0 || count == 0) return;
     sr_vram_mark_renderer_pending();
@@ -4199,7 +4434,7 @@ static void append(Batch *b, uint32_t first, uint32_t count) {
 
 static void ensure_room(uint32_t verts) {
     if (s_cpu_profile) s_cpu_profile_stats.ensure_room_calls++;
-    if (s_nverts + verts > MAX_VERTS || s_nbatch >= MAX_BATCH - 1) {
+    if (s_nverts + verts > MAX_VERTS || s_nbatch >= MAX_BATCH - 1 || s_nwbatch >= MAX_BATCH - 1) {
         if (s_cpu_profile) s_cpu_profile_stats.ensure_room_flushes++;
         submit_pending();
     }
@@ -4312,13 +4547,164 @@ static struct {
     Batch batch;
 } s_tri_state;
 
+/* Ace smooth motion's HUD mask (ace_hud.h): a through-mode draw's box on the target it draws
+ * into, and whether it samples a render target (then it is a post effect, not HUD). Reads only. */
+static int batch_samples_target(VkDescriptorSet set) {
+    for (unsigned k = 0; k < TEX_FILTER_VARIANTS; k++)
+        if (set == s_snap_set[k]) return 1;
+    for (int i = 0; i < MAX_TGT; i++)
+        if (s_tgts[i].used)
+            for (unsigned k = 0; k < TEX_FILTER_VARIANTS; k++)
+                if (set == s_tgts[i].set[k]) return 1;
+    return 0;
+}
+
+static void ace_hud_draw(const Batch *b, float xa, float ya, float xb, float yb) {
+    if (!(s_ge->vtype & (1u << 23)) || s_ge->clear || !s_cur) return;
+    ace_hud_note((int)(s_cur - s_tgts), xa, ya, xb, yb, batch_samples_target(b->dset));
+}
+
+/* ---- widescreen Fill: wing canvases (#1881) ------------------------------------------------ */
+
+static void wing_release(WingEnt *w) {
+    if (!w->used) return;
+    (void)cmd_drain(GEGPU_BOUNDARY_LIFETIME);
+    if (s_snap_src == &w->t) s_snap_src = NULL;
+    if (w->t.fb) vkDestroyFramebuffer(s_dev, w->t.fb, NULL);
+    if (w->t.view) vkDestroyImageView(s_dev, w->t.view, NULL);
+    if (w->t.img) vkDestroyImage(s_dev, w->t.img, NULL);
+    if (w->t.mem) vkFreeMemory(s_dev, w->t.mem, NULL);
+    if (w->dep.view) vkDestroyImageView(s_dev, w->dep.view, NULL);
+    if (w->dep.img) vkDestroyImage(s_dev, w->dep.img, NULL);
+    if (w->dep.mem) vkFreeMemory(s_dev, w->dep.mem, NULL);
+    memset(w, 0, sizeof *w);
+}
+
+/* Black, alpha 0 and depth 0: what ge.c's software canvas holds after its own clear. */
+static int wing_clear(WingEnt *w) {
+    if (!cmd_begin()) return 0;
+    to_layout(s_cmd, w->t.img, VK_IMAGE_ASPECT_COLOR_BIT, &w->t.layout,
+              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkClearColorValue black = {{0.0f, 0.0f, 0.0f, 0.0f}};
+    VkImageSubresourceRange crng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    vkCmdClearColorImage(s_cmd, w->t.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &crng);
+    to_layout(s_cmd, w->dep.img, VK_IMAGE_ASPECT_DEPTH_BIT, &w->dep.layout,
+              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkClearDepthStencilValue zero = { 0.0f, 0u };
+    VkImageSubresourceRange zrng = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+    vkCmdClearDepthStencilImage(s_cmd, w->dep.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &zrng);
+    to_layout(s_cmd, w->dep.img, VK_IMAGE_ASPECT_DEPTH_BIT, &w->dep.layout,
+              VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    return cmd_submit_wait(SR_PERF_GE_INIT);
+}
+
+static int wing_create(WingEnt *w, uint32_t fb) {
+    memset(w, 0, sizeof *w);
+    w->used = 1;
+    w->fb = fb;
+    w->t.used = 1;
+    w->t.stride = FB_W;
+    w->t.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    w->t.dep = &w->dep;
+    w->dep.used = 1;
+    w->dep.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (!make_image(SCL_W, SCL_H, VK_FORMAT_R8G8B8A8_UNORM,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    &w->t.img, &w->t.mem) ||
+        !make_view(w->t.img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, &w->t.view) ||
+        !make_image(SCL_W, SCL_H, VK_FORMAT_D16_UNORM,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    &w->dep.img, &w->dep.mem) ||
+        !make_view(w->dep.img, VK_FORMAT_D16_UNORM, VK_IMAGE_ASPECT_DEPTH_BIT, &w->dep.view))
+        return 0;
+    VkImageView views[2] = { w->t.view, w->dep.view };
+    VkFramebufferCreateInfo fbc = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+    fbc.renderPass = s_rp; fbc.attachmentCount = 2; fbc.pAttachments = views;
+    fbc.width = SCL_W; fbc.height = SCL_H; fbc.layers = 1;
+    return vkCreateFramebuffer(s_dev, &fbc, NULL, &w->t.fb) == VK_SUCCESS;
+}
+
+/* The canvas of display framebuffer `fb`, made on first use and cleared whenever ge.c cleared
+ * its own (ge_wide_epoch), so both renderers start a canvas from the same state. */
+static WingEnt *wing_get(uint32_t fb) {
+    const uint32_t epoch = ge_wide_epoch(fb);
+    if (!epoch) return NULL;
+    WingEnt *w = NULL;
+    for (int i = 0; i < MAX_WING; i++)
+        if (s_wings[i].used && s_wings[i].fb == fb) { w = &s_wings[i]; break; }
+    if (!w) {
+        for (int i = 0; i < MAX_WING && !w; i++) if (!s_wings[i].used) w = &s_wings[i];
+        if (!w) {
+            for (int i = 0; i < MAX_WING; i++)
+                if (!w || s_wings[i].lru < w->lru) w = &s_wings[i];
+            if (!submit_pending()) return NULL;   /* pending wing batches may name it */
+            wing_release(w);
+        }
+        if (!wing_create(w, fb)) {
+            static int reported = 0;
+            if (!reported) {
+                reported = 1;
+                fprintf(stderr, "gegpu: no wing canvas for 0x%08x; Fill draws no wings there\n", fb);
+            }
+            wing_release(w);
+            return NULL;
+        }
+    }
+    if (w->epoch != epoch) {
+        if (s_nwbatch && !submit_pending()) return NULL;
+        if (!wing_clear(w)) return NULL;
+        w->epoch = epoch;
+    }
+    w->lru = s_lru++;
+    return w;
+}
+
+/* A wing primitive this backend did not draw: count it (gegpu_wide_counts has the totals)
+ * and say once per cause that Fill is missing geometry there. */
+static void wing_drop(int cause) {
+    static unsigned reported = 0;
+    s_cnt_wing_drop++;
+    const unsigned bit = cause >= 0 ? 1u << (cause < 29 ? cause : 29) : cause == -1 ? 1u << 30 : 1u << 31;
+    if (reported & bit) return;
+    reported |= bit;
+    if (cause >= 0)
+        fprintf(stderr, "gegpu: Fill dropped a wing primitive: GE state drawn in software here (fallback "
+                        "reason %d); that wing has no geometry from it\n", cause);
+    else
+        fprintf(stderr, "gegpu: Fill dropped a wing primitive: no %s; that wing has no geometry from it\n",
+                cause == -1 ? "target" : "wing canvas");
+}
+
+/* The state of a wing primitive: the one its own draw used, with the canvas columns for the
+ * scissor's and the scissor's rows. A state this backend would hand to the software
+ * rasterizer is dropped here instead, with no flush or readback: the wings lack that draw. */
+static int wing_state(int persp, int sprite, Batch *b) {
+    const int reason = gpu_state_unsupported_reason();
+    if (reason >= 0) { wing_drop(reason); return 0; }
+    state_get(persp, sprite, b);
+    if (!begin_target()) { wing_drop(-1); return 0; }
+    if (!sprite) {
+        static int nocull = -1;
+        if (nocull < 0) nocull = getenv("SR_NOCULL") ? 1 : 0;
+        if (nocull) b->key.cull = VK_CULL_MODE_NONE;
+    }
+    if (b->sw <= 0 || b->sh <= 0) { b->sw = 0; return 1; }   /* no scissor rows: nothing */
+    b->sx = s_wing_x0;
+    b->sw = s_wing_x1 - s_wing_x0 + 1;
+    return 1;
+}
+
 static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     if (!s_ready) return 0;
     cpu_profile_hook_enter();
     { const GeVtx *vv[3] = { A, B, C };
       if (!hook_finite(vv, 3)) return cpu_profile_hook_leave(1); }
     Batch b;
-    if (s_tri_state.valid && s_tri_state.persp == persp && s_cur &&
+    if (__builtin_expect(s_wing_dst != NULL, 0)) {
+        if (!wing_state(persp, 0, &b)) return cpu_profile_hook_leave(1);
+    } else if (s_tri_state.valid && s_tri_state.persp == persp && s_cur &&
         s_tri_state.target == s_cur && s_tri_state.serial == ge_state_serial() &&
         s_tri_state.flushgen == s_flushgen) {
         b = s_tri_state.batch;
@@ -4350,7 +4736,12 @@ static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     put_vert(C->x, C->y, C->z, C->rw, C->u, C->v, C->fog, C->r, C->g, C->b, C->a);
     cpu_profile_vertex_done(vertex_started, 3);
     append(&b, first, 3);
-    s_cnt_tri++;
+    if (!s_wing_dst) {   /* a wing canvas draw is not the target's: no count, no HUD box */
+        s_cnt_tri++;
+        if (g_ace_hud_on)
+            ace_hud_draw(&b, fminf(A->x, fminf(B->x, C->x)), fminf(A->y, fminf(B->y, C->y)),
+                         fmaxf(A->x, fmaxf(B->x, C->x)), fmaxf(A->y, fmaxf(B->y, C->y)));
+    }
     return cpu_profile_hook_leave(1);
 }
 
@@ -4439,10 +4830,14 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     cpu_profile_hook_enter();
     { const GeVtx *vv[2] = { p0, p1 };
       if (!hook_finite(vv, 2)) return cpu_profile_hook_leave(1); }
-    if (software_fallback_begin(-1)) return cpu_profile_hook_leave(0);
     Batch b;
-    state_get(persp, 1, &b);
-    if (!begin_target()) return cpu_profile_hook_leave(1);
+    if (__builtin_expect(s_wing_dst != NULL, 0)) {
+        if (!wing_state(persp, 1, &b)) return cpu_profile_hook_leave(1);
+    } else {
+        if (software_fallback_begin(-1)) return cpu_profile_hook_leave(0);
+        state_get(persp, 1, &b);
+        if (!begin_target()) return cpu_profile_hook_leave(1);
+    }
     float xa = floorf(fminf(p0->x, p1->x)), xb = floorf(fmaxf(p0->x, p1->x));
     float ya = floorf(fminf(p0->y, p1->y)), yb = floorf(fmaxf(p0->y, p1->y));
     if (xb <= xa || yb <= ya) return cpu_profile_hook_leave(1);
@@ -4480,7 +4875,10 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     put_vert(xa, yb, z, 1.0f, ua, vb, fog, r, g, bb_, a);
     cpu_profile_vertex_done(vertex_started, 6);
     append(&b, first, 6);
-    s_cnt_spr++;
+    if (!s_wing_dst) {
+        s_cnt_spr++;
+        if (g_ace_hud_on) ace_hud_draw(&b, xa, ya, xb, yb);
+    }
     return cpu_profile_hook_leave(1);
 }
 
@@ -4898,8 +5296,15 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
      * target owns a newer frame, so gui_present syncs guest VRAM only for this code (issue #827). */
     if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;
     s_cnt_present_gpu++;
+    ts_note_present();
     stats_tick();
     VkImage shown = present_image(t);
+    /* Keyed by the shown image: gui.c takes the HUD mask by the image it shows, which is the
+     * twin while the twin is shown. The authentic depth matches it (s_tscale == s_scale). */
+    if (g_ace_hud_on)
+        ace_hud_present((int)(t - s_tgts), shown, t->dep ? t->dep->img : VK_NULL_HANDLE,
+                        t->dep ? t->dep->layout : VK_IMAGE_LAYOUT_UNDEFINED, (int)SCL_W, (int)SCL_H,
+                        t->dep ? t->dep->hud_zgen : 0u);
     int pr = sdl3vk_present_image_ex((void *)shown, DRAW_W * present_scale(t), FB_H * present_scale(t));
     /* Only SDL's -1 is remapped: it is a present that failed after the target was prepared, so
      * the target's newest pixels may exist only in its image. SDL's 0 (user close) and 1 (shown)
@@ -4971,10 +5376,62 @@ int gegpu_sync_guest_fb(const GeGpuFbDescriptor *desc) {
 
 /* ---- init ----------------------------------------------------------------------------------- */
 
+/* ge.c's wing hooks (ge_shared.h): hook_tri and hook_sprite record the primitive into the
+ * canvas while s_wing_dst is set. */
+static int wing_begin(uint32_t fb, int x0, int x1) {
+    if (!s_ready || x0 < 0 || x1 < x0 || x1 >= (int)FB_W) return 0;
+    WingEnt *w = wing_get(fb);
+    if (!w) { wing_drop(-2); return 0; }
+    s_wing_dst = w; s_wing_x0 = x0; s_wing_x1 = x1;
+    return 1;
+}
+
+/* Each returns 1 only when the primitive was recorded into the canvas (s_cnt_wing counts
+ * recordings), so ge.c marks a canvas drawn only for a real draw. */
+static int hook_wing_tri(uint32_t fb, int x0, int x1,
+                         const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp) {
+    if (!wing_begin(fb, x0, x1)) return 0;
+    const unsigned long recorded = s_cnt_wing;
+    (void)hook_tri(a, b, c, persp);
+    s_wing_dst = NULL;
+    return s_cnt_wing != recorded;
+}
+
+static int hook_wing_sprite(uint32_t fb, int x0, int x1,
+                            const GeVtx *p0, const GeVtx *p1, int persp) {
+    if (!wing_begin(fb, x0, x1)) return 0;
+    const unsigned long recorded = s_cnt_wing;
+    (void)hook_sprite(p0, p1, persp);
+    s_wing_dst = NULL;
+    return s_cnt_wing != recorded;
+}
+
+int gegpu_wide_read(uint32_t fb, uint32_t *rgba) {
+    if (!s_ready || !rgba) return 0;
+    WingEnt *w = NULL;
+    for (int i = 0; i < MAX_WING; i++)
+        if (s_wings[i].used && s_wings[i].fb == fb) { w = &s_wings[i]; break; }
+    if (!w || !submit_pending() || !cmd_begin()) return 0;
+    to_layout(s_cmd, w->t.img, VK_IMAGE_ASPECT_COLOR_BIT, &w->t.layout,
+              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    cmd_copy_readback(s_cmd, w->t.img, VK_IMAGE_ASPECT_COLOR_BIT, s_xfer, 4u);
+    if (!cmd_submit_wait(SR_PERF_GE_TARGET_READBACK_TRANSITION)) return 0;
+    const uint32_t *src = (const uint32_t *)s_xfer_map;
+    for (uint32_t y = 0; y < FB_H; y++)
+        for (uint32_t x = 0; x < FB_W; x++)
+            rgba[y * FB_W + x] = src[y * readback_row_step() * SCL_W + x * (uint32_t)s_scale];
+    return 1;
+}
+
+void gegpu_wide_counts(unsigned long *drawn, unsigned long *dropped) {
+    if (drawn) *drawn = s_cnt_wing;
+    if (dropped) *dropped = s_cnt_wing_drop;
+}
+
 static const GeGpuHooks k_hooks = {
     hook_tri, hook_sprite, hook_line, hook_point, gegpu_flush, hook_vram_dirty, hook_xfer,
     gegpu_capture_materialize, hook_vram_read, hook_vram_write_prepare, hook_vram_pending,
-    hook_tnl_prim,
+    hook_tnl_prim, hook_wing_tri, hook_wing_sprite,
 };
 
 #ifdef SR_GPU_COHERENCE_SELFTEST
@@ -5294,6 +5751,8 @@ int gegpu_init(void) {
         if (!s_white_set) return 0;
     }
 
+    /* Last, so a failed init leaves no query pool and the switch off. */
+    if (sr_perf_gpu_timestamps_requested()) (void)ts_setup(vi.queue_family);
     s_readback_commit_failures = 0;
     s_ready = 1;
     ge_set_gpu_hooks(&k_hooks);
@@ -5326,9 +5785,25 @@ void gegpu_shutdown(void) {
      * object that a recorded command or descriptor can reference. */
     (void)vkDeviceWaitIdle(s_dev);
     stats_emit(1);
+    if (s_ts_on) {
+        /* The device is idle: the recordings still marked in flight have their times too. */
+        for (uint32_t i = 0; i < SUBMIT_FRAMES; i++)
+            if (s_submit[i].in_flight) ts_collect(&s_submit[i]);
+        for (int i = 0; i < SR_PERF_GE_REASON_COUNT; i++) s_ts_total_ns[i] += s_ts_ns[i];
+        ts_report(1);
+        vkDestroyQueryPool(s_dev, s_ts_pool, NULL);
+        s_ts_pool = VK_NULL_HANDLE;
+        s_ts_on = 0;
+    }
+    /* A later gegpu_init starts its totals from zero. */
+    memset(s_ts_ns, 0, sizeof s_ts_ns);
+    memset(s_ts_total_ns, 0, sizeof s_ts_total_ns);
+    s_ts_buffers = s_ts_presents = s_ts_total_presents = 0;
+    s_ts_unavailable = 0;
     ge_set_gpu_hooks(NULL);
     s_ready = 0;
 
+    for (int i = 0; i < MAX_WING; i++) wing_release(&s_wings[i]);
     for (int i = 0; i < MAX_TGT; i++) target_destroy(&s_tgts[i]);
     for (int i = 0; i < MAX_DEP; i++) {
         DepthEnt *d = &s_deps[i];

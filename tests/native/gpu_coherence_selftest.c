@@ -94,21 +94,24 @@ static int host_mem_type_selection_ok(void) {
     return ok;
 }
 
+/* `value` "unset" removes the variable. */
 static int set_env(const char *name, const char *value) {
+    const int unset = strcmp(value, "unset") == 0;
 #ifdef _WIN32
-    return _putenv_s(name, value) == 0;
+    return _putenv_s(name, unset ? "" : value) == 0;
 #else
-    return setenv(name, value, 1) == 0;
+    return (unset ? unsetenv(name) : setenv(name, value, 1)) == 0;
 #endif
 }
 
-/* `--scale N`, `--case NAME` and `--readback-full 1` set SR_GPU_SCALE, SR_GPU_COHERENCE_CASE and
- * SR_GPU_READBACK_FULL before the backend starts; `--twin 1|native` and `--twin-ref PATH` set
- * SR_GPU_TWIN_COLOR (the host twin, #2050) and SR_GPU_TWIN_REF (a file the twin cases write in a
- * twin-off run and compare against in a twin-on run). The twin is an Ace Mode feature, so `--twin`
- * also turns Ace Mode on (with no Ace item of its own), unless `--authentic` keeps it off to show
- * that an authentic run ignores the switch. Recipes pass arguments, not a `VAR=value` prefix,
- * which cmd.exe does not accept. */
+/* `--scale N`, `--case NAME`, `--readback-full 1` and `--gpu-timestamps VALUE|unset` set SR_GPU_SCALE,
+ * SR_GPU_COHERENCE_CASE, SR_GPU_READBACK_FULL and SR_GPU_TIMESTAMPS before the backend starts;
+ * `--twin 1|native` and `--twin-ref PATH` set SR_GPU_TWIN_COLOR (the host twin, #2050) and
+ * SR_GPU_TWIN_REF (a file the twin cases write in a twin-off run and compare against in a
+ * twin-on run). The twin is an Ace Mode feature, so `--twin` also turns Ace Mode on (with no
+ * Ace item of its own), unless `--authentic` keeps it off to show that an authentic run
+ * ignores the switch. Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does
+ * not accept. */
 int main(int argc, char **argv) {
     int twin_arg = 0, authentic = 0;
     for (int i = 1; i < argc; i++) {
@@ -117,6 +120,7 @@ int main(int argc, char **argv) {
         const char *name = strcmp(argv[i], "--scale") == 0 ? "SR_GPU_SCALE"
                          : strcmp(argv[i], "--case") == 0  ? "SR_GPU_COHERENCE_CASE"
                          : strcmp(argv[i], "--readback-full") == 0 ? "SR_GPU_READBACK_FULL"
+                         : strcmp(argv[i], "--gpu-timestamps") == 0 ? "SR_GPU_TIMESTAMPS"
                          : strcmp(argv[i], "--twin") == 0 ? "SR_GPU_TWIN_COLOR"
                          : strcmp(argv[i], "--twin-ref") == 0 ? "SR_GPU_TWIN_REF" : NULL;
         if (!name || i + 1 >= argc || !set_env(name, argv[++i])) {
@@ -165,6 +169,12 @@ int main(int argc, char **argv) {
     ok = gegpu_snapshot_sync_selftest();
 #else
     ok = gegpu_coherence_selftest();
+    if (ok == 77) {   /* --case gpu-timestamps on a queue without timestamp queries */
+        gegpu_shutdown();
+        sdl3vk_shutdown();
+        free(arena);
+        return 77;
+    }
 #endif
 #ifndef SR_GPU_ACE_SELFTEST
     /* Ace Mode off (A2, src/rt/ace.h): every cell above ran with no anisotropic sampler,

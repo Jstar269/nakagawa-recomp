@@ -517,13 +517,35 @@ class WorkflowWiringTests(unittest.TestCase):
         for uses in re.findall(r"(?m)^\s*(?:- )?uses: (\S+)", self.text):
             self.assertRegex(uses, r"@[0-9a-f]{40}$")
 
-    def test_retriggers_name_every_producing_workflow_but_provenance(self) -> None:
+    def test_retriggers_only_on_ci_completion(self) -> None:
+        # CI finished last on all 181 heads whose three pull_request producers passed on
+        # 2026-11-04/05, so a verdict started by OSV-Scanner or Dependency Review only
+        # re-posted "pending" and held the head's concurrency group ahead of the run CI
+        # starts. When either finishes after CI (a re-run), the verdict stays pending, never
+        # success, until it is dispatched by hand, as for the provenance attestation.
         match = re.search(r"workflows: \[([^\]]*)\]", self.text)
         assert match is not None
         names = {name.strip().strip('"') for name in match.group(1).split(",")}
-        expected = {self._top_name(ROOT / producer.workflow) for producer in ctv.PRODUCERS
-                    if producer.events == ("pull_request",)}
-        self.assertEqual(names, expected)
+        ci = {self._top_name(ROOT / producer.workflow) for producer in ctv.PRODUCERS
+              if producer.workflow == ".github/workflows/ci.yml"}
+        self.assertEqual(ci, {"CI"})
+        self.assertEqual(names, ci)
+
+    def test_cancelled_first_attempt_starts_no_verdict(self) -> None:
+        # A first CI attempt is cancelled when a newer push supersedes it; its verdict would
+        # judge a stale head. The skip sits inside the workflow_run route only, so a re-run
+        # (attempt 2 or later) and the pull_request_target and dispatch routes still judge.
+        start = self.text.index("\n  verdict:\n")
+        condition = self.text[self.text.index("    if: >-\n", start):self.text.index("    runs-on:", start)]
+        skip = ("!(github.event.workflow_run.conclusion == 'cancelled' && "
+                "github.event.workflow_run.run_attempt == 1)")
+        self.assertEqual(condition.count(skip), 1)
+        route = re.search(r"\(github\.event_name == 'workflow_run' && "
+                          r"github\.event\.workflow_run\.event == 'pull_request' &&\s*"
+                          + re.escape(skip) + r"\)", condition)
+        self.assertIsNotNone(route, "the skip must be part of the workflow_run alternative")
+        self.assertIn("github.event_name == 'workflow_dispatch'", condition)
+        self.assertIn("github.event.pull_request.base.ref == github.event.repository.default_branch", condition)
 
     def test_does_not_name_the_provenance_context(self) -> None:
         # provenance_attest_verify.py refuses any other workflow naming its context.

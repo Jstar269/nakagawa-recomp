@@ -38,20 +38,38 @@
     },
     {
       "embedded": "ace_match_comp.inc",
-      "embedded_sha256": "20043b6d8e27dae4077ff4a28cd977a3271c32c3a0c67468579280ef32525352",
+      "embedded_sha256": "2d036847942f691456607e997003f34b8fca60957a14cd9852f0557b4980b1d9",
       "source": "shaders/ace_match.comp",
-      "source_sha256": "bf632ab0cb5f6895e2e664c3222d56ef39c3bebd62d47334db2cd8b0d6626be7",
-      "spirv_bytes": 8828,
-      "spirv_sha256": "dc0619e2d4ded3025c9112f778389194b2f1ed105f621322dcc3bbbe84efe0a8",
+      "source_sha256": "51fac42f5c9c7a5472e1a16bb78e8ebfebd479c50118a4e4eecbc1477a90de06",
+      "spirv_bytes": 13236,
+      "spirv_sha256": "b6be1c9bc17ee2980dee04e28dc927aafab35328978590e9143c0fbedd5066dd",
       "stage": "comp"
     },
     {
       "embedded": "ace_compose_comp.inc",
-      "embedded_sha256": "8ed723fa973f35816b177c09f4acbbc066f0149cbb3167f591991b4fa3abfab9",
+      "embedded_sha256": "af044b956de3b7fedea71189f59f0c3a9fd62b3bc8b4f4b034600fc4840a4545",
       "source": "shaders/ace_compose.comp",
-      "source_sha256": "c94a7fdda009bc641ea8dfe710906bbb46bf2a8687275072b234b16be97cc270",
-      "spirv_bytes": 7532,
-      "spirv_sha256": "a80ccfb575bf908fa2f9763f1fe6b83c28255002a3492f212d066b4fd1f4456d",
+      "source_sha256": "491b9ca632a0eec1d0cc0894e56a5cf1894b394a54353a19ac17b5529adcb2e0",
+      "spirv_bytes": 13680,
+      "spirv_sha256": "0557845987290e399b109eb0d40457bea0831b8b2351595dc597d584314e79f6",
+      "stage": "comp"
+    },
+    {
+      "embedded": "fsr1_easu_comp.inc",
+      "embedded_sha256": "23fda4c8a7dce5b0cc2af48fe6cd10faa272963f844b36d0dd395678beacbe8f",
+      "source": "shaders/fsr1_easu.comp",
+      "source_sha256": "6097066e6cfa3657e35877557349eeabbb7bafe620344d91df90899cd34ddc4d",
+      "spirv_bytes": 36868,
+      "spirv_sha256": "57a467ff2a7189227ebb5b487b88b77813ab2ca35b9852514d83a9bc84d3e162",
+      "stage": "comp"
+    },
+    {
+      "embedded": "fsr1_rcas_comp.inc",
+      "embedded_sha256": "dd213f53692cf6f812cb081a9b0e61df4c3e90316b5b9c7c2c56ce309e38b172",
+      "source": "shaders/fsr1_rcas.comp",
+      "source_sha256": "4bbd5513d9acfb4fb73e0db36bc034e1150c087b6514ff31374ba9d62ecbc2fa",
+      "spirv_bytes": 16976,
+      "spirv_sha256": "492a9dd7802bc46ab219022f044cf3c619dbaf769fde542fdcc8b9417f0656cd",
       "stage": "comp"
     }
   ]

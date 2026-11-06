@@ -153,6 +153,7 @@ approves the new bytes, or re-admits a file that has not landed yet.
 | Windows runtime compile gate | The runtime builds with MSYS2 UCRT64 on Windows | Check Windows-only APIs and headers |
 | Trusted provenance attestation | Your change against the private trusted ledger | Provenance mismatches are handled by a maintainer |
 | dependency-review, OSV, CodeQL | Dependency and static security scans | Read the finding; ask if unsure |
+| CodeQL (waiting) | CodeQL runs when a maintainer batches or dispatches the pull request | Nothing: a waiting CodeQL check is not a failure |
 | Public export candidate audit | The publication gates and the public-safe export candidate, which must fail closed without the trusted ledger and leave nothing at the requested path | Read the failing step in the job log. A provenance finding in the publication audit (a missing or unresolved claim) stops the job before the candidate audit, so the step then says it failed for a reason other than the named fail-closed candidate audit; fix that finding first |
 | Main integration smoke | The compact import and publication smoke (`tools/import_audit_gate.py`) and the provenance record gap check. It runs on pushes to `main`, manual runs and merge-queue groups, and is skipped on pull requests | Run `python tools/import_audit_gate.py` and `python tools/provenance_record_gap.py --check` |
 | CI required | The aggregate of the required jobs above | Fix the failing job it names |
@@ -188,7 +189,7 @@ Signed-off-by: Real Name <email@example.com>
 ## Development setup
 
 Follow the [authoritative development baseline in docs/SETUP.md](docs/SETUP.md). The core toolchain
-is Windows 11 x64, PowerShell 7.4+ (`pwsh`), CPython 3.15.x (3.14.x is also accepted), current MSYS2 UCRT64, and a current
+is Windows 11 x64, PowerShell 7.6+ (`pwsh`), CPython 3.15.x (3.14.x is also accepted), current MSYS2 UCRT64, and a current
 auto-detected Vulkan SDK/loader. The native player is the repository's only user interface.
 
 ## Contributing without a game disc

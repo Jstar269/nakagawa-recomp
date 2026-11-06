@@ -15,7 +15,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = Path(__file__).with_name("mypy_baseline.json")
-MYPY_VERSION = "2.1.0"
+MYPY_VERSION = "2.4.1"
 PYTHON_VERSION = "3.15"
 PLATFORM = "linux"
 MYPY_ARGS = [

@@ -700,9 +700,9 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-# The scaled-upload case (#1296), the per-fragment mip level case (#1373) and the readback-rows
-# case (#323, also on its SR_GPU_READBACK_FULL reference path) run again alone
-# at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
+# The scaled-upload case (#1296), the per-fragment mip level case (#1373), the readback-rows
+# case (#323, also on its SR_GPU_READBACK_FULL reference path) and the widescreen Fill case
+# (#1881) run again alone at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
 # cmd.exe does not take one. The host twin (#2050) runs after them: twin-off runs of twin-scene write
 # reference files that the twin-on runs at the same scale check (guest VRAM always, the shown
 # images for the native twin), `--twin native` runs the whole suite with every twin checked
@@ -714,7 +714,7 @@ $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_COHERENCE_BIN) \
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS)
 
 gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN)
@@ -728,6 +728,13 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 2 --case undrawn-rows
 	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows
 	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows --readback-full 1
+	$(GPU_COHERENCE_BIN) --scale 2 --case wide-fill
+	$(GPU_COHERENCE_BIN) --scale 4 --case wide-fill
+	$(GPU_COHERENCE_BIN) --gpu-timestamps unset --case gpu-timestamps-off
+	$(GPU_COHERENCE_BIN) --gpu-timestamps 0 --case gpu-timestamps-off
+	@rc=0; $(GPU_COHERENCE_BIN) --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; \
+	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest gpu-timestamps (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest gpu-timestamps (exit $$rc)"; exit $$rc; fi
 	$(GPU_COHERENCE_BIN) --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s1.txt
 	$(GPU_COHERENCE_BIN) --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
 	$(GPU_COHERENCE_BIN) --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
@@ -762,7 +769,7 @@ gpu-coherence-selftest-snapbar-mutants: shader-verify $(RT_GE_O)
 		$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPBAR_MUTANT=$$m -ffunction-sections -fdata-sections \
 			-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(LDFLAGS) -Wl,--gc-sections -o $$bin \
 			tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-			$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS) || exit 1; \
+			$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS) || exit 1; \
 		$$bin --case submit-batch > $$bin.log 2>&1; result=$$?; \
 		if test $$result -eq 77; then echo "snapbar mutant $$m: SKIP (no Vulkan device)"; exit 77; fi; \
 		if test $$result -eq 0; then cat $$bin.log; echo "snapbar mutant $$m unexpectedly passed" >&2; exit 1; fi; \
@@ -782,7 +789,7 @@ gpu-ace-selftest: shader-verify $(RT_GE_O)
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_ace_selftest.exe \
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS)
 	@rc=0; $(BUILD_DIR)/gpu_ace_selftest.exe || rc=$$?; \
 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-ace-selftest (exit 77; the reason is printed above)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-ace-selftest (exit $$rc)"; exit $$rc; fi
@@ -792,7 +799,7 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS)
 	$(BUILD_DIR)/gpu_snapsync_selftest.exe
 
 # gpu-capture-selftest — deterministic present-source capture regression (issue #57): the
@@ -849,7 +856,7 @@ ge-replay: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/ge_replay.exe \
 		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS)
 
 # selftest — compile and run the C++ reference interpreter unit tests.
 # Requires g++ with C++17. Exit code 0 = all tests passed.
