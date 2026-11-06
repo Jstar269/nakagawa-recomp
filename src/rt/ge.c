@@ -176,7 +176,11 @@ enum {
 
 /* GeState now lives in ge_shared.h (shared with the optional GPU backend). */
 static GeState ge;
-static uint32_t s_clut_last_bytes, s_clut_max_bytes;   /* CLUT loads seen, for ge_clut_load_extent */
+/* CLUT loads seen, for ge_clut_load_extent. Process-lifetime counters, like PPSSPP's clutTotalBytes_ and
+ * clutMaxBytes_ (never reset), kept outside GeState so the capture format and its size check stay as
+ * they are: a capture replay or snapshot restore does not reset them, and a run that has seen no
+ * GE_LOADCLUT reads (0, 0), for which nk_texrepl_clut_identity hashes the entries the format can index. */
+static uint32_t s_clut_last_bytes, s_clut_max_bytes;
 /* Bumped whenever GE state may change (every list command, init, replay restore); state
  * derived from registers and cached between commands is keyed on it (light_consts). */
 static uint32_t s_ge_state_serial;

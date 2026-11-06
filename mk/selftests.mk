@@ -924,7 +924,7 @@ gpu-texrepl-mutant: shader-verify $(RT_GE_O)
 		name=$${m%%:*}; want=$${m#*:}; rc=0; \
 		$(BUILD_DIR)/gpu_texrepl_mutant_$$name.exe > $(BUILD_DIR)/gpu_texrepl_mutant_$$name.log 2>&1 || rc=$$?; \
 		cat $(BUILD_DIR)/gpu_texrepl_mutant_$$name.log; \
-		if [ $$rc -eq 77 ]; then echo "SKIP gpu-texrepl-mutant $$name (exit 77; the reason is printed above)"; \
+		if [ $$rc -eq 77 ]; then echo "SKIP gpu-texscale gpu-texrepl-mutant $$name (exit 77; the reason is printed above)"; \
 		elif [ $$rc -eq 0 ]; then echo "FAIL gpu-texrepl-mutant $$name (the mutant passed: the replace cells are untested)"; exit 1; \
 		elif ! grep -q "$$want" $(BUILD_DIR)/gpu_texrepl_mutant_$$name.log; then \
 			echo "FAIL gpu-texrepl-mutant $$name (exit $$rc, but not from the intended check)"; exit 1; \
@@ -944,6 +944,7 @@ gpu-texscale-mutant: shader-verify $(RT_GE_O)
 	elif ! grep -q "FAIL rewrite: stale scaled copy" $(BUILD_DIR)/gpu_texscale_mutant.log; then \
 		echo "FAIL gpu-texscale-mutant (exit $$rc, but not from the stale-copy check)"; exit 1; \
 	else echo "PASS gpu-texscale-mutant (killed by the stale-copy check, exit $$rc)"; fi
+	@$(MAKE) --no-print-directory texrepl-mutant gpu-texrepl-mutant
 
 gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
