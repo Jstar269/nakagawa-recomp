@@ -17,6 +17,7 @@ import tempfile
 import unittest
 from types import ModuleType
 from typing import ClassVar, TypedDict, cast
+from collections.abc import Mapping
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1858,7 +1859,7 @@ def _job_if(block: list[str]) -> str:
 _EXPRESSION_TOKEN = re.compile(r"\s*(\|\||&&|==|!=|!|\(|\)|,|'(?:[^']|'')*'|[A-Za-z_][A-Za-z0-9_.-]*)")
 
 
-def _actions_eval(expression: str, context: dict[str, object]) -> bool:
+def _actions_eval(expression: str, context: Mapping[str, object]) -> bool:
     """Evaluate the GitHub Actions expression subset the job guards use.
 
     Supported: ``||``, ``&&``, ``!``, ``==``, ``!=``, parentheses, single-quoted strings,
@@ -2078,7 +2079,7 @@ class BatchOnlyCodeqlGuardTests(unittest.TestCase):
         self.assertTrue(_actions_eval(self.prepare, merge_group))
         for event_name in ("push", "schedule", "workflow_dispatch"):
             with self.subTest(event=event_name):
-                context = {"github": {"event_name": event_name, "repository": THIS_REPOSITORY, "event": {}}}
+                context: dict[str, object] = {"github": {"event_name": event_name, "repository": THIS_REPOSITORY, "event": {}}}
                 self.assertTrue(_actions_eval(self.prepare, context))
 
     def test_a_skipped_prepare_skips_analysis_and_upload(self) -> None:
