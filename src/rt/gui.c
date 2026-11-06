@@ -94,6 +94,9 @@ static int      s_on = 0;
 static int      s_sdl3 = 0;            /* SDL3+Vulkan presenter active (src/rt/gpu_sdl3vk) */
 static AceBetween *s_ace_smooth;       /* Ace Mode's in-between frames, when smooth motion is on */
 static Fsr1Pass *s_fsr1;               /* the presentation upscaler, when SR_PRESENT_UPSCALE=fsr1 */
+static Fsr1Pass *s_fsr1_rec;           /* its own instance for the recording (#2138), made at the
+                                          first recorded present */
+static int s_fsr1_rec_failed;          /* that instance could not be made: said once, not retried */
 #endif
 static int      s_offscreen = 0;        /* explicit host-memory presenter for headless bring-up */
 static uint32_t s_buttons = 0;
@@ -617,6 +620,47 @@ static void *gui_upscale_pass(void *cmd, void *src, int w, int h, int out_w, int
     return (void *)out;
 }
 
+/* An FSR 1 pass on the presenter's device, or NULL with the reason in error. */
+static Fsr1Pass *gui_fsr1_make(char *error, size_t error_size) {
+    Sdl3VkInfo vi;
+    memset(&vi, 0, sizeof(vi));
+    if (!sdl3vk_get_vk(&vi) || !vi.get_instance_proc_addr) {
+        snprintf(error, error_size, "no Vulkan device");
+        return NULL;
+    }
+    Fsr1Init init;
+    memset(&init, 0, sizeof(init));
+    init.get_instance_proc_addr = (PFN_vkGetInstanceProcAddr)vi.get_instance_proc_addr;
+    init.instance = (VkInstance)vi.instance;
+    init.physical_device = (VkPhysicalDevice)vi.physical;
+    init.device = (VkDevice)vi.device;
+    init.queue_family = vi.queue_family;
+    return fsr1_create(&init, error, error_size);
+}
+
+static unsigned long long s_fsr1_rec_presents;  /* recorded presents the upscaler made */
+
+/* The recording's upscale (sdl3vk_set_record_upscale_pass): its own pass, so the window's size and
+ * the recording's never make one rebuild its images for the other. Without it the recording is
+ * scaled as SR_PRESENT_SCALING says, and record.json names that filter. */
+static void *gui_record_upscale_pass(void *cmd, void *src, int w, int h, int out_w, int out_h) {
+    if (!s_fsr1_rec && !s_fsr1_rec_failed) {
+        char error[160] = "";
+        s_fsr1_rec = gui_fsr1_make(error, sizeof(error));
+        if (!s_fsr1_rec) {
+            s_fsr1_rec_failed = 1;
+            fprintf(stderr, "sdl3vk: FSR 1 is unavailable for the recording (%s); it is scaled as "
+                            "SR_PRESENT_SCALING says, and record.json names that filter\n",
+                    error[0] ? error : "unknown");
+        }
+    }
+    if (!s_fsr1_rec) return NULL;
+    VkImage out = fsr1_record(s_fsr1_rec, (VkCommandBuffer)cmd, (VkImage)src, w, h, out_w, out_h,
+                              FSR1_SHARPNESS_DEFAULT);
+    if (out) s_fsr1_rec_presents++;
+    return (void *)out;
+}
+
 /* SR_PRESENT_UPSCALE=fsr1: AMD FSR 1 (EASU + RCAS) scales the shown picture to the window. It is
  * presentation only: the guest's frame, guest VRAM and captures are untouched. Off by default. */
 static void gui_upscale_init(void) {
@@ -627,28 +671,19 @@ static void gui_upscale_init(void) {
                 value);
     if (mode != 1) return;
     char error[160] = "";
-    Sdl3VkInfo vi;
-    memset(&vi, 0, sizeof(vi));
-    if (sdl3vk_get_vk(&vi) && vi.get_instance_proc_addr) {
-        Fsr1Init init;
-        memset(&init, 0, sizeof(init));
-        init.get_instance_proc_addr = (PFN_vkGetInstanceProcAddr)vi.get_instance_proc_addr;
-        init.instance = (VkInstance)vi.instance;
-        init.physical_device = (VkPhysicalDevice)vi.physical;
-        init.device = (VkDevice)vi.device;
-        init.queue_family = vi.queue_family;
-        s_fsr1 = fsr1_create(&init, error, sizeof(error));
-    }
+    s_fsr1 = gui_fsr1_make(error, sizeof(error));
     if (!s_fsr1) {
         fprintf(stderr, "sdl3vk: FSR 1 upscaling is unavailable (%s); the window scales as before\n",
                 error[0] ? error : "no Vulkan device");
         return;
     }
     sdl3vk_set_upscale_pass(gui_upscale_pass);
+    /* A recording (SR_VIDEOREC_DIR) is enlarged the same way, at its own size (#2138). */
+    sdl3vk_set_record_upscale_pass(gui_record_upscale_pass);
     /* Stamped like Ace Mode: the window is not the authentic picture (captures still are). */
     sr_flight_set_present_upscale("fsr1");
-    fprintf(stderr, "ACE_MODE: present upscale fsr1 (the window only; captures hold the guest's "
-                    "frame)\n");
+    fprintf(stderr, "ACE_MODE: present upscale fsr1 (the window and its recording; captures hold "
+                    "the guest's frame)\n");
     /* In the boot events too, so tools/boot_gate.py sees it when stderr was silenced. */
     sr_gui_boot_event("BOOT_EVENT phase=present_upscale mode=fsr1");
     fprintf(stderr, "sdl3vk: FSR 1 upscaling on (EASU + RCAS, presentation only)\n");
@@ -657,8 +692,14 @@ static void gui_upscale_init(void) {
 static void gui_upscale_release(void) {
     if (s_fsr1) {
         sdl3vk_set_upscale_pass(NULL);
+        sdl3vk_set_record_upscale_pass(NULL);
         fprintf(stderr, "sdl3vk: FSR 1 upscaled %llu presents\n", s_fsr1_presents);
+        if (s_fsr1_rec)
+            fprintf(stderr, "sdl3vk: FSR 1 upscaled %llu recorded presents\n", s_fsr1_rec_presents);
     }
+    fsr1_destroy(s_fsr1_rec);
+    s_fsr1_rec = NULL;
+    s_fsr1_rec_failed = 0;
     fsr1_destroy(s_fsr1);
     s_fsr1 = NULL;
 }

@@ -952,6 +952,35 @@ static void *test_fsr_pass(void *cmd, void *src, int w, int h, int out_w, int ou
     return (void *)s_test_fsr_out;
 }
 
+#ifdef SR_VIDEOREC_SELFTEST
+/* The recording's upscaler as gui.c registers it (sdl3vk_set_record_upscale_pass), on its own
+ * pass, remembering what it was asked for. */
+static Fsr1Pass *s_test_rec_fsr;
+static int s_test_rec_calls, s_test_rec_args[4];
+
+static void *test_rec_fsr_pass(void *cmd, void *src, int w, int h, int out_w, int out_h) {
+    s_test_rec_calls++;
+    s_test_rec_args[0] = w;
+    s_test_rec_args[1] = h;
+    s_test_rec_args[2] = out_w;
+    s_test_rec_args[3] = out_h;
+    return (void *)fsr1_record(s_test_rec_fsr, (VkCommandBuffer)cmd, (VkImage)src, w, h, out_w,
+                               out_h, FSR1_SHARPNESS_DEFAULT);
+}
+
+/* The picture the last present recorded (BGRX, tightly packed) and the filter rec_record named
+ * for it, read from its readback once that present has finished. */
+static int test_rec_read(uint8_t *out, size_t bytes, int *filter) {
+    PresentFrame *f = s_rec_pending;
+    if (!f || !wait_present_frame(f)) return 0;
+    CapBuffer *c = &s_rec_buf[f - s_frame];
+    if (!cap_invalidate_readback(c) || c->alloc < bytes) return 0;
+    memcpy(out, c->map, bytes);
+    *filter = s_rec_filter[f - s_frame];
+    return 1;
+}
+#endif
+
 static int sdl3vk_capture_selftest_body(void) {
     int ok = 1;
 
@@ -1263,6 +1292,169 @@ static int sdl3vk_capture_selftest_body(void) {
         if (ok) printf("gpu capture selftest: FSR 1 present path OK (%dx%d to %dx%d)\n", PSP_W,
                        PSP_H, plan.w, plan.h);
     }
+
+    /* ---- a recording with the upscaler on (#2138, SR_VIDEOREC_DIR + SR_PRESENT_UPSCALE) -----
+     * A 960x544 recording of a 480x272 GE frame, through the production record path. With the
+     * recording's FSR 1 pass set, the recorded picture is byte for byte what a separate FSR 1
+     * pass makes of the same frame at that size, and rec_record names it fsr1. Without the pass
+     * the same present records SR_PRESENT_SCALING's picture, which differs, under that mode's
+     * name. The recorder counts each written frame under its picture's filter. */
+#ifdef SR_VIDEOREC_SELFTEST
+    {
+        enum { RW = 2 * PSP_W, RH = 2 * PSP_H };
+        const size_t rbytes = (size_t)RW * (size_t)RH * 4u;
+        const char *dir = "selftest_videorec_fsr";
+        const int mode_filter = s_scaling == SDL3VK_SCALING_INTEGER ? SR_VIDEOREC_FILTER_INTEGER
+                              : s_scaling == SDL3VK_SCALING_BILINEAR ? SR_VIDEOREC_FILTER_BILINEAR
+                              : SR_VIDEOREC_FILTER_SHARP;
+        Sdl3VkInfo vi;
+        memset(&vi, 0, sizeof(vi));
+        char err[160] = "";
+        Fsr1Pass *ref_fsr = NULL;
+        s_test_rec_fsr = NULL;
+        if (sdl3vk_get_vk(&vi) && vi.get_instance_proc_addr) {
+            Fsr1Init init;
+            memset(&init, 0, sizeof(init));
+            init.get_instance_proc_addr = (PFN_vkGetInstanceProcAddr)vi.get_instance_proc_addr;
+            init.instance = (VkInstance)vi.instance;
+            init.physical_device = (VkPhysicalDevice)vi.physical;
+            init.device = (VkDevice)vi.device;
+            init.queue_family = vi.queue_family;
+            s_test_rec_fsr = fsr1_create(&init, err, sizeof(err));
+            if (s_test_rec_fsr) ref_fsr = fsr1_create(&init, err, sizeof(err));
+        }
+        uint8_t *fsr_pic = (uint8_t *)malloc(rbytes);
+        uint8_t *plain_pic = (uint8_t *)malloc(rbytes);
+        CapBuffer ref;
+        memset(&ref, 0, sizeof(ref));
+        CapTestImage src;
+        memset(&src, 0, sizeof(src));
+        int fsr_filter = -1, plain_filter = -1;
+        if (!s_test_rec_fsr || !ref_fsr || !fsr_pic || !plain_pic ||
+            !cap_test_image_create(&src, PSP_W, PSP_H) || !cap_test_image_upload(&src)) {
+            fprintf(stderr, "record upscale: setup failed (%s)\n", err[0] ? err : "memory or image");
+            ok = 0;
+        } else if (!sr_videorec_test_start(dir, "raw")) {
+            fprintf(stderr, "record upscale: the raw recording did not start\n"); ok = 0;
+        } else {
+            s_rec_state = -1;           /* rec_on() asks the recorder again */
+            s_rec_w = RW;               /* as SR_VIDEOREC_SIZE=960x544 would */
+            s_rec_h = RH;
+            s_test_rec_calls = 0;
+            sdl3vk_set_record_upscale_pass(test_rec_fsr_pass);
+            if (sdl3vk_present_image_ex((void *)src.img, PSP_W, PSP_H) != 1 ||
+                !test_rec_read(fsr_pic, rbytes, &fsr_filter)) {
+                fprintf(stderr, "record upscale: the upscaled present was not recorded\n"); ok = 0;
+            }
+            sr_videorec_vblank(0u, 0u);
+            sdl3vk_set_record_upscale_pass(NULL);
+            if (sdl3vk_present_image_ex((void *)src.img, PSP_W, PSP_H) != 1 ||
+                !test_rec_read(plain_pic, rbytes, &plain_filter)) {
+                fprintf(stderr, "record upscale: the plain present was not recorded\n"); ok = 0;
+            }
+            sr_videorec_vblank(1u, 16683u);
+            if (s_test_rec_calls != 1 || s_test_rec_args[0] != PSP_W || s_test_rec_args[1] != PSP_H ||
+                s_test_rec_args[2] != RW || s_test_rec_args[3] != RH) {
+                fprintf(stderr, "record upscale: the pass ran %d times for %dx%d to %dx%d (want "
+                                "once, %dx%d to %dx%d)\n", s_test_rec_calls, s_test_rec_args[0],
+                        s_test_rec_args[1], s_test_rec_args[2], s_test_rec_args[3], PSP_W, PSP_H,
+                        RW, RH);
+                ok = 0;
+            }
+            if (fsr_filter != SR_VIDEOREC_FILTER_FSR1 || plain_filter != mode_filter) {
+                fprintf(stderr, "record upscale: the pictures were named %d and %d (want fsr1 %d, "
+                                "then the scaling mode's %d)\n", fsr_filter, plain_filter,
+                        SR_VIDEOREC_FILTER_FSR1, mode_filter);
+                ok = 0;
+            }
+            /* The reference: a second FSR 1 pass on the same frame, at the recording's size. */
+            VkImage out = VK_NULL_HANDLE;
+            int ref_ok = cap_ensure(&ref, RW, RH);
+            if (ref_ok) {
+                vkResetCommandBuffer(s_cmd, 0);
+                VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+                bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                ref_ok = vkBeginCommandBuffer(s_cmd, &bi) == VK_SUCCESS;
+                if (ref_ok) out = fsr1_record(ref_fsr, s_cmd, src.img, PSP_W, PSP_H, RW, RH,
+                                              FSR1_SHARPNESS_DEFAULT);
+                ref_ok = ref_ok && out && cap_record(s_cmd, &ref, out, RW, RH) &&
+                         vkEndCommandBuffer(s_cmd) == VK_SUCCESS;
+                VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
+                si.commandBufferCount = 1;
+                si.pCommandBuffers = &s_cmd;
+                ref_ok = ref_ok && vkQueueSubmit(s_queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS &&
+                         vkQueueWaitIdle(s_queue) == VK_SUCCESS && cap_invalidate_readback(&ref);
+            }
+            if (!ref_ok) {
+                fprintf(stderr, "record upscale: the reference FSR 1 pass failed\n"); ok = 0;
+            } else if (ok) {
+                /* The recording is BGRX; the pass's image is RGBA. */
+                const uint8_t *r = (const uint8_t *)ref.map;
+                size_t bad = 0, first = 0;
+                for (size_t i = 0; i < (size_t)RW * RH; i++) {
+                    const uint8_t *a = fsr_pic + i * 4u, *b = r + i * 4u;
+                    if (a[0] != b[2] || a[1] != b[1] || a[2] != b[0]) {
+                        if (!bad++) first = i;
+                    }
+                }
+                if (bad) {
+                    fprintf(stderr, "record upscale: %zu recorded pixels differ from the FSR 1 "
+                                    "pass's own output, first at %zu,%zu\n", bad, first % RW,
+                            first / RW);
+                    ok = 0;
+                }
+                if (memcmp(fsr_pic, plain_pic, rbytes) == 0) {
+                    fprintf(stderr, "record upscale: the FSR 1 recording equals the %s one\n",
+                            sr_videorec_filter_name(mode_filter));
+                    ok = 0;
+                }
+            }
+            SrVideoRecStats st;
+            sr_videorec_test_stats(&st);
+            if (st.frames != 2u || st.filter_frames[SR_VIDEOREC_FILTER_FSR1] != 1u ||
+                st.filter_frames[mode_filter] != 1u || st.width != (uint32_t)RW ||
+                st.height != (uint32_t)RH) {
+                fprintf(stderr, "record upscale: the recorder wrote %llu frames at %ux%u, %llu "
+                                "fsr1 and %llu %s\n", (unsigned long long)st.frames, st.width,
+                        st.height, (unsigned long long)st.filter_frames[SR_VIDEOREC_FILTER_FSR1],
+                        (unsigned long long)st.filter_frames[mode_filter],
+                        sr_videorec_filter_name(mode_filter));
+                ok = 0;
+            }
+        }
+        sdl3vk_set_record_upscale_pass(NULL);
+        sr_videorec_test_reset();
+        (void)wait_all_present_frames();
+        s_rec_state = -1;
+        s_rec_w = s_rec_h = 0;
+        rec_image_free(&s_rec_target);
+        rec_image_free(&s_rec_pre);
+        cap_free_buffer(&ref);
+        cap_test_image_destroy(&src);
+        fsr1_destroy(ref_fsr);
+        fsr1_destroy(s_test_rec_fsr);
+        s_test_rec_fsr = NULL;
+        free(fsr_pic);
+        free(plain_pic);
+        {
+            static const char *const files[] = { "record.json", "record.json.tmp", "video.bgr0",
+                                                 "audio.wav", "frames.csv", "logic.srt" };
+            char p[96];
+            for (size_t i = 0; i < sizeof files / sizeof files[0]; i++) {
+                snprintf(p, sizeof p, "%s/%s", dir, files[i]);
+                remove(p);
+            }
+            (void)cap_test_rmdir(dir);
+        }
+        if (ok) printf("gpu capture selftest: FSR 1 recording OK (%dx%d to %dx%d, equals the "
+                       "pass's output, differs from %s)\n", PSP_W, PSP_H, RW, RH,
+                       sr_videorec_filter_name(mode_filter));
+    }
+#else
+    fprintf(stderr, "record upscale: built without SR_VIDEOREC_SELFTEST, so the recording cell "
+                    "cannot run\n");
+    ok = 0;
+#endif
 
     /* ---- pause overlay (#1159): shown, repeated without an upload, never captured ------ */
     {

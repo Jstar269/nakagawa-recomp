@@ -911,11 +911,13 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 # gpu-capture-selftest — deterministic present-source capture regression (issue #57): the
 # production present path is armed and driven with synthetic pixels; the published P6 PPMs
 # are byte-checked (header, channel order, row pitch, no trailing bytes). Exit 77 = SKIP
-# when Vulkan or the validation layer is unavailable.
+# when Vulkan or the validation layer is unavailable. SR_VIDEOREC_SELFTEST opens the recorder's
+# test seams for the cell that records through the FSR 1 upscaler (#2138).
 GPU_CAPTURE_BIN := $(BUILD_DIR)/gpu_capture_selftest.exe
 
 $(GPU_CAPTURE_BIN): shader-verify
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		-DSR_VIDEOREC_SELFTEST \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_CAPTURE_BIN) \
 		tests/native/gpu_capture_selftest.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(LIBS)

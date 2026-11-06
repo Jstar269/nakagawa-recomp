@@ -64,6 +64,28 @@ int sr_videorec_requested_size(uint32_t *w, uint32_t *h);
 void sr_videorec_frame(const void *px, uint32_t w, uint32_t h, uint32_t row_bytes,
                        sr_cap_order order);
 
+/* How a presenter made the picture it hands over (#2138). record.json names the filter of the
+ * frames it wrote ("filter", or "mixed" when they differ) and counts each ("filter_frames").
+ * NONE is a picture at its own size; SHARP, INTEGER and BILINEAR are SR_PRESENT_SCALING's modes;
+ * FSR1 is the presentation upscaler (SR_PRESENT_UPSCALE=fsr1). */
+typedef enum {
+    SR_VIDEOREC_FILTER_NONE = 0,
+    SR_VIDEOREC_FILTER_SHARP,
+    SR_VIDEOREC_FILTER_INTEGER,
+    SR_VIDEOREC_FILTER_BILINEAR,
+    SR_VIDEOREC_FILTER_FSR1,
+    SR_VIDEOREC_FILTER_COUNT
+} SrVideoRecFilter;
+
+/* The name record.json gives a filter ("none", "sharp", "integer", "bilinear", "fsr1"), or NULL
+ * for a value that is not one. */
+const char *sr_videorec_filter_name(int filter);
+
+/* sr_videorec_frame for a picture made with `filter`; sr_videorec_frame is this with NONE. A
+ * value that is not an SrVideoRecFilter fails the recording. */
+void sr_videorec_frame_filtered(const void *px, uint32_t w, uint32_t h, uint32_t row_bytes,
+                                sr_cap_order order, int filter);
+
 /* The guest flipped to a new frame (sceDisplaySetFrameBuf). Counted per written frame in
  * frames.csv and per second in logic.srt, the game's own frame rate beside a picture that carries
  * no host readout. */
@@ -111,6 +133,7 @@ typedef struct {
     uint64_t audio_samples, audio_overflow, audio_trimmed;
     uint32_t width, height, first_vcount;
     int failed;
+    uint64_t filter_frames[SR_VIDEOREC_FILTER_COUNT]; /* written frames, by their picture's filter */
 } SrVideoRecStats;
 void sr_videorec_test_stats(SrVideoRecStats *out);
 void sr_videorec_test_reset(void);
