@@ -143,6 +143,7 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `src/rt/savedata.c` | FNV-64 | Content identity in a SAVE's transaction record: crash recovery deletes or restores a save file only when its size and FNV-1a 64 match the recorded previous or new content, and the record's own hash finds a torn record | Keep: matches a save's own files after a crash, not a security check |
 | `src/rt/ge.c` | FNV-32 | GE transition trace draw identity and watched-buffer hash | Keep: trace key, not integrity |
 | `src/rt/gpu_sdl3vk/ge_gpu.c` | FNV-64 | Texture cache key | Keep: cache key, not integrity |
+| `src/rt/motion_match.c` | FNV-64 | Sort and lookup key of a PRIM's signature and key in the draw matcher (`sig_hash`, `key_hash`); every hash match is confirmed by comparing the fields themselves | Keep: hash-table key, not integrity |
 | `src/core/nk_xb.c` | FNV-32 | In-memory path table that finds duplicate paths while writing an XB archive | Keep: hash-table key |
 | `src/core/nk_platform_win32.c` | FNV-64 | Non-cryptographic hash of the data-folder path (`single_instance_hash`), used only to name the launcher's single-instance mutex and its owner page | Keep: a name, not integrity; a collision only makes two data folders share one launcher |
 | `tools/nk_core/iso_inspect.py` | FNV-32 | Disc-path suffix that keeps two disc modules with the same file name apart in the per-title module folder (`disc_module_qualified_name`), mirrored by `src/player/player_state.c` | Keep: file-name key, not integrity |

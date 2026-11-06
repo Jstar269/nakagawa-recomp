@@ -21,6 +21,10 @@
 //     gives for a specular term (light component 1) and a powered-diffuse term (component 2)
 //     over ten specular coefficients, one flat-shaded transform-mode quad per pixel, so a
 //     host can compare candidate pow implementations with the hardware.
+//   CASE=ge-overlap (PSP-GE-OVERLAP-001, #2109): whether a blended primitive reads what an
+//     earlier primitive of the same PRIM command wrote. Overlapping translucent sprites and
+//     triangle pairs, in one PRIM and (the control) one PRIM each, over a 16x4 window in 8888
+//     and in 5650 with and without dithering.
 //
 // ge-sample: each draw is one raw display list (no libpspgu) into a 64x32 8888 framebuffer
 // at VRAM offset 0x100000, cleared by the CPU through the uncached VRAM mirror before the list is
@@ -41,6 +45,10 @@
 // records), then for family s (specular) and family d (powered diffuse) one draw into the
 // same 8 KiB block: a `<f>-<k>-draw` record and the 16x17 window x 16..31, y 8..24 read back
 // raw, one `<f>-<k>-rN` record per row. Sample i is the pixel (16 + i % 16, 8 + i / 16).
+//
+// ge-overlap: per shape and framebuffer format (`<shape>-<format>`), the ge-raster window and
+// record shape: a `-draw` record with the GE wait outcome and the window digest, then the
+// window x 16..31, y 8..11 read back raw, one `-rN` record per row.
 //
 // Record stream and log: the same writer, round trip and module lifecycle as
 // probe_hle_issues.c (copied byte for byte): NAKAGAWA_PSP_META, a NAKAGAWA_PSP_STEP
@@ -74,6 +82,7 @@ PSP_HEAP_SIZE_KB(64);
 #define GE_CASE_RASTER 123
 #define GE_CASE_MIP 126
 #define GE_CASE_LIGHT 139
+#define GE_CASE_OVERLAP 153
 
 #if PSP_ORACLE_CASE == GE_CASE_SAMPLE
 #define HLE_CAMPAIGN_ID "ge-sample"
@@ -91,6 +100,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "ge-light"
 #define HLE_TEST_ID "PSP-GE-LIGHT-001"
 #define HLE_LOG "host0:/ge_light_log.txt"
+#elif PSP_ORACLE_CASE == GE_CASE_OVERLAP
+#define HLE_CAMPAIGN_ID "ge-overlap"
+#define HLE_TEST_ID "PSP-GE-OVERLAP-001"
+#define HLE_LOG "host0:/ge_overlap_log.txt"
 #else
 #error probe_ge_sample.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -1950,6 +1963,347 @@ static int hle_run(void)
 }
 
 #endif /* GE_CASE_LIGHT */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == GE_CASE_OVERLAP
+
+/* ==== GE overlap cells (PSP-GE-OVERLAP-001, #2109) ====
+ * Whether a primitive that blends reads the colour an earlier primitive of the same PRIM
+ * command wrote, and what the GE stores when it does, in 8888 and in 5650 with and without
+ * dithering. Each cell is one display list of project-written command words (no game data)
+ * that draws through-mode, untextured, flat-coloured layers into the 16x4 window x 16..31,
+ * y 8..11 of a 64x32 colour buffer at VRAM offset GO_FB_OFFSET whose other pixels are 0 and
+ * whose window holds go_dst() before the list runs. Every per-fragment unit is off except
+ * blending (source alpha, one minus source alpha, add) and, on the `565d` cells, dithering
+ * with the PSP SDK's default matrix. Depth test and writes are off.
+ *
+ * Layers, in window x (every layer covers the window's four rows; x1 is exclusive):
+ *   A: x 0..10, ABGR 0xa0f808f8;   B: x 6..16, ABGR 0x601010f0;   C: x 3..13, ABGR 0x8080f010.
+ * A shape lists its layers in draw order. `-1p` draws them all with one PRIM command and
+ * `-np` with one PRIM per layer (the control: separate primitives, as a batch boundary
+ * would). `t` shapes draw each layer as a two-triangle quad instead of a sprite. The
+ * destination's red and blue are below 0x80 and its green at or above it; A and B have high
+ * red and low green, so both are far from it, and they differ in blue. Wherever two layers
+ * overlap, the in-order result, the result of every layer reading the pre-PRIM destination,
+ * and (for A and B) the result in the other order differ by at least three 5650 steps in some
+ * channel (tools/test_psp_oracle.py checks this), so the cells cannot pass by rounding alone.
+ * The result is the window's 64 pixels (5650 zero-extended). */
+
+#define GO_FB_OFFSET 0x00100000u   /* VRAM-relative colour buffer, stride 64, 32 rows */
+#define GO_ZB_OFFSET 0x00110000u   /* depth buffer pointer; depth test and writes are off */
+#define GO_STRIDE 64u
+#define GO_ROWS 32u
+#define GO_WX 16u                  /* window x 16..31, y 8..11 */
+#define GO_WY 8u
+#define GO_WW 16u
+#define GO_WH 4u
+#define GO_N 64u                   /* pixels in the window */
+#define GO_LIST_WORDS 192u
+#define GO_VTX_WORDS 96u           /* three triangle-pair layers: 18 vertices of 4 words */
+#define GO_Z 32768.0f
+
+/* x0, x1 (window x, x1 exclusive) and the ABGR colour of layers A, B and C. */
+struct go_layer {
+    uint8_t x0, x1;
+    uint32_t col;
+};
+static const struct go_layer go_layers[3] = {
+    {0u, 10u, 0xa0f808f8u},
+    {6u, 16u, 0x601010f0u},
+    {3u, 13u, 0x8080f010u},
+};
+
+/* layers: draw order, as letters A to C; split: one PRIM per layer instead of one PRIM;
+   tri: two-triangle quads instead of sprites. */
+struct go_shape {
+    const char *name;
+    const char *layers;
+    uint8_t split, tri;
+};
+#define GO_SHAPE_COUNT 10u
+static const struct go_shape go_shapes[GO_SHAPE_COUNT] = {
+    {"a", "A", 0u, 0u},
+    {"b", "B", 0u, 0u},
+    {"ab-1p", "AB", 0u, 0u},
+    {"ab-np", "AB", 1u, 0u},
+    {"ba-1p", "BA", 0u, 0u},
+    {"aa-1p", "AA", 0u, 0u},
+    {"abc-1p", "ABC", 0u, 0u},
+    {"abc-np", "ABC", 1u, 0u},
+    {"tab-1p", "AB", 0u, 1u},
+    {"tab-np", "AB", 1u, 1u},
+};
+
+/* psm: framebuffer format; dither: dithering on. */
+struct go_format {
+    const char *name;
+    uint8_t psm, dither;
+};
+#define GO_FORMAT_COUNT 3u
+static const struct go_format go_formats[GO_FORMAT_COUNT] = {
+    {"8888", 3u, 0u},
+    {"565d", 0u, 1u},
+    {"565", 0u, 0u},
+};
+
+/* A fixed integer hash of the window index. */
+static uint32_t go_hash(uint32_t i)
+{
+    uint32_t x = i * 0x9e3779b9u + 0x7f4a7c15u;
+    x ^= x >> 15;
+    x *= 0x2c1b3c6du;
+    x ^= x >> 12;
+    x *= 0x297a2d39u;
+    x ^= x >> 15;
+    return x;
+}
+
+/* Window pixel i before the draw: red and blue 0x00..0x7f, green 0x80..0xff, any alpha; in
+   5650 the top bits of each channel (red in bits 0-4, green 5-10, blue 11-15). */
+static uint32_t go_dst(uint32_t psm, uint32_t i)
+{
+    const uint32_t h = go_hash(i);
+    const uint32_t r = h & 0x7fu;
+    const uint32_t g = 0x80u | ((h >> 8) & 0x7fu);
+    const uint32_t b = (h >> 16) & 0x7fu;
+    if (psm == 3u) {
+        return r | (g << 8) | (b << 16) | (h & 0xff000000u);
+    }
+    return (r >> 3) | ((g >> 2) << 5) | ((b >> 3) << 11);
+}
+
+static uint32_t go_fbits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
+/* One through-mode vertex: 8888 colour; float x, y, z (vertex type 0x80019c). */
+static uint32_t go_vtx(uint32_t *out, uint32_t col, float x, float y)
+{
+    out[0] = col;
+    out[1] = go_fbits(x);
+    out[2] = go_fbits(y);
+    out[3] = go_fbits(GO_Z);
+    return 4u;
+}
+
+/* Layer l's vertices in screen pixels: a sprite (two corners) or two triangles that share the
+   diagonal; returns the word count. */
+static uint32_t go_layer_vertices(const struct go_layer *l, uint8_t tri, uint32_t *out)
+{
+    const float x0 = (float)(GO_WX + l->x0);
+    const float x1 = (float)(GO_WX + l->x1);
+    const float y0 = (float)GO_WY;
+    const float y1 = (float)(GO_WY + GO_WH);
+    uint32_t n = 0;
+    if (!tri) {
+        n += go_vtx(out + n, l->col, x0, y0);
+        n += go_vtx(out + n, l->col, x1, y1);
+        return n;
+    }
+    n += go_vtx(out + n, l->col, x0, y0);
+    n += go_vtx(out + n, l->col, x1, y0);
+    n += go_vtx(out + n, l->col, x0, y1);
+    n += go_vtx(out + n, l->col, x1, y0);
+    n += go_vtx(out + n, l->col, x1, y1);
+    n += go_vtx(out + n, l->col, x0, y1);
+    return n;
+}
+
+/* The shape's vertex words, layer after layer; returns the count. */
+static uint32_t go_vertices(const struct go_shape *s, uint32_t *out)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < 3u && s->layers[i] != '\0'; i++) {
+        n += go_layer_vertices(&go_layers[s->layers[i] - 'A'], s->tri, out + n);
+    }
+    return n;
+}
+
+/* The cell's display list for vertex words at `vtx` (physical address); returns the word
+   count. Every state the draw reads is set. */
+static uint32_t go_list(const struct go_shape *s, const struct go_format *f, uint32_t vtx,
+                        uint32_t *out)
+{
+    static const uint8_t off_units[12] = {0x17u, 0x1cu, 0x1du, 0x1eu, 0x1fu, 0x20u,
+                                          0x21u, 0x22u, 0x23u, 0x24u, 0x25u, 0x27u};
+    const uint32_t full = (GO_STRIDE - 1u) | ((GO_ROWS - 1u) << 10);
+    const uint32_t per_layer = s->tri ? 6u : 2u;
+    const uint32_t prim = s->tri ? 3u : 6u;
+    const uint32_t layers = (uint32_t)strlen(s->layers);
+    uint32_t n = 0;
+#define GO_W(cmd, data) (out[n++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(data) & 0x00ffffffu))
+    GO_W(0x10, (vtx >> 8) & 0x000f0000u);
+    GO_W(0x9c, GO_FB_OFFSET);
+    GO_W(0x9d, GO_STRIDE);
+    GO_W(0xd2, f->psm);
+    GO_W(0x9e, GO_ZB_OFFSET);
+    GO_W(0x9f, GO_STRIDE);
+    GO_W(0x15, 0);
+    GO_W(0x16, full);
+    GO_W(0xd4, 0);
+    GO_W(0xd5, full);
+    GO_W(0x4c, 0);
+    GO_W(0x4d, 0);
+    GO_W(0xd6, 0);
+    GO_W(0xd7, 0xffffu);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GO_W(off_units[i], 0);
+    }
+    GO_W(0x28, 0);              /* logic op off */
+    GO_W(0x50, 0);              /* flat shading */
+    GO_W(0xd3, 0);              /* clear mode off */
+    GO_W(0xe7, 1);              /* depth writes off */
+    GO_W(0xe8, 0);
+    GO_W(0xe9, 0);
+    GO_W(0xdb, 0x00ff0001u);    /* alpha test ALWAYS */
+    GO_W(0xd8, 1);              /* colour test ALWAYS */
+    GO_W(0xd9, 0);
+    GO_W(0xda, 0);
+    GO_W(0xdc, 0x00ff0001u);    /* stencil test ALWAYS */
+    GO_W(0xdd, 0);              /* KEEP, KEEP, KEEP */
+    GO_W(0xde, 1);              /* depth test ALWAYS */
+    GO_W(0xe6, 3);              /* logic op COPY */
+    GO_W(0xe2, 0x1d0cu);        /* the PSP SDK default dither matrix */
+    GO_W(0xe3, 0xf3e2u);
+    GO_W(0xe4, 0x0c1du);
+    GO_W(0xe5, 0xe2f3u);
+    GO_W(0xdf, 0x32u);          /* source alpha, one minus source alpha, add */
+    GO_W(0xe0, 0);
+    GO_W(0xe1, 0);
+    GO_W(0x21, 1);              /* blending on */
+    GO_W(0x20, f->dither);
+    GO_W(0x12, 0x0080019cu);    /* through, 8888 colour, float position */
+    if (!s->split) {
+        GO_W(0x01, vtx);
+        GO_W(0x04, (prim << 16) | (per_layer * layers));
+    } else {
+        for (uint32_t i = 0; i < layers; i++) {
+            GO_W(0x01, vtx + i * per_layer * 16u);
+            GO_W(0x04, (prim << 16) | per_layer);
+        }
+    }
+    GO_W(0x0f, 0);
+    GO_W(0x0c, 0);
+#undef GO_W
+    return n;
+}
+
+/* FNV-1a 64 over the window's 64 result words, each little-endian. */
+static uint64_t go_digest(const uint32_t *px)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint32_t i = 0; i < GO_N; i++) {
+        for (uint32_t b = 0; b < 4u; b++) {
+            h ^= (px[i] >> (8u * b)) & 0xffu;
+            h *= 0x100000001b3ull;
+        }
+    }
+    return h;
+}
+/* ==== end of the GE overlap cells ==== */
+
+#define GO_WAIT_POLLS 5000u         /* 5000 x 100 us: a half-second bound per draw */
+#define GO_WAIT_POLL_US 100u
+
+static uint32_t s_go_list[GO_LIST_WORDS] __attribute__((aligned(64)));
+static uint32_t s_go_vtx[GO_VTX_WORDS] __attribute__((aligned(64)));
+static uint32_t s_go_win[GO_N];
+
+static uint32_t go_phys(const void *p)
+{
+    return (uint32_t)(uintptr_t)p & 0x0fffffffu;
+}
+
+/* The uncached mirror of the 8 KiB colour block at VRAM offset GO_FB_OFFSET. */
+static uintptr_t go_fb(void)
+{
+    const uint32_t vram = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    return (uintptr_t)((vram | 0x40000000u) + GO_FB_OFFSET);
+}
+
+/* One cell: clear the block, write the window's destination pattern, queue the list, wait
+   (bounded), read the window back, then the records: `<cell>-draw` (the GE wait outcome, the
+   list length and the window digest) and one `<cell>-rN` record per window row. */
+static void go_draw(const struct go_shape *s, const struct go_format *f)
+{
+    static char name[32];
+    static char row[48];
+    snprintf(name, sizeof(name), "%s-%s", s->name, f->name);
+    hle_step(name);
+    volatile uint32_t *fb32 = (volatile uint32_t *)go_fb();
+    volatile uint16_t *fb16 = (volatile uint16_t *)go_fb();
+    for (unsigned i = 0; i < GO_STRIDE * GO_ROWS; i++) {
+        fb32[i] = 0u;
+    }
+    for (uint32_t i = 0; i < GO_N; i++) {
+        const uint32_t at = (GO_WY + i / GO_WW) * GO_STRIDE + GO_WX + i % GO_WW;
+        if (f->psm == 3u) {
+            fb32[at] = go_dst(f->psm, i);
+        } else {
+            fb16[at] = (uint16_t)go_dst(f->psm, i);
+        }
+    }
+    __asm__ volatile("sync" ::: "memory");
+    (void)go_vertices(s, s_go_vtx);
+    const uint32_t words = go_list(s, f, go_phys(s_go_vtx), s_go_list);
+    sceKernelDcacheWritebackAll();
+    const uint32_t t0 = sceKernelGetSystemTimeLow();
+    const int qid = sceGeListEnQueue(s_go_list, NULL, -1, NULL);
+    int list_state = qid;
+    int draw_state = -1;
+    int idle = 0;
+    for (unsigned i = 0; i < GO_WAIT_POLLS; i++) {
+        list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
+        draw_state = sceGeDrawSync(1);
+        idle = draw_state == PSP_GE_LIST_DONE;
+        if (idle) {
+            break;
+        }
+        sceKernelDelayThread(GO_WAIT_POLL_US);
+    }
+    const uint32_t elapsed = sceKernelGetSystemTimeLow() - t0;
+    int reset_rc = 0;
+    if (!idle) {
+        PspGeBreakParam param;
+        memset(&param, 0, sizeof(param));
+        reset_rc = sceGeBreak(1, &param);
+        for (unsigned i = 0; i < GO_WAIT_POLLS; i++) {
+            if (sceGeDrawSync(1) == PSP_GE_LIST_DONE) {
+                break;
+            }
+            sceKernelDelayThread(GO_WAIT_POLL_US);
+        }
+    }
+    for (uint32_t i = 0; i < GO_N; i++) {
+        const uint32_t at = (GO_WY + i / GO_WW) * GO_STRIDE + GO_WX + i % GO_WW;
+        s_go_win[i] = f->psm == 3u ? fb32[at] : (uint32_t)fb16[at];
+    }
+    const uint64_t digest = go_digest(s_go_win);
+    const uint32_t draw[9] = {(uint32_t)qid, (uint32_t)list_state, (uint32_t)draw_state,
+                              elapsed, (uint32_t)idle, (uint32_t)reset_rc, words,
+                              (uint32_t)digest, (uint32_t)(digest >> 32)};
+    snprintf(row, sizeof(row), "%s-draw", name);
+    hle_record(row, qid < 0 ? "FAIL" : idle ? "PASS" : "TIMEOUT", (uint32_t)qid, draw, 9);
+    for (uint32_t y = 0; y < GO_WH; y++) {
+        snprintf(row, sizeof(row), "%s-r%u", name, (unsigned int)y);
+        hle_record(row, "PASS", y, &s_go_win[y * GO_WW], GO_WW);
+    }
+}
+
+static int hle_run(void)
+{
+    for (uint32_t si = 0; si < GO_SHAPE_COUNT; si++) {
+        for (uint32_t fi = 0; fi < GO_FORMAT_COUNT; fi++) {
+            go_draw(&go_shapes[si], &go_formats[fi]);
+        }
+    }
+    return 1;
+}
+
+#endif /* GE_CASE_OVERLAP */
 
 /* ------------------------------------------------------------------------- */
 

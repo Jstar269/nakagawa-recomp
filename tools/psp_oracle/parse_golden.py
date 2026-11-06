@@ -2282,6 +2282,21 @@ _register_campaign_probe(
     {case: (10 if case.endswith("-draw") else 16) for case in GE_LIGHT_CASES},
 )
 
+# ge-overlap (153, probe_ge_sample.c): the #2109 GE overlap cells. Per shape of the go_shapes
+# table and framebuffer format of the go_formats table, in that nesting, the ge-raster record
+# shape: one `-draw` record (9 words) and one record per window row y 0..3.
+GE_OVERLAP_SHAPES = ("a", "b", "ab-1p", "ab-np", "ba-1p", "aa-1p", "abc-1p", "abc-np",
+                     "tab-1p", "tab-np")
+GE_OVERLAP_FORMATS = ("8888", "565d", "565")
+GE_OVERLAP_CELLS = tuple(f"{shape}-{fmt}" for shape in GE_OVERLAP_SHAPES
+                         for fmt in GE_OVERLAP_FORMATS)
+GE_OVERLAP_CASES = tuple(case for cell in GE_OVERLAP_CELLS
+                         for case in (f"{cell}-draw", *(f"{cell}-r{y}" for y in GE_RASTER_ROWS)))
+_register_campaign_probe(
+    "ge-overlap", "PSP-GE-OVERLAP-001", GE_OVERLAP_CASES,
+    {case: (9 if case.endswith("-draw") else 16) for case in GE_OVERLAP_CASES},
+)
+
 # module-start (124, probe_module_start.c): the module_start thread cell. A fixed-shape
 # stream of raw words: module_start's own sceKernelReferThreadStatus (return code and the
 # 26-word SceKernelThreadInfo), the user-partition free sizes before and after the helper
