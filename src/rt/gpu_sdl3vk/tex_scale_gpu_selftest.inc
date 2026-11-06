@@ -89,8 +89,27 @@ static int xst_draw(float x, float y) {
     return hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);
 }
 
-/* What a 1:1 nearest sprite of texture `t` shows from a factor-`f` copy: at each pixel centre
- * the copy's texel f*i + f/2 (f = 0: the texture itself). */
+/* The coordinate device pixel k samples on an axis of a 1:1 through-mode sprite that spans
+ * coordinates c0 .. c0 + n: its own centre, c0 + (k + 0.5) / scale (hook_sprite, #2104), clamped
+ * above 1x to the first and last guest pixel centres (uv_edge_axis). At 1x it is the pixel centre
+ * c0 + k + 0.5, so every value below is the one the PSP samples there. */
+static float xst_axis_u(float c0, int k, int n) {
+    float u = ((float)k + 0.5f) / (float)s_scale;
+    if (s_scale > 1) {
+        if (u < 0.5f) u = 0.5f;
+        if (u > (float)n - 0.5f) u = (float)n - 0.5f;
+    }
+    return c0 + u;
+}
+
+/* The texel of a factor-`f` copy (f = 1: the texture) that guest pixel i reads back: the one its
+ * top-left device sample, device pixel i * scale, falls in. */
+static size_t xst_readback_texel(float c0, int i, int n, int f) {
+    return (size_t)floorf((float)f * xst_axis_u(c0, i * s_scale, n));
+}
+
+/* What a 1:1 nearest sprite of texture `t` reads back from a factor-`f` copy (f = 0: the
+ * texture itself). */
 static void xst_expect(const uint32_t *t, int f, int clamp, uint32_t *want) {
     if (f < 2) { memcpy(want, t, sizeof(uint32_t) * XST_W * XST_H); return; }
     uint32_t *big = (uint32_t *)malloc(sizeof(uint32_t) * XST_W * XST_H * (size_t)f * (size_t)f);
@@ -101,8 +120,8 @@ static void xst_expect(const uint32_t *t, int f, int clamp, uint32_t *want) {
     }
     for (int y = 0; y < XST_H; y++)
         for (int x = 0; x < XST_W; x++)
-            want[y * XST_W + x] = big[((size_t)f * (size_t)y + (size_t)(f / 2)) * XST_W * (size_t)f +
-                                     (size_t)f * (size_t)x + (size_t)(f / 2)];
+            want[y * XST_W + x] = big[xst_readback_texel(0.0f, y, XST_H, f) * XST_W * (size_t)f +
+                                     xst_readback_texel(0.0f, x, XST_W, f)];
     free(big);
 }
 
@@ -189,16 +208,15 @@ static int xst_read_device(Target *t, uint32_t *out) {
 }
 
 /* Device pixels of the 1:1 sprite drawn at guest (x0, y0) that are not the nearest texel of
- * `t`, an image of the texture at `f` times its size (f = 1: the texture itself). Across the
- * sprite, device pixel k samples texture coordinate u = 0.5 + k / scale (as hook_sprite maps
- * it), which is texel floor(f * u) of the copy. */
+ * `t`, an image of the texture at `f` times its size (f = 1: the texture itself). Device pixel k
+ * samples coordinate xst_axis_u(0, k, n), which is texel floor(f * u) of the copy. */
 static int xst_device_blends(const uint32_t *dev, int x0, int y0, const uint32_t *t, int f) {
     const int s = s_scale, tw = XST_W * f, th = XST_H * f;
     int blends = 0;
     for (int ky = 0; ky < XST_H * s; ky++)
         for (int kx = 0; kx < XST_W * s; kx++) {
-            int tu = (int)floorf((float)f * (0.5f + (float)kx / (float)s));
-            int tv = (int)floorf((float)f * (0.5f + (float)ky / (float)s));
+            int tu = (int)floorf((float)f * xst_axis_u(0.0f, kx, XST_W));
+            int tv = (int)floorf((float)f * xst_axis_u(0.0f, ky, XST_H));
             if (tu > tw - 1) tu = tw - 1;
             if (tv > th - 1) tv = th - 1;
             uint32_t got = dev[((size_t)y0 * (size_t)s + (size_t)ky) * SCL_W + (size_t)x0 * (size_t)s + (size_t)kx] & XST_RGB;
@@ -215,7 +233,7 @@ static int xst_cell_scaled_draw(int f) {
     xst_upload(tex);
     xst_expect(tex, f, 1, want);
     xst_expect(tex, 0, 1, plain);
-    /* The guest pixel samples the copy at its texel centre's lattice point (f*i + f/2). From 3x
+    /* At 1x the guest pixel samples the copy at its texel centre's lattice point (f*i + f/2). From 3x
      * xBRZ often keeps that point, so only the device image at a render scale above 1 can tell
      * the copy from the texture. */
     const int guest_tells = memcmp(want, plain, sizeof(want)) != 0;
@@ -308,9 +326,8 @@ static int xst_cell_large(int f) {
         uint32_t want[XST_W * XST_H];
         for (int y = 0; y < XST_H; y++)
             for (int x = 0; x < XST_W; x++)
-                want[y * XST_W + x] = big[((size_t)factor * ((size_t)v0 + (size_t)y) + (size_t)(factor / 2)) * XST_BIG *
-                                          (size_t)factor +
-                                          (size_t)factor * ((size_t)u0 + (size_t)x) + (size_t)(factor / 2)];
+                want[y * XST_W + x] = big[xst_readback_texel(v0, y, XST_H, factor) * XST_BIG * (size_t)factor +
+                                          xst_readback_texel(u0, x, XST_W, factor)];
         ok = xst_report("large", 20, 160, want, pass ? "the last band of the 16 MiB copy is wrong"
                                                      : "the first band of the 16 MiB copy is wrong");
     }
@@ -793,11 +810,14 @@ static int xst_cell_smart2d(void) {
                 (unsigned long long)on_count, (unsigned long long)tri_count);
         return 0;
     }
-    /* At the PSP's resolution both filters read whole texels: the guest frame is the texture. */
+    /* The sprite smart 2D samples nearest reads whole texels at every render scale. At the PSP's
+     * resolution the linear one does too, so the guest frame is the texture with the filter on or
+     * off. Above 1x each device pixel samples at its own position (hook_sprite, #2104), so the
+     * linear sprite's guest pixels blend their neighbours; the device image below checks that. */
     uint32_t want[XST_W * XST_H];
     xst_expect(tex, 0, 1, want);
     if (!xst_report("smart2d", 20, 20, want, "the filtered sprite's guest pixels are not the texture") ||
-        !xst_report("smart2d", 60, 20, want, "the linear sprite's guest pixels are not the texture"))
+        (s_scale == 1 && !xst_report("smart2d", 60, 20, want, "the linear sprite's guest pixels are not the texture")))
         return 0;
     if (s_scale > 1) {
         uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
