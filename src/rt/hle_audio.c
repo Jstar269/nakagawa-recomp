@@ -696,8 +696,8 @@ typedef struct {
     int loop_start;               /* marked block offset to loop to (-1 = none) */
     int hist1, hist2;             /* ADPCM filter state */
     int pitch;                    /* 0x1000 = native 44.1 kHz */
-    int voll, volr;               /* dry L/R, 0..0x1000 */
-    int effect_l, effect_r;       /* send L/R, 0..0x1000 */
+    int voll, volr;               /* dry L/R, -0x1000..0x1000; 0x1000 from __sceSasInit */
+    int effect_l, effect_r;       /* send L/R, -0x1000..0x1000; 0x1000 from __sceSasInit */
     int16_t buf[28]; int bufn, bufi;
     uint32_t frac;                /* 12-bit fixed-point resample remainder */
     uint32_t pcm;                 /* mono signed-16 PCM source */
@@ -1026,8 +1026,15 @@ static void sas_mix_band_limited(SasVoice *v, const SasVoice *pre, const SasRsGr
     memcpy(v->rs_hist, src + k_next - SAS_RS_REACH, sizeof(v->rs_hist));
 }
 
-/* Mix one grain into out (s16 stereo or four planar channels). add=0 overwrites. */
-static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gain) {
+/* voice + in * gain >> 12, saturated to the s16 range the store clamps to anyway. */
+static int sas_add_scaled_input(int voice, int16_t in, int32_t gain) {
+    int64_t v = (int64_t)voice + (((int64_t)in * gain) >> 12);
+    return v > 32767 ? 32767 : v < -32768 ? -32768 : (int)v;
+}
+
+/* Mix one grain into out (s16 stereo or four planar channels). add=0 overwrites; add=1 keeps the
+ * caller's PCM in out, scaled by in_gain_l/in_gain_r on the two dry channels. */
+static void sas_mix_stateful(uint32_t out, int add, int32_t in_gain_l, int32_t in_gain_r) {
     uint64_t perf_started = sr_perf_now_ns();
     int32_t mixl[2048], mixr[2048], mixsl[2048], mixsr[2048];
     int n = s_sas_core.grain;
@@ -1103,14 +1110,14 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
         if (rs) sas_mix_band_limited(v, &pre, &grain, mixl, mixr, mixsl, mixsr);
     }
     for (int i = 0; i < n; i++) {
-        /* The gain product is 64-bit: twenty full-scale voices already sum past INT32_MAX / 4096,
-         * and a wrapped product inverts loud samples instead of saturating them at the output. */
-        int l = (int)(((int64_t)mixl[i] * left_gain) >> 12);
-        int r = (int)(((int64_t)mixr[i] * right_gain) >> 12);
+        /* in_gain_l/in_gain_r scale the caller's PCM already in out (add only), never the voice
+         * mix (#2135). The product is 64-bit and saturated before the store, so a volume of any
+         * size clips instead of wrapping. */
+        int l = mixl[i], r = mixr[i];
         int sl = mixsl[i], sr = mixsr[i];
         if (add) {
-            l += sas_output_read(out, (uint32_t)i, 0);
-            r += sas_output_read(out, (uint32_t)i, 1);
+            l = sas_add_scaled_input(l, sas_output_read(out, (uint32_t)i, 0), in_gain_l);
+            r = sas_add_scaled_input(r, sas_output_read(out, (uint32_t)i, 1), in_gain_r);
             if (s_sas_core.output_mode) {
                 sl += sas_output_read(out, (uint32_t)i, 2);
                 sr += sas_output_read(out, (uint32_t)i, 3);
@@ -1163,8 +1170,17 @@ static uint32_t h_SasInit(CpuState *s) {
     s_sas_core.effect_dry = s_sas_core.effect_wet = 1;
     s_sas_max_voices = max_voices;
     memset(s_sasv, 0, sizeof(s_sasv));
+    /* A voice starts at full dry and effect-send volume, and only __sceSasSetVolume changes it:
+     * KeyOn leaves volumes alone, so an explicit 0/0 stays silent (#2135). Reference: PPSSPP,
+     * hrydgard/ppsspp 0b30638e6571, Core/HW/SasAudio.h:234-237 (the SasVoice defaults);
+     * SasVoice::KeyOn and SasVoice::Reset there touch no volume. PPSSPP builds its voices once
+     * per boot and its sceSasInit resets only playing, loop and sample rate, so there a second
+     * init keeps the volumes; this model treats every init as fresh (PSP-SAS-001 above), which
+     * restores the defaults. Unmeasured on a PSP. */
     for (int i = 0; i < SAS_VOICES; i++) {
         s_sasv[i].pitch = 0x1000; s_sasv[i].loop_start = -1; s_sasv[i].pcm_loop_start = -1;
+        s_sasv[i].voll = s_sasv[i].volr = SAS_VOLUME_MAX;
+        s_sasv[i].effect_l = s_sasv[i].effect_r = SAS_VOLUME_MAX;
         sas_envelope_reset(&s_sasv[i].envelope);
     }
     s_sas_core.end_flags = sas_live_end_flags();
@@ -1215,8 +1231,8 @@ static uint32_t h_SasSetVolume(CpuState *s) {
     if (e) return e;
     /* A SAS volume is signed: |volume| <= 0x1000, and a negative side plays phase-inverted (the
      * mixer multiplies by it). Hot Shots Tennis gives three voices of each title-logo sound one
-     * negative side; refusing them left those voices at 0/0, which KeyOn then raised to full
-     * volume, about 9 dB above a PSP-3000 capture of the same moment (#2135). */
+     * negative side; refusing them left those voices at 0/0, which a KeyOn rule (since removed)
+     * raised to full volume, about 9 dB above a PSP-3000 capture of the same moment (#2135). */
     if (l < -SAS_VOLUME_MAX || l > SAS_VOLUME_MAX || r < -SAS_VOLUME_MAX || r > SAS_VOLUME_MAX ||
         el < -SAS_VOLUME_MAX || el > SAS_VOLUME_MAX || er < -SAS_VOLUME_MAX || er > SAS_VOLUME_MAX)
         return SAS_ERROR_VOLUME_VAL;
@@ -1298,7 +1314,6 @@ static uint32_t h_SasSetKeyOn(CpuState *s) {
         (v->type == SAS_VOICE_PCM && (!v->pcm || !v->pcm_samples))) return SAS_ERROR_INVALID_STATE;
     v->pos = 0; v->pcm_pos = 0; v->hist1 = v->hist2 = 0; v->bufn = v->bufi = 0; v->frac = 0;
     memset(v->rs_hist, 0, sizeof(v->rs_hist));
-    if (!v->voll && !v->volr) { v->voll = SAS_VOLUME_MAX; v->volr = SAS_VOLUME_MAX; }
     sas_envelope_key_on(&v->envelope); v->env_level = 0; v->on = 1;
     if (sas_log_on()) {
         static uint32_t calls; calls++;
@@ -1408,12 +1423,17 @@ static uint32_t h_SasCore(CpuState *s) {
     sas_mix_stateful(A1, 0, SAS_VOLUME_MAX, SAS_VOLUME_MAX); return 0;
 }
 
+/* __sceSasCoreWithMix(core, inout, leftVol, rightVol): leftVol/rightVol scale the PCM the caller
+ * left in inout, and the voices are added at their own volumes (#2135). No volume is refused: a
+ * negative one inverts the caller's PCM, one above 0x1000 amplifies it, and the sum saturates.
+ * Reference: PPSSPP, hrydgard/ppsspp 0b30638e6571, Core/HLE/sceSas.cpp _sceSasCoreWithMix (no
+ * volume check) and Core/HW/SasAudio.cpp WriteMixedOutput (inp * leftVol >> 12, then the dry
+ * mix, then clamp_s16). There the product is a C int, which overflows past |vol| = 0x10000;
+ * here it is 64-bit and saturates. Unmeasured on a PSP. */
 static uint32_t h_SasCoreWithMix(CpuState *s) {
     uint32_t e = sas_require_core(A0);
     int32_t left_gain = (int32_t)A2, right_gain = (int32_t)A3;
     if (e) return e;
-    if (left_gain < 0 || left_gain > SAS_VOLUME_MAX || right_gain < 0 || right_gain > SAS_VOLUME_MAX)
-        return SAS_ERROR_VOLUME_VAL;
     e = sas_output_validate(A1, 1);
     if (e) return e;
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
