@@ -3890,6 +3890,215 @@ static void test_io_async_and_path_imports(void) {
            "sceIoSync names unsupported device semantics with a real error");
 }
 
+/* sceIoAssign / sceIoUnassign through the production syscall path. WipEout Pure's Memory
+ * Stick insert handler assigns "fatms0:" to "msstor0p1:" through "fatms0:" read/write, and
+ * its eject handler unassigns it; before these handlers both NIDs were unregistered and the
+ * run stopped at boot. Arguments 5 and 6 (the mount argument buffer and its size) arrive in
+ * t0 and t1 (MIPS EABI): the stack slots hold a kernel-bit poison value, so a handler that
+ * read them from the stack would answer ILLEGAL_ADDR where these cells expect success. */
+static uint32_t io_assign_call(uint32_t dev, uint32_t block, uint32_t fs, uint32_t mode,
+                               uint32_t arg, uint32_t arg_size) {
+    enum { STACK_ADDR = 0x09016000u };
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[29] = STACK_ADDR;
+    MEM_W32(STACK_ADDR, 0x80000000u);
+    MEM_W32(STACK_ADDR + 4u, 0x80000000u);
+    cpu.r[4] = dev;
+    cpu.r[5] = block;
+    cpu.r[6] = fs;
+    cpu.r[7] = mode;
+    cpu.r[8] = arg;
+    cpu.r[9] = arg_size;
+    return sr_syscall(&cpu, 0xb2a628c1u);
+}
+
+static uint32_t io_unassign_call(uint32_t dev) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dev;
+    return sr_syscall(&cpu, 0x6d08a871u);
+}
+
+/* One sceIo call on a guest path through sr_syscall: open (with flags), getstat, mkdir or
+ * remove. Returns the syscall's result; an open that succeeds is closed again. */
+static uint32_t io_assign_path_call(uint32_t nid, uint32_t path_addr, const char *guest,
+                                    uint32_t flags) {
+    enum { STAT_ADDR = 0x09015200u };
+    CpuState cpu;
+    fd_guest_copy(path_addr, guest, strlen(guest) + 1u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = path_addr;
+    if (nid == 0x109f50bcu) {          /* sceIoOpen */
+        cpu.r[5] = flags;
+        cpu.r[6] = 0777u;
+    } else if (nid == 0xace946e8u) {   /* sceIoGetstat */
+        cpu.r[5] = STAT_ADDR;
+    } else if (nid == 0x06a70004u) {   /* sceIoMkdir */
+        cpu.r[5] = 0777u;
+    }
+    uint32_t rc = sr_syscall(&cpu, nid);
+    if (nid == 0x109f50bcu && rc >= 3u && rc < 64u) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = rc;
+        (void)sr_syscall(&cpu, 0x810c4bc3u);   /* sceIoClose */
+    }
+    return rc;
+}
+
+static void test_io_assign_through_syscall(void) {
+    enum {
+        ALIAS_ADDR = 0x09015000u,
+        BLOCK_ADDR = 0x09015040u,
+        FS_ADDR = 0x09015080u,
+        OTHER_ADDR = 0x090150c0u,
+        PATH_ADDR = 0x09015100u,
+        STAT_ADDR = 0x09015200u,
+        ARG_ADDR = 0x09015300u,
+        NO_SUCH_DEVICE = 0x80020321u,
+        ALIAS_USED = 0x80020326u,
+        ILLEGAL_ADDR = 0x800200d3u,
+        UNSUPPORTED = 0x80010086u,
+        RDWR = 0u,
+        RDONLY = 1u,
+    };
+    static const char probe_guest[] = "fatms0:/NAKAGAWA_IO_ASSIGN.TXT";
+    static const char probe_ms0[] = "ms0:/NAKAGAWA_IO_ASSIGN.TXT";
+    sr_hle_test_register_iofilemgr();   /* the production IoFileMgr registration run */
+    bool registered = sr_hle_test_is_registered(0xb2a628c1u) &&
+                      sr_hle_test_is_registered(0x6d08a871u);
+    expect(registered, "sceIoAssign and sceIoUnassign are registered IoFileMgr imports");
+    if (!registered) return;   /* an unregistered NID ends the run as an import miss */
+
+    fd_guest_copy(ALIAS_ADDR, "fatms0:", sizeof("fatms0:"));
+    fd_guest_copy(BLOCK_ADDR, "msstor0p1:", sizeof("msstor0p1:"));
+    fd_guest_copy(FS_ADDR, "fatms0:", sizeof("fatms0:"));
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == 0u,
+           "sceIoAssign honours fatms0: on msstor0p1: through fatms0: read/write");
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == ALIAS_USED,
+           "a second assign of the same alias name is ALIAS_USED");
+    fd_guest_copy(OTHER_ADDR, " FATMS0:", sizeof(" FATMS0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == ALIAS_USED,
+           "alias names compare case-insensitively after leading spaces");
+
+    /* The alias names the VFS Memory Stick: a file created through fatms0: is the ms0: file. */
+    char host[256];
+    fd_host_path(host, sizeof(host), probe_ms0);
+    nk_remove_utf8(host);
+    CpuState cpu;
+    fd_guest_copy(PATH_ADDR, probe_guest, sizeof(probe_guest));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = 0x00000602u;   /* PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC */
+    cpu.r[6] = 0777u;
+    uint32_t fd = sr_syscall(&cpu, 0x109f50bcu);   /* sceIoOpen */
+    expect(fd >= 3u && fd < 64u, "a file opens through the assigned fatms0: alias");
+    if (fd >= 3u && fd < 64u) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        expect(sr_syscall(&cpu, 0x810c4bc3u) == 0u, "the fatms0: probe closes");   /* sceIoClose */
+        fd_guest_copy(PATH_ADDR, probe_ms0, sizeof(probe_ms0));
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = PATH_ADDR;
+        cpu.r[5] = STAT_ADDR;
+        expect(sr_syscall(&cpu, 0xace946e8u) == 0u,   /* sceIoGetstat */
+               "the file created through fatms0: is the ms0: file");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = PATH_ADDR;
+        expect(sr_syscall(&cpu, 0xf27a9c51u) == 0u, "the probe file is removed");   /* sceIoRemove */
+    }
+
+    /* The aliases the runtime serves from boot are in the table. */
+    fd_guest_copy(OTHER_ADDR, "ms0:", sizeof("ms0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == ALIAS_USED,
+           "ms0 is assigned from boot");
+    fd_guest_copy(OTHER_ADDR, "disc0:", sizeof("disc0:"));
+    fd_guest_copy(BLOCK_ADDR, "umd0:", sizeof("umd0:"));
+    fd_guest_copy(FS_ADDR, "isofs0:", sizeof("isofs0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDONLY, 0u, 0u) == ALIAS_USED,
+           "disc0 is assigned from boot");
+    fd_guest_copy(BLOCK_ADDR, "msstor0p1:", sizeof("msstor0p1:"));
+    fd_guest_copy(FS_ADDR, "fatms0:", sizeof("fatms0:"));
+
+    /* uofw's argument checks. */
+    expect(io_assign_call(0u, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == NO_SUCH_DEVICE,
+           "a NULL alias is NO_SUCH_DEVICE");
+    fd_guest_copy(OTHER_ADDR, "msnew0:", sizeof("msnew0:"));
+    expect(io_assign_call(OTHER_ADDR, 0u, FS_ADDR, RDWR, 0u, 0u) == NO_SUCH_DEVICE,
+           "a filesystem without a block device is NO_SUCH_DEVICE");
+    expect(io_assign_call(OTHER_ADDR, 0x88000000u, FS_ADDR, RDWR, 0u, 0u) == ILLEGAL_ADDR,
+           "a kernel-space device pointer is ILLEGAL_ADDR");
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, ARG_ADDR, 0x80000000u) ==
+               ILLEGAL_ADDR,
+           "the argument size in t1 is checked (a negative size is ILLEGAL_ADDR)");
+    fd_guest_copy(OTHER_ADDR, "nocolon", sizeof("nocolon"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == NO_SUCH_DEVICE,
+           "an alias without ':' is NO_SUCH_DEVICE");
+
+    /* Assigns the VFS cannot honour stop at the named boundary, never success. */
+    fd_guest_copy(OTHER_ADDR, "msnew0:", sizeof("msnew0:"));
+    expect(io_assign_call(OTHER_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == UNSUPPORTED,
+           "a new alias name the VFS does not serve is refused at the boundary");
+    expect(io_unassign_call(ALIAS_ADDR) == 0u, "sceIoUnassign removes the game-made fatms0 alias");
+
+    /* The unassign unmounts fatms0: (uofw sceIoUnassign calls the driver's df_umount), so a
+     * path on it no longer reaches the Memory Stick: NO_SUCH_DEVICE, also through the
+     * handlers that answer one fixed code for other unusable paths. */
+    enum { OPEN = 0x109f50bcu, GETSTAT = 0xace946e8u, MKDIR = 0x06a70004u, REMOVE = 0xf27a9c51u,
+           CREATE = 0x00000602u /* PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC */ };
+    static const char probe_dir[] = "fatms0:/NAKAGAWA_IO_ASSIGN_DIR";
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_guest, CREATE) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoOpen on fatms0: is NO_SUCH_DEVICE");
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_guest, 0u) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoGetstat on fatms0: is NO_SUCH_DEVICE");
+    expect(io_assign_path_call(MKDIR, PATH_ADDR, probe_dir, 0u) == NO_SUCH_DEVICE,
+           "after the unassign, sceIoMkdir on fatms0: is NO_SUCH_DEVICE");
+    {
+        CpuState dev_cpu;
+        fd_guest_copy(OTHER_ADDR, "fatms0:", sizeof("fatms0:"));
+        memset(&dev_cpu, 0, sizeof(dev_cpu));
+        dev_cpu.r[4] = OTHER_ADDR;
+        dev_cpu.r[5] = 0x02425818u;   /* a Memory Stick devctl command */
+        expect(sr_syscall(&dev_cpu, 0x54f5fb11u) == NO_SUCH_DEVICE,   /* sceIoDevctl */
+               "after the unassign, sceIoDevctl on fatms0: is NO_SUCH_DEVICE");
+    }
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_ms0, 0u) != 0u,
+           "the refused open created nothing on the Memory Stick");
+    /* ms0 keeps serving the Memory Stick: the runtime's choice, since whether the PSP's
+     * unmount takes the unit ms0 shares with it is not measured. */
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_ms0, CREATE) < 64u,
+           "ms0: still opens after fatms0 is unassigned");
+    expect(io_assign_path_call(REMOVE, PATH_ADDR, probe_ms0, 0u) == 0u,
+           "and the ms0: probe is removed");
+    fd_guest_copy(OTHER_ADDR, "msnew0:", sizeof("msnew0:"));
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, ARG_ADDR, 4u) == UNSUPPORTED,
+           "a mount argument buffer in t0 is refused at the boundary (not modelled)");
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDONLY, 0u, 0u) == UNSUPPORTED,
+           "a read-only Memory Stick mount is refused: the VFS serves it read/write");
+
+    /* sceIoUnassign. */
+    expect(io_unassign_call(ALIAS_ADDR) == NO_SUCH_DEVICE,
+           "unassigning an alias that is not assigned is NO_SUCH_DEVICE");
+    expect(io_unassign_call(0u) == NO_SUCH_DEVICE, "sceIoUnassign(NULL) is NO_SUCH_DEVICE");
+    expect(io_unassign_call(0x88000000u) == ILLEGAL_ADDR,
+           "sceIoUnassign of a kernel-space pointer is ILLEGAL_ADDR");
+    fd_guest_copy(OTHER_ADDR, "ms0:", sizeof("ms0:"));
+    expect(io_unassign_call(OTHER_ADDR) == UNSUPPORTED,
+           "unassigning ms0, which the VFS keeps serving, is refused at the boundary");
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == 0u,
+           "fatms0 assigns again after its unassign (the insert-eject-insert sequence)");
+    expect(io_assign_path_call(OPEN, PATH_ADDR, probe_guest, CREATE) < 64u,
+           "fatms0: opens again once it is assigned again");
+    expect(io_assign_path_call(REMOVE, PATH_ADDR, probe_guest, 0u) == 0u,
+           "and the fatms0: probe is removed");
+    expect(io_unassign_call(ALIAS_ADDR) == 0u, "and unassigns again");
+    expect(io_assign_path_call(GETSTAT, PATH_ADDR, probe_guest, 0u) == NO_SUCH_DEVICE,
+           "the second unassign unmounts fatms0: again");
+    /* Leave fatms0: usable for the tests that follow, as it is from boot. */
+    expect(io_assign_call(ALIAS_ADDR, BLOCK_ADDR, FS_ADDR, RDWR, 0u, 0u) == 0u,
+           "fatms0 assigns a third time");
+}
+
 static void test_fd_namespace(void) {
     enum {
         FD_KIND_STD = 1,
@@ -4581,6 +4790,7 @@ static void test_fd_namespace(void) {
            "the descriptor reused after async close closes cleanly");
 
     test_io_async_and_path_imports();
+    test_io_assign_through_syscall();
     test_io_open_async_notifies_later_callback();
     test_io_enhancement_data_file();
     test_state_sampler_rows();

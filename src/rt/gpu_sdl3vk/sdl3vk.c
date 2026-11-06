@@ -388,6 +388,11 @@ static int create_swapchain(void) {
      * presentation. MAILBOX (no tearing, never blocks) avoids beating against the monitor
      * refresh; FIFO is the mandated fallback. */
     sci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
+    /* Printed once the swapchain exists: which mode, and why (sdl3vk_present_mode_line), for
+     * the first swapchain and whenever a recreation changes it (sdl3vk_present_mode_log_due). */
+    static int s_present_logged_mode = -1, s_present_logged_vsync = -1;
+    char present_line[256];
+    int vsync_on;
     {
         VkPresentModeKHR pm[8]; uint32_t npm = 8;
         int avail[8]; int navail = 0;
@@ -395,12 +400,10 @@ static int create_swapchain(void) {
             for (uint32_t i = 0; i < npm && i < 8; i++) avail[navail++] = (int)pm[i];
         }
         const char *vs = getenv("SR_VSYNC");
-        int vsync_on = !vs || !vs[0] || atoi(vs) != 0;
+        vsync_on = !vs || !vs[0] || atoi(vs) != 0;
         sci.presentMode = (VkPresentModeKHR)sdl3vk_pick_present_mode(vsync_on, avail, navail);
-        if (!vsync_on && sci.presentMode == VK_PRESENT_MODE_FIFO_KHR) {
-            fprintf(stderr, "sdl3vk: SR_VSYNC=0 requested but this surface offers no "
-                            "MAILBOX/IMMEDIATE mode; falling back to FIFO (vsync)\n");
-        }
+        (void)sdl3vk_present_mode_line(vsync_on, avail, navail, (int)sci.presentMode,
+                                       old != VK_NULL_HANDLE, present_line, sizeof(present_line));
     }
     sci.clipped          = VK_TRUE;
     sci.oldSwapchain     = old;
@@ -421,6 +424,9 @@ static int create_swapchain(void) {
         return 0;
     }
     s_swap = made;
+    if (sdl3vk_present_mode_log_due(&s_present_logged_mode, &s_present_logged_vsync,
+                                    (int)sci.presentMode, vsync_on))
+        fprintf(stderr, "%s\n", present_line);
     if (old) vkDestroySwapchainKHR(s_dev, old, NULL);
     /* Every present that waited on these was to the old swapchain, and the queue was idle
      * before it was replaced (wait_swapchain_unused). */
@@ -465,6 +471,67 @@ static int create_swapchain(void) {
 typedef char sdl3vk_present_mode_immediate_is_0[(int)VK_PRESENT_MODE_IMMEDIATE_KHR == 0 ? 1 : -1];
 typedef char sdl3vk_present_mode_mailbox_is_1[(int)VK_PRESENT_MODE_MAILBOX_KHR == 1 ? 1 : -1];
 typedef char sdl3vk_present_mode_fifo_is_2[(int)VK_PRESENT_MODE_FIFO_KHR == 2 ? 1 : -1];
+
+static const char *sdl3vk_present_mode_name(int mode) {
+    switch (mode) {
+        case 0: return "IMMEDIATE";
+        case 1: return "MAILBOX";
+        case 2: return "FIFO";
+        case 3: return "FIFO_RELAXED";
+        case 1000111000: return "SHARED_DEMAND_REFRESH";
+        case 1000111001: return "SHARED_CONTINUOUS_REFRESH";
+        case 1000361000: return "FIFO_LATEST_READY";
+        default: return NULL;
+    }
+}
+
+int sdl3vk_present_mode_line(int vsync, const int *available, int count, int chosen,
+                             int recreated, char *out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    const char *why;
+    if (chosen == 2 && vsync)
+        why = "VSync on";
+    else if (chosen == 1)
+        why = "VSync off; the surface offers MAILBOX, which does not tear";
+    else if (chosen == 0)
+        why = "VSync off; the surface offers no MAILBOX, and IMMEDIATE can tear";
+    else if (chosen == 2)
+        why = "VSync off, but the surface offers neither MAILBOX nor IMMEDIATE, so FIFO keeps VSync";
+    else
+        why = "not a mode the picker chooses";
+    const char *name = sdl3vk_present_mode_name(chosen);
+    char unknown[24];
+    if (!name) {
+        snprintf(unknown, sizeof(unknown), "mode %d", chosen);
+        name = unknown;
+    }
+    size_t at = 0;
+    int n = snprintf(out, cap, "sdl3vk: swapchain %s: present mode %s (%s); surface offers",
+                     recreated ? "recreated" : "created", name, why);
+    if (n < 0) { out[0] = '\0'; return 0; }
+    at = (size_t)n < cap ? (size_t)n : cap - 1;
+    if (count <= 0 || !available) {
+        n = snprintf(out + at, cap - at, " none");
+        if (n > 0) at += (size_t)n < cap - at ? (size_t)n : cap - at - 1;
+    }
+    for (int i = 0; available && i < count && at + 1 < cap; i++) {
+        const char *m = sdl3vk_present_mode_name(available[i]);
+        n = m ? snprintf(out + at, cap - at, " %s", m)
+              : snprintf(out + at, cap - at, " mode%d", available[i]);
+        if (n < 0) break;
+        at += (size_t)n < cap - at ? (size_t)n : cap - at - 1;
+    }
+    return (int)at;
+}
+
+int sdl3vk_present_mode_log_due(int *last_mode, int *last_vsync, int mode, int vsync) {
+    if (!last_mode || !last_vsync) return 1;
+    vsync = vsync != 0;
+    if (*last_mode == mode && *last_vsync == vsync) return 0;
+    *last_mode = mode;
+    *last_vsync = vsync;
+    return 1;
+}
 
 int sdl3vk_pick_present_mode(int vsync, const int *available, int count) {
     const int immediate = 0;
