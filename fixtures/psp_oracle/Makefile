@@ -310,6 +310,10 @@ CASE_ID = 152
 # 155: the #2135/#2054 SAS volume, WithMix and pitch cells (probe.c, run_sas_mix).
 else ifeq ($(CASE),sas-mix)
 CASE_ID = 155
+# 160: the #286 Media Engine boundary words: sceVideocodec, sceMpegbase and sceAudiocodec
+# CheckNeedMem on synthetic input (probe.c, run_vcodec_words).
+else ifeq ($(CASE),vcodec-words)
+CASE_ID = 160
 # 118: the #303 DMAC transfer-time and busy-channel cells (probe_dmac_timing.c).
 else ifeq ($(CASE),dma-timing)
 CASE_ID = 118
@@ -683,6 +687,16 @@ endif
 # libpspmpeg.a lacks the YCbCr, CSC and decode-detail stubs) and links only the utility stubs.
 ifeq ($(CASE),mpeg-ycbcr)
 LIBS += -lpsputility
+endif
+# #286: the Media Engine boundary probe carries its own sceVideocodec, sceMpegbase and sceAudiocodec
+# import blocks (probe.c; the PSPSDK libraries are not linked) and links only the utility stubs. The
+# gate pins each library to exactly the calls the case makes: eight videocodec, three mpegbase (no
+# PESpacketCopy, no YCrCb copy) and CheckNeedMem from the audio codec.
+ifeq ($(CASE),vcodec-words)
+LIBS += -lpsputility
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceVideocodec=0xC01EC829,0x2D31F5B1,0x17099F0A,0x745A7B7A,0xDBA273FA,0xA2F0564E,0x4F160BF4,0x307E6E1C
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceMpegbase=0x492B5E4B,0x91929A21,0x0530BE4E
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceAudiocodec=0x9D3F790C
 endif
 # #1595: the SAS re-init probe links the user-mode sceSasCore and utility stubs it calls.
 ifeq ($(CASE),sas-init)

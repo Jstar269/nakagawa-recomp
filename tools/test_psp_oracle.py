@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 137)
+        self.assertEqual(len(routes), 138)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
-                         | {150, 151, 152, 153, 154, 155, 156, 157, 158, 159},
+                         | {150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -2517,6 +2517,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(routes.get("mpeg-ycbcr"), "151")
         self.assertEqual(routes.get("sas-adsr"), "152")
         self.assertEqual(routes.get("sas-mix"), "155")
+        self.assertEqual(routes.get("vcodec-words"), "160")
 
     def test_mpeg_ycbcr_modes_2_and_3_cells_follow_the_mode_1_cells(self) -> None:
         # #302: the mode 2 and 3 cells come after every mode 1 cell, keep a record for a refused
@@ -2636,6 +2637,95 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.assertNotIn(f"sas-mix-p-{cell}-g{8 * int(grains):02x}", counts)
         # Raw mode writes four planar grains; the buffer holds twice that, filled with the sentinel.
         self.assertIn("#define SAS_MIX_OUT_SHORTS (SAS_MIX_GRAIN * 8)", section)
+
+    def test_vcodec_words_case_imports_exactly_its_calls_and_records_a_fixed_stream(self) -> None:
+        # #286 (W-LLE-1): the Media Engine boundary probe carries its own three import blocks in
+        # probe.c, pinned at link time to exactly the calls it makes.
+        block = re.search(r"(?ms)^ifeq \(\$\(CASE\),vcodec-words\)\n(.*?)^endif$", self.makefile)
+        if block is None:
+            self.fail("fixtures/psp_oracle/Makefile has no vcodec-words block")
+        self.assertIn("-lpsputility", block.group(1))
+        probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        self.assertIn("#define PSP_ORACLE_CASE_VCODEC_WORDS 160", probe)
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/vcodec_words_log.txt"', probe)
+        start = probe.index("#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VCODEC_WORDS\n#include")
+        section = probe[start:probe.index("#endif\n", probe.index("static void run_vcodec_words", start))]
+        blocks = re.findall(r"VCW_LIB\((\w+), (0x[0-9A-Fa-f]+)\)", section)
+        self.assertEqual(blocks, [("sceVideocodec", "0x40090000"), ("sceMpegbase", "0x00090000"),
+                                  ("sceAudiocodec", "0x40090000")])
+        funcs = re.findall(r"VCW_FUNC\((\w+), (0x[0-9A-F]{8}), (\w+)\)", section)
+        self.assertEqual(len(funcs), 12)
+        names = {library: set() for library, _ in blocks}
+        for library, nid, name in funcs:
+            names[library].add(int(nid, 16))
+            # Every NID is the first four bytes, little-endian, of SHA-1 of the export name, except
+            # the one sceMpegbase export that has no public name.
+            if name != "sceMpegbase_0530BE4E":
+                self.assertEqual(int(nid, 16), self._vcodec_nid(name), name)
+        nid_names = (self.root / "src" / "rt" / "nid_names.h").read_text(encoding="utf-8")
+        for name in ("sceMpegBaseCscInit", "sceMpegBaseCscAvc", "sceMpegbase_0530BE4E",
+                     "sceAudiocodecCheckNeedMem"):
+            nid = next(int(nid, 16) for _, nid, called in funcs if called == name)
+            self.assertIn("{0x%08xu, \"%s\"}" % (nid, name), nid_names)
+        # The Makefile pins each library to the same sets, and no kernel-only library is named.
+        pins = {}
+        for library, nids in re.findall(r"--exact-library (\w+)=(\S+)", block.group(1)):
+            pins[library] = {int(nid, 16) for nid in nids.split(",")}
+        self.assertEqual(pins, names)
+        self.assertEqual(len(names["sceVideocodec"]), 8)
+        self.assertEqual(names["sceAudiocodec"], {0x9D3F790C})
+        # Every firmware call goes through the one bounded helper: a step marker before it, a
+        # bounded wait, no write outside the host0 log (the log is probe_emit_durable's).
+        for banned in ("ms0:", "sceIoOpen", "sceIoWrite", "sceMpegBasePESpacketCopy", "sceKernelDelayThread"):
+            self.assertNotIn(banned, section)
+        run = section[section.index("static int vcw_run("):section.index("/* The teardown of one context")]
+        self.assertLess(run.index("probe_step("), run.index("sceKernelCreateThread("))
+        self.assertIn("sceKernelWaitSema(s_vcw_sema, 1, &wait_us)", run)
+        self.assertIn("sceKernelWaitThreadEnd(thid, &end_us)", run)
+        for call in ("sceVideocodecOpen(", "sceVideocodecGetEDRAM(", "sceVideocodecInit(",
+                     "sceVideocodecSetMemory(", "sceVideocodecDecode(", "sceVideocodecStop(",
+                     "sceVideocodecReleaseEDRAM(", "sceVideocodecDelete(", "sceMpegBaseCscInit(",
+                     "sceMpegBaseCscAvc(", "sceMpegbase_0530BE4E(", "sceAudiocodecCheckNeedMem("):
+            self.assertEqual(len(re.findall(r"return " + re.escape(call), section)), 1, call)
+        # The modules load and unload around everything; the stream ends in the done record.
+        self.assertIn("sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC)", section)
+        self.assertIn("sceUtilityLoadAvModule(PSP_AV_MODULE_MPEGBASE)", section)
+        self.assertIn("sceUtilityUnloadAvModule(PSP_AV_MODULE_MPEGBASE)", section)
+        self.assertIn("sceUtilityUnloadAvModule(PSP_AV_MODULE_AVCODEC)", section)
+        self.assertIn('vcw_record(emulated, "vcodec-words-done", 1, 0, done, 1u);', section)
+        # The registered stream: strict, 976 records before the done record.
+        spec, counts = CAMPAIGN_PROBE_CASES["vcodec-words"]
+        self.assertEqual(spec.test_id, "PSP-VCODEC-001")
+        self.assertEqual(spec.terminal_case, "vcodec-words-done")
+        self.assertEqual(_campaign_completeness_contract("vcodec-words"), "strict-golden-sequence")
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "vcodec-words").name,
+                         "vcodec_words_log.txt")
+        self.assertEqual(len(spec.semantic_cases), 976)
+        self.assertEqual(len(set(spec.semantic_cases)), 976)
+        self.assertEqual(spec.semantic_cases[0], "vc-load")
+        self.assertEqual(spec.semantic_cases[-1], "vc-unload")
+        # The step records are 34 words, the band chunks 120, the converted rows 128; the three
+        # sizes below are the constants probe.c uses.
+        self.assertIn("#define VCW_BAND_CHUNK_WORDS 120u", section)
+        self.assertIn("#define VCW_RGB_CHUNK_WORDS 128u", section)
+        self.assertIn("#define VCW_Y_BAND_BYTES 32640u", section)
+        self.assertIn("#define VCW_C_BAND_BYTES 16320u", section)
+        self.assertEqual(counts["vc-t0-open-c2"], 34)
+        self.assertEqual(counts["vc-t1-delete"], 34)
+        self.assertEqual(counts["vc-d480-a0-yuv"], 48)
+        self.assertEqual(counts["vc-d480-a0-b3-c67"], 120)
+        self.assertNotIn("vc-d480-a0-b3-c68", counts)
+        self.assertEqual(counts["vc-d464-a0-b7-c33"], 120)
+        self.assertNotIn("vc-d464-a0-b7-c34", counts)
+        self.assertEqual(counts["vc-csc-m3-d15"], 128)
+        self.assertNotIn("vc-csc-m0", [case for case in spec.semantic_cases if "d464" in case])
+        self.assertEqual(counts["vc-ac-1000-p5c28"], 67)
+        self.assertEqual(sum(1 for case in spec.semantic_cases if case.startswith("vc-csc-")), 71)
+        self.assertEqual(counts["vcodec-words-done"], 1)
+
+    @staticmethod
+    def _vcodec_nid(name: str) -> int:
+        return int.from_bytes(hashlib.sha1(name.encode("ascii"), usedforsecurity=False).digest()[:4], "little")
 
     def test_thread_k0_block_route_has_its_own_case_id(self) -> None:
         routes = dict(re.findall(

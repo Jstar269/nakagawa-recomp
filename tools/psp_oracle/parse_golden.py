@@ -2389,6 +2389,69 @@ _register_campaign_probe(
      for case in SAS_ADSR_CASES},
 )
 
+# vcodec-words (160, probe.c): the #286 (W-LLE-1) Media Engine boundary words. The fixed sequence
+# run_vcodec_words emits on every path (a call that was not made keeps its record's shape, status
+# SKIP): the load record; per codec type 0 and 1 the zero-filled context through Open, GetEDRAM,
+# Init and SetMemory (three 32-word chunks of the 96-word context each) and its teardown; per
+# picture width 480 (d480) and 464 (d464) the sceMpegCreate context, three decoded access units
+# with their output structs and band summaries, AU a0's eight band buffers in 120-word chunks,
+# for d480 the CscInit and CscAvc cells (four pixel modes, the first 8192 bytes of each in 128-word
+# chunks) and the teardown; the five CheckNeedMem cells; the unload record. Every step record is
+# 34 words (return, microseconds, 32 context words).
+VCODEC_STEP_WORDS = 34
+VCODEC_CHUNK_WORDS = 120
+# Chunk records per band: 4 luma bands of 32640 bytes and 4 chroma bands of 16320 bytes.
+VCODEC_BAND_CHUNKS = (68, 68, 68, 68, 34, 34, 34, 34)
+VCODEC_CSC_CHUNKS = 16
+VCODEC_CSC_CHUNK_WORDS = 128
+VCODEC_AUS = 3
+VCODEC_AU_ROWS = (("ctx", VCODEC_STEP_WORDS), ("b2", 32), ("yuv", 48), ("b3", 32), ("sei", 48),
+                  ("bands", 32))
+VCODEC_AC_CELLS = ("1000", "1001", "1002", "1000-p5c5c", "1000-p5c28")
+
+
+def _vcodec_type_rows(codec_type: int) -> tuple[tuple[str, int], ...]:
+    rows: list[tuple[str, int]] = []
+    for step in ("open", "edram", "init", "setmem"):
+        rows.extend((f"vc-t{codec_type}-{step}-c{chunk}", VCODEC_STEP_WORDS) for chunk in range(3))
+    rows.extend((f"vc-t{codec_type}-{step}", VCODEC_STEP_WORDS) for step in ("stop", "release", "delete"))
+    return tuple(rows)
+
+
+def _vcodec_decode_rows(tag: str, with_csc: bool) -> tuple[tuple[str, int], ...]:
+    rows: list[tuple[str, int]] = [(f"vc-{tag}-input", 9)]
+    rows.extend((f"vc-{tag}-{step}", VCODEC_STEP_WORDS) for step in ("open", "edram", "init", "setmem"))
+    for au in range(VCODEC_AUS):
+        rows.extend((f"vc-{tag}-a{au}-{name}", words) for name, words in VCODEC_AU_ROWS)
+        if au == 0:
+            for band, chunks in enumerate(VCODEC_BAND_CHUNKS):
+                rows.extend((f"vc-{tag}-a0-b{band}-c{chunk:02d}", VCODEC_CHUNK_WORDS)
+                            for chunk in range(chunks))
+    if with_csc:
+        rows.extend((("vc-csc-init", 2), ("vc-csc-struct", 13)))
+        for mode in range(4):
+            rows.append((f"vc-csc-m{mode}", 10))
+            rows.extend((f"vc-csc-m{mode}-d{chunk:02d}", VCODEC_CSC_CHUNK_WORDS)
+                        for chunk in range(VCODEC_CSC_CHUNKS))
+        rows.append(("vc-csc-modes", 2))
+    rows.extend((f"vc-{tag}-{step}", VCODEC_STEP_WORDS) for step in ("stop", "release", "delete"))
+    return tuple(rows)
+
+
+VCODEC_WORDS_ROWS = (
+    ("vc-load", 5),
+    *_vcodec_type_rows(0),
+    *_vcodec_type_rows(1),
+    *_vcodec_decode_rows("d480", True),
+    *_vcodec_decode_rows("d464", False),
+    *((f"vc-ac-{cell}", 67) for cell in VCODEC_AC_CELLS),
+    ("vc-unload", 5),
+)
+_register_campaign_probe(
+    "vcodec-words", "PSP-VCODEC-001",
+    tuple(row for row, _ in VCODEC_WORDS_ROWS), dict(VCODEC_WORDS_ROWS),
+)
+
 # ge-weight (157, probe_ge_sample.c): the #343 weighted-vertex cells. Per cell of the gw_cells
 # table, in order: one `-draw` record (10 words: the GE wait outcome, the list length, the vertex
 # type, the vertex size and the weight count) and seventeen `-rN` window rows.
