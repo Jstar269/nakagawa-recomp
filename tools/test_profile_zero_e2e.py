@@ -72,7 +72,7 @@ PROFILE_ZERO_REQUIRED = "NK_PROFILE_ZERO_REQUIRED"
 # PSPDEV build output of fixtures/profile_zero/{main.c,Makefile}. Only the digests
 # (SHA256SUMS) are committed: the repository stores no generated executable (#1100,
 # OpenSSF OSPS-QA-05.01). Hosted CI builds the bytes from source in the
-# profile_zero_fixture job and hands them to the route jobs; a host with PSPDEV
+# profile-zero steps of the public_export job and hands them to the route jobs; a host with PSPDEV
 # rebuilds them itself. Either way they must match the pinned digests, and they are
 # reproducible only with the distribution pinned by assets/upstream/pspdev.lock.json (#708).
 PREBUILT_DIR = ROOT / "fixtures" / "profile_zero" / "prebuilt"
@@ -142,8 +142,8 @@ def _build_guest(manifest: dict, output_dir: Path, backend: tuple[str, str | Non
     source_dir = (ROOT / build["working_directory"]).resolve()
     makefile = (ROOT / build["makefile"]).resolve()
     # The pinned digests are of the PRX built as TARGET=profile_zero_guest, as the
-    # profile_zero_fixture CI job builds it; the PRX embeds its target name, so a rebuild
-    # under the title's game_name could never reproduce them (#306).
+    # profile-zero steps of CI's public_export job build it; the PRX embeds its target
+    # name, so a rebuild under the title's game_name could never reproduce them (#306).
     target_name = PREBUILT_GUEST.stem
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -265,7 +265,7 @@ def _verify_committed_fixture() -> dict[str, str]:
     if not _fixture_bytes_present():
         raise unittest.SkipTest(
             "NOT_RUN: the profile-zero fixture bytes are absent. Hosted CI builds them in "
-            "the profile_zero_fixture job; locally, install the pinned PSPDEV (see "
+            "the profile-zero steps of the public_export job; locally, install the pinned PSPDEV (see "
             "fixtures/profile_zero/README.md)."
         )
     present = {

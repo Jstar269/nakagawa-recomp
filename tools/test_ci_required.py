@@ -89,6 +89,8 @@ class CiRequiredTests(unittest.TestCase):
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
+            "RUN_MARKDOWN": "false",
+            "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "true",
             "RUN_NATIVE": "true",
             "RUN_WINDOWS": "true",
@@ -154,9 +156,12 @@ class CiRequiredTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
-        for variable in ("MARKDOWN_RESULT", "MAIN_SMOKE_RESULT", "RUN_MARKDOWN", "RUN_MAIN_SMOKE"):
+        for variable in ("MARKDOWN_RESULT", "MAIN_SMOKE_RESULT"):
             with self.subTest(variable=variable):
                 self.assertNotIn(variable, workflow)
+        # Their run flags are still passed, so a missing classifier output fails closed.
+        self.assertIn("RUN_MARKDOWN: ${{ needs.classify.outputs.run_markdown }}", workflow)
+        self.assertIn("RUN_MAIN_SMOKE: ${{ needs.classify.outputs.run_main_smoke }}", workflow)
         for name in ("markdown", "main-smoke"):
             with self.subTest(name=name):
                 self.assertFalse(required_gate_passes(_results(hygiene="failure", **{name: "success"}), {}))
@@ -169,6 +174,8 @@ class CiRequiredTests(unittest.TestCase):
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
+            "RUN_MARKDOWN": "false",
+            "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "true",
             "RUN_NATIVE": "false",
             "RUN_WINDOWS": "false",
@@ -195,6 +202,8 @@ class AllowSubstantiveParsingTests(unittest.TestCase):
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
+            "RUN_MARKDOWN": "false",
+            "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "false",
             # Applicable, but the job was skipped -- this must fail unless
             # suppression was explicitly requested.
@@ -236,6 +245,8 @@ class ApplicabilityParsingTests(unittest.TestCase):
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "success",
             "WINDOWS_RESULT": "success",
+            "RUN_MARKDOWN": "false",
+            "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "false",
             "RUN_NATIVE": "false",
             "RUN_WINDOWS": "false",
@@ -245,9 +256,11 @@ class ApplicabilityParsingTests(unittest.TestCase):
 
     def test_every_run_variable_requires_a_boolean(self) -> None:
         for run_key in (
+            "RUN_MARKDOWN",
             "RUN_PYTHON",
             "RUN_NATIVE",
             "RUN_WINDOWS",
+            "RUN_MAIN_SMOKE",
         ):
             for value in (None, "", "   ", "garbage", "0", "no"):
                 with self.subTest(run_key=run_key, value=value):
@@ -260,9 +273,11 @@ class ApplicabilityParsingTests(unittest.TestCase):
 
     def test_run_variables_accept_case_and_surrounding_whitespace(self) -> None:
         for run_key in (
+            "RUN_MARKDOWN",
             "RUN_PYTHON",
             "RUN_NATIVE",
             "RUN_WINDOWS",
+            "RUN_MAIN_SMOKE",
         ):
             with self.subTest(run_key=run_key):
                 env = self._env()
@@ -270,6 +285,20 @@ class ApplicabilityParsingTests(unittest.TestCase):
                 self.assertTrue(evaluate_environment(env))
                 env[run_key] = " FaLsE "
                 self.assertTrue(evaluate_environment(env))
+
+    def test_missing_folded_step_flag_fails_closed(self) -> None:
+        """Markdown and main smoke run as hygiene steps gated on these flags.
+
+        A dropped or misnamed classifier output would skip the step and leave hygiene
+        green, so the aggregate must fail when either flag is absent, even with every
+        job successful.
+        """
+        for run_key in ("RUN_MARKDOWN", "RUN_MAIN_SMOKE"):
+            with self.subTest(run_key=run_key):
+                env = self._env()
+                self.assertTrue(evaluate_environment(env))
+                del env[run_key]
+                self.assertFalse(evaluate_environment(env))
 
     def test_malformed_applicability_cannot_be_masked_by_successful_jobs(self) -> None:
         env = self._env()

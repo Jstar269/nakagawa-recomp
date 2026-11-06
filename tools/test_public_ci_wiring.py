@@ -596,8 +596,8 @@ _WINDOWS_MAIN_SAVE_CONDITION = (
 
 
 #: The Windows parts each matrix group runs, one after another (docs/CI.md, "Jobs per
-#: run"). Parts that share a group use separate build trees; the fuzz shards share
-#: build/windows-runtime, as their own parts did, and each rebuilds and reruns there.
+#: run"). Parts in one group share the build tree; the fuzz shards, which used to run on
+#: separate runners, share build/windows-runtime, and each rebuilds and reruns there.
 _WINDOWS_GROUPS = {
     "smoke-routes": ["smoke", "routes"],
     "ladder-fuzz": ["ladder", "fuzz-0", "fuzz-1"],

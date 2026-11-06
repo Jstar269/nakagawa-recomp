@@ -1464,10 +1464,15 @@ jobs:
     # group runs its parts one after another, in this file's step order, after one
     # copy of the shared setup and the runtime-object compile gate. The groups are
     # balanced on the step times of runs 42270920833 and 42258417250 (about 10-13
-    # minutes each), and parts that share a group use separate build trees, apart
-    # from the fuzz shards, which ran in the same tree as each other before.
-    # needs.windows_runtime.result
-    # aggregates all groups, and a failing step fails its group's job.
+    # minutes each). Parts in one group share the checkout and its build tree. The
+    # ladder builds under build/platform-ladder; the two fuzz shards, which used to
+    # run on separate runners, now share build/windows-runtime, which is harmless
+    # because each regenerates its cases header and vfpu_fuzz_build always relinks
+    # and reruns the fuzzer. In smoke-routes, native-core-tests (routes) and the
+    # player targets (smoke) share build/ through selftest targets that have no
+    # output file, so their recipes compile and run every time.
+    # needs.windows_runtime.result aggregates all groups, and a failing step fails
+    # its group's job.
     # A group's timeout is the sum of its parts' former 25-minute limits.
     strategy:
       fail-fast: false
@@ -2050,6 +2055,10 @@ jobs:
       PYTHON_RESULT: ${{ needs.python_tools.result }}
       NATIVE_RESULT: ${{ needs.native_tools.result }}
       WINDOWS_RESULT: ${{ needs.windows_runtime.result }}
+      # The folded Markdown and main-smoke steps report through HYGIENE_RESULT; their
+      # run flags are still checked to be explicit booleans (tools/ci_required.py).
+      RUN_MARKDOWN: ${{ needs.classify.outputs.run_markdown }}
+      RUN_MAIN_SMOKE: ${{ needs.classify.outputs.run_main_smoke }}
       RUN_PYTHON: ${{ needs.classify.outputs.run_python }}
       RUN_NATIVE: ${{ needs.classify.outputs.run_native }}
       RUN_WINDOWS: ${{ needs.classify.outputs.run_windows }}

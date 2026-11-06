@@ -20,6 +20,12 @@ _GATES = (
     ("windows-runtime", "WINDOWS_RESULT", "RUN_WINDOWS"),
 )
 
+# The run flags of the steps folded into hygiene. Their results arrive through
+# HYGIENE_RESULT, but each flag must still be an explicit boolean: a missing or
+# misnamed classifier output would otherwise skip the Markdown lint or the main
+# smoke step silently while hygiene stays green.
+_FOLDED_STEP_FLAGS = ("RUN_MARKDOWN", "RUN_MAIN_SMOKE")
+
 _SUBSTANTIVE_GATES = frozenset(
     {"python-tools", "native-tools", "windows-runtime"}
 )
@@ -86,6 +92,9 @@ def evaluate_environment(environment: Mapping[str, str]) -> bool:
         "hygiene": environment.get("HYGIENE_RESULT", ""),
         "public-export": environment.get("PUBLIC_EXPORT_RESULT", ""),
     }
+    for run_key in _FOLDED_STEP_FLAGS:
+        if _parse_boolean(environment.get(run_key)) is None:
+            return False
     applicable: dict[str, bool] = {}
     for name, result_key, run_key in _GATES:
         results[name] = environment.get(result_key, "")

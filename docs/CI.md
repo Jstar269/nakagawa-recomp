@@ -54,8 +54,19 @@ of 2026-11-02, whole history, hosted runners):
 GitHub's free plan runs about 20 jobs at once for this repository. A full `CI` run (a workflow
 change, a manual run, the nightly schedule, a merge group) used to need 23 jobs, so a second
 pull request's run waited for runners while the first ran. The same checks now run in 14
-jobs. Nothing was dropped and no command or condition changed; jobs were merged and their
-steps run one after another:
+jobs. Nothing was dropped and no command changed; jobs were merged and their steps run one
+after another. Three things differ in when or how a step runs, and none of them skips a step
+where it ran before:
+
+- The main smoke steps no longer wait for the public-export job. The old `main_smoke` job
+  needed `public_export` to succeed; as hygiene steps they wait only for hygiene's own steps,
+  so they run in more cases, not fewer.
+- The profile-zero steps now also wait for the export step to succeed, because they follow
+  it in one job. Their consumers already needed `public_export` to succeed, and a failed
+  export still fails `CI required`.
+- The profile-zero steps' `python3` is the job's CPython 3.15.2, not the runner image's own.
+
+The jobs:
 
 | Job | Before (run 42270920833) | Now |
 | --- | --- | --- |
@@ -87,9 +98,13 @@ steps run one after another:
 - **Windows.** The six parts keep their steps and conditions (`contains(matrix.parts, '<part>')`)
   and run in three matrix groups: `smoke-routes` (smoke, routes), `ladder-fuzz` (ladder,
   fuzz-0, fuzz-1) and `selftests`. A group runs the shared setup and the runtime-object
-  compile gate once, then its parts in the workflow's step order. Parts that share a group use
-  separate build trees, apart from the two fuzz shards, which share `build/windows-runtime` as
-  they did before and each rebuild and rerun the fuzzer there. The compiler cache is keyed on
+  compile gate once, then its parts in the workflow's step order. Parts in one group share the
+  checkout and its build tree. The ladder builds under `build/platform-ladder`. The two fuzz
+  shards used to run on separate runners and now share `build/windows-runtime`; that is
+  harmless, because each regenerates its cases header and `vfpu_fuzz_build` has no output
+  file, so it always relinks and reruns the fuzzer. In `smoke-routes`, `native-core-tests`
+  (routes) and the player targets (smoke) share `build/` through selftest targets that have no
+  output file, so their recipes compile and run every time. The compiler cache is keyed on
   the group, so the first runs after this change restore no entry until a run on `main` has
   saved one per group.
 
