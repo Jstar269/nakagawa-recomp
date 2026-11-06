@@ -66,6 +66,12 @@ static void hb_build_sfo(const char *title, uint8_t sfo[HB_SFO_SIZE])
         unsigned char c = (unsigned char)title[length];
         clean[length] = c < 0x20u || c == 0x7Fu ? ' ' : (char)c;
     }
+    /* A cut must not leave half of a multi-byte character: drop a trailing lead byte and
+       its continuation bytes when the next byte of the title continues them. */
+    if (title != NULL && title[length] != '\0' && ((unsigned char)title[length] & 0xC0u) == 0x80u) {
+        while (length > 0 && ((unsigned char)clean[length - 1] & 0xC0u) == 0x80u) length--;
+        if (length > 0 && ((unsigned char)clean[length - 1] & 0x80u) != 0) length--;
+    }
     clean[length] = '\0';
     if (length == 0) {
         memcpy(clean, "Homebrew", 9);
@@ -125,35 +131,101 @@ static int hb_read_package(NkPspCtx *ctx, FILE *f, HbPackage *pkg)
     return NK_PSP_OK;
 }
 
-/* Whether the module declares kernel mode: SceModuleInfo's attribute word
-   carries 0x1000. The record is found the way a PRX loader finds it, through
-   the first program header's p_paddr; a module that declares none is user
-   mode. Imports only custom firmware provides are refused later, by the import
-   table check code generation runs on every program. */
+/* SceModuleInfo is found the way tools/psp_import_table.py finds it, so the player and code
+   generation read the same record: the ".rodata.sceModuleInfo" section when the program has a
+   section table that names one; otherwise (a stripped program) phdr[0].p_paddr with bit 31
+   masked is the record's FILE offset, and it must lie inside a PT_LOAD segment's file bytes.
+   A program that declares no record is user mode. A record, section table or program header
+   that is declared but lies outside the program is a malformed program (-2), never user mode.
+   Bit 31 of p_paddr itself marks a kernel module, as the PRX loader reads it. Imports only
+   custom firmware provides are refused later, by the import-table check code generation runs
+   on every program. Returns 0, -1 (unreadable) or -2 (malformed). */
+#define HB_MODULE_INFO_SIZE 52u
+#define HB_MODULE_INFO_SECTION ".rodata.sceModuleInfo"
+#define HB_MAX_SECTIONS 256u
+#define HB_MAX_SEGMENTS 64u
+
 static int hb_module_is_kernel_mode(FILE *f, uint64_t program_offset, uint32_t program_size,
                                     bool *kernel)
 {
     uint8_t elf[0x34];
-    uint8_t phdr[32];
+    uint8_t header[40];
     uint8_t attr[2];
-    uint32_t phoff, paddr, poffset;
-    uint16_t phnum, phentsize;
-    uint64_t record;
+    uint32_t phoff, shoff, str_offset = 0, str_size = 0, paddr_flag = 0;
+    uint16_t phentsize, phnum, shentsize, shnum, shstrndx;
+    uint64_t record = 0;
+    bool found = false;
     *kernel = false;
     if (hb_read_at(f, program_offset, elf, sizeof(elf)) != 0) return -1;
     phoff = hb_le32(elf + 28);
+    shoff = hb_le32(elf + 32);
     phentsize = hb_le16(elf + 42);
     phnum = hb_le16(elf + 44);
-    if (phnum == 0 || phentsize < sizeof(phdr) || (uint64_t)phoff + sizeof(phdr) > program_size)
-        return 0;
-    if (hb_read_at(f, program_offset + phoff, phdr, sizeof(phdr)) != 0) return -1;
-    poffset = hb_le32(phdr + 4);
-    paddr = hb_le32(phdr + 12);
-    if (paddr == 0u) return 0;
-    record = (uint64_t)poffset + (paddr & 0x7FFFFFFFu);
-    if (record + sizeof(attr) > program_size) return 0;
+    shentsize = hb_le16(elf + 46);
+    shnum = hb_le16(elf + 48);
+    shstrndx = hb_le16(elf + 50);
+
+    if (shnum > 0) {
+        if (shnum > HB_MAX_SECTIONS || shentsize != sizeof(header) || shstrndx >= shnum ||
+            (uint64_t)shoff + (uint64_t)shnum * sizeof(header) > program_size)
+            return -2;
+        if (hb_read_at(f, program_offset + shoff + (uint64_t)shstrndx * sizeof(header), header,
+                       sizeof(header)) != 0)
+            return -1;
+        str_offset = hb_le32(header + 16);
+        str_size = hb_le32(header + 20);
+        if (hb_le32(header + 4) != 3u || (uint64_t)str_offset + str_size > program_size)
+            return -2;
+        for (uint32_t i = 0; i < shnum && !found; i++) {
+            char name[sizeof(HB_MODULE_INFO_SECTION) + 1];
+            uint32_t name_at, want;
+            if (hb_read_at(f, program_offset + shoff + (uint64_t)i * sizeof(header), header,
+                           sizeof(header)) != 0)
+                return -1;
+            name_at = hb_le32(header);
+            if (name_at >= str_size) return -2;
+            want = str_size - name_at < sizeof(name) - 1 ? str_size - name_at
+                                                          : (uint32_t)sizeof(name) - 1u;
+            memset(name, 0, sizeof(name));
+            if (hb_read_at(f, program_offset + str_offset + name_at, name, want) != 0) return -1;
+            if (strcmp(name, HB_MODULE_INFO_SECTION) != 0) continue;
+            if (hb_le32(header + 4) == 8u || hb_le32(header + 20) < HB_MODULE_INFO_SIZE ||
+                (uint64_t)hb_le32(header + 16) + HB_MODULE_INFO_SIZE > program_size)
+                return -2;
+            record = hb_le32(header + 16);
+            found = true;
+        }
+    }
+    if (!found && phnum > 0) {
+        uint32_t paddr;
+        if (phnum > HB_MAX_SEGMENTS || phentsize != 32u ||
+            (uint64_t)phoff + (uint64_t)phnum * 32u > program_size)
+            return -2;
+        if (hb_read_at(f, program_offset + phoff, header, 32) != 0) return -1;
+        paddr = hb_le32(header + 12);
+        if (paddr != 0u) {
+            uint64_t offset = paddr & 0x7FFFFFFFu;
+            bool inside = false;
+            paddr_flag = paddr & 0x80000000u;
+            for (uint32_t i = 0; i < phnum && !inside; i++) {
+                if (hb_read_at(f, program_offset + phoff + (uint64_t)i * 32u, header, 32) != 0)
+                    return -1;
+                if (hb_le32(header) == 1u) {
+                    uint64_t seg_offset = hb_le32(header + 4);
+                    uint64_t seg_size = hb_le32(header + 16);
+                    inside = offset >= seg_offset &&
+                             offset + HB_MODULE_INFO_SIZE <= seg_offset + seg_size &&
+                             offset + HB_MODULE_INFO_SIZE <= program_size;
+                }
+            }
+            if (!inside) return -2;
+            record = offset;
+            found = true;
+        }
+    }
+    if (!found) return 0;
     if (hb_read_at(f, program_offset + record, attr, sizeof(attr)) != 0) return -1;
-    *kernel = (hb_le16(attr) & 0x1000u) != 0;
+    *kernel = (hb_le16(attr) & 0x1000u) != 0 || paddr_flag != 0;
     return 0;
 }
 
@@ -259,7 +331,15 @@ int nk_pbp_homebrew_inspect_file(NkPspCtx *ctx, const char *pbp_path, const NkPb
         return nk_psp_fail(ctx, NK_PSP_ERR_UNSUPPORTED, NULL,
                            "the package's program is not a PSP program");
     }
-    if (hb_module_is_kernel_mode(f, program_offset, program_size, &kernel) != 0) {
+    switch (hb_module_is_kernel_mode(f, program_offset, program_size, &kernel)) {
+    case 0:
+        break;
+    case -2:
+        out->kind = NK_PBP_HB_NOT_A_PROGRAM;
+        fclose(f);
+        return nk_psp_fail(ctx, NK_PSP_ERR_UNSUPPORTED, NULL,
+                           "the package's program has malformed module information");
+    default:
         fclose(f);
         return nk_psp_fail(ctx, NK_PSP_ERR_INPUT, NULL,
                            "the package's program could not be read");
@@ -376,7 +456,8 @@ static int hb_write_padded(FILE *out, size_t written_in_sector)
     return pad == 0 || fwrite(zeros, 1, pad, out) == pad ? 0 : -1;
 }
 
-/* Copy count bytes of the package to out, padded to a sector. */
+/* Copy count bytes of the package to out, padded to a sector. A package that changed or was
+   truncated since it was inspected fails here or at the read-back key check, never half-kept. */
 static int hb_copy_section(NkPspCtx *ctx, FILE *in, uint64_t offset, uint32_t count, FILE *out,
                            const NkNpumdimgCallbacks *callbacks, uint64_t *done, uint64_t total)
 {
