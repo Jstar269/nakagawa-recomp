@@ -2532,9 +2532,9 @@ class CensusTests(unittest.TestCase):
             self.assertIn("has no named limitation", str(ctx.exception))
 
     def test_new_partial_without_evidence_is_rejected(self) -> None:
-        self.assertNotIn("h_DisplayGetFrameBuf", meta.HANDLER_EVIDENCE)
-        with mock.patch.dict(meta.HANDLER_STATUS, {"h_DisplayGetFrameBuf": "partial"}), \
-                mock.patch.dict(meta.HANDLER_LIMITATIONS, {"h_DisplayGetFrameBuf": "a limit (#341)"}):
+        self.assertNotIn("h_AllocateFplCB", meta.HANDLER_EVIDENCE)
+        with mock.patch.dict(meta.HANDLER_STATUS, {"h_AllocateFplCB": "partial"}), \
+                mock.patch.dict(meta.HANDLER_LIMITATIONS, {"h_AllocateFplCB": "a limit (#341)"}):
             with self.assertRaises(ManifestError) as ctx:
                 hle_manifest.validate_meta(self.raw_regs)
         self.assertIn("cites no evidence", str(ctx.exception))
