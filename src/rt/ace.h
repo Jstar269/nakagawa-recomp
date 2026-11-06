@@ -1,15 +1,18 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 /*
- * ace.h - Ace Mode, the library-wide enhancement mode (docs/ENHANCEMENT_CONTRACT.md section 11).
+ * ace.h - the Enhanced and Ace play modes' runtime side (docs/ENHANCEMENT_CONTRACT.md section
+ * 10). The internal name stays "ace"; the launcher calls the modes Enhanced and Ace (#2055).
  *
  * One launch variable carries the run's choice. The launcher always exports it, so an inherited
  * value can never opt a launch in:
  *
  *     SR_ACE=off
- *     SR_ACE=v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off
+ *     SR_ACE=v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off
  *
- * Every key is required in v1, in any order, each once. A key or value for a feature this build
+ * tier (enhanced or ace) only names the run, in the badge, the pause menu and the stamps; a
+ * line without it is an Enhanced run. Every other key is required in v1, in any order, each
+ * once. A key or value for a feature this build
  * does not carry (wide=fill, smooth=match) is still parsed and refused. Anything else (an unknown version, key
  * or value, a duplicate, a missing key, an empty field) refuses the whole line: Ace is off for
  * the run and one "ACE_MODE: refused (<reason>)" line says why. Unset is off and says nothing.
@@ -31,7 +34,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ACE_SPEC_MAX 96          /* SR_ACE value, terminator included */
+#define ACE_SPEC_MAX 192         /* SR_ACE value, terminator included; room for later parts */
 
 /* Features that are part of this build. A feature that is not must be off in SR_ACE. */
 #define ACE_HAS_WIDE 0
@@ -41,6 +44,8 @@
 
 typedef enum { ACE_WIDE_OFF = 0, ACE_WIDE_FILL = 1 } AceWide;
 typedef enum { ACE_SMOOTH_OFF = 0, ACE_SMOOTH_MATCH = 1, ACE_SMOOTH_X2 = 2 } AceSmooth;
+/* The play mode a run is: Enhanced, or Ace (Enhanced plus the game's own package). */
+typedef enum { ACE_TIER_ENHANCED = 0, ACE_TIER_ACE = 1 } AceTier;
 typedef enum { ACE_SAS_OFF = 0, ACE_SAS_SINC = 1 } AceSas;
 
 typedef struct {
@@ -51,6 +56,7 @@ typedef struct {
     int notice;      /* the launch notice chip */
     int wide;        /* AceWide */
     int smooth;      /* AceSmooth */
+    int tier;        /* AceTier */
     int sas;         /* AceSas: SAS voices mix through a band-limited resampler (host-only) */
 } AceConfig;
 
@@ -87,6 +93,8 @@ const AceConfig *ace_requested(void);
 const AceConfig *ace_effective(void);
 /* The canonical line of the run ("off" for an authentic run). */
 const char *ace_spec_text(void);
+/* What the run is called on screen: "Enhanced", or "Ace" for a tier=ace line. */
+const char *ace_tier_name(void);
 /* A feature this host cannot provide: off for the run, named once on stderr and in the report.
  * The others stay on. */
 void ace_feature_unavailable(AceFeature feature, const char *reason);

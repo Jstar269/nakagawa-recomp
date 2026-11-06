@@ -1145,6 +1145,7 @@ class NativePlayerUiTests(unittest.TestCase):
         settings: dict[str, object] | None = None,
         package_built_by: str | None = None,
         disc_list: str | None = None,
+        enhancement_packages: dict[str, str] | None = None,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -1169,6 +1170,14 @@ class NativePlayerUiTests(unittest.TestCase):
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
             runtime_root = scratch / "runtime"
             runtime_root.mkdir()
+            for disc, title_id in (enhancement_packages or {}).items():
+                # A title's own enhancement package (docs/ENHANCEMENT_CONTRACT.md section 9.4):
+                # the player reads only its id and target title, so Ace is offered for it.
+                enhancements = runtime_root / "enhancements"
+                enhancements.mkdir(exist_ok=True)
+                (enhancements / f"{disc.lower()}-60hz.json").write_text(
+                    json.dumps({"id": "fixture-60hz", "target_title_id": title_id}),
+                    encoding="utf-8")
             tool_marker: Path | None = None
             if downloaded_tool_payload:
                 tool_marker = runtime_root / "prerequisites" / "synthetic-tool" / "marker.txt"
@@ -2177,7 +2186,7 @@ class NativePlayerUiTests(unittest.TestCase):
         "ace": str(0x4540), "ace_open": str(0x4541), "ace_mode": str(0x4542),
     }
     # From Resolution, Down runs through the Game card's six rows (the last is the
-    # one Ace Mode row, which opens its page) to the button row, which it enters at
+    # one Play mode row, which opens Settings > Enhanced) to the button row, which it enters at
     # Third-party notices.
     TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 6
 
@@ -2220,25 +2229,28 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(self.screens(tabs), [("settings", "1"), ("library", "3")],
                          "the ABOUT tab on Settings closes it and opens About")
 
-    def test_next_ui_ace_mode_switch_is_saved_and_its_page_opens(self) -> None:
-        """Ace Mode (src/rt/ace.h): off by default. Settings has one Ace Mode row (#2007);
-        it opens the page, where the switch turns Ace Mode on for the library and saves it."""
+    def test_next_ui_play_mode_is_saved_and_its_page_opens(self) -> None:
+        """The play modes (#2055): Authentic by default. Settings has one Play mode row
+        (#2007); it opens Settings > Enhanced, whose play mode row makes Enhanced the library's
+        default and saves it."""
         focus = self.SETTINGS_FOCUS
         run = self.next_ui_run(
             "settings",
             ("WAIT_MS=100",) + ("KEY_DOWN",) * 5 +
             ("KEY_RETURN", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
         )
-        self.assertIn(focus["ace_open"], self.focus_trail(run), "Down reaches the Ace Mode row")
-        self.assertNotIn(focus["ace"], self.focus_trail(run), "there is no second Ace Mode row")
+        self.assertIn(focus["ace_open"], self.focus_trail(run), "Down reaches the Play mode row")
+        self.assertNotIn(focus["ace"], self.focus_trail(run), "there is no second Play mode row")
         self.assertEqual([view for view, _ in self.screens(run)],
                          ["settings", "ace_settings", "settings"])
         settings = run["settings"]
         assert isinstance(settings, dict)
-        ace = settings.get("ace")
-        assert isinstance(ace, dict), settings
-        self.assertIs(ace.get("enabled"), True, "Ace Mode switched on on its page and saved")
-        self.assertEqual(ace.get("af"), 16, "the features keep their defaults")
+        enhanced = settings.get("enhanced")
+        assert isinstance(enhanced, dict), settings
+        self.assertEqual(enhanced.get("default"), "enhanced",
+                         "Enhanced chosen on its page and saved")
+        self.assertEqual(enhanced.get("af"), "16", "the parts keep their defaults")
+        self.assertNotIn("ace", settings, "the development builds' key is not written")
         pad = self.next_ui_run(
             "settings",
             ("WAIT_MS=100",) + ("PAD_DPAD_DOWN",) * 5 +
@@ -2246,9 +2258,10 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         pad_settings = pad["settings"]
         assert isinstance(pad_settings, dict)
-        pad_ace = pad_settings.get("ace")
-        assert isinstance(pad_ace, dict), pad_settings
-        self.assertIs(pad_ace.get("enabled"), True, "a controller's d-pad and south do the same")
+        pad_enhanced = pad_settings.get("enhanced")
+        assert isinstance(pad_enhanced, dict), pad_settings
+        self.assertEqual(pad_enhanced.get("default"), "enhanced",
+                         "a controller's d-pad and south do the same")
         page = self.next_ui_run(
             "settings",
             ("WAIT_MS=100",) + ("KEY_DOWN",) * 5 + ("KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE",
@@ -2258,7 +2271,7 @@ class NativePlayerUiTests(unittest.TestCase):
                          ["settings", "ace_settings", "settings"])
         trail = self.focus_trail(page)
         self.assertEqual(trail[-2:], [focus["ace_mode"], focus["ace_open"]],
-                         "the page opens on its switch and Back focuses the row that opened it")
+                         "the page opens on its play mode and Back focuses the row that opened it")
 
     def test_a_dedicated_data_root_keeps_everything_out_of_the_default_profile(self) -> None:
         """--user-data-root=<folder> opens the player on a second profile, for example a
@@ -5015,9 +5028,11 @@ class NativePlayerUiTests(unittest.TestCase):
 
     # Remove from library is the title page's lowest control, beside Report a
     # problem: Down presses reach that row whichever action-row buttons are
-    # enabled (the ENHANCEMENTS card's left-aligned Ace Mode button leads Down to
-    # Report a problem), and Right ends on Remove.
-    DOWN_TO_REMOVE = ("KEY_DOWN", "WAIT_MS=80") * 6 + ("KEY_RIGHT", "WAIT_MS=80")
+    # enabled. Down lands on whichever of the two lies nearest the button above
+    # (the ENHANCEMENTS card's Play mode label is wide enough to lead to either),
+    # so Left settles on Report a problem and Right ends on Remove.
+    DOWN_TO_REMOVE = (("KEY_DOWN", "WAIT_MS=80") * 6 +
+                      ("KEY_LEFT", "WAIT_MS=80", "KEY_RIGHT", "WAIT_MS=80"))
 
     def remove_run(self, events: tuple[str, ...]) -> list[dict[str, str]]:
         run = self.run_player("library", events, ui_mode="next", wait_background=True)
@@ -5065,6 +5080,174 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(last["next_route"], "1")
         self.assertEqual(last["next_focus"], self.LIBRARY_ADD)
         self.assertEqual(last["selected_disc"], "TEST00005")
+
+    # The title page's ENHANCEMENTS card (player_ui_nk.h), as the frame records print them.
+    TITLE_PLAY_MODE = str(0x200A)
+    TITLE_PLAY_OPTIONS = str(0x200B)
+    ENHANCED_PAGE_PART = str(0x4543)  # Settings > Enhanced's first part row, texture filtering
+    OPEN_FIRST = ("WAIT_MS=300", FIRST_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300")
+    # From the title page's first focus, Down reaches the ENHANCEMENTS card's Play mode button;
+    # Right from there is Enhanced options.
+    DOWN_TO_PLAY_MODE = ("KEY_DOWN", "WAIT_MS=80")
+    TO_PLAY_OPTIONS = ("KEY_RIGHT", "WAIT_MS=80")
+    # A library default of Enhanced, every part named (a part the block leaves out is off).
+    LIBRARY_ENHANCED = {"enhanced": {"default": "enhanced", "af": "16", "text": "on",
+                                     "readout": "off", "notice": "on", "smooth": "off"}}
+
+    @staticmethod
+    def play_badges(run: dict[str, object], disc: str) -> list[tuple[str, str]]:
+        """Each (library badge, title's own choice) a run showed for `disc`, in order."""
+        return re.findall(r"next_ui_play_badge index=\d+ disc=" + re.escape(disc) +
+                          r" badge=(\S+) chosen=(.+)", str(run["stdout"]))
+
+    @staticmethod
+    def enhanced_pages(run: dict[str, object]) -> list[dict[str, str]]:
+        """Each Settings > Enhanced the run drew: whose page, its play mode and each row."""
+        pages = []
+        for line in str(run["stdout"]).splitlines():
+            if line.startswith("[PLAYER_UI_TEST] next_ui_enhanced_page "):
+                fields = line[len("[PLAYER_UI_TEST] next_ui_enhanced_page "):].split("|")
+                pages.append(dict(field.split("=", 1) for field in fields))
+        return pages
+
+    @staticmethod
+    def title_play(run: dict[str, object]) -> dict[str, object]:
+        settings = run["settings"]
+        assert isinstance(settings, dict), run["stdout"]
+        title_play = settings.get("title_play", {})
+        assert isinstance(title_play, dict)
+        return title_play
+
+    def test_next_ui_title_play_mode_button_steps_its_modes(self) -> None:
+        """#2055: the title page's Play mode button steps Library default, Authentic, Enhanced
+        and, only for a game with a package of its own, Ace; the choice is saved for that game
+        alone, and the library card's badge follows it."""
+        presses = ("KEY_RETURN", "WAIT_MS=120") * 4
+        run = self.next_ui_run(
+            "library", (*self.OPEN_FIRST, *self.DOWN_TO_PLAY_MODE, *presses),
+            wait_background=True)
+        self.assertIn(self.TITLE_PLAY_MODE, self.focus_trail(run), "Down reaches Play mode")
+        chosen = [mode for _, mode in self.play_badges(run, "TEST00005")]
+        self.assertEqual(chosen, ["Library default", "Authentic", "Enhanced", "Library default",
+                                  "Authentic"],
+                         "without a package of its own, Ace is skipped")
+        badges = [badge for badge, _ in self.play_badges(run, "TEST00005")]
+        self.assertEqual(badges, ["none", "none", "Enhanced", "none", "none"])
+        self.assertEqual(self.title_play(run), {"TEST00005": {"mode": "authentic"}},
+                         "the choice is saved for that game alone")
+        self.assertEqual(self.play_badges(run, "TEST00006"), [("none", "Library default")],
+                         "the other game keeps the library's default")
+
+        # A sample game never has a package (player_read_title_enhancement), so the packaged
+        # case is the "ready" fixture's TEST00006, opened with Enter.
+        packaged = self.next_ui_run(
+            "ready", ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", *self.DOWN_TO_PLAY_MODE,
+                      *presses),
+            post_build_ready=True, wait_background=True,
+            enhancement_packages={"TEST00006": "display-smoke-v1"})
+        self.assertIn(self.TITLE_PLAY_MODE, self.focus_trail(packaged),
+                      [hex(int(focus)) for focus in self.focus_trail(packaged)])
+        steps = self.play_badges(packaged, "TEST00006")
+        self.assertEqual(steps, [("none", "Library default"), ("none", "Authentic"),
+                                 ("Enhanced", "Enhanced"), ("Ace", "Ace"),
+                                 ("none", "Library default")],
+                         "with its package, Ace follows Enhanced and the badge says Ace")
+        self.assertEqual(self.title_play(packaged), {}, "back to the library: nothing is kept")
+
+    def test_next_ui_title_enhanced_options_are_that_games_and_back_returns(self) -> None:
+        """#2055: Enhanced options opens Settings > Enhanced for that game: its rows show the
+        game's own values and change only them, and Escape returns to its title page with
+        Enhanced options focused."""
+        run = self.next_ui_run(
+            "library",
+            (*self.OPEN_FIRST, *self.DOWN_TO_PLAY_MODE, *self.TO_PLAY_OPTIONS,
+             "KEY_RETURN", "WAIT_MS=200", "KEY_DOWN", "WAIT_MS=80",
+             "KEY_RETURN", "WAIT_MS=120", "KEY_RETURN", "WAIT_MS=120",
+             "KEY_ESCAPE", "WAIT_MS=200"),
+            wait_background=True, settings=self.LIBRARY_ENHANCED)
+        trail = self.focus_trail(run)
+        self.assertIn(self.TITLE_PLAY_OPTIONS, trail, "Right reaches Enhanced options")
+        self.assertIn(self.ENHANCED_PAGE_PART, trail, "Down reaches the first part's row")
+        self.assertIn("ace_settings", [view for view, _ in self.screens(run)])
+        pages = self.enhanced_pages(run)
+        self.assertTrue(pages, run["stdout"])
+        self.assertEqual({page["title"] for page in pages}, {"TEST00005"},
+                         "the page is that game's")
+        self.assertEqual(pages[0]["af"], "Library (16x)", "a part follows the library first")
+        self.assertIn("Ace needs a package made for this game.", pages[0]["sentence"],
+                      "a game with no package of its own says why it has no Ace")
+        self.assertEqual(pages[-1]["af"], "8x", "the row shows the game's own value")
+        title_play = self.title_play(run)
+        self.assertEqual(title_play, {"TEST00005": {"mode": "library", "af": "8"}})
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings["enhanced"]["af"], "16", "the library's value is kept")
+        last = run["frames"][-1]  # type: ignore[index]
+        self.assertEqual((last["view"], last["next_route"]), ("library", "2"),
+                         "Escape returns to the title page, not Settings")
+        self.assertEqual(last["next_focus"], self.TITLE_PLAY_OPTIONS,
+                         "with Enhanced options focused")
+
+    def test_next_ui_enhanced_options_do_nothing_while_a_game_runs(self) -> None:
+        """#2055: while a game runs, the title page's Enhanced options and Play mode change
+        nothing (NK_UI_TEST_GAME_RUNNING fakes the running game)."""
+        run = self.next_ui_run(
+            "library",
+            (*self.OPEN_FIRST, *self.DOWN_TO_PLAY_MODE, "KEY_RETURN", "WAIT_MS=120",
+             *self.TO_PLAY_OPTIONS, "KEY_RETURN", "WAIT_MS=200", "CLOSE", "CLOSE"),
+            wait_background=True,
+            env_extra={"NK_UI_TEST_GAME_RUNNING": "TEST00006",
+                       "NK_UI_TEST_MESSAGEBOX_FAIL": "1"})
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertTrue(all(frame["game_running"] == "1" for frame in frames))
+        self.assertEqual({view for view, _ in self.screens(run)}, {"library"},
+                         "Enhanced options opens nothing while a game runs")
+        self.assertEqual([mode for _, mode in self.play_badges(run, "TEST00005")],
+                         ["Library default"], "Play mode changes nothing while a game runs")
+
+    def smooth_at_60_run(self, title: dict[str, str],
+                         to_options: tuple[str, ...]) -> tuple[list[str], dict[str, str]]:
+        """The packaged TEST00006 with smooth motion on in the library and `title` as its own
+        play choice: its title page's play lines, then its Settings > Enhanced page, which
+        `to_options` reaches from the title page's first focus."""
+        settings = {"enhanced": {**self.LIBRARY_ENHANCED["enhanced"], "smooth": "x2"},
+                    "title_play": {"TEST00006": title}}
+        run = self.next_ui_run(
+            "ready", ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", *to_options,
+                      "KEY_RETURN", "WAIT_MS=300"),
+            post_build_ready=True, wait_background=True, settings=settings,
+            enhancement_packages={"TEST00006": "display-smoke-v1"})
+        trail = [hex(int(focus)) for focus in self.focus_trail(run)]
+        self.assertIn(hex(int(self.TITLE_PLAY_OPTIONS)), trail, trail)
+        lines = re.findall(r"next_ui_title_play_line disc=TEST00006 line=(.+)",
+                           str(run["stdout"]))
+        pages = self.enhanced_pages(run)
+        # The title page's arrows move by layout, so a path that stops on another control
+        # (Play mode steps the mode instead) shows here with the focus trail.
+        self.assertTrue(lines and pages, f"Enhanced options not opened; focus trail {trail}")
+        self.assertEqual(pages[-1]["title"], "TEST00006", run["stdout"])
+        return lines, pages[-1]
+
+    def test_next_ui_smooth_motion_says_why_it_is_off_at_60_fps(self) -> None:
+        """Contract 10.5 (#2085; #2074 delta review B1): a game launched with its 60 FPS game
+        logic runs with smooth motion off, and its launch line says smooth=off. Its title page
+        and its Settings > Enhanced page say so and why, instead of showing smooth motion on;
+        with that logic off, both show the choice as it is."""
+        # The "ready" fixture does not read the saved Ace's package at start, so PLAY is
+        # disabled and the title page opens on Saves; Down from there reaches Enhanced options,
+        # the control below it in the ENHANCEMENTS row.
+        lines, page = self.smooth_at_60_run({"mode": "ace"}, ("KEY_DOWN", "WAIT_MS=80"))
+        self.assertIn("Ace for this game: 60 FPS game logic", lines[-1])
+        self.assertIn("Smooth motion is off while it runs at 60 FPS", lines[-1])
+        self.assertEqual(page["smooth"], "Off (this game runs at 60 FPS)")
+
+        lines, page = self.smooth_at_60_run({"mode": "ace", "logic_60": "off"},
+                                            (*self.DOWN_TO_PLAY_MODE, *self.TO_PLAY_OPTIONS))
+        self.assertNotIn("60 FPS game logic", lines[-1])
+        self.assertIn("smooth motion", lines[-1], "smooth motion is among the parts on")
+        self.assertNotIn("Smooth motion is off", lines[-1])
+        self.assertEqual(page["smooth"], "Library (On)")
 
     def test_compatibility_records_carry_a_player_tier(self) -> None:
         """#1297: every title record maps to a player tier; Hot Shots Tennis is Playable.

@@ -89,44 +89,44 @@ static const PlayerUiTitle k_titles[] = {
      "", "", "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "", "",
      "RETRY PACKAGE CHECK", "◆", 0xC29AF4FFu,
      PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "", "",
      "BUILD PACKAGE", "?", 0xC29AF4FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_WONT_BOOT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL}
 };
 
 /* A library with the demos that come with Nakagawa among the user's games, in
@@ -137,25 +137,25 @@ static const PlayerUiTitle k_demo_titles[] = {
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL}
 };
 
 /* The demos alone: a first start with nothing added yet. */
@@ -165,13 +165,13 @@ static const PlayerUiTitle k_demo_only_titles[] = {
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
+     false, NULL, false, false, NULL, NULL, NULL, false, false, NULL}
 };
 
 /* What-to-expect cards: a player tier with plain words, with known issues, the
@@ -214,6 +214,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
                FLOW_SETTINGS_ACCESSIBILITY, FLOW_SETTINGS_ACE, FLOW_SETTINGS_ACE_OFF,
+               FLOW_SETTINGS_ACE_TITLE,
                FLOW_SETTINGS_REPORT, FLOW_SETTINGS_REPORT_NO_PYTHON, FLOW_SETTINGS_REFRESH,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
@@ -349,7 +350,9 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
         : which == FLOW_SETTINGS_FONTS ? PLAYER_UI_SETTINGS_PAGE_FONTS
         : which == FLOW_SETTINGS_ACCESSIBILITY ? PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY
-        : which == FLOW_SETTINGS_ACE || which == FLOW_SETTINGS_ACE_OFF ? PLAYER_UI_SETTINGS_PAGE_ACE
+        : which == FLOW_SETTINGS_ACE || which == FLOW_SETTINGS_ACE_OFF ||
+                which == FLOW_SETTINGS_ACE_TITLE
+            ? PLAYER_UI_SETTINGS_PAGE_ACE
         : which == FLOW_SETTINGS_REPORT || which == FLOW_SETTINGS_REPORT_NO_PYTHON
             ? PLAYER_UI_SETTINGS_PAGE_PROBLEM_REPORT
         : which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_FAILED ||
@@ -357,12 +360,37 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
             ? PLAYER_UI_SETTINGS_PAGE_UPDATES
         : PLAYER_UI_SETTINGS_PAGE_MAIN;
     settings.resolution = "2x (960x544)";
-    /* Ace Mode: on (off for its own off case), with the defaults beside it. */
-    settings.ace_enabled = which != FLOW_SETTINGS_ACE_OFF;
-    settings.ace_filtering = "16x";
-    settings.ace_text = true;
-    settings.ace_readout = false;
-    settings.ace_notice = true;
+    /* Settings > Enhanced (#2055): the library's default Enhanced (Authentic for its off
+       case) with the fresh parts; the title case is one game's page, following it. */
+    {
+        static const char *const names[] = {"Texture filtering", "Crisp system text",
+                                            "Speed readout", "Game badge", "Smooth motion"};
+        static const char *const values[] = {"16x", "On", "Off", "On", "Off"};
+        static const char *const followed[] = {
+            "Library (16x)", "Library (On)", "Library (Off)", "Library (On)", "Library (Off)"};
+        static const char *const sentences[] = {
+            "Keeps slanted surfaces sharp. Save pictures keep the filtering.",
+            "Draws the on-screen keyboard at your screen's resolution.",
+            "The game's speed and frame rate in a corner, over its HUD.",
+            "Names the mode for a few seconds when a game starts.",
+            "Shows 30 FPS games at 60. Adds about 17 ms of delay."};
+        bool title = which == FLOW_SETTINGS_ACE_TITLE;
+        settings.enhanced_library_on = which != FLOW_SETTINGS_ACE_OFF;
+        settings.enhanced_on = settings.enhanced_library_on;
+        settings.enhanced_title = title ? "Test Game" : NULL;
+        settings.enhanced_mode = title ? "Library (Enhanced)"
+                               : settings.enhanced_on ? "Enhanced" : "Authentic";
+        settings.enhanced_mode_sentence =
+            title ? "Enhanced adds the parts below. Ace needs a package made for this game."
+                  : "The default for every game; each game's page can choose its own.";
+        settings.enhanced_row_count = 5;
+        for (int i = 0; i < 5; i++) {
+            settings.enhanced_rows[i].name = names[i];
+            settings.enhanced_rows[i].value = title ? followed[i] : values[i];
+            settings.enhanced_rows[i].sentence = sentences[i];
+            settings.enhanced_rows[i].on = strcmp(values[i], "Off") != 0;
+        }
+    }
     settings.pacing = "PSP timing";
     settings.scaling = "Sharp";
     settings.vsync = true;
@@ -752,16 +780,19 @@ static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
         return player_ui_screen_title(ui, &title);
     }
     if (which == FLOW_PAGE_TITLE_ACE) {
-        /* The ENHANCEMENTS card at its fullest: Ace Mode with its line and last session,
-           and a 60 FPS package beside it. */
+        /* The ENHANCEMENTS card at its fullest: Ace with its line and last session, Enhanced
+           options, and Ace's 60 FPS switch beside them. */
         static PlayerUiTitle fixture;
         PlayerUiTitleModel title;
         fixture = k_titles[6];
         fixture.ace_shown = true;
-        fixture.ace_label = "Ace Mode: On (library default)";
+        fixture.ace_label = "Play mode: Ace";
         fixture.ace_in_effect = true;
         fixture.ace_enabled = true;
-        fixture.ace_line = "On for this game: 16x texture filtering, crisp keyboard.";
+        fixture.ace_line =
+            "Ace for this game: 60 FPS game logic, 16x texture filtering, crisp system text.";
+        fixture.options_shown = true;
+        fixture.options_enabled = true;
         fixture.ace_last_session = "Last session: 16x filtering; the game ran at 30 Hz.";
         fixture.enhancement_shown = true;
         fixture.enhancement_enabled = true;
@@ -2618,25 +2649,21 @@ static void test_settings_pages(void) {
         {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
          "Back leaves Accessibility"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ACE_OPEN, PLAYER_UI_SETTINGS_OPEN_ACE,
-         "the one Ace Mode row opens its page"},
+         "the one Play mode row opens Settings > Enhanced"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_OPEN_DATA_FOLDER,
          PLAYER_UI_SETTINGS_OPEN_DATA_FOLDER, "Open data folder shows the data folder"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_OPEN_LOGS, PLAYER_UI_SETTINGS_OPEN_LOGS,
          "Open logs shows the logs folder"},
-        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ACE,
-         "the page's Ace Mode button switches it"},
-        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_FILTERING,
-         PLAYER_UI_SETTINGS_CYCLE_ACE_FILTERING, "the filtering button steps the level"},
-        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_TEXT, PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT,
-         "the crisp text button switches it"},
-        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_READOUT,
-         PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT, "the readout button switches it"},
-        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_NOTICE, PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE,
-         "the game badge button switches it"},
+        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_MODE, PLAYER_UI_SETTINGS_CYCLE_PLAY_MODE,
+         "the page's play mode button steps it"},
         {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
-         "Done leaves Ace Mode"},
-        {FLOW_SETTINGS_ACE_OFF, PLAYER_UI_ID_SETTINGS_ACE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ACE,
-         "with Ace Mode off its own button still switches it on"},
+         "Done leaves Enhanced"},
+        {FLOW_SETTINGS_ACE_OFF, PLAYER_UI_ID_SETTINGS_ACE_MODE, PLAYER_UI_SETTINGS_CYCLE_PLAY_MODE,
+         "with the library Authentic its play mode button still steps it"},
+        {FLOW_SETTINGS_ACE_TITLE, PLAYER_UI_ID_SETTINGS_ACE_MODE,
+         PLAYER_UI_SETTINGS_CYCLE_PLAY_MODE, "a game's Enhanced page steps its play mode"},
+        {FLOW_SETTINGS_ACE_TITLE, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
+         "Done leaves a game's Enhanced page"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_LAUNCHER_FULLSCREEN,
          PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN, "the launcher fullscreen button toggles it"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_CONTROLLER, PLAYER_UI_SETTINGS_OPEN_CONTROLLER,
@@ -2699,8 +2726,8 @@ static void test_settings_pages(void) {
                                      FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                                      FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
                                      FLOW_SETTINGS_ACCESSIBILITY, FLOW_SETTINGS_ACE,
-                                     FLOW_SETTINGS_ACE_OFF, FLOW_SETTINGS_REPORT,
-                                     FLOW_SETTINGS_REPORT_NO_PYTHON};
+                                     FLOW_SETTINGS_ACE_OFF, FLOW_SETTINGS_ACE_TITLE,
+                                     FLOW_SETTINGS_REPORT, FLOW_SETTINGS_REPORT_NO_PYTHON};
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         CHECK(settings_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
               cases[i].what);
@@ -2744,46 +2771,63 @@ static void test_settings_pages(void) {
               strstr(dump, "python tools/nk_cli.py report --title TEST00001") != NULL &&
               strstr(dump, "\"CREATE THE REPORT\"") == NULL,
           "without Python the Problem report page gives the command and offers no Create");
-    /* Ace Mode (src/rt/ace.h): every row with its value and, uncut, what it does and costs;
-       off, the feature rows cannot be changed or focused, and their values are kept. */
+    /* Settings > Enhanced (#2055): the play mode and every part with its value and, uncut, what
+       it does and costs; with the library Authentic the part rows cannot be changed or focused,
+       and their values are kept. */
     CHECK(flow_case_fits(FLOW_SETTINGS_ACE, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "\"ACE MODE: ON\"") != NULL &&
+              strstr(dump, "\"PLAY MODE: ENHANCED\"") != NULL &&
               strstr(dump, "\"TEXTURE FILTERING: 16X\"") != NULL &&
               strstr(dump, "\"CRISP SYSTEM TEXT: ON\"") != NULL &&
               strstr(dump, "\"SPEED READOUT: OFF\"") != NULL &&
               strstr(dump, "\"GAME BADGE: ON\"") != NULL &&
-              strstr(dump, "\"SMOOTH MOTION: ") != NULL &&
-              strstr(dump, "about 17 ms of delay.\"") != NULL &&
+              strstr(dump, "\"SMOOTH MOTION: OFF\"") != NULL &&
+              /* The sentences wrap; their lines are dumped one by one. */
+              strstr(dump, "Adds about 17 ms of") != NULL && strstr(dump, "delay.\"") != NULL &&
               strstr(dump, "keep the filtering.\"") != NULL &&
-              strstr(dump, "Boost") == NULL &&
+              strstr(dump, "Ace Mode") == NULL && strstr(dump, "Boost") == NULL &&
               strstr(dump, "\xE2\x80\xA6\"") == NULL,
-          "Ace Mode shows each feature, what it does and what it costs, uncut");
-    {
-        static const NkUiId feature_rows[] = {
-            PLAYER_UI_ID_SETTINGS_ACE_FILTERING, PLAYER_UI_ID_SETTINGS_ACE_TEXT,
-            PLAYER_UI_ID_SETTINGS_ACE_READOUT, PLAYER_UI_ID_SETTINGS_ACE_NOTICE
-        };
-        for (size_t i = 0u; i < sizeof(feature_rows) / sizeof(feature_rows[0]); ++i) {
-            CHECK(activate_flow_button(feature_rows[i], FLOW_SETTINGS_ACE_OFF).kind ==
-                      PLAYER_UI_ACTION_NONE,
-                  "with Ace Mode off a feature row changes nothing");
-        }
-        CHECK(dump_flow_case(FLOW_SETTINGS_ACE_OFF, dump, sizeof(dump)) &&
-                  strstr(dump, "\"ACE MODE: OFF\"") != NULL &&
-                  strstr(dump, "\"TEXTURE FILTERING: 16X\"") != NULL,
-              "with Ace Mode off the features keep their values");
+          "Settings > Enhanced shows each part, what it does and what it costs, uncut");
+    /* Each part's row is one table row: it names its part, so a new part needs no new op. */
+    for (unsigned i = 0u; i < 5u; ++i) {
+        PlayerUiAction part =
+            activate_flow_button(PLAYER_UI_ID_SETTINGS_ENHANCED_PART + i, FLOW_SETTINGS_ACE);
+        CHECK(settings_op_is(part, PLAYER_UI_SETTINGS_CYCLE_ENHANCED_PART) &&
+                  part.title_index == (size_t)i,
+              "each part's row steps that part");
+        part = activate_flow_button(PLAYER_UI_ID_SETTINGS_ENHANCED_PART + i,
+                                    FLOW_SETTINGS_ACE_TITLE);
+        CHECK(settings_op_is(part, PLAYER_UI_SETTINGS_CYCLE_ENHANCED_PART) &&
+                  part.title_index == (size_t)i,
+              "each part's row on a game's page steps that part");
+        CHECK(activate_flow_button(PLAYER_UI_ID_SETTINGS_ENHANCED_PART + i,
+                                   FLOW_SETTINGS_ACE_OFF).kind == PLAYER_UI_ACTION_NONE,
+              "with the library Authentic a part row changes nothing");
     }
-    /* #2007: Settings has one Ace Mode row, which opens its page; the switch and what Ace Mode
-       is live on that page. */
+    CHECK(dump_flow_case(FLOW_SETTINGS_ACE_OFF, dump, sizeof(dump)) &&
+              strstr(dump, "\"PLAY MODE: AUTHENTIC\"") != NULL &&
+              strstr(dump, "\"TEXTURE FILTERING: 16X\"") != NULL,
+          "with the library Authentic the parts keep their values");
+    /* #2007: Settings has one row, which opens the page; the default and what Enhanced is live
+       on that page. */
     CHECK(dump_flow_case(FLOW_SETTINGS, dump, sizeof(dump)) &&
-              strstr(dump, "Ace Mode options") == NULL &&
-              strstr(dump, "\"ON: OPTIONS\"") != NULL &&
+              strstr(dump, "Ace Mode") == NULL &&
+              strstr(dump, "\"ENHANCED: OPTIONS\"") != NULL &&
               activate_flow_button(PLAYER_UI_ID_SETTINGS_ACE, FLOW_SETTINGS).kind ==
                   PLAYER_UI_ACTION_NONE,
-          "Settings shows one Ace Mode row that opens its page, not a switch and an options row");
+          "Settings shows one Play mode row that opens Settings > Enhanced");
     CHECK(dump_flow_case(FLOW_SETTINGS_ACE, dump, sizeof(dump)) &&
-              strstr(dump, "Ace Mode adds optional modern touches") != NULL,
-          "the Ace Mode page says what Ace Mode is");
+              strstr(dump, "Enhanced adds modern touches") != NULL,
+          "Settings > Enhanced says what Enhanced is");
+    /* A game's own page: whose it is, and each part following the library until it has its
+       own value. */
+    CHECK(flow_case_fits(FLOW_SETTINGS_ACE_TITLE, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "For Test Game alone.") != NULL &&
+              strstr(dump, "\"PLAY MODE: LIBRARY (ENHANCED)\"") != NULL &&
+              strstr(dump, "\"TEXTURE FILTERING: LIBRARY (16X)\"") != NULL &&
+              strstr(dump, "Enhanced adds the parts below.") != NULL &&
+              strstr(dump, "made for this game.\"") != NULL &&
+              strstr(dump, "\xE2\x80\xA6\"") == NULL,
+          "a game's Enhanced page says whose it is and what each part follows");
     /* #2007: "Online mode" has nothing to switch yet, so the options step and the Online and
        developer page say so in one line and offer no switch, News or Reports button. */
     CHECK(dump_flow_case(FLOW_SETTINGS_ONLINE, dump, sizeof(dump)) &&
@@ -2812,13 +2856,19 @@ static void test_settings_pages(void) {
                   PLAYER_UI_ACTION_NONE,
           "the options step shows one plain line instead of an inert online switch");
     CHECK(flow_case_fits(FLOW_PAGE_TITLE_ACE, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "\"ACE MODE: ON (LIBRARY DEFAULT)\"") != NULL &&
+              strstr(dump, "\"PLAY MODE: ACE\"") != NULL &&
+              strstr(dump, "\"ENHANCED OPTIONS\"") != NULL &&
               strstr(dump, "the game ran at 30 Hz.") != NULL &&
-              strstr(dump, "\"60 FPS GAME LOGIC: OFF\"") != NULL,
-          "the title page's ENHANCEMENTS card shows Ace Mode, its last session and 60 FPS");
+              strstr(dump, "\"60 FPS GAME LOGIC: OFF\"") != NULL &&
+              strstr(dump, "Ace Mode") == NULL,
+          "the title page's ENHANCEMENTS card shows the play mode, Enhanced options, the "
+          "last session and Ace's 60 FPS switch");
     CHECK(activate_flow_button(PLAYER_UI_ID_TITLE_ACE, FLOW_PAGE_TITLE_ACE).kind ==
-              PLAYER_UI_ACTION_CYCLE_ACE,
-          "the title page's Ace Mode button steps library default, on, authentic");
+              PLAYER_UI_ACTION_CYCLE_PLAY_MODE,
+          "the title page's play mode button steps library default, Authentic, Enhanced, Ace");
+    CHECK(activate_flow_button(PLAYER_UI_ID_TITLE_PLAY_OPTIONS, FLOW_PAGE_TITLE_ACE).kind ==
+              PLAYER_UI_ACTION_OPEN_PLAY_OPTIONS,
+          "Enhanced options opens the game's own Enhanced page");
     CHECK(dump_flow_case(FLOW_SETTINGS_NOTICES, dump, sizeof(dump)) &&
               strstr(dump, "synthetic-compiler 14.2") != NULL &&
               strstr(dump, "GPL-3.0-or-later; see LICENSE") != NULL,
@@ -4283,9 +4333,9 @@ static void test_title_enhancement_card(void) {
               strstr(dump, "60 FPS GAME LOGIC: OFF") != NULL,
           "the card's switch says 60 FPS game logic is off");
     /* The sentence wraps; its lines are dumped one by one. */
-    CHECK(strstr(dump, "An optional enhancement made for this game") != NULL &&
-              strstr(dump, "Off plays the original game as") != NULL,
-          "the card says it is optional and that off is the original game as released");
+    CHECK(strstr(dump, "improvement made for this game") != NULL &&
+              strstr(dump, "Off plays the original") != NULL,
+          "the card says it is Ace's improvement for this game and that off is the original");
     CHECK(strstr(dump, "Experimental") != NULL || strstr(dump, "EXPERIMENTAL") != NULL,
           "the card is tagged experimental until matches hold 60 updates a second");
     CHECK(strstr(dump, "Turn it off to play the original game.") == NULL,
