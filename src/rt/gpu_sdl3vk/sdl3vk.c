@@ -1160,6 +1160,11 @@ static NkInputGate    s_gate;
 static uint32_t       s_raw_buttons;
 static uint8_t        s_raw_lx = 128, s_raw_ly = 128;
 static uint32_t       s_claim_saved_pulse, s_claim_saved_pad_pulse;
+/* Mouse aiming (#1791): the movement since the last poll, kept as floats so a slow drag
+ * that SDL reports in fractions of a count is not lost, and what carries between polls. */
+static float          s_mouse_fx, s_mouse_fy;
+static NkAimState     s_aim_state;
+static bool           s_mouse_captured;
 #define KEY_QUEUE_CAP 64
 static Sdl3VkKeyEvent s_key_queue[KEY_QUEUE_CAP];
 static int            s_key_head, s_key_count;
@@ -1242,6 +1247,30 @@ static uint32_t gamepad_button(Uint8 button) {
     return psp_btn;
 }
 
+/* The mouse counts to hand the aim step this poll; the fraction stays for the next one. */
+static int32_t aim_take_counts(float *accumulated) {
+    const float whole = truncf(*accumulated);
+    *accumulated -= whole;
+    if (whole > 2147483000.0f) return INT32_MAX;
+    if (whole < -2147483000.0f) return INT32_MIN;
+    return (int32_t)whole;
+}
+
+/* Nothing the mouse did earlier may reach the game later: a focus change, an overlay claim
+ * or a profile that turns aiming off all start the next poll from rest. */
+static void aim_reset(void) {
+    s_mouse_fx = s_mouse_fy = 0.0f;
+    nk_aim_state_reset(&s_aim_state);
+}
+
+/* The window grabs the pointer while aiming is on and the game has the input, and gives it
+ * back as soon as either stops. A hidden window (headless runs) never grabs it. */
+static void aim_set_capture(bool want) {
+    if (want == s_mouse_captured) return;
+    s_mouse_captured = want;
+    if (s_win && !s_window_hidden) SDL_SetWindowRelativeMouseMode(s_win, want);
+}
+
 static void pause_request_latch(int request) {
     if (s_claim_sink) return;
     /* The person's own request wins over the pad-lost one if both arrive together. */
@@ -1263,6 +1292,9 @@ static void poll_input_on_this_stack(void *arg) {
                 SDL_CloseGamepad(s_pad); s_pad = NULL;
                 pause_request_latch(SDL3VK_PAUSE_REQUEST_PAD_LOST);
             }
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            aim_reset();
             break;
         default: break;
         }
@@ -1295,6 +1327,10 @@ static void poll_input_on_this_stack(void *arg) {
             break;
         case SDL_EVENT_TEXT_INPUT:
             if (s_text_claim) queue_text_utf8(ev.text.text);
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            s_mouse_fx += ev.motion.xrel;
+            s_mouse_fy += ev.motion.yrel;
             break;
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
             /* Guide asks for the pause and is consumed, whatever the profile binds to it. */
@@ -1345,6 +1381,20 @@ static void poll_input_on_this_stack(void *arg) {
             stick_prof = &def_profile;
         }
         (void)nk_input_profile_eval_key_analog(stick_prof, k, key_count, &lx, &ly);
+    }
+    /* Mouse aiming (#1791): a moving mouse takes the nub; a still one leaves the controller's
+     * and the keyboard's value. Off unless the profile turns it on, and never under SR_PADSCRIPT
+     * or while the overlay has the input. */
+    {
+        const NkInputProfile *aim_prof = padscript_active() ? NULL : sdl3vk_get_input_profile();
+        const bool aim_on = aim_prof && aim_prof->aim.mouse && !s_claim_sink;
+        aim_set_capture(aim_on);
+        if (aim_on) {
+            (void)nk_aim_apply(&aim_prof->aim, &s_aim_state, aim_take_counts(&s_mouse_fx),
+                               aim_take_counts(&s_mouse_fy), &lx, &ly);
+        } else {
+            aim_reset();
+        }
     }
     s_raw_buttons = b;
     s_raw_lx = lx; s_raw_ly = ly;
