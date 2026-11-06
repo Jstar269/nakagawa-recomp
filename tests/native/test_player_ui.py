@@ -5218,12 +5218,14 @@ class NativePlayerUiTests(unittest.TestCase):
                       "KEY_RETURN", "WAIT_MS=300"),
             post_build_ready=True, wait_background=True, settings=settings,
             enhancement_packages={"TEST00006": "display-smoke-v1"})
-        trail = self.focus_trail(run)
-        self.assertIn(self.TITLE_PLAY_OPTIONS, trail, [hex(int(focus)) for focus in trail])
+        trail = [hex(int(focus)) for focus in self.focus_trail(run)]
+        self.assertIn(hex(int(self.TITLE_PLAY_OPTIONS)), trail, trail)
         lines = re.findall(r"next_ui_title_play_line disc=TEST00006 line=(.+)",
                            str(run["stdout"]))
         pages = self.enhanced_pages(run)
-        self.assertTrue(lines and pages, run["stdout"])
+        # The title page's arrows move by layout, so a path that stops on another control
+        # (Play mode steps the mode instead) shows here with the focus trail.
+        self.assertTrue(lines and pages, f"Enhanced options not opened; focus trail {trail}")
         self.assertEqual(pages[-1]["title"], "TEST00006", run["stdout"])
         return lines, pages[-1]
 
@@ -5233,10 +5235,9 @@ class NativePlayerUiTests(unittest.TestCase):
         and its Settings > Enhanced page say so and why, instead of showing smooth motion on;
         with that logic off, both show the choice as it is."""
         # The "ready" fixture does not read the saved Ace's package at start, so PLAY is
-        # disabled and the title page opens on Save folder; Down from there reaches the 60 FPS
-        # switch at the end of the ENHANCEMENTS row, and Left from it is Enhanced options.
-        lines, page = self.smooth_at_60_run({"mode": "ace"},
-                                            ("KEY_DOWN", "WAIT_MS=80", "KEY_LEFT", "WAIT_MS=80"))
+        # disabled and the title page opens on Saves; Down from there reaches Enhanced options,
+        # the control below it in the ENHANCEMENTS row.
+        lines, page = self.smooth_at_60_run({"mode": "ace"}, ("KEY_DOWN", "WAIT_MS=80"))
         self.assertIn("Ace for this game: 60 FPS game logic", lines[-1])
         self.assertIn("Smooth motion is off while it runs at 60 FPS", lines[-1])
         self.assertEqual(page["smooth"], "Off (this game runs at 60 FPS)")
