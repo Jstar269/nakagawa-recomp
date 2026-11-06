@@ -537,7 +537,7 @@ issue and rationale, ensuring the set of untriaged gaps can shrink but never
 grow; a new unlisted gap fails, and stale baseline entries whose gaps have been
 resolved fail closed until pruned. The gate is wired into `make check`,
 `make readiness`, `make provenance-record-gap-check`, pre-commit hooks, and
-hosted CI (`native_tools` and `main_smoke`).
+hosted CI (`native_tools` and the main smoke steps of `hygiene`).
 
 In addition, the proposed `LEDGER_DERIVED_ADMISSION` merge-gate posture
 extends this to trusted-ledger admission: the check loads the trusted ledger

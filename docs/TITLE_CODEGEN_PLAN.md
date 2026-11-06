@@ -118,7 +118,7 @@ The two public synthetic manifests also carry `profile_zero`, which points to th
 shared source-owned PSPDEV/PSPSDK fixture and a portable Make build path. Every
 implemented acceptance case names `profile-zero-e2e`, which loads the fixture
 built from the fixture source and byte-checked against the committed
-`fixtures/profile_zero/prebuilt/SHA256SUMS` (by CI's `profile_zero_fixture` job, or
+`fixtures/profile_zero/prebuilt/SHA256SUMS` (by the profile-zero steps of CI's `public_export` job, or
 locally whenever PSPDEV is installed), validates
 ProgramImage and AOT package outputs, launches the headless production runtime,
 and asserts the seven declared source-shape, dispatch, and helper cases. The

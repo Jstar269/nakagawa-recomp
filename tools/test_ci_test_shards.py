@@ -180,7 +180,7 @@ class LiveRepositoryPlanTests(unittest.TestCase):
     def test_workflow_takes_its_shards_from_the_classifier_and_fails_closed(self) -> None:
         self.assertNotIn("(NR-1)%4", self.python_job, "the alphabetical round-robin must be gone")
         self.assertIn(
-            "shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3, 4, 5]') }}", self.python_job
+            "shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2]') }}", self.python_job
         )
         fallback = re.search(r"python_shards \|\| '(\[[^']*\])'", self.python_job)
         self.assertIsNotNone(fallback)
