@@ -2486,7 +2486,7 @@ def _package_preflight(st):
         st.register_local_identity,
         st.reporter,
     )
-    reporter.report("preflight", "START", f"Inspecting library entry for {disc_id}...")
+    reporter.report("preflight", "START", f"Checking {disc_id} in your library")
     user_root = _user_data_root(args.user_data_root)
     entry = _load_library_entry(user_root, disc_id, getattr(args, "iso_path", None))
     iso_path = Path(entry["iso_path"]).expanduser()
@@ -2622,7 +2622,7 @@ def _package_preflight(st):
             "record names a different SFO revision. Review and register this revision explicitly "
             "with --register-local-compatibility-record."
         )
-    reporter.report("preflight", "PASS", "Library entry and manifest validated")
+    reporter.report("preflight", "PASS", "The game and its title file are in order")
     st.decrypted_eboot = decrypted_eboot
     st.entry = entry
     st.expected_hash = expected_hash
@@ -2658,7 +2658,7 @@ def _package_extract(st):
         st.user_root,
         st.uses_decrypted_eboot,
     )
-    reporter.report("extract", "START", "Extracting executable and guest modules...")
+    reporter.report("extract", "START", "Preparing the game's program files")
     cache_dir = _require_child(user_root, user_root / "cache" / "packages" / disc_id,
                                "Package cache")
     cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -2710,7 +2710,7 @@ def _package_extract(st):
         args.module_dir.expanduser().resolve() if args.module_dir else None,
         decrypted_module_dir(user_root, disc_id),
     )
-    reporter.report("extract", "PASS", "Executable and modules prepared")
+    reporter.report("extract", "PASS", "The game's program files are ready")
     st.actual_hash = actual_hash
     st.cache_dir = cache_dir
     st.cached_header = cached_header
@@ -2849,7 +2849,7 @@ def _package_cache_check(st):
             print("CACHE: unchanged key; AOT and native objects reused")
         reporter.log(f"PACKAGE_REUSED: {target_dir}")
         reporter.log("CACHE: unchanged key; AOT and native objects reused")
-        reporter.report("compile", "PASS", "Compilation skipped (reusing existing package)")
+        reporter.report("compile", "PASS", "Nothing to compile: the package is already built")
         reporter.report("package", "PASS", f"Package reused: {target_dir}")
         package_cache.write_local_title_input_identity(user_root, title_input_identity)
         _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
@@ -2878,8 +2878,8 @@ def _package_cache_check(st):
                 print("CACHE: content-addressed entry reused")
             reporter.log(f"PACKAGE: {target_dir}")
             reporter.log("CACHE: content-addressed entry reused")
-            reporter.report("compile", "PASS", "Compilation skipped (content-addressed entry reused)")
-            reporter.report("package", "PASS", f"Package promoted: {target_dir}")
+            reporter.report("compile", "PASS", "Nothing to compile: this code was built before")
+            reporter.report("package", "PASS", f"Package ready: {target_dir}")
             package_cache.write_local_title_input_identity(user_root, title_input_identity)
             _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
             _report_reused_package_stages(stage_observer)
@@ -2983,7 +2983,7 @@ def _package_codegen(st):
         # The codegen stage: the generation phase alone, through the same planner,
         # inputs and environment as the package build below. The package build then
         # compiles this output only if it passes the native-only reuse checks.
-        reporter.report("compile", "START", "Generating AOT code...")
+        reporter.report("compile", "START", "Translating the game's code")
         if stage_observer is not None:
             stage_observer("codegen", "START", 0)
         stage_command = planner_command(Path(aot_stage_dir)) + ["--aot-stage"]
@@ -3044,7 +3044,7 @@ def _package_compile(st):
         st.stage_observer,
         st.user_root,
     )
-    reporter.report("compile", "START", "Compiling package with AOT codegen...")
+    reporter.report("compile", "START", "Compiling the translated code")
     if stage_observer is not None:
         stage_observer("compile", "START", 0)
     log_command(command)
@@ -3145,8 +3145,8 @@ def _package_validate(st):
         st.stage_observer,
         st.title_input_identity,
     )
-    reporter.report("compile", "PASS", "Compilation completed successfully")
-    reporter.report("package", "START", "Staging runtime assets and validating package...")
+    reporter.report("compile", "PASS", "Compiling finished")
+    reporter.report("package", "START", "Putting the package together and checking it")
     if stage_observer is not None:
         stage_observer("build_package", "START", 0)
     package_started = time.perf_counter()
@@ -3269,7 +3269,7 @@ def _package_promote(st: Any) -> int:
         else:
             print("CACHE: AOT regenerated for changed cache key")
     reporter.log(f"PACKAGE: {target_dir}")
-    reporter.report("package", "PASS", f"Package verified and promoted to {target_dir}")
+    reporter.report("package", "PASS", f"Package checked and ready: {target_dir}")
     if stage_observer is not None:
         stage_observer(
             "build_package", "PASS",

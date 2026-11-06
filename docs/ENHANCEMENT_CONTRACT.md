@@ -192,7 +192,7 @@ Implementation of the enhancement subsystem is phased to maintain fidelity at ev
 Many PSP titles run a 30 Hz game-logic loop by waiting two VBLANK intervals per update and tune frame-counted durations, steps, decays and per-update probabilities for $\Delta t = 1/30\text{ s}$. A frame-rate rescale package lists the instruction sites that make the loop wait two VBLANKs and the sites whose constants assume $1/30\text{ s}$, so the same logic can run once per VBLANK.
 
 1. **Authentic mode is untouched.** Without `--enhancement-package` (the default), `tools/codegen.py` output and the codegen options in the AOT cache key are byte-identical to a build without this feature. A package build records `enhancement_package_epoch` (`aot-enhancement-package-v1`), the package id and digest in its codegen options, and `nk_cli.py build-package` writes it to its own directory (`packages/<disc_id>-enhanced-<pkg_id>`), never over the authentic package. `build-package` applies a package only when its command names one; it refuses to build while the environment names one on its own (`ENHANCEMENT_PACKAGE`, also through `MAKEFLAGS`, or `--enhancement-package` in `CODEGEN_USER_ARGS`), because the Makefile would apply it.
-2. **Off at run time unless opted in.** Every rewritten site is emitted twice: the stock statement and its rewrite. The rewrite runs only when the process starts with `SR_EXPERIMENTAL_60HZ=1`; any other value runs the stock statements, so a package build with the toggle off executes the authentic instruction stream. The player sets it per title: "60 FPS game logic" on the title page, shown only for a title with a usable enhancement package, is off by default and saved as the list `enhancement_60hz_discs` in the player's settings file (no other key turns it on). A title with it on launches its enhanced package with `SR_EXPERIMENTAL_60HZ=1`; with it off, the player launches the authentic `packages/<disc_id>` with `SR_EXPERIMENTAL_60HZ=0`, even when an enhanced package exists. Started with `--experimental-60hz`, the player turns it on for every title that has an enhancement package, for that session only; the flag is never written to the settings file.
+2. **Off at run time unless opted in.** Every rewritten site is emitted twice: the stock statement and its rewrite. The rewrite runs only when the process starts with `SR_EXPERIMENTAL_60HZ=1`; any other value runs the stock statements, so a package build with the toggle off executes the authentic instruction stream. The player sets it per title: "60 FPS game logic" on the title page, shown only for a title with a usable enhancement package, is off by default and saved as the list `enhancement_60hz_discs` in the player's settings file (no other key turns it on). A title with it on launches its enhanced package with `SR_EXPERIMENTAL_60HZ=1`; with it off, the player launches the authentic `packages/<disc_id>` with `SR_EXPERIMENTAL_60HZ=0`, even when an enhanced package exists. Started with `--experimental-60hz`, the player turns it on for every title that has an enhancement package and does not resolve to Authentic (section 10.5), for that session only; the flag is never written to the settings file.
 3. **No faster guest clock.** System time, RTC and audio sample clocks are untouched. Only the sites the package lists change.
 
 ### 9.2. Site Transforms
@@ -281,27 +281,42 @@ python tools/enhancement_package.py --compare-rates stock/samples.csv enhanced/s
 
 Sample specs and routes name guest addresses, so they stay private with the package; the check itself is generic.
 
-## 10. Ace Mode: the Project-Authored, Library-Wide Mode
+## 10. Play Modes: Authentic, Enhanced and Ace
 
-Ace Mode is one launcher switch that turns on presentation features for every game, with a per-title choice on the
-title page (#1272, #1273). It is project-authored code in the player and the runtime (section 7), not a package: no
-loader, no AOT change, no guest hook. The runtime part is `src/rt/ace.h`; the in-game UI is
-`src/rt/gpu_sdl3vk/ace_ui.h`.
+The player offers three play modes per game (#2055):
+
+- **Authentic** is the standard: the game as released, recreating the PSP as closely as the project can. It is the
+  default for a new library.
+- **Enhanced** turns on the project-authored improvements that work for any game: texture filtering, crisp system
+  text, the speed readout, the game badge, smooth motion and clean pitched sound (off by default) today. Each one is a *part* that can be turned off for
+  the library or for a single game.
+- **Ace** is Enhanced plus the improvements made for that game alone. Today that is the title's 60 FPS game logic
+  package (section 9). The player offers Ace only for a title with a usable package; its own parts can be turned off
+  for that game too.
+
+The parts are project-authored code in the player and the runtime (section 7), not a package: no loader, no AOT change,
+no guest hook. Ace's per-title package is the one exception, and section 9 governs it. The runtime keeps the
+development name: `src/rt/ace.h` serves both Enhanced and Ace runs, and the in-game UI is `src/rt/gpu_sdl3vk/ace_ui.h`.
+Code identifiers that say `ace` mean "Enhanced or Ace"; every name a player reads says Enhanced or Ace.
 
 ### 10.1. The Launch Line
 
-The launcher always exports `SR_ACE`, so an inherited value cannot opt a launch in: `off`, or
-`v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2;sas=off`. Every key is required, in any order, each once; a
-value for a feature this build does not carry (`wide=fill`, `smooth=match`) refuses the line. So does anything else: Ace
-is off for the run and one `ACE_MODE: refused (<reason>)` line says why. Unset is off. With Ace on the launcher also
-exports `SR_ACE_REPORT`, the per-run report under `<user data>/ace/`.
+The launcher always exports `SR_ACE`, so an inherited value cannot opt a launch in: `off` for Authentic, or
+`v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2;sas=off`. `tier` (`enhanced` or `ace`) only names the
+run, in the game badge, the pause menu and the stamps; a line without it is an Enhanced run. Every other key is
+required, in any order, each once; a value for a feature this build does not carry (`wide=fill`, `smooth=match`)
+refuses the line. So does anything else: the run is Authentic and one `ACE_MODE: refused (<reason>)` line says why.
+Unset is off. With Enhanced or Ace on, the launcher also exports `SR_ACE_REPORT`, the per-run report under
+`<user data>/ace/`. Ace's 60 FPS game logic is not on this line: it selects the title's enhanced package variant
+(section 9.4).
 
 ### 10.2. Authentic Is Untouched
 
 With `SR_ACE=off` (the default: players opt in) every Ace branch sits behind one switch that stays false: the Vulkan
 device is created with no features, every sampler and the texture descriptor pool are as before, the presenter
-registers no UI pass, the observation counters do not run, and nothing is printed. `gpu-coherence-selftest` checks
-the samplers and the pool; `display-smoke` keeps its image hash.
+registers no UI pass, and the observation counters do not run. Nothing is printed, except one `TEX_SCALE: off`
+line when the environment asks for texture scaling or the smart 2D filter, which names the request and does not obey
+it (section 10.10). `gpu-coherence-selftest` checks the samplers and the pool; `display-smoke` keeps its image hash.
 
 ### 10.3. What Ace Changes, and What It Never Changes
 
@@ -321,16 +336,25 @@ the samplers and the pool; `display-smoke` keeps its image hash.
 
 ### 10.4. Stamps and Evidence
 
-An Ace run prints `ACE_MODE: on (...)` at start and `ACE_MODE: exit (...)` at an ordinary exit, and its flight
-recorder bundle carries `runtime.enhancements` (`assets/flight_recorder_schema.json`); an authentic bundle's bytes are
-unchanged. `tools/flight_diff.py` refuses to compare any bundle that carries the block, `tools/boot_gate.py` refuses an
-Ace run's log, the acceptance checkpoint refuses an Ace run (`reason=ace_mode`), and the launcher never starts one.
+An Enhanced or Ace run prints `ACE_MODE: on (tier=..., ...)` at start and `ACE_MODE: exit (...)` at an ordinary exit,
+and its flight recorder bundle carries `runtime.enhancements` (`assets/flight_recorder_schema.json`); an Authentic
+bundle's bytes are unchanged. `tools/flight_diff.py` refuses to compare any bundle that carries the block,
+`tools/boot_gate.py` refuses an Enhanced or Ace run's log, the acceptance checkpoint refuses both
+(`reason=ace_mode`), and the launcher never starts either for it.
 
-### 10.5. Per-Title Choice
+### 10.5. Per-Title Choice and Precedence
 
-`settings.json` keeps the library's choice in `"ace"` and a sparse `"ace_titles"` map. A title's `authentic` turns
-everything off, its 60 FPS game logic included; its `ace` turns Ace on whatever the library says; otherwise the
-library's switch decides. A feature takes the title's value where it has one, else the library's.
+The library's default is Authentic or Enhanced. Ace is never a library default: it depends on a package only some titles
+have, and a player turns it on title by title where they want it. Each title follows the library or chooses one of the
+three modes for itself (its page's Play mode button, or Settings > Enhanced opened from its page). What a title launches
+with resolves in this order:
+
+1. **The mode.** The title's own choice, else the library's default. Authentic turns everything off, its 60 FPS game
+   logic included, and the line is `off`.
+2. **Each Enhanced part, for Enhanced and Ace alike.** The title's own value where it has one, else the library's. So
+   Ace includes Enhanced, with the title's own choices first.
+3. **Ace's parts.** The title's 60 FPS game logic is on unless the title turned it off. A title whose package has gone
+   is blocked, not quietly played without it, until the package is back or the part or Ace is turned off.
 
 A title's 60 FPS game logic and smooth motion may be on together (owner decision of 2026-11-04, replacing the earlier
 rule that refused the pair, #1272): the package keeps the game's logic at 60 Hz, and interpolation presents
@@ -350,8 +374,14 @@ lands, the player still turns smooth motion off for a launch of the enhanced 60 
 so. That is a limit of this build, not a rule of the contract; the item that lands the interpolator removes it and
 updates the tests that pin it.
 
-Ultrawide, the widescreen Fill mode (#1881), is not offered in this build: `SR_ACE` still refuses `wide=fill`. Its
-renderer layer is in place and off by default (section 10.8).
+The session flag `--experimental-60hz` makes every title with a usable package that resolves to Enhanced or Ace run as
+Ace for that session, with its 60 FPS game logic and `tier=ace`; a title that resolves to Authentic stays Authentic.
+
+A part is one row of the player's part table (`src/player/player_state.c`): its key, its values (each part has an off
+value, 0) and the words a row shows. The settings file, the launch line and both settings pages walk that table, so a
+new part is one more row and no new switch. Ultrawide, the widescreen Fill mode (#1881), is not offered in this
+build: `SR_ACE` still refuses `wide=fill`, and the line always carries `wide=off`. Its renderer layer is in place and off
+by default (section 10.8).
 
 ### 10.6. Smooth Motion
 
@@ -463,6 +493,117 @@ profile and never by a raw address in a package (section 5), fixes that title, a
 PSP's picture at every aspect. That hook changes what the guest computes, so it is a section 11 item. The setting's
 help text says so.
 
+### 10.9. Settings
+
+`settings.json` keeps the library's choice in `"enhanced"` and a sparse `"title_play"` map, every value by name:
+
+```json
+"enhanced": {"default": "enhanced", "af": "16", "text": "on", "readout": "off", "notice": "on", "smooth": "off",
+            "sas": "off"},
+"title_play": {"ULUS10000": {"mode": "ace", "af": "8"}, "ULES00000": {"mode": "library", "logic_60": "off"}}
+```
+
+A title's `mode` is `library`, `authentic`, `enhanced` or `ace`; a part it does not name follows the library; its
+`"logic_60": "off"` turns Ace's 60 FPS game logic off. An entry that follows the library everywhere is not written.
+Reading never makes a choice more permissive: in an `"enhanced"` block, a part it does not name or a word this build
+does not know is off, and a default other than `enhanced` is Authentic; a title's unknown mode follows the library,
+and an unknown part value is off. A file with no `"enhanced"` block starts from the fresh defaults: Authentic, with
+16x filtering, crisp text and the game badge set for when the player turns Enhanced on.
+
+Development builds after v0.0.1 saved `"ace"`, `"ace_titles"` and `"enhancement_60hz_discs"`. The player reads them only
+when `"enhanced"` is absent, maps them as below, and writes the new keys from then on:
+
+- `"ace"`: `"enabled": true` is an Enhanced library default, `false` Authentic; its feature values become the library's
+  parts (a value those builds did not know keeps the fresh default, as they did).
+- `"ace_titles"`: mode `ace` is Enhanced, `authentic` Authentic, anything else follows the library; the title's
+  feature values become its parts.
+- `"enhancement_60hz_discs"`: each disc becomes plain Ace: every Enhanced part as the library has it (the documented
+  defaults unless the old `"ace"` block changed them), any value of its own from `"ace_titles"` kept, plus its 60 FPS
+  game logic. Its parts can be turned off one by one afterwards. A disc chosen Authentic stays Authentic: its 60 FPS
+  game logic was not in effect while Authentic was chosen.
+
+`tests/native/test_player_state.c` (`test_play_mode_settings`, `test_play_mode_settings_mapping`) checks the names,
+the precedence, the off switches at both levels and this mapping.
+
+### 10.10. Texture Scaling and the Smart 2D Filter
+
+Two features in the Vulkan GE renderer (#1273). Both are guest-visible (section 11.1) and are not admitted under
+section 11.2: section 11.3.3 is their entry and says what the guest can observe, and this section says how they draw.
+The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture cache; the scaler is xBRZ 1.9
+(`third_party/xbrz/`, GPL-3.0).
+
+- **Settings.** `SR_TEX_SCALE=off|2|3|4|5|6` (the xBRZ factor), `SR_SMART_2D=off|on` and `SR_TEX_SCALE_BUDGET_MB`
+  (1 to 8192, default 512: the GPU memory the scaled copies may hold), read when the renderer starts. Both features
+  take effect only in Ace Mode: in an authentic run they stay off whatever the environment says, and a request
+  prints one `TEX_SCALE: off (texture scaling and the smart 2D filter need Ace Mode)` line. A value outside the list
+  prints `TEX_SCALE: refused (<reason>)` and leaves both off. There is no launch-line key, library setting or
+  per-title setting yet: they come in the launch-line pull request that follows the Ace settings work (#2074), and
+  only that pull request admits the features (section 11.3.3).
+- **What is scaled.** A texture the texture cache decodes, with one level (no mipmaps), after its palette lookup.
+  The factor drops for a texture whose scaled side would pass 2048 texels, and a texture that would pass 2048 at 2x
+  is not scaled. The image is padded by two texels, repeated or clamped by the texture's wrap mode, so a repeating
+  texture tiles without a seam.
+- **Never scaled.** A render target sampled as a texture: bound directly, it never enters the cache; read back
+  through the cache, it is decoded unscaled; and a texture whose VRAM range meets any live render target's is not
+  scaled.
+- **Never stale.** A scaled copy records the cache entry's upload and the content hash it was made from, and is
+  bound only while both still match. A texture the guest rewrites, or a CLUT texture drawn with another palette (a
+  different cache key), is drawn unscaled until its own copy is ready, and never with the old one.
+- **Never waited on.** Two worker threads scale; the renderer only queues the decoded texels and stores finished
+  copies at a later lookup. The jobs, waiting, running or finished, are at most 64 and hold at most 128 MiB of host
+  memory together (one job is always accepted, so the largest copy, 16 MiB, can be made). Storing a copy is an upload
+  on the renderer thread, so at most 8 MiB of copies are stored per present, the first copy of a present always;
+  the rest wait in the job table for the next present. Until its copy is stored, or with the job table full, a
+  texture is drawn unscaled. Nothing is hidden or skipped.
+- **Budget.** The copies hold at most `SR_TEX_SCALE_BUDGET_MB` of GPU memory. A copy that would not fit first frees
+  copies that no draw has bound for 60 presents (one to two seconds), the longest idle first, until a quarter of the
+  budget is spare besides the new copy; that drains the GE once, as a cache eviction does. A copy bound in those 60
+  presents is never freed, so when the copies in use fill the budget, the new texture is drawn unscaled. It is
+  offered again on a later draw, at most once per present and only when it could fit, and so is a texture whose
+  copy was freed.
+- **Sampling.** A copy is sampled on its own texel lattice: the fragment shader's PSP sample-point rule (nearest at
+  the texel centre, linear on the 1/16 grid) runs at the copy's resolution, from the factor the draw carries in its
+  flags.
+- **One texel per pixel.** A draw that maps one texel to one pixel (the smart 2D test below, whatever the filter)
+  binds the unscaled texture even when a copy is ready. xBRZ adds no detail at that size, and because it scales a
+  whole atlas (a font page), a copy carries a neighbouring cell into a cell's edge: the marks LittleBigPlanet's text
+  showed. Magnified and 3D draws keep the copy.
+- **Smart 2D.** A textured draw that maps one texel to one pixel on each axis (either direction), axis-aligned,
+  without perspective and with its edge on a texel boundary, samples nearest: a HUD, a font or a sprite stays crisp
+  at a render scale above 1x. The map may differ from 1:1 by 1/64 texel over the draw's whole span, and the
+  coordinate every pixel centre samples must lie on a texel centre or at most 1/32 texel above it, never more than
+  1/65536 below (the test's own float rounding). The PSP's linear rule floors to a 1/16 step, so a centre even
+  slightly below takes part of the texel before, while above it up to the next step reads the texel alone; the
+  shader's rounding to 1/4096 is left whole for the host's interpolation error. A triangle must carry the same 1/w
+  at all three vertices, bit for bit: the shader divides by the interpolated 1/w at each pixel, so any difference
+  bends the map between the vertices. At 1x every draw the test accepts reads the same whole texel with either
+  filter, so the frame is unchanged; `tex-scale-selftest` checks that against the shader's two rules, with its
+  per-pixel division, over offsets and drifts on both sides of the lattice, and refuses the draws just below it.
+  Every other draw, a 3D one included, keeps the game's filter.
+- **Guest memory.** Neither feature writes guest memory, the CLUT or a texture source; texture readbacks and
+  render-to-texture results are unchanged. What a present commits to guest VRAM does change, which makes both
+  features guest-visible: section 11.3.3 is their entry, and this section covers only their presentation.
+- **Stamps.** `TEX_SCALE: on (xbrz=<factor>, smart2d=on|off, budget_mb=<n>)` at start; at exit,
+  `TEX_SCALE: draws (scaled_binds=, onetoone_unscaled=, scaled_uploads=, stale=, smart2d=, reclaimed=,
+  budget_short=, upload_capped=)` and
+  `TEX_SCALE: exit (scaled=, queue_full=, discarded=, budget_peak_mb=, worker_ms=)`.
+  A run with either feature on also prints, at start, the line section 11.3.3 describes.
+  Section 10.4 applies: the run is an Ace run.
+- **A title it breaks.** A title whose fonts or pixel art suffer gets its off switch in its own package, never as
+  per-title code in a generic file.
+- **Hot Shots Tennis and LittleBigPlanet keep smart 2D off.** Both draw text from an anti-aliased glyph page, one
+  texel to one pixel. Nearest sampling turns each glyph texel into a hard block at a render scale above 1x, so the
+  filter makes their text worse, not crisper. The evidence is the before-and-after runs at render scale 4 recorded in
+  #2092. `SR_SMART_2D` is off by default for every title, so nothing in the runtime names them. Their per-title
+  setting comes with the launch-line pull request that follows #2074 (section 11.3.3).
+- **Tests.** `tex-scale-selftest` checks the C port against goldens from the upstream release, the borders, the job
+  queue, the settings (an authentic start with both variables set keeps both off) and the classifier, with refused
+  draws at the edge of its tolerance. `tex-scale-gate-mutant` builds the selftest without the Ace gate and passes only
+  when the settings cell fails for that reason. `gpu-texscale-selftest` runs the production path on a Vulkan device
+  at render scales 1, 4 and 2, the budget's reclamation included; `gpu-texscale-mutant` builds a cache that binds a
+  copy without its content check (state, serial and hash) and passes only when the rewrite cell fails for that
+  reason.
+
 ## 11. Guest-Visible Items
 
 Sections 10.3, 10.6 and 10.8 describe host-only features: what the guest reads, in its registers, memory and timing, is the
@@ -570,11 +711,12 @@ No guest-visible item is admitted by this section alone. Each lands in its own p
 #### 11.3.1. Band-Limited SAS Resampling (`sas=sinc`)
 
 - **Key.** `sas=off` or `sas=sinc` on the launch line (section 10.1), a required key (#2054). A line without it, or
-  with any other value, is refused, and Ace is off for that run.
-- **Tier and default.** Enhanced: it applies to every game, in this build through the library-wide Ace Mode of
-  section 10. The default is off, and the player writes `sas=off` on every launch line today. The library and
-  per-title settings that turn it on or off alone (section 11.2, item 2) are the player side of #2074. They are not
-  built here, so a player cannot turn the item on yet.
+  with any other value, is refused, and the run is Authentic.
+- **Tier and default.** Enhanced: it applies to every game, in Enhanced and Ace runs alike (section 10.5). The
+  default is off. It is the part "Clean pitched sound" (`"sas"`, `sinc` or `off`) on the library's Settings >
+  Enhanced page and on each game's own page (section 10.9), so the library and each title can turn it on or off
+  alone (section 11.2, item 2), and the launch line carries `sas=sinc` or `sas=off`. It stays off by default until
+  the "nothing worse" runs below exist.
 - **The authentic path.** Without the item the mixer does not interpolate (a zero-order hold). Each output sample
   plays the decoded sample at the voice's whole position. A 12-bit fraction then advances by the pitch (0x1000 is one
   source sample per output sample). Above 0x1000 the voice skips samples with no low-pass filter, so it aliases.
@@ -680,3 +822,37 @@ its own entry.
   that: an event window keeps its stock count and instants, and a held ease keeps its 30 Hz values. The private
   comparison runs of section 11.2, item 4 are recorded in the pull request that turns a title's 60 FPS game logic
   on by default, not here; until they exist it stays off by default, as it is today.
+
+#### 11.3.3. Texture Scaling and the Smart 2D Filter (Not Yet Admitted)
+
+The two features of section 10.10 (#1273). Their presentation is described there; this entry is what the guest can
+observe.
+
+- **Status: guest-visible, not admitted under section 11.2.** Each present commits the frame it shows to guest VRAM,
+  so a frame drawn with a scaled copy, or with a 1:1 draw sampled nearest by smart 2D, is the frame the guest keeps.
+  The features stay outside section 11.2 until the requirements below exist. Until then they are reachable only
+  through environment variables, for development.
+- **Key.** None yet. `SR_TEX_SCALE` and `SR_SMART_2D` are environment variables, not keys on the launch line (section
+  10.1), and have no library or per-title setting. Those come in the launch-line pull request that follows the Ace
+  settings work (#2074): it adds `tex`, `s2d` and `glyphs` (#2110) to `SR_ACE` in one change, with the library and
+  per-title switches. This entry is completed in that pull request, and only then are the features admitted.
+- **Never silent.** A run with either feature on prints, after its `TEX_SCALE: on` line, one line naming the features
+  as guest-visible, on through the environment and not admitted under section 11.2. The `tex-scale-selftest`
+  settings cell pins it.
+- **What it changes:** the frame a present commits, wherever a draw used a scaled copy or smart 2D at a render scale
+  above 1x.
+- **VRAM bytes:** differ in those frames, at those draws' pixels.
+- **Readbacks:** differ the same way, for a GE or display readback, save picture or screenshot that covers them.
+  Texture readbacks and render-to-texture results are unchanged (section 10.10).
+- **Timing:** differs. Scaling runs on worker threads, but storing a finished copy is an upload on the renderer
+  thread, the thread the guest runs on, and a budget reclaim drains the GE once (section 10.10), so a guest frame can
+  take longer. Measured at render scale 4 with `SR_TEX_SCALE=4 SR_SMART_2D=on` against the same build with both
+  off, in 200-second attract runs before the per-present store bound: *Hot Shots Tennis* presented 94.1% of its
+  frame intervals at one VBLANK against 98.9% (625 two-VBLANK intervals against 99); *LittleBigPlanet* 98.7%
+  against 97.1%, no loss. Storing is now bounded to 8 MiB of copies per present, the first copy of a present
+  always (up to 16 MiB); the bounded build's pacing has not been measured. The VBLANK schedule, the GE timing model
+  and the media clocks are unchanged.
+- **I/O speed:** unchanged.
+- **Tier:** Enhanced. **Default:** off, and Ace-only: in an authentic run both stay off whatever the environment says.
+- **Nothing worse (section 11.2, item 4):** not shown. *Hot Shots Tennis* and *LittleBigPlanet* keep smart 2D off
+  (section 10.10), and neither feature may be on by default before the runs item 4 lists exist.

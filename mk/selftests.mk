@@ -738,7 +738,7 @@ $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_COHERENCE_BIN) \
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS)
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
 
 gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN)
@@ -783,7 +783,7 @@ gpu-coherence-selftest-snapbar-mutants: shader-verify $(RT_GE_O)
 		$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPBAR_MUTANT=$$m -ffunction-sections -fdata-sections \
 			-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(LDFLAGS) -Wl,--gc-sections -o $$bin \
 			tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-			$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS) || exit 1; \
+			$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS) || exit 1; \
 		$$bin --case submit-batch > $$bin.log 2>&1; result=$$?; \
 		if test $$result -eq 77; then echo "snapbar mutant $$m: SKIP (no Vulkan device)"; exit 77; fi; \
 		if test $$result -eq 0; then cat $$bin.log; echo "snapbar mutant $$m unexpectedly passed" >&2; exit 1; fi; \
@@ -803,17 +803,79 @@ gpu-ace-selftest: shader-verify $(RT_GE_O)
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_ace_selftest.exe \
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS)
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
 	@rc=0; $(BUILD_DIR)/gpu_ace_selftest.exe || rc=$$?; \
 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-ace-selftest (exit 77; the reason is printed above)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-ace-selftest (exit $$rc)"; exit $$rc; fi
+
+# tex-scale-selftest - texture scaling's CPU side (src/rt/gpu_sdl3vk/tex_scale.h): the C port of
+# xBRZ 1.9 (third_party/xbrz) against goldens from the pinned upstream C++ (xbrz_golden.cpp), the
+# wrap and clamp borders, the job queue, the settings and the smart 2D classifier. No GPU; the
+# worker threads need SDL3, so without it the recipe reports SKIP.
+TEX_SCALE_SDL_READY := $(and $(filter-out none,$(SDL3_PROVIDER)),$(if $(strip $(SDL3_ERROR)),,yes))
+tex-scale-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	@if [ -z "$(TEX_SCALE_SDL_READY)" ]; then echo "SKIP tex-scale-selftest (SDL3 not found by build discovery)"; exit 0; fi; \
+	$(CC) $(CFLAGS) -O2 -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+		-o $(BUILD_DIR)/tex_scale_selftest$(EXE_EXT) \
+		src/rt/gpu_sdl3vk/tex_scale_selftest.c src/rt/gpu_sdl3vk/tex_scale.c third_party/xbrz/xbrz.c \
+		$(LIBS) -lm && $(BUILD_DIR)/tex_scale_selftest$(EXE_EXT)
+
+native-core-tests: tex-scale-selftest
+
+# tex-scale-gate-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_NO_ACE_GATE, which lets
+# an authentic start read SR_TEX_SCALE and SR_SMART_2D. It passes only when the settings cell fails
+# for that reason, so the Ace gate is under test (contract section 11.2, item 1).
+tex-scale-gate-mutant:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	@if [ -z "$(TEX_SCALE_SDL_READY)" ]; then echo "SKIP tex-scale-gate-mutant (SDL3 not found by build discovery)"; exit 0; fi; \
+	$(CC) $(CFLAGS) -O2 -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections -DNK_TEX_SCALE_MUTANT_NO_ACE_GATE \
+		-o $(BUILD_DIR)/tex_scale_gate_mutant$(EXE_EXT) \
+		src/rt/gpu_sdl3vk/tex_scale_selftest.c src/rt/gpu_sdl3vk/tex_scale.c third_party/xbrz/xbrz.c \
+		$(LIBS) -lm || exit 1; \
+	rc=0; $(BUILD_DIR)/tex_scale_gate_mutant$(EXE_EXT) > $(BUILD_DIR)/tex_scale_gate_mutant.log 2>&1 || rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "FAIL tex-scale-gate-mutant (the mutant passed: the Ace gate is untested)"; exit 1; \
+	elif ! grep -q "FAIL settings: SR_TEX_SCALE=4 SR_SMART_2D=on with Ace Mode off" $(BUILD_DIR)/tex_scale_gate_mutant.log; then \
+		cat $(BUILD_DIR)/tex_scale_gate_mutant.log; echo "FAIL tex-scale-gate-mutant (exit $$rc, but not from the gate check)"; exit 1; \
+	else grep "FAIL settings" $(BUILD_DIR)/tex_scale_gate_mutant.log; echo "PASS tex-scale-gate-mutant (killed by the gate check, exit $$rc)"; fi
+
+# gpu-texscale-selftest - texture scaling and the smart 2D filter on the Vulkan GE renderer's
+# production path (src/rt/gpu_sdl3vk/tex_scale_gpu_selftest.inc), at render scales 1 and 4: the
+# xBRZ copy is drawn on its own lattice, an unfinished scale draws unscaled, a rewritten or
+# re-paletted texture is rescaled and its old copy never drawn, render targets are never scaled,
+# guest VRAM is untouched, and a 1:1 sprite samples nearest. Exit 77 (SKIP) without Vulkan.
+GPU_TEXSCALE_BUILD = $(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_TEXSCALE_SELFTEST \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
+gpu-texscale-selftest: shader-verify $(RT_GE_O)
+	$(GPU_TEXSCALE_BUILD) -o $(BUILD_DIR)/gpu_texscale_selftest.exe
+	@for args in "--scale 1" "--scale 4" "--scale 2 --tex-scale 4"; do \
+		rc=0; $(BUILD_DIR)/gpu_texscale_selftest.exe $$args || rc=$$?; \
+		if [ $$rc -eq 77 ]; then echo "SKIP gpu-texscale-selftest $$args (exit 77; the reason is printed above)"; \
+		elif [ $$rc -ne 0 ]; then echo "FAIL gpu-texscale-selftest $$args (exit $$rc)"; exit $$rc; fi; \
+	done
+
+# gpu-texscale-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_SKIP_CONTENT_CHECK, which
+# binds a scaled copy without its state, serial and hash checks, so without checking that it was
+# made from the texture's current content. The rewrite cell must fail, and for that reason: the
+# build passes only when the run fails and prints that the stale copy was drawn.
+gpu-texscale-mutant: shader-verify $(RT_GE_O)
+	$(GPU_TEXSCALE_BUILD) -DNK_TEX_SCALE_MUTANT_SKIP_CONTENT_CHECK -o $(BUILD_DIR)/gpu_texscale_mutant.exe
+	@rc=0; $(BUILD_DIR)/gpu_texscale_mutant.exe > $(BUILD_DIR)/gpu_texscale_mutant.log 2>&1 || rc=$$?; \
+	cat $(BUILD_DIR)/gpu_texscale_mutant.log; \
+	if [ $$rc -eq 77 ]; then echo "SKIP gpu-texscale-mutant (exit 77; the reason is printed above)"; \
+	elif [ $$rc -eq 0 ]; then echo "FAIL gpu-texscale-mutant (the mutant passed: the hash check is untested)"; exit 1; \
+	elif ! grep -q "FAIL rewrite: stale scaled copy" $(BUILD_DIR)/gpu_texscale_mutant.log; then \
+		echo "FAIL gpu-texscale-mutant (exit $$rc, but not from the stale-copy check)"; exit 1; \
+	else echo "PASS gpu-texscale-mutant (killed by the stale-copy check, exit $$rc)"; fi
 
 gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS)
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
 	$(BUILD_DIR)/gpu_snapsync_selftest.exe
 
 # gpu-capture-selftest — deterministic present-source capture regression (issue #57): the
@@ -870,7 +932,7 @@ ge-replay: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/ge_replay.exe \
 		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS)
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
 
 # selftest — compile and run the C++ reference interpreter unit tests.
 # Requires g++ with C++17. Exit code 0 = all tests passed.

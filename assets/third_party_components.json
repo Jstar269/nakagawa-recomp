@@ -586,6 +586,26 @@
             "sha256": "7ec0306399fd391c17165cac57361c54da002ebe1b85cbfc49ea83b92867df24"
           }
         ]
+      },
+      {
+        "id": "xbrz",
+        "name": "xBRZ",
+        "spdx_id": "GPL-3.0-only",
+        "upstream_origin": "https://sourceforge.net/projects/xbrz/",
+        "upstream_revision": "1.9 (xBRZ_1.9.zip, 2026-01-24; zip SHA-256 b2dff73b3abd24a18a7cde78d5ff5ed8f0922296dce6ed734dce2264cd0a0fc9)",
+        "disposition": "statically_linked_subset",
+        "notice_file": "xBRZ.txt",
+        "copyright_notices": [
+          "Copyright (C) Zenju (zenju AT gmx DOT de) - All Rights Reserved"
+        ],
+        "note": "The xBRZ 1.9 scaler translated from C++ to C (third_party/xbrz/xbrz.c and xbrz.h, LOCAL DELTA; see third_party/xbrz/PROVENANCE.md). Linked into the runtime, where the Vulkan GE renderer's texture scaling (src/rt/gpu_sdl3vk/tex_scale.c) runs it in Ace Mode only. The upstream header's linking exception for MAME, FreeFileSync, Snes9x and ePSXe is kept unchanged.",
+        "license_texts": [
+          {
+            "file": "third_party/xbrz/License.txt",
+            "copied_from": "xBRZ 1.9 License.txt (GNU GPL version 3), CRLF line endings normalised to LF",
+            "sha256": "c61f12da7cdad526bdcbed47a4c0a603e60dbbfdaf8b66933cd088e9132c303f"
+          }
+        ]
       }
     ],
     "project_output": {

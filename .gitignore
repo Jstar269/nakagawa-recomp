@@ -72,8 +72,8 @@ EBOOT.BIN.dec*
 # one's digest and where it was copied from), so they must travel with the source.
 # Git does not descend into a directory it has already excluded, so the exclusion
 # is narrowed to /third_party/* and reviewed public dependencies are re-included
-# here. Clay's, stb's, Kenney's, portable-snippets', dr_libs', Monocypher's, libchdr's and the FidelityFX SDK's
-# pinned sources and
+# here. Clay's, stb's, Kenney's, portable-snippets', dr_libs', Monocypher's, libchdr's, xBRZ's and the
+# FidelityFX SDK's pinned sources and
 # provenance must travel with the source export.
 !/third_party/licenses/
 !/third_party/clay/
@@ -83,6 +83,7 @@ EBOOT.BIN.dec*
 !/third_party/kenney/
 !/third_party/monocypher/
 !/third_party/libchdr/
+!/third_party/xbrz/
 !/third_party/fidelityfx_sdk/
 
 # Runtime state, logs, captures, and reports

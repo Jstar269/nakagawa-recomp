@@ -258,6 +258,7 @@ int  gegpu_wide_read(uint32_t fb, uint32_t *rgba);
 void gegpu_wide_counts(unsigned long *drawn, unsigned long *dropped);
 int gegpu_snapshot_sync_selftest(void);
 int gegpu_ace_af_selftest(void);   /* 1 pass, 0 fail, 77 no anisotropic filtering */
+int gegpu_texscale_selftest(void); /* texture scaling and the smart 2D filter (tex_scale.h) */
 
 void gegpu_shutdown(void);
 
