@@ -3414,6 +3414,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-HLE-STDIO-001", "PSP-GE-WEIGHT-001",
                 # The 2026-11-06 acceptance-eligible ge-rtt (#343, boot 137) run.
                 "PSP-GE-RTT-001",
+                # The 2026-11-06 acceptance-eligible hle-audio-rest (#279, boot 138) run.
+                "PSP-HLE-AUDIO-REST-001",
             },
         )
         self.assertEqual(

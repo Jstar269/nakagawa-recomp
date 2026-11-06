@@ -1336,6 +1336,29 @@ One console is one data point; see §11. Nothing here closes issue #70
     matches neither table.
   - Pixel x of level L reads texel x >> L, as `ge-mip` measured.
 
+- **PSP-3000 single-case run of the `hle-audio-rest` probe on commit `8db3ec9d` (2026-11-06)**: system software
+  6.61, ARK-5.1.0 (owner); `pspver` 6.6.0, the firmware declared to the runner. PSPLink 3.2.1, operator-declared
+  model PSP-3000, XMB context. `hle-audio-rest` (case 159, `fixtures/psp_oracle/probe_hle_measure.c`) on boot 138,
+  after the `transport-write` preflight (PSP-TRANSPORT-001 is not re-cited). Both envelopes are acceptance-eligible
+  with 0 blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence (102 records and the done record), all PASS. The raw envelopes and host0 logs stay in the private
+  campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-06, `8db3ec9d`) |
+  | --- | --- | --- | --- |
+  | `PSP-HLE-AUDIO-REST-001` | `audio-rest-1024-*`, `audio-rest-2048-*`, `audio-rest-4096-*`, `hle-audio-rest-done` (boot 138) | mono channels, other sizes or frequencies, several channels at once, non-blocking output, the game context | MEASURED (`hle-audio-rest`) |
+
+  `hle-audio-rest` (#279): for each stereo channel of F = 1024, 2048 and 4096 frames, 32 back-to-back blocking
+  outputs, with the rest length read right after each return. For these exact states:
+  - *Return value:* `sceAudioOutputBlocking` returns F, not 0.
+  - *Timing:* the first call returns at once (about 0.1 ms); each later one returns one block after the previous
+    return (mean 23.37, 46.47 and 92.90 ms against blocks of 23.22, 46.44 and 92.88 ms at 44.1 kHz).
+  - *Rest length at return:* `sceAudioGetChannelRestLen` and `sceAudioGetChannelRestLength` agree and read F or
+    F - 64, so a channel holds one block (less any 64-sample unit already played) when a blocking output returns,
+    never two.
+  - *Drain:* after the last return the rest length reaches 0 within about one block, and `sceAudioChRelease` then
+    returns 0.
+
 - **PSP-3000 single-case run of the `ge-rtt` probe on commit `cb3702cf` (2026-11-06)**: system software 6.61,
   ARK-5.1.0 (owner); `pspver` 6.6.0, the firmware declared to the runner. PSPLink 3.2.1, operator-declared model
   PSP-3000, XMB context. `ge-rtt` (case 158, `fixtures/psp_oracle/probe_ge_sample.c`) on boot 137, after the

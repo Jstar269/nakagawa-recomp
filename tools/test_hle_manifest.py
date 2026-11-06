@@ -1901,7 +1901,7 @@ class EvidenceTierTests(unittest.TestCase):
                 "PSP-GE-OVERLAP-001", "PSP-GE-RASTER-001", "PSP-GE-RTT-001",
                 "PSP-GE-SAMPLE-001",
                 "PSP-GE-SYNC-001", "PSP-GE-TIMING-001", "PSP-GE-WEIGHT-001",
-                "PSP-HLE-AUDIO-SRC-001",
+                "PSP-HLE-AUDIO-REST-001", "PSP-HLE-AUDIO-SRC-001",
                 "PSP-HLE-CTRL-LATCH-001",
                 "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-INTR-001",
                 "PSP-HLE-KERNEL-STATUS-001",
