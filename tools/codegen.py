@@ -3910,8 +3910,8 @@ def _emit_jal(ctx, out, addr, w, ds, dsw):
         _call_stmt = "    " + emit_checked_dispatch_call(
             G(target), G((addr + 8) & 0xFFFFFFFF))
     if _jal_rw is not None:
-        # A gate on a call (gate_30hz or gate_30hz_hold; no other rewrite plans a
-        # call site): the delay slot above always runs; the call is gated while the
+        # A gate on a call (gate_30hz, gate_30hz_hold or gate_30hz_alt; no other rewrite
+        # plans a call site): the delay slot above always runs; the call is gated while the
         # toggle is on. A gate_30hz_hold call returns its float argument unchanged
         # when skipped. A site with ``requires`` makes the call every update, as
         # stock, until each required site has applied (section 9.6).
@@ -3921,11 +3921,51 @@ def _emit_jal(ctx, out, addr, w, ds, dsw):
         _ready = ""
         if "requires" in _jal_rw:
             _ready = f" || !nk_enh_ready({_jal_rw['site_index']}u)"
-        out.append(
-            f"    if (!nk_enhancement_on(){_ready} || nk_enhancement_gate_30hz()) {{\n"
-            f"{_call_stmt}\n"
-            f"    }}{_held}"
-        )
+        if "alternates" in _jal_rw:
+            # gate_30hz_alt (contract sections 9.2 and 9.5): the site keeps its own phase on
+            # the update count. It makes its alternates only in the update right after one in
+            # which it made the stock call, and a second visit in one update repeats that
+            # update's choice. On an alternate update each alternate is called in list order
+            # with $a0 as it was after the delay slot and $ra = site + 8.
+            _resume = (addr + 8) & 0xFFFFFFFF
+            _lines = [
+                "    { static uint32_t _nk_alt_last; static unsigned char _nk_alt_seen, _nk_alt_stock;",
+                "      uint32_t _nk_u = nk_enhancement_updates; int _nk_st;",
+                "      if (_nk_alt_seen && _nk_alt_last == _nk_u) _nk_st = _nk_alt_stock;",
+                "      else _nk_st = !(_nk_alt_seen && _nk_alt_last + 1u == _nk_u && _nk_alt_stock);",
+                f"      if (!nk_enhancement_on(){_ready}) _nk_st = 1;",
+                "      _nk_alt_seen = 1u; _nk_alt_last = _nk_u; _nk_alt_stock = (unsigned char)_nk_st;",
+                "      if (_nk_st) {",
+                _call_stmt,
+                "      } else { uint32_t _nk_a0 = s->r[4];",
+            ]
+            for _alt in _jal_rw["alternates"]:
+                _lines.append(f"    s->r[4] = _nk_a0; s->r[31] = {G(_resume)};")
+                if _alt in known or _alt in resume_owners:
+                    _lines += [
+                        "#ifdef SR_VERIFY",
+                        "    sr_verify_suppress_direct = 1;",
+                        "#endif",
+                        f"    {{ int _nk_b = sr_aot_return_boundary_begin(s, {G(_resume)}, {G(addr)}, 1u);",
+                        "#ifdef SR_VERIFY",
+                        "      sr_verify_suppress_direct = 0;",
+                        f"      if (!_nk_b) sr_verify_begin(s, {G(_alt)}, {G(addr)}, {G(_resume)});",
+                        "#endif",
+                        f"      if (_nk_b) return; {emit_body_call(ADDRESS_SPACE.symbol(_alt, resume_owners))} "
+                        "if (sr_aot_return_boundary_end(s)) return; }",
+                    ]
+                else:
+                    _lines.append("    " + emit_checked_dispatch_call(G(_alt), G(_resume)))
+                if lle_cpu:
+                    _lines.append(f"    {_flow_return(resumable)}")
+            _lines.append("    } }")
+            out.extend(_lines)
+        else:
+            out.append(
+                f"    if (!nk_enhancement_on(){_ready} || nk_enhancement_gate_30hz()) {{\n"
+                f"{_call_stmt}\n"
+                f"    }}{_held}"
+            )
     else:
         out.extend(_call_stmt.split("\n"))
     _emit_slot_exit(ctx, out, addr)

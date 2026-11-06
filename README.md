@@ -59,7 +59,7 @@ You need:
 
 | Game | Rating | Notes |
 | --- | --- | --- |
-| *Hot Shots Tennis: Get a Grip* | Playable | Full matches and Story Mode at the game's own 30 frames per second on the reference PC. Its title file ships with Nakagawa. Movies show black in v0.0.1; builds after it show them ([#1049](https://github.com/Jstar269/nakagawa-recomp/issues/1049)). |
+| *Hot Shots Tennis: Get a Grip* | Playable | Full matches and Story Mode play. On the reference PC a full match runs at 29.5 of the game's own 30 frames per second. Its title file ships with Nakagawa. Movies show black in v0.0.1; builds after it play them. Some sound effects can still drop out while the game loads ([#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)). |
 | PAC-MAN Championship Edition | In-game | Reaches its menu, plays a stage and resumes from its own save, through general fixes with no game-specific code ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556), [#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126)). The rest of the game hasn't been tried. |
 | *Super Stardust Portable* | Title screen | Goes through its menus to difficulty select, then stops by name at a VFPU instruction Nakagawa doesn't support yet ([#326](https://github.com/Jstar269/nakagawa-recomp/issues/326)). |
 | Eleven more games, *LittleBigPlanet* among them | No tier | Seen to start or run, in the project's testing or in user reports on v0.0.1, but not checked by the maintainer. Several reach menus or gameplay, most well below full speed. [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) says how far each one gets. |
