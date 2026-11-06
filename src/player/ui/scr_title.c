@@ -340,12 +340,11 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                                             (PlayerUiPrimaryAction)PLAYER_UI_REBUILD_TITLE);
                         }
                     }
-                    nk_ui_flow_item(ui, &flow,
-                                    nk_ui_button_width(ui, "Open save folder", save_flags));
-                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_SAVE_FOLDER, "Open save folder",
-                                     save_flags)) {
-                        result = action(PLAYER_UI_ACTION_OPEN_SAVE_FOLDER,
-                                        model->title_index, PLAYER_UI_PRIMARY_NONE);
+                    /* Saves (#1883): back up, restore, add a save, open the folder. */
+                    nk_ui_flow_item(ui, &flow, nk_ui_button_width(ui, "Saves", save_flags));
+                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_SAVES, "Saves", save_flags)) {
+                        result = action(PLAYER_UI_ACTION_OPEN_SAVES, model->title_index,
+                                        PLAYER_UI_PRIMARY_NONE);
                     }
                     nk_ui_flow_item(ui, &flow, nk_ui_button_width(ui, "Back", NK_UI_BUTTON_LARGE));
                     if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_BACK, "Back", NK_UI_BUTTON_LARGE)) {
