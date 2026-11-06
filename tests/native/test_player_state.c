@@ -6614,6 +6614,7 @@ static void test_play_mode_settings(void) {
            app->settings.enhanced.part[PLAYER_PART_TEXT] == 1 &&
            app->settings.enhanced.part[PLAYER_PART_READOUT] == 0 &&
            app->settings.enhanced.part[PLAYER_PART_NOTICE] == 1 &&
+           app->settings.enhanced.part[PLAYER_PART_WIDE] == 0 &&
            app->settings.enhanced.part[PLAYER_PART_SMOOTH] == 0 &&
            app->settings.enhanced.part[PLAYER_PART_SAS] == 0);
     assert(app->settings.title_play_count == 0);
@@ -6821,13 +6822,16 @@ static void test_play_mode_settings(void) {
         char *saved = read_text_file(path);
         assert(saved && strstr(saved, "\"enhanced\": {\"default\": \"enhanced\", \"af\": \"16\", "
                                       "\"text\": \"off\", \"readout\": \"off\", "
-                                      "\"notice\": \"on\", \"smooth\": \"off\", "
-                                      "\"sas\": \"off\"},") != NULL);
+                                      "\"notice\": \"on\", \"wide\": \"off\", "
+                                      "\"smooth\": \"off\", \"sas\": \"off\"},") != NULL);
         assert(strstr(saved, "\"TEST90001\": {\"mode\": \"library\", \"af\": \"8\", "
                              "\"notice\": \"off\"}") != NULL);
         assert(strstr(saved, "\"TEST90002\": {\"mode\": \"library\", \"logic_60\": \"off\"}")
                != NULL);
-        assert(strstr(saved, "wide") == NULL);
+        /* Widescreen is saved in the library block only: no title set it. */
+        int wides = 0;
+        for (const char *q = saved; (q = strstr(q, "\"wide\"")) != NULL; q++) wides++;
+        assert(wides == 1);
         /* The development builds' keys are not written again. */
         assert(strstr(saved, "\"ace\"") == NULL && strstr(saved, "ace_titles") == NULL &&
                strstr(saved, "enhancement_60hz_discs") == NULL);
@@ -7107,6 +7111,19 @@ static void test_play_mode_smooth_motion(void) {
     assert(r.part[PLAYER_PART_SAS] == 1 && player_play_launch_line(&r, line, sizeof(line)) &&
            strstr(line, "tier=ace;") != NULL && strstr(line, "sas=sinc") != NULL);
     settings.enhanced.part[PLAYER_PART_SAS] = 0;
+    /* Widescreen Fill (#1881) is off by default, reaches the line as fill when the library
+       turns it on, and the 60 FPS game logic leaves it alone. It stays on for the Authentic
+       check below: Authentic is off whatever the parts say. */
+    assert(settings.enhanced.part[PLAYER_PART_WIDE] == 0);
+    settings.enhanced.part[PLAYER_PART_WIDE] = 1;
+    player_play_resolve(&settings, "TEST90001", &r);
+    assert(r.on && r.part[PLAYER_PART_WIDE] == 1);
+    assert(player_play_launch_line(&r, line, sizeof(line)) &&
+           strcmp(line, "v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=fill;"
+                        "smooth=off;sas=off") == 0);
+    player_play_apply_logic_60(&r, true);
+    assert(r.part[PLAYER_PART_WIDE] == 1 && player_play_launch_line(&r, line, sizeof(line)) &&
+           strstr(line, "tier=ace;") != NULL && strstr(line, ";wide=fill;") != NULL);
     /* An Authentic resolution stays off, whatever the 60 FPS game logic says. */
     settings.enhanced.library = PLAYER_PLAY_AUTHENTIC;
     player_play_resolve(&settings, "TEST90001", &r);
@@ -7133,7 +7150,7 @@ static void expect_line_parses_in_runtime(const PlayerPlayResolved *r) {
     assert(c.text == r->part[PLAYER_PART_TEXT]);
     assert(c.readout == r->part[PLAYER_PART_READOUT]);
     assert(c.notice == r->part[PLAYER_PART_NOTICE]);
-    assert(c.wide == ACE_WIDE_OFF);
+    assert(c.wide == (r->part[PLAYER_PART_WIDE] ? ACE_WIDE_FILL : ACE_WIDE_OFF));
     assert(c.smooth == (r->part[PLAYER_PART_SMOOTH] ? ACE_SMOOTH_X2 : ACE_SMOOTH_OFF));
     assert(c.sas == (r->part[PLAYER_PART_SAS] ? ACE_SAS_SINC : ACE_SAS_OFF));
     assert(ace_format(&c, canonical, sizeof(canonical)) && strcmp(canonical, line) == 0);

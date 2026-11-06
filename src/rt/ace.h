@@ -13,7 +13,7 @@
  * tier (enhanced or ace) only names the run, in the badge, the pause menu and the stamps; a
  * line without it is an Enhanced run. Every other key is required in v1, in any order, each
  * once. A key or value for a feature this build
- * does not carry (wide=fill, smooth=match) is still parsed and refused. Anything else (an unknown version, key
+ * does not carry (smooth=match) is still parsed and refused. Anything else (an unknown version, key
  * or value, a duplicate, a missing key, an empty field) refuses the whole line: Ace is off for
  * the run and one "ACE_MODE: refused (<reason>)" line says why. Unset is off and says nothing.
  *
@@ -37,7 +37,7 @@
 #define ACE_SPEC_MAX 192         /* SR_ACE value, terminator included; room for later parts */
 
 /* Features that are part of this build. A feature that is not must be off in SR_ACE. */
-#define ACE_HAS_WIDE 0
+#define ACE_HAS_WIDE 1          /* wide=fill: widescreen Fill (#1881), the 3D scene in wings */
 #define ACE_HAS_SMOOTH 1        /* smooth=x2: one in-between per 30 Hz frame */
 #define ACE_HAS_SMOOTH_MATCH 0  /* smooth=match: the monitor's rate */
 #define ACE_HAS_SAS 1           /* sas=sinc: band-limited SAS voice resampling (#2054) */

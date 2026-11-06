@@ -185,11 +185,17 @@ batches after the target's own, so every resource a pending batch names is relea
 boundaries as before. A canvas (`WingEnt`) is a 512x272 colour and depth pair at render scale,
 the size of every target, so both wings of up to 256 columns each fit (32:9 uses 240). It is never
 in `s_tgts` or `s_deps`: no readback, upload, coherence or texture path reaches it. It is cleared
-whenever ge.c clears its own (`ge_wide_epoch`), which ge.c does on the first wing draw after the
-canvas was shown. A state this backend would draw in software is dropped from the wings with no
-flush or readback: `wing_drop` counts it and names each cause once on stderr, and the wing hook
-returns 0, so ge.c does not mark the canvas drawn. `gegpu_wide_read` reads a canvas back for
-`gpu-coherence-selftest`'s `wide-fill` case, which compares it with the software rasterizer's.
+whenever ge.c clears its own (`ge_wide_epoch`), which ge.c does on the first draw into the
+framebuffer after it was shown. A state this backend would draw in software is dropped from the
+wings with no flush or readback: `wing_drop` counts it and names each cause once on stderr, and the
+wing hook returns 0, so ge.c does not mark the canvas drawn. `gegpu_wide_read` reads a canvas back
+for `gpu-coherence-selftest`'s `wide-fill` case, which compares it with the software rasterizer's.
+
+With Fill on, `gegpu_present` blits the left wing, the shown image and the right wing into one
+(480 + 2D) x 272 image at the shown image's scale (`wide_compose`, on the GE chain ahead of the
+presenter's work) and presents that; wings the frame did not draw are black. The window fits it
+by its own shape (`sdl3vk_present_plan`). The software renderer's picture is composed in
+`src/rt/gui.c` and presented with `sdl3vk_present_rgba_ex`.
 
 ## Present and swapchain failures (#1377)
 

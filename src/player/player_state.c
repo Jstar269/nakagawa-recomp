@@ -1427,6 +1427,7 @@ static const char *const k_part_switch_labels[] = {"On", "Off"};
 static const char *const k_part_switch_words[] = {"on", "off"};
 static const char *const k_part_smooth_words[] = {"x2", "off"};
 static const char *const k_part_sas_words[] = {"sinc", "off"};
+static const char *const k_part_wide_words[] = {"fill", "off"};
 
 static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
     {"af", "Texture filtering",
@@ -1441,6 +1442,12 @@ static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
     {"notice", "Game badge",
      "Names the mode for a few seconds when a game starts.",
      2, k_part_switch_values, k_part_switch_labels, k_part_switch_words, 1},
+    /* Host-only (contract 10.8): what a game reads is unchanged. Objects a game skips as off
+       screen are missing from the sides until that title has its own culling item. */
+    {"wide", "Widescreen",
+     "Shows more of the 3D world on a wide screen; the HUD keeps its shape. Objects can pop in at "
+     "the edges. Not with Smooth motion yet.",
+     2, k_part_switch_values, k_part_switch_labels, k_part_wide_words, 0},
     {"smooth", "Smooth motion",
      "Shows 30 FPS games at 60. Adds about 17 ms of delay.",
      2, k_part_switch_values, k_part_switch_labels, k_part_smooth_words, 0},
@@ -3066,13 +3073,6 @@ bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t c
     if (n <= 0 || (size_t)n >= cap) { out[0] = '\0'; return false; }
     used = (size_t)n;
     for (int p = 0; p < PLAYER_PART_COUNT; p++) {
-        /* Ultrawide is not part of this build: the runtime refuses any value but off, and
-           the key sits where the runtime's own format puts it. */
-        if (p == PLAYER_PART_SMOOTH) {
-            n = snprintf(out + used, cap - used, ";wide=off");
-            if (n <= 0 || (size_t)n >= cap - used) { out[0] = '\0'; return false; }
-            used += (size_t)n;
-        }
         n = snprintf(out + used, cap - used, ";%s=%s", k_enhanced_parts[p].key,
                      enhanced_part_word(p, play->part[p]));
         if (n <= 0 || (size_t)n >= cap - used) { out[0] = '\0'; return false; }
