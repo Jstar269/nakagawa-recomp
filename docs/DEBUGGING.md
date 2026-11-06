@@ -2217,8 +2217,9 @@ player and game behave as they do for everyone ([#314](https://github.com/Jstar2
   256 draws. A difference `src/rt/gpu_sdl3vk/README.md` allows (fixed-function blends within 2 LSB)
   is counted under its rule name (`rule=blend-2lsb`), and a frame with only those reports
   `result=RULE_ONLY`. A capture of a title is private, and so are its report and crops.
-  `mingw32-make ge-first-bad-draw-selftest` checks the tool on a generated capture against two
-  executed Vulkan mutants.
+  `mingw32-make ge-first-bad-draw-selftest` checks the tool on generated captures against two
+  executed Vulkan mutants and the known overlapping-blend difference (#2109).
+  `ge_replay --write-synthetic <path> [basic|overlap]` writes those captures.
 - **Capture frames unattended.** Set `SR_NOINPUT=1` so the automatic START pulse does not reach the game, bound the run
   with `SR_EXIT_AT_VBLANK` ([where it stops](#where-sr_exit_at_vblank-actually-stops)), and capture with
   `SR_FBSNAP_WINDOWS` ([both ends of a transition](#capturing-both-ends-of-a-transition--snapwindows)).

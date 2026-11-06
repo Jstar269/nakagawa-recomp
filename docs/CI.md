@@ -399,7 +399,10 @@ the destination-snapshot copy's barriers (`SR_GPU_SNAPBAR_MUTANT`), and the subm
 fail each one with its own message. Then `ge-first-bad-draw-selftest` runs
 `ge_replay --first-bad-draw` on a generated capture: the unchanged backend must report
 `NO_DIFFERENCE`, and two executed mutants that change one draw's Vulkan blend or depth state
-(`SR_GE_FBD_MUTANT`) must each be named as that draw, in linear and bisect mode. The job also runs
+(`SR_GE_FBD_MUTANT`) must each be named as that draw, in linear and bisect mode. A second generated
+capture holds one PRIM of two overlapping translucent sprites on a 16-bit target, and the tool must
+find exactly its overlap as the first bad draw: the known shader-blend batch-order difference
+(#2109), which that fix turns into `NO_DIFFERENCE`. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by

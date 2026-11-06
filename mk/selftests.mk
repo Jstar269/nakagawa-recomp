@@ -969,6 +969,9 @@ ge-replay: shader-verify $(RT_GE_O)
 # data): the comparison rules without a GPU, NO_DIFFERENCE from the unchanged backend, then each
 # executed SR_GE_FBD_MUTANT (1: a blend draw 3 does not have, 2: draw 3's depth writes off) builds
 # its own binary and must be named as draw 3 in linear and bisect mode, mutant 2 in depth alone.
+# Last, a known difference no mutant made: the "overlap" capture's one PRIM of two overlapping
+# 50% blends on 5650 (#2109; shader-blend batches read one pre-batch copy of the target) must be
+# found as draw 1, its 100x100 overlap and nothing else. The #2109 fix flips this expectation.
 # Exit 77 (no Vulkan device) is a SKIP, as for gpu-coherence-selftest.
 GE_FBD_DIR = $(BUILD_DIR)/ge_first_bad_draw
 ge-first-bad-draw-selftest: ge-replay
@@ -1004,6 +1007,17 @@ ge-first-bad-draw-selftest: ge-replay
 				cat $$log; echo "FAIL ge-first-bad-draw-selftest: mutant 2 was not a depth-only difference ($$mode)" >&2; exit 1; fi; \
 			echo "ge-first-bad-draw-selftest: mutant $$m named as draw 3 ($$mode)"; \
 		done; \
+	done
+	@$(BUILD_DIR)/ge_replay.exe --write-synthetic $(GE_FBD_DIR)/overlap.ngef overlap
+	@for mode in linear bisect; do \
+		log=$(GE_FBD_DIR)/overlap-$$mode.log; result=0; \
+		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/overlap.ngef --first-bad-draw --mode $$mode \
+			--report $(GE_FBD_DIR)/overlap-$$mode > $$log 2>&1 || result=$$?; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest overlap (no Vulkan device)"; exit 77; fi; \
+		if test $$result -ne 1 || ! grep -Fq "result=FIRST_BAD_DRAW index=1 draws=2 " $$log || \
+		   ! grep -Fq "pixels=10000 max_diff=" $$log || ! grep -Fq "bbox=140,100,239,199" $$log; then \
+			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the #2109 overlap was not found as draw 1, exactly the overlap ($$mode)" >&2; exit 1; fi; \
+		echo "ge-first-bad-draw-selftest: known difference #2109 found at draw 1, the 100x100 overlap only ($$mode)"; \
 	done
 
 # selftest — compile and run the C++ reference interpreter unit tests.

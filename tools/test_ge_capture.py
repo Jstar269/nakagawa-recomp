@@ -403,6 +403,12 @@ class TestGeFirstBadDrawWiring(unittest.TestCase):
         self.assertIn("exit 77", self.rule)
         self.assertIn("--fbd-self-check", self.rule)
 
+    def test_known_overlap_difference_is_pinned(self):
+        # #2109: the generated overlap capture must be found at draw 1, the overlap only.
+        self.assertIn("--write-synthetic $(GE_FBD_DIR)/overlap.ngef overlap", self.rule)
+        self.assertIn('"result=FIRST_BAD_DRAW index=1 draws=2 "', self.rule)
+        self.assertIn('"bbox=140,100,239,199"', self.rule)
+
     def test_replay_stops_before_a_draw_and_restores_no_observer(self):
         ge = (RT / "ge.c").read_text(encoding="utf-8")
         self.assertIn("if (s_draw_observer && ge_draw_observed(op, addr, list_addr)) return addr;", ge)
