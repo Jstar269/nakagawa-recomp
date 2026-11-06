@@ -2360,6 +2360,19 @@ _register_campaign_probe(
     {case: (10 if case.endswith("-draw") else 16) for case in GE_WEIGHT_CASES},
 )
 
+# ge-rtt (158, probe_ge_sample.c): the #343 render-to-texture cells. Per cell of the grt_cells
+# table, in order: one `-draw` record (10 words: the GE wait outcome, the list length, T's format
+# word, the SAMPLE count and the operation mask), one `-t0` record (T's first row, 16 words) and
+# twelve `-rN` window rows.
+GE_RTT_CELLS = ("cpu", "flush", "noflush", "warm-noflush", "warm-flush", "warm-texsync",
+                "warm-both", "565-flush", "565-warm-noflush")
+GE_RTT_CASES = tuple(case for cell in GE_RTT_CELLS
+                     for case in (f"{cell}-draw", f"{cell}-t0", *(f"{cell}-r{y}" for y in range(12))))
+_register_campaign_probe(
+    "ge-rtt", "PSP-GE-RTT-001", GE_RTT_CASES,
+    {case: (10 if case.endswith("-draw") else 16) for case in GE_RTT_CASES},
+)
+
 # module-start (124, probe_module_start.c): the module_start thread cell. A fixed-shape
 # stream of raw words: module_start's own sceKernelReferThreadStatus (return code and the
 # 26-word SceKernelThreadInfo), the user-partition free sizes before and after the helper

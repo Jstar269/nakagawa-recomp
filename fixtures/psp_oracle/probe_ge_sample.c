@@ -88,6 +88,7 @@ PSP_HEAP_SIZE_KB(64);
 #define GE_CASE_OVERLAP 153
 #define GE_CASE_CLUT_MIP 154
 #define GE_CASE_WEIGHT 157
+#define GE_CASE_RTT 158
 
 #if PSP_ORACLE_CASE == GE_CASE_SAMPLE
 #define HLE_CAMPAIGN_ID "ge-sample"
@@ -117,6 +118,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "ge-weight"
 #define HLE_TEST_ID "PSP-GE-WEIGHT-001"
 #define HLE_LOG "host0:/ge_weight_log.txt"
+#elif PSP_ORACLE_CASE == GE_CASE_RTT
+#define HLE_CAMPAIGN_ID "ge-rtt"
+#define HLE_TEST_ID "PSP-GE-RTT-001"
+#define HLE_LOG "host0:/ge_rtt_log.txt"
 #else
 #error probe_ge_sample.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -2979,6 +2984,348 @@ static int hle_run(void)
 }
 
 #endif /* GE_CASE_WEIGHT */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == GE_CASE_RTT
+
+/* ==== GE render-to-texture cells (PSP-GE-RTT-001, #343) ====
+ * What a texture fetch sees of a framebuffer the GE has just drawn into: whether the GE
+ * rendering into a VRAM region makes a later fetch from that region read the new pixels, and
+ * what TEXFLUSH (0xcb) and TEXSYNC (0xcc) change about it. Each cell is one display list of
+ * project-written command words (no game data), in through mode, with blending and every test
+ * off, depth writes off, flat shading, so a pixel is the texel or the colour drawn.
+ *
+ * Layout. B is the colour buffer at VRAM offset GRT_B_OFFSET, 64x32 8888, stride 64. T is the
+ * render target and the texture at VRAM offset GRT_T_OFFSET, 64x16 texels, stride 64: the
+ * texture words point at the VRAM base plus that offset, size 64x16, format 8888 (3) or 5650 (0),
+ * REPLACE/RGBA, nearest filtering, clamped, TEXMODE 0, constant level 0. The CPU writes both
+ * through the uncached VRAM mirror. Before every cell it fills T's first 16x4 texels with the
+ * pattern P0 and clears B to 0, then `sync` and a data-cache write-back. P0 in 8888 is
+ * texel (x, y) = 0xff000000 | 0x11 << 16 | 16 y << 8 | 4 x; in 5650 it is the 16-bit value
+ * (x << 11) | (y << 5) | 0x1f.
+ *
+ * Operations (each cell's list is the shared state words, one TEXFLUSH, the operations in
+ * order, then FINISH and END):
+ *   RENDER      set the framebuffer pointer and stride to T, the drawing region and the scissor to
+ *               64x16 (and the pixel format to T's), one untextured flat sprite over x 0..16,
+ *               y 0..4 of colour C1 = 0xff2080e0 (ABGR), then the framebuffer, region, scissor and
+ *               format back to B (64x32, 8888).
+ *   SAMPLE(r)   one textured sprite into B over x 16..31, y r..r+4, texture coordinates (0, 0) to
+ *               (16, 4) read from T.
+ *   TEXFLUSH    command 0xcb, data 0.        TEXSYNC    command 0xcc, data 0.
+ * The cells: cpu = SAMPLE(8) (on the model B rows 8..11 read P0); flush = RENDER, TEXFLUSH,
+ * SAMPLE(8); noflush = RENDER, SAMPLE(8); warm-noflush = SAMPLE(8), RENDER, SAMPLE(16);
+ * warm-flush = SAMPLE(8), RENDER, TEXFLUSH, SAMPLE(16); warm-texsync = SAMPLE(8), RENDER,
+ * TEXSYNC, SAMPLE(16); warm-both = SAMPLE(8), RENDER, TEXSYNC, TEXFLUSH, SAMPLE(16); 565-flush
+ * and 565-warm-noflush are flush and warm-noflush with T a 5650 target (format word 0xd2 = 0
+ * while drawing into T, 3 for B) sampled as 5650.
+ *
+ * List words: the shared state words and the opening TEXFLUSH are 62, FINISH and END 2, RENDER
+ * 18, SAMPLE 4, TEXFLUSH or TEXSYNC 1; the longest cell (warm-both) is 92 words.
+ *
+ * Records per cell: `<cell>-draw` (10 words: the GE wait outcome as ge-weight, the list length,
+ * T's format word (0 = 8888, 1 = 5650), the number of SAMPLE operations and a bitmask of the
+ * operation kinds used, bit k set for kind k: 1 RENDER, 2 SAMPLE(8), 3 SAMPLE(16), 4 TEXFLUSH,
+ * 5 TEXSYNC), `<cell>-t0` (T's first row, x 0..15, read back by the CPU after the list: 8888
+ * words, or the 16-bit texels zero-extended for the 5650 cells) and the window rows
+ * `<cell>-rN` (B's x 16..31, y 8..19, N = 0..11). */
+
+#define GRT_B_OFFSET 0x00100000u   /* VRAM-relative colour buffer, stride 64, 32 rows */
+#define GRT_Z_OFFSET 0x00110000u   /* depth buffer pointer; depth test and writes are off */
+#define GRT_T_OFFSET 0x00120000u   /* render target and texture, stride 64, 16 rows */
+#define GRT_STRIDE 64u
+#define GRT_B_ROWS 32u
+#define GRT_T_ROWS 16u
+#define GRT_WX 16u                 /* window x 16..31, y 8..19 */
+#define GRT_WY 8u
+#define GRT_WW 16u
+#define GRT_WH 12u
+#define GRT_OPS 6u                 /* operation slots per cell; the list ends at the first GRT_END */
+#define GRT_VTX_SLOT 10u           /* words per operation slot: a textured sprite is 2 x 5 */
+#define GRT_VTX_WORDS (GRT_OPS * GRT_VTX_SLOT)
+/* 62 shared + 2 end + RENDER 18 + 2 SAMPLE 8 + 2 (TEXSYNC, TEXFLUSH) = 92 at most; room to spare. */
+#define GRT_LIST_WORDS 128u
+#define GRT_WAIT_POLLS 5000u       /* 5000 x 100 us: a half-second bound per draw */
+#define GRT_WAIT_POLL_US 100u
+#define GRT_C1 0xff2080e0u
+
+enum { GRT_END = 0, GRT_RENDER = 1, GRT_SAMPLE8 = 2, GRT_SAMPLE16 = 3, GRT_TEXFLUSH = 4,
+       GRT_TEXSYNC = 5 };
+
+/* t565: T is a 5650 target and texture; ops: the operations in order, GRT_END after the last. */
+struct grt_cell {
+    const char *name;
+    uint8_t t565;
+    uint8_t ops[GRT_OPS];
+};
+
+#define GRT_CELL_COUNT 9u
+static const struct grt_cell grt_cells[GRT_CELL_COUNT] = {
+    {"cpu", 0u, {GRT_SAMPLE8}},
+    {"flush", 0u, {GRT_RENDER, GRT_TEXFLUSH, GRT_SAMPLE8}},
+    {"noflush", 0u, {GRT_RENDER, GRT_SAMPLE8}},
+    {"warm-noflush", 0u, {GRT_SAMPLE8, GRT_RENDER, GRT_SAMPLE16}},
+    {"warm-flush", 0u, {GRT_SAMPLE8, GRT_RENDER, GRT_TEXFLUSH, GRT_SAMPLE16}},
+    {"warm-texsync", 0u, {GRT_SAMPLE8, GRT_RENDER, GRT_TEXSYNC, GRT_SAMPLE16}},
+    {"warm-both", 0u, {GRT_SAMPLE8, GRT_RENDER, GRT_TEXSYNC, GRT_TEXFLUSH, GRT_SAMPLE16}},
+    {"565-flush", 1u, {GRT_RENDER, GRT_TEXFLUSH, GRT_SAMPLE8}},
+    {"565-warm-noflush", 1u, {GRT_SAMPLE8, GRT_RENDER, GRT_SAMPLE16}},
+};
+_Static_assert(sizeof(grt_cells) / sizeof(grt_cells[0]) == GRT_CELL_COUNT, "GRT_CELL_COUNT");
+
+static uint32_t s_grt_vtx[GRT_VTX_WORDS] __attribute__((aligned(64)));
+static uint32_t s_grt_list[GRT_LIST_WORDS] __attribute__((aligned(64)));
+static uint32_t s_grt_win[GRT_WW * GRT_WH];
+static uint32_t s_grt_t0[GRT_WW];
+
+static uint32_t grt_fbits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
+static uint32_t grt_phys(const void *p)
+{
+    return (uint32_t)(uintptr_t)p & 0x0fffffffu;
+}
+
+/* The uncached mirror of the VRAM block at `offset`. */
+static uintptr_t grt_mirror(uint32_t offset)
+{
+    const uint32_t vram = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    return (uintptr_t)((vram | 0x40000000u) + offset);
+}
+
+/* T's physical address: the VRAM base plus GRT_T_OFFSET. */
+static uint32_t grt_tex_phys(void)
+{
+    return ((uint32_t)(uintptr_t)sceGeEdramGetAddr() & 0x0fffffffu) + GRT_T_OFFSET;
+}
+
+/* The pattern P0 in T's first 16x4 texels and zero in B, through the uncached mirror. */
+static void grt_prepare(const struct grt_cell *c)
+{
+    volatile uint32_t *b = (volatile uint32_t *)grt_mirror(GRT_B_OFFSET);
+    for (unsigned i = 0; i < GRT_STRIDE * GRT_B_ROWS; i++) {
+        b[i] = 0u;
+    }
+    volatile uint32_t *t32 = (volatile uint32_t *)grt_mirror(GRT_T_OFFSET);
+    volatile uint16_t *t16 = (volatile uint16_t *)grt_mirror(GRT_T_OFFSET);
+    for (uint32_t y = 0; y < 4u; y++) {
+        for (uint32_t x = 0; x < 16u; x++) {
+            if (c->t565) {
+                t16[y * GRT_STRIDE + x] = (uint16_t)((x << 11) | (y << 5) | 0x1fu);
+            } else {
+                t32[y * GRT_STRIDE + x] =
+                    0xff000000u | (0x11u << 16) | ((16u * y) << 8) | (4u * x);
+            }
+        }
+    }
+    __asm__ volatile("sync" ::: "memory");
+}
+
+/* Operation slot `slot`'s vertices: the flat sprite (colour, x, y, z; two vertices) over x 0..16,
+   y 0..4, or the textured sprite (u, v, x, y, z) into B over x 16..31, y row..row+4. */
+static void grt_vertices_render(uint32_t slot)
+{
+    uint32_t *v = s_grt_vtx + slot * GRT_VTX_SLOT;
+    v[0] = GRT_C1;
+    v[1] = grt_fbits(0.0f);
+    v[2] = grt_fbits(0.0f);
+    v[3] = grt_fbits(0.0f);
+    v[4] = GRT_C1;
+    v[5] = grt_fbits(16.0f);
+    v[6] = grt_fbits(4.0f);
+    v[7] = grt_fbits(0.0f);
+}
+
+static void grt_vertices_sample(uint32_t slot, uint32_t row)
+{
+    const float f[10] = {0.0f, 0.0f, (float)GRT_WX, (float)row, 0.0f,
+                         16.0f, 4.0f, (float)(GRT_WX + 16u), (float)(row + 4u), 0.0f};
+    uint32_t *v = s_grt_vtx + slot * GRT_VTX_SLOT;
+    for (uint32_t i = 0; i < 10u; i++) {
+        v[i] = grt_fbits(f[i]);
+    }
+}
+
+/* The cell's display list; returns the word count. Every state the draws read is set. */
+static uint32_t grt_list(const struct grt_cell *c, uint32_t vtx, uint32_t tex, uint32_t *out)
+{
+    static const uint8_t off_units[12] = {0x17u, 0x1cu, 0x1du, 0x1fu, 0x20u, 0x21u,
+                                          0x22u, 0x23u, 0x24u, 0x25u, 0x27u, 0x28u};
+    const uint32_t full_b = (GRT_STRIDE - 1u) | ((GRT_B_ROWS - 1u) << 10);
+    const uint32_t full_t = (GRT_STRIDE - 1u) | ((GRT_T_ROWS - 1u) << 10);
+    uint32_t n = 0;
+#define GRT_W(cmd, data) (out[n++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(data) & 0x00ffffffu))
+    GRT_W(0x10, (vtx >> 8) & 0x000f0000u);
+    GRT_W(0x9c, GRT_B_OFFSET);
+    GRT_W(0x9d, GRT_STRIDE);
+    GRT_W(0xd2, 3u);            /* 8888 */
+    GRT_W(0x9e, GRT_Z_OFFSET);
+    GRT_W(0x9f, GRT_STRIDE);
+    GRT_W(0x15, 0);
+    GRT_W(0x16, full_b);
+    GRT_W(0xd4, 0);
+    GRT_W(0xd5, full_b);
+    GRT_W(0xd6, 0);
+    GRT_W(0xd7, 0xffffu);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GRT_W(off_units[i], 0); /* lighting, culling, texturing, fog, dither, blending, tests */
+    }
+    GRT_W(0x1e, 0);             /* texture off */
+    GRT_W(0x50, 0);             /* flat shading */
+    GRT_W(0xd3, 0);             /* clear mode off */
+    GRT_W(0xe7, 1);             /* depth writes off */
+    GRT_W(0xe8, 0);
+    GRT_W(0xe9, 0);
+    GRT_W(0xdb, 0x00ff0001u);   /* alpha test ALWAYS */
+    GRT_W(0xd8, 1);             /* colour test ALWAYS */
+    GRT_W(0xd9, 0);
+    GRT_W(0xda, 0);
+    GRT_W(0xdc, 0x00ff0001u);   /* stencil test ALWAYS */
+    GRT_W(0xdd, 0);             /* KEEP, KEEP, KEEP */
+    GRT_W(0xde, 1);             /* depth test ALWAYS */
+    GRT_W(0xdf, 0x32u);
+    GRT_W(0xe0, 0);
+    GRT_W(0xe1, 0);
+    GRT_W(0xe6, 3);             /* logic op COPY */
+    GRT_W(0xcf, 0);
+    GRT_W(0xcd, 0);
+    GRT_W(0xce, 0);
+    GRT_W(0x53, 0);             /* MATERIALUPDATE: vertex colour is the only colour source */
+    GRT_W(0x55, 0xffffffu);
+    GRT_W(0x58, 0xffu);
+    GRT_W(0xc0, 0);             /* UV mapping */
+    GRT_W(0xc2, 0);             /* TEXMODE 0 */
+    GRT_W(0xc3, c->t565 ? 0u : 3u);   /* texture format: 5650 or 8888 */
+    GRT_W(0xa0, tex);
+    GRT_W(0xa8, GRT_STRIDE | ((tex >> 24) << 16));
+    GRT_W(0xb8, (4u << 8) | 6u);      /* 64 x 16 */
+    GRT_W(0xc6, 0x004u);        /* nearest, nearest level */
+    GRT_W(0xc7, 0x101u);        /* clamp u and v */
+    GRT_W(0xc8, 1u);            /* constant level 0 */
+    GRT_W(0xd0, 0);
+    GRT_W(0xc9, 0x103u);        /* REPLACE, RGBA */
+    GRT_W(0xca, 0);
+    GRT_W(0x4c, 0);
+    GRT_W(0x4d, 0);
+    GRT_W(0xcb, 0);             /* texture flush: no list inherits texture-cache contents */
+    for (uint32_t i = 0; i < GRT_OPS && c->ops[i] != GRT_END; i++) {
+        const uint32_t op = c->ops[i];
+        const uint32_t v = vtx + 4u * GRT_VTX_SLOT * i;
+        if (op == GRT_RENDER) {
+            grt_vertices_render(i);
+            GRT_W(0x9c, GRT_T_OFFSET);
+            GRT_W(0x9d, GRT_STRIDE);
+            GRT_W(0xd2, c->t565 ? 0u : 3u);
+            GRT_W(0x15, 0);
+            GRT_W(0x16, full_t);
+            GRT_W(0xd4, 0);
+            GRT_W(0xd5, full_t);
+            GRT_W(0x1e, 0);
+            GRT_W(0x12, 0x0080019cu);   /* through, 8888 colour, float position */
+            GRT_W(0x01, v);
+            GRT_W(0x04, (6u << 16) | 2u);   /* sprite */
+            GRT_W(0x9c, GRT_B_OFFSET);
+            GRT_W(0x9d, GRT_STRIDE);
+            GRT_W(0xd2, 3u);
+            GRT_W(0x15, 0);
+            GRT_W(0x16, full_b);
+            GRT_W(0xd4, 0);
+            GRT_W(0xd5, full_b);
+        } else if (op == GRT_SAMPLE8 || op == GRT_SAMPLE16) {
+            grt_vertices_sample(i, op == GRT_SAMPLE8 ? 8u : 16u);
+            GRT_W(0x1e, 1);             /* texture on */
+            GRT_W(0x12, 0x00800183u);   /* through, float uv, float position */
+            GRT_W(0x01, v);
+            GRT_W(0x04, (6u << 16) | 2u);
+        } else if (op == GRT_TEXFLUSH) {
+            GRT_W(0xcb, 0);
+        } else if (op == GRT_TEXSYNC) {
+            GRT_W(0xcc, 0);
+        }
+    }
+    GRT_W(0x0f, 0);
+    GRT_W(0x0c, 0);
+#undef GRT_W
+    return n;
+}
+
+/* One cell: prepare T and B, build the list, queue it, wait (bounded), read T's first row and
+   the window back, then the `-draw`, `-t0` and `-rN` records. */
+static void grt_draw(const struct grt_cell *c)
+{
+    static char row[64];
+    hle_step(c->name);
+    grt_prepare(c);
+    const uint32_t words = grt_list(c, grt_phys(s_grt_vtx), grt_tex_phys(), s_grt_list);
+    uint32_t samples = 0;
+    uint32_t mask = 0;
+    for (uint32_t i = 0; i < GRT_OPS && c->ops[i] != GRT_END; i++) {
+        mask |= 1u << c->ops[i];
+        samples += c->ops[i] == GRT_SAMPLE8 || c->ops[i] == GRT_SAMPLE16;
+    }
+    sceKernelDcacheWritebackAll();
+    const uint32_t t0 = sceKernelGetSystemTimeLow();
+    const int qid = sceGeListEnQueue(s_grt_list, NULL, -1, NULL);
+    int list_state = qid;
+    int draw_state = -1;
+    int idle = 0;
+    for (unsigned i = 0; i < GRT_WAIT_POLLS; i++) {
+        list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
+        draw_state = sceGeDrawSync(1);
+        idle = draw_state == PSP_GE_LIST_DONE;
+        if (idle) {
+            break;
+        }
+        sceKernelDelayThread(GRT_WAIT_POLL_US);
+    }
+    const uint32_t elapsed = sceKernelGetSystemTimeLow() - t0;
+    int reset_rc = 0;
+    if (!idle) {
+        PspGeBreakParam param;
+        memset(&param, 0, sizeof(param));
+        reset_rc = sceGeBreak(1, &param);
+        for (unsigned i = 0; i < GRT_WAIT_POLLS; i++) {
+            if (sceGeDrawSync(1) == PSP_GE_LIST_DONE) {
+                break;
+            }
+            sceKernelDelayThread(GRT_WAIT_POLL_US);
+        }
+    }
+    volatile uint32_t *b = (volatile uint32_t *)grt_mirror(GRT_B_OFFSET);
+    volatile uint32_t *t32 = (volatile uint32_t *)grt_mirror(GRT_T_OFFSET);
+    volatile uint16_t *t16 = (volatile uint16_t *)grt_mirror(GRT_T_OFFSET);
+    for (uint32_t i = 0; i < GRT_WW; i++) {
+        s_grt_t0[i] = c->t565 ? (uint32_t)t16[i] : t32[i];
+    }
+    for (uint32_t i = 0; i < GRT_WW * GRT_WH; i++) {
+        s_grt_win[i] = b[(GRT_WY + i / GRT_WW) * GRT_STRIDE + GRT_WX + i % GRT_WW];
+    }
+    const uint32_t draw[10] = {(uint32_t)qid, (uint32_t)list_state, (uint32_t)draw_state,
+                               elapsed, (uint32_t)idle, (uint32_t)reset_rc, words,
+                               (uint32_t)c->t565, samples, mask};
+    snprintf(row, sizeof(row), "%s-draw", c->name);
+    hle_record(row, qid < 0 ? "FAIL" : idle ? "PASS" : "TIMEOUT", (uint32_t)qid, draw, 10);
+    snprintf(row, sizeof(row), "%s-t0", c->name);
+    hle_record(row, "PASS", 0, s_grt_t0, GRT_WW);
+    for (uint32_t y = 0; y < GRT_WH; y++) {
+        snprintf(row, sizeof(row), "%s-r%u", c->name, (unsigned int)y);
+        hle_record(row, "PASS", y, &s_grt_win[y * GRT_WW], GRT_WW);
+    }
+}
+
+static int hle_run(void)
+{
+    for (uint32_t i = 0; i < GRT_CELL_COUNT; i++) {
+        grt_draw(&grt_cells[i]);
+    }
+    return 1;
+}
+
+#endif /* GE_CASE_RTT */
 
 /* ------------------------------------------------------------------------- */
 

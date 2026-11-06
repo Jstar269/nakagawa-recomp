@@ -249,6 +249,10 @@ CASE_ID = 154
 # count, the bone each slot selects and the weighted vertex layout.
 else ifeq ($(CASE),ge-weight)
 CASE_ID = 157
+# 158: the GE render-to-texture cells (probe_ge_sample.c, #343): what a texture fetch
+# reads of a framebuffer the GE just drew into, with and without TEXFLUSH and TEXSYNC.
+else ifeq ($(CASE),ge-rtt)
+CASE_ID = 158
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -622,6 +626,10 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE weighted-vertex cells: the same source as the sample-point cells, case 157.
 else ifeq ($(CASE),ge-weight)
 TARGET = $(BUILD_DIR)/ge_weight
+OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
+# The GE render-to-texture cells: the same source as the sample-point cells, case 158.
+else ifeq ($(CASE),ge-rtt)
+TARGET = $(BUILD_DIR)/ge_rtt
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The instruction trace: its own source, the single-step trampoline and the fixtures
 # header, with the same writer, ThreadManForUser block and module lifecycle as the HLE

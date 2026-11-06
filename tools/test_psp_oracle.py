@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 135)
+        self.assertEqual(len(routes), 136)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
-                         | {150, 151, 152, 153, 154, 155, 156, 157},
+                         | {150, 151, 152, 153, 154, 155, 156, 157, 158},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -9915,6 +9915,187 @@ class GeWeightProbeTests(unittest.TestCase):
         for name, fmt, count, *_ in self._cells():
             with self.subTest(cell=name):
                 self.assertLessEqual(((count * size[fmt] + 3) & ~3) + 16, 48)
+
+
+class GeRttProbeTests(unittest.TestCase):
+    """CASE=ge-rtt (158, PSP-GE-RTT-001) in probe_ge_sample.c: the #343 render-to-texture
+    cells. T is rendered into and sampled as a texture, with TEXFLUSH and TEXSYNC placed
+    differently per cell; the stream matches the registry and the list words, the pattern the
+    CPU writes and the operation order are the ones the cells claim."""
+
+    probe: ClassVar[str]
+    makefile: ClassVar[str]
+    section: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_RTT\n\n")
+        end = cls.probe.index("#endif /* GE_CASE_RTT */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),ge-rtt)\nCASE_ID = 158\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),ge-rtt)\nTARGET = $(BUILD_DIR)/ge_rtt\n"
+                      "OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define GE_CASE_RTT 158\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "ge-rtt"\n#define HLE_TEST_ID "PSP-GE-RTT-001"\n'
+                      '#define HLE_LOG "host0:/ge_rtt_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "ge-rtt").name,
+                         "ge_rtt_log.txt")
+        self.assertEqual(_campaign_completeness_contract("ge-rtt"), "strict-golden-sequence")
+        self.assertNotIn("ge-rtt", CAMPAIGN_QUEUE_CASES)
+
+    def test_section_calls_only_the_ge_and_cache_imports_and_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
+            "sceGeEdramGetAddr", "sceGeListEnQueue", "sceGeListSync", "sceGeDrawSync",
+            "sceGeBreak", "sceKernelDcacheWritebackAll", "sceKernelDelayThread",
+            "sceKernelGetSystemTimeLow"})
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceGu", "sceDisplay", "sceIo"):
+            self.assertNotIn(banned, self.section)
+        self.assertEqual(self.section.count("i < GRT_WAIT_POLLS; i++"), 2)
+        body = _c_function_bodies(self.section)["grt_draw"]
+        self.assertLess(body.index("hle_step(c->name);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("grt_prepare(c);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceKernelDcacheWritebackAll();"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceGeListEnQueue("), body.index("hle_record("))
+        self.assertIn("#define GRT_LIST_WORDS 128u", self.section)
+        self.assertIn("#define GRT_OPS 6u", self.section)
+        self.assertIn("static uint32_t s_grt_list[GRT_LIST_WORDS] __attribute__((aligned(64)));",
+                      self.section)
+        self.assertIn("static uint32_t s_grt_vtx[GRT_VTX_WORDS] __attribute__((aligned(64)));",
+                      self.section)
+
+    def _list_blocks(self) -> tuple[int, int, int]:
+        """Words of the shared prefix (with the opening TEXFLUSH and the 12-unit loop expanded),
+        of one RENDER and of one SAMPLE, counted from grt_list's source."""
+        body = _c_function_bodies(self.section)["grt_list"]
+        loop = body.index("for (uint32_t i = 0; i < GRT_OPS && c->ops[i] != GRT_END; i++) {")
+        render = body.index("if (op == GRT_RENDER) {")
+        sample = body.index("} else if (op == GRT_SAMPLE8 || op == GRT_SAMPLE16) {")
+        flush = body.index("} else if (op == GRT_TEXFLUSH) {")
+
+        def words(text: str) -> int:
+            return len(re.findall(r"^\s*GRT_W\(", text, re.MULTILINE))
+
+        self.assertIn("GRT_W(off_units[i], 0);", body[:loop])
+        self.assertIn("for (uint32_t i = 0; i < 12u; i++) {", body[:loop])
+        return words(body[:loop]) + 11, words(body[render:sample]), words(body[sample:flush])
+
+    def test_list_words_are_the_ones_the_comment_counts(self) -> None:
+        shared, render, sample = self._list_blocks()
+        self.assertEqual((shared, render, sample), (62, 18, 4))
+        # The opening TEXFLUSH is the last shared word; FINISH and END close the list.
+        body = _c_function_bodies(self.section)["grt_list"]
+        self.assertLess(body.index("GRT_W(0xcb, 0);"),
+                        body.index("for (uint32_t i = 0; i < GRT_OPS && c->ops[i] != GRT_END; i++) {"))
+        self.assertTrue(body.rstrip().endswith("return n;\n}"))
+        self.assertIn("    GRT_W(0x0f, 0);\n    GRT_W(0x0c, 0);\n#undef GRT_W\n", body)
+        longest = 0
+        for _, _, ops in self._cells():
+            total = shared + 2 + sum({1: render, 2: sample, 3: sample, 4: 1, 5: 1}[op]
+                                     for op in ops)
+            longest = max(longest, total)
+            self.assertLessEqual(total, 128)
+        self.assertEqual(longest, 92)
+        self.assertIn("the longest cell (warm-both) is 92 words.", self.probe)
+
+    def test_list_words_render_to_t_and_sample_it_back(self) -> None:
+        body = _c_function_bodies(self.section)["grt_list"]
+        for word in ("GRT_W(0x9c, GRT_T_OFFSET);", "GRT_W(0x9c, GRT_B_OFFSET);",
+                     "GRT_W(0xd2, c->t565 ? 0u : 3u);", "GRT_W(0xd2, 3u);",
+                     "GRT_W(0xc3, c->t565 ? 0u : 3u);", "GRT_W(0xa0, tex);",
+                     "GRT_W(0xa8, GRT_STRIDE | ((tex >> 24) << 16));",
+                     "GRT_W(0xb8, (4u << 8) | 6u);", "GRT_W(0xc2, 0);", "GRT_W(0xc8, 1u);",
+                     "GRT_W(0xc9, 0x103u);", "GRT_W(0xc6, 0x004u);", "GRT_W(0xc7, 0x101u);",
+                     "GRT_W(0x1e, 1);", "GRT_W(0x1e, 0);", "GRT_W(0xcb, 0);", "GRT_W(0xcc, 0);",
+                     "GRT_W(0x12, 0x0080019cu);", "GRT_W(0x12, 0x00800183u);",
+                     "GRT_W(0x04, (6u << 16) | 2u);", "GRT_W(0xe7, 1);", "GRT_W(0xde, 1);",
+                     "GRT_W(0x16, full_t);", "GRT_W(0xd5, full_t);"):
+            self.assertIn(word, body)
+        self.assertIn("#define GRT_C1 0xff2080e0u", self.section)
+        self.assertIn("#define GRT_B_OFFSET 0x00100000u", self.section)
+        self.assertIn("#define GRT_T_OFFSET 0x00120000u", self.section)
+        self.assertIn("(GRT_STRIDE - 1u) | ((GRT_T_ROWS - 1u) << 10)", body)
+        self.assertIn("#define GRT_T_ROWS 16u", self.section)
+        units = re.search(r"off_units\[12\] = \{([^}]*)\}", self.section)
+        assert units is not None
+        cleared = {int(word.strip().rstrip("u"), 16) for word in units.group(1).split(",")}
+        self.assertEqual(cleared, {0x17, 0x1c, 0x1d, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+                                   0x27, 0x28})
+        # The texture address is the VRAM base plus the target's offset.
+        phys = _c_function_bodies(self.section)["grt_tex_phys"]
+        self.assertIn("sceGeEdramGetAddr() & 0x0fffffffu) + GRT_T_OFFSET;", phys)
+        # RENDER draws into T, then restores B; SAMPLE reads texture T into B.
+        render = body[body.index("if (op == GRT_RENDER) {"):
+                      body.index("} else if (op == GRT_SAMPLE8")]
+        self.assertLess(render.index("GRT_W(0x9c, GRT_T_OFFSET);"), render.index("GRT_W(0x04,"))
+        self.assertLess(render.index("GRT_W(0x04,"), render.index("GRT_W(0x9c, GRT_B_OFFSET);"))
+
+    def test_cpu_writes_pattern_p0_and_clears_b_before_the_writeback(self) -> None:
+        prepare = _c_function_bodies(self.section)["grt_prepare"]
+        self.assertIn("(uint16_t)((x << 11) | (y << 5) | 0x1fu)", prepare)
+        self.assertIn("0xff000000u | (0x11u << 16) | ((16u * y) << 8) | (4u * x)", prepare)
+        self.assertIn("y < 4u", prepare)
+        self.assertIn("x < 16u", prepare)
+        self.assertIn('__asm__ volatile("sync" ::: "memory");', prepare)
+        mirror = _c_function_bodies(self.section)["grt_mirror"]
+        self.assertIn("(vram | 0x40000000u) + offset", mirror)
+        draw = _c_function_bodies(self.section)["grt_draw"]
+        self.assertIn("s_grt_t0[i] = c->t565 ? (uint32_t)t16[i] : t32[i];", draw)
+        self.assertIn("b[(GRT_WY + i / GRT_WW) * GRT_STRIDE + GRT_WX + i % GRT_WW]", draw)
+        self.assertIn("#define GRT_WH 12u", self.section)
+        self.assertIn("#define GRT_WX 16u", self.section)
+        self.assertIn("#define GRT_WY 8u", self.section)
+
+    def _cells(self) -> list[tuple[str, int, list[int]]]:
+        kinds = {"GRT_RENDER": 1, "GRT_SAMPLE8": 2, "GRT_SAMPLE16": 3, "GRT_TEXFLUSH": 4,
+                 "GRT_TEXSYNC": 5}
+        rows = re.findall(r'\{"([a-z0-9-]+)", (\d)u, \{([^}]*)\}\},', self.section)
+        return [(name, int(t565), [kinds[op.strip()] for op in ops.split(",")])
+                for name, t565, ops in rows]
+
+    def test_cells_match_the_registry_and_the_designed_operations(self) -> None:
+        cells = self._cells()
+        self.assertEqual(len(cells), 9)
+        self.assertIn("#define GRT_CELL_COUNT 9u", self.section)
+        render, s8, s16, flush, sync = 1, 2, 3, 4, 5
+        self.assertEqual(cells, [
+            ("cpu", 0, [s8]),
+            ("flush", 0, [render, flush, s8]),
+            ("noflush", 0, [render, s8]),
+            ("warm-noflush", 0, [s8, render, s16]),
+            ("warm-flush", 0, [s8, render, flush, s16]),
+            ("warm-texsync", 0, [s8, render, sync, s16]),
+            ("warm-both", 0, [s8, render, sync, flush, s16]),
+            ("565-flush", 1, [render, flush, s8]),
+            ("565-warm-noflush", 1, [s8, render, s16]),
+        ])
+        spec, counts = CAMPAIGN_PROBE_CASES["ge-rtt"]
+        self.assertEqual(spec.test_id, "PSP-GE-RTT-001")
+        self.assertEqual([case[:-len("-draw")] for case in spec.semantic_cases
+                          if case.endswith("-draw")], [name for name, *_ in cells])
+        self.assertEqual(len(spec.semantic_cases), 9 * 14)
+        for name, *_ in cells:
+            self.assertEqual(
+                [case for case in spec.semantic_cases if case.startswith(f"{name}-")
+                 and case[len(name) + 1:] in ("draw", "t0") + tuple(f"r{y}" for y in range(12))],
+                [f"{name}-draw", f"{name}-t0", *(f"{name}-r{y}" for y in range(12))])
+        for case in spec.semantic_cases:
+            self.assertEqual(counts[case], 10 if case.endswith("-draw") else 16)
+        self.assertEqual(counts["ge-rtt-done"], 1)
+        # The operation mask in the draw record names every kind the cell uses.
+        draw = _c_function_bodies(self.section)["grt_draw"]
+        self.assertIn("mask |= 1u << c->ops[i];", draw)
+        self.assertIn("(uint32_t)c->t565, samples, mask};", draw)
+        # Row 8 is the first sample, row 16 the second (rows 0..3 and 8..11 of the window).
+        sample = _c_function_bodies(self.section)["grt_list"]
+        self.assertIn("grt_vertices_sample(i, op == GRT_SAMPLE8 ? 8u : 16u);", sample)
 
 
 class GeClutMipProbeTests(unittest.TestCase):
