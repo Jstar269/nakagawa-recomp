@@ -4976,7 +4976,7 @@ static int title_builds_for_disc_id(const char *disc_id, BuildRow rows[MAX_DISC_
         const NkTitleBuild *builtin = NULL;
         int builtin_count = nk_title_catalog_builds(disc_id, &builtin);
         for (int b = 0; b < builtin_count && b < MAX_DISC_BUILDS; b++) {
-            snprintf(rows[b].sha256, sizeof(rows[b].sha256), "%s", builtin[b].executable_sha256);
+            snprintf(rows[b].sha256, sizeof(rows[b].sha256), "%s", builtin[b].executable_digest);
             snprintf(rows[b].status, sizeof(rows[b].status), "%s", builtin[b].status);
             snprintf(rows[b].label, sizeof(rows[b].label), "%s", builtin[b].label);
             snprintf(rows[b].reason, sizeof(rows[b].reason), "%s", builtin[b].reason);

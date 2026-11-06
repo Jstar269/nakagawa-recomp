@@ -71,7 +71,7 @@ typedef struct {
  * executable as the disc image holds it, a status (supported, experimental or
  * known-bad), a label and, for a known-bad build, the reason. */
 typedef struct {
-    const char *executable_sha256;
+    const char *executable_digest;
     const char *status;
     const char *label;
     const char *reason;
