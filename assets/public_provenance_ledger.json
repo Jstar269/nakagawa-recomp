@@ -4514,6 +4514,28 @@
       }
     },
     {
+      "path": "src/core/nk_zip.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk-zip-save-backups-1883",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/core/nk_zip.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk-zip-save-backups-1883",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "src/player/input_settings.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -11648,6 +11670,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tests/native/test_nk_zip.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk-zip-save-backups-1883",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
