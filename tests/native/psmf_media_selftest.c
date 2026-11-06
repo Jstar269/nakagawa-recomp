@@ -3759,7 +3759,6 @@ void sr_vblank_tick(void);
 #define PB_AU_B     0x08622000u
 #define PB_AU_NEVER 0x08624000u
 #define PB_FRAMES   2048
-#define PB_LEAD_US  46439                 /* 2048 frames at 44.1 kHz, truncated */
 #define PB_VBASE_US 100000
 #define PB_ABASE_US 20000
 #define PB_VLAG_US  5000                  /* delivery precedes presentation by this much */
@@ -3767,8 +3766,9 @@ void sr_vblank_tick(void);
 #define PB_SKIP_VIDEO 40                  /* never presented: overwritten by picture 42 */
 #define PB_SKIP_AUDIO 30                  /* never played: overwritten by block 32 */
 #define PB_VOFF_US  PB_VBASE_US
-#define PB_AOFF_US  (PB_ABASE_US + PB_LEAD_US)
-#define PB_AV_US    (PB_VOFF_US - PB_AOFF_US)
+/* At the guest boundaries (flip, submit) the offset is the authored interleave alone; the host
+ * queue lead is added after the submit, so it moves av_us and leaves av_submit_us alone. */
+#define PB_SUBMIT_AV_US (PB_VOFF_US - PB_ABASE_US)
 #define PB_AUDIO_TOL_US 36                /* 3 ticks of anchor extrapolation, plus rounding */
 
 typedef struct {
@@ -3787,6 +3787,12 @@ static struct {
 } pb;
 
 static int64_t pb_us(int64_t ticks) { return ticks * 100 / 9; }
+/* The injected host queue lead in microseconds (44.1 kHz frames, truncated: 2048 -> 46439). */
+static int64_t pb_lead_us(const PbScenario *sc) {
+    return sc->lead_frames >= 0 ? (int64_t)sc->lead_frames * 1000000 / 44100 : 0;
+}
+static int64_t pb_aoff_us(const PbScenario *sc) { return PB_ABASE_US + pb_lead_us(sc); }
+static int64_t pb_av_us(const PbScenario *sc) { return PB_VOFF_US - pb_aoff_us(sc); }
 static uint32_t pb_video_buf(int idx) { return (idx & 1) ? PB_FB_B : PB_FB_A; }
 static uint32_t pb_audio_buf(int idx) { return (idx & 1) ? PB_AU_B : PB_AU_A; }
 static int pb_is_na(const char *line, const char *key) {
@@ -3811,17 +3817,26 @@ static void pb_check_new_windows(const PbScenario *sc) {
     if (an > 0 && sc->lead_frames >= 0 && !pb_is_na(w, " aoff_us=")) {
         CHECK(av_log_field(w, " aoff_us=", &ao), "psmf-present: a window carries its audio offset");
         if (sc->stretch_ppm == 0)
-            CHECK(llabs(ao - PB_AOFF_US) <= PB_AUDIO_TOL_US,
+            CHECK(llabs(ao - pb_aoff_us(sc)) <= PB_AUDIO_TOL_US,
                   "psmf-present: a window's audio offset equals submit time plus queue lead minus pts");
+        long long lead = -1;
+        CHECK(av_log_field(w, " alead_us=", &lead) && lead == pb_lead_us(sc),
+              "psmf-present: a window carries the host queue lead its audio blocks met");
     }
     if (sc->lead_frames < 0) {
-        CHECK(an == 0 && pb_is_na(w, " aoff_us=") && pb_is_na(w, " av_us="),
-              "psmf-present: without a host queue the audio offset and the A/V offset are not measured");
+        CHECK(an == 0 && pb_is_na(w, " aoff_us=") && pb_is_na(w, " av_us=") && pb_is_na(w, " alead_us=") &&
+                  pb_is_na(w, " av_submit_us="),
+              "psmf-present: without a host queue the audio offset, its lead and the A/V offsets are not measured");
     } else if (vn > 0 && an > 0) {
-        CHECK(av_log_field(w, " av_us=", &av), "psmf-present: a paired window carries an A/V offset");
-        if (sc->stretch_ppm == 0)
-            CHECK(llabs(av - PB_AV_US) <= PB_AUDIO_TOL_US + 1,
+        long long avsub = 0;
+        CHECK(av_log_field(w, " av_us=", &av) && av_log_field(w, " av_submit_us=", &avsub),
+              "psmf-present: a paired window carries its A/V offset and its offset at the guest boundaries");
+        if (sc->stretch_ppm == 0) {
+            CHECK(llabs(av - pb_av_us(sc)) <= PB_AUDIO_TOL_US + 1,
                   "psmf-present: a window's A/V offset equals the authored video minus audio offset");
+            CHECK(llabs(avsub - PB_SUBMIT_AV_US) <= PB_AUDIO_TOL_US + 1,
+                  "psmf-present: a window's offset at the flip and the submit leaves the host queue lead out");
+        }
         if (pb.nav < (int)(sizeof(pb.av) / sizeof(pb.av[0]))) pb.av[pb.nav++] = av;
     }
 }
@@ -4020,14 +4035,19 @@ static void pb_run(const PbScenario *sc, const char *name) {
           "psmf-present: the undelivered and the repeated submit are the only non-matching submits");
     if (sc->lead_frames >= 0) {
         CHECK(amatch == AV_AUDIO_BLOCKS - 2 && aunmeas == 0, "psmf-present: every played block was matched");
-        CHECK(av_log_field(f, " alat_mean_us=", &alat) && alat == PB_ALAG_US + PB_LEAD_US &&
-                  av_log_field(f, " alat_max_us=", &vlatmax) && vlatmax == PB_ALAG_US + PB_LEAD_US,
+        CHECK(av_log_field(f, " alat_mean_us=", &alat) && alat == PB_ALAG_US + pb_lead_us(sc) &&
+                  av_log_field(f, " alat_max_us=", &vlatmax) && vlatmax == PB_ALAG_US + pb_lead_us(sc),
               "psmf-present: block delivery-to-play latency is the clock lag plus the queue lead");
+        long long lead_mean = -1, lead_max = -1;
+        CHECK(av_log_field(f, " alead_mean_us=", &lead_mean) && lead_mean == pb_lead_us(sc) &&
+                  av_log_field(f, " alead_max_us=", &lead_max) && lead_max == pb_lead_us(sc),
+              "psmf-present: the summary gives the host queue lead the played blocks met");
     } else {
         CHECK(amatch == 0 && aunmeas == AV_AUDIO_BLOCKS - 2,
               "psmf-present: with no host queue every played block is unmeasured, none reads as zero lead");
-        CHECK(pb_is_na(f, " alat_mean_us=") && pb_is_na(f, " av_mean_us=") && pb_is_na(f, " drift_us="),
-              "psmf-present: unmeasured audio leaves the offsets and the drift unmeasured");
+        CHECK(pb_is_na(f, " alat_mean_us=") && pb_is_na(f, " av_mean_us=") && pb_is_na(f, " drift_us=") &&
+                  pb_is_na(f, " alead_mean_us=") && pb_is_na(f, " av_submit_mean_us="),
+              "psmf-present: unmeasured audio leaves the offsets, the lead and the drift unmeasured");
     }
     if (video) {
         CHECK(vdel == AV_PICTURES && vsuper == 1 && vpend == 1 && vevict == 0 && vnospan == 0,
@@ -4045,9 +4065,15 @@ static void pb_run(const PbScenario *sc, const char *name) {
                       av_log_field(f, " av_mean_us=", &avmean),
                   "psmf-present: the summary carries min, max, mean and drift of the A/V offset");
             if (sc->stretch_ppm == 0) {
-                CHECK(llabs(avmin - PB_AV_US) <= PB_AUDIO_TOL_US + 1 && llabs(avmax - PB_AV_US) <= PB_AUDIO_TOL_US + 1 &&
-                          llabs(avmean - PB_AV_US) <= PB_AUDIO_TOL_US + 1,
+                CHECK(llabs(avmin - pb_av_us(sc)) <= PB_AUDIO_TOL_US + 1 &&
+                          llabs(avmax - pb_av_us(sc)) <= PB_AUDIO_TOL_US + 1 &&
+                          llabs(avmean - pb_av_us(sc)) <= PB_AUDIO_TOL_US + 1,
                       "psmf-present: the A/V offset equals the authored interleave at the host boundaries");
+                long long avsub = 0;
+                CHECK(av_log_field(f, " av_submit_mean_us=", &avsub) &&
+                          llabs(avsub - PB_SUBMIT_AV_US) <= PB_AUDIO_TOL_US + 1,
+                      "psmf-present: at the guest boundaries the A/V offset is the authored interleave, "
+                      "whatever the host queue held");
                 CHECK(llabs(drift) <= 2 * PB_AUDIO_TOL_US,
                       "psmf-present: the A/V offset does not drift across the run");
             } else {
@@ -4085,6 +4111,10 @@ static void test_player_av_presentation_boundary(void) {
     pb_run(&in_step, "in-step regular channel");
     PbScenario packed = { 1, PB_FRAMES, 0, AV_LAYOUT_PACKED, 1 };
     pb_run(&packed, "in-step packed layout, Output2");
+    /* Twice the host queue: the heard offset (av_us) moves by the extra lead, the offset at the
+       guest boundaries (av_submit_us) does not (#279). */
+    PbScenario deep = { 1, 2 * PB_FRAMES, 0, AV_LAYOUT_SPLIT, 0 };
+    pb_run(&deep, "in-step, twice the host queue");
     PbScenario slow = { 1, PB_FRAMES, 10000, AV_LAYOUT_SPLIT, 0 };
     pb_run(&slow, "audio 1% slow");
     PbScenario no_queue = { 1, -1, 0, AV_LAYOUT_SPLIT, 0 };
