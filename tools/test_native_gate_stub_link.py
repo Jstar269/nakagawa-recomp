@@ -331,6 +331,11 @@ class TestRecorderClockSeam(unittest.TestCase):
     real videorec.c, not its standalone-selftest variant.
     """
 
+    _tmp: tempfile.TemporaryDirectory[str]
+    work: Path
+    exe: Path
+    build_error: str
+
     @classmethod
     def setUpClass(cls) -> None:
         cls._tmp = tempfile.TemporaryDirectory(prefix="videorec_clock_seam_")
@@ -362,19 +367,25 @@ class TestRecorderClockSeam(unittest.TestCase):
         record = json.loads((out / "record.json").read_text(encoding="utf-8"))
         return result, record
 
+    def _reason(self, record: dict[str, object]) -> str:
+        reason = record["reason"]
+        if not isinstance(reason, str):
+            self.fail(f"record.json's reason is not a string: {record!r}")
+        return reason
+
     def test_no_clock_refuses_because_no_scheduler_runs(self) -> None:
         result, record = self._run("none")
         self.assertIn("active=0", result.stdout)
         self.assertEqual(record["status"], "REFUSED")
-        self.assertIn("runs no scheduler", record["reason"])
+        self.assertIn("runs no scheduler", self._reason(record))
         self.assertIn("VIDEOREC: not recording: this program runs no scheduler", result.stderr)
 
     def test_a_paced_clock_refuses_for_the_clock(self) -> None:
         result, record = self._run("paced")
         self.assertIn("active=0", result.stdout)
         self.assertEqual(record["status"], "REFUSED")
-        self.assertIn("SR_DETERMINISTIC_CLOCK=1", record["reason"])
-        self.assertNotIn("runs no scheduler", record["reason"])
+        self.assertIn("SR_DETERMINISTIC_CLOCK=1", self._reason(record))
+        self.assertNotIn("runs no scheduler", self._reason(record))
 
     def test_a_deterministic_clock_starts_the_recording(self) -> None:
         result, record = self._run("deterministic")
