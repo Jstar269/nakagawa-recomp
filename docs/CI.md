@@ -394,9 +394,12 @@ each device pixel's own position, and so does its uv-edge-clamp case (also at sc
 device pixels outside a screen-aligned strip's or sprite's first and last pixel centres must show
 that edge pixel's 1x sample, with linear and nearest filtering and with repeat and clamp wrapping,
 while a sheared strip stays unclamped.
-Last, `gpu-coherence-selftest-snapbar-mutants` builds three broken variants of
+Then `gpu-coherence-selftest-snapbar-mutants` builds three broken variants of
 the destination-snapshot copy's barriers (`SR_GPU_SNAPBAR_MUTANT`), and the submit-batch case must
-fail each one with its own message. The job also runs
+fail each one with its own message. The same step then runs `vram-view-identity-selftest` (#314):
+the pause menu's VRAM viewer, run at a paused VBLANK, must leave later presented frames, guest
+memory and the GE state as a run without it does, and a mutant viewer that stores one byte must
+fail. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by

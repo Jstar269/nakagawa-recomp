@@ -189,7 +189,9 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("-name 'lvp_icd*.json'", text)
         self.assertIn('export VK_ICD_FILENAMES="$lvp_icd"', text)
         self.assertIn('xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11', text)
-        self.assertRegex(text, r"(?m)^\s+make CC=gcc gpu-coherence-selftest$")
+        # The VRAM viewer identity test (#314) needs the same device and window, so it runs in
+        # this step, after the coherence selftest.
+        self.assertRegex(text, r"(?m)^\s+make CC=gcc gpu-coherence-selftest vram-view-identity-selftest$")
         self.assertNotIn("continue-on-error", text)
         # Its only condition is the native_tools part that runs it; nothing can skip it there.
         self.assertEqual([line.strip() for line in step if line.strip().startswith("if:")],
