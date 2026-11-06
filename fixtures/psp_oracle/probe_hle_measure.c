@@ -80,6 +80,7 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_SAVEDATA_GETSIZE 104
 #define HLE_CASE_UTILITY_NONE 140
 #define HLE_CASE_STD_HANDLES 156
+#define HLE_CASE_AUDIO_REST 159
 
 #if PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS
 #define HLE_CAMPAIGN_ID "hle-kernel-status"
@@ -149,6 +150,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "hle-std-handles"
 #define HLE_TEST_ID "PSP-HLE-STDIO-001"
 #define HLE_LOG "host0:/hle_std_handles_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_AUDIO_REST
+#define HLE_CAMPAIGN_ID "hle-audio-rest"
+#define HLE_TEST_ID "PSP-HLE-AUDIO-REST-001"
+#define HLE_LOG "host0:/hle_audio_rest_log.txt"
 #else
 #error probe_hle_measure.c has no family for this PSP_ORACLE_CASE
 #endif
@@ -2290,6 +2295,129 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_STD_HANDLES */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_AUDIO_REST
+
+/* #279 (W-MEDIA-2): how much a regular audio channel still holds when sceAudioOutputBlocking
+   returns, in steady state. The runtime's release of a blocking output (#67) lets a caller run
+   two blocks ahead; this case measures what the console does.
+
+   For each channel size F of 1024, 2048 and 4096 frames, one stereo channel is reserved with
+   sceAudioChReserve(-1, F, PSP_AUDIO_FORMAT_STEREO) and fed HLE_AREST_BLOCKS blocking outputs
+   of the same F-frame buffer at volume 0x8000. Right after each return the probe reads
+   sceAudioGetChannelRestLen and sceAudioGetChannelRestLength and the system time. Nothing is
+   written to host0 between the outputs (a host0 write can take longer than a block and would
+   starve the channel): the values are kept in arrays and the records follow the run. After the
+   last output the probe polls sceAudioGetChannelRestLen every 1 ms, at most HLE_AREST_DRAIN_POLLS
+   times, until it reads 0, then releases the channel.
+
+   The buffer is a project-written ramp of amplitude 64 (of 32767), quiet on the speaker; no
+   game data.
+
+   Cells, per F (`audio-rest-<F>-...`):
+   - `-reserve` (3 words): the channel, F, the format. result: the channel.
+   - `-bNN`, NN = 00..31 (5 words): the time the call took (us), the time since the previous
+     return (us; for b00 the time since the reserve), RestLen and RestLength after the return,
+     the channel. result: what sceAudioOutputBlocking returned.
+   - `-drain` (4 words): the polls taken, RestLen at the last poll, the time from the last return
+     to that poll (us), what sceAudioChRelease returned. result: the release's return.
+   A reserve that fails gives SKIP for that F's other cells; nothing else is called. */
+
+#define HLE_AREST_BLOCKS 32u
+#define HLE_AREST_MAX_FRAMES 4096u
+#define HLE_AREST_AMPLITUDE 64
+#define HLE_AREST_DRAIN_POLLS 500u
+#define HLE_AREST_DRAIN_POLL_US 1000u
+
+static int16_t s_hle_arest_ramp[HLE_AREST_MAX_FRAMES * 2u] __attribute__((aligned(64)));
+static uint32_t s_hle_arest_rc[HLE_AREST_BLOCKS];
+static uint32_t s_hle_arest_call_us[HLE_AREST_BLOCKS];
+static uint32_t s_hle_arest_gap_us[HLE_AREST_BLOCKS];
+static uint32_t s_hle_arest_len[HLE_AREST_BLOCKS];
+static uint32_t s_hle_arest_length[HLE_AREST_BLOCKS];
+
+/* Written through the uncached mirror (address | 0x40000000), so the audio DMA reads it
+   without a cache write-back. */
+static void hle_arest_fill(void)
+{
+    volatile int16_t *ramp =
+        (volatile int16_t *)((uintptr_t)s_hle_arest_ramp | 0x40000000u);
+    for (uint32_t i = 0; i < HLE_AREST_MAX_FRAMES; i++) {
+        const int16_t v = (int16_t)((int)(i % 128u) - HLE_AREST_AMPLITUDE);
+        ramp[2u * i] = v;
+        ramp[2u * i + 1u] = v;
+    }
+}
+
+static void hle_arest_size(uint32_t frames)
+{
+    static char name[48];
+    static char step[48];
+    snprintf(step, sizeof(step), "audio-rest-%u-run", (unsigned int)frames);
+    hle_step(step);
+    const int ch = sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, (int)frames, PSP_AUDIO_FORMAT_STEREO);
+    uint32_t prev = sceKernelGetSystemTimeLow();
+    const uint32_t reserve[3] = {(uint32_t)ch, frames, (uint32_t)PSP_AUDIO_FORMAT_STEREO};
+    if (ch >= 0) {
+        for (uint32_t b = 0; b < HLE_AREST_BLOCKS; b++) {
+            const uint32_t start = sceKernelGetSystemTimeLow();
+            const int rc = sceAudioOutputBlocking(ch, PSP_AUDIO_VOLUME_MAX, s_hle_arest_ramp);
+            const uint32_t end = sceKernelGetSystemTimeLow();
+            s_hle_arest_len[b] = (uint32_t)sceAudioGetChannelRestLen(ch);
+            s_hle_arest_length[b] = (uint32_t)sceAudioGetChannelRestLength(ch);
+            s_hle_arest_rc[b] = (uint32_t)rc;
+            s_hle_arest_call_us[b] = end - start;
+            s_hle_arest_gap_us[b] = end - prev;
+            prev = end;
+        }
+    }
+    uint32_t polls = 0;
+    int rest = 0;
+    uint32_t drain_us = 0;
+    int release_rc = 0;
+    if (ch >= 0) {
+        rest = sceAudioGetChannelRestLen(ch);
+        while (rest > 0 && polls < HLE_AREST_DRAIN_POLLS) {
+            sceKernelDelayThread(HLE_AREST_DRAIN_POLL_US);
+            polls++;
+            rest = sceAudioGetChannelRestLen(ch);
+        }
+        drain_us = sceKernelGetSystemTimeLow() - prev;
+        release_rc = sceAudioChRelease(ch);
+    }
+
+    snprintf(name, sizeof(name), "audio-rest-%u-reserve", (unsigned int)frames);
+    hle_record(name, ch < 0 ? "FAIL" : "PASS", (uint32_t)ch, reserve, 3);
+    for (uint32_t b = 0; b < HLE_AREST_BLOCKS; b++) {
+        snprintf(name, sizeof(name), "audio-rest-%u-b%02u", (unsigned int)frames, (unsigned int)b);
+        if (ch < 0) {
+            hle_skip(name, 5);
+            continue;
+        }
+        const uint32_t out[5] = {s_hle_arest_call_us[b], s_hle_arest_gap_us[b], s_hle_arest_len[b],
+                                 s_hle_arest_length[b], (uint32_t)ch};
+        hle_record(name, "PASS", s_hle_arest_rc[b], out, 5);
+    }
+    snprintf(name, sizeof(name), "audio-rest-%u-drain", (unsigned int)frames);
+    if (ch < 0) {
+        hle_skip(name, 4);
+        return;
+    }
+    const uint32_t drain[4] = {polls, (uint32_t)rest, drain_us, (uint32_t)release_rc};
+    hle_record(name, "PASS", (uint32_t)release_rc, drain, 4);
+}
+
+static int hle_run(void)
+{
+    hle_arest_fill();
+    hle_arest_size(1024u);
+    hle_arest_size(2048u);
+    hle_arest_size(4096u);
+    return 1;
+}
+
+#endif /* HLE_CASE_AUDIO_REST */
 
 /* ------------------------------------------------------------------------- */
 

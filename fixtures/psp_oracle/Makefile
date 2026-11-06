@@ -212,6 +212,9 @@ CASE_ID = 140
 # 156: #341's standard handles, a write to each and a write after closing Stdout.
 else ifeq ($(CASE),hle-std-handles)
 CASE_ID = 156
+# 159: #279's audio channel rest length at each blocking-output return (1024, 2048, 4096).
+else ifeq ($(CASE),hle-audio-rest)
+CASE_ID = 159
 # 106-108: the HLE issue cells (probe_hle_issues.c). 106 is the #356 model-getter and
 # #326 vrnd carry / vscmp batch; 107 the #325 interrupt and timer delivery cells; 108 the
 # #326 VFPU form words (vh2f, vuc2i, vsocp, vwbn, vrndf1/2).
@@ -542,6 +545,9 @@ TARGET = $(BUILD_DIR)/hle_utility_none
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_utility_imports.o
 else ifeq ($(CASE),hle-std-handles)
 TARGET = $(BUILD_DIR)/hle_std_handles
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-audio-rest)
+TARGET = $(BUILD_DIR)/hle_audio_rest
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 # HLE issue cells: their own source, which installs and removes interrupt and timer
 # handlers (107) and reaches a kernel getter through the kernel bridge (106), so they

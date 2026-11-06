@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 136)
+        self.assertEqual(len(routes), 137)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
-                         | {150, 151, 152, 153, 154, 155, 156, 157, 158},
+                         | {150, 151, 152, 153, 154, 155, 156, 157, 158, 159},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -5168,6 +5168,8 @@ class HleMeasureProbeTests(unittest.TestCase):
     LATER_FAMILIES = (
         ("hle-std-handles", 156, "hle_std_handles", None,
          "HLE_CASE_STD_HANDLES", "PSP-HLE-STDIO-001"),
+        ("hle-audio-rest", 159, "hle_audio_rest", None,
+         "HLE_CASE_AUDIO_REST", "PSP-HLE-AUDIO-REST-001"),
     )
     ALL_FAMILIES = FAMILIES + SINGLE_LAUNCH_FAMILIES + TABLE_FAMILIES + LATER_FAMILIES
     # Every family block: file -> (library, version word, {function: NID}). The
@@ -5240,13 +5242,16 @@ class HleMeasureProbeTests(unittest.TestCase):
         "sceAudioOutput2Reserve", "sceAudioOutput2Release", "sceDisplayWaitVblankStart",
         "sceKernelVolatileMemTryLock", "sceKernelVolatileMemUnlock",
         "sceKernelStdin", "sceKernelStdout", "sceKernelStderr",
+        "sceAudioChReserve", "sceAudioChRelease", "sceAudioOutputBlocking",
+        "sceAudioGetChannelRestLen", "sceAudioGetChannelRestLength",
     })
     MEASURED_CALL_RE = re.compile(
         r"\b(sceKernel(?:ReferSystemStatus|ReferFplStatus|CreateFpl|TryAllocateFpl|FreeFpl|"
         r"DeleteFpl|CreateVTimer|ReferVTimerStatus|GetVTimerTime|StartVTimer|StopVTimer|"
         r"DeleteVTimer|DelayThread|GetVTimerBase|GetSystemTimeWide|CreateVpl|TryAllocateVpl|"
         r"FreeVpl|DeleteVpl|SetAlarm|CancelAlarm|SetVTimerHandler)|"
-        r"sceAudio(?:SRC(?:ChReserve|ChRelease|OutputBlocking)|Output2(?:Reserve|Release))|"
+        r"sceAudio(?:SRC(?:ChReserve|ChRelease|OutputBlocking)|Output2(?:Reserve|Release)|"
+        r"Ch(?:Reserve|Release)|OutputBlocking|GetChannelRestLen(?:gth)?)|"
         r"scePowerGet\w+|sceHprmIs\w+|sceCtrl\w*Latch|"
         r"sceUtilityGetSystemParam\w+|sceUtilitySavedataInitStart|sceIoGetstat|"
         r"sceGeEdram\w+|sceKernelStd(?:in|out|err))\s*\("

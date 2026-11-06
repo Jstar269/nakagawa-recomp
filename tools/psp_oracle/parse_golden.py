@@ -1947,6 +1947,22 @@ _register_campaign_probe(
     tuple(row for row, _ in HLE_STD_HANDLES_ROWS), dict(HLE_STD_HANDLES_ROWS),
 )
 
+# hle-audio-rest (159, probe_hle_measure.c): #279's rest length after each of 32 blocking
+# outputs on a 1024-, 2048- and 4096-frame stereo channel, then the drain and the release.
+HLE_AUDIO_REST_FRAMES = (1024, 2048, 4096)
+HLE_AUDIO_REST_BLOCKS = 32
+HLE_AUDIO_REST_ROWS = tuple(
+    row
+    for frames in HLE_AUDIO_REST_FRAMES
+    for row in ((f"audio-rest-{frames}-reserve", 3),
+                *((f"audio-rest-{frames}-b{block:02d}", 5) for block in range(HLE_AUDIO_REST_BLOCKS)),
+                (f"audio-rest-{frames}-drain", 4))
+)
+_register_campaign_probe(
+    "hle-audio-rest", "PSP-HLE-AUDIO-REST-001",
+    tuple(row for row, _ in HLE_AUDIO_REST_ROWS), dict(HLE_AUDIO_REST_ROWS),
+)
+
 # io-umd-eof (137, probe_kernel_semantics.c): #1380 on the UMD, read-only: the drive state
 # before and after; for two disc0: files (a = UMD_DATA.BIN, b = PSP_GAME/PARAM.SFO) the open
 # and size, seeks past the end, reads past and across the end, negative seeks and seeks at and
