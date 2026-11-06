@@ -1219,6 +1219,14 @@ UPDATE_CHECK_REPOSITORY = "Jstar269/nakagawa-recomp"
 UPDATE_CHECK_HOSTS = frozenset({
     "api.github.com", "github.com", "release-assets.githubusercontent.com",
 })
+# RetroAchievements (#1316; owner decision 2026-11-06): opt-in and off by default, and it
+# reaches the RetroAchievements servers only. The bridge (src/core/nk_achievements.c) holds no
+# network code: it passes rc_client's requests to a caller's transport only for this host, and
+# nk_achievements.h names it. Neither the bridge nor the vendored rcheevos may use a network API;
+# the transport that carries them is a new egress and gets its own line above when it ships.
+ACHIEVEMENTS_HOST = "retroachievements.org"
+ACHIEVEMENTS_NO_NETWORK_PATHS = ("src/core/nk_achievements.c", "src/core/nk_achievements.h")
+ACHIEVEMENTS_VENDORED_TREE = "third_party/rcheevos"
 # The only shipped callers of the native transport: the prerequisite bootstrap (in
 # package_builder.c itself) and the update check. Another caller is a new egress.
 NATIVE_TRANSPORT_CALLERS = frozenset({
@@ -1299,6 +1307,32 @@ class TestNetworkEgressAllowlist(unittest.TestCase):
         setup = (REPO_ROOT / "docs" / "SETUP.md").read_text(encoding="utf-8")
         for host in sorted(UPDATE_CHECK_HOSTS):
             self.assertIn(f"`{host}`", setup)
+
+    def test_achievements_name_only_the_retroachievements_server(self) -> None:
+        header = (REPO_ROOT / "src" / "core" / "nk_achievements.h").read_text(encoding="utf-8")
+        host = re.search(r'#define NK_ACH_HOST\s+"([^"]*)"', header)
+        prefix = re.search(r'#define NK_ACH_URL_PREFIX\s+"https://"\s+NK_ACH_HOST\s+"/"', header)
+        self.assertIsNotNone(host, "NK_ACH_HOST")
+        assert host is not None
+        self.assertEqual(host.group(1), ACHIEVEMENTS_HOST)
+        self.assertIsNotNone(prefix, "NK_ACH_URL_PREFIX must be https://NK_ACH_HOST/")
+        # No other host literal in the bridge: the gate is the one place a host is named.
+        bridge = (REPO_ROOT / "src" / "core" / "nk_achievements.c").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r"https?://[A-Za-z0-9.-]+", bridge), [])
+        offenders = []
+        for rel in ACHIEVEMENTS_NO_NETWORK_PATHS:
+            match = NETWORK_EGRESS_PATTERN.search((REPO_ROOT / rel).read_text(encoding="utf-8"))
+            if match:
+                offenders.append(f"{rel}: {match.group(0).strip()}")
+        vendored = sorted((REPO_ROOT / ACHIEVEMENTS_VENDORED_TREE).rglob("*"))
+        self.assertTrue(any(path.suffix == ".c" for path in vendored), "rcheevos is vendored")
+        for path in vendored:
+            if path.is_file() and path.suffix in (".c", ".h"):
+                text = path.read_text(encoding="utf-8", errors="replace")
+                match = NETWORK_EGRESS_PATTERN.search(text)
+                if match:
+                    offenders.append(f"{path.relative_to(REPO_ROOT).as_posix()}: {match.group(0)}")
+        self.assertEqual(offenders, [], "the achievements bridge and rcheevos open no connection")
 
     def test_only_the_known_callers_use_the_native_transport(self) -> None:
         callers = set()
