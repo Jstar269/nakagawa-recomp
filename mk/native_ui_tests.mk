@@ -23,7 +23,7 @@ native-core-objects-player:
 
 # Test-binary recipes, shared by the standalone *-test-bin targets and native-core-tests.
 define PLAYER_STATE_TEST_BIN_CMD
-$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -DNK_SAVES_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 	$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c src/player/setup_staging.c \
 	tests/native/native_test_isolation.c tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_player_state$(EXE_EXT)
 endef
@@ -419,6 +419,9 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 	$(BUILD_ROOT_RUN)/test_disc_expand$(EXE_EXT)
 	$(CC) $(NC_CFLAGS_CORE) -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) 		tests/native/native_test_isolation.c tests/native/test_disc_verify.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_disc_verify$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_disc_verify$(EXE_EXT)
+	$(CC) $(NC_CFLAGS_CORE) -Wpedantic -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
+		tests/native/native_test_isolation.c tests/native/test_nk_zip.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_nk_zip$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_nk_zip$(EXE_EXT)
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" tests/native/test_safe_math.c \
 		-o $(BUILD_ROOT)/test_safe_math$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_safe_math$(EXE_EXT)

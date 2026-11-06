@@ -34,7 +34,10 @@ void player_host_show_picker(PlayerHostPick what, SDL_Window *window,
     };
     /* The fonts import shows the .pgf files themselves, which a folder picker
        hides, so the user can see they are in the right folder. */
-    if (what == PLAYER_HOST_PICK_FONTS) {
+    if (what == PLAYER_HOST_PICK_SAVE) {
+        /* A save is a folder (SAVEDATA/<ID>), so the folder picker. */
+        SDL_ShowOpenFolderDialog(callback, userdata, window, start_folder, false);
+    } else if (what == PLAYER_HOST_PICK_FONTS) {
         SDL_ShowOpenFileDialog(callback, userdata, window, font_filters, 1,
                                start_folder, true);
     } else {
