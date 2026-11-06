@@ -213,6 +213,11 @@ BUILD_RECORD_NAME = "build.json"
 
 
 def identify_build(profile: TitleProfile, executable_name: Optional[str], executable_sha256: Optional[str]) -> dict:
+    """Name the build against ``profile.builds``; see identify_build_in."""
+    return identify_build_in(profile.builds, executable_name, executable_sha256)
+
+
+def identify_build_in(builds, executable_name: Optional[str], executable_sha256: Optional[str]) -> dict:
     """Name the executable build a copy holds against the builds its title records (#2140).
 
     ``status`` is one of:
@@ -228,7 +233,7 @@ def identify_build(profile: TitleProfile, executable_name: Optional[str], execut
 
     A digest is not game data, so it may appear in the record and in messages.
     """
-    listed = [dict(build) for build in profile.builds]
+    listed = [dict(build) for build in builds]
     build: dict = {
         "executable": executable_name or "",
         "executable_sha256": executable_sha256 or "",
@@ -251,7 +256,15 @@ def identify_build(profile: TitleProfile, executable_name: Optional[str], execut
     return build
 
 
-def _unlisted_build_message(profile: TitleProfile, build: dict) -> str:
+def known_bad_build_message(title_name: str, build: dict) -> str:
+    return (
+        f"This copy of {title_name} holds a build Nakagawa refuses"
+        f" ({build['label']}): {build['reason']}"
+    )
+
+
+def unlisted_build_message(title_name: str, build: dict) -> str:
+    """The sentence for an executable the title does not list; it never cites a retail game's bytes."""
     supported = build["supported_builds"]
     if build["executable_sha256"]:
         found = f"This copy's executable (SHA-256 {build['executable_sha256'][:16]}...) is not a build"
@@ -263,9 +276,13 @@ def _unlisted_build_message(profile: TitleProfile, build: dict) -> str:
         else " The supported builds are: " + "; ".join(supported) + "." if supported else ""
     )
     return (
-        f"{found} Nakagawa has recorded for {profile.name}. It is imported as experimental, "
+        f"{found} Nakagawa has recorded for {title_name}. It is imported as experimental, "
         f"and the title's recorded addresses are not applied to it.{known}"
     )
+
+
+def _unlisted_build_message(profile: TitleProfile, build: dict) -> str:
+    return unlisted_build_message(profile.name, build)
 
 
 def _write_build_record(directory: Path, build: dict) -> None:
@@ -481,10 +498,7 @@ class PreparationEngine:
                 iso_executable_sha256(iso, boot_executable_source) if boot_executable_source else None,
             )
             if build["status"] == "known-bad":
-                message = (
-                    f"This copy of {profile.name} holds a build Nakagawa refuses"
-                    f" ({build['label']}): {build['reason']}"
-                )
+                message = known_bad_build_message(profile.name, build)
                 emit(PrepStage.FAILED, message, severity=EventSeverity.ERROR)
                 return PreparationResult(
                     success=False,

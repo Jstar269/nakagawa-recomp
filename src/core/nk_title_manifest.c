@@ -52,6 +52,7 @@ static int nk_ascii_casecmp(const char *a, const char *b) {
 /* Mirrors MAX_TITLE_MODULES in tools/title_manifest.py: the disc module-discovery cap. */
 #define MAX_MODULES 256
 #define MAX_COMPAT_DISC_IDS 16
+#define MAX_DISC_BUILDS 16
 #define MAX_LOOSE_CONTENT_ROOTS 16
 #define MAX_LOOSE_CONTENT_EXCLUDES 2
 #define NK_MANIFEST_MAX_OVERLAYS 8
@@ -97,6 +98,12 @@ typedef struct {
     NkModuleDefinition modules[MAX_MODULES];
     char module_names[MAX_MODULES][129];
     int module_count;
+    /* disc.builds (#2140), kept as text so a by-value copy of the slot stays valid. */
+    char build_sha256[MAX_DISC_BUILDS][65];
+    char build_status[MAX_DISC_BUILDS][16];
+    char build_label[MAX_DISC_BUILDS][65];
+    char build_reason[MAX_DISC_BUILDS][201];
+    int build_count;
     NkTitleEntry entry;
 } OverlayStorageSlot;
 
@@ -267,8 +274,6 @@ static bool is_build_text(const char *s, size_t max) {
     }
     return true;
 }
-
-#define MAX_DISC_BUILDS 16
 
 static bool check_object_keys(const JsonNode *node, const char *path,
                               const char * const *allowed_keys,
@@ -1560,6 +1565,25 @@ static void manifest_build_slot(const ManifestParse *mp, OverlayStorageSlot *out
                 }
             }
             out->compat_id_ptrs[c_count] = NULL;
+        }
+    }
+
+    if (mp->disc_node) {
+        JsonNode *builds_node = obj_get(mp->disc_node, "builds");
+        if (builds_node && builds_node->type == JSON_ARRAY) {
+            for (size_t b = 0; b < builds_node->u.arr.count && b < MAX_DISC_BUILDS; b++) {
+                JsonNode *item = builds_node->u.arr.items[b];
+                JsonNode *reason = obj_get(item, "reason");
+                snprintf(out->build_sha256[b], sizeof(out->build_sha256[b]), "%s",
+                         obj_get(item, "executable_sha256")->u.str_val);
+                snprintf(out->build_status[b], sizeof(out->build_status[b]), "%s",
+                         obj_get(item, "status")->u.str_val);
+                snprintf(out->build_label[b], sizeof(out->build_label[b]), "%s",
+                         obj_get(item, "label")->u.str_val);
+                snprintf(out->build_reason[b], sizeof(out->build_reason[b]), "%s",
+                         reason ? reason->u.str_val : "");
+                out->build_count = (int)b + 1;
+            }
         }
     }
 
@@ -4912,6 +4936,156 @@ bool nk_title_manifest_experimental_profile_executable(
             error, sizeof(error))) return false;
     snprintf(out_leaf, out_leaf_size, "%s", leaf);
     return true;
+}
+
+/* ---- Executable builds (#2140) ----------------------------------------------
+ * A title's runtime_bindings are addresses inside one exact executable. The
+ * manifest may list the builds it knows by the SHA-256 of the executable file
+ * as the disc image holds it; this names the build a user's disc holds. */
+
+typedef struct {
+    char sha256[65];
+    char status[16];
+    char label[65];
+    char reason[201];
+} BuildRow;
+
+/* The builds recorded under a disc ID: the latest overlay naming the ID wins
+   (a user's manifest replaces the built-in one), else the built-in table. */
+static int title_builds_for_disc_id(const char *disc_id, BuildRow rows[MAX_DISC_BUILDS]) {
+    int count = 0;
+    nk_title_catalog_lock();
+    for (int s = s_overlay_slot_count - 1; s >= 0; s--) {
+        const OverlayStorageSlot *slot = &s_overlay_slots[s];
+        bool names_id = strcmp(slot->primary_disc_id, disc_id) == 0;
+        for (int c = 0; !names_id && slot->compat_id_ptrs[c]; c++) {
+            names_id = strcmp(slot->compat_ids_storage[c], disc_id) == 0;
+        }
+        if (!names_id) continue;
+        for (int b = 0; b < slot->build_count; b++) {
+            snprintf(rows[b].sha256, sizeof(rows[b].sha256), "%s", slot->build_sha256[b]);
+            snprintf(rows[b].status, sizeof(rows[b].status), "%s", slot->build_status[b]);
+            snprintf(rows[b].label, sizeof(rows[b].label), "%s", slot->build_label[b]);
+            snprintf(rows[b].reason, sizeof(rows[b].reason), "%s", slot->build_reason[b]);
+        }
+        count = slot->build_count;
+        nk_title_catalog_unlock();
+        return count;
+    }
+    {
+        const NkTitleBuild *builtin = NULL;
+        int builtin_count = nk_title_catalog_builds(disc_id, &builtin);
+        for (int b = 0; b < builtin_count && b < MAX_DISC_BUILDS; b++) {
+            snprintf(rows[b].sha256, sizeof(rows[b].sha256), "%s", builtin[b].executable_sha256);
+            snprintf(rows[b].status, sizeof(rows[b].status), "%s", builtin[b].status);
+            snprintf(rows[b].label, sizeof(rows[b].label), "%s", builtin[b].label);
+            snprintf(rows[b].reason, sizeof(rows[b].reason), "%s", builtin[b].reason);
+            count = b + 1;
+        }
+    }
+    nk_title_catalog_unlock();
+    return count;
+}
+
+/* SHA-256 of PSP_GAME/SYSDIR/<name> as stored in the image, as 64 lowercase hex digits. */
+static bool iso_executable_sha256_hex(const char *iso_path, const char *name, char out[65]) {
+    char path[64];
+    uint32_t lba = 0;
+    uint32_t size = 0;
+    bool is_dir = false;
+    uint8_t buffer[65536];
+    uint8_t digest[32];
+    NkSha256 sha;
+    NkIsoReader *reader;
+    bool ok = false;
+    if (!iso_path || !name ||
+        snprintf(path, sizeof(path), "PSP_GAME/SYSDIR/%s", name) >= (int)sizeof(path)) {
+        return false;
+    }
+    reader = nk_iso_reader_open(iso_path);
+    if (!reader) return false;
+    if (nk_iso_reader_lookup(reader, path, &lba, &size, &is_dir) == 0 && !is_dir && size > 0) {
+        uint64_t offset = 0;
+        nk_sha256_init(&sha);
+        ok = true;
+        while (offset < size) {
+            uint32_t count = size - offset < sizeof(buffer) ? (uint32_t)(size - offset)
+                                                            : (uint32_t)sizeof(buffer);
+            if (nk_iso_reader_read(reader, lba, offset, buffer, count) != (int)count) {
+                ok = false;
+                break;
+            }
+            nk_sha256_update(&sha, buffer, count);
+            offset += count;
+        }
+        if (ok) {
+            nk_sha256_finish(&sha, digest);
+            for (int i = 0; i < 32; i++) snprintf(out + i * 2, 3, "%02x", digest[i]);
+        }
+    }
+    nk_iso_reader_close(reader);
+    return ok;
+}
+
+bool nk_title_manifest_identify_build(const char *disc_id, const char *iso_path,
+                                      const char *executable_name, NkBuildIdentity *out) {
+    BuildRow rows[MAX_DISC_BUILDS];
+    char normalized[10];
+    int count;
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!nk_manifest_normalize_disc_id(disc_id, normalized)) return false;
+    count = title_builds_for_disc_id(normalized, rows);
+    if (count == 0) {
+        out->status = NK_BUILD_UNTRACKED;
+        return true;
+    }
+    snprintf(out->executable, sizeof(out->executable), "%s", executable_name ? executable_name : "");
+    if (!iso_path || !executable_name ||
+        !iso_executable_sha256_hex(iso_path, executable_name, out->sha256)) {
+        out->sha256[0] = '\0';
+    }
+    for (int b = 0; b < count; b++) {
+        if (strcmp(rows[b].status, "supported") == 0) {
+            size_t used = strlen(out->supported);
+            snprintf(out->supported + used, sizeof(out->supported) - used, "%s%s",
+                     used ? "; " : "", rows[b].label);
+        }
+        if (out->sha256[0] && strcmp(rows[b].sha256, out->sha256) == 0) {
+            snprintf(out->label, sizeof(out->label), "%s", rows[b].label);
+            snprintf(out->reason, sizeof(out->reason), "%s", rows[b].reason);
+            out->status = strcmp(rows[b].status, "known-bad") == 0 ? NK_BUILD_KNOWN_BAD
+                        : strcmp(rows[b].status, "experimental") == 0 ? NK_BUILD_EXPERIMENTAL
+                        : NK_BUILD_SUPPORTED;
+        }
+    }
+    if (out->status == NK_BUILD_UNTRACKED) out->status = NK_BUILD_UNLISTED;
+    return true;
+}
+
+void nk_title_manifest_describe_build(const NkBuildIdentity *id, char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!id) return;
+    switch (id->status) {
+    case NK_BUILD_SUPPORTED:
+        snprintf(out, out_size, "Build: %s (supported).", id->label);
+        break;
+    case NK_BUILD_EXPERIMENTAL:
+        snprintf(out, out_size, "Build: %s (experimental).", id->label);
+        break;
+    case NK_BUILD_KNOWN_BAD:
+        snprintf(out, out_size, "Build: %s (refused). %s", id->label, id->reason);
+        break;
+    case NK_BUILD_UNLISTED:
+        snprintf(out, out_size,
+                 "This copy's executable is not a build Nakagawa has recorded for this game, "
+                 "so it runs as experimental and the game's recorded addresses are not applied.%s%s",
+                 id->supported[0] ? " Supported build: " : "", id->supported);
+        break;
+    default:
+        break;
+    }
 }
 
 static bool package_catalog_identity_matches(const char *disc_id,

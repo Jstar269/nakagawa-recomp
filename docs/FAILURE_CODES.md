@@ -107,6 +107,7 @@ The **Where** column of each table names the places a code can appear:
 
 | Code | Where | Meaning |
 | --- | --- | --- |
+| `BUILD_KNOWN_BAD` | staging | The disc's executable is a build the title's manifest marks known-bad; the manifest's reason is in the message. |
 | `DISC_FILES_STAGE_FAILED` | report | The game's files on the disc could not be staged; the output says why. |
 | `EXECUTABLE_LOAD_BINDING_REQUIRED` | route | A relocatable executable has no load address bound to it. |
 | `EXPERIMENTAL_CODEGEN_PROFILE_MISSING` | route | An experimental title's profile has no `codegen_profile` setting and is not the player's untouched default profile. |

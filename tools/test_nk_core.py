@@ -469,6 +469,59 @@ class NkCoreTests(unittest.TestCase):
         self.assertIn("INSPECTING_ISO", stages)
         self.assertIn("READY", stages)
 
+    def test_package_build_applies_the_executable_build_to_the_titles_bindings(self) -> None:
+        """A build the manifest marks known-bad stops the build, and an unlisted build is built
+        without the title's runtime_bindings (#2140)."""
+        import hashlib
+
+        from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
+
+        elf = build_plain_mips_elf()
+        iso_file = self.temp_dir / "bound.iso"
+        create_test_iso_with_executables(iso_file, elf, disc_id="UCUS98701")
+        manifest = title_manifest.validate_manifest(
+            json.loads(
+                (Path(__file__).resolve().parent.parent / "assets" / "titles" / "hst-ucus98701.json")
+                .read_text(encoding="utf-8")
+            )
+        )
+        self.assertIn("runtime_bindings", manifest)
+        digest = hashlib.sha256(elf).hexdigest()
+
+        def with_builds(*builds: dict) -> dict:
+            copy = json.loads(json.dumps(manifest))
+            copy["disc"]["builds"] = list(builds)
+            return dict(title_manifest.validate_manifest(copy))
+
+        class Reporter:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, str, str]] = []
+
+            def report(self, stage: str, status: str, message: str, *args, **kwargs) -> None:
+                self.events.append((stage, status, message))
+
+        listed = {"executable_sha256": digest, "status": "supported", "label": "DISC_VERSION 1.00"}
+        reporter = Reporter()
+        kept = nk_cli._apply_executable_build(iso_file, "EBOOT.BIN", with_builds(listed), reporter)
+        self.assertIn("runtime_bindings", kept)
+        self.assertEqual(reporter.events, [])
+
+        untracked = nk_cli._apply_executable_build(iso_file, "EBOOT.BIN", manifest, reporter)
+        self.assertIn("runtime_bindings", untracked)
+
+        other = {"executable_sha256": "1" * 64, "status": "supported", "label": "DISC_VERSION 1.01"}
+        unbound = nk_cli._apply_executable_build(iso_file, "EBOOT.BIN", with_builds(other), reporter)
+        self.assertNotIn("runtime_bindings", unbound)
+        self.assertEqual(unbound["disc"]["builds"][0]["label"], "DISC_VERSION 1.01")
+        self.assertEqual(reporter.events[0][:2], ("preflight", "WARN"))
+        self.assertIn("not applied", reporter.events[0][2])
+        self.assertIn("DISC_VERSION 1.01", reporter.events[0][2])
+
+        bad = dict(listed, status="known-bad", reason="A patched executable; its addresses differ.")
+        with self.assertRaises(nk_cli.PackageBuildError) as raised:
+            nk_cli._apply_executable_build(iso_file, "EBOOT.BIN", with_builds(bad), reporter)
+        self.assertIn("addresses differ", str(raised.exception))
+
     def test_preparation_names_a_pbp_package_boundary(self) -> None:
         """A PBP package reaches the caller as a named boundary, not PREPARATION_FAILED."""
         from test_iso_parity import build_pbp_package

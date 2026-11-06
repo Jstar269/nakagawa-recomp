@@ -382,6 +382,57 @@ class TitleManifestParityTests(unittest.TestCase):
                 self.assertFalse(py_ok, f"Python accepted {label}: {py_message}")
                 self.assertFalse(c_ok, f"Native accepted {label}: {c_message}")
 
+    def test_build_identity_native_matches_python(self):
+        """The native identifier names the build a disc holds as the Python prep engine does (#2140)."""
+        import hashlib
+
+        from nk_core.prep_engine import identify_build_in
+        from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
+
+        elf = build_plain_mips_elf()
+        digest = hashlib.sha256(elf).hexdigest()
+        manifest = json.loads(
+            (ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
+        )
+        manifest["kind"] = "retail"
+        manifest.pop("profile_zero", None)
+        listed = {"executable_sha256": digest, "status": "supported", "label": "DISC_VERSION 1.00"}
+        other = {"executable_sha256": "1" * 64, "status": "supported", "label": "DISC_VERSION 1.01"}
+        bad = {"executable_sha256": digest, "status": "known-bad", "label": "patched copy",
+               "reason": "A patched executable; its addresses differ."}
+        cases = [
+            ("untracked", None, "", ""),
+            ("supported", [listed], "DISC_VERSION 1.00", "(supported)"),
+            ("experimental", [dict(listed, status="experimental")], "DISC_VERSION 1.00", "(experimental)"),
+            ("known-bad", [bad], "patched copy", "addresses differ"),
+            ("unlisted", [other], "", "Supported build: DISC_VERSION 1.01"),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            iso = Path(temporary) / "disc.iso"
+            create_test_iso_with_executables(iso, elf, disc_id="TEST00001")
+            path = Path(temporary) / "builds.json"
+            for want, builds, label, fragment in cases:
+                disc = {"id": "TEST00001", "region": "OTHER", "revision_policy": "exact-disc-id"}
+                if builds is not None:
+                    disc["builds"] = builds
+                manifest["disc"] = disc
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                result = subprocess.run(
+                    [str(self.native_exe), "--identify-build", str(path), str(iso), "EBOOT.BIN"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, f"{want}: {result.stdout}{result.stderr}")
+                status, found_label, sha, text = result.stdout.strip().split("|", 3)
+                self.assertEqual(status, want)
+                self.assertEqual(found_label, label)
+                self.assertIn(fragment, text)
+                if builds is not None:
+                    self.assertEqual(sha, digest)
+                    self.assertEqual(identify_build_in(builds, "EBOOT.BIN", sha)["status"],
+                                     "supported" if want == "supported" else
+                                     "experimental" if want == "experimental" else
+                                     "known-bad" if want == "known-bad" else "unlisted")
+
     def test_hostile_mutations_parity(self):
         """Both parsers must fail closed on hostile mutations."""
         valid_json = {

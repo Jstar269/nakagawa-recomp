@@ -183,6 +183,16 @@ executable locally and writes the result to `build.json` in the title's private 
 | a digest not in a non-empty list | recorded as `unlisted`: experimental, and the title's runtime bindings are not applied |
 | a title with no `builds` list | recorded as `untracked`: neither confirmed nor questioned |
 
+The same check runs where the build happens and where the user looks:
+
+- `build-package` (and the player's BUILD PACKAGE) hashes the disc's executable again. A `known-bad`
+  build stops the build with its reason. An unlisted build is built without the manifest's
+  `runtime_bindings` and `required_runtime_bindings`, with a warning that names the supported
+  builds, so another build's addresses are never applied.
+- The game card gets a "Program version" row for a title that lists builds (`GAME_BUILD`, from
+  `nk_title_manifest_identify_build`): Ready with the build's label, "Not recorded" for an unlisted
+  build, and "Can't use" (it blocks Play) for a known-bad one. A title that lists no builds gets no row.
+
 For an unlisted build, `tools/binding_carry.py` (above) can propose bindings for review; once they
 are reviewed, the build becomes a new entry. Adding the entry for a title the maintainer owns is a
 private step.

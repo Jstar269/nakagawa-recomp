@@ -155,6 +155,34 @@ bool nk_title_manifest_read_unbound_experimental_profile(
  * no selected executable; a later build with a user-supplied decrypted
  * EBOOT.elf rewrites the profile to bind EBOOT.BIN, and the library entry
  * adopts it from here (#1276). */
+/* Which build of its executable a user's disc holds, against the builds the
+ * title's manifest records under disc.builds (#2140). The digest is the
+ * SHA-256 of PSP_GAME/SYSDIR/<executable_name> as the image stores it. */
+typedef enum {
+    NK_BUILD_UNTRACKED = 0,   /* the title records no builds: neither confirmed nor questioned */
+    NK_BUILD_SUPPORTED,
+    NK_BUILD_EXPERIMENTAL,
+    NK_BUILD_KNOWN_BAD,
+    NK_BUILD_UNLISTED         /* the title records builds and this copy matches none */
+} NkBuildStatus;
+
+typedef struct {
+    NkBuildStatus status;
+    char executable[16];
+    char sha256[65];      /* empty when the executable could not be read */
+    char label[65];       /* the matched build's label */
+    char reason[201];     /* a known-bad build's reason */
+    char supported[256];  /* the supported builds' labels, "; " apart */
+} NkBuildIdentity;
+
+/* False only for an unusable disc ID or argument; a title without builds is
+ * NK_BUILD_UNTRACKED. iso_path or executable_name may be NULL: the build is
+ * then NK_BUILD_UNLISTED when the title records any. */
+bool nk_title_manifest_identify_build(const char *disc_id, const char *iso_path,
+                                      const char *executable_name, NkBuildIdentity *out);
+/* A one-sentence description for the game card; empty for an untracked title. */
+void nk_title_manifest_describe_build(const NkBuildIdentity *id, char *out, size_t out_size);
+
 bool nk_title_manifest_experimental_profile_executable(
     const char *user_data_root,
     const char *disc_id,

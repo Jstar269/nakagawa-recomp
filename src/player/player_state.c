@@ -7665,7 +7665,7 @@ const char *player_preflight_label(const PlayerPreflightCheck *check) {
     static const struct { const char *code; const char *label; } labels[] = {
         {"EXPERIMENTAL", "Compatibility"}, {"DISC_SFO", "Disc"},
         {"EXECUTABLE", "Game program"}, {"GUEST_MODULES", "Game modules"},
-        {"TITLE_PROFILE", "Title settings"},
+        {"TITLE_PROFILE", "Title settings"}, {"GAME_BUILD", "Program version"},
         {"RUNTIME_PACKAGE", "Game build"}, {"DATA_ROOT", "Game data"},
         {"SYSTEM_FONTS", "Fonts"}, {"AUDIO_OUTPUT", "Sound"},
     };
@@ -7704,7 +7704,8 @@ static void player_input_note_file(PlayerInputReport *input, const char *name,
 bool player_preflight_check_blocks(const PlayerPreflightCheck *check) {
     return check && check->status == PREFLIGHT_UNSUPPORTED &&
            (strcmp(check->code, "EXECUTABLE") == 0 ||
-            strcmp(check->code, "DISC_SFO") == 0);
+            strcmp(check->code, "DISC_SFO") == 0 ||
+            strcmp(check->code, "GAME_BUILD") == 0);
 }
 
 const char *player_preflight_status_word(const PlayerPreflightCheck *check) {
@@ -7718,6 +7719,9 @@ const char *player_preflight_status_word(const PlayerPreflightCheck *check) {
             case PREFLIGHT_INCOMPATIBLE: return "Build again";
             default: return "Not yet";
         }
+    }
+    if (strcmp(check->code, "GAME_BUILD") == 0) {
+        return "Not recorded"; /* a known-bad build blocks, so it reads "Can't use" above */
     }
     if (strcmp(check->code, "DATA_ROOT") == 0) return "Checked later";
     if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
@@ -9561,6 +9565,30 @@ static void player_build_compatibility_preflight_for_game(
         if (!profile_valid) {
             player_preflight_set_plain(preflight,
                 "The title settings for this disc are missing or out of date. Add the disc again.");
+        }
+    }
+
+    /* Which build of the executable this disc holds, against the builds the title's manifest
+       records (#2140). A title that records none gets no row, so its card is unchanged. */
+    if (disc_readable && game->title_id[0] && game->iso_path[0]) {
+        NkBuildIdentity build;
+        const char *build_executable =
+            executables && executables->selected == NK_ISO_EXEC_SELECTION_BOOT ? "BOOT.BIN"
+                                                                                : "EBOOT.BIN";
+        char build_text[512];
+        if (nk_title_manifest_identify_build(game->disc_id, game->iso_path, build_executable,
+                                             &build) &&
+            build.status != NK_BUILD_UNTRACKED) {
+            static const unsigned int issues[] = { 2140 };
+            PlayerPreflightStatus build_status =
+                build.status == NK_BUILD_KNOWN_BAD ? PREFLIGHT_UNSUPPORTED
+                : build.status == NK_BUILD_UNLISTED ? PREFLIGHT_IN_PROGRESS
+                                                    : PREFLIGHT_OK;
+            nk_title_manifest_describe_build(&build, build_text, sizeof(build_text));
+            player_preflight_add(preflight, "GAME_BUILD", build_status, build_text,
+                                 build_status == PREFLIGHT_OK ? NULL : issues,
+                                 build_status == PREFLIGHT_OK ? 0u : 1u);
+            player_preflight_set_plain(preflight, "%s", build_text);
         }
     }
 

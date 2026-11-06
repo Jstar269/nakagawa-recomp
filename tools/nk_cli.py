@@ -63,7 +63,14 @@ from nk_core import (  # noqa: E402
     inspect_iso,
 )
 from nk_core import package_cache  # noqa: E402
-from nk_core.prep_engine import NativeTitleStager, SUPPORTED_ARCHIVE_FORMATS  # noqa: E402
+from nk_core.prep_engine import (  # noqa: E402
+    NativeTitleStager,
+    SUPPORTED_ARCHIVE_FORMATS,
+    identify_build_in,
+    known_bad_build_message,
+    unlisted_build_message,
+)
+from nk_core.iso_inspect import iso_executable_sha256  # noqa: E402
 from nk_core.title_registry import get_default_registry  # noqa: E402
 from nk_core.launcher import psp_boot_path as _psp_boot_path  # noqa: E402
 from nk_core import disc_expand_tool  # noqa: E402
@@ -1266,6 +1273,34 @@ def _load_library_entry(user_root: Path, disc_id: str, iso_path: Path | None = N
     if type(entry.get("is_experimental", False)) is not bool:
         raise PackageBuildError(f"Library entry {disc_id} has an invalid experimental marker.")
     return entry
+
+
+def _apply_executable_build(iso_path: Path, executable_name: str, manifest: dict, reporter) -> dict:
+    """Act on the executable build the disc holds against the manifest's ``disc.builds`` (#2140).
+
+    A title's ``runtime_bindings`` are addresses inside one exact executable. A build the
+    manifest marks ``known-bad`` stops the build with its reason. A build it does not list
+    is built without the title's bindings (``runtime_bindings`` and
+    ``required_runtime_bindings``), so another build's addresses are never applied to it,
+    and the reporter says so. A manifest with no ``builds`` list is not questioned.
+    """
+    builds = (manifest.get("disc") or {}).get("builds")
+    if not builds:
+        return manifest
+    build = identify_build_in(
+        builds, executable_name, iso_executable_sha256(iso_path, executable_name)
+    )
+    name = manifest.get("display_name", manifest.get("id", "this title"))
+    if build["status"] == "known-bad":
+        raise PackageBuildError(known_bad_build_message(name, build))
+    if build["status"] != "unlisted":
+        return manifest
+    reporter.report("preflight", "WARN", unlisted_build_message(name, build))
+    unbound = {
+        key: value for key, value in manifest.items()
+        if key not in ("runtime_bindings", "required_runtime_bindings")
+    }
+    return dict(title_manifest.validate_manifest(unbound))
 
 
 def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: str,
@@ -2622,6 +2657,7 @@ def _package_preflight(st):
             "record names a different SFO revision. Review and register this revision explicitly "
             "with --register-local-compatibility-record."
         )
+    manifest = _apply_executable_build(iso_path, manifest_selected, manifest, reporter)
     reporter.report("preflight", "PASS", "The game and its title file are in order")
     st.decrypted_eboot = decrypted_eboot
     st.entry = entry

@@ -353,6 +353,21 @@ def generate_header(digest: str, titles: List[Dict[str, Any]]) -> str:
         "    void *owned_storage;",
         "} NkTitleEntrySnapshot;",
         "",
+        "/* One recorded executable build of a built-in title (#2140): the SHA-256 of the",
+        " * executable as the disc image holds it, a status (supported, experimental or",
+        " * known-bad), a label and, for a known-bad build, the reason. */",
+        "typedef struct {",
+        "    const char *executable_sha256;",
+        "    const char *status;",
+        "    const char *label;",
+        "    const char *reason;",
+        "} NkTitleBuild;",
+        "",
+        "/* The builds a built-in title records under a disc ID (its primary or a compatible",
+        " * revision): the count, with *out_builds set to a static array. 0 means the title",
+        " * records none or the ID is not a built-in title's. Overlay builds are separate. */",
+        "int nk_title_catalog_builds(const char *disc_id, const NkTitleBuild **out_builds);",
+        "",
         "/* Total public titles in static catalog */",
         "extern const int nk_title_catalog_count;",
         "extern const NkTitleEntry nk_title_catalog_entries[];",
@@ -731,6 +746,43 @@ def generate_source(digest: str, titles: List[Dict[str, Any]]) -> str:
                 )
             lines.append("};")
             lines.append("")
+
+    # The builds each built-in title records (#2140), looked up by any of its disc IDs.
+    build_rows: List[str] = []
+    for idx, t in enumerate(titles):
+        builds = t.get("disc", {}).get("builds", [])
+        if not builds:
+            continue
+        lines.append(f"static const NkTitleBuild s_builds_title_{idx}[] = {{")
+        for build in builds:
+            lines.append(
+                f'    {{ "{build["executable_sha256"]}", "{build["status"]}", '
+                f'"{_c_string_escape(build["label"])}", "{_c_string_escape(build.get("reason", ""))}" }},'
+            )
+        lines.append("};")
+        lines.append("")
+        for disc_id in [t["disc"]["id"]] + t["disc"].get("compatible_revisions", []):
+            build_rows.append(f'    {{ "{disc_id}", s_builds_title_{idx}, {len(builds)} }},')
+    if build_rows:
+        lines.append("static const struct { const char *disc_id; const NkTitleBuild *builds; int count; } s_title_build_rows[] = {")
+        lines.extend(build_rows)
+        lines.append("};")
+        lines.append("")
+    lines += [
+        "int nk_title_catalog_builds(const char *disc_id, const NkTitleBuild **out_builds) {",
+        "    if (out_builds) *out_builds = NULL;",
+        "    if (!disc_id || !*disc_id) return 0;",
+    ]
+    if build_rows:
+        lines += [
+            "    for (size_t i = 0; i < sizeof(s_title_build_rows) / sizeof(s_title_build_rows[0]); i++) {",
+            "        if (strcmp(disc_id, s_title_build_rows[i].disc_id) == 0) {",
+            "            if (out_builds) *out_builds = s_title_build_rows[i].builds;",
+            "            return s_title_build_rows[i].count;",
+            "        }",
+            "    }",
+        ]
+    lines += ["    return 0;", "}", ""]
 
     # Emit main public catalog array
     lines.append(f"const int nk_title_catalog_count = {len(titles)};")
