@@ -69,18 +69,21 @@ typedef void (*NkAchTransport)(void *ctx, const NkAchRequest *request, NkAchDone
 typedef enum NkAchEventKind {
     NK_ACH_EVENT_LOGIN_OK = 1,
     NK_ACH_EVENT_LOGIN_FAILED,
-    NK_ACH_EVENT_GAME_LOADED,      /* id: the RA game ID; points: achievements in its core set */
+    NK_ACH_EVENT_GAME_LOADED,      /* id: the RA game ID; count: achievements in its core set */
     NK_ACH_EVENT_GAME_FAILED,
     NK_ACH_EVENT_UNLOCKED,         /* id, title, points: the achievement just earned */
     NK_ACH_EVENT_SERVER_ERROR,     /* message: the server's error, not retried */
     NK_ACH_EVENT_DISCONNECTED,     /* an unlock is waiting to be sent */
-    NK_ACH_EVENT_RECONNECTED       /* every waiting unlock was sent */
+    NK_ACH_EVENT_RECONNECTED,      /* every waiting unlock was sent */
+    NK_ACH_EVENT_DISABLED          /* id: an achievement rc_client turned off because guest memory
+                                    * it reads could not be read; message: rc_client's note */
 } NkAchEventKind;
 
 typedef struct NkAchEvent {
     NkAchEventKind kind;
     uint32_t id;
-    uint32_t points;
+    uint32_t points;   /* UNLOCKED and LOGIN_OK only; 0 otherwise */
+    uint32_t count;    /* GAME_LOADED only; 0 otherwise */
     char title[96];
     char message[160];
 } NkAchEvent;
@@ -95,7 +98,8 @@ bool nk_ach_url_allowed(const char *url);
 
 /* Reads up to n bytes at RA address ra_address through the PSP memory map. Returns the bytes
  * read: 0 when the address is outside the map or outside mem's span, fewer than n when the
- * span ends first. Nothing outside mem's span is ever read. */
+ * span or the map ends first. The PSP's three regions are one run of guest memory, so a read may
+ * cross from one into the next. Nothing outside mem's span is ever read. */
 uint32_t nk_ach_read_memory(const NkAchMemory *mem, uint32_t ra_address, uint8_t *out,
                             uint32_t n);
 
@@ -128,6 +132,10 @@ bool nk_ach_hardcore(const NkAch *ach);
  * them. */
 size_t nk_ach_take_events(NkAch *ach, NkAchEvent *out, size_t max);
 uint32_t nk_ach_events_dropped(const NkAch *ach);
+
+/* The rc_client behind ach, for the bridge's own tests: they point it at another host to prove
+ * that the request gate refuses it. Nothing else needs it. */
+struct rc_client_t *nk_ach_rc_client(NkAch *ach);
 
 #ifdef __cplusplus
 }

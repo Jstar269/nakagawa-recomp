@@ -8,6 +8,7 @@
 
 #include "nk_achievements.h"
 
+#include "rc_client.h"
 #include "rc_consoles.h"
 
 #include <stdio.h>
@@ -34,7 +35,6 @@ static int g_failures;
 
 typedef struct Fake {
     int requests;
-    int refused_urls;        /* requests that reached the transport with a disallowed URL */
     char log[16][512];       /* the post data of each request, in order */
     int award_status;        /* the HTTP status awardachievement answers */
 } Fake;
@@ -49,7 +49,10 @@ static const char k_sets[] =
     "\"ImageIconUrl\":\"\",\"Achievements\":["
     "{\"ID\":5501,\"Title\":\"Five\",\"Description\":\"The watched byte reads 5\","
     "\"Flags\":3,\"Points\":5,\"MemAddr\":\"0xH800100=5\",\"Author\":\"Synthetic\","
-    "\"BadgeName\":\"00001\",\"Created\":1700000000,\"Modified\":1700000000}"
+    "\"BadgeName\":\"00001\",\"Created\":1700000000,\"Modified\":1700000000},"
+    "{\"ID\":5502,\"Title\":\"Kernel\",\"Description\":\"Reads memory outside the span\","
+    "\"Flags\":3,\"Points\":1,\"MemAddr\":\"0xH000100=5\",\"Author\":\"Synthetic\","
+    "\"BadgeName\":\"00002\",\"Created\":1700000000,\"Modified\":1700000000}"
     "],\"Leaderboards\":[]}]}";
 static const char k_session[] =
     "{\"Success\":true,\"Unlocks\":[],\"HardcoreUnlocks\":[],\"ServerNow\":1700000000}";
@@ -67,7 +70,6 @@ static void fake_transport(void *ctx, const NkAchRequest *req, NkAchDone done, v
     const char *post = req->post_data ? req->post_data : "";
     if (f->requests < 16) snprintf(f->log[f->requests], sizeof f->log[0], "%s", post);
     f->requests++;
-    if (!nk_ach_url_allowed(req->url)) f->refused_urls++;
     NkAchResponse r = {k_ok, sizeof k_ok - 1u, 200};
     if (starts_with(post, "r=login2&")) r.body = k_login;
     else if (starts_with(post, "r=achievementsets&")) r.body = k_sets;
@@ -155,8 +157,45 @@ static void test_memory_map(uint8_t *ram) {
           "a read past the span's end reads nothing");
     CHECK(nk_ach_read_memory(&small, 0x00800000u + 0x0ffeu, buf, 4u) == 2u,
           "a read across the span's end stops at it");
+    /* The regions are one run of guest memory: a read across RA 0x00800000 (kernel RAM into user
+     * RAM) is whole when the span covers both sides. */
+    const NkAchMemory across = {ram, 0x087ff000u, 0x2000u};
+    ram[0xffeu] = 0x11;
+    ram[0x1001u] = 0x44;
+    CHECK(nk_ach_read_memory(&across, 0x007ffffeu, buf, 4u) == 4u && buf[0] == 0x11 && buf[3] == 0x44,
+          "a read across a region boundary is whole");
+    const NkAchMemory top = {ram, 0x0bfff000u, 0x2000u};
+    CHECK(nk_ach_read_memory(&top, 0x03fffffeu, buf, 4u) == 2u, "a read stops at the end of the map");
     const NkAchMemory none = {NULL, USER_RAM, USER_RAM_SIZE};
     CHECK(nk_ach_read_memory(&none, 0x00800000u, buf, 1u) == 0u, "no memory, nothing read");
+}
+
+/* rc_client pointed at another host: the gate refuses every request before the transport. */
+static void test_other_host_is_refused(uint8_t *ram) {
+    static const char *hosts[] = {"https://example.net", "http://retroachievements.org",
+                                  "https://retroachievements.org.example.net"};
+    for (size_t i = 0; i < sizeof hosts / sizeof hosts[0]; i++) {
+        Fake fake;
+        memset(&fake, 0, sizeof fake);
+        const NkAchMemory mem = {ram, USER_RAM, USER_RAM_SIZE};
+        NkAch *ach = nk_ach_create(&mem, fake_transport, &fake);
+        CHECK(ach != NULL && nk_ach_rc_client(ach) != NULL, "create");
+        if (!ach) return;
+        rc_client_set_host(nk_ach_rc_client(ach), hosts[i]);
+        CHECK(nk_ach_begin_login(ach, "Player", "TOKEN"), "login starts");
+        NkAchEvent ev[8];
+        const size_t n = take(ach, ev, 8);
+        const int failed = has_event(ev, n, NK_ACH_EVENT_LOGIN_FAILED);
+        CHECK(failed >= 0, "login to %s fails", hosts[i]);
+        CHECK(fake.requests == 0, "nothing reached the transport for %s (%d requests)", hosts[i],
+              fake.requests);
+        if (failed >= 0)
+            CHECK(strstr(ev[failed].message, "not a RetroAchievements server") != NULL,
+                  "the gate refused %s: %s", hosts[i], ev[failed].message);
+        CHECK(!nk_ach_logged_in(ach), "not logged in");
+        nk_ach_destroy(ach);
+    }
+    CHECK(nk_ach_rc_client(NULL) == NULL, "no client without a bridge");
 }
 
 /* No transport: rc_client's requests are refused before anything is sent. */
@@ -205,9 +244,17 @@ static void test_login_load_unlock(uint8_t *ram) {
     const int loaded = has_event(ev, n, NK_ACH_EVENT_GAME_LOADED);
     CHECK(loaded >= 0, "game loads");
     if (loaded >= 0)
-        CHECK(ev[loaded].id == 1234u && ev[loaded].points == 1u, "game 1234 with one achievement "
-              "(id %u, %u)", ev[loaded].id, ev[loaded].points);
+        CHECK(ev[loaded].id == 1234u && ev[loaded].count == 2u && ev[loaded].points == 0u,
+              "game 1234 with two achievements, counted apart from points (id %u, count %u, "
+              "points %u)", ev[loaded].id, ev[loaded].count, ev[loaded].points);
     CHECK(nk_ach_game_loaded(ach), "game loaded");
+    /* 5502 reads kernel RAM, outside the span. rc_client reads every address once when it
+     * activates the set, turns 5502 off, and the user is told, before GAME_LOADED. */
+    const int disabled = has_event(ev, n, NK_ACH_EVENT_DISABLED);
+    CHECK(disabled >= 0 && disabled < loaded, "an achievement that cannot read its memory is reported");
+    if (disabled >= 0)
+        CHECK(ev[disabled].id == 5502u && strstr(ev[disabled].message, "Invalid address") != NULL,
+              "DISABLED names 5502 (got %u: %s)", ev[disabled].id, ev[disabled].message);
     const int sets = find_request(&fake, "r=achievementsets&");
     CHECK(sets >= 0 && strstr(fake.log[sets], "m=" HASH), "the hash identifies the game");
     const int session = find_request(&fake, "r=startsession&");
@@ -218,6 +265,7 @@ static void test_login_load_unlock(uint8_t *ram) {
     for (int i = 0; i < 4; i++) nk_ach_frame(ach);
     n = take(ach, ev, NK_ACH_EVENT_QUEUE);
     CHECK(has_event(ev, n, NK_ACH_EVENT_UNLOCKED) < 0, "no unlock while the byte reads 0");
+    CHECK(has_event(ev, n, NK_ACH_EVENT_DISABLED) < 0, "an achievement is reported off once");
     CHECK(find_request(&fake, "r=awardachievement&") < 0, "no award request yet");
 
     ram[ACH_ADDR] = 5;
@@ -233,7 +281,6 @@ static void test_login_load_unlock(uint8_t *ram) {
     const int award = find_request(&fake, "r=awardachievement&");
     CHECK(award >= 0 && strstr(fake.log[award], "a=5501") && strstr(fake.log[award], "&h=0"),
           "a softcore award for 5501 is sent: %s", award >= 0 ? fake.log[award] : "");
-    CHECK(fake.refused_urls == 0, "every request named the RetroAchievements server");
     CHECK(!nk_ach_hardcore(ach), "still softcore");
     nk_ach_destroy(ach);
 }
@@ -270,6 +317,7 @@ int main(void) {
     }
     test_url_gate();
     test_memory_map(ram);
+    test_other_host_is_refused(ram);
     test_no_transport_sends_nothing(ram);
     test_login_load_unlock(ram);
     test_award_offline_is_pending(ram);

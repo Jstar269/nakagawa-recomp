@@ -44,7 +44,8 @@ Nakagawa has since substantially extended and modified that codebase. This repos
   [`third_party/monocypher/`](third_party/monocypher/).
 - **rcheevos 12.5.0 — RetroAchievements.org and contributors** — MIT. RetroAchievements' C library for opt-in
   achievements ([#1316](https://github.com/Jstar269/nakagawa-recomp/issues/1316)), in
-  [`third_party/rcheevos/`](third_party/rcheevos/PROVENANCE.md).
+  [`third_party/rcheevos/`](third_party/rcheevos/PROVENANCE.md). Its MD5 (`src/rhash/md5.c`, `md5.h`) is
+  L. Peter Deutsch's (Aladdin Enterprises), under the zlib licence.
 - **PSPSDK / PSPDEV contributors** — BSD-family notices for public ABI definitions and source-owned fixtures ([`THIRD_PARTY_LICENSES/PSPSDK.txt`](THIRD_PARTY_LICENSES/PSPSDK.txt)).
 - **SDL, SDL_ttf and their dependencies** — staged beside the player with their licence texts (listed in [`NOTICE.md`](NOTICE.md)).
 - **stb_image 2.30 — Sean Barrett** — public domain (Unlicense), the alternative to MIT that upstream offers. The PNG

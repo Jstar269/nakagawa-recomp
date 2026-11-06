@@ -1319,6 +1319,9 @@ class TestNetworkEgressAllowlist(unittest.TestCase):
         # No other host literal in the bridge: the gate is the one place a host is named.
         bridge = (REPO_ROOT / "src" / "core" / "nk_achievements.c").read_text(encoding="utf-8")
         self.assertEqual(re.findall(r"https?://[A-Za-z0-9.-]+", bridge), [])
+        # Nor does it move rc_client to another host; only achievements-selftest does, to prove
+        # the gate refuses it.
+        self.assertEqual(re.findall(r"\brc_(?:client|api)_set_host\b", bridge), [])
         offenders = []
         for rel in ACHIEVEMENTS_NO_NETWORK_PATHS:
             match = NETWORK_EGRESS_PATTERN.search((REPO_ROOT / rel).read_text(encoding="utf-8"))

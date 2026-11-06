@@ -12,6 +12,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The transport's sentinels pass straight through as rc_client's status codes. */
+typedef char nk_ach_client_error_matches_rcheevos
+    [(NK_ACH_HTTP_CLIENT_ERROR == RC_API_SERVER_RESPONSE_CLIENT_ERROR) ? 1 : -1];
+typedef char nk_ach_retry_matches_rcheevos
+    [(NK_ACH_HTTP_RETRY == RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR) ? 1 : -1];
+
 struct NkAch {
     rc_client_t *client;
     NkAchMemory mem;
@@ -42,10 +48,21 @@ uint32_t nk_ach_read_memory(const NkAchMemory *mem, uint32_t ra_address, uint8_t
         const uint64_t guest = (uint64_t)r->real_address + (ra_address - r->start_address);
         const uint64_t span_end = (uint64_t)mem->guest_start + mem->size;
         if (guest < mem->guest_start || guest >= span_end) return 0u;
-        /* A read stops at the end of the region and at the end of the span. */
+        /* The run of regions that follow on in both RA and guest addresses (all three, for the
+         * PSP) is one piece of memory: a read stops only at its end and at the end of the span. */
+        uint32_t run_end = r->end_address;
+        for (uint32_t k = i + 1u; k < regions->num_regions; k++) {
+            const rc_memory_region_t *next = &regions->region[k];
+            const rc_memory_region_t *prev = &regions->region[k - 1u];
+            if ((uint64_t)next->start_address != (uint64_t)prev->end_address + 1u ||
+                (uint64_t)next->real_address !=
+                    (uint64_t)prev->real_address + (prev->end_address - prev->start_address) + 1u)
+                break;
+            run_end = next->end_address;
+        }
         uint64_t avail = span_end - guest;
-        const uint64_t region_left = (uint64_t)r->end_address - ra_address + 1u;
-        if (region_left < avail) avail = region_left;
+        const uint64_t run_left = (uint64_t)run_end - ra_address + 1u;
+        if (run_left < avail) avail = run_left;
         const uint32_t count = (uint32_t)(avail < n ? avail : n);
         memcpy(out, mem->base + (size_t)(guest - mem->guest_start), count);
         return count;
@@ -54,7 +71,7 @@ uint32_t nk_ach_read_memory(const NkAchMemory *mem, uint32_t ra_address, uint8_t
 }
 
 static void ach_push(NkAch *ach, NkAchEventKind kind, uint32_t id, uint32_t points,
-                     const char *title, const char *message) {
+                     uint32_t count, const char *title, const char *message) {
     if (ach->event_count == NK_ACH_EVENT_QUEUE) {
         ach->event_head = (ach->event_head + 1u) % NK_ACH_EVENT_QUEUE;
         ach->event_count--;
@@ -65,6 +82,7 @@ static void ach_push(NkAch *ach, NkAchEventKind kind, uint32_t id, uint32_t poin
     e->kind = kind;
     e->id = id;
     e->points = points;
+    e->count = count;
     if (title) snprintf(e->title, sizeof e->title, "%s", title);
     if (message) snprintf(e->message, sizeof e->message, "%s", message);
     ach->event_count++;
@@ -137,22 +155,38 @@ static void RC_CCONV ach_event(const rc_client_event_t *event, rc_client_t *clie
     case RC_CLIENT_EVENT_ACHIEVEMENT_TRIGGERED:
         if (event->achievement)
             ach_push(ach, NK_ACH_EVENT_UNLOCKED, event->achievement->id,
-                     event->achievement->points, event->achievement->title, NULL);
+                     event->achievement->points, 0u, event->achievement->title, NULL);
         break;
     case RC_CLIENT_EVENT_SERVER_ERROR:
         ach_push(ach, NK_ACH_EVENT_SERVER_ERROR,
-                 event->server_error ? event->server_error->related_id : 0u, 0u, NULL,
+                 event->server_error ? event->server_error->related_id : 0u, 0u, 0u, NULL,
                  event->server_error ? event->server_error->error_message : NULL);
         break;
     case RC_CLIENT_EVENT_DISCONNECTED:
-        ach_push(ach, NK_ACH_EVENT_DISCONNECTED, 0u, 0u, NULL, NULL);
+        ach_push(ach, NK_ACH_EVENT_DISCONNECTED, 0u, 0u, 0u, NULL, NULL);
         break;
     case RC_CLIENT_EVENT_RECONNECTED:
-        ach_push(ach, NK_ACH_EVENT_RECONNECTED, 0u, 0u, NULL, NULL);
+        ach_push(ach, NK_ACH_EVENT_RECONNECTED, 0u, 0u, 0u, NULL, NULL);
         break;
     default:
         break;
     }
+}
+
+/* rc_client raises no event when a short read turns an achievement off; it only logs
+ * "Disabled achievement <id>. Invalid address <addr>" (rc_client.c,
+ * rc_client_invalidate_memref_achievements). That warning becomes a DISABLED event, so the user is
+ * told. achievements-selftest checks the text, so an rcheevos update that changes it fails there. */
+static const char k_disabled_prefix[] = "Disabled achievement ";
+
+static void RC_CCONV ach_log(const char *message, const rc_client_t *client) {
+    NkAch *ach = (NkAch *)rc_client_get_userdata(client);
+    if (!ach || !message || strncmp(message, k_disabled_prefix, sizeof k_disabled_prefix - 1u))
+        return;
+    const char *p = message + sizeof k_disabled_prefix - 1u;
+    uint32_t id = 0u;
+    while (*p >= '0' && *p <= '9' && id <= 0x0fffffffu) id = id * 10u + (uint32_t)(*p++ - '0');
+    ach_push(ach, NK_ACH_EVENT_DISABLED, id, 0u, 0u, NULL, message);
 }
 
 NkAch *nk_ach_create(const NkAchMemory *mem, NkAchTransport transport, void *transport_ctx) {
@@ -168,6 +202,7 @@ NkAch *nk_ach_create(const NkAchMemory *mem, NkAchTransport transport, void *tra
     }
     rc_client_set_userdata(ach->client, ach);
     rc_client_set_event_handler(ach->client, ach_event);
+    rc_client_enable_logging(ach->client, RC_CLIENT_LOG_LEVEL_WARN, ach_log);
     rc_client_set_hardcore_enabled(ach->client, 0);
     rc_client_set_encore_mode_enabled(ach->client, 0);
     rc_client_set_unofficial_enabled(ach->client, 0);
@@ -187,10 +222,10 @@ static void RC_CCONV ach_login_done(int result, const char *error_message,
     if (!ach) return;
     if (result == RC_OK) {
         const rc_client_user_t *user = rc_client_get_user_info(client);
-        ach_push(ach, NK_ACH_EVENT_LOGIN_OK, 0u, user ? user->score_softcore : 0u,
+        ach_push(ach, NK_ACH_EVENT_LOGIN_OK, 0u, user ? user->score_softcore : 0u, 0u,
                  user ? user->display_name : NULL, NULL);
     } else {
-        ach_push(ach, NK_ACH_EVENT_LOGIN_FAILED, 0u, 0u, NULL,
+        ach_push(ach, NK_ACH_EVENT_LOGIN_FAILED, 0u, 0u, 0u, NULL,
                  error_message ? error_message : rc_error_str(result));
     }
 }
@@ -213,10 +248,10 @@ static void RC_CCONV ach_load_done(int result, const char *error_message,
         rc_client_user_game_summary_t summary;
         memset(&summary, 0, sizeof summary);
         rc_client_get_user_game_summary(client, &summary);
-        ach_push(ach, NK_ACH_EVENT_GAME_LOADED, game->id, summary.num_core_achievements,
+        ach_push(ach, NK_ACH_EVENT_GAME_LOADED, game->id, 0u, summary.num_core_achievements,
                  game->title, NULL);
     } else {
-        ach_push(ach, NK_ACH_EVENT_GAME_FAILED, 0u, 0u, NULL,
+        ach_push(ach, NK_ACH_EVENT_GAME_FAILED, 0u, 0u, 0u, NULL,
                  error_message ? error_message : rc_error_str(result));
     }
 }
@@ -269,4 +304,8 @@ size_t nk_ach_take_events(NkAch *ach, NkAchEvent *out, size_t max) {
 
 uint32_t nk_ach_events_dropped(const NkAch *ach) {
     return ach ? ach->events_dropped : 0u;
+}
+
+struct rc_client_t *nk_ach_rc_client(NkAch *ach) {
+    return ach ? ach->client : NULL;
 }
