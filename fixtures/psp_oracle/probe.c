@@ -2938,7 +2938,7 @@ static int ge_reset_queues(GeIdleWait *after) {
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
 /* GE teardown for every case that calls sceGuInit, on every path out of it.
  *
- * sceGuInit (PSPSDK src/gu/sceGuInit.c; pspsdk e62057d9, the PSPDEV v20261001
+ * sceGuInit (PSPSDK src/gu/sceGuInit.c; pspsdk c3da4314, the PSPDEV v20261101
  * the probe links) creates the "SceGuSignal" event flag and registers
  * libpspgu's callbackSig and callbackFin with sceGeSetCallback.  Those handlers
  * are code in this PRX.  Only sceGuTerm (src/gu/sceGuTerm.c) removes them, by

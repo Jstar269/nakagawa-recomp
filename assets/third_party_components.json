@@ -609,9 +609,9 @@
         "recorded_from": "installed dist-info bashlex-0.18.dist-info/METADATA (License: GPLv3+; Classifier: License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)); License-File: LICENSE"
       },
       "coverage": {
-        "version": "7.17.0",
+        "version": "7.17.2",
         "spdx_id": "Apache-2.0",
-        "recorded_from": "PyPI release metadata https://pypi.org/pypi/coverage/7.17.0/json (license: Apache-2.0; license_files: LICENSE.txt, NOTICE.txt)"
+        "recorded_from": "PyPI release metadata https://pypi.org/pypi/coverage/7.17.2/json (license: Apache-2.0; license_files: LICENSE.txt, NOTICE.txt)"
       }
     }
   }
