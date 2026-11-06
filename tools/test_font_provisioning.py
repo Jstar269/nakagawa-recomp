@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from nk_core.fonts import (  # noqa: E402
+    PROJECT_LATIN_INDEX_FILES,
     FontImportError,
     FontValidationError,
     get_font_cache_dir,
@@ -260,7 +261,8 @@ class FontProvisioningTests(unittest.TestCase):
                          {"source": "user", "served_index": 0})
         # Index 9 belongs to the second eight-entry group and cannot borrow ltn0.
         self.assertEqual(resolve_latin_index(user_data, project / "font", 8),
-                         {"source": "project", "served_index": -1, "project_file": "nkltn.pgf"})
+                         {"source": "project", "served_index": -1, "project_file": "nkltn.pgf",
+                          "project_style_index": 0})
         states = latin_index_states(user_data, project_root=project)
         self.assertIn("missing; fallback ltn0.pgf", states[1]["detail"])
         self.assertIn("missing; project nkltn.pgf", states[8]["detail"])
@@ -270,7 +272,8 @@ class FontProvisioningTests(unittest.TestCase):
             latin_strike_pgf("Nakagawa Project Latin Second", 7 * 64)
         )
         self.assertEqual(resolve_latin_index(user_data, project / "font", 8),
-                         {"source": "project", "served_index": -1, "project_file": "nkltns.pgf"})
+                         {"source": "project", "served_index": -1, "project_file": "nkltns.pgf",
+                          "project_style_index": 8})
         states = latin_index_states(user_data, project_root=project)
         self.assertIn("missing; project nkltns.pgf", states[8]["detail"])
         (project / "font" / "nkltns.pgf").unlink()
@@ -279,6 +282,30 @@ class FontProvisioningTests(unittest.TestCase):
         (project / "font" / "nkltn.pgf").unlink()
         self.assertEqual(resolve_latin_index(user_data, project / "font", 8),
                          {"source": "user", "served_index": -2})
+
+    def test_each_latin_index_serves_its_own_project_face_then_its_group_regular(self) -> None:
+        """#2005: the project ships a face per Latin index; one used to serve all eight styles."""
+        project = self.temp_path / "styles" / "font"
+        project.mkdir(parents=True)
+        for name, size in (("nkltn.pgf", 12), ("nkltn5.pgf", 12), ("nkltns.pgf", 7), ("nkltn14.pgf", 7)):
+            project.joinpath(name).write_bytes(latin_strike_pgf(f"Nakagawa Project {name[:-4]}", size * 64))
+        user_data = self.temp_path / "no-imports"
+        expected = {
+            0: ("nkltn.pgf", 0), 5: ("nkltn5.pgf", 5), 3: ("nkltn.pgf", 0),
+            8: ("nkltns.pgf", 8), 14: ("nkltn14.pgf", 14), 13: ("nkltns.pgf", 8),
+        }
+        for index, (name, style) in expected.items():
+            with self.subTest(index=index):
+                self.assertEqual(resolve_latin_index(user_data, project, index),
+                                 {"source": "project", "served_index": -1, "project_file": name,
+                                  "project_style_index": style})
+        # Without the second group's regular face, its other faces fall back to the first group's.
+        (project / "nkltns.pgf").unlink()
+        self.assertEqual(resolve_latin_index(user_data, project, 13),
+                         {"source": "project", "served_index": -1, "project_file": "nkltn.pgf",
+                          "project_style_index": 0})
+        self.assertEqual(len(PROJECT_LATIN_INDEX_FILES), 16)
+        self.assertEqual(len(set(PROJECT_LATIN_INDEX_FILES)), 16)
 
     def test_legacy_only_latin_import_stays_in_use_with_project_and_cache_font_dirs(self) -> None:
         source = self._folder("legacy_only_latin", {"nkltn.pgf": latin_pgf()})

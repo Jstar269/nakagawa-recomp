@@ -174,8 +174,14 @@ class TestProjectFontBuildWiring(unittest.TestCase):
     def test_makefile_uses_one_rule_family_for_all_project_slots(self):
         makefile = read_makefile(ROOT)
         self.assertIn("define PROJECT_FONT_RULE", makefile)
-        for target in ("japanese", "latin", "korean"):
+        for target in ("japanese", "korean"):
             self.assertIn(f"PROJECT_FONT_RULE,{target},", makefile)
+        # #2005: one Latin face per console Latin index, through the same rule family.
+        self.assertIn("$(call PROJECT_FONT_RULE,", makefile)
+        self.assertIn("PROJECT_LATIN_FACE_RULE,0,latin,nkltn.pgf,", makefile)
+        self.assertIn("PROJECT_LATIN_FACE_RULE,8,latin-small,nkltns.pgf,", makefile)
+        styles = tuple(f"latin-{i}" for i in (1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15))
+        for target in ("japanese", "latin", "latin-small", "korean", *styles):
             self.assertIn(f"project-{target}-font", makefile)
         self.assertIn("project-fonts: $(PROJECT_FONT_SLOT_TARGETS)", makefile)
         self.assertIn("compile: | project-fonts", makefile)
@@ -187,6 +193,20 @@ class TestProjectFontAssetCopy(unittest.TestCase):
         "nkjpn.pgf", "nkjpn.json", "nkjpn-OFL.txt",
         "nkltn.pgf", "nkltn.json", "nkltn-OFL.txt",
         "nkltns.pgf", "nkltns.json", "nkltns-OFL.txt",
+        "nkltn1.pgf", "nkltn1.json", "nkltn1-OFL.txt",
+        "nkltn2.pgf", "nkltn2.json", "nkltn2-OFL.txt",
+        "nkltn3.pgf", "nkltn3.json", "nkltn3-OFL.txt",
+        "nkltn4.pgf", "nkltn4.json", "nkltn4-OFL.txt",
+        "nkltn5.pgf", "nkltn5.json", "nkltn5-OFL.txt",
+        "nkltn6.pgf", "nkltn6.json", "nkltn6-OFL.txt",
+        "nkltn7.pgf", "nkltn7.json", "nkltn7-OFL.txt",
+        "nkltn9.pgf", "nkltn9.json", "nkltn9-OFL.txt",
+        "nkltn10.pgf", "nkltn10.json", "nkltn10-OFL.txt",
+        "nkltn11.pgf", "nkltn11.json", "nkltn11-OFL.txt",
+        "nkltn12.pgf", "nkltn12.json", "nkltn12-OFL.txt",
+        "nkltn13.pgf", "nkltn13.json", "nkltn13-OFL.txt",
+        "nkltn14.pgf", "nkltn14.json", "nkltn14-OFL.txt",
+        "nkltn15.pgf", "nkltn15.json", "nkltn15-OFL.txt",
         "nkkr.pgf", "nkkr.json", "nkkr-OFL.txt",
     )
 

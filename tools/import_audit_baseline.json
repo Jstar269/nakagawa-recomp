@@ -3466,8 +3466,8 @@
   },
   "0xd5c28cc0": {
     "classification": "dedicated",
-    "handler": "h_AtracReleaseResources",
-    "name": "sceAtracReleaseResources",
+    "handler": "h_AtracEndEntry",
+    "name": "sceAtracEndEntry",
     "status": "unreviewed"
   },
   "0xd5ebbbcd": {

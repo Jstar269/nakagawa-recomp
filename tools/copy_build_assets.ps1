@@ -61,7 +61,8 @@ if (-not $ExcludeOptionalFonts) {
     }
 }
 
-# The three project PGFs are generated from their pinned sources before compile.
+# The project PGFs (Japanese, Korean and the sixteen Latin faces) are generated from their pinned
+# sources before compile.
 # Stage them after the optional source-font copy so that replacing the destination
 # directory cannot remove a generated default. They are part of every runtime
 # build, including builds that omit optional source fonts.
@@ -76,6 +77,20 @@ if (Test-Path -LiteralPath $generatedFontDir -PathType Container) {
         'nkjpn.pgf', 'nkjpn.json', 'nkjpn-OFL.txt',
         'nkltn.pgf', 'nkltn.json', 'nkltn-OFL.txt',
         'nkltns.pgf', 'nkltns.json', 'nkltns-OFL.txt',
+        'nkltn1.pgf', 'nkltn1.json', 'nkltn1-OFL.txt',
+        'nkltn2.pgf', 'nkltn2.json', 'nkltn2-OFL.txt',
+        'nkltn3.pgf', 'nkltn3.json', 'nkltn3-OFL.txt',
+        'nkltn4.pgf', 'nkltn4.json', 'nkltn4-OFL.txt',
+        'nkltn5.pgf', 'nkltn5.json', 'nkltn5-OFL.txt',
+        'nkltn6.pgf', 'nkltn6.json', 'nkltn6-OFL.txt',
+        'nkltn7.pgf', 'nkltn7.json', 'nkltn7-OFL.txt',
+        'nkltn9.pgf', 'nkltn9.json', 'nkltn9-OFL.txt',
+        'nkltn10.pgf', 'nkltn10.json', 'nkltn10-OFL.txt',
+        'nkltn11.pgf', 'nkltn11.json', 'nkltn11-OFL.txt',
+        'nkltn12.pgf', 'nkltn12.json', 'nkltn12-OFL.txt',
+        'nkltn13.pgf', 'nkltn13.json', 'nkltn13-OFL.txt',
+        'nkltn14.pgf', 'nkltn14.json', 'nkltn14-OFL.txt',
+        'nkltn15.pgf', 'nkltn15.json', 'nkltn15-OFL.txt',
         'nkkr.pgf', 'nkkr.json', 'nkkr-OFL.txt'
     )) {
         $source = Join-Path $generatedFontDir $name
