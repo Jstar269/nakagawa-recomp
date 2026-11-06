@@ -1544,8 +1544,11 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 VPL cells)",
+            "PSPAutotests tests/threads/vpl/allocate.expected (0 bytes, -1 bytes and more than the pool 0x800201B7)",
+            "tests/native/hle_thread_selftest.c:test_wb_tlspl_vpl_cells",
+            "tests/native/hle_thread_selftest.c:test_vpl_blocking_waits",
         ],
-        "limitation": "ordinary allocation, one finite timeout, measured pool accounting, and one-waiter hand-off are covered; invalid output pointers, invalid sizes, and fragmented-pool behavior beyond the measured cases are not measured",
+        "limitation": "ordinary allocation, one finite timeout, measured pool accounting, one-waiter hand-off and the invalid sizes are covered; invalid output pointers and fragmented-pool behaviour beyond the measured cases are not measured (#341)",
     },
     # Route-A batch 3: each citation was checked against the exact API path in
     # its hardware cell. These handlers remain partial where the cell does not
@@ -1701,8 +1704,11 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-B1-01: 1024-byte VPL accounting and high-down allocation placement)",
+            "PSPAutotests tests/threads/vpl/try.expected (0 bytes, -1 bytes and more than the pool 0x800201B7; a request no free block can hold 0x80020190)",
+            "tests/native/hle_thread_selftest.c:test_wb_tlspl_vpl_cells",
+            "tests/native/hle_thread_selftest.c:test_vpl_nonblocking_roundtrip",
         ],
-        "limitation": "valid allocation placement and measured pool accounting are covered; the handler maps a zero-size request to VPL_EXHAUSTED, whose exact hardware result is unmeasured, and invalid output pointers or fragmented-pool behavior are not established",
+        "limitation": "the recorded codes are reproduced; the point where a pool runs out differs because the PSP's per-block header accounting is not modelled, and invalid output pointers are not measured (#341)",
     },
     # Route-A batch 5: retain only the behaviors named by the existing cells.
     "h_LockMutex": {
@@ -2665,6 +2671,55 @@ HANDLER_METADATA = {
             "tests/native/hle_thread_selftest.c:test_wc_display_getmode_and_start_cb",
         ],
         "limitation": "returns 0 after one delivered VBLANK with callbacks serviced; the guest VCOUNT step is not asserted, and a call from interrupt context is not modelled (#341)",
+    },
+    "h_CreateTlspl": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/tls/create.expected (a NULL name 0x80020190; partitions 2 and 6 accepted, 1, 3 and 4 0x800200D1, others 0x800200D2; a block size or count of 0 or -1 0x800201B7; power-of-two alignments; the 17th pool 0x800201D1)",
+            "tests/native/hle_thread_selftest.c:test_wb_tlspl_vpl_cells",
+        ],
+        "limitation": "the recorded arguments are reproduced; attribute 0x4000 (allocation from the top of the partition) is accepted but not exercised by a test, and partitions 5 and 11 and above and alignments above 0x10000 keep a refusal the cells do not record (#341)",
+    },
+    "h_DeleteTlspl": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/tls/delete.expected (NULL, invalid and deleted ids 0x800201D0; a pool with a block still held 0x800201D2)",
+            "tests/native/hle_thread_selftest.c:test_wb_tlspl_vpl_cells",
+        ],
+        "limitation": "the recorded results are reproduced; the wake code of threads still waiting when a pool is deleted is not asserted (#341)",
+    },
+    "h_FreeTlspl": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/tls/free.expected (a free answers 0 and a second free 0; NULL, invalid and deleted ids 0x800201D0; a waiting thread receives the freed block)",
+            "tests/native/hle_thread_selftest.c:test_wb_tlspl_vpl_cells",
+        ],
+        "limitation": "the recorded results are reproduced; the block is cleared on free; the hand-off order with several waiters is not measured (#341)",
+    },
+    "h_ReferTlsplStatus": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/tls/refer.expected (a 60-byte record with index at +40; input size 0 is left alone, any other size reads back 0x3c; unknown ids 0x800201D0)",
+            "tests/native/hle_thread_selftest.c:test_wb_tlspl_vpl_cells",
+        ],
+        "limitation": "the recorded fields and sizes are reproduced; index is the pool's slot number, which matches the cells only while pools are created in slot order (#341)",
+    },
+    "h_ReferVplStatus": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/vpl/refer.expected (the name at +4; input size 0 is left alone)",
+            "tests/native/hle_thread_selftest.c:test_wb_tlspl_vpl_cells",
+        ],
+        "limitation": "the name, size word and wait count are reproduced; poolSize and freeSize follow this runtime's accounting, not the PSP's per-block headers (0xFFE0 for a 0x10000 pool) (#341)",
+    },
+    "h_AllocateVplCB": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/vpl/allocate.expected (0 bytes, -1 bytes and more than the pool 0x800201B7)",
+            "tests/native/hle_thread_selftest.c:test_wb_tlspl_vpl_cells",
+            "tests/native/hle_thread_selftest.c:test_vpl_blocking_waits",
+        ],
+        "limitation": "as sceKernelAllocateVpl, with callbacks serviced while waiting (#341)",
     },
 }
 
