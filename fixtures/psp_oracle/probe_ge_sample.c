@@ -25,6 +25,9 @@
 //     earlier primitive of the same PRIM command wrote. Overlapping translucent sprites and
 //     triangle pairs, in one PRIM and (the control) one PRIM each, over a 16x4 window in 8888
 //     and in 5650 with and without dithering.
+//   CASE=ge-clut-mip (PSP-GE-MIP-002, #2031): what TEXMODE bit 8 (multi-CLUT) does to the
+//     CLUT entry each mip level of a T4, T8 or T16 texture reads, with 8888 and 4444 CLUTs,
+//     a short CLUT load over a full one, and the CLUT start offset and index mask.
 //
 // ge-sample: each draw is one raw display list (no libpspgu) into a 64x32 8888 framebuffer
 // at VRAM offset 0x100000, cleared by the CPU through the uncached VRAM mirror before the list is
@@ -83,6 +86,7 @@ PSP_HEAP_SIZE_KB(64);
 #define GE_CASE_MIP 126
 #define GE_CASE_LIGHT 139
 #define GE_CASE_OVERLAP 153
+#define GE_CASE_CLUT_MIP 154
 
 #if PSP_ORACLE_CASE == GE_CASE_SAMPLE
 #define HLE_CAMPAIGN_ID "ge-sample"
@@ -104,6 +108,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "ge-overlap"
 #define HLE_TEST_ID "PSP-GE-OVERLAP-001"
 #define HLE_LOG "host0:/ge_overlap_log.txt"
+#elif PSP_ORACLE_CASE == GE_CASE_CLUT_MIP
+#define HLE_CAMPAIGN_ID "ge-clut-mip"
+#define HLE_TEST_ID "PSP-GE-MIP-002"
+#define HLE_LOG "host0:/ge_clut_mip_log.txt"
 #else
 #error probe_ge_sample.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -2304,6 +2312,346 @@ static int hle_run(void)
 }
 
 #endif /* GE_CASE_OVERLAP */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == GE_CASE_CLUT_MIP
+
+/* ==== GE CLUT mip cells (PSP-GE-MIP-002, #2031) ====
+ * What TEXMODE bit 8 (sceGuTexMode's multi-CLUT argument) does to an indexed texture's mip
+ * levels. Each cell is one display list of project-written command words (no game data) in
+ * the ge-mip window: the 16x4 window x 16..31, y 8..11 of a 64x32 8888 colour buffer at VRAM
+ * offset GC_FB_OFFSET whose pixels are 0 before the list runs, one through-mode sprite with
+ * texture coordinates (0, 0) to (16, 4), REPLACE/RGBA, nearest filtering, clamped, and the
+ * level chosen by the constant TEXLEVEL mode (bias = level, as ge-mip's c-bN cells measured).
+ *
+ * The texture has four levels (64, 32, 16 and 8 texels a side). Level L's texel in column x
+ * holds the index gc_base(format) + 4 L + (x & 3), so a pixel names the level sampled even with
+ * the bit clear. CLUT entry k is a colour that names k and the table it came from: in an 8888
+ * CLUT, R = k & 0xff, G = k >> 8, B = 0x80 for the main table and 0x40 for the background
+ * table; in a 4444 CLUT, the raw entry is 0xf000 | k (main) or 0xf800 | k (background), so R,
+ * G and B's nibbles carry k's three nibbles and B's top bit the table. Each list first loads
+ * `bg_blocks` blocks of the background table, then `main_blocks` blocks of the main table, so
+ * an entry the main load did not reach shows the background colour.
+ *
+ * The cells vary: the bit (off, on); the index format (T4, T8, T16); the CLUT format (8888,
+ * 4444); a main load that covers only 16 entries over a full background load; the CLUT start
+ * offset (CLUTFORMAT bits 16-20) and index mask (bits 8-15); and three level-0 controls that
+ * read entries 256 and up with the bit clear, to see how much of a load the CLUT keeps. The
+ * result is the window's first row (the rows are equal: the index depends on x only). */
+
+#define GC_FB_OFFSET 0x00100000u   /* VRAM-relative colour buffer, stride 64, 32 rows */
+#define GC_ZB_OFFSET 0x00110000u   /* depth buffer pointer; depth test and writes are off */
+#define GC_STRIDE 64u
+#define GC_ROWS 32u
+#define GC_WX 16u                  /* window x 16..31, y 8..11 */
+#define GC_WY 8u
+#define GC_WW 16u
+#define GC_WH 4u
+#define GC_N 64u
+#define GC_LEVELS 4u
+#define GC_TEX_BYTES 12288u        /* T16: 64x64 + 32x32 + 16x16 + 8x8 texels of 2 bytes, padded */
+#define GC_TABLE_ENTRIES 1024u     /* 4096 bytes of 8888, 2048 of 4444: past the largest load */
+#define GC_LIST_WORDS 160u
+#define GC_VTX_WORDS 16u
+
+enum { GC_T4 = 4, GC_T8 = 5, GC_T16 = 6 };
+enum { GC_C4444 = 2, GC_C8888 = 3 };
+
+/* tex_format: TEXFORMAT's index format; clut_format: CLUTFORMAT bits 0-1; multi: TEXMODE bit
+   8; level: the constant level; bg_blocks, main_blocks: LOADCLUT counts (32-byte blocks);
+   csa: CLUTFORMAT bits 16-20; mask: CLUTFORMAT bits 8-15 (the shift is 0). */
+struct gc_cell {
+    const char *name;
+    uint8_t tex_format, clut_format, multi, level, bg_blocks, main_blocks, csa, mask;
+};
+
+#define GC_FAMILY(prefix, tf, cf, multi, bg, mainb, csa, mask)                         \
+    {prefix "-l0", tf, cf, multi, 0u, bg, mainb, csa, mask},                            \
+    {prefix "-l1", tf, cf, multi, 1u, bg, mainb, csa, mask},                            \
+    {prefix "-l2", tf, cf, multi, 2u, bg, mainb, csa, mask},                            \
+    {prefix "-l3", tf, cf, multi, 3u, bg, mainb, csa, mask}
+
+#define GC_CELL_COUNT 47u
+static const struct gc_cell gc_cells[GC_CELL_COUNT] = {
+    GC_FAMILY("t8-off", GC_T8, GC_C8888, 0u, 0x20u, 0x20u, 0u, 0xffu),
+    GC_FAMILY("t8-on", GC_T8, GC_C8888, 1u, 0x20u, 0x20u, 0u, 0xffu),
+    GC_FAMILY("t8-on-b40", GC_T8, GC_C8888, 1u, 0x40u, 0x40u, 0u, 0xffu),
+    GC_FAMILY("t4-off", GC_T4, GC_C8888, 0u, 0x20u, 0x20u, 0u, 0xffu),
+    GC_FAMILY("t4-on", GC_T4, GC_C8888, 1u, 0x20u, 0x20u, 0u, 0xffu),
+    GC_FAMILY("t4-on-small", GC_T4, GC_C8888, 1u, 0x20u, 0x02u, 0u, 0xffu),
+    GC_FAMILY("c16-t4-on", GC_T4, GC_C4444, 1u, 0x20u, 0x20u, 0u, 0xffu),
+    GC_FAMILY("c16-t8-on", GC_T8, GC_C4444, 1u, 0x20u, 0x20u, 0u, 0xffu),
+    GC_FAMILY("t4-on-csa1", GC_T4, GC_C8888, 1u, 0x20u, 0x20u, 1u, 0xffu),
+    GC_FAMILY("t8-on-mask1f", GC_T8, GC_C8888, 1u, 0x20u, 0x20u, 0u, 0x1fu),
+    GC_FAMILY("t16-on", GC_T16, GC_C8888, 1u, 0x20u, 0x20u, 0u, 0xffu),
+    {"cap32-csa16-b20", GC_T8, GC_C8888, 0u, 0u, 0x20u, 0x20u, 16u, 0xffu},
+    {"cap32-csa16-b40", GC_T8, GC_C8888, 0u, 0u, 0x40u, 0x40u, 16u, 0xffu},
+    {"cap16-csa16-b20", GC_T8, GC_C4444, 0u, 0u, 0x20u, 0x20u, 16u, 0xffu},
+};
+_Static_assert(sizeof(gc_cells) / sizeof(gc_cells[0]) == GC_CELL_COUNT, "GC_CELL_COUNT");
+
+static uint32_t gc_base(uint32_t tex_format)
+{
+    return tex_format == GC_T4 ? 0u : tex_format == GC_T8 ? 0x10u : 0x20u;
+}
+
+static uint32_t gc_side(uint32_t level)
+{
+    return 64u >> level;
+}
+
+/* Buffer width in texels: whole 16-byte rows. */
+static uint32_t gc_bufw(uint32_t tex_format, uint32_t level)
+{
+    const uint32_t min = tex_format == GC_T4 ? 32u : tex_format == GC_T8 ? 16u : 8u;
+    const uint32_t side = gc_side(level);
+    return side < min ? min : side;
+}
+
+/* Bytes of `texels` texels of `tex_format`. */
+static uint32_t gc_bytes(uint32_t tex_format, uint32_t texels)
+{
+    return tex_format == GC_T4 ? texels / 2u : tex_format == GC_T8 ? texels : texels * 2u;
+}
+
+static uint32_t gc_level_offset(uint32_t tex_format, uint32_t level)
+{
+    uint32_t off = 0;
+    for (uint32_t l = 0; l < level; l++) {
+        off += (gc_bytes(tex_format, gc_bufw(tex_format, l) * gc_side(l)) + 63u) & ~63u;
+    }
+    return off;
+}
+
+/* The texture block for `tex_format`: level L's texel (x, y) = gc_base + 4 L + (x & 3). */
+static void gc_texture(uint32_t tex_format, uint8_t *out)
+{
+    memset(out, 0, GC_TEX_BYTES);
+    for (uint32_t l = 0; l < GC_LEVELS; l++) {
+        uint8_t *base = out + gc_level_offset(tex_format, l);
+        const uint32_t bufw = gc_bufw(tex_format, l);
+        for (uint32_t y = 0; y < gc_side(l); y++) {
+            for (uint32_t x = 0; x < bufw; x++) {
+                const uint32_t index = gc_base(tex_format) + 4u * l + (x & 3u);
+                const uint32_t t = y * bufw + x;
+                if (tex_format == GC_T4) {
+                    base[t / 2u] |= (uint8_t)((index & 0xfu) << ((t & 1u) * 4u));
+                } else if (tex_format == GC_T8) {
+                    base[t] = (uint8_t)index;
+                } else {
+                    base[2u * t] = (uint8_t)index;
+                    base[2u * t + 1u] = (uint8_t)(index >> 8);
+                }
+            }
+        }
+    }
+}
+
+static uint32_t s_gc_main32[GC_TABLE_ENTRIES] __attribute__((aligned(64)));
+static uint32_t s_gc_bg32[GC_TABLE_ENTRIES] __attribute__((aligned(64)));
+static uint16_t s_gc_main16[2u * GC_TABLE_ENTRIES] __attribute__((aligned(64)));
+static uint16_t s_gc_bg16[2u * GC_TABLE_ENTRIES] __attribute__((aligned(64)));
+
+static void gc_tables(void)
+{
+    for (uint32_t k = 0; k < GC_TABLE_ENTRIES; k++) {
+        s_gc_main32[k] = 0xff800000u | ((k >> 8) << 8) | (k & 0xffu);
+        s_gc_bg32[k] = 0xff400000u | ((k >> 8) << 8) | (k & 0xffu);
+    }
+    for (uint32_t k = 0; k < 2u * GC_TABLE_ENTRIES; k++) {
+        s_gc_main16[k] = (uint16_t)(0xf000u | (k & 0x3ffu));
+        s_gc_bg16[k] = (uint16_t)(0xf800u | (k & 0x3ffu));
+    }
+}
+
+static uint32_t gc_fbits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
+static uint32_t gc_phys(const void *p)
+{
+    return (uint32_t)(uintptr_t)p & 0x0fffffffu;
+}
+
+/* The cell's display list; returns the word count. Every state the draw reads is set. */
+static uint32_t gc_list(const struct gc_cell *c, uint32_t vtx, uint32_t tex, uint32_t *out)
+{
+    static const uint8_t off_units[12] = {0x17u, 0x1cu, 0x1du, 0x1fu, 0x20u, 0x21u,
+                                          0x22u, 0x23u, 0x24u, 0x25u, 0x27u, 0x28u};
+    const uint32_t full = (GC_STRIDE - 1u) | ((GC_ROWS - 1u) << 10);
+    const int c16 = c->clut_format == GC_C4444;
+    const uint32_t bg = gc_phys(c16 ? (const void *)s_gc_bg16 : (const void *)s_gc_bg32);
+    const uint32_t mn = gc_phys(c16 ? (const void *)s_gc_main16 : (const void *)s_gc_main32);
+    uint32_t n = 0;
+#define GC_W(cmd, data) (out[n++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(data) & 0x00ffffffu))
+    GC_W(0x10, (vtx >> 8) & 0x000f0000u);
+    GC_W(0x9c, GC_FB_OFFSET);
+    GC_W(0x9d, GC_STRIDE);
+    GC_W(0xd2, 3u);
+    GC_W(0x9e, GC_ZB_OFFSET);
+    GC_W(0x9f, GC_STRIDE);
+    GC_W(0x15, 0);
+    GC_W(0x16, full);
+    GC_W(0xd4, 0);
+    GC_W(0xd5, full);
+    GC_W(0xd6, 0);
+    GC_W(0xd7, 0xffffu);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GC_W(off_units[i], 0);
+    }
+    GC_W(0x50, 0);              /* flat shading */
+    GC_W(0xd3, 0);              /* clear mode off */
+    GC_W(0xe7, 1);              /* depth writes off */
+    GC_W(0xe8, 0);
+    GC_W(0xe9, 0);
+    GC_W(0xdb, 0x00ff0001u);    /* alpha test ALWAYS */
+    GC_W(0xd8, 1);              /* colour test ALWAYS */
+    GC_W(0xd9, 0);
+    GC_W(0xda, 0);
+    GC_W(0xdc, 0x00ff0001u);    /* stencil test ALWAYS */
+    GC_W(0xdd, 0);
+    GC_W(0xde, 1);              /* depth test ALWAYS */
+    GC_W(0xdf, 0x32u);
+    GC_W(0xe0, 0);
+    GC_W(0xe1, 0);
+    GC_W(0xe6, 3);              /* logic op COPY */
+    GC_W(0xcf, 0);
+    GC_W(0xcd, 0);
+    GC_W(0xce, 0);
+    GC_W(0x55, 0xffffffu);
+    GC_W(0x58, 0xffu);
+    /* The background load, then the main load (CBP, CBPH, LOADCLUT). */
+    GC_W(0xb0, bg);
+    GC_W(0xb1, (bg >> 8) & 0x000f0000u);
+    GC_W(0xc4, c->bg_blocks);
+    GC_W(0xb0, mn);
+    GC_W(0xb1, (mn >> 8) & 0x000f0000u);
+    GC_W(0xc4, c->main_blocks);
+    GC_W(0xc5, ((uint32_t)c->csa << 16) | ((uint32_t)c->mask << 8) | c->clut_format);
+    GC_W(0x1e, 1);              /* texture on */
+    GC_W(0xc0, 0);              /* UV mapping */
+    GC_W(0xc2, (3u << 16) | ((uint32_t)c->multi << 8));
+    GC_W(0xc3, c->tex_format);
+    for (uint32_t l = 0; l < GC_LEVELS; l++) {
+        const uint32_t a = tex + gc_level_offset(c->tex_format, l);
+        const uint32_t log2 = 6u - l;
+        GC_W(0xa0 + l, a);
+        GC_W(0xa8 + l, ((a >> 8) & 0x000f0000u) | gc_bufw(c->tex_format, l));
+        GC_W(0xb8 + l, (log2 << 8) | log2);
+    }
+    GC_W(0xc6, 0x004u);         /* nearest, nearest level */
+    GC_W(0xc7, 0x101u);         /* clamp u and v */
+    GC_W(0xc8, ((uint32_t)c->level << 20) | 1u);   /* constant level, bias = level (4.4) */
+    GC_W(0xd0, 0);
+    GC_W(0xc9, 0x103u);         /* REPLACE, RGBA */
+    GC_W(0xca, 0);
+    GC_W(0xcb, 0);              /* texture flush */
+    GC_W(0x4c, 0);
+    GC_W(0x4d, 0);
+    GC_W(0x12, 0x00800183u);    /* through, float uv, float position */
+    GC_W(0x01, vtx);
+    GC_W(0x04, (6u << 16) | 2u);
+    GC_W(0x0f, 0);
+    GC_W(0x0c, 0);
+#undef GC_W
+    return n;
+}
+
+#define GC_WAIT_POLLS 5000u         /* 5000 x 100 us: a half-second bound per draw */
+#define GC_WAIT_POLL_US 100u
+
+static uint8_t s_gc_tex[GC_TEX_BYTES] __attribute__((aligned(64)));
+static uint32_t s_gc_list[GC_LIST_WORDS] __attribute__((aligned(64)));
+static uint32_t s_gc_vtx[GC_VTX_WORDS] __attribute__((aligned(64)));
+static uint32_t s_gc_win[GC_N];
+
+/* The uncached mirror of the 8 KiB colour block at VRAM offset GC_FB_OFFSET. */
+static volatile uint32_t *gc_fb(void)
+{
+    const uint32_t vram = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    return (volatile uint32_t *)(uintptr_t)((vram | 0x40000000u) + GC_FB_OFFSET);
+}
+
+/* One cell: clear the block, queue the list, wait (bounded), read the window back, then the
+   records: `<cell>-draw` (the GE wait outcome and the window digest) and `<cell>-r0`, the
+   window's first row. */
+static void gc_draw(const struct gc_cell *c)
+{
+    static char row[64];
+    hle_step(c->name);
+    volatile uint32_t *fb = gc_fb();
+    for (unsigned i = 0; i < GC_STRIDE * GC_ROWS; i++) {
+        fb[i] = 0u;
+    }
+    __asm__ volatile("sync" ::: "memory");
+    const float x0 = (float)GC_WX, y0 = (float)GC_WY;
+    const float verts[10] = {0.0f, 0.0f, x0, y0, 0.0f,
+                             16.0f, 4.0f, x0 + (float)GC_WW, y0 + (float)GC_WH, 0.0f};
+    for (uint32_t i = 0; i < 10u; i++) {
+        s_gc_vtx[i] = gc_fbits(verts[i]);
+    }
+    gc_texture(c->tex_format, s_gc_tex);
+    const uint32_t words = gc_list(c, gc_phys(s_gc_vtx), gc_phys(s_gc_tex), s_gc_list);
+    sceKernelDcacheWritebackAll();
+    const uint32_t t0 = sceKernelGetSystemTimeLow();
+    const int qid = sceGeListEnQueue(s_gc_list, NULL, -1, NULL);
+    int list_state = qid;
+    int draw_state = -1;
+    int idle = 0;
+    for (unsigned i = 0; i < GC_WAIT_POLLS; i++) {
+        list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
+        draw_state = sceGeDrawSync(1);
+        idle = draw_state == PSP_GE_LIST_DONE;
+        if (idle) {
+            break;
+        }
+        sceKernelDelayThread(GC_WAIT_POLL_US);
+    }
+    const uint32_t elapsed = sceKernelGetSystemTimeLow() - t0;
+    int reset_rc = 0;
+    if (!idle) {
+        PspGeBreakParam param;
+        memset(&param, 0, sizeof(param));
+        reset_rc = sceGeBreak(1, &param);
+        for (unsigned i = 0; i < GC_WAIT_POLLS; i++) {
+            if (sceGeDrawSync(1) == PSP_GE_LIST_DONE) {
+                break;
+            }
+            sceKernelDelayThread(GC_WAIT_POLL_US);
+        }
+    }
+    for (uint32_t i = 0; i < GC_N; i++) {
+        s_gc_win[i] = fb[(GC_WY + i / GC_WW) * GC_STRIDE + GC_WX + i % GC_WW];
+    }
+    uint64_t digest = 0xcbf29ce484222325ull;
+    for (uint32_t i = 0; i < GC_N; i++) {
+        for (uint32_t b = 0; b < 4u; b++) {
+            digest ^= (s_gc_win[i] >> (8u * b)) & 0xffu;
+            digest *= 0x100000001b3ull;
+        }
+    }
+    const uint32_t draw[9] = {(uint32_t)qid, (uint32_t)list_state, (uint32_t)draw_state,
+                              elapsed, (uint32_t)idle, (uint32_t)reset_rc, words,
+                              (uint32_t)digest, (uint32_t)(digest >> 32)};
+    snprintf(row, sizeof(row), "%s-draw", c->name);
+    hle_record(row, qid < 0 ? "FAIL" : idle ? "PASS" : "TIMEOUT", (uint32_t)qid, draw, 9);
+    snprintf(row, sizeof(row), "%s-r0", c->name);
+    hle_record(row, "PASS", 0, s_gc_win, GC_WW);
+}
+
+static int hle_run(void)
+{
+    gc_tables();
+    for (uint32_t i = 0; i < GC_CELL_COUNT; i++) {
+        gc_draw(&gc_cells[i]);
+    }
+    return 1;
+}
+
+#endif /* GE_CASE_CLUT_MIP */
 
 /* ------------------------------------------------------------------------- */
 

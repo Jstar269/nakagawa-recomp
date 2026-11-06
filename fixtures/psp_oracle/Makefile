@@ -238,6 +238,10 @@ CASE_ID = 139
 # one PRIM and in one PRIM each, in 8888 and in 5650 with and without dithering.
 else ifeq ($(CASE),ge-overlap)
 CASE_ID = 153
+# 154: the GE multi-CLUT mip cells (probe_ge_sample.c, #2031): which CLUT entry each mip
+# level of an indexed texture reads, with TEXMODE bit 8 clear and set.
+else ifeq ($(CASE),ge-clut-mip)
+CASE_ID = 154
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -597,6 +601,10 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE overlap cells: the same source as the sample-point cells, case 153.
 else ifeq ($(CASE),ge-overlap)
 TARGET = $(BUILD_DIR)/ge_overlap
+OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
+# The GE multi-CLUT mip cells: the same source as the sample-point cells, case 154.
+else ifeq ($(CASE),ge-clut-mip)
+TARGET = $(BUILD_DIR)/ge_clut_mip
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The instruction trace: its own source, the single-step trampoline and the fixtures
 # header, with the same writer, ThreadManForUser block and module lifecycle as the HLE

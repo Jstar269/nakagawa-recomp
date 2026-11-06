@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 131)
+        self.assertEqual(len(routes), 132)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
-                         | {150, 151, 152, 153},
+                         | {150, 151, 152, 153, 154},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -9744,6 +9744,125 @@ class GeOverlapProbeTests(unittest.TestCase):
                     self.assertGreaterEqual(steps(in_order, other), 3.0, (name, i))
                 checked += 1
         self.assertGreater(checked, 0)
+
+
+class GeClutMipProbeTests(unittest.TestCase):
+    """CASE=ge-clut-mip (154, PSP-GE-MIP-002) in probe_ge_sample.c: the #2031 multi-CLUT mip
+    cells. Each level's texels name the level and each CLUT entry names its index and table, so
+    a pixel decides which entry a level read; the stream matches the registry and the list
+    sets TEXMODE bit 8, the CLUT loads and the constant level the cells claim."""
+
+    probe: ClassVar[str]
+    makefile: ClassVar[str]
+    section: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_CLUT_MIP\n\n")
+        end = cls.probe.index("#endif /* GE_CASE_CLUT_MIP */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),ge-clut-mip)\nCASE_ID = 154\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),ge-clut-mip)\nTARGET = $(BUILD_DIR)/ge_clut_mip\n"
+                      "OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define GE_CASE_CLUT_MIP 154\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "ge-clut-mip"\n#define HLE_TEST_ID "PSP-GE-MIP-002"\n'
+                      '#define HLE_LOG "host0:/ge_clut_mip_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "ge-clut-mip").name,
+                         "ge_clut_mip_log.txt")
+        self.assertEqual(_campaign_completeness_contract("ge-clut-mip"), "strict-golden-sequence")
+        self.assertNotIn("ge-clut-mip", CAMPAIGN_QUEUE_CASES)
+
+    def test_section_calls_only_the_ge_and_cache_imports_and_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
+            "sceGeEdramGetAddr", "sceGeListEnQueue", "sceGeListSync", "sceGeDrawSync",
+            "sceGeBreak", "sceKernelDcacheWritebackAll", "sceKernelDelayThread",
+            "sceKernelGetSystemTimeLow"})
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceGu", "sceDisplay", "sceIo"):
+            self.assertNotIn(banned, self.section)
+        self.assertEqual(self.section.count("i < GC_WAIT_POLLS; i++"), 2)
+        self.assertIn("#define GC_FB_OFFSET 0x00100000u", self.probe)
+        body = _c_function_bodies(self.section)["gc_draw"]
+        self.assertLess(body.index("hle_step(c->name);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceGeListEnQueue("), body.index("hle_record("))
+
+    def test_list_sets_the_bit_the_loads_and_the_constant_level(self) -> None:
+        body = _c_function_bodies(self.section)["gc_list"]
+        for word in ("GC_W(0xc2, (3u << 16) | ((uint32_t)c->multi << 8));",
+                     "GC_W(0xc3, c->tex_format);",
+                     "GC_W(0xc5, ((uint32_t)c->csa << 16) | ((uint32_t)c->mask << 8) | c->clut_format);",
+                     "GC_W(0xc8, ((uint32_t)c->level << 20) | 1u);",
+                     "GC_W(0xc6, 0x004u);", "GC_W(0xc9, 0x103u);", "GC_W(0xc7, 0x101u);",
+                     "GC_W(0x12, 0x00800183u);", "GC_W(0xe7, 1);", "GC_W(0xde, 1);"):
+            self.assertIn(word, body)
+        # The background load comes first, then the main load, both before the draw.
+        bg = body.index("GC_W(0xc4, c->bg_blocks);")
+        main = body.index("GC_W(0xc4, c->main_blocks);")
+        self.assertLess(bg, main)
+        self.assertLess(main, body.index("GC_W(0x04, (6u << 16) | 2u);"))
+        # Blending, dithering, fog and the tests are among the units the off loop clears.
+        units = re.search(r"off_units\[12\] = \{([^}]*)\}", self.section)
+        assert units is not None
+        cleared = {int(word.strip().rstrip("u"), 16) for word in units.group(1).split(",")}
+        self.assertEqual(cleared, {0x17, 0x1c, 0x1d, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+                                   0x27, 0x28})
+
+    def _cells(self) -> list[tuple[str, ...]]:
+        families = re.findall(r'GC_FAMILY\("([a-z0-9-]+)", (GC_T\d+), (GC_C\d+), (\d)u, '
+                              r'(0x[0-9a-f]+)u, (0x[0-9a-f]+)u, (\d+)u, (0x[0-9a-f]+)u\),', self.section)
+        singles = re.findall(r'\{"([a-z0-9-]+)", (GC_T\d+), (GC_C\d+), (\d)u, (\d)u, '
+                             r'(0x[0-9a-f]+)u, (0x[0-9a-f]+)u, (\d+)u, (0x[0-9a-f]+)u\},', self.section)
+        cells = [(f"{name}-l{level}", tf, cf, multi, str(level), bg, main, csa, mask)
+                 for name, tf, cf, multi, bg, main, csa, mask in families for level in range(4)]
+        return cells + [tuple(row) for row in singles]
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["ge-clut-mip"]
+        self.assertEqual(spec.test_id, "PSP-GE-MIP-002")
+        self.assertEqual(spec.terminal_case, "ge-clut-mip-done")
+        cells = self._cells()
+        self.assertEqual(tuple(cell[0] for cell in cells), parse_golden.GE_CLUT_MIP_CELLS)
+        self.assertIn(f"#define GC_CELL_COUNT {len(cells)}u", self.probe)
+        self.assertEqual(spec.ordered_cases[:3], ("t8-off-l0-draw", "t8-off-l0-r0", "t8-off-l1-draw"))
+        self.assertEqual(spec.ordered_cases[-2:], ("cap16-csa16-b20-r0", "ge-clut-mip-done"))
+        self.assertEqual(counts["t4-on-l3-draw"], 9)
+        self.assertEqual(counts["t4-on-l3-r0"], 16)
+        # Each family runs levels 0..3, and every on-cell family has its index format's off
+        # control or shares T8/T4's.
+        self.assertEqual({cell[4] for cell in cells if not cell[0].startswith("cap")}, {"0", "1", "2", "3"})
+
+    def test_levels_and_entries_are_decisive(self) -> None:
+        """A pixel names its level with the bit clear, and an entry names its index and table."""
+        bases = {"GC_T4": 0x00, "GC_T8": 0x10, "GC_T16": 0x20}
+        self.assertIn("return tex_format == GC_T4 ? 0u : tex_format == GC_T8 ? 0x10u : 0x20u;", self.section)
+        self.assertIn("const uint32_t index = gc_base(tex_format) + 4u * l + (x & 3u);", self.section)
+        for fmt, base in bases.items():
+            indices = {level: {base + 4 * level + x for x in range(4)} for level in range(4)}
+            for a in range(4):
+                for b in range(a + 1, 4):
+                    self.assertFalse(indices[a] & indices[b], (fmt, a, b))
+            # T4 indices fit in four bits.
+            if fmt == "GC_T4":
+                self.assertLessEqual(max(max(v) for v in indices.values()), 0xF)
+        self.assertIn("s_gc_main32[k] = 0xff800000u | ((k >> 8) << 8) | (k & 0xffu);", self.section)
+        self.assertIn("s_gc_bg32[k] = 0xff400000u | ((k >> 8) << 8) | (k & 0xffu);", self.section)
+        self.assertIn("s_gc_main16[k] = (uint16_t)(0xf000u | (k & 0x3ffu));", self.section)
+        self.assertIn("s_gc_bg16[k] = (uint16_t)(0xf800u | (k & 0x3ffu));", self.section)
+        # Every table is longer than the largest load (0x40 blocks of 32 bytes).
+        self.assertIn("#define GC_TABLE_ENTRIES 1024u", self.probe)
+        largest = max(int(cell[5], 16) for cell in self._cells()) * 32
+        self.assertLessEqual(largest, 1024 * 4)
+        self.assertLessEqual(largest, 2 * 1024 * 2)
+        # The T16 texture block fits GC_TEX_BYTES with each level at a 64-byte boundary.
+        total = sum((max(64 >> level, 8) * (64 >> level) * 2 + 63) & ~63 for level in range(4))
+        self.assertLessEqual(total, 12288)
 
 
 class ModuleStartProbeTests(unittest.TestCase):

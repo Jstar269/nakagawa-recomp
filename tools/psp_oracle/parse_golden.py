@@ -2297,6 +2297,20 @@ _register_campaign_probe(
     {case: (9 if case.endswith("-draw") else 16) for case in GE_OVERLAP_CASES},
 )
 
+# ge-clut-mip (154, probe_ge_sample.c): the #2031 GE multi-CLUT mip cells. Per cell of the
+# gc_cells table, in order: one `-draw` record (9 words) and the window's first row (`-r0`).
+GE_CLUT_MIP_FAMILIES = ("t8-off", "t8-on", "t8-on-b40", "t4-off", "t4-on", "t4-on-small",
+                        "c16-t4-on", "c16-t8-on", "t4-on-csa1", "t8-on-mask1f", "t16-on")
+GE_CLUT_MIP_CELLS = (*(f"{family}-l{level}" for family in GE_CLUT_MIP_FAMILIES
+                       for level in range(4)),
+                     "cap32-csa16-b20", "cap32-csa16-b40", "cap16-csa16-b20")
+GE_CLUT_MIP_CASES = tuple(case for cell in GE_CLUT_MIP_CELLS
+                          for case in (f"{cell}-draw", f"{cell}-r0"))
+_register_campaign_probe(
+    "ge-clut-mip", "PSP-GE-MIP-002", GE_CLUT_MIP_CASES,
+    {case: (9 if case.endswith("-draw") else 16) for case in GE_CLUT_MIP_CASES},
+)
+
 # module-start (124, probe_module_start.c): the module_start thread cell. A fixed-shape
 # stream of raw words: module_start's own sceKernelReferThreadStatus (return code and the
 # 26-word SceKernelThreadInfo), the user-partition free sizes before and after the helper

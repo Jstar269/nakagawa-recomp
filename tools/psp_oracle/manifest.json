@@ -2112,6 +2112,62 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-GE-MIP-002",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No hardware run of this probe exists yet. It is built to measure which CLUT entry each mip level of an indexed texture reads with TEXMODE bit 8 (multi-CLUT) clear and set, so the software and Vulkan samplers can apply the measured rule (#2031).",
+        "group": "ge",
+        "source": "fixtures/psp_oracle/probe_ge_sample.c",
+        "prx": "ge_clut_mip.prx",
+        "apis": [
+          "sceGeListEnQueue",
+          "sceGeListSync",
+          "sceGeDrawSync",
+          "sceGeBreak",
+          "sceGeEdramGetAddr",
+          "sceKernelDcacheWritebackAll",
+          "sceKernelDelayThread",
+          "sceKernelGetSystemTimeLow",
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "PSP GE CLUT lookup per mip level with TEXMODE bit 8 (multi-CLUT)"
+        ],
+        "diagnostic_case_ids": [
+          "ge-clut-mip"
+        ],
+        "case_ids": [
+          "t8-off-*",
+          "t8-on-*",
+          "t8-on-b40-*",
+          "t4-off-*",
+          "t4-on-*",
+          "t4-on-small-*",
+          "c16-t4-on-*",
+          "c16-t8-on-*",
+          "t4-on-csa1-*",
+          "t8-on-mask1f-*",
+          "t16-on-*",
+          "cap32-csa16-b20-*",
+          "cap32-csa16-b40-*",
+          "cap16-csa16-b20-*",
+          "ge-clut-mip-done"
+        ],
+        "invariant": "#2031: per cell, the raw 8888 pixels of the first row of a 16x4 window (x 16..31, y 8..11 of a 64x32 buffer at VRAM 0x100000) after one through-mode sprite with texture coordinates (0, 0) to (16, 4), nearest filtering and the constant TEXLEVEL mode at bias = level 0..3, over a four-level (64, 32, 16, 8 texels a side) T4, T8 or T16 texture whose level-L texel in column x holds index base + 4 L + (x & 3) (base 0, 0x10, 0x20), through an 8888 or 4444 CLUT whose entry k names k and its table (a background load of bg_blocks blocks, then a main load of main_blocks blocks), with TEXMODE bit 8 clear or set, the CLUT start offset and index mask as the cell gives; REPLACE/RGBA, clamped; blending, every test, fog, dither and depth writes are off",
+        "issues": [
+          2031
+        ],
+        "risk": "low; raw display lists into an 8 KiB colour block at VRAM offset 0x100000 that the CPU clears first; depth test and writes are off; every GE wait is bounded and a list that does not finish resets the queues; no display, callback or device state is changed",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-TRACE-001",
         "status": "implemented",
         "hardware_evidence": "MEASURED",
