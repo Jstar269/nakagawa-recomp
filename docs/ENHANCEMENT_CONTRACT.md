@@ -69,7 +69,7 @@ Camera overrides operate at the 3D projection interface, transforming guest came
 
 PSP titles commonly lock physics and animation loops to 30 Hz or 60 Hz VBLANK ticks. Enhancing presentation or rescaling frame-counted game logic to run at a true 60 Hz requires strict separation from real-time clocks (see #328):
 
-- **Allowed:** Interpolating host rendering between consecutive guest frames; adjusting presentation swap intervals; multiplying display updates while keeping guest timer tick counts authentic; applying declarative frame-rate rescale transforms (`count_x2`, `step_x0.5`, `decay_k_to_1-sqrt(1-k)`, `probability_per_update_x0.5`, `gate_30hz`, `vblank_wait_2_to_1`, `retention_m_to_sqrt(m)`) to verified symbolic sites during an explicit AOT enhancement epoch.
+- **Allowed:** Interpolating host rendering between consecutive guest frames; adjusting presentation swap intervals; multiplying display updates while keeping guest timer tick counts authentic; applying the declarative frame-rate rescale transforms of section 9.2 to verified symbolic sites during an explicit AOT enhancement epoch.
 - **Forbidden:** Speeding up the guest real-time clock (`sceKernelGetSystemTime*`, `sceRtc*`, audio hardware sample clocks) to force higher frame rates, which breaks real-time clocks, physics, and audio synchronization. Only frame-counted logic is rescaled; the game's real-time clock stays 100% authentic.
 - **RNG Policy for 60 Hz Rescaling:** Frame-rate rescale packages must declare an explicit `rng_policy` (`rescale_probability` or `subtick_30hz`) with its rationale. Under `rescale_probability`, stateless per-update probability thresholds use `probability_per_update_x0.5` ($p_{60} = 0.5\,p_{30}$) so expected events per second remain invariant at 60 Hz, while stateful multi-roll PRNG sequences or coupled physics/particle steps use `gate_30hz` to step on alternate 60 Hz ticks (30 Hz cadence) without altering PRNG state evolution.
 
@@ -189,7 +189,9 @@ Each `sites` entry names a symbolic `function`, a 4-byte-aligned `insn_offset`, 
 | --- | --- | --- |
 | `vblank_wait_2_to_1` | `addi`/`addiu`/`slti`/`sltiu`/`ori` with immediate 2 | immediate 2 becomes 1 |
 | `gate_30hz` | `jal`; accumulating `addiu rt, rt, imm`, `addu`/`subu`/`add`/`sub` with the destination as a source, `add.s`/`sub.s` likewise | the statement runs only on even logic updates (§9.5), so every instance runs on the same alternate updates |
+| `gate_30hz_hold` | `jal` | the call runs only on even logic updates, as `gate_30hz`; on a skipped update `f0` takes the value of `f12`. It is for a helper that returns its first float argument advanced by one update (an ease toward a target): a skipped update holds the value, so each 30 Hz value shows for two updates. The resolver refuses the site unless the callee, read from its entry to its `jr $ra` and that delay slot, makes no call, jump or trap, writes no memory, `$ra`, `$sp` or FPU control register, branches only to words up to that `jr $ra`, reads `f12` before it writes it, and writes `f0`: skipping it then drops nothing but its result. The check reads the body in address order, not along each path, and does not look at VFPU registers. The site's evidence shows the rest: that the result is stored back as the value the call advances, and that nothing reads the helper's other outputs |
 | `count_x2` | positive `addi`/`addiu`/`slti`/`sltiu` immediate; `andi` mask $2^n-1$; `lui` of a normal float; `sll`; integer loads; `lwc1`/`swc1`; `sw` (only with `stock_values`, §9.6); `lv.s` (the loaded VFPU register is scaled); single-precision arithmetic and `cvt.s.w`; a unit countdown `addiu rt, rt, -1` | the produced value is doubled (a countdown is gated) |
+| `count_x2_even` | `slti`/`sltiu rt, rs, n` with $0 < n \le$ `0x3FFF` and `rt` neither `$zero` nor `rs` | a bound on a counter of logic updates since an event: true while `rs` $< 2n$ and `rs` is even, so the $n$ events of the stock window still happen, one every second update, at the stock instants (`count_x2` would make $2n$ of them, twice as dense). Under `slti` a negative `rs` stays true, as in stock, so an inactive value such as $-1$ keeps its meaning; under `sltiu` it is a large unsigned value, false in both forms. The resolver refuses the site unless `rs` is loaded from memory (`lb`, `lbu`, `lh`, `lhu` or `lw`) within the 16 instructions before the compare, with no branch, jump or call in between, and not in the delay slot of a jump, a call or a branch-likely. The check reads backward in address order and does not see a branch from elsewhere into those instructions. The site's evidence shows the rest: that the stored count advances by one every update |
 | `step_x0.5`, `probability_per_update_x0.5` | as `count_x2` except integer loads, plus accumulating `+1`/`-1`/`addu`/`subu` updates | the produced value is halved (exactly, or by gating a unit or register step); `add.s fd, fd, ft` halves the addend `ft` |
 | `decay_k_to_1-sqrt(1-k)` | `lui` of a float $k \in (0, 1)$; `lwc1` or `lv.s` of the factor | $k \to 1 - \sqrt{1-k}$, evaluated as $k / (1 + \sqrt{1-k})$ in double so that a small $k$ does not cancel to 0, and rounded to the upper half; after an `lwc1` or `lv.s` the loaded register is mapped at run time, and a value outside $(0, 1)$ keeps its stock value and is reported once per site (`ENHANCEMENT_FACTOR_KEPT`) |
 | `retention_m_to_sqrt(m)` | `lui` of a float $m \in (0, 1)$; `lwc1` or `lv.s` of the factor | $m \to \sqrt{m}$, rounded to the upper half; after an `lwc1` or `lv.s` as for `decay_k_to_1-sqrt(1-k)` |
@@ -216,9 +218,9 @@ Every frame-rate rescale package declares `rng_policy`. Under `rescale_probabili
 
 ### 9.5. Update Boundary: Gating Counts Logic Updates
 
-A gated statement (a `gate_30hz` site, and the unit steps and countdowns whose rewrite is a gate) runs when the number of logic updates begun so far is even. The package says where an update begins with `update_boundary`: a symbolic `function`, a 4-byte-aligned `insn_offset` and the `stock_digest` of one instruction that runs exactly once per logic update, usually the first instruction of the title's per-frame body. While `SR_EXPERIMENTAL_60HZ=1`, that instruction first advances the counter `nk_enhancement_updates` and then runs its stock statement unchanged; with the toggle off nothing is counted.
+A gated statement (a `gate_30hz` or `gate_30hz_hold` site, and the unit steps and countdowns whose rewrite is a gate) runs when the number of logic updates begun so far is even. The package says where an update begins with `update_boundary`: a symbolic `function`, a 4-byte-aligned `insn_offset` and the `stock_digest` of one instruction that runs exactly once per logic update, usually the first instruction of the title's per-frame body. While `SR_EXPERIMENTAL_60HZ=1`, that instruction first advances the counter `nk_enhancement_updates` and then runs its stock statement unchanged; with the toggle off nothing is counted.
 
-1. **Required when anything gates.** The validator refuses a package with a `gate_30hz` site and no `update_boundary`, and codegen refuses one whose planned rewrites include any gate without it.
+1. **Required when anything gates.** The validator refuses a package with a `gate_30hz` or `gate_30hz_hold` site and no `update_boundary`, and codegen refuses one whose planned rewrites include any gate without it.
 2. **Verified like a site.** The boundary's function resolves and its stock word is checked against `stock_digest` the same way, fail-closed. It may not be a control transfer or a rewritten site, and a package whose boundary is never emitted is refused like an unemitted site.
 3. **Correct under frame drops.** The count advances once per update however many display VBLANKs that update takes, so gated statements keep alternating when an update overruns a VBLANK or a stock two-VBLANK wait still runs. `tools/test_enhancement_package.py` compiles the generated gate and runs updates of one to three VBLANKs to check it.
 4. **Slowdown is reported.** An update that takes longer than one VBLANK of host time is followed by the title's own wait for the next VBLANK, so the logic runs below 60 updates per second while every per-update step stays halved: the game plays slower than the original. The generated start-up hands `nk_enhancement_updates` to the runtime (`sr_enhancement_register_updates()`), which compares it once a second. Logic that runs but stays under 57 updates per second for three seconds in a row is logged as `ENHANCEMENT_LOGIC_SLOWED` and shown in the game window as a red `60 FPS logic: <n>/s - SLOWED` line, with or without the F3 HUD. A second with no update at all (a load or a pause) clears the count.
@@ -244,7 +246,7 @@ Some titles parse a table from disc at load time and store each field into RAM w
 - **A store site that never runs.** With the toggle on, when the process ends, each site with `stock_values` that stored no value prints `ENHANCEMENT_DATA_SITE_NOT_REACHED: site <id> at 0x<pc> stored no value in this run; whatever it should have rescaled stayed stock`: the title filled the field on another path, and its readers saw stock values. A run stopped by `ENHANCEMENT_DATA_MISMATCH` prints only the mismatch. The line is printed at an ordinary exit and on the runtime's `_Exit` paths (the headless end of run, a route failure, a capture exit, an unsupported import, a guest fault), through `sr_at_process_end()` in `src/rt/perf.h`. It is a report and leaves the exit status as it is: those statuses already mean something (a route result, a capture code), and the site may legitimately not have run yet when the run ends early. A tool that accepts a 60 Hz run checks for the line.
 - **Choosing the store.** The site must be the last store of the value: after any clamp or range check the title applies to the field, or a scaled value the title clamps afterwards is lost without a line. If a later store cannot be ruled out, keep the scaled values inside the clamp.
 - **A scaled value that is also a stock value.** The check compares the stored value with the stock list, so it cannot tell a stock value from an already scaled value that equals another stock value (stock values 30 and 60 with `count_x2`: a re-stored 60 that was a scaled 30 is scaled again to 120). The package is not refused, because one table can hold both v and 2v, but codegen prints `warning: enhancement site <id>: stock value <v> scales to <w>, which is also a stock value; ...` once per such value. The package author checks that no path stores an already scaled value again through that instruction.
-- **`requires`** is a non-empty list of site ids, each another site of the package that declares `stock_values`. The site runs its rewrite only after every required site has applied at least once in the run; until then it runs its stock statement, and the first time that happens it prints `ENHANCEMENT_SITE_GATED: site <id> at 0x<pc> runs stock: <required id> has not applied` once. It works for every rewrite kind. The package refuses an unknown id, the site's own id, a duplicate, an id that names a data site or data file, and a required site that itself declares `requires`.
+- **`requires`** is a non-empty list of site ids, each another site of the package that declares `stock_values`. The site runs its rewrite only after every required site has applied at least once in the run; until then it runs its stock statement, and the first time that happens it prints `ENHANCEMENT_SITE_GATED: site <id> at 0x<pc> runs stock: <required id> has not applied` once. It works for every rewrite kind; on a gated call (`gate_30hz` or `gate_30hz_hold` on a `jal`) the stock statement is the call made on every update. The package refuses an unknown id, the site's own id, a duplicate, an id that names a data site or data file, and a required site that itself declares `requires`.
 - **"In the run" means the process.** Application counts and the gate are kept for the life of the process, including after an in-process `LoadExec`: a site that applied before it still counts as applied.
 
 ### 9.7. Side-by-Side Timing Check
@@ -550,3 +552,51 @@ No guest-visible item is admitted by this section alone. Each lands in its own p
 - **Per-title off switch (section 11.2, item 5).** None. No title is known to regress with the item on.
 - **Evidence tools (section 11.2, item 6).** `ACE_MODE: on (...)` and the flight recorder's `runtime.enhancements`
   carry `sas=` with the rest of the launch line, and section 10.4's refusals apply to the run unchanged.
+
+#### 11.3.2. The 60 FPS logic transforms `count_x2_even` and `gate_30hz_hold`
+
+Every section 9 transform rewrites guest code, so what the guest computes differs with it on. These two are the
+first section 9 transforms admitted under this section; a later section 9 transform is admitted the same way, with
+its own entry.
+
+- **Key.** The title's "60 FPS game logic" setting of section 9.1, item 2: the player's
+  `enhancement_60hz_discs` list (or `--experimental-60hz` for the session), which launches the title's enhanced
+  package with `SR_EXPERIMENTAL_60HZ=1`. A transform acts only at the sites the title's package names with it, so
+  each title's package is that title's switch for each transform.
+- **Off switch.** The same setting, per title: turning a title's 60 FPS game logic off launches its authentic
+  package with `SR_EXPERIMENTAL_60HZ=0`, and any value other than `1` runs every stock statement. This switch is
+  coarser than section 11.2, item 2 asks: it turns off every section 9 transform of the title's package together,
+  not these two alone, and there is no launch-line key or library setting for them alone. A package leaves either
+  transform out for its title by not naming it (the site keeps its stock instruction, or names `count_x2` or
+  `gate_30hz` instead); that is the per-title data of section 11.2, item 5.
+- **What it changes.** `count_x2_even` doubles a `slti`/`sltiu` bound on a counter of logic updates and reads false
+  on a non-negative odd count, so the window's events happen at the stock instants. `gate_30hz_hold` skips a call to
+  an ease helper on odd logic updates and gives `f0` the value of `f12`, so each 30 Hz value shows for two updates.
+- **What the guest can observe.**
+  - Guest registers and memory: at a `count_x2_even` site, the compare's `rt` is 0 on an odd count below twice the
+    bound, where `count_x2` would give 1. At a skipped `gate_30hz_hold` call, `f0` is the held value and the
+    callee's other result registers keep their earlier values; no memory differs, because the resolver refuses a
+    callee that writes memory. Everything the logic computes from these values, and so what it draws, follows them,
+    as for every site of a 60 Hz package.
+  - VRAM bytes: no transform writes VRAM; the frames drawn follow the logic, as above.
+  - Readbacks: unchanged; neither transform reads or writes a GE or display readback.
+  - Timing the guest can measure: no VBLANK, DMA, GE list or media clock changes. An odd update does less work, by
+    the skipped call.
+  - I/O speed: unchanged.
+- **Tier and default.** Ace: on only for a title whose package names the sites and whose 60 FPS game logic is
+  selected. Off by default, as 60 FPS game logic is.
+- **Authentic stays byte-identical.** Without `--enhancement-package`, codegen output and the cache key's codegen
+  options are those of a build without this feature (section 9.1, item 1). With the package built in and the toggle
+  off, every site runs its stock statement. `test_count_x2_even_and_gate_30hz_hold_match_30hz_when_run` in
+  `tools/test_enhancement_package.py` builds a fixture with the package and without it, checks that each site's
+  toggle-off statement is the Authentic statement byte for byte, runs the same harness on both builds, and checks
+  that the toggle-off output equals the Authentic output byte for byte.
+- **Sampled checking.** With `SR_EXPERIMENTAL_60HZ=1`, the in-play verifier
+  ([sampled in-play checking](DEBUGGING.md#sampled-in-play-checking)) compares the enhanced code with the stock
+  reference interpreter, so a sampled call whose body holds any enhancement site, these two included, reports a
+  mismatch there; there is no enhancement skip class. Run it with the toggle off, or read such a mismatch as
+  expected. A skipped `gate_30hz` or `gate_30hz_hold` call never reaches its return boundary, so it starts no check.
+- **"Nothing worse".** The transforms replace `count_x2` and `gate_30hz` where those were wrong, and their tests pin
+  that: an event window keeps its stock count and instants, and a held ease keeps its 30 Hz values. The private
+  comparison runs of section 11.2, item 4 are recorded in the pull request that turns a title's 60 FPS game logic
+  on by default, not here; until they exist it stays off by default, as it is today.
