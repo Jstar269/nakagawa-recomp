@@ -5023,7 +5023,7 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
         /* 60 FPS game logic is on and its package is gone: the original game
            is not started in its place. */
         player_app_set_error(
-            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS Enhancement Unavailable",
+            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS enhancement unavailable",
             "60 FPS game logic is on for this game, but its enhancement package is missing "
             "or not valid. Turn the enhancement off on the game's page to play the original "
             "game, or put the package back.",
@@ -5828,7 +5828,7 @@ static bool player_app_start_package_build_view(PlayerApp *app, int game_index,
     if (game_index < 0 || game_index >= app->game_count) return false;
     if (player_app_title_60hz_blocked(app, game_index)) {
         player_app_set_error(
-            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS Enhancement Unavailable",
+            app, "ENHANCEMENT_UNAVAILABLE", "60 FPS enhancement unavailable",
             "60 FPS game logic is on for this game, but its enhancement package is missing "
             "or not valid. Turn the enhancement off on the game's page to build the "
             "original game, or put the package back.",
@@ -5872,7 +5872,7 @@ static bool player_app_start_package_build_view(PlayerApp *app, int game_index,
         snprintf(unavailable, sizeof(unavailable),
                  "%s before building the package or installing tools.",
                  player_data_dir_unavailable_text(nk_platform_host_kind()));
-        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Data folder not found",
                              unavailable, "Back to library", VIEW_LIBRARY);
         return false;
     }
@@ -6168,7 +6168,7 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
         char unavailable[256];
         snprintf(unavailable, sizeof(unavailable), "%s before inspecting installed tools.",
                  player_data_dir_unavailable_text(nk_platform_host_kind()));
-        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Data folder not found",
                              unavailable, "Back to settings", VIEW_SETTINGS);
         return false;
     }
@@ -6248,7 +6248,7 @@ bool player_app_request_user_folder(PlayerApp *app, NkPathType kind) {
         char unavailable[256];
         (void)snprintf(unavailable, sizeof(unavailable), "%s before showing this folder.",
                        player_data_dir_unavailable_text(nk_platform_host_kind()));
-        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Data folder not found",
                              unavailable, "Back to settings", VIEW_SETTINGS);
         return false;
     }
