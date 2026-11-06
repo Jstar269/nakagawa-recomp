@@ -412,6 +412,11 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
             if lines[index].startswith("volatile int sr_dispatch_unwind_requested;"):
                 continue  # the definition
             readers.add(_enclosing_function(lines, index))
+            # A refusal is the only thing the flag lets through: the read is guarded by the
+            # fatal flow the refusal set, so any other failure still ends the run.
+            self.assertIn("sr_dispatch_unwind_requested && s->flow_kind == SR_FLOW_FATAL",
+                          lines[index], f"recomp.c:{index + 1} reads the flag without the "
+                          "fatal-flow guard")
         self.assertEqual(readers, {"dispatch_call_checked", "dispatch_call_continue"})
 
         domain = _strip_comments_keep_lines((RT / "domain_mode.c").read_text(encoding="utf-8"))
@@ -419,6 +424,8 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
         self.assertTrue(uses)
         self.assertEqual(sorted(set(uses)), ["sr_dispatch_unwind_requested = 0;",
                                              "sr_dispatch_unwind_requested = 1;"])
+        # Cleared twice: after the guest lane returns and in sr_cosim_reset.
+        self.assertGreaterEqual(uses.count("sr_dispatch_unwind_requested = 0;"), 2)
 
         others = []
         for _, relative, text in self._runtime_sources():

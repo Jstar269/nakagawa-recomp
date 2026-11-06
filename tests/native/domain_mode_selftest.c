@@ -373,6 +373,7 @@ static void test_cosim_lane(void) {
 #define EXP_VRAM     (TEST_EXPORT + 0x60u)
 #define EXP_CHECKED  (TEST_EXPORT + 0x70u)
 #define EXP_HELPER   (TEST_EXPORT + 0x80u)
+#define EXP_CONTINUE (TEST_EXPORT + 0x90u)
 #define COSIM_VRAM_A 0x04000100u   /* the renderer holds a newer byte here */
 #define COSIM_VRAM_B 0x04001000u   /* both lanes store here */
 
@@ -439,6 +440,22 @@ static void exp_checked(CpuState *s) {
     s->r[2] = s_syscall_canned;
 }
 
+/* The interpreter's AOT handoff: an interpreted linked call hands its live frame
+ * to a native body (dispatch_call_continue, from guest_interp.c), here one that
+ * reaches an import. */
+static int s_continue_result;
+
+static void exp_continue(CpuState *s) {
+    s_export_ran++;
+    MEM_W8(COSIM_DATA, 0xEEu);
+    const SrGuestInterpCallBoundary call = {.resume_pc = EXP_CONTINUE + 8u};
+    s_continue_result = dispatch_call_continue(s, EXP_HELPER, &call);
+    if (s_continue_result) {
+        return;
+    }
+    s->r[2] = s_syscall_canned;
+}
+
 /* Same VRAM store as the HLE stand-in, made while the renderer holds newer bytes. */
 static void exp_vram(CpuState *s) {
     s_export_ran++;
@@ -456,6 +473,8 @@ static void cosim_fixture(CpuState *s, uint32_t export_addr) {
     s_hle_write_addr = COSIM_DATA;
     s_hle_write_value = 0xA5u;
     s_export_ran = 0;
+    s_helper_ran = 0;
+    s_helper_continued = 0;
     s->pc = STUB_PC;
     s->r[29] = COSIM_SP;
     s->r[16] = COSIM_S0;
@@ -475,6 +494,7 @@ static void test_cosim_dual_run(void) {
     sr_register(EXP_VRAM, exp_vram);
     sr_register(EXP_CHECKED, exp_checked);
     sr_register(EXP_HELPER, exp_helper);
+    sr_register(EXP_CONTINUE, exp_continue);
 
     /* MATCH: both lanes run from the same input, the HLE lane is kept. */
     cosim_fixture(&s, EXP_SAME);
@@ -618,6 +638,29 @@ static void test_cosim_dual_run(void) {
               s.flow_kind == SR_FLOW_NONE && MEM_R8(COSIM_DATA) == 0xA5u,
           "the HLE lane runs once and its result is kept (%u calls)", s_syscall_calls);
     CHECK(sr_dispatch_unwind_requested == 0, "the unwind flag is clear after the lane");
+
+    /* The same import reached under the interpreter's handoff of a live frame to
+     * a native body (dispatch_call_continue): the refusal unwinds through it too
+     * (#2171 delta review N-new-2). Without its guard the process ends. */
+    cosim_fixture(&s, EXP_CONTINUE);
+    s_syscall_calls = 0u;
+    rc = sr_import_call(&s, NID_PAIR, STUB_PC);
+    sr_domain_cosim_last_result(&r);
+    CHECK(s_export_ran == 1 && s_helper_ran == 1,
+          "the export and its handed-off body run in the guest lane (%d, %d)", s_export_ran,
+          s_helper_ran);
+    CHECK(s_helper_continued == 0, "the handed-off body does not run past the refused import");
+    CHECK(s_continue_result == 1, "dispatch_call_continue tells its caller to return (got %d)",
+          s_continue_result);
+    CHECK(r.outcome == SR_COSIM_OUTCOME_NOT_COMPARED &&
+              r.reason == SR_COSIM_REASON_NESTED_IMPORT && r.nested_nid == NID_HLE,
+          "an import under a handoff is NOT_COMPARED nested-import (outcome %d reason %d)",
+          (int)r.outcome, (int)r.reason);
+    CHECK(s_syscall_calls == 1u && s_syscall_last_nid == NID_PAIR && rc == (int)s_syscall_canned &&
+              s.flow_kind == SR_FLOW_NONE && MEM_R8(COSIM_DATA) == 0xA5u,
+          "the HLE lane runs once after the handoff and its result is kept (%u calls)",
+          s_syscall_calls);
+    CHECK(sr_dispatch_unwind_requested == 0, "the unwind flag is clear after the handoff lane");
 
     /* Dispatch refuses the guest export: NOT_COMPARED, never fatal, HLE kept. */
     cosim_fixture(&s, EXP_SAME);

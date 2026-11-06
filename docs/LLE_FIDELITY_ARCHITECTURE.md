@@ -243,9 +243,14 @@ two can be compared call by call (#2148). The check is the `SR_MODE_COSIM` lane 
 
 - **Guest lane.** The export runs through the production linked-call boundary. An import it
   reaches is refused and unwinds the lane, so no host-side effect (a kernel object, a file
-  position, a device) happens twice. The unwind also passes computed calls and interpreted
-  handoffs (`dispatch_call_checked`, `dispatch_call_continue`), which honour it only while the
-  guest lane runs; everywhere else they still end the run on a fatal flow.
+  position, a device) happens twice. The unwind passes direct calls, checked computed calls
+  (`dispatch_call_checked`, a generated `jalr` site) and the interpreter's handoff of a live frame
+  to a native body (`dispatch_call_continue`). Those two boundaries honour it only while the guest
+  lane runs; everywhere else they still end the run on a fatal flow. Three other boundaries do not
+  unwind yet and end the process (exit 1) when the lane reaches an import under them: an
+  interpreted linked call into a native body (`dispatch_call`), a computed tail transfer
+  (`dispatch_tail_step`) and an interpreted transfer into a native body with no call boundary
+  (`dispatch`). Nothing is hidden there; the run stops.
 - **HLE lane.** Guest memory and CPU state go back to the input state and the handler runs as in
   `SR_MODE_HLE`. Its result is what the guest keeps, so a difference never changes a run.
 - **Compared.** `v0`, the callee-saved registers (`s0`-`s7`, `gp`, `sp`, `fp`) and every byte of
