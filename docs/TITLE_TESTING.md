@@ -85,7 +85,9 @@ the analog stick's four directions to that list (`stick_up`, `stick_down`,
 `stick_left`, `stick_right`, with the same `primary` and `secondary` keys). A schema 2
 file such as this one loads with the default keyboard keys, stick included.
 Schema 5 adds an optional `aim` member to each mapping (mouse movement as the analog stick,
-[#1791](https://github.com/Jstar269/nakagawa-recomp/issues/1791)); a file without it loads with aiming off.
+[#1791](https://github.com/Jstar269/nakagawa-recomp/issues/1791)); a file without it loads with aiming off. The host scales the movement by the time between polls, so the same hand speed
+gives the same stick at any frame rate; there is no mouse dead zone (one count at 100% is about 7 of 127 stick units);
+and aiming is off under `SR_PADSCRIPT`, where a script drives the pad.
 
 Rules the validator enforces, in addition to the runtime parser's:
 

@@ -35,6 +35,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1247,10 +1248,32 @@ static uint32_t gamepad_button(Uint8 button) {
     return psp_btn;
 }
 
-/* The mouse counts to hand the aim step this poll; the fraction stays for the next one. */
-static int32_t aim_take_counts(float *accumulated) {
-    const float whole = truncf(*accumulated);
-    *accumulated -= whole;
+/* Mouse aiming works in counts per reference poll of 1/60 s (NK_AIM_FULL_DEFLECTION_COUNTS),
+ * but the host polls once per presented frame, so the movement is scaled by the time since
+ * the last aim poll: the same hand speed gives the same nub whatever the frame rate, and a
+ * frame hitch does not saturate it. */
+#define AIM_REFERENCE_POLL_NS 16666667ull
+#define AIM_MIN_POLL_NS 4166667ull       /* polls closer than 1/240 s count as 1/240 s */
+#define AIM_STALL_NS 250000000ull        /* a longer gap is a stall, not a hand movement */
+
+static uint64_t aim_clock_ns_default(void) { return SDL_GetTicksNS(); }
+/* Test seams: the clock, and the call that grabs or frees the pointer. */
+static uint64_t (*s_aim_clock_ns)(void) = aim_clock_ns_default;
+static bool aim_relative_mode_default(bool want) {
+    if (!s_win || s_window_hidden) return false;   /* headless runs never grab the pointer */
+    return SDL_SetWindowRelativeMouseMode(s_win, want);
+}
+static bool (*s_aim_relative_mode)(bool) = aim_relative_mode_default;
+static uint64_t s_aim_last_ns;                    /* 0 = no previous aim poll */
+static float    s_aim_rem_x, s_aim_rem_y;         /* scaled fractions kept for the next poll */
+
+/* Scale the raw movement to counts per reference poll and hand over the whole counts; the
+ * fraction stays for the next poll. `scale` is reference period / elapsed. */
+static int32_t aim_take_counts(float *raw, float *rem, float scale) {
+    const float scaled = *raw * scale + *rem;
+    const float whole = truncf(scaled);
+    *raw = 0.0f;
+    *rem = scaled - whole;
     if (whole > 2147483000.0f) return INT32_MAX;
     if (whole < -2147483000.0f) return INT32_MIN;
     return (int32_t)whole;
@@ -1260,15 +1283,39 @@ static int32_t aim_take_counts(float *accumulated) {
  * or a profile that turns aiming off all start the next poll from rest. */
 static void aim_reset(void) {
     s_mouse_fx = s_mouse_fy = 0.0f;
+    s_aim_rem_x = s_aim_rem_y = 0.0f;
+    s_aim_last_ns = 0;
     nk_aim_state_reset(&s_aim_state);
 }
 
 /* The window grabs the pointer while aiming is on and the game has the input, and gives it
- * back as soon as either stops. A hidden window (headless runs) never grabs it. */
+ * back as soon as either stops. The flag follows what the window really did, so a request
+ * that could not be applied (no window, hidden window) is asked again next poll instead of
+ * being remembered as done. */
 static void aim_set_capture(bool want) {
     if (want == s_mouse_captured) return;
-    s_mouse_captured = want;
-    if (s_win && !s_window_hidden) SDL_SetWindowRelativeMouseMode(s_win, want);
+    if (s_aim_relative_mode(want)) s_mouse_captured = want;
+}
+
+/* The nub for this poll's movement. The first poll after a reset, and a stall, count as one
+ * reference poll and drop the movement that built up. */
+static bool aim_poll(const NkAimConfig *cfg, uint8_t *lx, uint8_t *ly) {
+    const uint64_t now = s_aim_clock_ns();
+    uint64_t dt = AIM_REFERENCE_POLL_NS;
+    if (s_aim_last_ns != 0 && now > s_aim_last_ns) {
+        dt = now - s_aim_last_ns;
+        if (dt > AIM_STALL_NS) {
+            s_mouse_fx = s_mouse_fy = 0.0f;
+            s_aim_rem_x = s_aim_rem_y = 0.0f;
+            dt = AIM_REFERENCE_POLL_NS;
+        } else if (dt < AIM_MIN_POLL_NS) {
+            dt = AIM_MIN_POLL_NS;
+        }
+    }
+    s_aim_last_ns = now ? now : 1;
+    const float scale = (float)AIM_REFERENCE_POLL_NS / (float)dt;
+    return nk_aim_apply(cfg, &s_aim_state, aim_take_counts(&s_mouse_fx, &s_aim_rem_x, scale),
+                        aim_take_counts(&s_mouse_fy, &s_aim_rem_y, scale), lx, ly);
 }
 
 static void pause_request_latch(int request) {
@@ -1390,8 +1437,7 @@ static void poll_input_on_this_stack(void *arg) {
         const bool aim_on = aim_prof && aim_prof->aim.mouse && !s_claim_sink;
         aim_set_capture(aim_on);
         if (aim_on) {
-            (void)nk_aim_apply(&aim_prof->aim, &s_aim_state, aim_take_counts(&s_mouse_fx),
-                               aim_take_counts(&s_mouse_fy), &lx, &ly);
+            (void)aim_poll(&aim_prof->aim, &lx, &ly);
         } else {
             aim_reset();
         }
@@ -3078,6 +3124,7 @@ void sdl3vk_shutdown(void) {
     }
     if (s_pad)         { SDL_CloseGamepad(s_pad); s_pad = NULL; }
     if (s_win)         { SDL_DestroyWindow(s_win); s_win = NULL; }
+    s_mouse_captured = false;                      /* the window took its grab with it */
     if (s_sdl_subsystems) {
         SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
         s_sdl_subsystems = 0;

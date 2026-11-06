@@ -3261,6 +3261,45 @@ static void test_mouse_aim(void) {
     nk_aim_state_reset(&state);
     assert(nk_aim_apply(&cfg, &state, 3, 3, NULL, &ly) && ly == 128 + 23);
     assert(!nk_aim_apply(&cfg, &state, 3, 3, NULL, NULL));
+
+    /* The state reset a focus loss or an overlay claim does: smoothing carried from before
+     * is gone, so the next poll starts from rest. */
+    cfg.smoothing = 50;
+    nk_aim_state_reset(&state);
+    assert(nk_aim_apply(&cfg, &state, 16, 0, &lx, &ly));
+    assert(state.sx != 0);
+    nk_aim_state_reset(&state);
+    assert(state.sx == 0 && state.sy == 0);
+    lx = 128; ly = 128;
+    assert(!nk_aim_apply(&cfg, &state, 0, 0, &lx, &ly) && lx == 128 && ly == 128);
+
+    /* Aiming is per title: a disc's own mapping carries its own aim settings, another disc
+     * and the global mapping keep theirs, and the settings survive a save and reload. */
+    {
+        char pt_diag[256];
+        NkInputProfileFile doc;
+        nk_input_profile_file_init_default(&doc);
+        NkInputProfile shooter;
+        nk_input_profile_init_default(&shooter);
+        shooter.aim.mouse = true;
+        shooter.aim.sensitivity = 300;
+        shooter.aim.invert_y = true;
+        assert(nk_input_profile_file_set_title(&doc, "UCUS98701", &shooter, pt_diag,
+                                               sizeof(pt_diag)) == NK_OK);
+        const char *pt_path = SR_SELFTEST_BUILD_ROOT "/test_per_title_aim.json";
+        assert(nk_input_profile_file_save(&doc, pt_path, pt_diag, sizeof(pt_diag)) == NK_OK);
+        NkInputProfileFile back;
+        assert(nk_input_profile_file_load(&back, pt_path, pt_diag, sizeof(pt_diag)) == NK_OK);
+        const NkInputProfile *mine = nk_input_profile_file_resolve(&back, "UCUS98701", pt_diag,
+                                                                   sizeof(pt_diag));
+        assert(mine == &back.title[0] && mine->aim.mouse && mine->aim.sensitivity == 300 &&
+               mine->aim.invert_y && !mine->aim.invert_x);
+        const NkInputProfile *other = nk_input_profile_file_resolve(&back, "ULES99999", pt_diag,
+                                                                    sizeof(pt_diag));
+        assert(other == &back.global && !other->aim.mouse &&
+               other->aim.sensitivity == NK_AIM_SENSITIVITY_DEFAULT);
+        remove(pt_path);
+    }
     printf("[INPUT_PROFILE_TEST] Subtest 18 PASSED!\n");
 }
 

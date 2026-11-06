@@ -248,9 +248,13 @@ typedef enum {
  *
  * Each input poll, the mouse movement since the last poll (host counts, raw, with no
  * acceleration) is turned into a nub deflection: NK_AIM_FULL_DEFLECTION_COUNTS counts in
- * one poll at 100% sensitivity push the nub to its edge, and the nub returns to centre
- * when the mouse stops. A moving mouse replaces the controller's or keyboard's value on
- * that axis; a still one leaves it alone.
+ * one reference poll (1/60 s) at 100% sensitivity push the nub to its edge, and the nub
+ * returns to centre when the mouse stops. The host polls once per presented frame, so it
+ * scales the movement by the time since the last poll before it calls nk_aim_apply: the
+ * same hand speed gives the same nub at any frame rate. There is no deadzone: one count at
+ * 100% is already about 7 of the nub's 127 units. A moving mouse replaces the controller's
+ * or keyboard's value on that axis; a still one leaves it alone. Aiming is off under
+ * SR_PADSCRIPT, where a script drives the pad.
  */
 #define NK_AIM_SENSITIVITY_MIN 1
 #define NK_AIM_SENSITIVITY_MAX 1000

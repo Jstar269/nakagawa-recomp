@@ -801,6 +801,18 @@ static void aim_test_motion(float dx, float dy) {
     SDL_PushEvent(&ev);
 }
 
+/* The clock and the pointer grab are the aim step's seams: the test sets the time between
+ * polls and records what the window was asked to do. */
+static uint64_t aim_test_now, aim_test_step;
+static uint64_t aim_test_clock(void) { aim_test_now += aim_test_step; return aim_test_now; }
+static int aim_test_grab_calls, aim_test_grab_last = -1;
+static bool aim_test_grab_result = true;
+static bool aim_test_grab(bool want) {
+    aim_test_grab_calls++;
+    aim_test_grab_last = want ? 1 : 0;
+    return aim_test_grab_result;
+}
+
 static void aim_test_stick(uint8_t *lx, uint8_t *ly) {
     int quit = 0;
     poll_input(&quit);
@@ -818,6 +830,13 @@ static int sdl3vk_mouse_aim_selftest(void) {
     uint8_t lx, ly;
     int quit = 0;
     NkInputProfile custom;
+    s_aim_clock_ns = aim_test_clock;
+    s_aim_relative_mode = aim_test_grab;
+    aim_test_now = 1000000000ull;
+    aim_test_step = AIM_REFERENCE_POLL_NS;
+    aim_test_grab_calls = 0;
+    aim_test_grab_last = -1;
+    aim_test_grab_result = true;
 
     /* Off (the default): a moving mouse leaves the nub at centre. */
     sdl3vk_reset_input_profile();
@@ -831,6 +850,7 @@ static int sdl3vk_mouse_aim_selftest(void) {
     aim_test_motion(40.0f, 40.0f);
     aim_test_stick(&lx, &ly);
     AIM_CHECK(lx == 128 && ly == 128, "aim off: the mouse moved the nub to %u,%u", lx, ly);
+    AIM_CHECK(aim_test_grab_calls == 0, "aim off: the pointer was grabbed (%d calls)", aim_test_grab_calls);
 
     /* On: 8 counts right and 16 up at 100% are half and full deflection. */
     custom.aim.mouse = true;
@@ -870,16 +890,102 @@ static int sdl3vk_mouse_aim_selftest(void) {
         aim_test_motion(16.0f, 16.0f);
         aim_test_stick(&lx, &ly);
         AIM_CHECK(lx == 128 && ly == 128, "a claimed mouse moved the nub to %u,%u", lx, ly);
+        AIM_CHECK(aim_test_grab_last == 0 && !s_mouse_captured,
+                  "the overlay holds the input but the pointer is still grabbed");
         sdl3vk_set_input_claim(NULL, NULL);
         aim_test_stick(&lx, &ly);
         AIM_CHECK(lx == 128 && ly == 128, "the claim's mouse movement reached the game (%u,%u)",
                   lx, ly);
+        AIM_CHECK(aim_test_grab_last == 1 && s_mouse_captured,
+                  "the pointer was not grabbed again once the game had the input");
     }
+
+    /* The grab is asked for once, not every poll, and a request that could not be applied
+     * (no window) is not remembered as done: it is asked again until it works. */
+    {
+        int calls = aim_test_grab_calls;
+        aim_test_stick(&lx, &ly);
+        aim_test_stick(&lx, &ly);
+        AIM_CHECK(aim_test_grab_calls == calls, "a held grab was asked for again (%d calls)",
+                  aim_test_grab_calls - calls);
+        PauseTestSink sink = {0};
+        sdl3vk_set_input_claim(pause_test_sink, &sink);
+        aim_test_stick(&lx, &ly);
+        sdl3vk_set_input_claim(NULL, NULL);
+        aim_test_grab_result = false;
+        aim_test_grab_calls = 0;
+        aim_test_stick(&lx, &ly);
+        aim_test_stick(&lx, &ly);
+        AIM_CHECK(!s_mouse_captured && aim_test_grab_calls == 2,
+                  "a failed grab was latched as done (captured=%d, %d calls)", s_mouse_captured,
+                  aim_test_grab_calls);
+        aim_test_grab_result = true;
+        aim_test_stick(&lx, &ly);
+        AIM_CHECK(s_mouse_captured, "the grab was not retried after it could succeed");
+        /* The real call with no window (headless) does nothing and latches nothing. */
+        s_aim_relative_mode = aim_relative_mode_default;
+        s_mouse_captured = false;
+        aim_test_stick(&lx, &ly);
+        AIM_CHECK(!s_mouse_captured, "a run with no window latched a grab");
+        s_aim_relative_mode = aim_test_grab;
+        aim_test_stick(&lx, &ly);
+    }
+
+    /* The nub follows the hand's speed, not the frame rate: the same movement over twice the
+     * time is half the deflection, a frame hitch is not a saturated nub, polls faster than
+     * 1/240 s count as 1/240 s, and a stall throws its movement away. */
+    {
+        aim_reset();
+        aim_test_stick(&lx, &ly);                 /* first poll after a reset: one reference poll */
+        aim_test_step = 2 * AIM_REFERENCE_POLL_NS;
+        aim_test_motion(16.0f, 0.0f);
+        aim_test_stick(&lx, &ly);
+        AIM_CHECK(lx == 128 + 63, "30 fps: 16 counts gave %u, expected %d", lx, 128 + 63);
+        aim_test_step = 6 * AIM_REFERENCE_POLL_NS;
+        aim_test_motion(16.0f, 0.0f);
+        aim_test_stick(&lx, &ly);
+        AIM_CHECK(lx == 128 + 15, "a 100 ms hitch: 16 counts gave %u, expected %d", lx, 128 + 15);
+        aim_test_step = 1000000ull;
+        aim_test_motion(2.0f, 0.0f);
+        aim_test_stick(&lx, &ly);
+        AIM_CHECK(lx == 128 + 63, "1 ms poll: 2 counts gave %u, expected %d", lx, 128 + 63);
+        aim_test_step = AIM_STALL_NS + 1;
+        aim_test_motion(40.0f, 40.0f);
+        aim_test_stick(&lx, &ly);
+        AIM_CHECK(lx == 128 && ly == 128, "a stall's movement reached the game (%u,%u)", lx, ly);
+        aim_test_step = AIM_REFERENCE_POLL_NS;
+    }
+
+    /* SR_PADSCRIPT drives the pad by script: aiming is off and the pointer is not grabbed,
+     * and it comes back when the script ends. */
+    {
+        aim_reset();
+        profile_test_setenv("SR_PADSCRIPT", "synthetic_script_active");
+        aim_test_motion(16.0f, 16.0f);
+        aim_test_stick(&lx, &ly);
+        AIM_CHECK(lx == 128 && ly == 128, "SR_PADSCRIPT: the mouse moved the nub to %u,%u", lx, ly);
+        AIM_CHECK(aim_test_grab_last == 0 && !s_mouse_captured,
+                  "SR_PADSCRIPT: the pointer is still grabbed");
+        profile_test_setenv("SR_PADSCRIPT", NULL);
+        aim_test_stick(&lx, &ly);
+        aim_test_motion(16.0f, 0.0f);
+        aim_test_stick(&lx, &ly);
+        AIM_CHECK(lx == 128 + 127, "aim did not come back after SR_PADSCRIPT ended (%u)", lx);
+    }
+
+    /* One count is about 7 nub units at 100%, and no deadzone hides it. */
+    aim_reset();
+    aim_test_motion(1.0f, 0.0f);
+    aim_test_stick(&lx, &ly);
+    AIM_CHECK(lx == 128 + 7, "one count gave %u, expected %d", lx, 128 + 7);
 
     profile_test_setenv("NK_INPUT_PROFILE", NULL);
     remove(tmp_profile);
     sdl3vk_reset_input_profile();
     aim_reset();
+    s_aim_clock_ns = aim_clock_ns_default;
+    s_aim_relative_mode = aim_relative_mode_default;
+    s_mouse_captured = false;
     nk_input_gate_init(&s_gate);
     s_button_pulse = s_pad_pulse = 0;
     s_buttons = 0;
