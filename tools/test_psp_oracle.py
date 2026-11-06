@@ -5581,9 +5581,7 @@ class HleMeasureProbeTests(unittest.TestCase):
         # of them can take longer than a block and would starve the channel. One step names the
         # whole run, written before the reserve, and nothing reaches host0 until the release.
         arest_start = self.probe.index("static void hle_arest_size(")
-        arest_end = self.probe.index("
-}
-", arest_start)
+        arest_end = self.probe.index("\n}\n", arest_start)
         arest = self.probe[arest_start:arest_end]
         reserve = arest.index("sceAudioChReserve(")
         release = arest.index("sceAudioChRelease(")
@@ -5591,10 +5589,8 @@ class HleMeasureProbeTests(unittest.TestCase):
         self.assertEqual(arest[:reserve].count("hle_step("), 1)
         for writer in ("hle_step(", "hle_write(", "hle_record(", "hle_skip("):
             self.assertNotIn(writer, arest[reserve:release])
-        arest_lines = (self.probe.count("
-", 0, arest_start + reserve),
-                       self.probe.count("
-", 0, arest_start + release))
+        arest_lines = (self.probe.count("\n", 0, arest_start + reserve),
+                       self.probe.count("\n", 0, arest_start + release))
         checked = 0
         for index, line in enumerate(lines):
             if not self.MEASURED_CALL_RE.search(line):
@@ -5808,6 +5804,7 @@ class HleMeasureProbeTests(unittest.TestCase):
                             ('hle_skip(names[1u + HLE_AREST_BLOCKS], 4);', 4)):
             with self.subTest(call=call):
                 self.assertIn(call, section)
+                self.assertTrue(call.endswith(f", {words});"), call)
         for name in names:
             expected = 3 if name.endswith("-reserve") else 4 if name.endswith("-drain") else 5
             self.assertEqual(counts[name], expected, name)
