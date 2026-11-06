@@ -867,6 +867,39 @@ its own entry.
   comparison runs of section 11.2, item 4 are recorded in the pull request that turns a title's 60 FPS game logic
   on by default, not here; until they exist it stays off by default, as it is today.
 
+##### 11.3.2.1. The 60 FPS logic transform `gate_30hz_alt`
+
+The third section 9 transform admitted under this section, by its own entry as section 11.3.2 asks.
+
+- **Key and off switch.** Those of section 11.3.2: the title's "60 FPS game logic" setting, which launches the
+  enhanced package with `SR_EXPERIMENTAL_60HZ=1`, and per title the same setting off, which runs every stock statement.
+  A package leaves the transform out for its title by not naming it.
+- **What it changes.** At a `gate_30hz_alt` site the gated call keeps its stock instants, and on the updates it skips,
+  the functions its `alternates` name are called in its place, in list order, each with `$a0` as it was at the site and
+  `$ra` set to the site + 8. The site keeps its own phase (section 9.5), so the gated function runs first whenever the
+  site is reached again.
+- **What the guest can observe.**
+  - Guest registers and memory: on an alternate update the gated function's work outside its alternates does not
+    happen, and the alternates' does, twice as often as stock. After the site, `$v0`, `$v1`, `f0`-`f3`, HI and LO hold
+    what the last alternate left; the resolver refuses a site whose caller reads them (section 9.2). Each alternate's
+    other argument registers hold what the caller left there; the resolver refuses an alternate that reads them, three
+    calls deep.
+  - VRAM bytes: no transform writes VRAM; the frames drawn follow the logic.
+  - Readbacks: unchanged.
+  - Timing the guest can measure: no VBLANK, DMA, GE list or media clock changes. An alternate update does the
+    alternates' work in place of the gated function's.
+  - I/O speed: unchanged.
+- **Tier and default.** Ace, off by default, as section 11.3.2.
+- **Authentic stays byte-identical.** As section 11.3.2: without `--enhancement-package` codegen output is unchanged,
+  and with the package built in and the toggle off the site runs its stock call.
+  `test_gate_30hz_alt_runs_its_alternates_on_the_skipped_updates` in `tools/test_enhancement_package.py` builds a
+  fixture with the package and without it, checks the toggle-off statement against the Authentic one byte for byte,
+  runs both builds, and checks the toggle-on run's calls update by update against the site's phase.
+- **Sampled checking.** A sampled alternate call is checked as a call of the alternate from the site, with the
+  alternate as its target, never the target the site's own `jal` names. A skipped stock call starts no check.
+- **"Nothing worse".** Not shown here: the private comparison runs of section 11.2, item 4 come with the pull request
+  that turns a title's 60 FPS game logic on by default.
+
 #### 11.3.3. Texture Scaling and the Smart 2D Filter (Not Yet Admitted)
 
 The two features of section 10.10 (#1273). Their presentation is described there; this entry is what the guest can
@@ -900,36 +933,3 @@ observe.
 - **Tier:** Enhanced. **Default:** off, and Ace-only: in an authentic run both stay off whatever the environment says.
 - **Nothing worse (section 11.2, item 4):** not shown. *Hot Shots Tennis* and *LittleBigPlanet* keep smart 2D off
   (section 10.10), and neither feature may be on by default before the runs item 4 lists exist.
-
-#### 11.3.4. The 60 FPS logic transform `gate_30hz_alt`
-
-The third section 9 transform admitted under this section, by its own entry as section 11.3.2 says.
-
-- **Key and off switch.** Those of section 11.3.2: the title's "60 FPS game logic" setting, which launches the
-  enhanced package with `SR_EXPERIMENTAL_60HZ=1`, and per title the same setting off, which runs every stock statement.
-  A package leaves the transform out for its title by not naming it.
-- **What it changes.** At a `gate_30hz_alt` site the gated call keeps its stock instants, and on the updates it skips,
-  the functions its `alternates` name are called in its place, in list order, each with `$a0` as it was at the site and
-  `$ra` set to the site + 8. The site keeps its own phase (section 9.5), so the gated function runs first whenever the
-  site is reached again.
-- **What the guest can observe.**
-  - Guest registers and memory: on an alternate update the gated function's work outside its alternates does not
-    happen, and the alternates' does, twice as often as stock. After the site, `$v0`, `$v1`, `f0`-`f3`, HI and LO hold
-    what the last alternate left; the resolver refuses a site whose caller reads them (section 9.2). Each alternate's
-    other argument registers hold what the caller left there; the resolver refuses an alternate that reads them, three
-    calls deep.
-  - VRAM bytes: no transform writes VRAM; the frames drawn follow the logic.
-  - Readbacks: unchanged.
-  - Timing the guest can measure: no VBLANK, DMA, GE list or media clock changes. An alternate update does the
-    alternates' work in place of the gated function's.
-  - I/O speed: unchanged.
-- **Tier and default.** Ace, off by default, as section 11.3.2.
-- **Authentic stays byte-identical.** As section 11.3.2: without `--enhancement-package` codegen output is unchanged,
-  and with the package built in and the toggle off the site runs its stock call.
-  `test_gate_30hz_alt_runs_its_alternates_on_the_skipped_updates` in `tools/test_enhancement_package.py` builds a
-  fixture with the package and without it, checks the toggle-off statement against the Authentic one byte for byte,
-  runs both builds, and checks the toggle-on run's calls update by update against the site's phase.
-- **Sampled checking.** A sampled alternate call is checked as a call of the alternate from the site, with the
-  alternate as its target, never the target the site's own `jal` names. A skipped stock call starts no check.
-- **"Nothing worse".** Not shown here: the private comparison runs of section 11.2, item 4 come with the pull request
-  that turns a title's 60 FPS game logic on by default.
