@@ -79,11 +79,13 @@ does not attempt either operation.
 `assets/input_profiles/standard-gamepad.json` is the public default mapping. It is
 the runtime's own built-in gamepad default written out in the schema-2 profile format,
 and the route stages it into the sandbox config folder for the run. The player now
-saves `<config>/input_profile.json` at schema 4. Schema 3 added `keyboard_bindings`
+saves `<config>/input_profile.json` at schema 5. Schema 3 added `keyboard_bindings`
 ([#1299](https://github.com/Jstar269/nakagawa-recomp/issues/1299)), and schema 4 adds
 the analog stick's four directions to that list (`stick_up`, `stick_down`,
 `stick_left`, `stick_right`, with the same `primary` and `secondary` keys). A schema 2
 file such as this one loads with the default keyboard keys, stick included.
+Schema 5 adds an optional `aim` member to each mapping (mouse movement as the analog stick,
+[#1791](https://github.com/Jstar269/nakagawa-recomp/issues/1791)); a file without it loads with aiming off.
 
 Rules the validator enforces, in addition to the runtime parser's:
 
