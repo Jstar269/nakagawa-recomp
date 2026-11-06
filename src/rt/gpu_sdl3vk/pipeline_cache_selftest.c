@@ -194,18 +194,18 @@ int main(int argc, char **argv) {
     {
         char root[64];
 #ifdef _WIN32
-        const char *abs_utf8 = "C:\\Users\\Jos\xc3\xa9\\NK \xf0\x9f\x8e\xae";   /* a non-BMP code point too */
+        const char *abs_utf8 = "D:\\Games\\Jos\xc3\xa9\\NK \xf0\x9f\x8e\xae";   /* a non-BMP code point too */
         int ok = _wputenv_s(L"SR_USER_DATA_ROOT", L"") == 0 && nk_pcache_user_data_root(root, sizeof root) == 0;
         ok = ok && _wputenv_s(L"SR_USER_DATA_ROOT", L"data\\nk") == 0 && nk_pcache_user_data_root(root, sizeof root) == -1;
-        ok = ok && _wputenv_s(L"SR_USER_DATA_ROOT", L"C:\\Users\\Jos\u00e9\\NK \U0001F3AE") == 0 &&
+        ok = ok && _wputenv_s(L"SR_USER_DATA_ROOT", L"D:\\Games\\Jos\u00e9\\NK \U0001F3AE") == 0 &&
              nk_pcache_user_data_root(root, sizeof root) == 1 && strcmp(root, abs_utf8) == 0;
         ok = ok && nk_pcache_user_data_root(root, 12) == -1;
         (void)_wputenv_s(L"SR_USER_DATA_ROOT", L"");
 #else
         int ok = unsetenv("SR_USER_DATA_ROOT") == 0 && nk_pcache_user_data_root(root, sizeof root) == 0;
         ok = ok && setenv("SR_USER_DATA_ROOT", "data/nk", 1) == 0 && nk_pcache_user_data_root(root, sizeof root) == -1;
-        ok = ok && setenv("SR_USER_DATA_ROOT", "/home/jos\xc3\xa9/nk", 1) == 0 &&
-             nk_pcache_user_data_root(root, sizeof root) == 1 && strcmp(root, "/home/jos\xc3\xa9/nk") == 0;
+        ok = ok && setenv("SR_USER_DATA_ROOT", "/srv/jos\xc3\xa9/nk", 1) == 0 &&
+             nk_pcache_user_data_root(root, sizeof root) == 1 && strcmp(root, "/srv/jos\xc3\xa9/nk") == 0;
         ok = ok && nk_pcache_user_data_root(root, 8) == -1;
         (void)unsetenv("SR_USER_DATA_ROOT");
 #endif
