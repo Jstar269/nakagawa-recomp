@@ -975,7 +975,7 @@ ge-replay: shader-verify $(RT_GE_O)
 # Exit 77 (no Vulkan device) is a SKIP, as for gpu-coherence-selftest.
 GE_FBD_DIR = $(BUILD_DIR)/ge_first_bad_draw
 ge-first-bad-draw-selftest: ge-replay
-	@mkdir -p $(GE_FBD_DIR)
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(GE_FBD_DIR)').mkdir(parents=True, exist_ok=True)"
 	@$(BUILD_DIR)/ge_replay.exe --fbd-self-check
 	@$(BUILD_DIR)/ge_replay.exe --write-synthetic $(GE_FBD_DIR)/synthetic.ngef
 	@for mode in linear bisect; do \

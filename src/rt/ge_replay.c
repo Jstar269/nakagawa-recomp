@@ -662,7 +662,8 @@ static void fbd_putf(uint32_t addr, float value) { memcpy(SR_HOST_LINEAR(addr), 
 typedef struct FbdSprite { float x0, y0, x1, y1, z; uint32_t abgr; } FbdSprite;
 
 static int fbd_write_synthetic(const char *path, const char *variant) {
-    const uint32_t list = 0x08800000u, verts = 0x08810000u, init = 0x08820000u;
+    /* Synthetic placement at the start of the user partition; no game is involved. */
+    const uint32_t list = 0x08800000u, verts = list + 0x10000u, init = list + 0x20000u;
     static const FbdSprite basic[6] = {
         { 0, 0, 480, 272, 0, 0xFF202020u },                 /* 0: clear colour and depth */
         { 40, 40, 200, 160, 30000, 0xFF0000E0u },           /* 1 */
