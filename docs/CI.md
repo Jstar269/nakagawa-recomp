@@ -292,7 +292,9 @@ names, downloads the Gradle distribution named in
 (`gradle -p android assembleDebug -Pnk.abis=arm64-v8a`) and checks that it carries
 `libmain.so`, `libSDL3.so` and `libSDL3_ttf.so` for that ABI and no other ABI. No title is
 bundled and nothing runs: running needs a device or an emulator
-([`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md)). The repository keeps no Gradle wrapper
+([`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md)). The APK is kept for 14 days as the
+artifact `nakagawa-android-arm64-debug`, for installing on a phone
+([Test on a phone](ANDROID_DEVELOPMENT.md#test-on-a-phone)). The repository keeps no Gradle wrapper
 jar or scripts, as it keeps no other generated executable (#1100).
 `tools/test_public_ci_wiring.py` (`AndroidBuildWiringTests`) fails when the job's versions,
 the Gradle files and `ANDROID_DEVELOPMENT.md` disagree.

@@ -1021,6 +1021,22 @@ class AndroidBuildWiringTests(unittest.TestCase):
         self.assertIn("contents: read", self.job)
         self.assertIn("needs.classify.outputs.run_native == 'true'", self.job)
 
+    def test_job_keeps_the_apk_for_a_phone(self) -> None:
+        """The debug APK is kept as an artifact, so it can be installed on a phone without a PC
+        build (docs/ANDROID_DEVELOPMENT.md, "Test on a phone")."""
+        step = _ci_step(_ci_job_blocks()["android_build"],
+                        "Keep the debug APK for installing on a phone")
+        self.assertIsNotNone(step, "android_build must upload the debug APK")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertRegex(text, r"uses: actions/upload-artifact@[0-9a-f]{40} # v\d")
+        self.assertIn("name: nakagawa-android-arm64-debug", text)
+        self.assertIn("path: android/app/build/outputs/apk/debug/app-debug.apk", text)
+        self.assertIn("if-no-files-found: error", text)
+        docs = (ROOT / "docs" / "ANDROID_DEVELOPMENT.md").read_text(encoding="utf-8")
+        self.assertIn("## Test on a phone", docs)
+        self.assertIn("`nakagawa-android-arm64-debug`", docs)
+
     def test_ci_required_reads_the_android_build(self) -> None:
         required_job = "\n".join(_ci_job_blocks()["ci_required"])
         self.assertRegex(required_job, r"needs: \[[^\]]*\bandroid_build\b[^\]]*\]")
