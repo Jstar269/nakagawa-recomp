@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 133)
+        self.assertEqual(len(routes), 134)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
-                         | {150, 151, 152, 153, 154, 155},
+                         | {150, 151, 152, 153, 154, 155, 156},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -5128,6 +5128,8 @@ class HleMeasureProbeTests(unittest.TestCase):
          "HLE_CASE_TIMER_ORDER", "PSP-HLE-TIMER-ORDER-001"),
         ("hle-savedata-getsize", 104, "hle_savedata_getsize", "hle_utility_imports.S",
          "HLE_CASE_SAVEDATA_GETSIZE", "PSP-HLE-SAVEDATA-GETSIZE-001"),
+        ("hle-std-handles", 156, "hle_std_handles", None,
+         "HLE_CASE_STD_HANDLES", "PSP-HLE-STDIO-001"),
     )
     # Families whose cells come from a row table rather than one literal record call each, so
     # the out-word walker cannot read them; HleUtilityNoneProbeTests checks their shape.
@@ -5205,6 +5207,7 @@ class HleMeasureProbeTests(unittest.TestCase):
         "sceAudioSRCChReserve", "sceAudioSRCChRelease", "sceAudioSRCOutputBlocking",
         "sceAudioOutput2Reserve", "sceAudioOutput2Release", "sceDisplayWaitVblankStart",
         "sceKernelVolatileMemTryLock", "sceKernelVolatileMemUnlock",
+        "sceKernelStdin", "sceKernelStdout", "sceKernelStderr",
     })
     MEASURED_CALL_RE = re.compile(
         r"\b(sceKernel(?:ReferSystemStatus|ReferFplStatus|CreateFpl|TryAllocateFpl|FreeFpl|"
@@ -5214,7 +5217,7 @@ class HleMeasureProbeTests(unittest.TestCase):
         r"sceAudio(?:SRC(?:ChReserve|ChRelease|OutputBlocking)|Output2(?:Reserve|Release))|"
         r"scePowerGet\w+|sceHprmIs\w+|sceCtrl\w*Latch|"
         r"sceUtilityGetSystemParam\w+|sceUtilitySavedataInitStart|sceIoGetstat|"
-        r"sceGeEdram\w+)\s*\("
+        r"sceGeEdram\w+|sceKernelStd(?:in|out|err))\s*\("
     )
     # A line that is nothing but a whole `int|float|void sce...(...);` declaration.
     # Only such a line is skipped as "not a call"; a declaration that shares its line

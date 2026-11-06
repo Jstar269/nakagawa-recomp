@@ -1936,6 +1936,17 @@ _register_campaign_probe(
     tuple(row for row, _ in HLE_UTILITY_NONE_ROWS), dict(HLE_UTILITY_NONE_ROWS),
 )
 
+# hle-std-handles (156, probe_hle_measure.c): #341's three standard handles, a one-byte write
+# to Stdout and to Stderr, and a write to Stdout after closing it (the Stdin read is not run).
+HLE_STD_HANDLES_ROWS = (
+    ("stdio-handles", 3), ("stdio-write-stdout", 2), ("stdio-write-stderr", 2),
+    ("stdio-close-stdout", 3),
+)
+_register_campaign_probe(
+    "hle-std-handles", "PSP-HLE-STDIO-001",
+    tuple(row for row, _ in HLE_STD_HANDLES_ROWS), dict(HLE_STD_HANDLES_ROWS),
+)
+
 # io-umd-eof (137, probe_kernel_semantics.c): #1380 on the UMD, read-only: the drive state
 # before and after; for two disc0: files (a = UMD_DATA.BIN, b = PSP_GAME/PARAM.SFO) the open
 # and size, seeks past the end, reads past and across the end, negative seeks and seeks at and

@@ -50,6 +50,7 @@
 #include <pspge.h>
 #include <pspdisplay.h>
 #include <pspsuspend.h>
+#include <pspstdio.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -78,6 +79,7 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_TIMER_ORDER 103
 #define HLE_CASE_SAVEDATA_GETSIZE 104
 #define HLE_CASE_UTILITY_NONE 140
+#define HLE_CASE_STD_HANDLES 156
 
 #if PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS
 #define HLE_CAMPAIGN_ID "hle-kernel-status"
@@ -143,6 +145,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "hle-utility-none"
 #define HLE_TEST_ID "PSP-HLE-UTILITY-NONE-001"
 #define HLE_LOG "host0:/hle_utility_none_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_STD_HANDLES
+#define HLE_CAMPAIGN_ID "hle-std-handles"
+#define HLE_TEST_ID "PSP-HLE-STDIO-001"
+#define HLE_LOG "host0:/hle_std_handles_log.txt"
 #else
 #error probe_hle_measure.c has no family for this PSP_ORACLE_CASE
 #endif
@@ -2221,6 +2227,69 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_UTILITY_NONE */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_STD_HANDLES
+
+/* #341 (W-HLE-2, part 1): the three standard handles in the probe's launch context, a
+   one-byte write to Stdout and to Stderr, and a write to Stdout after closing it. The runtime
+   answers 1 for all three handles today (h_StdFd); this case measures what the console does.
+
+   Cells, in order:
+   - stdio-handles (3 words): sceKernelStdin, sceKernelStdout, sceKernelStderr. result: Stdout.
+   - stdio-write-stdout, stdio-write-stderr (2 words): the handle written to and, again, the
+     handle read after the write. result: what sceIoWrite(handle, "x", 1) returned.
+   - stdio-close-stdout (3 words): the write to the closed handle, sceKernelStdout read after
+     the close, and the handle that was closed. result: what sceIoClose returned.
+
+   The family log goes to host0 only, so closing Stdout cannot cut a record short, and the
+   close comes last so every earlier cell runs on an open handle. Under PSPLink the handles are
+   its tty; the close lasts until the next boot, and every launch here gets a fresh one.
+
+   Not run: sceIoRead on Stdin. On PSPLink's tty a one-byte read waits for input that nothing
+   sends, and a thread blocked in a device read when the runner stops the module risks a hang
+   that needs a power cycle. That cell needs a design that cannot block (#341). */
+
+static const char s_hle_std_byte[1] = {'x'};
+
+static int hle_run(void)
+{
+    uint32_t handles[3];
+    hle_step("stdio-handles");
+    handles[0] = (uint32_t)sceKernelStdin();
+    handles[1] = (uint32_t)sceKernelStdout();
+    handles[2] = (uint32_t)sceKernelStderr();
+    hle_record("stdio-handles", "PASS", handles[1], handles, 3);
+
+    uint32_t out_wrote[2];
+    hle_step("stdio-write-stdout");
+    const int out_rc = sceIoWrite((SceUID)handles[1], s_hle_std_byte, 1);
+    out_wrote[0] = handles[1];
+    hle_step("stdio-stdout-reread");
+    out_wrote[1] = (uint32_t)sceKernelStdout();
+    hle_record("stdio-write-stdout", "PASS", (uint32_t)out_rc, out_wrote, 2);
+
+    uint32_t err_wrote[2];
+    hle_step("stdio-write-stderr");
+    const int err_rc = sceIoWrite((SceUID)handles[2], s_hle_std_byte, 1);
+    err_wrote[0] = handles[2];
+    hle_step("stdio-stderr-reread");
+    err_wrote[1] = (uint32_t)sceKernelStderr();
+    hle_record("stdio-write-stderr", "PASS", (uint32_t)err_rc, err_wrote, 2);
+
+    uint32_t closed[3];
+    hle_step("stdio-close-stdout");
+    const int close_rc = sceIoClose((SceUID)handles[1]);
+    hle_step("stdio-write-closed");
+    closed[0] = (uint32_t)sceIoWrite((SceUID)handles[1], s_hle_std_byte, 1);
+    hle_step("stdio-handle-after-close");
+    closed[1] = (uint32_t)sceKernelStdout();
+    closed[2] = handles[1];
+    hle_record("stdio-close-stdout", "PASS", (uint32_t)close_rc, closed, 3);
+    return 1;
+}
+
+#endif /* HLE_CASE_STD_HANDLES */
 
 /* ------------------------------------------------------------------------- */
 

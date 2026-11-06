@@ -209,6 +209,9 @@ CASE_ID = 104
 # 140: #1386's utility dialog calls at NONE (no InitStart is imported).
 else ifeq ($(CASE),hle-utility-none)
 CASE_ID = 140
+# 156: #341's standard handles, a write to each and a write after closing Stdout.
+else ifeq ($(CASE),hle-std-handles)
+CASE_ID = 156
 # 106-108: the HLE issue cells (probe_hle_issues.c). 106 is the #356 model-getter and
 # #326 vrnd carry / vscmp batch; 107 the #325 interrupt and timer delivery cells; 108 the
 # #326 VFPU form words (vh2f, vuc2i, vsocp, vwbn, vrndf1/2).
@@ -529,6 +532,9 @@ OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(
 else ifeq ($(CASE),hle-utility-none)
 TARGET = $(BUILD_DIR)/hle_utility_none
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_utility_imports.o
+else ifeq ($(CASE),hle-std-handles)
+TARGET = $(BUILD_DIR)/hle_std_handles
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 # HLE issue cells: their own source, which installs and removes interrupt and timer
 # handlers (107) and reaches a kernel getter through the kernel bridge (106), so they
 # stay out of probe_hle_measure.c. Same ThreadManForUser block and module lifecycle.
