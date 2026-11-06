@@ -288,7 +288,9 @@ nk-ui-vk-selftest:
 
 # ace-smooth-selftest - Ace Mode's in-between frames (src/rt/gpu_sdl3vk/ace_smooth.c) on a headless
 # Vulkan device: a moving shape lands halfway, a HUD over motion keeps every pixel, a cut holds the
-# old frame and the held frame is the new one, byte for byte. Linked from the pass and the C
+# old frame and the held frame is the new one, byte for byte. With the HUD mask and depth
+# (ace_hud.c): the scene beside a HUD and at a camouflaged band's edge is right, and an empty
+# mask changes no byte. Linked from the pass, ace_hud.c and the C
 # library alone (invariant S1). No Vulkan headers, loader or device: SKIP (exit 77), visible in
 # the log; NK_UI_VK_REQUIRE=1 makes a skip fail.
 native-core-tests: ace-smooth-selftest
@@ -300,8 +302,8 @@ ace-smooth-selftest: shader-verify
 		if [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then exit 1; fi; exit 0; \
 	fi; \
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -Isrc/rt/gpu_sdl3vk $(VULKAN_INC_FLAGS) \
-		src/rt/gpu_sdl3vk/ace_smooth.c src/rt/gpu_sdl3vk/ace_smooth_selftest.c \
-		$(NK_UI_VK_SELFTEST_LIBS) -o $(BUILD_ROOT)/ace_smooth_selftest$(EXE_EXT) || exit 1; \
+		src/rt/gpu_sdl3vk/ace_smooth.c src/rt/gpu_sdl3vk/ace_hud.c src/rt/gpu_sdl3vk/ace_smooth_selftest.c \
+		$(NK_UI_VK_SELFTEST_LIBS) -lm -o $(BUILD_ROOT)/ace_smooth_selftest$(EXE_EXT) || exit 1; \
 	rc=0; $(BUILD_ROOT_RUN)/ace_smooth_selftest$(EXE_EXT) $(BUILD_ROOT) || rc=$$?; \
 	if [ $$rc -eq 77 ] && [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then \
 		echo "FAIL ace-smooth-selftest (skipped, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
