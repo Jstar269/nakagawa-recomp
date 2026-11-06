@@ -48,6 +48,27 @@ CASE_EVIDENCE = {
 }
 SAVE_BYTES = b"PROFILE_ZERO_SAVE_V1\n"
 VBLANK_SCRIPT = "12 4000 4\n240 0008 4\n"
+# What the profile-zero package produces on the deterministic guest clock
+# (SR_DETERMINISTIC_CLOCK=1), pinned once and checked on every host that runs the route: Windows
+# (windows_runtime, routes part) and Linux (native_tools, player part) in hosted CI, and macOS
+# (#329) and Android (#360) as they arrive. Guest time there is a function of the guest's work
+# alone, so these are pure functions of the guest bytes and the runtime source. Values:
+# sha256 of RESULT.TXT and ROUNDTRIP.BIN, and the vblank and sha256 of the first frame
+# snapshot that shows the rasterized primitive (#306).
+CROSS_HOST_DIGESTS: dict[str, dict[str, str]] = {
+    "synthetic-allegrex-v1": {
+        "result_txt": "233610c1d4af4c78d6ae41fb9f9fce9a7564f5b37dc5c0684e7850a4ef7f6b5f",
+        "save_bin": "52abb30ce3f156d815824a3f06c75fa094dd814c8fef673a0c72319d86581f99",
+        "first_frame": "vblank=60 758a9e84df25d20fb9c33aa20e18d84efa3cf9c3986a0f4466c85da5062636f5",
+    },
+    "synthetic-title2-v1": {
+        "result_txt": "233610c1d4af4c78d6ae41fb9f9fce9a7564f5b37dc5c0684e7850a4ef7f6b5f",
+        "save_bin": "52abb30ce3f156d815824a3f06c75fa094dd814c8fef673a0c72319d86581f99",
+        "first_frame": "vblank=60 758a9e84df25d20fb9c33aa20e18d84efa3cf9c3986a0f4466c85da5062636f5",
+    },
+}
+# Set by the hosted CI steps: the route must run there, so a missing dependency fails.
+PROFILE_ZERO_REQUIRED = "NK_PROFILE_ZERO_REQUIRED"
 # PSPDEV build output of fixtures/profile_zero/{main.c,Makefile}. Only the digests
 # (SHA256SUMS) are committed: the repository stores no generated executable (#1100,
 # OpenSSF OSPS-QA-05.01). Hosted CI builds the bytes from source in the
@@ -120,7 +141,10 @@ def _build_guest(manifest: dict, output_dir: Path, backend: tuple[str, str | Non
     build = profile["build"]
     source_dir = (ROOT / build["working_directory"]).resolve()
     makefile = (ROOT / build["makefile"]).resolve()
-    game_name = manifest.get("game_name") or manifest["id"].replace("-", "_")
+    # The pinned digests are of the PRX built as TARGET=profile_zero_guest, as the
+    # profile_zero_fixture CI job builds it; the PRX embeds its target name, so a rebuild
+    # under the title's game_name could never reproduce them (#306).
+    target_name = PREBUILT_GUEST.stem
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if backend[0] == "wsl":
@@ -144,7 +168,7 @@ def _build_guest(manifest: dict, output_dir: Path, backend: tuple[str, str | Non
                 "-C",
                 _wsl_path(wsl, output_dir),
                 f"VPATH={_wsl_path(wsl, source_dir)}",
-                f"TARGET={game_name}",
+                f"TARGET={target_name}",
                 str(build["target"]),
             ],
             cwd=ROOT,
@@ -158,6 +182,11 @@ def _build_guest(manifest: dict, output_dir: Path, backend: tuple[str, str | Non
         if not make:
             raise AssertionError("PSPDEV is installed but GNU Make is unavailable")
         environment = os.environ.copy()
+        # The guest build is its own make, not a submake of `make profile-zero-e2e`: an
+        # inherited MAKEFLAGS carries that command line's overrides (CC=gcc on Linux), which
+        # beat PSPSDK's CC=psp-gcc and fail the build with "gcc: unrecognized option -G0".
+        for key in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES"):
+            environment.pop(key, None)
         ucrt = Path("C:/msys64/ucrt64/bin")
         if os.name == "nt" and ucrt.is_dir():
             environment["PATH"] = str(ucrt) + os.pathsep + environment.get("PATH", "")
@@ -172,7 +201,7 @@ def _build_guest(manifest: dict, output_dir: Path, backend: tuple[str, str | Non
                 "-C",
                 str(output_dir),
                 f"VPATH={source_dir}",
-                f"TARGET={game_name}",
+                f"TARGET={target_name}",
                 str(build["target"]),
             ],
             cwd=ROOT,
@@ -188,7 +217,7 @@ def _build_guest(manifest: dict, output_dir: Path, backend: tuple[str, str | Non
             f"(exit {completed.returncode}):\n{completed.stdout}\n{completed.stderr}"
         )
     eboot = output_dir / str(build["target"])
-    guest = output_dir / f"{game_name}.prx"
+    guest = output_dir / PREBUILT_GUEST.name
     if not eboot.is_file() or not guest.is_file():
         raise AssertionError(
             f"PSPDEV did not produce both {build['target']} and {guest.name} "
@@ -661,7 +690,79 @@ def _run_package(manifest_path: Path, guest: Path, package_dir: Path,
                 f"SKIP: SDL3 dummy audio is unavailable for {manifest['id']}"
             )
         raise AssertionError(f"SDL3 dummy audio initialization is unproven for {manifest['id']}")
+    _check_cross_host_digests(
+        manifest["id"],
+        _deterministic_run_digests(run_command, environment, package_dir, manifest["id"]),
+    )
     return fields
+
+
+def _deterministic_run_digests(run_command: list[str], base_environment: dict[str, str],
+                               package_dir: Path, title_id: str) -> dict[str, str]:
+    """Run the package again on the deterministic guest clock and digest what the guest made.
+
+    #306: guest time on SR_DETERMINISTIC_CLOCK=1 is a function of the guest's own work, never
+    the host clock, so every output below is a pure function of the guest bytes and the
+    runtime source. The same digests must come out on every host (Windows, Linux, and later
+    macOS #329 and Android #360). RESULT.TXT holds the guest's own scheduler, input, audio and
+    frame counts, ROUNDTRIP.BIN went through the savedata VFS, and the frame is the GE's output;
+    a host whose scheduler, VFS, HLE or rasterizer differs changes one of them.
+    """
+    run_dir = package_dir / "deterministic"
+    memstick = run_dir / "memstick"
+    memstick.mkdir(parents=True)
+    environment = dict(base_environment)
+    environment.update({
+        "SR_MEMSTICK": str(memstick),
+        "SR_NOVBPACE": "1",
+        "SR_DETERMINISTIC_CLOCK": "1",
+        "SR_BOOT_EVENT_FILE": str(run_dir / "boot-events.log"),
+        "SR_PERF_CSV": str(run_dir / "perf.csv"),
+    })
+    for key in ("SR_DETERMINISTIC_SLICE_US", "SR_FPS_CAP", "SR_EXIT_AT_VBLANK"):
+        environment.pop(key, None)
+    run = subprocess.run(
+        run_command, cwd=run_dir, env=environment, capture_output=True, text=True,
+        timeout=30, check=False,
+    )
+    output = (run.stdout or "") + (run.stderr or "")
+    if run.returncode:
+        raise AssertionError(
+            f"deterministic-clock run failed for {title_id} (exit {run.returncode}):\n{output}"
+        )
+    window = ge_stat_windows.first_window(output, require=("tri2d", "px2d"))
+    if window is None:
+        raise AssertionError(f"deterministic-clock run drew no primitive for {title_id}")
+    ppm = run_dir / window.snapshot_name
+    result = memstick / "PROFILE_ZERO" / "RESULT.TXT"
+    save = memstick / "PROFILE_ZERO" / "ROUNDTRIP.BIN"
+    for path in (ppm, result, save):
+        if not path.is_file():
+            raise AssertionError(f"deterministic-clock run did not write {path.name} for {title_id}")
+    return {
+        "result_txt": hashlib.sha256(result.read_bytes()).hexdigest(),
+        "save_bin": hashlib.sha256(save.read_bytes()).hexdigest(),
+        "first_frame": f"vblank={window.frame} "
+                       + hashlib.sha256(ppm.read_bytes()).hexdigest(),
+    }
+
+
+def _check_cross_host_digests(title_id: str, digests: dict[str, str]) -> None:
+    for key, value in sorted(digests.items()):
+        print(f"PROFILE_ZERO_DIGEST id={title_id} {key}={value}", file=sys.stderr, flush=True)
+    pinned = CROSS_HOST_DIGESTS.get(title_id)
+    if pinned is None:
+        raise AssertionError(f"no cross-host digests are pinned for {title_id}")
+    differing = [
+        f"{key}: pinned {pinned.get(key)!r}, this host {value!r}"
+        for key, value in sorted(digests.items()) if pinned.get(key) != value
+    ]
+    if differing or set(pinned) != set(digests):
+        raise AssertionError(
+            f"{title_id} on the deterministic clock differs from the output every host must "
+            "produce (#306); a deliberate runtime change re-pins CROSS_HOST_DIGESTS after "
+            "checking the new values on Windows and Linux alike:\n  " + "\n  ".join(differing)
+        )
 
 
 class ProfileZeroManifestTests(unittest.TestCase):
@@ -701,6 +802,47 @@ class ProfileZeroManifestTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("profile-zero-e2e:", makefile)
         self.assertIn("profile-zero-e2e", workflow)
+
+    def test_make_gate_runs_the_route_case_on_windows_and_linux(self) -> None:
+        """#306: the route ran nowhere in hosted CI. The Windows routes step skipped it as
+        NIGHTLY_TIER (its job never sets NK_TEST_TIER) and the Linux Python shards skip it
+        for want of SDL3, so the make gate itself asks for the full tier, and both hosted
+        steps require the route to run."""
+        makefile = read_makefile(ROOT)
+        self.assertIn("profile-zero-e2e: export NK_TEST_TIER := full", makefile)
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        for step, command in (
+            ("Build and run the profile-zero production route on Linux",
+             "make --no-print-directory CC=gcc profile-zero-e2e"),
+            ("Build and run profile-zero production routes",
+             "mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 profile-zero-e2e"),
+        ):
+            with self.subTest(step=step):
+                start = workflow.index(f"      - name: {step}\n")
+                end = workflow.find("\n      - name: ", start + 1)
+                block = workflow[start:end if end >= 0 else len(workflow)]
+                self.assertIn(f'{PROFILE_ZERO_REQUIRED}: "1"', block)
+                self.assertIn(command, block)
+
+    def test_cross_host_digests_cover_every_manifest(self) -> None:
+        ids = {_manifest(path)["id"] for path in MANIFEST_PATHS}
+        self.assertEqual(set(CROSS_HOST_DIGESTS), ids)
+        expected_save = hashlib.sha256(SAVE_BYTES).hexdigest()
+        for title_id, digests in CROSS_HOST_DIGESTS.items():
+            with self.subTest(title=title_id):
+                self.assertEqual(set(digests), {"result_txt", "save_bin", "first_frame"})
+                self.assertRegex(digests["first_frame"], r"^vblank=\d+ [0-9a-f]{64}$")
+                for key in ("result_txt", "save_bin"):
+                    self.assertRegex(digests[key], r"^[0-9a-f]{64}$")
+                # The save is the guest's fixed payload on every host.
+                self.assertEqual(digests["save_bin"], expected_save)
+
+    def test_cross_host_check_names_each_differing_output(self) -> None:
+        title_id = _manifest(MANIFEST_PATHS[0])["id"]
+        pinned = dict(CROSS_HOST_DIGESTS[title_id])
+        with self.assertRaisesRegex(AssertionError, r"result_txt: pinned"):
+            _check_cross_host_digests(title_id, dict(pinned, result_txt="0" * 64))
+        _check_cross_host_digests(title_id, pinned)
 
     def test_repository_stores_only_the_fixture_digests(self) -> None:
         """No generated executable is committed (#1100, OpenSSF OSPS-QA-05.01)."""
@@ -749,6 +891,14 @@ class ProfileZeroManifestTests(unittest.TestCase):
 
     @nightly_tier
     def test_package_and_runtime_route_assert_all_profile_zero_cases(self) -> None:
+        try:
+            self._run_package_and_runtime_route()
+        except unittest.SkipTest as skipped:
+            if os.environ.get(PROFILE_ZERO_REQUIRED) == "1":
+                self.fail(f"{PROFILE_ZERO_REQUIRED}=1, but the route did not run: {skipped}")
+            raise
+
+    def _run_package_and_runtime_route(self) -> None:
         backend = _pspdev_backend()
         if backend is None:
             print(
