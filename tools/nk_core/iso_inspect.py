@@ -822,9 +822,8 @@ class PbpPackage:
     ``kind`` is one of:
 
     * ``homebrew``: DATA.PSP is a plain little-endian MIPS ELF32 executable or PRX, so
-      the program needs no key. ``data_psp_sha256`` names it. The player writes the program
-      into a small disc image (src/core/nk_pbp_homebrew.c), and that disc's contents key
-      names the game in the library, as for any non-retail disc;
+      the program needs no key. ``data_psp_sha256`` names it. The library key comes from the
+      disc image made from the package (#2143), as for any non-retail disc;
     * ``encrypted-executable``: DATA.PSP is a ``~PSP`` container, which holds a signed
       program that homebrew does not use;
     * ``psn-umd``: a PSN release of a UMD game (the player converts those to a disc image);
