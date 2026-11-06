@@ -118,7 +118,7 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIsNotNone(step, "python_tools must enforce the tracked mypy baseline")
         assert step is not None
         text = "\n".join(step)
-        self.assertIn("mypy==2.1.0", text)
+        self.assertIn("mypy==2.4.1", text)
         self.assertIn("--require-hashes", text)
         self.assertIn("python tools/mypy_baseline.py", text)
 
@@ -573,9 +573,9 @@ _WINDOWS_SERIAL_GATES = {
 # runtime-object compile gate.
 _WINDOWS_EVERY_PART = (
     "Check out repository",
-    "Set up Windows CPython 3.15.1",
+    "Set up Windows CPython 3.15.2",
     "Set up MSYS2 UCRT64",
-    "Pin the Windows Python toolchain (CPython 3.15.1)",
+    "Pin the Windows Python toolchain (CPython 3.15.2)",
     "Verify default and override compiler resolution",
     "Compute the persisted compiler cache key",
     "Restore the persisted compiler cache",
@@ -631,9 +631,9 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         return _matched(match).group(1)
 
     def test_windows_runtime_pins_windows_cpython_315_for_tools_and_make(self) -> None:
-        setup = "\n".join(cast(list[str], self.steps["Set up Windows CPython 3.15.1"]))
-        self.assertIn('python-version: "3.15.1"', setup)
-        pin = "\n".join(cast(list[str], self.steps["Pin the Windows Python toolchain (CPython 3.15.1)"]))
+        setup = "\n".join(cast(list[str], self.steps["Set up Windows CPython 3.15.2"]))
+        self.assertIn('python-version: "3.15.2"', setup)
+        pin = "\n".join(cast(list[str], self.steps["Pin the Windows Python toolchain (CPython 3.15.2)"]))
         self.assertIn("shell: pwsh", pin)
         self.assertIn("steps.windows-cpython.outputs.python-path", pin)
         self.assertIn('"PYTHON=$pythonPath`n"', pin)
@@ -1469,7 +1469,7 @@ class PublicExportJobTests(unittest.TestCase):
         build_versions = versions(build_lock)
         package_versions = versions(lock)
         self.assertEqual(build_versions, {
-            "cython": "3.3.0",
+            "cython": "3.3.1",
             "setuptools": "84.2.1",
             "packaging": "26.3",
             "wheel": "0.48.0",
@@ -1478,15 +1478,15 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertEqual(package_versions, {
             "cfgv": "3.5.0",
             "distlib": "0.4.4",
-            "filelock": "4.2.4",
+            "filelock": "4.2.9",
             "identify": "2.6.20",
-            "nodeenv": "1.11.0",
+            "nodeenv": "1.12.0",
             "packaging": "26.3",
-            "platformdirs": "4.13.5",
-            "pre-commit": "4.6.2",
+            "platformdirs": "4.14.5",
+            "pre-commit": "4.7.0",
             "pyyaml": "6.0.3",
-            "python-discovery": "1.6.4",
-            "virtualenv": "21.14.11",
+            "python-discovery": "1.9.4",
+            "virtualenv": "21.15.5",
         })
         self.assertEqual(lock.count("--hash=sha256:"), len(package_versions))
 
@@ -1512,7 +1512,7 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("PROVENANCE_UNVERIFIED", export)
         job = "\n".join(self.blocks["public_export"])
         self.assertIn("fetch-depth: 0", job)
-        self.assertIn('python-version: "3.15.1"', job)
+        self.assertIn('python-version: "3.15.2"', job)
 
     def test_public_export_job_is_ungated_by_path(self) -> None:
         block = self.blocks["public_export"]
@@ -1876,7 +1876,7 @@ class SelfHostedRunnerWiringTests(unittest.TestCase):
         self.assertEqual(ci.count("needs.classify.outputs.linux_runner_2604 "), len(SELF_HOSTED_JOBS_2604))
         # The classifier, which decides, and the Windows gates stay hosted.
         self.assertIn("    runs-on: ubuntu-26.04", "\n".join(blocks["classify"]))
-        self.assertIn("    runs-on: windows-2022", "\n".join(blocks["windows_runtime"]))
+        self.assertIn("    runs-on: windows-2025", "\n".join(blocks["windows_runtime"]))
         for job in SELF_HOSTED_JOBS | SELF_HOSTED_JOBS_2604:
             block = "\n".join(blocks[job])
             with self.subTest(job=job):

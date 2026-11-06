@@ -794,7 +794,7 @@ def base_unit_paths(rev: str, base_dir: Path | None = None) -> tuple[list[str], 
     units = [p for p in listed if re.fullmatch(r"src/rt/hle(?:_[a-z0-9_]+)?\.c", p)
              and p not in hle_sources.NOT_RUNTIME]
     units.sort(key=lambda p: (p != "src/rt/hle.c", p))
-    headers = [p for p in ("src/rt/hle_internal.h", "src/rt/hle_power.h") if p in listed]
+    headers: list[str] = [p for p in ("src/rt/hle_internal.h", "src/rt/hle_power.h") if p in listed]
     return units, headers
 
 

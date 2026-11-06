@@ -52,7 +52,7 @@ repos:
   # The project-owned native config keeps default detection enabled and limits
   # the synthetic history-audit exception to its exact value and path.
   - repo: https://github.com/betterleaks/betterleaks
-    rev: 81aff7a638638aae3a659845d089043e1d8fe9ac # v1.9.0
+    rev: 8d77e1712fb06fd14444cc648686f1d5655e28a8 # v1.10.0
     hooks:
       - id: betterleaks
         # Directory mode over the hook's file list. pre-commit stashes unstaged
