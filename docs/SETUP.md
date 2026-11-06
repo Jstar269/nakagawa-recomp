@@ -761,12 +761,17 @@ long-run present rate never exceeds the cap (`gui-present-selftest`).
 
 ### Presentation upscaler (`SR_PRESENT_UPSCALE`)
 
+In the player this is **Sharper enlarging** on Settings > Enhanced and on each game's page, off by
+default; the launcher sets `SR_PRESENT_UPSCALE` from it for an Enhanced or Ace run.
+
 `SR_PRESENT_UPSCALE=fsr1` makes the Vulkan presenter enlarge the picture to its place in the
 window with AMD FidelityFX Super Resolution 1: EASU, an edge-adaptive upscaler, then RCAS
 sharpening. `off`, the default, keeps the `SR_PRESENT_SCALING` filter. It runs only when the
 picture is enlarged on both axes, on whatever frame the presenter shows. It is presentation only:
 the guest's frame, guest VRAM and captures are byte for byte what they are with it off
-(`gpu-capture-selftest` and, with a Vulkan device and a display, `display-smoke-fsr1`). The pause
+(`gpu-capture-selftest` and, with a Vulkan device and a display, `display-smoke-fsr1`). A run
+recording (`SR_VIDEOREC_DIR`) is enlarged by FSR 1 too, at the recording's size, and its
+`record.json` names the filter ([DEBUGGING.md](DEBUGGING.md)). The pause
 overlay is drawn at the window's size on the CPU, so the paused picture is not upscaled and looks
 softer than the running one. Its cost is small: from 1920x1088 to 3840x2160, EASU and RCAS took
 0.40 ms per present on an RTX 3080 (`fsr1-selftest`). An unknown value, or a device without

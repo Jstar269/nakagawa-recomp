@@ -232,6 +232,9 @@ typedef enum {
     PLAYER_PART_NOTICE,        /* the in-game badge at start: 0 or 1 */
     PLAYER_PART_SMOOTH,        /* smooth motion (#1272): 0 off, 1 x2 */
     PLAYER_PART_SAS,           /* band-limited SAS resampling (#2054, section 11.3.1): 0 off, 1 sinc */
+    PLAYER_PART_UPSCALE,       /* the presentation upscaler (#2122): 0 off, 1 FSR 1. It reaches the
+                                  runtime as SR_PRESENT_UPSCALE (NkRuntimeConfig.present_upscale),
+                                  not in the SR_ACE line */
     PLAYER_PART_COUNT
 } PlayerEnhancedPart;
 
@@ -1615,6 +1618,17 @@ void player_play_apply_logic_60(PlayerPlayResolved *play, bool logic_60);
  * notice=on;wide=off;smooth=off;sas=off" (tier=ace for Ace; wide is always off, and smooth=match
  * is never written). Returns false when it does not fit. */
 bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t cap);
+/* The presentation upscaler a resolution asks for (NkRuntimeConfig.present_upscale, exported as
+ * SR_PRESENT_UPSCALE): NK_PRESENT_UPSCALE_FSR1 for Enhanced or Ace with the part on, else
+ * NK_PRESENT_UPSCALE_OFF. The launcher still exports off for an authentic session (#2122). */
+int player_play_present_upscale(const PlayerPlayResolved *play);
+/* A launch's play mode into its runtime configuration: the title's resolution (with Ace's 60 FPS
+ * logic when its package is the build, and off for the acceptance checkpoint), its SR_ACE line in
+ * ace_spec ("off" when it does not fit) and its present_upscale. *out, when not NULL, receives
+ * the resolution the launch runs with. */
+void player_play_config_session(const PlayerSettings *settings, const char *disc_id,
+                                bool logic_60_package, bool acceptance, NkRuntimeConfig *config,
+                                PlayerPlayResolved *out);
 /* <user_root>/ace/<disc ID>.json: the runtime's per-run report for that disc. */
 bool player_ace_report_path(const char *user_root, const char *disc_id, char *out, size_t cap);
 /* The title page's "Last session" line from that report ("Last session: 16x filtering,

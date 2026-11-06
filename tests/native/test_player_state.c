@@ -6822,7 +6822,7 @@ static void test_play_mode_settings(void) {
         assert(saved && strstr(saved, "\"enhanced\": {\"default\": \"enhanced\", \"af\": \"16\", "
                                       "\"text\": \"off\", \"readout\": \"off\", "
                                       "\"notice\": \"on\", \"smooth\": \"off\", "
-                                      "\"sas\": \"off\"},") != NULL);
+                                      "\"sas\": \"off\", \"upscale\": \"off\"},") != NULL);
         assert(strstr(saved, "\"TEST90001\": {\"mode\": \"library\", \"af\": \"8\", "
                              "\"notice\": \"off\"}") != NULL);
         assert(strstr(saved, "\"TEST90002\": {\"mode\": \"library\", \"logic_60\": \"off\"}")
@@ -7015,7 +7015,8 @@ static void test_play_mode_sas_settings(void) {
     assert(player_app_save_settings(app, path) == NK_OK);
     {
         char *saved = read_text_file(path);
-        assert(saved && strstr(saved, "\"smooth\": \"off\", \"sas\": \"sinc\"}") != NULL);
+        assert(saved && strstr(saved, "\"smooth\": \"off\", \"sas\": \"sinc\", "
+                                      "\"upscale\": \"off\"}") != NULL);
         assert(strstr(saved, "\"TEST92001\": {\"mode\": \"library\", \"sas\": \"off\"}") != NULL);
         free(saved);
     }
@@ -7040,7 +7041,8 @@ static void test_play_mode_sas_settings(void) {
     assert(player_app_save_settings(app, path) == NK_OK);
     {
         char *saved = read_text_file(path);
-        assert(saved && strstr(saved, "\"smooth\": \"off\", \"sas\": \"off\"}") != NULL);
+        assert(saved && strstr(saved, "\"smooth\": \"off\", \"sas\": \"off\", "
+                                      "\"upscale\": \"off\"}") != NULL);
         assert(strstr(saved, "\"TEST92001\": {\"mode\": \"library\", \"sas\": \"sinc\"}") != NULL);
         free(saved);
     }
@@ -7181,6 +7183,117 @@ static void test_play_mode_line_parses_in_runtime(void) {
         expect_line_parses_in_runtime(&r);
     }
     printf("[PLAYER_STATE_TEST] play mode lines parse in the runtime PASSED\n");
+}
+
+/* Sharper enlarging (#2122): the FSR 1 presentation upscaler as an Enhanced part. Off in a fresh
+ * settings file; read, resolved and saved at both levels; it sets NkRuntimeConfig.present_upscale
+ * (exported as SR_PRESENT_UPSCALE, test_launch_resolution) for Enhanced and Ace only, and never
+ * enters the SR_ACE line, which the runtime would refuse with an unknown key. */
+static void test_play_mode_upscale_settings(void) {
+    char sep = nk_platform_path_separator();
+    char cache_root[512], root[700], path[800];
+    char line[192];
+    PlayerPlayResolved r;
+    const PlayerEnhancedPartInfo *info = player_enhanced_part(PLAYER_PART_UPSCALE);
+    assert(info && strcmp(info->key, "upscale") == 0 && info->fresh == 0 && info->value_count == 2);
+    assert(strcmp(player_enhanced_part_label(PLAYER_PART_UPSCALE, 1), "FSR 1") == 0 &&
+           strcmp(player_enhanced_part_label(PLAYER_PART_UPSCALE, 0), "Off") == 0);
+    /* The row says it is presentation only and when it applies (#2122). */
+    assert(strstr(info->sentence, "larger than the game") != NULL &&
+           strstr(info->sentence, "Only what you see changes") != NULL &&
+           strstr(info->sentence, "screenshots stay the same") != NULL);
+
+    PlayerSettings fresh;
+    player_app_settings_init_default(&fresh);
+    assert(fresh.enhanced.part[PLAYER_PART_UPSCALE] == 0);
+
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(root, sizeof(root), "%s%cplay_mode_upscale_probe", cache_root, sep);
+    assert(nk_platform_mkdir_p(root));
+    snprintf(path, sizeof(path), "%s%csettings.json", root, sep);
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    PlayerApp *back = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app && back);
+
+    /* The library on with FSR 1; one title turns it off, one plays Authentic, one says fsr2. */
+    write_text_file(path,
+        "{\"schema_version\": 2,"
+        " \"enhanced\": {\"default\": \"enhanced\", \"upscale\": \"fsr1\"},"
+        " \"title_play\": {\"TEST94001\": {\"mode\": \"library\", \"upscale\": \"off\"},"
+        " \"TEST94002\": {\"mode\": \"authentic\"},"
+        " \"TEST94004\": {\"mode\": \"ace\", \"upscale\": \"fsr2\"}}}");
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings.enhanced.part[PLAYER_PART_UPSCALE] == 1);
+    player_play_resolve(&app->settings, "TEST94003", &r);        /* follows the library */
+    assert(r.on && r.part[PLAYER_PART_UPSCALE] == 1);
+    assert(player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_FSR1);
+    assert(player_play_launch_line(&r, line, sizeof(line)) && strstr(line, "upscale") == NULL);
+    expect_line_parses_in_runtime(&r);
+    player_play_resolve(&app->settings, "TEST94001", &r);
+    assert(r.on && r.part[PLAYER_PART_UPSCALE] == 0);
+    assert(player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_OFF);
+    player_play_resolve(&app->settings, "TEST94002", &r);        /* Authentic: off whatever */
+    assert(!r.on && player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_OFF);
+    player_play_resolve(&app->settings, "TEST94004", &r);        /* a word it does not know */
+    assert(r.on && r.part[PLAYER_PART_UPSCALE] == 0 &&
+           player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_OFF);
+    /* The acceptance checkpoint turns the resolution off; the upscaler goes with it. */
+    player_play_resolve(&app->settings, "TEST94003", &r);
+    r.on = false;
+    assert(player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_OFF);
+    assert(player_play_present_upscale(NULL) == NK_PRESENT_UPSCALE_OFF);
+    /* The launch's configuration (player_launch_work_run): what nk_launch exports. */
+    {
+        NkRuntimeConfig config;
+        memset(&config, 0, sizeof(config));
+        player_play_config_session(&app->settings, "TEST94003", false, false, &config, &r);
+        assert(config.present_upscale == NK_PRESENT_UPSCALE_FSR1 && r.on);
+        assert(strncmp(config.ace_spec, "v1;tier=enhanced;", 17) == 0 &&
+               strstr(config.ace_spec, "upscale") == NULL);
+        player_play_config_session(&app->settings, "TEST94003", false, true, &config, NULL);
+        assert(config.present_upscale == NK_PRESENT_UPSCALE_OFF &&
+               strcmp(config.ace_spec, "off") == 0);              /* the acceptance checkpoint */
+        player_play_config_session(&app->settings, "TEST94001", false, false, &config, NULL);
+        assert(config.present_upscale == NK_PRESENT_UPSCALE_OFF);
+        player_play_config_session(&app->settings, "TEST94002", false, false, &config, NULL);
+        assert(config.present_upscale == NK_PRESENT_UPSCALE_OFF &&
+               strcmp(config.ace_spec, "off") == 0);              /* Authentic */
+    }
+    /* Ace with its 60 FPS logic keeps the upscaler: only smooth motion steps aside. */
+    {
+        PlayerTitlePlay *own = NULL;
+        for (int i = 0; i < app->settings.title_play_count; i++)
+            if (strcmp(app->settings.title_play[i].key, "TEST94004") == 0)
+                own = &app->settings.title_play[i];
+        assert(own && own == player_settings_title_play(&app->settings, "TEST94004"));
+        own->part[PLAYER_PART_UPSCALE] = 1;
+        player_play_resolve(&app->settings, "TEST94004", &r);
+        player_play_apply_logic_60(&r, true);
+        assert(r.mode == PLAYER_PLAY_ACE && player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_FSR1);
+        expect_line_parses_in_runtime(&r);
+        own->part[PLAYER_PART_UPSCALE] = 0;
+    }
+
+    assert(player_app_save_settings(app, path) == NK_OK);
+    {
+        char *saved = read_text_file(path);
+        assert(saved && strstr(saved, "\"sas\": \"off\", \"upscale\": \"fsr1\"}") != NULL);
+        assert(strstr(saved, "\"TEST94001\": {\"mode\": \"library\", \"upscale\": \"off\"}") != NULL);
+        free(saved);
+    }
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.enhanced.part[PLAYER_PART_UPSCALE] == 1);
+    player_play_resolve(&back->settings, "TEST94001", &r);
+    assert(r.on && r.part[PLAYER_PART_UPSCALE] == 0);
+    player_play_resolve(&back->settings, "TEST94003", &r);
+    assert(player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_FSR1);
+
+    remove(path);
+    (void)test_rmdir(root);
+    free(back);
+    free(app);
+    printf("[PLAYER_STATE_TEST] sharper enlarging is read, resolved, saved and exported PASSED\n");
 }
 
 /* Settings > Enhanced opened from a title (#2055): the page's rows act on that title, Back
@@ -7553,6 +7666,7 @@ int main(int argc, char **argv) {
     test_play_mode_smooth_motion();
     test_play_mode_sas_settings();
     test_play_mode_line_parses_in_runtime();
+    test_play_mode_upscale_settings();
     test_play_mode_title_page();
     /* Saves a library file under the cache root, so it runs only once that
      * root is the temporary one. */
