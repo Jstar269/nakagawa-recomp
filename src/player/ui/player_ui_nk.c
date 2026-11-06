@@ -87,6 +87,8 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
 
 struct PlayerUiNk {
     SDL_Window *window;     /* the launcher window: Settings reads its display's refresh rate */
+    bool clock_held;        /* frames are drawn at held_clock_s, not the time of day (#2124) */
+    double held_clock_s;
     NkUi *ui;
     NkUiSdlr *backend;
     NkUiTtf *ttf;
@@ -498,8 +500,20 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
            player_ui_nk_draws_view(app->active_view);
 }
 
+void player_ui_nk_hold_clock(PlayerUiNk *player, double now_s) {
+    if (player == NULL || !isfinite(now_s)) return;
+    player->clock_held = true;
+    player->held_clock_s = now_s;
+}
+
+/* The clock the launcher draws with: the time since SDL started, or the held time. */
+static double player_ui_nk_now_s(const PlayerUiNk *player) {
+    if (player != NULL && player->clock_held) return player->held_clock_s;
+    return (double)SDL_GetTicksNS() / 1000000000.0;
+}
+
 uint32_t player_ui_nk_wait_ms(const PlayerUiNk *player, uint32_t idle_ms) {
-    double now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    double now_s = player_ui_nk_now_s(player);
     double wait_s;
     if (player == NULL) {
         return idle_ms;
@@ -1960,7 +1974,7 @@ bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
     size_t count;
     double now_s;
     if (player == NULL || !player->ready || event == NULL) return false;
-    now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    now_s = player_ui_nk_now_s(player);
     if (player_ui_nk_find_open(player)) {
         /* The box takes what is typed: SDL's text input brings the characters,
            Backspace deletes one, and a printable key is not also a shortcut
@@ -2267,7 +2281,7 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
     }
 #endif
     {
-        double now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+        double now_s = player_ui_nk_now_s(player);
         if (strcmp(player->ace_last_disc, game->disc_id) != 0 || now_s - player->ace_last_read_s >= 2.0) {
             snprintf(player->ace_last_disc, sizeof(player->ace_last_disc), "%s", game->disc_id);
             player->ace_last_read_s = now_s;
@@ -2802,7 +2816,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     nk_ui_set_layout_debug(player->ui,
                            app->settings.developer_mode && app->dev_log.inspect_layout);
     nk_ui_sdlr_set_scale(player->backend, scale.density);
-    now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    now_s = player_ui_nk_now_s(player);
     repeat_count = nk_ui_input_poll(&player->input.input, now_s, repeats,
                                     sizeof(repeats) / sizeof(repeats[0]));
     for (size_t i = 0u; i < repeat_count; ++i) {

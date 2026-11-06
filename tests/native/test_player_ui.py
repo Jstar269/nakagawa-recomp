@@ -5881,6 +5881,83 @@ class FirstRunRouteTests(unittest.TestCase):
         self.assertIn("SAMPLE", completed.stderr)
 
 
+class ScreenshotDeterminismTests(unittest.TestCase):
+    """#2124: two --screenshot captures of one view from one build are the same bytes.
+
+    Failing-before: the launcher drew its one captured frame at the time since SDL
+    started, so the background waves (which step with that clock at 30 Hz) and any
+    progress sweep came out different from run to run. --screenshot now draws at a
+    held time.
+
+    The second capture of each view waits NK_UI_TEST_SCREENSHOT_DELAY_MS (a test-only
+    hook) before it draws, so the two runs are always at least seven wave steps apart
+    on the real clock. Without the held time, the test therefore fails every time,
+    not only when two runs happen to land in different steps.
+
+    Each run has its own data folder, as in the issue's repro. The Settings page
+    prints that folder's path ("Saves: ..."), so there the two captures may differ
+    only within one line of text."""
+
+    VIEWS = ("library", "settings", "developer-log", "accessibility-settings", "psp-fonts",
+             "updates", "wizard", "building", "empty")
+    DELAY_MS = "250"  # 7.5 steps of the waves' 30 Hz clock
+    TEXT_LINE_ROWS = 16
+
+    def capture(self, scratch: Path, view: str, run: int, delay_ms: str | None) -> bytes:
+        # Same-length folder names, so only the run number differs in the printed path.
+        data = scratch / f"data-{run}"
+        shutil.rmtree(data, ignore_errors=True)
+        profile = data / "profile"
+        for folder in (data / "appdata", data / "localappdata", profile):
+            folder.mkdir(parents=True)
+        env = os.environ.copy()
+        env.update({
+            "SDL_VIDEODRIVER": "dummy", "SDL_RENDER_DRIVER": "software", "SDL_AUDIODRIVER": "dummy",
+            "APPDATA": str(data / "appdata"), "LOCALAPPDATA": str(data / "localappdata"),
+            "USERPROFILE": str(profile), "HOME": str(profile),
+            "XDG_CONFIG_HOME": str(profile / "config"), "XDG_DATA_HOME": str(profile / "data"),
+            "XDG_CACHE_HOME": str(profile / "cache"),
+        })
+        env.pop("NK_UI_TEST_SCREENSHOT_DELAY_MS", None)
+        if delay_ms is not None:
+            env["NK_UI_TEST_SCREENSHOT_DELAY_MS"] = delay_ms
+        shot = scratch / f"{view}-{run}.bmp"
+        completed = subprocess.run(
+            [str(PLAYER_EXE), f"--view={view}", f"--screenshot={shot}", "--width=1280",
+             "--height=720", f"--user-data-root={data / 'user'}", f"--runtime-root={data / 'runtime'}"],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120, check=False,
+        )
+        if "[PLAYER] Screenshot saved" not in completed.stdout:
+            if "UI_NEXT_ACTIVE" not in completed.stdout:
+                self.skipTest("the next UI could not start here (no UI fonts)")
+            self.fail(f"--view={view} saved no screenshot:\n{completed.stdout}\n{completed.stderr}")
+        return shot.read_bytes()
+
+    @staticmethod
+    def differing_rows(scratch: Path, view: str) -> list[int]:
+        width, height, bpp, a = read_bmp(scratch / f"{view}-1.bmp")
+        _, _, _, b = read_bmp(scratch / f"{view}-2.bmp")
+        stride = (width * (bpp // 8) + 3) & ~3
+        return [row for row in range(height)
+                if a[row * stride:(row + 1) * stride] != b[row * stride:(row + 1) * stride]]
+
+    def test_two_captures_of_each_view_are_the_same_bytes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".screenshot-twice-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            for view in self.VIEWS:
+                with self.subTest(view=view):
+                    first = self.capture(scratch, view, 1, None)
+                    second = self.capture(scratch, view, 2, self.DELAY_MS)
+                    if first == second:
+                        continue
+                    rows = self.differing_rows(scratch, view)
+                    if view == "settings" and rows and rows[-1] - rows[0] < self.TEXT_LINE_ROWS:
+                        continue  # only the printed data folder's path
+                    self.fail(f"--view={view}: the two captures differ in {len(rows)} rows "
+                              f"({rows[0]} to {rows[-1]})" if rows else
+                              f"--view={view}: the two captures differ")
+
+
 if __name__ == "__main__":
     unittest.main()
 
