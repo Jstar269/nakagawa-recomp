@@ -17276,6 +17276,16 @@ static void test_sema_hardware_codes(void) {
         expect(wsv_count(sema) == 0, "B1 rejected PollSema preserves count");
     }
     wsv_delete(sema);
+    /* pspautotests tests/threads/semaphores/poll.expected: a count <= 0 is checked before the id
+     * lookup (NULL, invalid and deleted ids answer 800201BD), a count of 1 answers 80020199. */
+    {
+        const uint32_t ids[] = {0u, sema, 0xdeadbeefu};
+        const uint32_t counts[] = {0u, 0xffffffffu};
+        for (unsigned i = 0; i < 3; i++)
+            for (unsigned j = 0; j < 2; j++)
+                b1_expect(wsv_wait(0x58b1f937u, ids[i], counts[j], 0u), 0x800201bdu,
+                          "PollSema count <= 0 with a NULL/deleted/invalid id returns 800201BD");
+    }
     const uint32_t nids[] = {NID_WSV_SIGNAL_SEMA, NID_WSV_DELETE_SEMA, 0x58b1f937u};
     for (unsigned i = 0; i < sizeof nids / sizeof nids[0]; i++) {
         b1_expect(wsv_wait(nids[i], sema, 1u, 0u), 0x80020199u,
@@ -17518,6 +17528,41 @@ static void test_lwmutex_hardware_codes(void) {
            "B1 self-held non-recursive Lock neither waits nor consumes the timeout");
     expect(MEM_R32(wa) == 1u, "B1 rejected relock leaves lockLevel unchanged");
     b1_expect(b1_call(NID_B1_DELETE_LWMUTEX, wa, 0u, 0u, 0u), 0u, "Delete succeeds");
+    s_cur = -1;
+}
+
+/* pspautotests tests/threads/lwmutex/try600.expected (the "(fake)" uid-0 cells are not modelled). */
+static void test_trylock600_cells(void) {
+    TCB *self = wsv_begin();
+    const uint32_t wa = B1_LW_WORKAREA;
+    const uint32_t me = self->uid;
+    const uint32_t N = NID_TRYLOCK_LWMUTEX_600;
+    /* Non-recursive, free. */
+    b1_expect(b1_call(NID_B1_CREATE_LWMUTEX, wa, WSV_NAMEBUF, 0u, 0u), 0u, "T600 create FIFO free");
+    b1_expect(b1_call(N, wa, 0u, 0u, 0u), 0x800201bdu, "T600 count 0 returns 800201BD");
+    b1_expect(b1_call(N, wa, 0xffffffffu, 0u, 0u), 0x800201bdu, "T600 count -1 returns 800201BD");
+    b1_expect(b1_call(N, wa, 2u, 0u, 0u), 0x800201bdu, "T600 count 2 on a non-recursive mutex returns 800201BD");
+    expect(MEM_R32(wa) == 0u && MEM_R32(wa + 4u) == 0u, "T600 rejected counts leave the mutex free");
+    b1_expect(b1_call(N, wa, 1u, 0u, 0u), 0u, "T600 count 1 takes the free mutex");
+    expect(MEM_R32(wa) == 1u && MEM_R32(wa + 4u) == me, "T600 taken: level 1, owner is the caller");
+    b1_expect(b1_call(N, wa, 1u, 0u, 0u), 0x800201cfu, "T600 self-held non-recursive returns 800201CF");
+    expect(MEM_R32(wa) == 1u, "T600 self-held relock leaves the level unchanged");
+    /* Held by another thread. */
+    MEM_W32(wa + 4u, me + 0x100u);
+    b1_expect(b1_call(N, wa, 1u, 0u, 0u), 0x800201cbu, "T600 held by another thread returns 800201CB");
+    MEM_W32(wa + 4u, me);
+    b1_expect(b1_call(NID_B1_DELETE_LWMUTEX, wa, 0u, 0u, 0u), 0u, "T600 delete");
+    b1_expect(b1_call(N, wa, 1u, 0u, 0u), 0x800201cau, "T600 deleted workarea (uid 0xFFFFFFFF) returns 800201CA");
+    /* Recursive. */
+    b1_expect(b1_call(NID_B1_CREATE_LWMUTEX, wa, WSV_NAMEBUF, 0x200u, 1u), 0u, "T600 create recursive held");
+    b1_expect(b1_call(N, wa, 1u, 0u, 0u), 0u, "T600 recursive relock succeeds");
+    expect(MEM_R32(wa) == 2u, "T600 recursive level is 2");
+    b1_expect(b1_call(N, wa, 0x7ffffffdu, 0u, 0u), 0u, "T600 level reaches INT_MAX");
+    expect(MEM_R32(wa) == 0x7fffffffu, "T600 level is INT_MAX");
+    b1_expect(b1_call(N, wa, 1u, 0u, 0u), 0x800201cdu, "T600 recursive overflow returns 800201CD");
+    expect(MEM_R32(wa) == 0x7fffffffu, "T600 overflow leaves the level unchanged");
+    b1_expect(b1_call(N, wa, 0u, 0u, 0u), 0x800201bdu, "T600 recursive count 0 returns 800201BD");
+    b1_expect(b1_call(NID_B1_DELETE_LWMUTEX, wa, 0u, 0u, 0u), 0u, "T600 recursive delete");
     s_cur = -1;
 }
 
@@ -18813,7 +18858,7 @@ static void test_b23_second_round(void) {
         main_t->started = 1;
         CpuState c2;
         memset(&c2, 0, sizeof c2);
-        c2.r[4] = B23_MPP_NAME; c2.r[7] = 64u;
+        c2.r[4] = B23_MPP_NAME; c2.r[5] = 2u; c2.r[7] = 64u;
         for (int i = 0; i < 3; i++) MEM_W8(B23_MPP_NAME + (uint32_t)i, (uint8_t)"mp"[i]);
         MEM_W8(B23_MPP_NAME + 2u, 0u);
         uint32_t pipe = sr_syscall(&c2, NID_SCE_KERNEL_CREATE_MSG_PIPE);
@@ -32615,6 +32660,7 @@ static void test_msgpipe_safety(void) {
     /* --- CreateMsgPipe: resource-model validation before any allocation --- */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = GUEST_NAME;
+    cpu.r[5] = 2u;  /* partition: msgpipe/create.expected accepts only 2 and 6 */
     cpu.r[7] = 0u;
     uint32_t zero_uid = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
     expect(zero_uid != 0u && zero_uid < 0x80000000u,
@@ -32622,19 +32668,26 @@ static void test_msgpipe_safety(void) {
     cpu.r[4] = zero_uid;
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
            "zero-buffer pipe deletes cleanly");
-    cpu.r[4] = GUEST_NAME;
 
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = GUEST_NAME;
+    cpu.r[5] = 2u;
     cpu.r[7] = max_cap + 1u; /* first size above the model ceiling */
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_SIZE,
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == 0x80020190u,
            "CreateMsgPipe rejects bufferSize above the capacity ceiling (bounded time, no alloc)");
 
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = GUEST_NAME;
+    cpu.r[5] = 2u;
     cpu.r[7] = 0xFFFFFFFFu; /* maximal hostile request */
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_SIZE,
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == 0x80020190u,
            "CreateMsgPipe rejects a 4 GiB hostile request before allocation");
 
     /* A rejected create must not consume a UID or slot: a follow-up valid
      * create must succeed and be the FIRST pipe (state probe finds it). */
+    memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = GUEST_NAME;
+    cpu.r[5] = 2u;
     cpu.r[7] = 64u;
     uint32_t uid = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
     expect(uid != 0u && uid < 0x80000000u, "valid CreateMsgPipe returns a kernel UID");
@@ -32758,6 +32811,7 @@ static void test_msgpipe_safety(void) {
     /* --- Exact ceiling boundary: cap itself is legal (probe-backed) --- */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = GUEST_NAME;
+    cpu.r[5] = 2u;
     cpu.r[7] = max_cap;
     uint32_t big_uid = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
     expect(big_uid != 0u && big_uid < 0x80000000u, "capacity exactly at the ceiling is accepted");
@@ -32832,6 +32886,7 @@ static void test_msgpipe_blocking(void) {
 
     CpuState cpu = {0};
     cpu.r[4] = GUEST_NAME;
+    cpu.r[5] = 2u;
     cpu.r[7] = 4u;
     uint32_t pipe = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
     expect(pipe != 0u && pipe < 0x80000000u, "blocking Message Pipe test creates a four-byte pipe");
@@ -33071,6 +33126,7 @@ static void test_msgpipe_blocking(void) {
 static uint32_t selftest_msgpipe_create(uint32_t name, uint32_t attr, uint32_t size) {
     CpuState cpu = {0};
     cpu.r[4] = name;
+    cpu.r[5] = 2u;
     cpu.r[6] = attr;
     cpu.r[7] = size;
     return sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
@@ -33153,7 +33209,7 @@ static void test_msgpipe_rendezvous(void) {
         MEM_W8(src, 0xa1u); MEM_W8(src + 1u, 0xb2u);
         TCB *main_t = fixture_thread(0x201u, TH_RUNNING, 32);
         main_t->started = 1; int main_idx = (int)(main_t - s_tcb); s_cur = main_idx;
-        CpuState cpu = {0}; cpu.r[4] = name; cpu.r[7] = buffered ? 4u : 0u;
+        CpuState cpu = {0}; cpu.r[4] = name; cpu.r[5] = 2u; cpu.r[7] = buffered ? 4u : 0u;
         uint32_t pipe = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
         expect((int32_t)pipe > 0, buffered ? "buffered rendezvous pipe created" : "zero-buffer pipe created");
         if ((int32_t)pipe <= 0) { s_cur = -1; continue; }
@@ -35145,6 +35201,7 @@ static void test_hle_liveness_queue_full_empty(void) {
     MEM_W8(source, 0x5a);
     CpuState cpu = {0};
     cpu.r[4] = name;
+    cpu.r[5] = 2u;
     cpu.r[7] = 1u;
     uint32_t pipe = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
     expect((int32_t)pipe > 0, "HLE queue workload creates a bounded message pipe");
@@ -35201,6 +35258,7 @@ static void test_td23_guest_pointer_validation(void) {
     /* 1. Unmapped name pointer rejected (not treated as "") */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0xDEADBEEFu; /* unmapped address */
+    cpu.r[5] = 2u;          /* partition */
     cpu.r[7] = 64u;         /* bufferSize */
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "CreateMsgPipe rejects unmapped name pointer");
@@ -35216,6 +35274,7 @@ static void test_td23_guest_pointer_validation(void) {
     memset((char *)SR_HOST(unterminated_buf), 'A', 64);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = unterminated_buf;
+    cpu.r[5] = 2u;
     cpu.r[7] = 64u;
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "CreateMsgPipe rejects unterminated name string");
@@ -38233,7 +38292,13 @@ static void test_psp_mutex(void) {
     expect(w_cn.returned == 0 && w_cn.tcb->state == TH_WAIT_OBJ, "T21: waiter blocked on m_cn");
 
     expect(mtx_cancel(m_cn, 2, 0) == 0x800201bdu, "MO-01: CancelMutex newCount=2 returns 0x800201bd");
-    expect(mtx_cancel(m_cn, -1, 0) == 0x800201bdu, "MO-01: CancelMutex newCount=-1 returns 0x800201bd");
+    {   /* pspautotests tests/threads/mutex/cancel.expected "Negative -3/-1: OK", then current=0 lockThread=0 */
+        uint32_t m_neg = mtx_create("neg_mtx", 0, 1);
+        expect(mtx_cancel(m_neg, -1, 0) == 0, "MO-01: CancelMutex newCount=-1 returns 0");
+        expect(mtx_get_info(m_neg, &info) && info.currentCount == 0 && info.lockThread == 0,
+               "MO-01: CancelMutex newCount=-1 releases to count 0, no owner");
+        mtx_delete(m_neg);
+    }
 
     uint32_t num_wait_out = 0x00270090u; MEM_W32(num_wait_out, 0xdeadbeefu);
     s_cur = (int)(cur - s_tcb);
@@ -48079,7 +48144,6 @@ static void test_mp3_error_paths(void) {
 #define TMID_SENTINEL          0xa5a5a5a5u
 #define TMID_ILLEGAL_TYPE_ERR  0x800201bbu   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_TYPE */
 #define TMID_ILLEGAL_ADDR_ERR  0x800200d3u   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_ADDR */
-#define TMID_ILLEGAL_SIZE_ERR  0x800201bcu   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_SIZE */
 #define TMID_NOT_MODELLED_ERR  0x80020002u   /* the runtime's named refusal */
 
 static uint32_t tmid_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
@@ -48195,7 +48259,7 @@ static void test_threadman_id_list(void) {
            "ThreadmanIdList count-only: readbufsize 0 returns 0 and idcount holds the total");
 
     /* Types outside the PSPSDK list are refused before any write. */
-    static const uint32_t illegal[] = {0u, 12u, 63u, 68u, 0xffffffffu};
+    static const uint32_t illegal[] = {0u, 15u, 63u, 68u, 0xffffffffu};
     for (size_t i = 0; i < sizeof illegal / sizeof illegal[0]; i++) {
         tmid_fill();
         rc = tmid_list(illegal[i], TMID_BUF, 4u, TMID_COUNT);
@@ -48223,9 +48287,9 @@ static void test_threadman_id_list(void) {
     expect(tmid_list(1u, 0x0bfffff8u, 4u, TMID_COUNT) == TMID_ILLEGAL_ADDR_ERR &&
                MEM_R32(TMID_COUNT) == TMID_SENTINEL,
            "ThreadmanIdList readbuf span past guest memory: ILLEGAL_ADDR, no count written");
-    expect(tmid_list(1u, TMID_BUF, 0xffffffffu, TMID_COUNT) == TMID_ILLEGAL_SIZE_ERR &&
+    expect(tmid_list(1u, TMID_BUF, 0xffffffffu, TMID_COUNT) == TMID_ILLEGAL_ADDR_ERR &&
                MEM_R32(TMID_COUNT) == TMID_SENTINEL,
-           "ThreadmanIdList negative readbufsize: ILLEGAL_SIZE, no count written");
+           "ThreadmanIdList negative readbufsize: ILLEGAL_ADDR (threadmanidlist.expected), no count written");
     expect(tmid_list(1u, TMID_BUF, 8u, 0x0bfffffeu) == TMID_ILLEGAL_ADDR_ERR &&
                MEM_R32(TMID_BUF) == TMID_SENTINEL,
            "ThreadmanIdList unwritable idcount: ILLEGAL_ADDR, no uid written");
@@ -48253,7 +48317,7 @@ static void test_threadman_id_list(void) {
     uid = fpl_make_pool();
     tmid_check_object("Fpl", 6u, 5u, uid, fpl_base, vpl_base, NID_FPL_DELETE);
     base = tmid_total(7u);
-    tmid_check_object("Mpipe", 7u, 0u, tmid_call(NID_TMID_CREATE_MPP, TMID_NAME, 0u, 0u, 64u),
+    tmid_check_object("Mpipe", 7u, 0u, tmid_call(NID_TMID_CREATE_MPP, TMID_NAME, 2u, 0u, 64u),
                       base, 0u, NID_TMID_DELETE_MPP);
     base = tmid_total(8u);
     tmid_check_object("Callback", 8u, 0u, tmid_call(NID_TMID_CREATE_CB, TMID_NAME, TMID_HANDLER, 0u, 0u),
@@ -48264,6 +48328,144 @@ static void test_threadman_id_list(void) {
     base = tmid_total(11u);
     tmid_check_object("VTimer", 11u, 0u, tmid_call(NID_TMID_CREATE_VT, TMID_NAME, 0u, 0u, 0u),
                       base, 0u, NID_TMID_DELETE_VT);
+    s_cur = -1;
+}
+
+static void test_thread_exit_status_zero_uid(void) {
+    TCB *self = wsv_begin();
+    /* pspautotests tests/threads/threads/exitstatus.expected: -1, Zero and Invalid answer 80020198;
+     * the running thread answers 800201a4 (not dormant). */
+    b1_expect(b1_call(NID_SCE_KERNEL_GET_EXIT_STATUS, 0u, 0u, 0u, 0u), 0x80020198u,
+              "GetThreadExitStatus(0) is UNKNOWN_THID, not the current thread");
+    b1_expect(b1_call(NID_SCE_KERNEL_GET_EXIT_STATUS, 0xffffffffu, 0u, 0u, 0u), 0x80020198u,
+              "GetThreadExitStatus(-1) is UNKNOWN_THID");
+    b1_expect(b1_call(NID_SCE_KERNEL_GET_EXIT_STATUS, 0xdeadbeefu, 0u, 0u, 0u), 0x80020198u,
+              "GetThreadExitStatus(invalid) is UNKNOWN_THID");
+    b1_expect(b1_call(NID_SCE_KERNEL_GET_EXIT_STATUS, self->uid, 0u, 0u, 0u), 0x800201a4u,
+              "GetThreadExitStatus(current) is NOT_DORMANT");
+    s_cur = -1;
+}
+
+static void test_msgpipe_create_cells(void) {
+    (void)wsv_begin();
+    CpuState cpu;
+#define MPC(part, attr, size) (memset(&cpu, 0, sizeof cpu), cpu.r[4] = WSV_NAMEBUF, \
+        cpu.r[5] = (uint32_t)(part), cpu.r[6] = (attr), cpu.r[7] = (size), \
+        sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE))
+    /* pspautotests tests/threads/msgpipe/create.expected. */
+    static const struct { int32_t part; uint32_t want; } parts[] = {
+        {-5, 0x800200d2u}, {-1, 0x800200d2u}, {0, 0x800200d2u}, {1, 0x800200d1u}, {3, 0x800200d1u},
+        {4, 0x800200d1u}, {7, 0x800200d2u}, {8, 0x800200d2u}, {9, 0x800200d2u}, {10, 0x800200d2u},
+    };
+    for (unsigned i = 0; i < sizeof parts / sizeof parts[0]; i++)
+        b1_expect(MPC(parts[i].part, 0u, 0u), parts[i].want, "MsgPipe create partition");
+    static const int ok_parts[] = {2, 6};
+    for (unsigned i = 0; i < 2; i++) {
+        uint32_t uid = MPC(ok_parts[i], 0u, 0u);
+        expect((int32_t)uid > 0, "MsgPipe create partition 2/6 succeeds");
+        cpu.r[4] = uid; sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+    }
+    static const uint32_t good_attr[] = {0x1u, 0x100u, 0x1000u, 0x4000u, 0x51ffu};
+    for (unsigned i = 0; i < sizeof good_attr / sizeof good_attr[0]; i++) {
+        uint32_t uid = MPC(2, good_attr[i], 100u);
+        expect((int32_t)uid > 0, "MsgPipe create accepts an attribute inside 0x51ff");
+        cpu.r[4] = uid; sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+    }
+    static const uint32_t bad_attr[] = {0x200u, 0x300u, 0x3ffu, 0x400u, 0x800u, 0x2000u, 0x8000u,
+                                        0x10000u, 0x20000u, 0x40000u, 0x80000u};
+    for (unsigned i = 0; i < sizeof bad_attr / sizeof bad_attr[0]; i++)
+        b1_expect(MPC(2, bad_attr[i], 100u), 0x80020191u, "MsgPipe create attribute outside 0x51ff");
+    b1_expect(MPC(2, 0u, 0xffffffffu), 0x80020190u, "MsgPipe create size 0xFFFFFFFF is NO_MEMORY");
+    b1_expect(MPC(2, 0u, 0x04000000u), 0x80020190u, "MsgPipe create size 0x04000000 is NO_MEMORY");
+    static const uint32_t good_size[] = {0u, 1u, 0x10u, 0x1000u, 0x100000u};
+    for (unsigned i = 0; i < sizeof good_size / sizeof good_size[0]; i++) {
+        uint32_t uid = MPC(2, 0u, good_size[i]);
+        expect((int32_t)uid > 0, "MsgPipe create accepts a recorded size");
+        cpu.r[4] = uid; sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+    }
+#undef MPC
+    s_cur = -1;
+}
+
+/* pspautotests tests/threads/threads/threadmanidlist.expected: types 12 (Mutex), 13 (LwMutex)
+ * and 14 (Tlspl) list; 15 and above are ILLEGAL_TYPE; a negative size is ILLEGAL_ADDR with the
+ * count word unwritten. */
+static void test_threadman_id_list_cells(void) {
+    (void)wsv_begin();
+    for (uint32_t i = 0; i < 8u; i++) MEM_W8(TMID_NAME + i, (uint8_t)"tmidobj"[i]);
+    static const uint32_t neg[] = {0xfffffffeu, 0xffffffffu};
+    for (unsigned i = 0; i < 2; i++) {
+        tmid_fill();
+        b1_expect(tmid_list(1u, TMID_BUF, neg[i], TMID_COUNT), 0x800200d3u, "ThreadmanIdList negative size");
+        expect(MEM_R32(TMID_COUNT) == TMID_SENTINEL, "ThreadmanIdList negative size leaves the count unwritten");
+    }
+    static const uint32_t bad_types[] = {15u, 16u, 0x18u, 0x44u, 0x80u, 0x1000u, 0x80000000u};
+    for (unsigned i = 0; i < sizeof bad_types / sizeof bad_types[0]; i++)
+        b1_expect(tmid_list(bad_types[i], TMID_BUF, 4u, TMID_COUNT), TMID_ILLEGAL_TYPE_ERR,
+                  "ThreadmanIdList type 15 and above");
+    uint32_t base = tmid_total(12u);
+    expect(base != UINT32_MAX, "ThreadmanIdList accepts type 12 (Mutex)");
+    tmid_check_object("Mutex", 12u, 0u, tmid_call(0xb7d098c6u, TMID_NAME, 0u, 0u, 0u), base, 0u, 0xf8170fbeu);
+    base = tmid_total(13u);
+    expect(base != UINT32_MAX, "ThreadmanIdList accepts type 13 (LwMutex)");
+    expect(tmid_call(NID_B1_CREATE_LWMUTEX, TMID_LWMUTEX_WA, TMID_NAME, 0u, 0u) == 0u &&
+               tmid_total(13u) == base + 1u && tmid_lists(13u, MEM_R32(TMID_LWMUTEX_WA + 0x10u)),
+           "ThreadmanIdList LwMutex: created object is listed once");
+    expect(tmid_call(NID_B1_DELETE_LWMUTEX, TMID_LWMUTEX_WA, 0u, 0u, 0u) == 0u && tmid_total(13u) == base,
+           "ThreadmanIdList LwMutex: deleted object is gone");
+    base = tmid_total(14u);
+    expect(base != UINT32_MAX, "ThreadmanIdList accepts type 14 (Tlspl)");
+    CpuState tc; memset(&tc, 0, sizeof tc);
+    tc.r[4] = TMID_NAME; tc.r[5] = 2u; tc.r[6] = 0u; tc.r[7] = 16u; tc.r[8] = 2u;
+    tmid_check_object("Tlspl", 14u, 0u, sr_syscall(&tc, NID_TLSPL_CREATE), base, 0u, NID_TLSPL_DELETE);
+    s_cur = -1;
+}
+
+#define CBC_NAME 0x00252600u
+#define CBC_FUNC TMID_HANDLER
+static uint32_t cbc_create(uint32_t name, uint32_t func, uint32_t arg) {
+    return b1_call(0xe81caf8fu, name, func, arg, 0u);
+}
+
+/* pspautotests tests/threads/callbacks/{create,delete,cancel,count}.expected. The refer.expected
+ * cells (and the name truncation and notifyArg that only sceKernelReferCallbackStatus shows) are
+ * not reachable here: this binary is built with SR_HLE_THREAD_SELFTEST, which leaves the
+ * 0x730ed8bc registration out (hle_register_init_kernel_thread_2). */
+static void test_callback_object_cells(void) {
+    (void)wsv_begin();
+    const char *longname = "1234567890123456789012345678901234567890123456789012345678901234";
+    for (uint32_t i = 0; i <= strlen(longname); i++) MEM_W8(CBC_NAME + i, (uint8_t)longname[i]);
+    /* create.expected */
+    b1_expect(cbc_create(0u, CBC_FUNC, 0u), 0x80020001u, "Callback create NULL name");
+    uint32_t cb = cbc_create(CBC_NAME, CBC_FUNC, 0xdeadbeefu);
+    expect((int32_t)cb > 0, "Callback create with a 64-character name and a wild arg pointer succeeds");
+    b1_expect(b1_call(0xedba5844u, cb, 0u, 0u, 0u), 0u, "Callback delete OK");
+    uint32_t nullfunc = cbc_create(CBC_NAME, 0u, 0x1337u);
+    expect((int32_t)nullfunc > 0, "Callback create NULL func is accepted");
+    b1_expect(b1_call(0xedba5844u, nullfunc, 0u, 0u, 0u), 0u, "Callback delete NULL-func callback");
+    b1_expect(cbc_create(CBC_NAME, 0xdeadbeefu, 0u), 0x800200d3u, "Callback create invalid func is ILLEGAL_ADDR");
+    /* delete.expected: NULL / invalid / deleted answer 800201a1 */
+    b1_expect(b1_call(0xedba5844u, 0u, 0u, 0u, 0u), 0x800201a1u, "Callback delete NULL");
+    b1_expect(b1_call(0xedba5844u, 0xdeadbeefu, 0u, 0u, 0u), 0x800201a1u, "Callback delete invalid");
+    b1_expect(b1_call(0xedba5844u, cb, 0u, 0u, 0u), 0x800201a1u, "Callback delete already deleted");
+    /* count.expected and cancel.expected */
+    cb = cbc_create(CBC_NAME, CBC_FUNC, 0u);
+    b1_expect(b1_call(0x2a3d44ffu, cb, 0u, 0u, 0u), 0u, "Callback count of a fresh callback is 0");
+    b1_expect(b1_call(0xc11ba8c4u, cb, 0x123u, 0u, 0u), 0u, "Callback notify");
+    b1_expect(b1_call(0x2a3d44ffu, cb, 0u, 0u, 0u), 1u, "Callback count after 1 notify is 1");
+    b1_expect(b1_call(0xc11ba8c4u, cb, 0x123u, 0u, 0u), 0u, "Callback notify 2");
+    b1_expect(b1_call(0xc11ba8c4u, cb, 0x123u, 0u, 0u), 0u, "Callback notify 3");
+    b1_expect(b1_call(0x2a3d44ffu, cb, 0u, 0u, 0u), 3u, "Callback count after 3 notifies is 3");
+    b1_expect(b1_call(0xba4051d6u, cb, 0u, 0u, 0u), 0u, "Callback cancel");
+    b1_expect(b1_call(0x2a3d44ffu, cb, 0u, 0u, 0u), 0u, "Callback cancel clears the notify count");
+    /* unknown ids */
+    b1_expect(b1_call(0xba4051d6u, 0u, 0u, 0u, 0u), 0x800201a1u, "Callback cancel NULL");
+    b1_expect(b1_call(0xba4051d6u, 0xdeadbeefu, 0u, 0u, 0u), 0x800201a1u, "Callback cancel invalid");
+    b1_expect(b1_call(0x2a3d44ffu, 0u, 0u, 0u, 0u), 0x800201a1u, "Callback count NULL");
+    b1_expect(b1_call(0x2a3d44ffu, 0xdeadbeefu, 0u, 0u, 0u), 0x800201a1u, "Callback count invalid");
+    b1_expect(b1_call(0xedba5844u, cb, 0u, 0u, 0u), 0u, "Callback delete");
+    b1_expect(b1_call(0xba4051d6u, cb, 0u, 0u, 0u), 0x800201a1u, "Callback cancel deleted");
+    b1_expect(b1_call(0x2a3d44ffu, cb, 0u, 0u, 0u), 0x800201a1u, "Callback count deleted");
     s_cur = -1;
 }
 
@@ -48673,6 +48875,11 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vtimer_handler_catches_up_and_refuses_cancel_inside();
     test_vtimer_handler_return_below_100us_reschedules_100us_on();
     test_lwmutex_hardware_codes();
+    test_trylock600_cells();
+    test_thread_exit_status_zero_uid();
+    test_msgpipe_create_cells();
+    test_threadman_id_list_cells();
+    test_callback_object_cells();
     test_evf_hardware_codes();
     test_threadman_id_list();
     test_wait_sema_count_validation();
