@@ -3,10 +3,16 @@
 /*
  * texrepl.c - Texture replacement packs in PPSSPP's layout (#1880), phase 1. See texrepl.h.
  *
- * Written from PPSSPP's documented pack layout and from reading how its replacer forms a texture's
- * identity (design reading only). The hashes are the public XXH32 and XXH64 algorithms and PPSSPP's
- * quick hash, which a pack's file names depend on, so they must match it bit for bit; the
- * selftest checks them against published xxHash vectors and fixed quick-hash vectors.
+ * The quick texture hash and the replacement-pack key and lookup order are translated from PPSSPP
+ * (GPL-2.0-or-later), GPU/Common/TextureDecoder.cpp (StableQuickTexHash, QuickTexHashNonSSE),
+ * GPU/Common/TextureReplacer.cpp (textures.ini, hash ranges, key and wildcard lookup) and
+ * GPU/Common/TextureCacheCommon.cpp (the palette hash) at 3bc60270eae3069f13dfbfdb7292a7e1375de6f6.
+ * Copyright (c) 2012- PPSSPP Project. Modified for Nakagawa Recomp.
+ *
+ * The hashes must match PPSSPP's bit for bit, since a pack's file names depend on them; the
+ * selftest checks them against fixed quick-hash vectors taken from PPSSPP's own code and published
+ * xxHash vectors (XXH32 and XXH64 are the public algorithms). The ini parser, the PNG decode (stb),
+ * the cache and the budget are this project's own.
  */
 #include "texrepl.h"
 
