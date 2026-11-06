@@ -33,16 +33,23 @@ name: Trusted CI verdict
 # purpose: the required context is the commit status alone, and the verifier
 # refuses any check run that uses the status's name.
 #
-# Re-triggers: a new head, a label change, and the completion of each workflow
-# that produces an intended context. The provenance attestation workflow is not
-# listed by name here (its verifier reserves that name in every other
-# workflow), so when it is the last to finish, dispatch this workflow by hand
-# (docs/CI.md, "Trusted CI verdict").
+# Re-triggers: a new head, a label change, and the completion of CI, which is
+# the producer that finishes last (on all 181 heads measured on 2026-11-04/05).
+# A run started when OSV-Scanner or Dependency Review finished only re-posted
+# "pending" and held the head's concurrency group ahead of the run CI starts.
+# When one of them, or the provenance attestation workflow (its verifier
+# reserves that name in every other workflow, so it is never listed here),
+# finishes after CI, the verdict stays pending, never success: dispatch this
+# workflow by hand (docs/CI.md, "Trusted CI verdict"). The draft/ready
+# transition is not a re-trigger: the verifier never reads the draft state.
+# Every label event re-judges, whatever the label: a newer run in this head's
+# concurrency group replaces a pending one, so a run that judged nothing could
+# leave an older verdict standing.
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_run:
-    workflows: ["CI", "OSV-Scanner", "Dependency Review"]
+    workflows: ["CI"]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -98,7 +105,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
 
       - name: Hash the labelled head
         id: record
@@ -188,13 +195,18 @@ jobs:
     # Only heads proposed for the default branch, which is the only branch the
     # ruleset protects. workflow_run runs of push or schedule events have no
     # pull request to judge; the verifier also finds none and posts nothing.
+    # A cancelled first CI attempt is a head superseded by a newer push (ci.yml
+    # cancels in progress per pull request): skipped here, it takes no runner.
+    # If it was the current head's CI, the status stays pending (never
+    # mergeable) until a re-run, attempt 2 or later, which is judged as usual.
     if: >-
       ${{ always() &&
           (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
           (needs.approval_record.result == 'success' || needs.approval_record.result == 'skipped') &&
           ((github.event_name == 'pull_request_target' &&
             github.event.pull_request.base.ref == github.event.repository.default_branch) ||
-           (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request') ||
+           (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
+            !(github.event.workflow_run.conclusion == 'cancelled' && github.event.workflow_run.run_attempt == 1)) ||
            github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 10
@@ -217,7 +229,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
 
       # The verifier fetches refs/pull/N/head into a private ref as objects
       # only, with no credentials, and posts the status itself.

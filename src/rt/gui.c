@@ -35,6 +35,8 @@
 #ifdef SR_SDL3VK
 #include "gpu_sdl3vk/ge_gpu.h"
 #include "gpu_sdl3vk/ace_smooth.h" /* Ace Mode's in-between frames */
+#include "gpu_sdl3vk/ace_hud.h"    /* ... and the HUD mask and depth they read */
+#include "gpu_sdl3vk/fsr1_pass.h"  /* the presentation upscaler (SR_PRESENT_UPSCALE) */
 #endif
 #if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
 #include "nk_ui_theme.h"         /* the pause overlay's scrim token */
@@ -90,6 +92,7 @@ static int      s_on = 0;
 #ifdef SR_SDL3VK
 static int      s_sdl3 = 0;            /* SDL3+Vulkan presenter active (src/rt/gpu_sdl3vk) */
 static AceBetween *s_ace_smooth;       /* Ace Mode's in-between frames, when smooth motion is on */
+static Fsr1Pass *s_fsr1;               /* the presentation upscaler, when SR_PRESENT_UPSCALE=fsr1 */
 #endif
 static int      s_offscreen = 0;        /* explicit host-memory presenter for headless bring-up */
 static uint32_t s_buttons = 0;
@@ -557,10 +560,20 @@ static void *gui_ace_show_pass(void *cmd, void *src, int *w, int *h) {
         s_ace_present_kind = ACE_PRESENT_HELD;
         return (void *)held;
     }
+    /* What the GPU GE published for this image (its HUD boxes and depth), taken on every real
+     * present so it never outlives its frame; NULL for a CPU frame or another image. */
+    const AceSmoothAux *aux = ace_hud_take((VkImage)src);
     AceShow show = ace_smooth_take();
-    if (show == ACE_SHOW_REAL) return NULL;
-    VkImage between = ace_smooth_record(s_ace_smooth, vk_cmd, (VkImage)src, *w, *h,
-                                        show == ACE_SHOW_BETWEEN);
+    VkImage between = VK_NULL_HANDLE;
+    if (show != ACE_SHOW_REAL)
+        between = ace_smooth_record_aux(s_ace_smooth, vk_cmd, (VkImage)src, *w, *h,
+                                        show == ACE_SHOW_BETWEEN, aux);
+    /* The report's counts of boxes, frames and pairs with and without mask or depth. */
+    AceSmoothAuxStats st;
+    memset(&st, 0, sizeof(st));
+    ace_hud_stats(&st);
+    ace_smooth_aux_stats(s_ace_smooth, &st);
+    ace_smooth_aux_report(&st);
     if (!between) return NULL;
     ace_smooth_shown_between(SDL_GetTicksNS());
     s_ace_present_kind = ACE_PRESENT_BETWEEN;
@@ -588,11 +601,70 @@ static void gui_ace_smooth_init(void) {
         return;
     }
     sdl3vk_set_show_pass(gui_ace_show_pass);
+    /* The HUD mask and depth: on with smooth motion; SR_ACE_SMOOTH_HUD=0 and SR_ACE_SMOOTH_DEPTH=0
+     * turn each off (ace_hud.h), and with both off the in-betweens are today's, byte for byte. */
+    ace_hud_enable(1);
     ace_confirm(ACE_FEATURE_SMOOTH);
+}
+
+static unsigned long long s_fsr1_presents;  /* presents the upscaler made, said at shutdown */
+
+static void *gui_upscale_pass(void *cmd, void *src, int w, int h, int out_w, int out_h) {
+    VkImage out = fsr1_record(s_fsr1, (VkCommandBuffer)cmd, (VkImage)src, w, h, out_w, out_h,
+                              FSR1_SHARPNESS_DEFAULT);
+    if (out) s_fsr1_presents++;
+    return (void *)out;
+}
+
+/* SR_PRESENT_UPSCALE=fsr1: AMD FSR 1 (EASU + RCAS) scales the shown picture to the window. It is
+ * presentation only: the guest's frame, guest VRAM and captures are untouched. Off by default. */
+static void gui_upscale_init(void) {
+    const char *value = getenv("SR_PRESENT_UPSCALE");
+    int mode = fsr1_parse_mode(value);
+    if (mode < 0)
+        fprintf(stderr, "sdl3vk: unknown SR_PRESENT_UPSCALE '%s' (off or fsr1); upscaling stays off\n",
+                value);
+    if (mode != 1) return;
+    char error[160] = "";
+    Sdl3VkInfo vi;
+    memset(&vi, 0, sizeof(vi));
+    if (sdl3vk_get_vk(&vi) && vi.get_instance_proc_addr) {
+        Fsr1Init init;
+        memset(&init, 0, sizeof(init));
+        init.get_instance_proc_addr = (PFN_vkGetInstanceProcAddr)vi.get_instance_proc_addr;
+        init.instance = (VkInstance)vi.instance;
+        init.physical_device = (VkPhysicalDevice)vi.physical;
+        init.device = (VkDevice)vi.device;
+        init.queue_family = vi.queue_family;
+        s_fsr1 = fsr1_create(&init, error, sizeof(error));
+    }
+    if (!s_fsr1) {
+        fprintf(stderr, "sdl3vk: FSR 1 upscaling is unavailable (%s); the window scales as before\n",
+                error[0] ? error : "no Vulkan device");
+        return;
+    }
+    sdl3vk_set_upscale_pass(gui_upscale_pass);
+    /* Stamped like Ace Mode: the window is not the authentic picture (captures still are). */
+    sr_flight_set_present_upscale("fsr1");
+    fprintf(stderr, "ACE_MODE: present upscale fsr1 (the window only; captures hold the guest's "
+                    "frame)\n");
+    /* In the boot events too, so tools/boot_gate.py sees it when stderr was silenced. */
+    sr_gui_boot_event("BOOT_EVENT phase=present_upscale mode=fsr1");
+    fprintf(stderr, "sdl3vk: FSR 1 upscaling on (EASU + RCAS, presentation only)\n");
+}
+
+static void gui_upscale_release(void) {
+    if (s_fsr1) {
+        sdl3vk_set_upscale_pass(NULL);
+        fprintf(stderr, "sdl3vk: FSR 1 upscaled %llu presents\n", s_fsr1_presents);
+    }
+    fsr1_destroy(s_fsr1);
+    s_fsr1 = NULL;
 }
 
 static void gui_ace_smooth_release(void) {
     if (s_ace_smooth) sdl3vk_set_show_pass(NULL);
+    ace_hud_enable(0);
     ace_smooth_destroy(s_ace_smooth);
     s_ace_smooth = NULL;
 }
@@ -706,6 +778,7 @@ void gui_init(const char *title) {
 #ifndef SR_GUI_PRESENT_SELFTEST
                 gui_ace_ui_init();
                 gui_ace_smooth_init();
+                gui_upscale_init();
 #endif
                 sync_sdl_input();
                 /* Phase 1 GPU rasterizer (opt-in): captures GE triangles/sprites and
@@ -1779,6 +1852,7 @@ static void gui_release_presenter(void) {
         free(s_pause_vram_px);
         s_pause_vram_px = NULL;
 #ifndef SR_GUI_PRESENT_SELFTEST
+        gui_upscale_release();
         gui_ace_smooth_release();
         gui_ace_ui_release();
 #endif

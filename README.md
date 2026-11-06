@@ -93,7 +93,7 @@ Zelda: Link's Awakening*.
 ## Build from source
 
 The [prerequisites](docs/SETUP.md#prerequisites) are listed in [`docs/SETUP.md`](docs/SETUP.md): Windows 11 x64
-with a Vulkan GPU, PowerShell 7.4+ and MSYS2 UCRT64.
+with a Vulkan GPU, PowerShell 7.6+ and MSYS2 UCRT64.
 
 1. Build the player from a checkout: `mingw32-make player`.
 2. Start `build\nakagawa_player.exe`, then drag a game's `.iso` into the window or choose **START SETUP WIZARD**.

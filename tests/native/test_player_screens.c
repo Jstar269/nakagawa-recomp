@@ -224,6 +224,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_PAGE_LIBRARY, FLOW_PAGE_LIBRARY_FIND, FLOW_PAGE_TITLE, FLOW_PAGE_ABOUT,
                FLOW_PAGE_REMOVE,
                FLOW_PAGE_STOP, FLOW_PAGE_TITLE_ACE,
+               FLOW_PAGE_SAVES, FLOW_PAGE_SAVES_RESTORE, FLOW_PAGE_SAVES_REPLACE,
                FLOW_CONSENT_FULL, FLOW_COUNT } FlowCase;
 
 /* The window size the game-found and Settings cases lay out for. */
@@ -831,6 +832,38 @@ static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
         remove.logical_width = g_flow_width;
         remove.logical_height = g_flow_height;
         return player_ui_screen_remove(ui, &remove);
+    }
+    if (which == FLOW_PAGE_SAVES || which == FLOW_PAGE_SAVES_RESTORE ||
+        which == FLOW_PAGE_SAVES_REPLACE) {
+        /* #1883: a full page of backups, with Newer and Older, a status line
+           and, in the other two cases, the question asked first. */
+        static const PlayerUiSavesRow rows[PLAYER_UI_SAVES_ROW_CAP] = {
+            {"2026-11-04 14:05:01", "Backed up, 120 KB"},
+            {"2026-11-04 13:58:44 (2)", "Before a restore, 118 KB"},
+            {"2026-11-03 21:30:00", "Before adding a save, 96 KB"},
+            {"2026-11-01 09:12:10", "Before a removal, 1.2 MB"}
+        };
+        PlayerUiSavesModel saves;
+        memset(&saves, 0, sizeof(saves));
+        saves.title = "Synthetic Untested Fixture";
+        saves.title_index = 0u;
+        saves.has_saves = true;
+        saves.saves_bytes = 2u * 1024u * 1024u;
+        saves.rows = rows;
+        saves.row_count = PLAYER_UI_SAVES_ROW_CAP;
+        saves.first_row = 4u;
+        saves.total = 12u;
+        saves.status = "Restored the backup from 2026-11-04 14:05:01. Your saves from before are "
+                       "the newest backup, and their folder is kept beside the save folder.";
+        saves.status_kind = PLAYER_UI_NOTE_DONE;
+        saves.ask = which == FLOW_PAGE_SAVES_RESTORE ? PLAYER_UI_SAVES_ASK_RESTORE
+                  : which == FLOW_PAGE_SAVES_REPLACE ? PLAYER_UI_SAVES_ASK_REPLACE
+                                                     : PLAYER_UI_SAVES_ASK_NONE;
+        saves.ask_row = 1u;
+        saves.ask_name = "ULUS99999DATA00";
+        saves.logical_width = g_flow_width;
+        saves.logical_height = g_flow_height;
+        return player_ui_screen_saves(ui, &saves);
     }
     if (which == FLOW_PAGE_STOP) {
         PlayerUiStopModel stop;
@@ -1670,14 +1703,14 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
             }
         }
     }
-    nk_ui_focus(ui, PLAYER_UI_ID_TITLE_SAVE_FOLDER);
+    nk_ui_focus(ui, PLAYER_UI_ID_TITLE_SAVES);
     if (!append_case(out, cap, used, "title-save-folder-focused", ui,
                      NULL, &model)) {
         nk_ui_destroy(ui);
         return false;
     }
-    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_SAVE_FOLDER,
-          "the save-folder action can keep focus");
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_SAVES,
+          "the Saves action can keep focus");
     {
         static const struct { FlowCase which; const char *name; } flows[] = {
             {FLOW_BUILD, "flow-build-running"}, {FLOW_BUILT, "flow-build-written"},
@@ -1804,7 +1837,7 @@ static void test_router(void) {
     CHECK(nk_ui_router_current(router) == PLAYER_UI_ROUTE_TITLE,
           "pushed screen is current");
     CHECK(nk_ui_router_depth(router) == 2u, "push keeps the Library underneath");
-    nk_ui_router_set_focus(router, PLAYER_UI_ID_TITLE_SAVE_FOLDER);
+    nk_ui_router_set_focus(router, PLAYER_UI_ID_TITLE_SAVES);
     memset(&back, 0, sizeof(back));
     back.type = NK_UI_EV_BACK;
     CHECK(nk_ui_router_handle_event(router, &back),
@@ -1843,7 +1876,7 @@ static void test_router(void) {
           !nk_ui_router_push(router, (PlayerUiRoute)0) &&
           !nk_ui_router_replace(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)) &&
           !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)) &&
-          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REBUILD + 1)),
+          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_SAVES + 1)),
           "router refuses routes it does not draw");
     CHECK(nk_ui_router_current(router) == PLAYER_UI_ROUTE_ABOUT &&
           nk_ui_router_depth(router) == 1u, "a refused route leaves the stack alone");
@@ -3399,9 +3432,9 @@ static void test_screen_actions(void) {
               "the REBUILD PACKAGE button returns the rebuild action");
         detail.title = &k_titles[0];
     }
-    action = activate_title_button(PLAYER_UI_ID_TITLE_SAVE_FOLDER, &detail);
-    CHECK(action.kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER,
-          "the save-folder button requests the existing per-title folder");
+    action = activate_title_button(PLAYER_UI_ID_TITLE_SAVES, &detail);
+    CHECK(action.kind == PLAYER_UI_ACTION_OPEN_SAVES && action.title_index == 0u,
+          "the Saves button opens the title's Saves dialog");
     action = activate_title_button(PLAYER_UI_ID_TITLE_BACK, &detail);
     CHECK(action.kind == PLAYER_UI_ACTION_BACK,
           "the back button returns to the Library");
@@ -3909,7 +3942,7 @@ static int capture_screens(const char *directory) {
     title.logical_height = 800.0f;
     nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
     if (!capture_one(&rig, "title", NULL, &title)) goto done;
-    nk_ui_focus(ui, PLAYER_UI_ID_TITLE_SAVE_FOLDER);
+    nk_ui_focus(ui, PLAYER_UI_ID_TITLE_SAVES);
     if (!capture_one(&rig, "title-save-folder-focused", NULL, &title)) goto done;
     capture_prefs(ui, NK_UI_PROMPT_LETTERS_A_SOUTH, false);
     nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
@@ -4161,7 +4194,7 @@ static void test_default_focus_lands_on_the_main_action(void) {
         (void)player_ui_screen_title(ui, &title);
         (void)nk_ui_end(ui);
     }
-    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_SAVE_FOLDER,
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_SAVES,
           "with BUILD PACKAGE off, focus lands on the next action, not a tab");
 
     {
@@ -4672,6 +4705,158 @@ static void test_outcome_lines_take_their_colour(void) {
                    (unsigned)theme->muted);
     CHECK(dump_flow_case(FLOW_WIZ_CHOOSE, dump, sizeof(dump)) && strstr(dump, expect) != NULL,
           "the Game step with nothing chosen yet shows the muted hint");
+}
+
+static PlayerUiAction activate_saves_button(NkUiId id, const PlayerUiSavesModel *model) {
+    NkUiConfig config;
+    NkUiEvent activate;
+    NkUi *ui;
+    PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    ui = screen_ui_create(&config);
+    if (ui == NULL) return result;
+    set_test_viewport(ui, 1280, 800);
+    nk_ui_focus(ui, id);
+    memset(&activate, 0, sizeof(activate));
+    activate.type = NK_UI_EV_ACTIVATE;
+    activate.down = true;
+    nk_ui_push_event(ui, &activate);
+    nk_ui_begin(ui, 0.0);
+    result = player_ui_screen_saves(ui, model);
+    (void)nk_ui_end(ui);
+    nk_ui_destroy(ui);
+    return result;
+}
+
+static unsigned saves_op(PlayerUiAction action) {
+    return action.kind == PLAYER_UI_ACTION_SAVES ? (unsigned)action.primary : 0u;
+}
+
+/* #1883: the Saves dialog's controls say what they ask for, Restore and a
+   replacing Add ask first, and a running game keeps every change off. */
+static void test_saves_dialog(void) {
+    static char dump[CASE_DUMP_CAP];
+    static const PlayerUiSavesRow rows[] = {
+        {"2026-11-04 14:05:01", "Backed up, 120 KB"},
+        {"2026-11-04 13:58:44", "Before a restore, 118 KB"}
+    };
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiSavesModel saves;
+    PlayerUiAction action;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = screen_ui_create(&config);
+    CHECK(ui != NULL, "create the Saves UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    memset(&saves, 0, sizeof(saves));
+    saves.title = "Synthetic Untested Fixture";
+    saves.title_index = 2u;
+    saves.has_saves = true;
+    saves.saves_bytes = 2048u;
+    saves.rows = rows;
+    saves.row_count = 2u;
+    saves.total = 2u;
+    saves.logical_width = 1280.0f;
+    saves.logical_height = 800.0f;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_saves(ui, &saves);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Synthetic Untested Fixture") != NULL &&
+              strstr(dump, "BACK UP SAVES") != NULL && strstr(dump, "ADD A SAVE") != NULL &&
+              strstr(dump, "OPEN SAVE FOLDER") != NULL,
+          "the dialog names the game and offers back up, add and the folder");
+    CHECK(strstr(dump, "BACKUPS 1-2 OF 2, NEWEST FIRST") != NULL &&
+              strstr(dump, "2026-11-04 14:05:01") != NULL &&
+              strstr(dump, "Before a restore, 118 KB") != NULL,
+          "the dialog lists the backups newest first with what made them");
+    /* Quoted: OPEN SAVE FOLDER holds the letters OLDER too. */
+    CHECK(strstr(dump, "\"OLDER\"") == NULL && strstr(dump, "\"NEWER\"") == NULL,
+          "one page of backups offers no Newer or Older");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_BACK_UP, &saves);
+    CHECK(saves_op(action) == PLAYER_UI_SAVES_BACK_UP && action.title_index == 2u,
+          "Back up saves asks for a backup of this title");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_ADD, &saves);
+    CHECK(saves_op(action) == PLAYER_UI_SAVES_ADD, "Add a save asks for the folder picker");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_OPEN_FOLDER, &saves);
+    CHECK(saves_op(action) == PLAYER_UI_SAVES_OPEN_FOLDER,
+          "Open save folder is still one button away");
+    action = activate_saves_button((NkUiId)(PLAYER_UI_ID_SAVES_RESTORE_BASE + 1u), &saves);
+    CHECK(saves_op(action) == PLAYER_UI_SAVES_RESTORE_BASE + 1u,
+          "a row's Restore names its row (and only asks)");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_BACK, &saves);
+    CHECK(action.kind == PLAYER_UI_ACTION_BACK, "Back leaves the dialog");
+    saves.total = 9u;
+    saves.first_row = 4u;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_saves(ui, &saves);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "BACKUPS 5-6 OF 9, NEWEST FIRST") != NULL &&
+              strstr(dump, "\"NEWER\"") != NULL && strstr(dump, "\"OLDER\"") != NULL,
+          "a middle page counts its backups and turns both ways");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_OLDER, &saves);
+    CHECK(saves_op(action) == PLAYER_UI_SAVES_OLDER, "Older turns the page");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_NEWER, &saves);
+    CHECK(saves_op(action) == PLAYER_UI_SAVES_NEWER, "Newer turns the page back");
+    saves.total = 2u;
+    saves.first_row = 0u;
+    saves.ask = PLAYER_UI_SAVES_ASK_RESTORE;
+    saves.ask_row = 1u;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_saves(ui, &saves);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Restore the backup from 2026-11-04 13:58:44?") != NULL &&
+              strstr(dump, "backed up first") != NULL && strstr(dump, "BACK UP SAVES") == NULL,
+          "Restore asks first, says the saves now are kept, and holds the card");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_CONFIRM, &saves);
+    CHECK(saves_op(action) == PLAYER_UI_SAVES_CONFIRM, "the question's Restore confirms");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_CANCEL, &saves);
+    CHECK(saves_op(action) == PLAYER_UI_SAVES_CANCEL, "the question's Cancel cancels");
+    saves.ask = PLAYER_UI_SAVES_ASK_REPLACE;
+    saves.ask_name = "ULUS99999DATA00";
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_saves(ui, &saves);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "A save named ULUS99999DATA00 is already here. Replace it?") != NULL &&
+              strstr(dump, "\"REPLACE\"") != NULL,
+          "a save of the same name asks before it is replaced");
+    saves.ask = PLAYER_UI_SAVES_ASK_NONE;
+    saves.blocked = "Stop the game first: it uses its save folder while it runs.";
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_saves(ui, &saves);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Stop the game first") != NULL, "a running game says why");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_BACK_UP, &saves);
+    CHECK(action.kind == PLAYER_UI_ACTION_NONE, "a running game keeps Back up saves off");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_ADD, &saves);
+    CHECK(action.kind == PLAYER_UI_ACTION_NONE, "a running game keeps Add a save off");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_RESTORE_BASE, &saves);
+    CHECK(action.kind == PLAYER_UI_ACTION_NONE, "a running game keeps Restore off");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_OPEN_FOLDER, &saves);
+    CHECK(saves_op(action) == PLAYER_UI_SAVES_OPEN_FOLDER,
+          "a running game still opens the save folder");
+    saves.blocked = NULL;
+    saves.has_saves = false;
+    saves.total = 0u;
+    saves.row_count = 0u;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_saves(ui, &saves);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "No saves yet.") != NULL && strstr(dump, "NO BACKUPS YET") != NULL,
+          "a game with nothing saved says so");
+    action = activate_saves_button(PLAYER_UI_ID_SAVES_BACK_UP, &saves);
+    CHECK(action.kind == PLAYER_UI_ACTION_NONE, "no saves keeps Back up saves off");
+    nk_ui_destroy(ui);
 }
 
 static PlayerUiAction activate_stop_button(NkUiId id, const PlayerUiStopModel *model) {
@@ -5263,6 +5448,7 @@ int main(int argc, char **argv) {
     test_default_focus_lands_on_the_main_action();
     test_tier_table_matches_the_docs();
     test_remove_from_library();
+    test_saves_dialog();
     test_wizard_steps_match_the_route();
     test_outcome_lines_take_their_colour();
     test_stop_game_asks_first();

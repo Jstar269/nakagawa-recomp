@@ -184,6 +184,8 @@ static uint64_t s_limited_windows;
 static AcePace s_pace;
 static AcePaceStats s_pace_stats;
 static uint32_t s_pace_vcount;
+static AceSmoothAuxStats s_aux_stats;
+static int s_have_aux_stats;
 
 #define ACE_TARGETS 8
 typedef struct { uint32_t fb, bytes, draws, seen, touched; int used; } AceTarget;
@@ -204,6 +206,8 @@ static void observation_reset(void) {
     ace_pace_reset(&s_pace);
     memset(&s_pace_stats, 0, sizeof(s_pace_stats));
     s_pace_vcount = 0;
+    memset(&s_aux_stats, 0, sizeof(s_aux_stats));
+    s_have_aux_stats = 0;
     memset(s_targets, 0, sizeof(s_targets));
     s_target_clock = 0;
 }
@@ -675,6 +679,16 @@ static AceRate dominant_rate(void) {
     return best;
 }
 
+void ace_smooth_aux_report(const AceSmoothAuxStats *s) {
+    if (!s) return;
+    s_aux_stats = *s;
+    s_have_aux_stats = 1;
+}
+
+static uint64_t aux_dropped(const AceSmoothAuxStats *a) {
+    return a->boxes_large + a->boxes_target + a->boxes_outside + a->boxes_full;
+}
+
 size_t ace_report_json(char *out, size_t cap) {
     size_t used = 0;
     int n;
@@ -731,6 +745,23 @@ size_t ace_report_json(char *out, size_t cap) {
                 ps->hold_count ? (double)ps->hold_sum_ns / (double)ps->hold_count / 1e6 : 0.0,
                 (double)ps->hold_max_ns / 1e6);
     }
+    if (s_req.smooth && s_have_aux_stats) {
+        const AceSmoothAuxStats *a = &s_aux_stats;
+        ACE_PUT("  \"smooth_aux\": {\"pairs\": %llu, \"pairs_mask\": %llu, \"pairs_depth\": %llu, "
+                "\"depth_refused\": %llu,\n",
+                (unsigned long long)a->pairs, (unsigned long long)a->pairs_mask,
+                (unsigned long long)a->pairs_depth, (unsigned long long)a->depth_refused);
+        ACE_PUT("    \"boxes\": {\"kept\": %llu, \"merged\": %llu, \"large\": %llu, \"target\": %llu, "
+                "\"outside\": %llu, \"full\": %llu},\n",
+                (unsigned long long)a->boxes_kept, (unsigned long long)a->boxes_merged,
+                (unsigned long long)a->boxes_large, (unsigned long long)a->boxes_target,
+                (unsigned long long)a->boxes_outside, (unsigned long long)a->boxes_full);
+        ACE_PUT("    \"frames\": {\"mask\": %llu, \"overflow\": %llu, \"depth\": %llu, "
+                "\"depth_unwritten\": %llu, \"depth_none\": %llu, \"unshown\": %llu}},\n",
+                (unsigned long long)a->frames_mask, (unsigned long long)a->frames_overflow,
+                (unsigned long long)a->frames_depth, (unsigned long long)a->frames_depth_unwritten,
+                (unsigned long long)a->frames_depth_none, (unsigned long long)a->published_unshown);
+    }
     if (s_pace_stats.interval_count) {
         const AcePaceStats *ps = &s_pace_stats;
         ACE_PUT("  \"present_interval_ms\": {\"count\": %llu, \"mean\": %.2f, \"bins\": [",
@@ -758,6 +789,18 @@ void ace_finish(void) {
     }
     size_t len = ace_report_json(json, sizeof(json));
     fprintf(stderr, "ACE_MODE: exit (%s; rate %s)\n", s_spec, ace_rate_name(dominant_rate()));
+    if (s_req.smooth && s_have_aux_stats) {
+        const AceSmoothAuxStats *a = &s_aux_stats;
+        fprintf(stderr, "ACE_MODE: smooth inputs (pairs %llu: HUD mask %llu, depth %llu; HUD boxes kept "
+                        "%llu, dropped %llu: %llu large, %llu sampling a target, %llu off screen, %llu past "
+                        "the limit; frames without a mask %llu, without depth %llu)\n",
+                (unsigned long long)a->pairs, (unsigned long long)a->pairs_mask,
+                (unsigned long long)a->pairs_depth, (unsigned long long)a->boxes_kept,
+                (unsigned long long)aux_dropped(a), (unsigned long long)a->boxes_large,
+                (unsigned long long)a->boxes_target, (unsigned long long)a->boxes_outside,
+                (unsigned long long)a->boxes_full, (unsigned long long)a->frames_overflow,
+                (unsigned long long)(a->frames_depth_unwritten + a->frames_depth_none + a->depth_refused));
+    }
     if (!len || !s_report_path[0]) return;
     char tmp[sizeof(s_report_path) + 8];
     snprintf(tmp, sizeof(tmp), "%s.tmp", s_report_path);

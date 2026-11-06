@@ -6,7 +6,13 @@
  * blends the two frames along it; where nothing fits (something appeared or was uncovered) it
  * keeps the old frame's side, because a sharp wrong pixel for 17 ms shows less than a ghost. When
  * too many blocks fit nothing, or disagree with their neighbours, the two frames are different
- * pictures: a cut. The in-between is then the old frame, and the new one follows on its VBLANK. */
+ * pictures: a cut. The in-between is then the old frame, and the new one follows on its VBLANK.
+ *
+ * With the pair's HUD masks (aux bit 1): a changed pixel on the HUD in either frame keeps the old
+ * frame's side, and a vector whose end lands on the HUD in one frame takes only the other
+ * frame's side, so the HUD is never dragged into the scene. Such a vector cannot be judged by its
+ * fit here, so it is judged by its block's cost, which the search found with the HUD left out. With the pair's depth (aux bit 2): a
+ * vector whose two ends land at different depths fits worse. */
 #version 450
 layout(local_size_x = 16, local_size_y = 16) in;
 
@@ -15,25 +21,52 @@ layout(set = 0, binding = 1) uniform sampler2D new_frame;
 layout(set = 0, binding = 2) uniform sampler2D field;
 layout(set = 0, binding = 4, rgba8) uniform writeonly image2D out_frame;
 layout(set = 0, binding = 5, std430) readonly buffer Stats { uint bad_blocks; } stats;
+layout(set = 0, binding = 6, std430) readonly buffer OldHud { uint bits[]; } old_hud;
+layout(set = 0, binding = 7, std430) readonly buffer NewHud { uint bits[]; } new_hud;
+layout(set = 0, binding = 8) uniform sampler2D old_depth;
+layout(set = 0, binding = 9) uniform sampler2D new_depth;
 
 layout(push_constant) uniform Compose {
     ivec2 size;
     uint cut_blocks;   /* this many bad blocks make the pair a cut */
+    uint aux;          /* 1: HUD masks, 2: depth */
 } pc;
 
 const float SAME = 0.008;      /* about 2/255: the same pixel */
 const float FITS = 0.30;       /* the summed channel difference of a good fit */
+const float DEPTH_COST = 3.0;  /* per unit of depth between a vector's two ends (three channels) */
+const ivec2 HUD_SIZE = ivec2(480, 272);
+const float LUMA_TO_FIT = 3.0; /* a block cost (mean luma difference) on the misfit's scale */
 
+bool on_hud(vec2 uv, bool newer) {
+    ivec2 g = ivec2(floor(uv * vec2(HUD_SIZE)));
+    if (any(lessThan(g, ivec2(0))) || any(greaterThanEqual(g, HUD_SIZE))) return false;
+    uint i = uint(g.y * HUD_SIZE.x + g.x);
+    uint word = newer ? new_hud.bits[i >> 5] : old_hud.bits[i >> 5];
+    return ((word >> (i & 31u)) & 1u) != 0u;
+}
+
+/* The caller has checked that the centre tap's two ends are off the HUD; with the masks, a side
+ * tap whose end lands on the HUD does not count. */
 float misfit(vec2 uv, vec2 d, vec2 px) {
     float e = 0.0;
+    float n = 0.0;
+    bool hud = (pc.aux & 1u) != 0u;
     const vec2 taps[3] = vec2[3](vec2(0.0), vec2(-1.0, -1.0), vec2(1.0, 1.0));
     for (int i = 0; i < 3; i++) {
-        vec3 a = textureLod(old_frame, uv + taps[i] * px - d, 0.0).rgb;
-        vec3 b = textureLod(new_frame, uv + taps[i] * px + d, 0.0).rgb;
+        vec2 q = uv + taps[i] * px;
+        if (hud && i > 0 && (on_hud(q - d, false) || on_hud(q + d, true))) continue;
+        vec3 a = textureLod(old_frame, q - d, 0.0).rgb;
+        vec3 b = textureLod(new_frame, q + d, 0.0).rgb;
         vec3 diff = abs(a - b);
         e += diff.r + diff.g + diff.b;
+        n += 1.0;
     }
-    return e / 3.0;
+    if (hud) e /= n;
+    else e /= 3.0;
+    if ((pc.aux & 2u) != 0u)
+        e += DEPTH_COST * abs(textureLod(old_depth, uv - d, 0.0).r - textureLod(new_depth, uv + d, 0.0).r);
+    return e;
 }
 
 void main() {
@@ -52,15 +85,40 @@ void main() {
         imageStore(out_frame, p, vec4(a0.rgb, 1.0));
         return;
     }
+    bool hud = (pc.aux & 1u) != 0u;
+    if (hud && (on_hud(uv, false) || on_hud(uv, true))) {
+        /* The HUD changed here, or came or went: the old side, as when nothing fits. */
+        imageStore(out_frame, p, vec4(a0.rgb, 1.0));
+        return;
+    }
     ivec2 cells = textureSize(field, 0);
     ivec2 cell = ivec2(uv * vec2(cells));
     const ivec2 around[5] = ivec2[5](ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
     vec2 best = vec2(0.0);
     float best_e = misfit(uv, best, px);
+    /* Of the vectors with one end on the HUD, the one its block was surest of; it is taken from
+     * the frame whose end is clear when its block cost beats every two-ended fit. */
+    vec2 one_sided = vec2(0.0);
+    float one_cost = 1e9;
+    int side = 0;   /* 1: only the old frame is clear at that vector, 2: only the new one */
     for (int i = 0; i < 5; i++) {
-        vec2 d = texelFetch(field, clamp(cell + around[i], ivec2(0), cells - 1), 0).xy;
+        vec4 f = texelFetch(field, clamp(cell + around[i], ivec2(0), cells - 1), 0);
+        vec2 d = f.xy;
+        if (hud) {
+            bool ha = on_hud(uv - d, false), hb = on_hud(uv + d, true);
+            if (ha || hb) {
+                if (!(ha && hb) && f.z < one_cost) { one_sided = d; one_cost = f.z; side = ha ? 2 : 1; }
+                continue;
+            }
+        }
         float e = misfit(uv, d, px);
         if (e < best_e) { best_e = e; best = d; }
+    }
+    if (side != 0 && LUMA_TO_FIT * one_cost < best_e) {
+        vec3 c = side == 1 ? textureLod(old_frame, uv - one_sided, 0.0).rgb
+                           : textureLod(new_frame, uv + one_sided, 0.0).rgb;
+        imageStore(out_frame, p, vec4(c, 1.0));
+        return;
     }
     vec3 a = textureLod(old_frame, uv - best, 0.0).rgb;
     vec3 b = textureLod(new_frame, uv + best, 0.0).rgb;

@@ -1274,6 +1274,9 @@ SPDX_BYTE_EXACT_IMPORT_TREES = (
     # libchdr and the codecs it carries, kept as upstream wrote them (CRLF normalised to LF only;
     # third_party/libchdr/PROVENANCE.md records every upstream blob).
     "third_party/libchdr/",
+    # AMD FidelityFX SDK headers (MIT): the notice is in each header comment, without an SPDX
+    # line upstream; imported byte-identical (third_party/fidelityfx_sdk/PROVENANCE.md).
+    "third_party/fidelityfx_sdk/",
 )
 
 SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({
@@ -1340,6 +1343,8 @@ SPDX_GENERATED_EMBEDDING_SOURCES = {
     "src/rt/gpu_sdl3vk/psp_tnl_vert.inc": "src/rt/gpu_sdl3vk/shaders/psp_tnl.vert",
     "src/rt/gpu_sdl3vk/ace_match_comp.inc": "src/rt/gpu_sdl3vk/shaders/ace_match.comp",
     "src/rt/gpu_sdl3vk/ace_compose_comp.inc": "src/rt/gpu_sdl3vk/shaders/ace_compose.comp",
+    "src/rt/gpu_sdl3vk/fsr1_easu_comp.inc": "src/rt/gpu_sdl3vk/shaders/fsr1_easu.comp",
+    "src/rt/gpu_sdl3vk/fsr1_rcas_comp.inc": "src/rt/gpu_sdl3vk/shaders/fsr1_rcas.comp",
 }
 
 

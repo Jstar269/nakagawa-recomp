@@ -149,6 +149,7 @@ static int write_launch_environment_probe(void) {
     const char *vsync = getenv("SR_VSYNC");
     const char *scale = getenv("SR_RESOLUTION_SCALE");
     const char *present_scaling = getenv("SR_PRESENT_SCALING");
+    const char *present_upscale = getenv("SR_PRESENT_UPSCALE");
     const char *fullscreen = getenv("SR_FULLSCREEN");
     const char *launcher_display = getenv("SR_LAUNCHER_DISPLAY_BOUNDS");
     const char *volume = getenv("SR_MASTER_VOLUME");
@@ -173,6 +174,7 @@ static int write_launch_environment_probe(void) {
                      "SR_VSYNC=%s\n"
                      "SR_RESOLUTION_SCALE=%s\n"
                      "SR_PRESENT_SCALING=%s\n"
+                     "SR_PRESENT_UPSCALE=%s\n"
                      "SR_FULLSCREEN=%s\n"
                      "SR_LAUNCHER_DISPLAY_BOUNDS=%s\n"
                      "SR_MASTER_VOLUME=%s\n"
@@ -196,6 +198,7 @@ static int write_launch_environment_probe(void) {
                      vsync ? vsync : "<unset>",
                      scale ? scale : "<unset>",
                      present_scaling ? present_scaling : "<unset>",
+                     present_upscale ? present_upscale : "<unset>",
                      fullscreen ? fullscreen : "<unset>",
                      launcher_display ? launcher_display : "<unset>",
                      volume ? volume : "<unset>",
@@ -391,6 +394,10 @@ static void test_no_iso_child_environment(const char *test_executable,
     set_environment_value("SR_REDUCE_MOTION", "on");
     /* Nor an inherited Ace Mode line (src/rt/ace.h): a session the player did not resolve on
        is authentic, "off", and exports no report path (A1). */
+    /* Nor an inherited presentation upscaler (#1273): an authentic session runs it off. */
+    bool had_upscale;
+    char *old_upscale = capture_environment_value("SR_PRESENT_UPSCALE", &had_upscale);
+    set_environment_value("SR_PRESENT_UPSCALE", "fsr1");
     bool had_ace;
     char *old_ace = capture_environment_value("SR_ACE", &had_ace);
     set_environment_value("SR_ACE", "v1;af=16;text=on;readout=on;notice=on;wide=off;smooth=off;sas=off");
@@ -450,10 +457,12 @@ static void test_no_iso_child_environment(const char *test_executable,
     /* Prepare defaults: a caller that never configures the session must not
        hand the runtime a muted or zeroed volume (#settings). */
     assert(session.config.master_volume == 100);
+    assert(session.config.present_upscale == NK_PRESENT_UPSCALE_OFF);
     /* Apply settings the way the player does (apply_settings_to_session)
        before spawning, so every setting reaches the child environment. */
     session.config.resolution_scale = 2;
     session.config.present_scaling = NK_PRESENT_SCALING_INTEGER;
+    session.config.present_upscale = NK_PRESENT_UPSCALE_FSR1;  /* the setting; authentic still exports off */
     session.config.fps_cap = 30;
     session.config.vsync = false;
     session.config.fullscreen = true;
@@ -519,6 +528,9 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_VSYNC=0\n") != NULL);
     assert(strstr(observed, "SR_RESOLUTION_SCALE=2\n") != NULL);
     assert(strstr(observed, "SR_PRESENT_SCALING=integer\n") != NULL);
+    /* Authentic: off, though the parent says fsr1 and the setting asks for it. */
+    assert(session.config.present_upscale == NK_PRESENT_UPSCALE_FSR1);
+    assert(strstr(observed, "SR_PRESENT_UPSCALE=off\n") != NULL);
     assert(strstr(observed, "SR_FULLSCREEN=1\n") != NULL);
     assert(strstr(observed, "SR_MASTER_VOLUME=55\n") != NULL);
     /* The launcher's display reaches the child, windowed or fullscreen, and the
@@ -632,6 +644,8 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_DEVELOPER_MODE=1\n") != NULL);
     assert(strstr(observed, "SR_REDUCE_MOTION=off\n") != NULL);
     assert(strstr(observed, "SR_ACE=v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off\n") != NULL);
+    /* An enhanced session follows the setting. */
+    assert(strstr(observed, "SR_PRESENT_UPSCALE=fsr1\n") != NULL);
     {
         char expected_report[1200];
         snprintf(expected_report, sizeof(expected_report), "SR_ACE_REPORT=%s\n",
@@ -654,8 +668,37 @@ static void test_no_iso_child_environment(const char *test_executable,
     snprintf(session.config.ace_spec, sizeof(session.config.ace_spec), "off");
     session.config.ace_report_path[0] = '\0';
 
+    /* Either an enhanced build or Ace Mode alone is enough to follow the upscale setting
+       (an enhancement package or Ace, not both): one launch with each. */
+    for (int only = 0; only < 2; only++) {
+        if (only == 0) {
+            snprintf(session.enhancement_package_id, sizeof(session.enhancement_package_id),
+                     "fixture-60hz");
+        } else {
+            snprintf(session.config.ace_spec, sizeof(session.config.ace_spec),
+                     "v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off");
+        }
+        assert(nk_launch_start(&session) == NK_OK);
+        child_exit = nk_launch_wait(&session, -1);
+        nk_launch_stop(&session);
+        assert(child_exit == 0);
+        report = fopen(report_path, "rb");
+        assert(report != NULL);
+        observed_size = fread(observed, 1, sizeof(observed) - 1, report);
+        observed[observed_size] = '\0';
+        assert(!ferror(report));
+        assert(fclose(report) == 0);
+        assert(strstr(observed, only == 0 ? "SR_ACE=off\n"
+                                          : "SR_ACE=v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off\n") != NULL);
+        assert(strstr(observed, "SR_PRESENT_UPSCALE=fsr1\n") != NULL);
+        session.enhancement_package_id[0] = '\0';
+        snprintf(session.config.ace_spec, sizeof(session.config.ace_spec), "off");
+    }
+
     restore_environment_value("SR_ACE", old_ace, had_ace);
     free(old_ace);
+    restore_environment_value("SR_PRESENT_UPSCALE", old_upscale, had_upscale);
+    free(old_upscale);
     restore_environment_value("SR_ACE_REPORT", old_ace_report, had_ace_report);
     free(old_ace_report);
     restore_environment_value("SR_EXPERIMENTAL_60HZ", old_60hz, had_60hz);

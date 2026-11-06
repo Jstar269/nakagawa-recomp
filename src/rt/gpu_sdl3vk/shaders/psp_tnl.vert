@@ -75,6 +75,7 @@ layout(location = 0) noperspective out vec2  v_uv;
 layout(location = 1) noperspective out float v_rw;
 layout(location = 2) noperspective out float v_fog;
 layout(location = 3) noperspective out vec4  v_color;
+layout(location = 4) flat out vec4 v_uvbox;
 
 precise gl_Position;
 
@@ -544,4 +545,5 @@ void main() {
     v_fog   = fog;
     v_color = vec4(div_rn(float(clamp8(r)), 255.0), div_rn(float(clamp8(g)), 255.0),
                    div_rn(float(clamp8(b)), 255.0), div_rn(float(clamp8(a)), 255.0));
+    v_uvbox = vec4(1.0, 1.0, 0.0, 0.0);   /* transform mode: no edge clamp (psp.vert) */
 }

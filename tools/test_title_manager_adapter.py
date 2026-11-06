@@ -50,7 +50,7 @@ class TitleManagerAdapterTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         shell = shutil.which("pwsh")
         if shell is None:
-            raise unittest.SkipTest("PowerShell 7.4+ (pwsh) is required")
+            raise unittest.SkipTest("PowerShell 7.6+ (pwsh) is required")
         cls.shell = shell
 
     def setUp(self) -> None:
@@ -282,7 +282,7 @@ class RunEntryIsPlanOwned(unittest.TestCase):
     def setUpClass(cls) -> None:
         shell = shutil.which("pwsh")
         if shell is None:
-            raise unittest.SkipTest("PowerShell 7.4+ (pwsh) is required")
+            raise unittest.SkipTest("PowerShell 7.6+ (pwsh) is required")
         cls.shell = shell
 
     def build(self, manifest: dict) -> dict:

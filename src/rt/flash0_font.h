@@ -103,7 +103,8 @@ const char *sr_flash0_font_slot_label(NkFontSlot slot);
  * a bold or italic Latin index is listed too. No project font is bold or italic (FONT_PLAN D10),
  * so a project or legacy Latin fallback reports Regular. An indexed exact or same-group fallback
  * reports the served index's measured style; served_as_regular is set when that style differs
- * from the requested index. Bold is never synthesized. */
+ * from the requested index, and served_as_other_family when the served face is the other family
+ * (a serif index served by a sans-serif face). Bold is never synthesized. */
 #define SR_FONT_REGISTRY_COUNT 18u
 #define SR_FONT_REGISTRY_NAME_BYTES 64u /* the header's font-name field, with room for the NUL */
 
@@ -126,6 +127,7 @@ typedef struct {
     char font_name[SR_FONT_REGISTRY_NAME_BYTES]; /* NUL-terminated, at most 63 characters */
     /* Measured codes of the requested index, except style follows the file actually served: */
     int served_as_regular;  /* the served style differs from the requested index's measured style */
+    int served_as_other_family; /* the served face's family differs from the requested index's */
     uint32_t weight, family_code, style, sub_style;
     uint32_t language_code, region_code, country_code;
     uint32_t extra_attributes, expire_date;

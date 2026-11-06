@@ -294,9 +294,39 @@ void ace_smooth_note_present(AcePresentKind kind, uint64_t now_ns);
 void ace_pace_stats(AcePaceStats *out);
 void ace_pace_stats_add(AcePaceStats *s, AcePresentKind kind, uint64_t now_ns);
 
+/* What smooth motion's in-betweens read besides the pixels (gpu_sdl3vk/ace_hud.c and ace_smooth.c,
+ * contract section 10.6), counted so a title where the HUD rule or the depth gate never applies
+ * shows in the report instead of looking like one where it works. */
+typedef struct {
+    /* The boxes of through-mode draws (ace_hud.c). */
+    uint64_t boxes_kept;          /* kept as HUD */
+    uint64_t boxes_merged;        /* the second triangle of a quad: the same box again */
+    uint64_t boxes_large;         /* a quarter of the screen or more: a backdrop */
+    uint64_t boxes_target;        /* samples a render target: a post effect */
+    uint64_t boxes_outside;       /* nothing on screen (off the edge, empty or not a number) */
+    uint64_t boxes_full;          /* past the 1024-box or two-screen limit: that frame has no mask */
+    /* What each GPU present published. */
+    uint64_t frames_mask;         /* with a mask */
+    uint64_t frames_overflow;     /* without one: its list went past a limit */
+    uint64_t frames_depth;        /* with depth */
+    uint64_t frames_depth_unwritten; /* without: no draw wrote that depth image since it was last
+                                      * handed on, so it holds an older frame's depth */
+    uint64_t frames_depth_none;   /* without: the target has no depth image */
+    uint64_t published_unshown;   /* published, but the show pass took another image (a CPU frame,
+                                   * or a present that never reached it) */
+    /* The pairs an in-between was made from (ace_smooth.c). */
+    uint64_t pairs;
+    uint64_t pairs_mask;          /* both frames had a mask */
+    uint64_t pairs_depth;         /* both frames had depth */
+    uint64_t depth_refused;       /* frames whose depth image was smaller than the frame */
+} AceSmoothAuxStats;
+
+/* The renderer's latest totals, for the report and the exit line. */
+void ace_smooth_aux_report(const AceSmoothAuxStats *s);
+
 /* ---- the per-run report -------------------------------------------------------------------- */
 
-#define ACE_REPORT_MAX 4096u
+#define ACE_REPORT_MAX 6144u
 /* The report's JSON for the run so far; 0 when it would not fit. */
 size_t ace_report_json(char *out, size_t cap);
 /* Settles the features that never ran (ace_confirm), then writes the report (SR_ACE_REPORT,

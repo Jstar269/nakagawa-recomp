@@ -185,7 +185,9 @@
               "launch_velocity_x0.5",
               "offset_x2",
               "window_start_x2",
-              "argument_x2"
+              "argument_x2",
+              "count_x2_even",
+              "gate_30hz_hold"
             ],
             "description": "Declarative frame-rate rescale transform class."
           },

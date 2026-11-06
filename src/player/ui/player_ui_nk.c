@@ -82,6 +82,9 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
      ""}
 };
 
+/* The backups the Saves dialog keeps (#1883), newest first. */
+#define PLAYER_UI_SAVES_LIST_CAP 64u
+
 struct PlayerUiNk {
     SDL_Window *window;     /* the launcher window: Settings reads its display's refresh rate */
     NkUi *ui;
@@ -185,6 +188,27 @@ struct PlayerUiNk {
     bool remove_delete_saves;
     bool remove_delete_disc_copy;
     bool remove_focus_pending;
+    /* Saves (#1883): the title the dialog is for, its backups newest first and
+       the page shown, the question it asks, and what the last action did. */
+    int saves_index;
+    char saves_disc[NK_MAX_DISC_ID_LEN];
+    NkUiId saves_focus;                 /* focus to give next frame, or 0 */
+    bool saves_waiting_pick;            /* Add a save opened the folder picker */
+    bool saves_has;
+    uint64_t saves_bytes;
+    PlayerSaveBackup saves_list[PLAYER_UI_SAVES_LIST_CAP];
+    size_t saves_list_count;
+    size_t saves_total;
+    size_t saves_first;
+    PlayerUiSavesRow saves_rows[PLAYER_UI_SAVES_ROW_CAP];
+    char saves_when[PLAYER_UI_SAVES_ROW_CAP][32];
+    char saves_detail[PLAYER_UI_SAVES_ROW_CAP][64];
+    PlayerUiSavesAsk saves_ask;
+    size_t saves_ask_row;
+    char saves_ask_path[NK_MAX_PATH];   /* the folder a replacing Add a save copies */
+    char saves_ask_name[72];
+    char saves_status[NK_MAX_PATH + 200];
+    PlayerUiNoteKind saves_status_kind;
     /* STOP GAME asks first: the title page the question was asked from. */
     int stop_index;
     char stop_disc[NK_MAX_DISC_ID_LEN];
@@ -1606,6 +1630,250 @@ static bool player_ui_open_remove(PlayerUiNk *player, const PlayerApp *app, int 
     return true;
 }
 
+/* Saves (#1883). The dialog reads the save folder and the backups when it
+   opens and after each action, never every frame. */
+static void player_ui_saves_bytes(char *out, size_t cap, uint64_t bytes) {
+    if (bytes < 1024u) {
+        (void)snprintf(out, cap, "%u bytes", (unsigned)bytes);
+    } else if (bytes < 1024u * 1024u) {
+        (void)snprintf(out, cap, "%.0f KB", (double)bytes / 1024.0);
+    } else if (bytes < 1024ull * 1024u * 1024u) {
+        (void)snprintf(out, cap, "%.1f MB", (double)bytes / (1024.0 * 1024.0));
+    } else {
+        (void)snprintf(out, cap, "%.1f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
+    }
+}
+
+static void player_ui_saves_reload(PlayerUiNk *player, const PlayerApp *app, int index) {
+    static const char *const kinds[PLAYER_SAVE_BACKUP_KIND_COUNT] = {
+        "Backed up", "Before a restore", "Before adding a save", "Before a removal"
+    };
+    char folder[NK_MAX_PATH];
+    uint64_t bytes = 0u;
+    player->saves_has = false;
+    player->saves_bytes = 0u;
+    if (player_app_save_folder(&app->games[index], folder, sizeof(folder)) &&
+        !nk_platform_path_missing(folder) && nk_platform_tree_size(folder, NULL, &bytes) &&
+        bytes > 0u) {
+        player->saves_has = true;
+        player->saves_bytes = bytes;
+    }
+    player->saves_list_count = player_app_list_save_backups(
+        app, index, player->saves_list, PLAYER_UI_SAVES_LIST_CAP, &player->saves_total);
+    if (player->saves_first >= player->saves_list_count) player->saves_first = 0u;
+    for (size_t row = 0u; row < PLAYER_UI_SAVES_ROW_CAP; ++row) {
+        size_t at = player->saves_first + row;
+        const PlayerSaveBackup *backup;
+        const char *st;
+        char size[24];
+        if (at >= player->saves_list_count) break;
+        backup = &player->saves_list[at];
+        st = backup->stamp;
+        /* YYYYMMDD-HHMMSS as YYYY-MM-DD HH:MM:SS */
+        (void)snprintf(player->saves_when[row], sizeof(player->saves_when[row]),
+                       "%.4s-%.2s-%.2s %.2s:%.2s:%.2s", st, st + 4, st + 6, st + 9, st + 11,
+                       st + 13);
+        if (backup->sequence > 1u) {
+            size_t used = strlen(player->saves_when[row]);
+            (void)snprintf(player->saves_when[row] + used,
+                           sizeof(player->saves_when[row]) - used, " (%u)", backup->sequence);
+        }
+        player_ui_saves_bytes(size, sizeof(size), backup->bytes);
+        (void)snprintf(player->saves_detail[row], sizeof(player->saves_detail[row]),
+                       "%s \xC2\xB7 %s",
+                       (unsigned)backup->kind < PLAYER_SAVE_BACKUP_KIND_COUNT
+                           ? kinds[backup->kind] : "Backed up",
+                       size);
+        player->saves_rows[row].when = player->saves_when[row];
+        player->saves_rows[row].detail = player->saves_detail[row];
+    }
+}
+
+static size_t player_ui_saves_page_rows(const PlayerUiNk *player) {
+    size_t rows;
+    if (player->saves_first >= player->saves_list_count) return 0u;
+    rows = player->saves_list_count - player->saves_first;
+    return rows > PLAYER_UI_SAVES_ROW_CAP ? PLAYER_UI_SAVES_ROW_CAP : rows;
+}
+
+static void player_ui_saves_status(PlayerUiNk *player, PlayerUiNoteKind kind, const char *text) {
+    (void)snprintf(player->saves_status, sizeof(player->saves_status), "%s", text);
+    player->saves_status_kind = kind;
+}
+
+static void player_ui_open_saves(PlayerUiNk *player, const PlayerApp *app, int index) {
+    player->saves_index = index;
+    (void)snprintf(player->saves_disc, sizeof(player->saves_disc), "%s",
+                   app->games[index].disc_id);
+    player->saves_first = 0u;
+    player->saves_ask = PLAYER_UI_SAVES_ASK_NONE;
+    player->saves_waiting_pick = false;
+    player->saves_status[0] = '\0';
+    player->saves_status_kind = PLAYER_UI_NOTE_NEUTRAL;
+    player_ui_saves_reload(player, app, index);
+    player->saves_focus = player->saves_has ? PLAYER_UI_ID_SAVES_BACK_UP : PLAYER_UI_ID_SAVES_ADD;
+}
+
+/* Add a save with the folder picked: a save of that name already there asks
+   before it is replaced. */
+static void player_ui_saves_add(PlayerUiNk *player, PlayerApp *app, int index,
+                                const char *picked, bool replace) {
+    char stamp[24];
+    char added[72];
+    char error[NK_MAX_PATH + 160];
+    char text[sizeof(player->saves_status)];
+    PlayerSavesResult result;
+    added[0] = '\0';
+    error[0] = '\0';
+    player_app_save_stamp_now(stamp, sizeof(stamp));
+    result = player_app_add_save(app, index, picked, replace, stamp, added, sizeof(added), error,
+                                 sizeof(error));
+    if (result == PLAYER_SAVES_EXISTS) {
+        (void)snprintf(player->saves_ask_path, sizeof(player->saves_ask_path), "%s", picked);
+        (void)snprintf(player->saves_ask_name, sizeof(player->saves_ask_name), "%s", added);
+        player->saves_ask = PLAYER_UI_SAVES_ASK_REPLACE;
+        player->saves_focus = PLAYER_UI_ID_SAVES_CANCEL;
+        return;
+    }
+    player->saves_ask = PLAYER_UI_SAVES_ASK_NONE;
+    player->saves_focus = PLAYER_UI_ID_SAVES_ADD;
+    if (result == PLAYER_SAVES_DONE) {
+        player->saves_first = 0u;
+        player_ui_saves_reload(player, app, index);
+        (void)snprintf(text, sizeof(text), "%s %s.%s%s",
+                       replace ? "Replaced the save" : "Added the save", added,
+                       replace ? " The saves from before are the newest backup." : "",
+                       error[0] != '\0' ? " " : "");
+        if (error[0] != '\0') {
+            size_t used = strlen(text);
+            (void)snprintf(text + used, sizeof(text) - used, "%s", error);
+        }
+        player_ui_saves_status(player, error[0] != '\0' ? PLAYER_UI_NOTE_WARNING
+                                                         : PLAYER_UI_NOTE_DONE, text);
+        return;
+    }
+    player_ui_saves_status(player, PLAYER_UI_NOTE_NEUTRAL, "");
+    player_app_set_error(app, "SAVES_ADD_FAILED", "The save was not added",
+                         error[0] != '\0' ? error : "Nakagawa could not add the save.", "Back",
+                         VIEW_LIBRARY);
+}
+
+/* One Saves dialog control. Back up and Restore run here, on this frame. */
+static void player_ui_saves_op(PlayerUiNk *player, PlayerApp *app, int index, unsigned op,
+                               PlayerUiAction *out_action) {
+    char stamp[24];
+    char path[NK_MAX_PATH];
+    char error[NK_MAX_PATH + 160];
+    char text[sizeof(player->saves_status)];
+    PlayerSavesResult result;
+    bool blocked = player_app_saves_blocker(app, index) != NULL;
+    error[0] = '\0';
+    if (op == PLAYER_UI_SAVES_OPEN_FOLDER) {
+        if (out_action != NULL) {
+            out_action->kind = PLAYER_UI_ACTION_OPEN_SAVE_FOLDER;
+            out_action->primary = PLAYER_UI_PRIMARY_NONE;
+            out_action->title_index = (size_t)index;
+        }
+    } else if (op == PLAYER_UI_SAVES_OLDER) {
+        if (player->saves_first + PLAYER_UI_SAVES_ROW_CAP < player->saves_list_count) {
+            player->saves_first += PLAYER_UI_SAVES_ROW_CAP;
+        }
+        player_ui_saves_reload(player, app, index);
+        player->saves_focus = player->saves_first + PLAYER_UI_SAVES_ROW_CAP <
+                                      player->saves_list_count
+                                  ? PLAYER_UI_ID_SAVES_OLDER : PLAYER_UI_ID_SAVES_NEWER;
+    } else if (op == PLAYER_UI_SAVES_NEWER) {
+        player->saves_first = player->saves_first > PLAYER_UI_SAVES_ROW_CAP
+                                  ? player->saves_first - PLAYER_UI_SAVES_ROW_CAP : 0u;
+        player_ui_saves_reload(player, app, index);
+        player->saves_focus = player->saves_first > 0u ? PLAYER_UI_ID_SAVES_NEWER
+                                                       : PLAYER_UI_ID_SAVES_OLDER;
+    } else if (blocked) {
+        player->saves_ask = PLAYER_UI_SAVES_ASK_NONE;
+    } else if (op == PLAYER_UI_SAVES_BACK_UP) {
+        player_app_save_stamp_now(stamp, sizeof(stamp));
+        result = player_app_back_up_saves(app, index, stamp, PLAYER_SAVE_BACKUP_MANUAL, path,
+                                          sizeof(path), error, sizeof(error));
+        player->saves_first = 0u;
+        player_ui_saves_reload(player, app, index);
+        if (result == PLAYER_SAVES_DONE) {
+            player_ui_saves_status(player, PLAYER_UI_NOTE_DONE,
+                                   "Backed up. It is the newest backup in the list.");
+        } else if (result == PLAYER_SAVES_NOTHING) {
+            player_ui_saves_status(player, PLAYER_UI_NOTE_NEUTRAL,
+                                   "There are no saves to back up yet.");
+        } else {
+            player_ui_saves_status(player, PLAYER_UI_NOTE_NEUTRAL, "");
+            player_app_set_error(app, "SAVES_BACKUP_FAILED", "Your saves were not backed up",
+                                 error[0] != '\0' ? error
+                                                  : "Nakagawa could not write the backup.",
+                                 "Back", VIEW_LIBRARY);
+        }
+    } else if (op == PLAYER_UI_SAVES_ADD) {
+        player->saves_waiting_pick = true;
+        app->saves_pick_ready = false;
+        app->saves_pick_index = index;
+        app->request_save_folder_picker = true;
+        player_ui_saves_status(player, PLAYER_UI_NOTE_NEUTRAL,
+                               "Pick the save's folder: the one that holds its PARAM.SFO, "
+                               "inside a SAVEDATA folder.");
+    } else if (op >= PLAYER_UI_SAVES_RESTORE_BASE) {
+        size_t row = (size_t)(op - PLAYER_UI_SAVES_RESTORE_BASE);
+        if (row < player_ui_saves_page_rows(player)) {
+            player->saves_ask = PLAYER_UI_SAVES_ASK_RESTORE;
+            player->saves_ask_row = row;
+            player->saves_focus = PLAYER_UI_ID_SAVES_CANCEL;
+        }
+    } else if (op == PLAYER_UI_SAVES_CANCEL) {
+        player->saves_ask = PLAYER_UI_SAVES_ASK_NONE;
+        player->saves_focus = player->saves_has ? PLAYER_UI_ID_SAVES_BACK_UP
+                                                : PLAYER_UI_ID_SAVES_ADD;
+    } else if (op == PLAYER_UI_SAVES_CONFIRM &&
+               player->saves_ask == PLAYER_UI_SAVES_ASK_REPLACE) {
+        (void)snprintf(path, sizeof(path), "%s", player->saves_ask_path);
+        player_ui_saves_add(player, app, index, path, true);
+    } else if (op == PLAYER_UI_SAVES_CONFIRM &&
+               player->saves_ask == PLAYER_UI_SAVES_ASK_RESTORE &&
+               player->saves_ask_row < player_ui_saves_page_rows(player)) {
+        char kept[NK_MAX_PATH];
+        char when[32];
+        const PlayerSaveBackup *backup =
+            &player->saves_list[player->saves_first + player->saves_ask_row];
+        (void)snprintf(path, sizeof(path), "%s", backup->path);
+        (void)snprintf(when, sizeof(when), "%s", player->saves_when[player->saves_ask_row]);
+        player->saves_ask = PLAYER_UI_SAVES_ASK_NONE;
+        player->saves_focus = PLAYER_UI_ID_SAVES_BACK_UP;
+        kept[0] = '\0';
+        player_app_save_stamp_now(stamp, sizeof(stamp));
+        result = player_app_restore_saves(app, index, path, stamp, kept, sizeof(kept), error,
+                                          sizeof(error));
+        player->saves_first = 0u;
+        player_ui_saves_reload(player, app, index);
+        if (result == PLAYER_SAVES_DONE) {
+            (void)snprintf(text, sizeof(text),
+                           "Restored the backup from %s.%s%s", when,
+                           kept[0] != '\0'
+                               ? " Your saves from before are the newest backup, and their "
+                                 "folder is kept beside the save folder."
+                               : "",
+                           error[0] != '\0' ? " " : "");
+            if (error[0] != '\0') {
+                size_t used = strlen(text);
+                (void)snprintf(text + used, sizeof(text) - used, "%s", error);
+            }
+            player_ui_saves_status(player, error[0] != '\0' ? PLAYER_UI_NOTE_WARNING
+                                                              : PLAYER_UI_NOTE_DONE, text);
+        } else {
+            player_ui_saves_status(player, PLAYER_UI_NOTE_NEUTRAL, "");
+            player_app_set_error(app, "SAVES_RESTORE_FAILED", "Your saves were not restored",
+                                 error[0] != '\0' ? error
+                                                  : "Nakagawa could not restore the backup. "
+                                                    "Your saves are as they were.",
+                                 "Back", VIEW_LIBRARY);
+        }
+    }
+}
+
 bool player_ui_nk_at_library_root(const PlayerUiNk *player) {
     return player != NULL && player->ready &&
            nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_LIBRARY &&
@@ -2857,8 +3125,12 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                         player->title_primary_refocus = true;
                         player->title_primary_fallback = 0u;
                     } else if (player->title_primary_refocus &&
-                               player->title_primary_fallback == 0u) {
-                        /* A page just opened still shows the library's focus for a
+                               player->title_primary_fallback == 0u &&
+                               !shown->primary_action_enabled) {
+                        /* Only an action that is off (STARTING...) pushes focus away,
+                           so only then is the next button the fallback; leaving STOP
+                           GAME, which stays on, is the user's own move (#2002).
+                           A page just opened still shows the library's focus for a
                            frame or two; the fallback is the page's own button. */
                         if (focused >= 0x2000u && focused < 0x3000u) {
                             player->title_primary_fallback = focused;
@@ -2896,6 +3168,13 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 if (player->titles[index].options_enabled) {
                     nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
                     player_app_open_title_enhanced(app, index);
+                }
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_OPEN_SAVES) {
+                if (player->titles[index].save_folder_enabled) {
+                    player_ui_open_saves(player, app, index);
+                    nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
+                    (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_SAVES);
                 }
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TITLE) {
@@ -2999,6 +3278,64 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 }
                 player->library_focus_pending = true;
                 player->library_focus_index = (size_t)index;
+                action.kind = PLAYER_UI_ACTION_NONE;
+            }
+        }
+    } else if (route == PLAYER_UI_ROUTE_SAVES) {
+        int index = player->saves_index;
+        /* The dialog closes if its title left the library. */
+        if (index < 0 || index >= app->game_count ||
+            strcmp(app->games[index].disc_id, player->saves_disc) != 0) {
+            player->saves_waiting_pick = false;
+            app->saves_pick_ready = false;
+            (void)nk_ui_router_pop(player->router);
+        } else {
+            PlayerUiSavesModel model;
+            const char *blocked = player_app_saves_blocker(app, index);
+            if (app->saves_pick_ready) {
+                /* The folder Add a save picked (main.c takes it from the picker). */
+                bool ours = player->saves_waiting_pick && app->saves_pick_index == index;
+                app->saves_pick_ready = false;
+                player->saves_waiting_pick = false;
+                player_ui_saves_status(player, PLAYER_UI_NOTE_NEUTRAL, "");
+                if (ours && blocked == NULL) {
+                    player_ui_saves_add(player, app, index, app->saves_picked, false);
+                }
+            }
+            if (blocked != NULL) player->saves_ask = PLAYER_UI_SAVES_ASK_NONE;
+            if (player->saves_focus != 0u) {
+                nk_ui_focus(player->ui, player->saves_focus);
+                player->saves_focus = 0u;
+            }
+            memset(&model, 0, sizeof(model));
+            model.title = app->games[index].title_name;
+            model.title_index = (size_t)index;
+            model.has_saves = player->saves_has;
+            model.saves_bytes = player->saves_bytes;
+            model.rows = player->saves_rows;
+            model.row_count = player_ui_saves_page_rows(player);
+            model.first_row = player->saves_first;
+            model.total = player->saves_total;
+            model.ask = player->saves_ask;
+            model.ask_row = player->saves_ask_row;
+            model.ask_name = player->saves_ask_name;
+            model.status = player->saves_status;
+            model.status_kind = player->saves_status_kind;
+            model.blocked = blocked;
+            model.logical_width = scale.logical_w;
+            model.logical_height = scale.logical_h;
+            action = player_ui_screen_saves(player->ui, &model);
+            if (action.kind == PLAYER_UI_ACTION_BACK) {
+                if (player->saves_ask != PLAYER_UI_SAVES_ASK_NONE) {
+                    /* Back answers the question with Cancel first. */
+                    player_ui_saves_op(player, app, index, PLAYER_UI_SAVES_CANCEL, NULL);
+                } else {
+                    player->saves_waiting_pick = false;
+                    (void)nk_ui_router_pop(player->router);
+                }
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_SAVES) {
+                player_ui_saves_op(player, app, index, (unsigned)action.primary, out_action);
                 action.kind = PLAYER_UI_ACTION_NONE;
             }
         }

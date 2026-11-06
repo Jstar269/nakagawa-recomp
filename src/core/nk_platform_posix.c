@@ -230,24 +230,64 @@ bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
     return true;
 }
 
-bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
+/* Both directory walks. With skipped NULL this is nk_platform_list_dir; with it,
+   every entry left out is counted and a listing that stops on an error fails. */
+static bool posix_list_dir(const char *dir, NkDirEntryFn fn, void *ctx, size_t *skipped) {
     if (!dir || !*dir || !fn) return false;
+    if (skipped) *skipped = 0;
     DIR *handle = opendir(dir);
     if (!handle) return false;
+    bool ok = true;
     struct dirent *item;
-    while ((item = readdir(handle)) != NULL) {
+    for (;;) {
+        errno = 0;
+        item = readdir(handle);
+        if (!item) {
+            if (skipped && errno != 0) ok = false;
+            break;
+        }
         if (strcmp(item->d_name, ".") == 0 || strcmp(item->d_name, "..") == 0) continue;
         char path[4096];
         int written = snprintf(path, sizeof(path), "%s/%s", dir, item->d_name);
-        if (written < 0 || (size_t)written >= sizeof(path)) continue;
         struct stat st;
         /* lstat: a symlink is neither a file nor a directory here. */
-        if (lstat(path, &st) != 0) continue;
-        if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) continue;
+        if (written < 0 || (size_t)written >= sizeof(path) || lstat(path, &st) != 0 ||
+            (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))) {
+            if (skipped) ++*skipped;
+            continue;
+        }
         if (!fn(item->d_name, S_ISDIR(st.st_mode), ctx)) break;
     }
     closedir(handle);
-    return true;
+    return ok;
+}
+
+bool nk_platform_list_dir(const char *dir, NkDirEntryFn fn, void *ctx) {
+    return posix_list_dir(dir, fn, ctx, NULL);
+}
+
+bool nk_platform_list_dir_counted(const char *dir, NkDirEntryFn fn, void *ctx,
+                                  size_t *skipped) {
+    size_t none = 0;
+    return posix_list_dir(dir, fn, ctx, skipped ? skipped : &none);
+}
+
+bool nk_platform_sync_file(FILE *f) {
+    if (!f || fflush(f) != 0) return false;
+    int fd = fileno(f);
+    if (fd < 0) return false;
+    return fsync(fd) == 0;
+}
+
+bool nk_platform_sync_dir(const char *dir) {
+    if (!dir || !*dir) return false;
+    int fd = open(dir, O_RDONLY);
+    if (fd < 0) return false;
+    struct stat st;
+    bool ok = fstat(fd, &st) == 0 && S_ISDIR(st.st_mode);
+    if (ok && fsync(fd) != 0 && errno != EINVAL) ok = false;
+    close(fd);
+    return ok;
 }
 
 /* Call fn for each folder directly inside dir (not following a link to a non-folder); with

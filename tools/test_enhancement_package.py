@@ -1152,6 +1152,199 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                 with self.assertRaises(EnhancementPackageError):
                     plan(transform, word)
 
+    def test_count_x2_even_and_gate_30hz_hold_plans(self) -> None:
+        """count_x2_even doubles a slti/sltiu bound and keeps even counts; gate_30hz_hold holds f12."""
+        from enhancement_package import EnhancementPackageError, plan_site_rewrite
+
+        def plan(transform: str, word: int) -> dict:
+            rewrite: dict = plan_site_rewrite({"id": "S", "transform": transform}, word)
+            return rewrite
+
+        self.assertEqual(plan("count_x2_even", 0x28410008),  # slti at, v0, 8
+                         {"kind": "word_even", "word": 0x28410010, "reg": 2, "rt": 1})
+        self.assertEqual(plan("count_x2_even", 0x2C410008),  # sltiu at, v0, 8
+                         {"kind": "word_even", "word": 0x2C410010, "reg": 2, "rt": 1})
+        self.assertEqual(plan("count_x2_even", 0x28413FFF),  # the largest bound that doubles in 16 bits
+                         {"kind": "word_even", "word": 0x28417FFE, "reg": 2, "rt": 1})
+        self.assertEqual(plan("gate_30hz_hold", 0x0C000480), {"kind": "gate", "hold_f": 12})  # jal
+        for transform, word in (
+            ("count_x2_even", 0x28420008),  # slti v0, v0, 8: the counter is overwritten
+            ("count_x2_even", 0x28400008),  # slti zero, v0, 8
+            ("count_x2_even", 0x2841FFFF),  # negative bound
+            ("count_x2_even", 0x28410000),  # a bound of 0 is never true for a count
+            ("count_x2_even", 0x2C410000),  # sltiu with a bound of 0
+            ("count_x2_even", 0x28414000),  # 2 * 0x4000 does not fit
+            ("count_x2_even", 0x24410008),  # addiu: not a compare
+            ("gate_30hz_hold", 0x24840001),  # an accumulating update is not a call
+            ("gate_30hz_hold", 0x0320F809),  # jalr: codegen gates only a jal
+        ):
+            with self.subTest(transform=transform, word=f"{word:08x}"):
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    plan(transform, word)
+                self.assertIn("has no defined rewrite", str(ctx.exception))
+
+        pkg, _ = self._make_package_and_symbols(b"synthetic_elf_bytes")
+        pkg["sites"] = [dict(pkg["sites"][-1], transform="gate_30hz_hold")]
+        del pkg["update_boundary"]
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            validate_package(pkg)
+        self.assertIn("gate_30hz_hold sites must declare update_boundary", str(ctx.exception))
+
+    def _even_and_hold_build(self, tmp: Path) -> str:
+        # The resolver's static checks: the held call goes to an ease, a leaf that reads f12
+        # and writes f0 (f0 = f12 + f14 * (f13 - f12)), and the even bound compares a count
+        # loaded just before it.
+        self.words.update({
+            0x00001500: 0x8CA40000,  # lw a0, 0(a1)
+            0x00001504: 0x28830064,  # slti v1, a0, 100
+            0x00001508: 0x03E00008, 0x0000150C: 0,
+            0x00001600: 0x0C000000 | (0x00001700 >> 2),  # jal synth_ease
+            0x00001700: 0x460C6841,  # sub.s f1, f13, f12
+            0x00001704: 0x460E0842,  # mul.s f1, f1, f14
+            0x00001708: 0x46016000,  # add.s f0, f12, f1
+            0x0000170C: 0x03E00008, 0x00001710: 0,
+        })
+        self.fn_addrs["synth_ease"] = 0x00001700
+        elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", self.words, self.entry)
+        pkg, symbols = self._make_package_and_symbols(elf_bytes)
+        for site in pkg["sites"]:
+            if site["id"] == "SYNTH_PROB":  # slti v1, a0, 100, after the count's load
+                site.update(transform="count_x2_even", insn_offset=4,
+                            stock_digest=compute_stock_words_digest([0x28830064]))
+            elif site["id"] == "SYNTH_GATE":  # jal synth_ease
+                site["transform"] = "gate_30hz_hold"
+        rc, output, files = self._codegen_with(tmp, "even-hold", pkg, symbols)
+        self.assertEqual(rc, 0, output)
+        return b"\n".join(files.values()).decode("utf-8")
+
+    def test_count_x2_even_and_gate_30hz_hold_emit_both_forms(self) -> None:
+        """The enhanced slti doubles its bound and drops odd counts; the held call copies f12 to f0."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            combined = self._even_and_hold_build(Path(tmp_dir))
+            self.assertIn("(int32_t)0x000000c8u ? 1u : 0u", combined)  # 100 -> 200
+            self.assertIn("(int32_t)0x00000064u ? 1u : 0u", combined)  # the stock form is kept
+            self.assertIn("uint32_t _nk_count = s->r[4];", combined)
+            # slti: a negative count stays true, as in stock.
+            self.assertIn("if ((_nk_count & 1u) && (int32_t)_nk_count >= 0) { s->r[3] = 0u; }", combined)
+            self.assertIn("if (!nk_enhancement_on() || nk_enhancement_gate_30hz())", combined)
+            self.assertIn("} else { s->fi[0] = s->fi[12]; }", combined)
+
+    @unittest.skipUnless(GCC, "needs a host C compiler")
+    def test_count_x2_even_and_gate_30hz_hold_match_30hz_when_run(self) -> None:
+        """Compile the generated statements and run 30 Hz against 60 Hz updates.
+
+        count_x2_even: a counter of updates since an event meets the bound at the stock
+        instants only (60 Hz count 2k where the stock count is k), the same number of times.
+        gate_30hz_hold: three values advanced by an ease call each update, as a menu pane
+        does, take the 30 Hz values, each held for two updates; none takes another's result.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            combined = self._even_and_hold_build(tmp)
+            lines = combined.splitlines()
+            at = next(i for i, line in enumerate(lines) if "uint32_t _nk_count" in line)
+            compare = "\n".join(lines[at:at + 2])
+            # The call statement: from the jal's trace hook to the line that closes its gate,
+            # whatever that gate's skipped branch holds.
+            at = next(i for i, line in enumerate(lines) if "sr_begin(s, 0x00001600u" in line)
+            gate = next(i for i in range(at, len(lines)) if "nk_enhancement_gate_30hz()) {" in lines[i])
+            end = next(i for i in range(gate + 1, len(lines)) if lines[i].lstrip().startswith("}"))
+            call = "\n".join(lines[at:end + 1])
+            authentic_dir = tmp / "authentic"
+            authentic_dir.mkdir()
+            rc, output, files = self._run_codegen(tmp / "synth.elf", authentic_dir / "out.c", [])
+            self.assertEqual(rc, 0, output)
+            stock_lines = b"\n".join(files.values()).decode("utf-8").splitlines()
+            at = next(i for i, line in enumerate(stock_lines) if "sr_begin(s, 0x00001504u" in line)
+            stock_compare = stock_lines[at]
+            at = next(i for i, line in enumerate(stock_lines) if "sr_begin(s, 0x00001600u" in line)
+            end = next(i for i in range(at, len(stock_lines))
+                       if "sr_aot_return_boundary_end" in stock_lines[i])
+            stock_call = "\n".join(stock_lines[at:end + 1])
+            # Toggle off, each site runs the Authentic statement, byte for byte.
+            self.assertIn(f"else {{ {stock_compare.strip()} }}", compare)
+            self.assertIn(stock_lines[end], call)  # the checked call itself
+
+            def program(name: str, compare: str, call: str) -> list[str]:
+                callee_match = re.search(r"return; (\w+)\(s\);", call)
+                self.assertIsNotNone(callee_match, call)
+                assert callee_match is not None
+                callee = callee_match.group(1)
+                harness = tmp / f"{name}.c"
+                harness.write_text(
+                    "#include \"recomp.h\"\n"
+                    "/* The real CpuState and trace hooks; the statement runs alone, with no caller\n"
+                    " * frame to return through, so only the return boundary is stubbed. */\n"
+                    "#undef SR_TAIL_DRAIN\n#define SR_TAIL_DRAIN(s) ((void)0)\n"
+                    "#define sr_aot_return_boundary_begin(s, r, c, k) 0\n"
+                    "#define sr_aot_return_boundary_end(s) 0\n"
+                    "static int on;\nint nk_enhancement_on(void) { return on; }\n"
+                    "uint32_t nk_enhancement_updates;\n"
+                    "static inline int nk_enhancement_gate_30hz(void) "
+                    "{ return (nk_enhancement_updates & 1u) == 0u; }\n"
+                    "/* The ease: f0 = f12 + f14 * (f13 - f12), as the consumer's helper computes. */\n"
+                    f"static void {callee}(CpuState *s) "
+                    "{ s->f[0] = s->f[12] + s->f[14] * (s->f[13] - s->f[12]); }\n"
+                    f"static void compare(CpuState *s) {{\n{compare}\n}}\n"
+                    f"static void call(CpuState *s) {{\n{call}\n}}\n"
+                    "static float ease(CpuState *s, float cur, float target) {\n"
+                    "    s->f[12] = cur; s->f[13] = target; s->f[14] = 0.25f; call(s); return s->f[0];\n"
+                    "}\n"
+                    "int main(void) {\n"
+                    "    CpuState st; CpuState *s = &st; memset(&st, 0, sizeof st);\n"
+                    "    for (on = 0; on < 2; on++) {\n"
+                    "        for (int32_t n = -4; n < 300; n++) {\n"
+                    "            s->r[4] = (uint32_t)n; compare(s);\n"
+                    "            if (s->r[3]) printf(\"%s %d\\n\", on ? \"hit60\" : \"hit30\", (int)n);\n"
+                    "        }\n"
+                    "    }\n"
+                    "    for (on = 0; on < 2; on++) {\n"
+                    "        float x = 0.0f, y = 100.0f, a = 1.0f;\n"
+                    "        nk_enhancement_updates = 0;\n"
+                    "        for (int u = 0; u < (on ? 40 : 20); u++) {\n"
+                    "            nk_enhancement_updates++;\n"
+                    "            x = ease(s, x, 64.0f); y = ease(s, y, 0.0f); a = ease(s, a, 0.0f);\n"
+                    "            printf(\"%s %d %.6f %.6f %.6f\\n\", on ? \"ease60\" : \"ease30\", u, x, y, a);\n"
+                    "        }\n"
+                    "    }\n"
+                    "    return 0;\n"
+                    "}\n",
+                    encoding="utf-8",
+                )
+                exe = tmp / f"{name}.exe"
+                # The generated call statement keeps its guards on one line, as codegen emits it.
+                assert GCC is not None, "skipUnless(GCC) runs this test only with a compiler"
+                built = subprocess.run([GCC, "-std=gnu11", "-Wall", "-Werror", "-Wno-unused-function",
+                                        "-Wno-misleading-indentation", "-Wno-unused-variable",
+                                        f"-I{ROOT / 'src' / 'rt'}", "-o", str(exe), str(harness)],
+                                       capture_output=True, text=True)
+                self.assertEqual(built.returncode, 0, built.stderr)
+                run = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+                lines: list[str] = run.stdout.split("\n")
+                return lines
+
+            out = program("even_hold", compare, call)
+            # Section 11.2, item 1: the package build with the toggle off prints what the
+            # Authentic build prints, byte for byte.
+            authentic = program("authentic", stock_compare, stock_call)
+            off = [line for line in out if line.startswith(("hit30 ", "ease30 "))]
+            self.assertEqual(off, [line for line in authentic if line.startswith(("hit30 ", "ease30 "))])
+            self.assertEqual(len(off), 104 + 20)
+            hit30 = [int(line.split()[1]) for line in out if line.startswith("hit30 ")]
+            hit60 = [int(line.split()[1]) for line in out if line.startswith("hit60 ")]
+            # A negative count is below the slti bound in stock and stays so (an "inactive"
+            # sentinel such as -1 keeps its meaning); 0..99 at 30 Hz meet it at 0..198 at 60 Hz.
+            self.assertEqual(hit30, [-4, -3, -2, -1] + list(range(100)))
+            self.assertEqual(hit60, [-4, -3, -2, -1] + [2 * k for k in range(100)])
+            ease30 = [tuple(line.split()[2:]) for line in out if line.startswith("ease30 ")]
+            ease60 = [tuple(line.split()[2:]) for line in out if line.startswith("ease60 ")]
+            # Update 1 of 60 is odd and holds the start; then each 30 Hz value shows for two updates.
+            self.assertEqual(ease60[0], ("0.000000", "100.000000", "1.000000"))
+            for k, values in enumerate(ease30[:19]):
+                with self.subTest(update=k):
+                    self.assertEqual(ease60[2 * k + 1], values)
+                    self.assertEqual(ease60[2 * k + 2], values)
+
     def test_aot_cache_epoch_separation_and_authentic_invariance(self) -> None:
         """With package off, AOT cache digest is untouched; with package on, it keys a distinct epoch."""
         base_opts = {
@@ -2405,7 +2598,10 @@ class TestEnhancementStoreSites(unittest.TestCase):
 
     # -- compile and run ---------------------------------------------------------------
 
-    def _generate(self, tmp: Path) -> dict[str, str]:
+    def _generate(self, tmp: Path, gate_transform: str | None = None) -> dict[str, str]:
+        """Generate the store-site fixture. With ``gate_transform``, the entry also calls
+        0x1400, whose first word begins each logic update and whose ``jal 0x1500`` at 0x1404 (an ease
+        leaf, as gate_30hz_hold needs) is a gate site of that transform that requires F_STORE."""
         def jal(target: int) -> int:
             return 0x0C000000 | ((target >> 2) & 0x03FFFFFF)
 
@@ -2416,16 +2612,29 @@ class TestEnhancementStoreSites(unittest.TestCase):
             0x1200: self.SW, 0x1204: 0x03E00008, 0x1208: 0,
             0x1300: self.ADDIU, 0x1304: 0x03E00008, 0x1308: 0,
         }
+        symbols = {"fstore": "0x1100", "istore": "0x1200", "gcount": "0x1300"}
+        if gate_transform is not None:
+            words.update({0x1018: jal(0x1400), 0x101C: 0, 0x1020: 0x03E00008, 0x1024: 0,
+                          0x1400: 0x24070001, 0x1404: jal(0x1500), 0x1408: 0,  # addiu a3, zero, 1
+                          0x140C: 0x03E00008, 0x1410: 0,
+                          # sub.s f1, f13, f12; add.s f0, f12, f1; jr ra; nop
+                          0x1500: 0x460C6841, 0x1504: 0x46016000, 0x1508: 0x03E00008, 0x150C: 0})
+            symbols["hgate"] = "0x1400"
         elf = _write_synthetic_mips_elf(tmp / "synth.elf", words, 0x1000)
         sites = [
             dict(self._site("F_STORE", self.SWC1, stock_values=[30, 60]), function="fstore"),
             dict(self._site("I_STORE", self.SW, stock_values=[9, -9]), function="istore"),
             dict(self._site("G_COUNT", self.ADDIU, requires=["F_STORE"]), function="gcount"),
         ]
-        pkg = self._package(sites, executable_sha256=hashlib.sha256(elf).hexdigest())
+        extra: dict[str, Any] = {}
+        if gate_transform is not None:
+            sites.append(dict(self._site("H_GATE", jal(0x1500), requires=["F_STORE"]),
+                              function="hgate", insn_offset=4, transform=gate_transform))
+            extra["update_boundary"] = {"function": "hgate", "insn_offset": 0,
+                                        "stock_digest": compute_stock_words_digest([0x24070001])}
+        pkg = self._package(sites, executable_sha256=hashlib.sha256(elf).hexdigest(), **extra)
         (tmp / "store.json").write_text(json.dumps(pkg), encoding="utf-8")
-        (tmp / "store.symbols.json").write_text(
-            json.dumps({"fstore": "0x1100", "istore": "0x1200", "gcount": "0x1300"}), encoding="utf-8")
+        (tmp / "store.symbols.json").write_text(json.dumps(symbols), encoding="utf-8")
         out_dir = tmp / "out"
         out_dir.mkdir()
         rc, output, files = TestEnhancementAotCodegenAndCache._run_codegen(
@@ -2573,6 +2782,70 @@ class TestEnhancementStoreSites(unittest.TestCase):
             res = run(0, "X")
             self.assertEqual((res.returncode, res.stderr), (0, ""))
 
+    @unittest.skipUnless(GCC, "needs a host C compiler")
+    def test_requires_holds_a_gated_call_stock_until_ready(self) -> None:
+        """A gate_30hz or gate_30hz_hold call site with ``requires`` makes the call every
+        update, as stock, until the required site has applied; then it gates."""
+        for transform in ("gate_30hz", "gate_30hz_hold"):
+            with self.subTest(transform=transform), tempfile.TemporaryDirectory() as tmp_dir:
+                tmp = Path(tmp_dir)
+                files = self._generate(tmp, gate_transform=transform)
+                main, chunk = files["out.c"], files["out_0.c"]
+                begin = main.index("/* Enhancement store sites. */")
+                block = main[begin:main.index("/* End of enhancement store sites. */")]
+                lines = chunk.splitlines()
+                at = next(i for i, line in enumerate(lines) if "sr_begin(s, 0x00001404u" in line)
+                gate = next(i for i in range(at, len(lines)) if "nk_enhancement_gate_30hz()) {" in lines[i])
+                self.assertIn("|| !nk_enh_ready(", lines[gate])
+                end = next(i for i in range(gate + 1, len(lines)) if lines[i].lstrip().startswith("}"))
+                call = "\n".join(lines[at:end + 1])
+                callee = re.search(r"return; (\w+)\(s\);", call)
+                self.assertIsNotNone(callee, call)
+                assert callee is not None
+                harness = (
+                    "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n"
+                    "typedef struct { uint32_t r[32]; union { float f[32]; uint32_t fi[32]; }; } CpuState;\n"
+                    "#define sr_begin(s, pc, op) ((void)0)\n#define sr_end(s, a, n) ((void)0)\n"
+                    "#define MEM_W32_PC(a, v, pc) ((void)(v))\n"
+                    "#define sr_aot_return_boundary_begin(s, r, c, k) 0\n"
+                    "#define sr_aot_return_boundary_end(s) 0\n#define SR_TAIL_DRAIN(s) ((void)0)\n"
+                    "void sr_perf_shutdown(void);\n"
+                    "int nk_enhancement_on(void) { return 1; }\n"
+                    "uint32_t nk_enhancement_updates;\n"
+                    "static inline int nk_enhancement_gate_30hz(void) "
+                    "{ return (nk_enhancement_updates & 1u) == 0u; }\n"
+                    f"{block}\n"
+                    "static unsigned calls;\n"
+                    f"static void {callee.group(1)}(CpuState *s) {{ (void)s; calls++; }}\n"
+                    f"static void run_f(CpuState *s) {{\n{self._statement(chunk, 0x1100)}\n}}\n"
+                    f"static void run_h(CpuState *s) {{\n{call}\n}}\n"
+                    "int main(void) {\n"
+                    "    CpuState s; memset(&s, 0, sizeof s); s.r[4] = 4;\n"
+                    "    nk_enh_sites_start();\n"
+                    "    for (nk_enhancement_updates = 1; nk_enhancement_updates <= 4; nk_enhancement_updates++)\n"
+                    "        run_h(&s);\n"
+                    "    printf(\"before %u\\n\", calls); calls = 0;\n"
+                    "    s.fi[2] = 0x41f00000u; run_f(&s);\n"
+                    "    for (nk_enhancement_updates = 5; nk_enhancement_updates <= 8; nk_enhancement_updates++)\n"
+                    "        run_h(&s);\n"
+                    "    printf(\"after %u\\n\", calls); fflush(stdout);\n"
+                    "    return 0;\n}\n")
+                src = tmp / "gate_harness.c"
+                src.write_text(harness, encoding="utf-8")
+                exe = tmp / "gate.exe"
+                assert GCC is not None
+                built = subprocess.run([str(GCC), "-std=gnu11", "-Wall", "-Werror", "-Wno-unused-function",
+                                        "-Wno-misleading-indentation", f"-I{ROOT / 'src' / 'rt'}", "-o",
+                                        str(exe), str(src), str(ROOT / "src" / "rt" / "perf.c"), "-lm"],
+                                       capture_output=True, text=True)
+                self.assertEqual(built.returncode, 0, built.stderr)
+                res = subprocess.run([str(exe)], capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0, res.stderr)
+                # Stock, every update, while F_STORE has not applied; then every second update.
+                self.assertEqual(res.stdout.splitlines(), ["before 4", "after 2"])
+                self.assertIn("ENHANCEMENT_SITE_GATED: site H_GATE at 0x00001404 runs stock: "
+                              "F_STORE has not applied", res.stderr)
+
     def test_every_runtime_exit_path_reaches_the_end_of_process_reports(self) -> None:
         """A store site's NOT_REACHED report runs from sr_perf_shutdown(); every _Exit/_exit
         in the runtime calls it first. HLE self-tests that do not link perf.c stub it."""
@@ -2610,6 +2883,119 @@ class TestEnhancementStoreSites(unittest.TestCase):
             self.assertNotIn("nk_enh_store", combined)
             self.assertNotIn("nk_enh_ready", combined)
             self.assertNotIn("Enhancement store sites", combined)
+
+
+class TestHoldAndEvenStaticChecks(unittest.TestCase):
+    """The resolver's static checks behind gate_30hz_hold and count_x2_even (section 9.2):
+    a held callee drops nothing but its result, and an even bound compares a stored count."""
+
+    JAL_EASE = 0x0C000800       # jal 0x2000
+    NOP, JR_RA = 0x00000000, 0x03E00008
+    SUB = 0x460C6841            # sub.s f1, f13, f12
+    MUL = 0x460E0842            # mul.s f1, f1, f14
+    ADD_F0 = 0x46016000         # add.s f0, f12, f1
+    LW_A0 = 0x8CA40000          # lw a0, 0(a1)
+    SLTI = 0x28830064           # slti v1, a0, 100
+
+    def _resolve(self, words: dict[int, int], site: dict[str, Any]) -> dict[int, Any]:
+        pkg = {
+            "schema_version": 1, "id": "synth.hold", "display_name": "Synthetic hold and even sites",
+            "version": "1.0.0", "category": "timing_frame_presentation",
+            "target_title_id": "synthetic-allegrex-v1", "game_version": "1.00",
+            "executable_sha256": "a" * 64, "capabilities": ["gate_30hz"],
+            "rng_policy": {"mode": "subtick_30hz", "reason": "No random rolls in this fixture."},
+            "update_boundary": {"function": "caller", "insn_offset": 8,
+                                "stock_digest": compute_stock_words_digest([self.JR_RA])},
+            "sites": [site],
+        }
+        resolved: dict[int, Any] = verify_and_resolve_sites(
+            pkg, executable_sha256="a" * 64,
+            symbol_to_addr={"caller": 0x1000, "counter": 0x1100},
+            read_words_fn=lambda a, n: ([words[a + 4 * i] for i in range(n)]
+                                        if all(a + 4 * i in words for i in range(n)) else None))
+        return resolved
+
+    def _hold(self, callee: list[int]) -> dict[int, Any]:
+        words = {0x1000: self.JAL_EASE, 0x1004: self.NOP, 0x1008: self.JR_RA, 0x100C: self.NOP}
+        words.update({0x2000 + 4 * i: w for i, w in enumerate(callee)})
+        return self._resolve(words, {
+            "id": "HOLD", "function": "caller", "insn_offset": 0,
+            "stock_digest": compute_stock_words_digest([self.JAL_EASE]), "transform": "gate_30hz_hold"})
+
+    def _even(self, body: list[int]) -> dict[int, Any]:
+        words = {0x1100 + 4 * i: w for i, w in enumerate(body)}
+        offset = 4 * body.index(self.SLTI)
+        return self._resolve(words, {
+            "id": "EVEN", "function": "counter", "insn_offset": offset,
+            "stock_digest": compute_stock_words_digest([self.SLTI]), "transform": "count_x2_even"})
+
+    def test_an_ease_callee_is_held(self) -> None:
+        ease = [self.SUB, self.MUL, self.ADD_F0, self.JR_RA, self.NOP]
+        self.assertEqual(self._hold(ease)[0x1000]["rewrite"], {"kind": "gate", "hold_f": 12})
+        # A forward branch inside the body (bc1f to the return) is allowed.
+        self.assertIn(0x1000, self._hold([self.SUB, 0x45000002, self.MUL, self.ADD_F0, self.JR_RA, self.NOP]))
+
+    def test_hold_callee_refusals(self) -> None:
+        cases = (
+            ("store", [self.SUB, 0xE4810000, self.ADD_F0, self.JR_RA, self.NOP], "writes memory at 0x00002004"),
+            ("call", [self.SUB, 0x0C000C00, self.ADD_F0, self.JR_RA, self.NOP], "jumps or calls"),
+            ("jalr", [self.SUB, 0x0320F809, self.ADD_F0, self.JR_RA, self.NOP], "calls through a register"),
+            ("tail jump", [self.SUB, self.ADD_F0, 0x03200008, self.NOP, self.JR_RA, self.NOP],
+             "jumps through a register"),
+            ("syscall", [self.SUB, 0x0000000C, self.ADD_F0, self.JR_RA, self.NOP], "traps"),
+            ("store in the delay slot", [self.SUB, self.ADD_F0, self.JR_RA, 0xAC850000], "writes memory"),
+            ("branch out", [self.SUB, 0x10000040, self.ADD_F0, self.JR_RA, self.NOP], "branches from 0x00002004"),
+            ("f12 written first", [0x46006B06, self.ADD_F0, self.JR_RA, self.NOP],
+             "does not read f12 before it writes it"),
+            ("no f0", [self.SUB, 0x46016080, self.JR_RA, self.NOP], "does not write f0"),
+            ("no return", [self.NOP] * 300, r"has no jr \$ra in its first 256"),
+            ("unreadable", [self.SUB, self.ADD_F0], "cannot be read at 0x00002008"),
+            ("no delay slot", [self.SUB, self.ADD_F0, self.JR_RA], "cannot be read at its return's delay slot"),
+            ("ra moved", [self.SUB, self.ADD_F0, 0x27FF0004, self.JR_RA, self.NOP], r"writes \$ra at 0x00002008"),
+            ("ra set", [self.SUB, self.ADD_F0, 0x3C1F0800, self.JR_RA, self.NOP], r"writes \$ra"),
+            ("ra loaded", [self.SUB, self.ADD_F0, 0x8FBF0000, self.JR_RA, self.NOP], r"writes \$ra"),
+            ("sp moved", [self.SUB, 0x27BDFFF0, self.ADD_F0, self.JR_RA, self.NOP], r"writes \$sp"),
+            ("fcsr", [self.SUB, 0x44C0F800, self.ADD_F0, self.JR_RA, self.NOP], "writes an FPU control register"),
+            ("unknown word", [self.SUB, 0x78000000, self.ADD_F0, self.JR_RA, self.NOP], "cannot read"),
+            # beq to the return's delay slot: the slot runs, then execution falls through to the sw.
+            ("branch to the return's slot", [self.SUB, 0x10000003, self.NOP, self.ADD_F0, self.JR_RA, self.NOP,
+                                             0xAC850000, self.JR_RA, self.NOP],
+             "branches from 0x00002004 to 0x00002014, outside the body up to its jr"),
+        )
+        for name, callee, why in cases:
+            with self.subTest(name), self.assertRaisesRegex(EnhancementPackageError, why):
+                self._hold(callee)
+
+    def test_even_counter_is_loaded(self) -> None:
+        self.assertEqual(self._even([self.LW_A0, self.SLTI, self.JR_RA, self.NOP])[0x1104]["rewrite"],
+                         {"kind": "word_even", "word": 0x288300C8, "reg": 4, "rt": 3})
+        # Unrelated instructions between the load and the compare are allowed.
+        self.assertIn(0x1108, self._even([self.LW_A0, 0x00031080, self.SLTI, self.JR_RA, self.NOP]))
+        # A plain branch's delay slot runs on both paths, so a load there reaches the compare.
+        self.assertIn(0x1108, self._even([0x14400002, self.LW_A0, self.SLTI, self.JR_RA, self.NOP]))
+
+    def test_even_counter_refusals(self) -> None:
+        cases = (
+            ("computed", [0x24840001, self.SLTI, self.JR_RA, self.NOP], r"counter \$4 is computed at 0x00001100"),
+            ("at the entry", [self.SLTI, self.JR_RA, self.NOP], "not loaded from memory in the straight-line"),
+            ("call between", [self.LW_A0, 0x0C000C00, self.NOP, self.SLTI, self.JR_RA, self.NOP],
+             "not loaded from memory in the straight-line"),
+            ("branch between", [self.LW_A0, 0x10000002, self.NOP, self.SLTI, self.JR_RA, self.NOP],
+             "not loaded from memory in the straight-line"),
+            ("unknown word", [self.LW_A0, 0x78000000, self.SLTI, self.JR_RA, self.NOP], "cannot tell whether"),
+            ("too far", [self.LW_A0] + [self.NOP] * 16 + [self.SLTI, self.JR_RA, self.NOP],
+             "not loaded from memory in the straight-line"),
+            # The callee runs between a call's delay slot and the compare.
+            ("call's slot", [0x0C000C00, self.LW_A0, self.SLTI, self.JR_RA, self.NOP],
+             "loaded at 0x00001104, in the delay slot of 0x0c000c00"),
+            ("jalr's slot", [0x0320F809, self.LW_A0, self.SLTI, self.JR_RA, self.NOP], "in the delay slot of"),
+            # bnel skips its slot on the fall-through path to the compare.
+            ("branch-likely's slot", [0x54400002, self.LW_A0, self.SLTI, self.JR_RA, self.NOP],
+             "in the delay slot of 0x54400002"),
+        )
+        for name, body, why in cases:
+            with self.subTest(name), self.assertRaisesRegex(EnhancementPackageError, why):
+                self._even(body)
 
 
 if __name__ == "__main__":

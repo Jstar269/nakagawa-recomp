@@ -177,6 +177,8 @@ class AcceptTests(Base):
         self.assertEqual((side["commit"], side["width"], side["height"]), ("abc123", W, H))
         self.assertEqual(side["slice_us"], pg.DEFAULT_SLICE_US)
         self.assertEqual(side["sha256"], meta["sha256"])
+        # a frame the gate did not capture: its presentation is unknown, so none is claimed
+        self.assertNotIn("present_upscale", side)
         self.assertEqual(pg.compare_files(ref, src).status, pg.PASS)
 
     def test_accept_replaces_only_when_called(self):
@@ -383,6 +385,29 @@ class RouteTests(Base):
         self.assertEqual(pg.run_route(route, 2, self.dir / "work", accept_frame=True)[1].status, pg.ACCEPTED)
         side = json.loads(pg.sidecar_path(self.dir / "priv" / "ref.ppm").read_text())
         self.assertEqual(side["slice_us"], 250)
+        self.assertEqual(side["present_upscale"], "off")
+
+    def test_an_inherited_present_upscale_never_reaches_the_run(self):
+        # SR_PRESENT_UPSCALE=fsr1 left in the shell enhances the window (#1273): the gate sets
+        # it off unless the route asks, and the reference records what its run used.
+        with patch.dict(os.environ, {"SR_PRESENT_UPSCALE": "fsr1"}):
+            self.check(self.route())
+        seen = json.loads((self.dir / "work" / "run0" / "seen_env.json").read_text())
+        self.assertEqual(seen["SR_PRESENT_UPSCALE"], "off")
+        with patch.dict(os.environ, {"SR_PRESENT_UPSCALE": "fsr1"}):
+            verdict = pg.run_route(self.route(), 2, self.dir / "work2", accept_frame=True)[1]
+        self.assertEqual(verdict.status, pg.ACCEPTED)
+        side = json.loads(pg.sidecar_path(self.dir / "priv" / "ref.ppm").read_text())
+        self.assertEqual(side["present_upscale"], "off")
+        # a route that asks for it gets it, and says so
+        asked = self.route(env={"SR_PRESENT_UPSCALE": "fsr1"})
+        with patch.dict(os.environ, {"SR_PRESENT_UPSCALE": "off"}):
+            verdict = pg.run_route(asked, 2, self.dir / "work3", accept_frame=True)[1]
+        self.assertEqual(verdict.status, pg.ACCEPTED)
+        seen = json.loads((self.dir / "work3" / "run0" / "seen_env.json").read_text())
+        self.assertEqual(seen["SR_PRESENT_UPSCALE"], "fsr1")
+        side = json.loads(pg.sidecar_path(self.dir / "priv" / "ref.ppm").read_text())
+        self.assertEqual(side["present_upscale"], "fsr1")
 
     def test_a_reference_taken_with_another_slice_says_so_when_it_differs(self):
         ref = self.dir / "priv" / "ref.ppm"
