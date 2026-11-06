@@ -1057,7 +1057,7 @@
       "hashes": {
         "sha256": "2f294ad496432b1608f070d310e3aa2adcf1de4af429f4901df97ec4bd361ed1"
       },
-      "comment": "Retrieved from google/fonts ofl/mplus1p/MPLUS1p-Regular.ttf at d714b17ce2379f06daf6295617f961df605dccb5; byte-identical pinned source for the build-time project Japanese PGF at font index 0. Shipped beside its OFL license text."
+      "comment": "Retrieved from google/fonts ofl/mplus1p/MPLUS1p-Regular.ttf at d714b17ce2379f06daf6295617f961df605dccb5; byte-identical pinned source that draws U+2252, the one character Noto Sans JP lacks, in the build-time project Japanese PGF (#2005). Shipped beside its OFL license text."
     },
     {
       "id": "readme-hst-title-screen",

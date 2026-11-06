@@ -33,8 +33,11 @@ policy into a public-safe PGF fixture:
   shaping; authentic firmware-font provisioning (route #300, which remains
   preferable when fidelity to the PSP system fonts is required); claiming any
   pixel identity with a firmware font (non-goal of issue #313).
-- **Japanese project font.** The project pins M PLUS 1p Regular under SIL OFL
-  1.1 and converts the Japanese repertoire described below. The converter is
+- **Japanese project font.** The project pins Noto Sans JP Regular (the UI
+  font's static instance) and M PLUS 1p Regular, both under SIL OFL 1.1, and
+  converts the `--japanese-text` repertoire described below from Noto Sans JP,
+  with M PLUS 1p drawing through `--fallback` the one point Noto Sans JP lacks
+  (#2005). The converter is
   codepoint-driven; any additional font pin still needs its own pin file and
   coverage set. The output is not claimed to be pixel-identical to a firmware
   font (`FONT_ORIGINS.md` records the source and conversion).
@@ -80,7 +83,7 @@ scaling.
 | --- | --- |
 | `unsupported-sfnt-version` | Scaler type is not a TrueType sfnt. |
 | `unsupported-outline-format` | `OTTO`, `"CFF "`, or `CFF2`: PostScript outlines. |
-| `unsupported-variable-font` | `fvar`/`gvar`/`cvar`/`HVAR`/`MVAR`/`STAT` present. |
+| `unsupported-variable-font` | `fvar`/`gvar`/`cvar`/`avar`/`HVAR`/`MVAR`/`VVAR` present. A `STAT` table alone is accepted: static family members carry it too. |
 | `unsupported-loca-format` | `indexToLocFormat` is neither 0 nor 1. |
 | `unsupported-cmap-format` | No usable Unicode subtable in formats 0/4/6/12. |
 | `unsupported-composite-point-args` | Composite matches points instead of XY offsets. |
@@ -88,22 +91,23 @@ scaling.
 | `missing-table` | A required table is absent. |
 | `truncated-table` | A directory entry claims bytes past end of file. |
 | `malformed-font` / `malformed-head` / `malformed-maxp` / `malformed-hhea` / `malformed-hmtx` / `malformed-loca` / `malformed-cmap` / `malformed-glyph` | Bounds or invariant violation in that section. |
-| `missing-code-point` | A requested code has no glyph. |
+| `missing-code-point` | A requested code has no glyph (in either font, with `--fallback`). |
 | `bad-code-range` | `--codes` is unparseable, inverted, or outside 16 bits. |
 | `bad-codepoint-list` | A `--codepoints` file is unreadable, not ASCII, holds a line that is not a code point, or leaves 16 bits. |
 | `codepoints-unsorted` | A `--codepoints` file repeats a code or is not in ascending order. |
 | `empty-codepoint-set` | A `--codepoints` file lists no code point. |
-| `japanese-codec-unavailable` / `japanese-mapping-invalid` | A built-in ASCII/EUC-JP codec or its pinned Japanese mapping is unavailable or has changed. |
+| `japanese-codec-unavailable` / `japanese-mapping-invalid` | A built-in ASCII/EUC-JP/CP932 codec or its pinned Japanese mapping is unavailable or has changed. |
 | `latin-mapping-invalid` | A built-in Latin mapping has changed from its pinned digest or count. |
 | `ppem-out-of-range` | Size outside 1..128. |
 | `embolden-out-of-range` | `--embolden-x`, `--embolden-y`, or `--embolden-advance` outside 0..8 sub-samples. |
-| `baseline-ellipsis-unavailable` | `--baseline-ellipsis` without U+2026 in the code set, or without an outline for U+2026 or U+002E. |
+| `baseline-ellipsis-unavailable` | `--baseline-ellipsis` without U+2026 in the code set, without an outline for U+2026 or U+002E, or with U+2026 drawn by the `--fallback` font. |
 | `tracking-out-of-range` | `--tracking` outside -8..16 sub-samples. |
 | `digit-advance-out-of-range` / `digit-advance-unavailable` | `--digit-advance` outside 64..`MAX_EDGE * 64` (26.6), or without all of the digits 0-9 in the code set. |
+| `fallback-unused` | `--fallback` given, but the first font draws every requested code. |
 | `glyph-too-large` | A raster exceeds the writer's 7-bit record fields (127 px). |
 | `composite-too-deep` / `composite-too-many-components` | Composite expansion bounds. |
 | `metric-targets-invalid` / `metric-target-unreachable` | Policy document is malformed / no size satisfies it. |
-| `conflicting-parameters` | `--ppem` together with `--metric-targets`. (`--codes`, `--codepoints`, `--jis-x-0208-japanese`, `--latin-1-text`, `--latin-cyrillic-text`, and `--ks-x-1001-korean` are mutually exclusive at the CLI.) |
+| `conflicting-parameters` | `--ppem` together with `--metric-targets`; `--fallback-pin` without `--fallback`; or only one of `--pin` and `--fallback-pin` when a fallback is given. (`--codes`, `--codepoints`, `--jis-x-0208-japanese`, `--japanese-text`, `--latin-1-text`, `--latin-cyrillic-text`, and `--ks-x-1001-korean` are mutually exclusive at the CLI.) |
 | `pin-invalid` / `pin-digest-mismatch` / `pin-size-mismatch` / `pin-license-mismatch` | Source pin does not bind the exact input and licence bytes. |
 | `reserved-font-name` / `camouflage-font-name` | Output name policy violation (section 6). |
 | writer reasons (`font-field-invalid`, `nominal-size-out-of-range`, `metric-table-overflow`, ...) | Re-raised unchanged from `pgf_writer.py`. |
@@ -139,6 +143,14 @@ U+0401-040C, U+040E-044F, U+0451-045C, U+045E-045F and U+0490-0491 and U+04C0
 and U+0338; and U+2116, U+2206, U+2219, U+221A, U+221E, U+2248, U+2260, U+2264
 and U+2265. The set contains 454 unique points with canonical SHA-256
 `6b8511988b7ce6199c99a45ab3a00ee498986067343117205c22031e2b8b330d`.
+
+`--japanese-text` (#2005) is the `--jis-x-0208-japanese` set widened by the
+EUC-JP mapping of JIS X 0208 rows 48..84 (the 3,390 level-2 kanji), every
+assigned double-byte character of Python's standard `cp932` table outside the
+user-defined area (lead bytes 0xF0-0xF9, Unicode Private Use; 7,326
+characters, with the NEC and IBM extensions), and the Latin-1 Supplement
+U+00A0-U+00FF. The set contains 7,575 unique points with canonical SHA-256
+`7c737cfedb45385d553dbfeecce9949135f185b5ca31ce486428cd4082904497`.
 
 `--ks-x-1001-korean` decodes assigned cells in KS X 1001 rows 1-4 and 6-9
 through Python's standard `euc_kr` codec, adds ASCII, and includes every modern
@@ -182,13 +194,14 @@ manifest in memory first and writes only after every stage succeeds.
    so shared contour vertices can never double-count a sample.
 6. **Coverage rounding.** `floor((count * 15 + 32) / 64)` with `count` in
    0..64, mapping to the writer's 4-bit samples.
-7. **Advances.** `hmtx` advance scaled by rule 1, plus
-   `(--embolden-advance + --tracking) * 8` 26.6 units; `advance_y` is 0.
-   `--tracking K` (-8..16 sub-samples, default 0) spaces every glyph alike.
-   `--digit-advance D` (26.6) replaces the scaled advance of each digit 0-9 with
-   `D` before that addition (tabular figures), and shifts that digit's outline
-   right by `floor((D - natural) / 2)` 26.6 units, `natural` being its scaled
-   `hmtx` advance, so its ink stays centred in the new width.
+7. **Advances.** `hmtx` advance scaled by rule 1 (with the upem of the font
+   that draws the code, rule 12), plus `(--embolden-advance + --tracking) * 8`
+   26.6 units; `advance_y` is 0. `--tracking K` (-8..16 sub-samples, default
+   0) spaces every glyph alike. `--digit-advance D` (26.6) replaces the scaled
+   advance of each digit 0-9 with `D` before that addition (tabular figures),
+   and shifts that digit's outline right by `floor((D - natural) / 2)` 26.6
+   units, `natural` being its scaled `hmtx` advance, so its ink stays centred
+   in the new width.
 8. **Iteration order.** Codes ascend; the writer sorts glyphs, metric tables,
    and map entries itself; manifest JSON uses sorted keys, 2-space indent,
    ASCII, and a trailing newline.
@@ -208,6 +221,13 @@ manifest in memory first and writes only after every stage succeeds.
     the U+2026 outline, in font units, so that its lowest point meets the
     lowest point of U+002E. A Japanese font centres the ellipsis on the em,
     which reads as three raised dots in Latin text.
+12. **Second font** (optional, default off). `--fallback FILE` (with
+    `--fallback-pin` when `--pin` is given) names a second TrueType font. A
+    requested code the first font's character map lacks is drawn from the
+    second, scaled by its own `unitsPerEm`; every other code comes from the
+    first. Both fonts pass the same input checks, and the output name must
+    satisfy both pins. The codes the second font draws are recorded in the
+    manifest, and a fallback that draws none is refused.
 
 Same pinned input plus same parameters plus same converter version therefore
 produce byte-identical `.pgf` and manifest output on every supported host,
@@ -322,6 +342,7 @@ Generated PGFs are fixtures, never an authenticity claim.
 | `glyphs` | Count, zero-area codes, maximum pixel dimensions. |
 | `metric_targets` | The policy, the chosen ppem, and achieved 26.6 values - or `null`. |
 | `parameters` | ppem, nominal em size (26.6), resolution (26.6), any header ascender and descender given, whether the ellipsis was set on the baseline, supersample, coverage bits, rounding formulas, hinting mode, and the `embolden` strengths (x, y, advance, in sub-samples); `tracking_sub_samples` and `digit_advance_26_6` only when given. |
+| `fallback` | Only with `--fallback`: the second font's `input` record (as above), its `license` block, and the ascending `codes` it draws. |
 | `license` | SPDX id, copyright line, reserved font names, the **full licence text**, its digest, and the source pin's provenance record - or `null` without a pin. |
 
 ## 8. Independence and provenance record
@@ -368,7 +389,8 @@ Generated PGFs are fixtures, never an authenticity claim.
 | Code-point set converts only the listed codes, sparse map, digest in manifest, nominal size | `CodePointSetTests` |
 | Sparse code-point set reads back through the reader; absent codes are misses | `ReaderRoundTripTests` |
 | Every named refusal writes nothing | `RefusalTests`, `CompositeRefusalTests` |
-| Tracking and tabular digits: effect, manifest record and refusals | `SpacingOptionTests` |
+| Tracking, tabular digits and the second font: effect, manifest record and refusals | `SpacingAndFallbackOptionTests` |
 | Built-in Latin, Japanese and Korean sets and the pinned fonts' coverage of them | `ProjectCodePointCoverageTests`, `JapaneseCodePointCoverageTests` |
 | Project Latin faces: one per console index, line widths, class widths and ink | `ProjectLatinStrikeTests` |
+| Project Japanese and Korean nominal size and advances | `ProjectCjkSizeTests` |
 | Independent structural validation | `nk_core.fonts.validate_pgf_data` on the output |
