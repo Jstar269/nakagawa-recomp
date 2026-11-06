@@ -2,12 +2,17 @@
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
 /*
- * The pause menu's VRAM viewer leaves the game as it found it (#314).
+ * The GE decoders the pause menu's VRAM viewer calls leave later frames, guest memory and the GE
+ * state as they would have been (#314).
  *
  * The viewer decodes guest VRAM while the game is paused at a VBLANK: the displayed framebuffer,
  * a window the user steps to (here the render-to-texture source), the depth buffer and the bound
- * texture, with the same calls and arguments gui_pause_describe_vram and gui_pause_decode_vram
- * use. On the Vulkan backend those reads go through sr_guest_copy_in, which materialises
+ * texture. This test calls the decoders the page calls, ge_vram_decode_surface and
+ * ge_vram_decode_bound_texture, with the arguments gui_pause_describe_vram and
+ * gui_pause_decode_vram pass. It does not run those two gui.c functions, which are static there:
+ * a change to them that writes guest state would not show here.
+ *
+ * On the Vulkan backend those reads go through sr_guest_copy_in, which materialises
  * GPU-resident targets into guest VRAM and applies CPU stores the backend was still holding. A
  * software-GE test would pass without reaching any of that, so this one runs ge.c's lists on
  * ge_gpu.c's real targets, as gpu-coherence-selftest does.
@@ -16,7 +21,9 @@
  * into the middle of a pixel, a byte store), draws T1 as a texture into T2, presents T2 with a
  * capture armed, then stores into T2 from the CPU. A run writes a digest of every presented
  * frame, the lists' return codes, and at the end guest VRAM and RAM as a guest read sees them
- * (through sr_guest_copy_in) and the GE state.
+ * (through sr_guest_copy_in) and the GE state. The digest does not cover timing: there is no
+ * scheduler, VBLANK counter, timer, audio or perf counter in this harness, so a viewer that
+ * changed one of those would not show here.
  *
  *   --write PATH          run without the viewer and write the digest to PATH
  *   --check PATH          run again and require the same digest
@@ -403,6 +410,8 @@ static int run(int view_at, const char *capture_path) {
     line("lists %" PRIu64 " %016" PRIx64, FRAMES * 2u, codes);
     line("vram %" PRIu64 " %016" PRIx64, ZBUF + STRIDE * PSP_H * 2u - T1, vram);
     line("ram %" PRIu64 " %016" PRIx64, RAM_END - LISTS, ram);
+    /* The GE state is hashed as raw bytes across processes: this relies on ge.c's GeState being
+     * static (zeroed padding) and holding no pointers or timers, which holds today. */
     line("ge %" PRIu64 " %016" PRIx64, sizeof(GeState), fnv(FNV0, ge_state_ptr(), sizeof(GeState)));
     return 1;
 }

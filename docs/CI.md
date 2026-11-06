@@ -397,9 +397,9 @@ while a sheared strip stays unclamped.
 Then `gpu-coherence-selftest-snapbar-mutants` builds three broken variants of
 the destination-snapshot copy's barriers (`SR_GPU_SNAPBAR_MUTANT`), and the submit-batch case must
 fail each one with its own message. The same step then runs `vram-view-identity-selftest` (#314):
-the pause menu's VRAM viewer, run at a paused VBLANK, must leave later presented frames, guest
-memory and the GE state as a run without it does, and a mutant viewer that stores one byte must
-fail. The job also runs
+the GE decoders the pause menu's VRAM viewer calls, run at a paused VBLANK, must leave later
+presented frames, guest memory and the GE state as a run without them does, and a mutant viewer
+that stores one byte must fail. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by
