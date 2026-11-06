@@ -24,7 +24,7 @@ typedef struct {
     char kind;     /* 'F' a flip with a new frame, 'R' a repeat flip, 'V' a VBLANK */
     uint32_t vcount;
     AceRate rate;
-    int fsr3, cut, camera;
+    int fsr3, cut;
     /* expected */
     Fsr3FgPresent present;
     Fsr3FgWhy why;
@@ -40,13 +40,13 @@ typedef struct {
 #define REAL FSR3FG_PRESENT_REAL
 #define MID FSR3FG_PRESENT_MIDPOINT
 #define PREV FSR3FG_PRESENT_PREVIOUS
-/* A new frame at 30 Hz through FSR 3 with an agreed camera and no cut. */
-#define F30(v, present, why, id, reset) { 'F', v, K2, 1, 0, 1, present, FSR3FG_WHY_##why, 1, id, reset, 0, 0, 0 }
+/* A new frame at 30 Hz through FSR 3, no cut. */
+#define F30(v, present, why, id, reset) { 'F', v, K2, 1, 0, present, FSR3FG_WHY_##why, 1, id, reset, 0, 0, 0 }
 /* A new frame with every input given. */
-#define F(v, rate, fsr3, cut, cam, present, why, run, id, reset, sup, line) \
-    { 'F', v, rate, fsr3, cut, cam, present, FSR3FG_WHY_##why, run, id, reset, sup, line, 0 }
-#define REPEAT(v) { 'R', v, K2, 1, 0, 1, REAL, FSR3FG_WHY_REPEAT, 0, 0, 0, 0, 0, 0 }
-#define V(v, due) { 'V', v, K2, 0, 0, 0, REAL, FSR3FG_WHY_MIDPOINT, 0, 0, 0, 0, 0, due }
+#define F(v, rate, fsr3, cut, present, why, run, id, reset, sup, line) \
+    { 'F', v, rate, fsr3, cut, present, FSR3FG_WHY_##why, run, id, reset, sup, line, 0 }
+#define REPEAT(v) { 'R', v, K2, 1, 0, REAL, FSR3FG_WHY_REPEAT, 0, 0, 0, 0, 0, 0 }
+#define V(v, due) { 'V', v, K2, 0, 0, REAL, FSR3FG_WHY_MIDPOINT, 0, 0, 0, 0, 0, due }
 
 typedef struct {
     uint64_t midpoints, runs, resets, held_shown, superseded;
@@ -72,8 +72,8 @@ static const Row steady_30[] = {
 /* The detector settles on 30 after frames of no class: those show as they come and do not run
  * frame generation, but take frame IDs. The first 30 Hz frame resets and keeps the cadence. */
 static const Row enter_30[] = {
-    F(0, ACE_RATE_NONE, 1, 0, 1, REAL, NOT_30, 0, 0, 0, 0, 0), V(1, 0),
-    F(2, ACE_RATE_NONE, 1, 0, 1, REAL, NOT_30, 0, 0, 0, 0, 0), V(3, 0),
+    F(0, ACE_RATE_NONE, 1, 0, REAL, NOT_30, 0, 0, 0, 0, 0), V(1, 0),
+    F(2, ACE_RATE_NONE, 1, 0, REAL, NOT_30, 0, 0, 0, 0, 0), V(3, 0),
     F30(4, PREV, RESET, 3, 1), V(5, 1),
     F30(6, MID, MIDPOINT, 4, 0), V(7, 1),
 };
@@ -83,15 +83,8 @@ static const Row enter_30[] = {
 static const Row cut[] = {
     F30(0, REAL, RESET, 1, 1),
     F30(2, MID, MIDPOINT, 2, 0), V(3, 1),
-    F(4, K2, 1, 1, 1, PREV, CUT, 1, 3, 1, 0, 0), V(5, 1),
+    F(4, K2, 1, 1, PREV, CUT, 1, 3, 1, 0, 0), V(5, 1),
     F30(6, MID, MIDPOINT, 4, 0), V(7, 1),
-};
-
-/* A frame whose camera is not agreed: no midpoint, a reset, counted. */
-static const Row camera[] = {
-    F30(0, REAL, RESET, 1, 1),
-    F(2, K2, 1, 0, 0, PREV, CAMERA, 1, 2, 1, 0, 0), V(3, 1),
-    F30(4, MID, MIDPOINT, 3, 0), V(5, 1),
 };
 
 /* A frame that fell back to FSR 1: frame generation does not run on it, but it takes its frame ID,
@@ -99,23 +92,23 @@ static const Row camera[] = {
 static const Row fsr1_fallback[] = {
     F30(0, REAL, RESET, 1, 1),
     F30(2, MID, MIDPOINT, 2, 0), V(3, 1),
-    F(4, K2, 0, 0, 1, PREV, FSR1, 0, 0, 0, 0, 0), V(5, 1),
+    F(4, K2, 0, 0, PREV, FSR1, 0, 0, 0, 0, 0), V(5, 1),
     F30(6, PREV, RESET, 4, 1), V(7, 1),
     F30(8, MID, MIDPOINT, 5, 0), V(9, 1),
 };
 
 /* The first frame of the run fell back to FSR 1: nothing to show again, so it is shown as it comes. */
 static const Row first_fsr1[] = {
-    F(0, K2, 0, 0, 1, REAL, FSR1, 0, 0, 0, 0, 0), V(1, 0),
+    F(0, K2, 0, 0, REAL, FSR1, 0, 0, 0, 0, 0), V(1, 0),
     F30(2, PREV, RESET, 2, 1), V(3, 1),
     F30(4, MID, MIDPOINT, 3, 0), V(5, 1),
 };
 
 /* A 60 Hz title: refused with one line, frames shown as they come, frame generation never runs. */
 static const Row refused_60[] = {
-    F(0, K1, 1, 0, 1, REAL, REFUSED_60, 0, 0, 0, 0, 1), V(0, 0),
-    F(1, K1, 1, 0, 1, REAL, REFUSED_60, 0, 0, 0, 0, 0), V(1, 0),
-    F(2, K1, 1, 0, 1, REAL, REFUSED_60, 0, 0, 0, 0, 0), V(2, 0),
+    F(0, K1, 1, 0, REAL, REFUSED_60, 0, 0, 0, 0, 1), V(0, 0),
+    F(1, K1, 1, 0, REAL, REFUSED_60, 0, 0, 0, 0, 0), V(1, 0),
+    F(2, K1, 1, 0, REAL, REFUSED_60, 0, 0, 0, 0, 0), V(2, 0),
 };
 
 /* 30, then 60, then 30. The first 60 Hz flip arrives while a frame is held: it supersedes it, is
@@ -124,8 +117,8 @@ static const Row rate_change[] = {
     F30(0, REAL, RESET, 1, 1),
     F30(2, MID, MIDPOINT, 2, 0), V(3, 1),
     F30(4, MID, MIDPOINT, 3, 0),
-    F(5, K1, 1, 0, 1, REAL, REFUSED_60, 0, 0, 0, 1, 1), V(5, 0),
-    F(6, K1, 1, 0, 1, REAL, REFUSED_60, 0, 0, 0, 0, 0), V(6, 0),
+    F(5, K1, 1, 0, REAL, REFUSED_60, 0, 0, 0, 1, 1), V(5, 0),
+    F(6, K1, 1, 0, REAL, REFUSED_60, 0, 0, 0, 0, 0), V(6, 0),
     F30(7, PREV, RESET, 6, 1), V(8, 1),
     F30(9, MID, MIDPOINT, 7, 0), V(10, 1),
 };
@@ -135,7 +128,7 @@ static const Row rate_change[] = {
 static const Row superseded[] = {
     F30(0, REAL, RESET, 1, 1),
     F30(2, MID, MIDPOINT, 2, 0),
-    F(3, K2, 1, 0, 1, MID, MIDPOINT, 1, 3, 0, 1, 0), V(3, 0), V(4, 1),
+    F(3, K2, 1, 0, MID, MIDPOINT, 1, 3, 0, 1, 0), V(3, 0), V(4, 1),
 };
 
 /* A repeat flip while a frame is held shows that frame now, so its VBLANK has nothing to show; the
@@ -149,10 +142,10 @@ static const Row repeat[] = {
 
 /* 20 Hz, variable and static titles show each frame as it comes, with no refusal line. */
 static const Row other_rates[] = {
-    F(0, K3, 1, 0, 1, REAL, NOT_30, 0, 0, 0, 0, 0), V(1, 0),
-    F(3, K3, 1, 0, 1, REAL, NOT_30, 0, 0, 0, 0, 0), V(4, 0),
-    F(6, ACE_RATE_VARIABLE, 1, 0, 1, REAL, NOT_30, 0, 0, 0, 0, 0),
-    F(7, ACE_RATE_STATIC, 1, 0, 1, REAL, NOT_30, 0, 0, 0, 0, 0), V(8, 0),
+    F(0, K3, 1, 0, REAL, NOT_30, 0, 0, 0, 0, 0), V(1, 0),
+    F(3, K3, 1, 0, REAL, NOT_30, 0, 0, 0, 0, 0), V(4, 0),
+    F(6, ACE_RATE_VARIABLE, 1, 0, REAL, NOT_30, 0, 0, 0, 0, 0),
+    F(7, ACE_RATE_STATIC, 1, 0, REAL, NOT_30, 0, 0, 0, 0, 0), V(8, 0),
 };
 
 #define SCENARIO(rows, mid, runs, resets, held, sup) \
@@ -161,7 +154,6 @@ static const Scenario k_scenarios[] = {
     SCENARIO(steady_30, 3, 4, 1, 3, 0),
     SCENARIO(enter_30, 1, 2, 1, 2, 0),
     SCENARIO(cut, 2, 4, 2, 3, 0),
-    SCENARIO(camera, 1, 3, 2, 2, 0),
     SCENARIO(fsr1_fallback, 2, 4, 2, 4, 0),
     SCENARIO(first_fsr1, 1, 2, 1, 2, 0),
     SCENARIO(refused_60, 0, 0, 0, 0, 0),
@@ -190,7 +182,7 @@ static void run_scenario(const Scenario *sc) {
             EXPECT(sc->name, i, "vblank due", fsr3_fg_state_vblank(&s, r->vcount), r->due);
             continue;
         }
-        Fsr3FgFlip f = { r->kind == 'F', r->rate, r->fsr3, r->cut, r->camera };
+        Fsr3FgFlip f = { r->kind == 'F', r->rate, r->fsr3, r->cut };
         const Fsr3FgDecision d = fsr3_fg_state_flip(&s, &f, r->vcount);
         EXPECT(sc->name, i, "present", d.present, r->present);
         EXPECT(sc->name, i, "why", d.why, r->why);

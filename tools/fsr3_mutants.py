@@ -259,10 +259,10 @@ FG_MUTANTS: list[tuple[str, str, str, str, str]] = [
      "    const int at_30 = f->rate == ACE_RATE_K2;\n    d.run = at_30 && f->fsr3;\n"
      "    const uint64_t id = d.run ? s->next_frame_id++ : s->next_frame_id;\n",
      "FAIL fsr1_fallback row 5: frame id"),
-    ("G-S: the camera ignored", FG_STATE,
-     "d.reset = !s->ran_previous || f->cut || !f->camera;",
+    ("G-S: a cut that does not reset", FG_STATE,
      "d.reset = !s->ran_previous || f->cut;",
-     "FAIL camera row 1: reset"),
+     "d.reset = !s->ran_previous;",
+     "FAIL cut row 3: reset"),
     ("G-S: the 60 Hz refusal printed at every flip", FG_STATE,
      "if (d.why == FSR3FG_WHY_REFUSED_60 && !s->refused_line_said) {",
      "if (d.why == FSR3FG_WHY_REFUSED_60) {",

@@ -39,7 +39,7 @@ Fsr3FgDecision fsr3_fg_state_flip(Fsr3FgState *s, const Fsr3FgFlip *f, uint32_t 
     d.run = at_30 && f->fsr3;
     if (d.run) {
         d.frame_id = id;
-        d.reset = !s->ran_previous || f->cut || !f->camera;
+        d.reset = !s->ran_previous || f->cut;
         s->runs++;
         if (d.reset) s->resets++;
     }
@@ -56,8 +56,6 @@ Fsr3FgDecision fsr3_fg_state_flip(Fsr3FgState *s, const Fsr3FgFlip *f, uint32_t 
         d.why = FSR3FG_WHY_RESET;
     } else if (f->cut) {
         d.why = FSR3FG_WHY_CUT;
-    } else if (!f->camera) {
-        d.why = FSR3FG_WHY_CAMERA;
     } else {
         d.why = FSR3FG_WHY_MIDPOINT;
     }
@@ -86,7 +84,7 @@ int fsr3_fg_state_vblank(Fsr3FgState *s, uint32_t vcount) {
 
 const char *fsr3_fg_why_name(Fsr3FgWhy why) {
     static const char *const names[FSR3FG_WHY_COUNT] = {
-        "midpoint", "repeat", "refused_60", "not_30", "fsr1_fallback", "reset", "cut", "camera_ambiguous",
+        "midpoint", "repeat", "refused_60", "not_30", "fsr1_fallback", "reset", "cut",
     };
     return (unsigned)why < FSR3FG_WHY_COUNT ? names[why] : "?";
 }

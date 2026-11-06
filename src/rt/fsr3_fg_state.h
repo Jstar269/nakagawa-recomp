@@ -14,8 +14,11 @@
  * - It runs on every new real frame at 30 Hz that went through FSR 3, so the next frame always has a
  *   predecessor. Frame IDs step by exactly one per new real frame.
  * - A run resets when frame generation did not run on the previous real frame (the first frame, a
- *   frame that fell back to FSR 1, a frame at another rate), at a cut, and when the frame's camera is
- *   not agreed. A reset's output is never shown.
+ *   frame that fell back to FSR 1, a frame at another rate) and at a cut. A reset's output is never
+ *   shown. FSR 3.1.6 reads no camera vectors (its prepare description carries them, and neither the
+ *   prepare nor the dispatch reads them), so a frame without an agreed camera is not a reset: the
+ *   projection it does read is the one FSR 3's upscaler ran with, and a frame without one falls back
+ *   to FSR 1.
  * - A 30 Hz pair with no generated image keeps the cadence: its flip shows the previous real frame
  *   again and the next VBLANK shows the new one, as Smooth Motion does at a cut. Every such pair is
  *   counted by reason.
@@ -35,7 +38,6 @@ typedef struct {
     AceRate rate;  /* the 30 Hz detector's stable class at this flip */
     int fsr3;      /* the frame went through FSR 3's upscaler and has its shared resources (0: FSR 1) */
     int cut;       /* the frame is a different picture from the previous real frame */
-    int camera;    /* the frame's camera is agreed (MotionFrame or the title hint) */
 } Fsr3FgFlip;
 
 typedef enum {
@@ -53,7 +55,6 @@ typedef enum {
     FSR3FG_WHY_FSR1,         /* the frame fell back to FSR 1: nothing to generate from */
     FSR3FG_WHY_RESET,        /* frame generation did not run on the previous real frame */
     FSR3FG_WHY_CUT,          /* a cut between the two frames */
-    FSR3FG_WHY_CAMERA,       /* the frame's camera is not agreed (camera_ambiguous) */
     FSR3FG_WHY_COUNT
 } Fsr3FgWhy;
 
