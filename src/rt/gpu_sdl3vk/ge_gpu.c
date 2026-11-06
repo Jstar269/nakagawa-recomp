@@ -118,6 +118,7 @@
 #include "../perf.h"
 #include "../ace.h"   /* Ace Mode: the 30 Hz detector counts draws per target (Ace on only) */
 #include "tex_scale.h"   /* texture scaling (xBRZ) and the smart 2D filter (Ace on only) */
+#include "pipeline_cache.h"   /* the pipeline cache's file on disk (#2149) */
 
 #include <vulkan/vulkan.h>
 #include <SDL3/SDL_timer.h>
@@ -1594,6 +1595,175 @@ static ReadbackSlot *readback_acquire(void) {
     return NULL;
 }
 
+/* ---- the pipeline cache on disk (#2149) ------------------------------------------------
+ *
+ * Every pipeline is created through one VkPipelineCache. gegpu_init loads it from
+ * <data root>/cache/gegpu (pipeline_cache.h checks the file first), and gegpu_shutdown writes
+ * it back when the driver's data changed. It changes compile time only: the driver builds the
+ * same pipeline from the same create info, so no rendered pixel depends on it.
+ *
+ *   SR_GPU_PIPELINE_CACHE  unset, empty, 1 or on: on. 0 or off: off. Anything else is
+ *                          refused, and the run goes without it.
+ *   SR_USER_DATA_ROOT      the data root the launcher passes (portable mode included); unset,
+ *                          the platform's per-user cache folder holds gegpu/ instead.
+ *
+ * Stamps: one start line (loaded, none yet, discarded with its reason, off, or unavailable)
+ * and one exit line (saved, unchanged or not saved, and the time pipeline creation took).
+ * A file that fails a check is never handed to the driver; a run never stops for the cache. */
+static VkPipelineCache s_pcache = VK_NULL_HANDLE;
+static NkPcacheKey s_pcache_key;
+static char s_pcache_name[64];             /* the file name, for stamps (never the folder) */
+static char s_pcache_path[4096];
+static int s_pcache_loaded = 0;            /* the cache started from the file's data */
+static size_t s_pcache_loaded_n = 0;
+static uint64_t s_pcache_loaded_hash = 0;
+static unsigned long s_pcache_discards = 0;     /* files refused at open (selftest) */
+static unsigned long s_pcache_creates = 0;      /* pipelines created this run... */
+static uint64_t s_pcache_create_ns = 0;         /* ...and the time vkCreateGraphicsPipelines took */
+
+/* SR_GPU_PIPELINE_CACHE: 1 on, 0 off, -1 refused. */
+static int pcache_mode_parse(const char *v) {
+    if (!v || !v[0] || strcmp(v, "1") == 0 || strcmp(v, "on") == 0) return 1;
+    if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) return 0;
+    return -1;
+}
+
+/* The shader set the cache was made for: the renderer's SPIR-V modules, as embedded. */
+static uint64_t pcache_shader_set(void) {
+    uint64_t h = 0;
+    uint64_t n[3] = { sizeof(k_vert_spv), sizeof(k_frag_spv), sizeof(k_tnl_vert_spv) };
+    h = nk_pcache_fnv1a64(h, n, sizeof n);
+    h = nk_pcache_fnv1a64(h, k_vert_spv, sizeof(k_vert_spv));
+    h = nk_pcache_fnv1a64(h, k_frag_spv, sizeof(k_frag_spv));
+    return nk_pcache_fnv1a64(h, k_tnl_vert_spv, sizeof(k_tnl_vert_spv));
+}
+
+static void pcache_open(VkPhysicalDevice pdev) {
+    s_pcache_loaded = 0;
+    s_pcache_loaded_n = 0;
+    s_pcache_loaded_hash = 0;
+    s_pcache_creates = 0;
+    s_pcache_create_ns = 0;
+    s_pcache_name[0] = s_pcache_path[0] = 0;
+    const char *mv = getenv("SR_GPU_PIPELINE_CACHE");
+    const int mode = pcache_mode_parse(mv);
+    if (mode < 0) {
+        fprintf(stderr, "gegpu: pipeline cache: refused (SR_GPU_PIPELINE_CACHE=%s: the values are on, 1, off "
+                        "and 0): running without it\n", mv);
+        return;
+    }
+    if (!mode) {
+        fprintf(stderr, "gegpu: pipeline cache: off (SR_GPU_PIPELINE_CACHE=%s)\n", mv);
+        return;
+    }
+    VkPhysicalDeviceProperties pp;
+    vkGetPhysicalDeviceProperties(pdev, &pp);
+    memset(&s_pcache_key, 0, sizeof s_pcache_key);
+    s_pcache_key.vendor_id = pp.vendorID;
+    s_pcache_key.device_id = pp.deviceID;
+    s_pcache_key.driver_version = pp.driverVersion;
+    memcpy(s_pcache_key.uuid, pp.pipelineCacheUUID, 16);
+    s_pcache_key.shader_set = pcache_shader_set();
+
+    /* The folder: <data root>/cache/gegpu, where the data root is SR_USER_DATA_ROOT (the
+     * launcher's, so portable mode reaches the game process), or, unset, the platform's
+     * per-user cache folder holds gegpu/. A data root that is set but unusable is never
+     * replaced by another folder: the run goes without the cache. */
+    char dir[4096], root[4096];
+    const char sep = nk_platform_path_separator();
+    const char *dir_why = "its folder could not be made";
+    int dir_ok;
+    const int root_rc = nk_pcache_user_data_root(root, sizeof root);
+    if (root_rc > 0) {
+        dir_ok = snprintf(dir, sizeof dir, "%s%ccache%cgegpu", root, sep, sep) < (int)sizeof dir;
+    } else if (root_rc == 0) {
+        dir_ok = nk_platform_get_path(NK_PATH_CACHE, root, sizeof root) &&
+                 snprintf(dir, sizeof dir, "%s%cgegpu", root, sep) < (int)sizeof dir;
+    } else {
+        dir_ok = 0;
+        dir_why = "SR_USER_DATA_ROOT is set but is not an absolute folder";
+    }
+    if (!dir_ok || !nk_platform_mkdir_p(dir) || !nk_pcache_file_name(&s_pcache_key, s_pcache_name, sizeof s_pcache_name) ||
+        snprintf(s_pcache_path, sizeof s_pcache_path, "%s%c%s", dir, sep, s_pcache_name) >= (int)sizeof s_pcache_path) {
+        fprintf(stderr, "gegpu: pipeline cache: unavailable (%s): running without it\n", dir_why);
+        s_pcache_name[0] = s_pcache_path[0] = 0;
+        return;
+    }
+
+    uint8_t *buf = NULL;
+    size_t n = 0, dn = 0;
+    const uint8_t *data = NULL;
+    const char *why = "unknown";
+    int have = nk_pcache_read_file(s_pcache_path, &buf, &n, &why) &&
+               nk_pcache_check(buf, n, &s_pcache_key, &data, &dn, &why);
+    VkPipelineCacheCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+    if (have) { ci.initialDataSize = dn; ci.pInitialData = data; }
+    VkResult r = vkCreatePipelineCache(s_dev, &ci, NULL, &s_pcache);
+    if (r != VK_SUCCESS && have) {
+        have = 0;
+        why = "the driver refused its data";
+        ci.initialDataSize = 0; ci.pInitialData = NULL;
+        r = vkCreatePipelineCache(s_dev, &ci, NULL, &s_pcache);
+    }
+    if (r != VK_SUCCESS) {
+        fprintf(stderr, "gegpu: pipeline cache: unavailable (vkCreatePipelineCache %d): running without it\n", (int)r);
+        s_pcache = VK_NULL_HANDLE;
+        free(buf);
+        return;
+    }
+    if (have) {
+        s_pcache_loaded = 1;
+        s_pcache_loaded_n = dn;
+        s_pcache_loaded_hash = nk_pcache_fnv1a64(0, data, dn);
+        fprintf(stderr, "gegpu: pipeline cache: loaded %zu bytes (%s)\n", dn, s_pcache_name);
+    } else if (strcmp(why, "none yet") == 0) {
+        fprintf(stderr, "gegpu: pipeline cache: none yet (%s): starting empty\n", s_pcache_name);
+    } else {
+        s_pcache_discards++;
+        fprintf(stderr, "gegpu: pipeline cache: discarded %s (%s): starting empty\n", s_pcache_name, why);
+    }
+    free(buf);
+}
+
+/* Writes the cache back when `save` and the driver's data changed, prints the exit line and
+ * destroys the cache. The device must be idle. */
+static void pcache_close(int save) {
+    if (!s_pcache) return;
+    char result[160];
+    snprintf(result, sizeof result, "not saved");
+    size_t sz = 0;
+    void *data = NULL;
+    if (save) {
+        VkResult r = vkGetPipelineCacheData(s_dev, s_pcache, &sz, NULL);
+        if (r == VK_SUCCESS && sz) {
+            data = malloc(sz);
+            r = data ? vkGetPipelineCacheData(s_dev, s_pcache, &sz, data) : VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+        const char *why = NULL;
+        if (r != VK_SUCCESS || !data) {
+            snprintf(result, sizeof result, "not saved: the driver returned no data (%d)", (int)r);
+        } else if (s_pcache_loaded && sz == s_pcache_loaded_n &&
+                   nk_pcache_fnv1a64(0, data, sz) == s_pcache_loaded_hash) {
+            snprintf(result, sizeof result, "unchanged, %zu bytes", sz);
+        } else {
+            size_t fn = 0;
+            uint8_t *file = nk_pcache_pack(&s_pcache_key, data, sz, &fn);
+            if (!file) why = "out of memory or too large";
+            if (file && nk_pcache_write_file(s_pcache_path, file, fn, &why))
+                snprintf(result, sizeof result, "saved %zu bytes", sz);
+            else
+                snprintf(result, sizeof result, "not saved: %s", why ? why : "unknown");
+            free(file);
+        }
+    }
+    fprintf(stderr, "gegpu: pipeline cache: exit (%s, %s; %lu pipelines created in %.1f ms)\n",
+            s_pcache_loaded ? "started from the file" : "started empty", result, s_pcache_creates,
+            (double)s_pcache_create_ns / 1e6);
+    free(data);
+    vkDestroyPipelineCache(s_dev, s_pcache, NULL);
+    s_pcache = VK_NULL_HANDLE;
+}
+
 /* ---- pipelines ------------------------------------------------------------------------ */
 
 static VkPipeline pipe_create(const PipeKey *k) {
@@ -1680,7 +1850,10 @@ static VkPipeline pipe_create(const PipeKey *k) {
 
     VkPipeline p = VK_NULL_HANDLE;
     uint64_t perf_started = sr_perf_now_ns();
-    VkResult r = vkCreateGraphicsPipelines(s_dev, VK_NULL_HANDLE, 1, &pci, NULL, &p);
+    const uint64_t create_started = SDL_GetTicksNS();
+    VkResult r = vkCreateGraphicsPipelines(s_dev, s_pcache, 1, &pci, NULL, &p);
+    s_pcache_create_ns += SDL_GetTicksNS() - create_started;
+    if (r == VK_SUCCESS) s_pcache_creates++;
     if (perf_started) sr_perf_vulkan_pipeline(perf_started);
     if (r != VK_SUCCESS) fprintf(stderr, "gegpu: pipeline create failed: %d\n", (int)r);
     if (s_cpu_profile) {
@@ -6284,6 +6457,9 @@ int gegpu_init(void) {
 
     /* Last, so a failed init leaves no query pool and the switch off. */
     if (sr_perf_gpu_timestamps_requested()) (void)ts_setup(vi.queue_family);
+    /* After every step that can fail, and before the first pipeline (pipe_get runs only once
+     * the renderer is ready), so the cache is either used for every pipeline or not made. */
+    pcache_open((VkPhysicalDevice)vi.physical);
     s_readback_commit_failures = 0;
     s_ready = 1;
     ge_set_gpu_hooks(&k_hooks);
@@ -6316,6 +6492,7 @@ void gegpu_shutdown(void) {
      * object that a recorded command or descriptor can reference. */
     (void)vkDeviceWaitIdle(s_dev);
     stats_emit(1);
+    pcache_close(1);   /* the device is idle: every pipeline this run made is in the cache */
     if (s_ts_on) {
         /* The device is idle: the recordings still marked in flight have their times too. */
         for (uint32_t i = 0; i < SUBMIT_FRAMES; i++)

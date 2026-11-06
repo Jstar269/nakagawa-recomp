@@ -154,6 +154,7 @@ PUBLIC_TARGETS := \
 	gpu-snapsync-selftest \
 	gpu-ace-selftest \
 	tex-scale-selftest \
+	pipeline-cache-selftest \
 	tex-scale-gate-mutant \
 	gpu-texscale-selftest \
 	gpu-texscale-mutant \
@@ -330,6 +331,7 @@ HELP_DESCRIPTION_gpu-coherence-selftest-snapbar-mutants := prove the GPU coheren
 HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
 HELP_DESCRIPTION_gpu-ace-selftest := run Ace Mode's texture filtering selftest on a real Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_tex-scale-selftest := run the xBRZ texture scaling selftest against the pinned upstream goldens (no GPU)
+HELP_DESCRIPTION_pipeline-cache-selftest := run the GPU pipeline cache file checks and their atomic write (no GPU)
 HELP_DESCRIPTION_tex-scale-gate-mutant := prove the texture scaling selftest kills a build without the Ace gate
 HELP_DESCRIPTION_gpu-texscale-selftest := run texture scaling and the smart 2D filter on a real Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_gpu-texscale-mutant := prove the texture scaling selftest kills a cache that binds a stale scaled copy

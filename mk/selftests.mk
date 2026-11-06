@@ -736,7 +736,10 @@ asset-index-selftest:
 # same scale check (guest VRAM always, the shown images for the native twin), `--twin native`
 # runs the whole suite with every twin checked against its image after each case, twin-gate
 # checks the switch's values and its Ace gate (`--authentic`), and twin-alloc-fail injects a
-# failed twin allocation, and gpu-timestamps runs once more with the twin shown.
+# failed twin allocation, and gpu-timestamps runs once more with the twin shown. The pipeline
+# cache (#2149) runs last, as three processes over one empty data root: a cold run saves the
+# cache, a warm run must start from it and draw the same frames, and a reject run re-opens it
+# over damaged, foreign and other-driver files and with the switch off or refused.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
@@ -786,7 +789,13 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --twin yes --case twin-gate
 	$(GPU_COHERENCE_BIN) --twin 1 --scale 4 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
 	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
-	@rc=0; $(GPU_COHERENCE_BIN) --twin 1 --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest twin gpu-timestamps (exit 77; the reason is printed above)"; 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest twin gpu-timestamps (exit $$rc)"; exit $$rc; fi
+	@rc=0; $(GPU_COHERENCE_BIN) --twin 1 --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; \
+	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest twin gpu-timestamps (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest twin gpu-timestamps (exit $$rc)"; exit $$rc; fi
+	@"$(PYTHON)" -c "import shutil; shutil.rmtree('$(BUILD_DIR)/pipeline_cache_test', ignore_errors=True)"
+	$(GPU_COHERENCE_BIN) --pipeline-cache $(BUILD_DIR)/pipeline_cache_test --case pipeline-cache-cold
+	$(GPU_COHERENCE_BIN) --pipeline-cache $(BUILD_DIR)/pipeline_cache_test --case pipeline-cache-warm
+	$(GPU_COHERENCE_BIN) --pipeline-cache $(BUILD_DIR)/pipeline_cache_test --case pipeline-cache-reject
 	@$(MAKE) --no-print-directory gpu-coherence-selftest-snapbar-mutants
 
 # gpu-coherence-selftest-snapbar-mutants — the submit-batch case must kill each
@@ -846,6 +855,19 @@ tex-scale-selftest:
 		$(LIBS) -lm && $(BUILD_DIR)/tex_scale_selftest$(EXE_EXT)
 
 native-core-tests: tex-scale-selftest
+
+# pipeline-cache-selftest - the checks a Vulkan pipeline cache file passes before its data reaches
+# the driver (src/rt/gpu_sdl3vk/pipeline_cache.h, #2149), with no GPU: another device, driver,
+# cache UUID, shader set or schema, foreign, short, truncated, oversized and corrupt files, and the
+# driver's own header, each refused with its reason; then the write-through-rename round trip.
+pipeline-cache-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/rt -Isrc/core \
+		-o $(BUILD_DIR)/pipeline_cache_selftest$(EXE_EXT) \
+		src/rt/gpu_sdl3vk/pipeline_cache_selftest.c $(PLAYER_PLATFORM_SRC) $(PLAYER_PLATFORM_LIBS)
+	$(BUILD_DIR)/pipeline_cache_selftest$(EXE_EXT) $(BUILD_DIR)/pipeline_cache_scratch
+
+native-core-tests: pipeline-cache-selftest
 
 # tex-scale-gate-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_NO_ACE_GATE, which lets
 # an authentic start read SR_TEX_SCALE and SR_SMART_2D. It passes only when the settings cell fails
