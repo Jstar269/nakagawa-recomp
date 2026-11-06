@@ -7193,14 +7193,15 @@ static int ahc_sprite(float x0, float y0, float x1, float y1, uint32_t c) {
     return hook_sprite(&p0, &p1, 0);
 }
 
-/* Presents `base` and returns 1 when the show pass saw that target's image. */
+/* Presents `base` and returns 1 when the show pass saw the image the present showed: the target's own,
+ * or its host twin (#2050). gegpu_present keys the HUD mask by that image. */
 static int ahc_present(uint32_t base, const char *step) {
     Target *t = target_find_by_fba(base & 0x00FFFFFFu);
     memset(&s_ahc, 0, sizeof(s_ahc));
     int pr = gegpu_present(base, 3, 512u);
-    if (pr != GEGPU_PRESENT_SHOWN || !t || s_ahc.calls != 1 || s_ahc.src != t->img) {
+    if (pr != GEGPU_PRESENT_SHOWN || !t || s_ahc.calls != 1 || s_ahc.src != present_image(t)) {
         fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: %s: present %d, show pass calls %d, "
-                        "image %s\n", step, pr, s_ahc.calls, t && s_ahc.src == t->img ? "right" : "wrong");
+                        "image %s\n", step, pr, s_ahc.calls, t && s_ahc.src == present_image(t) ? "right" : "wrong");
         return 0;
     }
     return 1;

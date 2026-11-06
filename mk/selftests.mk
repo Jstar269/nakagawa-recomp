@@ -719,7 +719,7 @@ asset-index-selftest:
 # same scale check (guest VRAM always, the shown images for the native twin), `--twin native`
 # runs the whole suite with every twin checked against its image after each case, twin-gate
 # checks the switch's values and its Ace gate (`--authentic`), and twin-alloc-fail injects a
-# failed twin allocation.
+# failed twin allocation, and gpu-timestamps runs once more with the twin shown.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
@@ -769,6 +769,7 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --twin yes --case twin-gate
 	$(GPU_COHERENCE_BIN) --twin 1 --scale 4 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
 	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
+	@rc=0; $(GPU_COHERENCE_BIN) --twin 1 --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest twin gpu-timestamps (exit 77; the reason is printed above)"; 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest twin gpu-timestamps (exit $$rc)"; exit $$rc; fi
 	@$(MAKE) --no-print-directory gpu-coherence-selftest-snapbar-mutants
 
 # gpu-coherence-selftest-snapbar-mutants — the submit-batch case must kill each
@@ -797,7 +798,9 @@ gpu-coherence-selftest-snapbar-mutants: shader-verify $(RT_GE_O)
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
-# target-scoped synchronization closes the generation gap and rejects unsafe geometry.
+# target-scoped synchronization closes the generation gap and rejects unsafe geometry. It runs
+# again with the host twin (#2050) shown, at scales 1 and 2, so the Ace HUD mask stays keyed by
+# the image the present showed.
 # gpu-ace-selftest - Ace Mode's texture filtering (src/rt/ace.h) on a real device: SR_ACE asks for
 # 16x before the device is made; through-mode draws keep the measured PSP sample points and get
 # no anisotropic sampler, a transformed linear draw gets one, a nearest one does not. Exit 77
@@ -819,6 +822,8 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c src/rt/gpu_sdl3vk/ace_hud.c $(LIBS)
 	$(BUILD_DIR)/gpu_snapsync_selftest.exe
+	$(BUILD_DIR)/gpu_snapsync_selftest.exe --twin 1
+	$(BUILD_DIR)/gpu_snapsync_selftest.exe --twin 1 --scale 2
 
 # gpu-capture-selftest — deterministic present-source capture regression (issue #57): the
 # production present path is armed and driven with synthetic pixels; the published P6 PPMs
