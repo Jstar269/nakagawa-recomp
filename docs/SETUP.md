@@ -129,11 +129,11 @@ are done with it.
 
 | Folder | Holds | To remove it |
 | --- | --- | --- |
-| `data` | the library, built games and their build cache, imported discs and decrypted files (`titles\<DISC_ID>`, `discs\<DISC_ID>`), imported fonts, downloaded build tools | **Remove from library** on a game removes what Nakagawa built for it; its disc copy and decrypted files go only when you tick them, and the size is shown first. **Settings > Factory reset** moves the folders aside instead of deleting them. |
-| `cache` | the platform cache folder | **Settings > Build tools and cache** deletes the shared library cache; or delete the folder |
-| `saves` | each game's Memory Stick folder | **Remove from library** keeps it unless you tick the saves (it backs them up first); otherwise delete the folder by hand |
-| `config` | `settings.json` | **Factory reset**, or delete the folder |
-| `logs` | the player's, the games' and the builds' logs, in one folder | **Settings** opens it; delete what you like |
+| `data/` | the library, built games and their build cache, imported discs and decrypted files (`titles\<DISC_ID>`, `discs\<DISC_ID>`), imported fonts, downloaded build tools | **Remove from library** on a game removes what Nakagawa built for it; its disc copy and decrypted files go only when you tick them, and the size is shown first. **Settings > Factory reset** moves the folders aside instead of deleting them. |
+| `cache/` | the platform cache folder | **Settings > Build tools and cache** deletes the shared library cache; or delete the folder |
+| `saves/` | each game's Memory Stick folder | **Remove from library** keeps it unless you tick the saves (it backs them up first); otherwise delete the folder by hand |
+| `config/` | `settings.json` | **Factory reset**, or delete the folder |
+| `logs/` | the player's, the games' and the builds' logs, in one folder | **Settings** opens it; delete what you like |
 
 Your disc images on your own drives are never touched. To remove everything Nakagawa ever wrote, uninstall the
 program as above and then delete `%LOCALAPPDATA%\Nakagawa`. Factory reset leaves a `-backup-<time>` copy of each
