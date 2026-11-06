@@ -1060,6 +1060,11 @@ def run_quit(build_dir: Path) -> int:
 #: load: it has been seen at vblanks 1 to 3.
 VRAMDUMP_WINDOW = 8
 VRAMDUMP_FIRST_VBLANK = 1
+#: The latest vblank the capture run may present its first frame at. Measured on this fixture:
+#: vblank 1 on an idle machine, 2 or 3 with 16 busy processes competing (80 runs) and in both
+#: hosted failures of #2200. 4 leaves a margin; a presenter that slips to 7 is a regression to
+#: report, not a race to absorb, even though the 1..8 window would still hold it.
+VRAMDUMP_FIRST_PRESENT_MAX = 4
 
 
 def first_presented_vblank(output: str) -> int | None:
@@ -1068,7 +1073,8 @@ def first_presented_vblank(output: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def vramdump_capture_failure(output: str, window: range) -> str | None:
+def vramdump_capture_failure(output: str, window: range,
+                             latest_first_present: int = VRAMDUMP_FIRST_PRESENT_MAX) -> str | None:
     """Why a capture run's output does not prove a present-aligned VRAM capture, or None.
 
     Which vblank a run presents first is not fixed: it moves with how busy the machine is, so
@@ -1088,6 +1094,9 @@ def vramdump_capture_failure(output: str, window: range) -> str | None:
     if first_presented is None or first_presented not in window:
         return (f"the capture run's first presented vblank ({first_presented}) is not in the "
                 f"requested window {first}..{last}, so its first-frame PPM has no VRAM capture")
+    if first_presented > latest_first_present:
+        return (f"the capture run presented its first frame at vblank {first_presented}, later than "
+                f"the {latest_first_present} this fixture has been seen to need under load")
     if not passed:
         return (f"the requested window {first}..{last} presented vblanks "
                 f"{sorted(presented & set(window))} but produced no VRAM capture")
@@ -1102,6 +1111,48 @@ def vramdump_capture_failure(output: str, window: range) -> str | None:
         return (f"the first presented vblank {first_presented} produced no VRAM capture "
                 f"(captured {sorted(passed)})")
     return None
+
+
+def first_frame_vram_sidecar(capture_dir: Path, first_presented: int, passes: int,
+                             expected_rgb: bytes) -> Path:
+    """The sidecar of the capture run's first presented vblank, once it proves that frame.
+
+    ``expected_rgb`` is the 480x272 RGB the host sink wrote for that same first present. The
+    sidecar of exactly that vblank must carry the display framebuffer's address, stride and format
+    and hold those pixels, and the run must have written one sidecar per reported PASS. Another
+    vblank's sidecar that happens to match does not stand in for it (#2200).
+    """
+    sidecars = sorted(capture_dir.glob("vram_*.json"))
+    if not sidecars:
+        raise RuntimeError("no selected vblank produced a VRAM sidecar")
+    if len(sidecars) != passes:
+        raise RuntimeError(f"{passes} vblanks reported PASS but {len(sidecars)} VRAM sidecars exist")
+    candidate = capture_dir / f"vram_{first_presented}.json"
+    if not candidate.is_file():
+        raise RuntimeError(f"the first presented vblank {first_presented} has no VRAM sidecar")
+    sidecar = json.loads(candidate.read_text(encoding="utf-8"))
+    display = sidecar.get("display_framebuffer", {})
+    if (display.get("addr") != f"0x{FRAMEBUFFER:08x}" or
+            display.get("stride") != STRIDE or display.get("format_code") != PIXEL_FORMAT):
+        raise RuntimeError(f"captured display framebuffer metadata mismatch: {display}")
+    raw_image = (candidate.parent / sidecar["vram"]["image_file"]).read_bytes()
+    row_bytes = STRIDE * 4
+    for y in range(DISPLAY_HEIGHT):
+        row = raw_image[y * row_bytes:y * row_bytes + DISPLAY_WIDTH * 4]
+        rgb = bytearray(DISPLAY_WIDTH * 3)
+        rgb[0::3], rgb[1::3], rgb[2::3] = row[0::4], row[1::4], row[2::4]
+        if bytes(rgb) != expected_rgb[y * DISPLAY_WIDTH * 3:(y + 1) * DISPLAY_WIDTH * 3]:
+            samples = []
+            for sample_y in (0, 128, 263, 264, 265, 271):
+                raw_at = sample_y * row_bytes
+                ppm_at = sample_y * DISPLAY_WIDTH * 3
+                samples.append(f"y{sample_y}:vram={raw_image[raw_at:raw_at + 4].hex()}"
+                               f"/ppm={expected_rgb[ppm_at:ppm_at + 3].hex()}")
+            raise RuntimeError(
+                f"the VRAM capture of the first presented vblank {first_presented} "
+                f"({len(sidecars)} captured) does not match the offscreen presented PPM at row {y}; "
+                + ",".join(samples))
+    return candidate
 
 
 def run_vramdump(build_dir: Path) -> int:
@@ -1172,7 +1223,14 @@ def run_vramdump(build_dir: Path) -> int:
         capture_ppm = capture_dir / "frame_first.ppm"
         if not baseline_ppm.is_file() or not capture_ppm.is_file():
             raise RuntimeError("offscreen host sink did not publish its first-frame PPM")
-        if baseline_ppm.read_bytes() != capture_ppm.read_bytes():
+        # Each run's first frame must be exactly one guest frame of the stripe pattern (the one
+        # its first pixel names). They are the same frame in every run measured, 0, whatever
+        # vblank was presented first; checking each against its own frame keeps that a fact the
+        # check verifies, not one it assumes (#2200).
+        frames = int(_read_manifest(build_dir / "fixture")["frames"])
+        baseline_frame = _require_exact_present_pixels(baseline_ppm, frames, "baseline")
+        capture_frame = _require_exact_present_pixels(capture_ppm, frames, "capture")
+        if baseline_frame == capture_frame and baseline_ppm.read_bytes() != capture_ppm.read_bytes():
             raise RuntimeError("enabling SR_VRAMDUMP changed the presented PPM bytes")
         captured_output = captured.stdout + captured.stderr
         if failure := vramdump_capture_failure(captured_output, window):
@@ -1204,60 +1262,16 @@ def run_vramdump(build_dir: Path) -> int:
                 (headless_dir / "capture").glob("vram_*")):
             raise RuntimeError("a run with no presenter reported a VRAM capture")
 
-        sidecars = sorted((capture_dir / "capture").glob("vram_*.json"))
-        if not sidecars:
-            raise RuntimeError("no selected vblank produced a VRAM sidecar")
         passes = len(re.findall(r"VRAMDUMP vblank=\d+ PASS", captured_output))
-        if len(sidecars) != passes:
-            raise RuntimeError(f"{passes} vblanks reported PASS but {len(sidecars)} VRAM sidecars exist")
         ppm_header = b"P6\n480 272\n255\n"
-        ppm = baseline_ppm.read_bytes()
+        ppm = capture_ppm.read_bytes()
         if not ppm.startswith(ppm_header) or len(ppm) - len(ppm_header) != 480 * 272 * 3:
             raise RuntimeError("offscreen host-sink output is not the expected 480x272 P6 frame")
         expected_rgb = ppm[len(ppm_header):]
-        matching_sidecar = None
         first_presented = first_presented_vblank(captured_output)
-        first_sidecar_path = capture_dir / "capture" / f"vram_{first_presented}.json"
-        if not first_sidecar_path.is_file():
-            raise RuntimeError(f"the first presented vblank {first_presented} has no VRAM sidecar")
-        for candidate in (first_sidecar_path,):
-            candidate_sidecar = json.loads(candidate.read_text(encoding="utf-8"))
-            display = candidate_sidecar.get("display_framebuffer", {})
-            if (display.get("addr") != f"0x{FRAMEBUFFER:08x}" or
-                    display.get("stride") != STRIDE or display.get("format_code") != PIXEL_FORMAT):
-                raise RuntimeError(f"captured display framebuffer metadata mismatch: {display}")
-            raw_path = candidate.parent / candidate_sidecar["vram"]["image_file"]
-            raw_image = raw_path.read_bytes()
-            matches = True
-            for y in range(272):
-                for x in range(480):
-                    raw_offset = (y * STRIDE + x) * 4
-                    ppm_offset = (y * 480 + x) * 3
-                    if (raw_image[raw_offset:raw_offset + 3] !=
-                            expected_rgb[ppm_offset:ppm_offset + 3]):
-                        matches = False
-                        break
-                if not matches:
-                    break
-            if matches:
-                matching_sidecar = candidate
-                break
-        if matching_sidecar is None:
-            first_sidecar = json.loads(sidecars[0].read_text(encoding="utf-8"))
-            raw_image = (sidecars[0].parent / first_sidecar["vram"]["image_file"]).read_bytes()
-            samples = []
-            for sample_y in (0, 128, 263, 264, 265, 271):
-                raw_at = (sample_y * STRIDE) * 4
-                ppm_at = sample_y * 480 * 3
-                samples.append(
-                    f"y{sample_y}:vram={raw_image[raw_at:raw_at + 4].hex()}"
-                    f"/ppm={expected_rgb[ppm_at:ppm_at + 3].hex()}"
-                )
-            raise RuntimeError(
-                f"the VRAM capture of the first presented vblank {first_presented} ({len(sidecars)} captured) "
-                "does not match the offscreen presented PPM; "
-                + ",".join(samples)
-            )
+        assert first_presented is not None  # vramdump_capture_failure refused a run without one
+        matching_sidecar = first_frame_vram_sidecar(
+            capture_dir / "capture", first_presented, passes, expected_rgb)
 
         output_dir = root / "png"
         decoded = subprocess.run(
