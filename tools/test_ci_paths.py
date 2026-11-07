@@ -322,6 +322,48 @@ class CiPathAdversarialTests(unittest.TestCase):
         self.assertEqual(result["allow_substantive"], "true")
         self.assertEqual(result["run_main_smoke"], "true")
 
+    def test_unrecognised_path_on_main_push_keeps_the_compact_run(self) -> None:
+        """An unknown path forced the full matrix on the PR or batch that carried it.
+
+        The push lands that validated tree, so it no longer repeats the matrix: 32 of 79
+        main pushes did (2026-11-02 to 2026-11-07). Markdown and the export exercise
+        still follow force_full, and the substantive flags still describe the change.
+        """
+        with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main"}):
+            for paths in (["new-tool-input.dat"],
+                          ["tests/native/test_player_ui.py", "src/rt/hle.c"],
+                          ["fixtures/psp_oracle/Makefile", "docs/CI.md"]):
+                with self.subTest(paths=paths):
+                    result = classify(paths, event_name="push")
+                    self.assertEqual(result["allow_substantive"], "false")
+                    self.assertEqual(result["run_main_smoke"], "true")
+                    self.assertEqual(result["run_python"], "true")
+                    self.assertEqual(result["run_markdown"], "true")
+                    self.assertEqual(result["security_publication"], "true")
+
+    def test_ci_definition_change_on_main_push_still_runs_the_matrix(self) -> None:
+        with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main"}):
+            for path in (".github/workflows/ci.yml", ".github/actions/x/action.yml",
+                         "tools/ci_paths.py", "tools/ci_test_shards.py", "tools/test_ci_required.py"):
+                with self.subTest(path=path):
+                    result = classify([path, "new-tool-input.dat"], event_name="push")
+                    self.assertEqual(result["allow_substantive"], "true")
+
+    def test_unreadable_main_push_still_runs_the_matrix(self) -> None:
+        with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main"}):
+            for paths in ([], ["<history-unavailable>"], ["<history-unavailable>", "docs/CI.md"]):
+                with self.subTest(paths=paths):
+                    self.assertEqual(classify(paths, event_name="push")["allow_substantive"], "true")
+
+    def test_unrecognised_path_stays_full_everywhere_but_a_main_push(self) -> None:
+        for event in ("pull_request", "merge_group", "schedule", "workflow_dispatch"):
+            with self.subTest(event=event):
+                result = classify(["new-tool-input.dat"], event_name=event)
+                self.assertEqual(result["allow_substantive"], "true")
+                self.assertEqual(result["run_windows"], "true")
+        with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/feature"}):
+            self.assertEqual(classify(["new-tool-input.dat"], event_name="push")["allow_substantive"], "true")
+
     def test_non_main_push_is_not_treated_as_main_smoke(self) -> None:
         with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/feature"}):
             result = classify(["src/rt/hle.c"], event_name="push")

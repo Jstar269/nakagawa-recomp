@@ -30,8 +30,8 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
 | Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, CI required | Python/native, Windows |
 | Mixed documentation/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the applicable product gates |
-| Ordinary push to `main` after a validated merge | classification, hygiene/security with its Markdown step when needed and its compact main smoke steps, CI required | expensive platform matrix; the merged PR carried it |
-| Workflow push to `main` | the full applicable validation above plus the main smoke steps | none of the substantive public gates |
+| Ordinary push to `main` after a validated merge, including one with a path the classifier does not recognise | classification, hygiene/security with its Markdown step when needed and its compact main smoke steps, CI required | expensive platform matrix; the merged PR (or batch) carried it, and an unrecognised path already forced the full matrix there |
+| Workflow push to `main` (a changed workflow, action, CI classifier, aggregate or shard planner), or a push whose change set cannot be read | the full applicable validation above plus the main smoke steps | none of the substantive public gates |
 | Manual `workflow_dispatch` | the full matrix and full Python tier, regardless of paths | none |
 | Nightly schedule (`17 3 * * *` UTC) | the full matrix and full Python tier | none |
 | Merge-queue group (`merge_group`, `checks_requested`) | the full matrix, as for a manual dispatch, regardless of paths; every required check reports on the group commit | none |
@@ -991,7 +991,15 @@ tooling and therefore skipping a native or Windows gate. These invariants exist
 to prevent that, and `tools/test_ci_paths.py` asserts each one:
 
 - **Unknown paths fail closed.** Any path matching no predicate forces the full
-  matrix. Adding a new kind of file makes CI more expensive, never less.
+  matrix. Adding a new kind of file makes CI more expensive, never less. The one
+  exception is a push to `main`: it lands a tree whose pull request (or batch) already
+  ran that full matrix because of the same path, so the push keeps its compact run.
+  Only a changed CI definition (`_is_workflow_ci`) or a change set that cannot be read
+  (no paths, or `<history-unavailable>`) re-runs the matrix on a main push. Unknown paths
+  made 32 of 79 main pushes repeat the matrix from 2026-11-02 to 2026-11-07 (and 28 of 77
+  from 2026-10-31 to 2026-11-05, when three of those 28 failed: two on a tree that had
+  passed on its batch head, the third with no same-tree pull request run in the sampled
+  window). The nightly schedule still runs the full matrix on `main`.
 - **Every change type counts.** The changed-file query uses name-status without
   a narrowing diff filter, and retains both sides of a rename. Filtering to
   `ACMR` or keeping only a rename's new name can drop a build-affecting source,
@@ -1082,8 +1090,11 @@ once per smoke). Between runs it is persisted with the Actions cache:
   compile, and Make still decides what to build.
 - Only a run of `main` on `main` saves it: a push, the nightly schedule or a manual
   dispatch (`save_compiler_cache` from `tools/ci_paths.py`). Pull requests and merge
-  groups restore it and never write it. Before a save, entries the run did not
-  use are evicted, so the saved cache holds exactly that run's compiles.
+  groups restore it and never write it. A push runs the Windows gates only when it
+  changes a CI definition (see [Classifier invariants](#classifier-invariants)), so most
+  saves come from the nightly run; in ladder parts sampled on 2026-11-05, hit rates from
+  92% to 100% made no measurable difference to the step time. Before a save, entries
+  the run did not use are evicted, so the saved cache holds exactly that run's compiles.
 
 `gcc` is a native symlink to the UCRT64 toolchain's `ccache.exe`, so `CC` stays
 `gcc`, and SDL3 discovery and the toolchain check (`tools/nk_doctor_checks.py`)

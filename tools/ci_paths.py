@@ -1325,10 +1325,20 @@ def classify(
     # The run flags above still describe what the paths would route, and
     # tools/ci_required.py never reports a Draft's run green (DRAFT_LIGHT_CI).
     # Only a pull_request event can be a Draft, so no other event is narrowed.
+    #
+    # On a main push only a changed CI definition, or a change set that cannot be
+    # read (no paths, or history unavailable), re-runs the substantive matrix. An
+    # unrecognised path does not: it already forced the full matrix on the pull
+    # request or batch that carried it, whose tree the push lands, and it made 32 of
+    # 79 main pushes repeat that matrix (2026-11-02 to 2026-11-07, docs/CI.md,
+    # "Workflow topology"). ``workflow_ci`` itself still includes ``force_full``.
     draft_pull_request = event_name == "pull_request" and draft
     is_main_push = event_name == "push" and os.environ.get("GITHUB_REF") == "refs/heads/main"
+    changed_ci_definition = any(_is_workflow_ci(path) for path in files)
+    undeterminable_change = not files or "<history-unavailable>" in files
+    main_push_full = changed_ci_definition or undeterminable_change
     allow_substantive = not draft_pull_request and (
-        event_name in FULL_MATRIX_EVENTS or not is_main_push or workflow_ci
+        event_name in FULL_MATRIX_EVENTS or not is_main_push or main_push_full
     )
     run_main_smoke = is_main_push or event_name in FULL_MATRIX_EVENTS
     # #735: only a run of main's own code on main -- a push, the nightly schedule or
