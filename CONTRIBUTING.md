@@ -218,8 +218,8 @@ Two more routes also need no game:
   [docs/SETUP.md](docs/SETUP.md#showcase-demos-on-windows-wsl-2-and-pspdev)). They need no disc either.
 
 The full Python suite (`python -m unittest discover -s tools -p "test_*.py"`) takes about 77 minutes on this
-machine because it also runs heavy native fixtures. Hosted CI runs it in shards on every pull request, so run
-only the modules for the files you changed.
+machine because it also runs heavy native fixtures. Hosted CI runs it in shards on every Ready pull request
+and push, so run only the modules for the files you changed.
 
 What does need your own copy of a game: building or running a title (`nk_manager.ps1 -Action BuildFull` with a
 title manifest, the library sweep, `make verify` and the private-title routes) and matching work in a
@@ -305,7 +305,7 @@ python -m pre_commit run --all-files
 These are the gates [AGENTS.md section 9](AGENTS.md#9-validation-and-gate-routing) lists, and its table gives
 the focused gate for each changed surface. The whole Python suite
 (`python -m unittest discover -s tools -p "test_*.py"`) is not on this list: hosted CI runs it in shards on
-every pull request, so run it locally only when hosted CI cannot
+every Ready pull request and push, so run it locally only when hosted CI cannot
 ([what hosted CI does not run](docs/CI.md#what-hosted-ci-does-not-run)).
 
 To rebuild a game you own, pass its local title manifest:
