@@ -848,6 +848,7 @@ set(NK_RUNTIME_SOURCES
     src/rt/gpu_sdl3vk/sdl3vk.c
     src/rt/gpu_sdl3vk/ge_gpu.c
     src/rt/gpu_sdl3vk/tex_scale.c
+    src/rt/texrepl.c
     third_party/xbrz/xbrz.c
     src/rt/gpu_sdl3vk/ace_ui.c
     src/rt/gpu_sdl3vk/ace_smooth.c
