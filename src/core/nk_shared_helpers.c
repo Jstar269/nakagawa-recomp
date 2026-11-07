@@ -54,7 +54,7 @@ static bool path_join_plan(const char *left, const char *right, char separator,
             plan->separator_length = 1u;
             break;
         case NK_SHARED_PATH_JOIN_IF_LEFT_NEEDS_SEPARATOR:
-            plan->separator_length = plan->left_length > 0u && !left_has_separator ? 1u : 0u;
+            plan->separator_length = left_has_separator ? 0u : 1u;
             break;
         case NK_SHARED_PATH_JOIN_IF_BOTH_NONEMPTY:
             plan->separator_length = plan->left_length > 0u &&

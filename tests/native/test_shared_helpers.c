@@ -151,13 +151,12 @@ static void test_legacy_path_contracts(void) {
                               NK_SHARED_PATH_JOIN_IF_LEFT_NEEDS_SEPARATOR,
                               NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH),
           "UI join accepts an empty root when the relative path is nonempty");
-    CHECK(strcmp(out, "leaf") == 0, "UI join adds no leading separator for an empty root");
-    memset(out, 'x', sizeof(out));
-    CHECK(!nk_shared_path_join(out, sizeof(out), "", "", '\\',
-                               NK_SHARED_PATH_JOIN_IF_LEFT_NEEDS_SEPARATOR,
-                               NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH),
-          "UI join rejects an empty result");
-    CHECK(out[0] == '\0', "empty UI join retains snprintf's empty output");
+    CHECK(strcmp(out, "\\leaf") == 0, "UI join keeps the separator after an empty root");
+    CHECK(nk_shared_path_join(out, sizeof(out), "", "", '\\',
+                              NK_SHARED_PATH_JOIN_IF_LEFT_NEEDS_SEPARATOR,
+                              NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH) &&
+              strcmp(out, "\\") == 0,
+          "UI join of two empty parts is the lone separator, as the old snprintf wrote");
     CHECK(nk_shared_path_join(out, sizeof(out), "root/", "", '\\',
                               NK_SHARED_PATH_JOIN_IF_LEFT_NEEDS_SEPARATOR,
                               NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH) &&
