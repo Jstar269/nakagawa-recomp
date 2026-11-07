@@ -1080,8 +1080,9 @@ directly checks `tools/verify_vfpu_provenance.py`,
 `tools/vfpu_fuzz_gen.py`, `tools/test_import_audit.py`, `tools/test_hle_manifest.py`,
 `tools/test_enhancement_package.py` and `tools/mypy_baseline.py`; mypy also checks their imports.
 The historical `tools/test_pgd_malformed.py` path is not present in this checkout. Run the focused
-shared check with `python tools/mypy_baseline.py --scope issue-1391`. The local hook requires
-`python -m pip install mypy==2.4.1`; it rejects any other installed version. These tools are not
+shared check with `python tools/mypy_baseline.py --scope issue-1391`. The local hook installs
+its own `mypy==2.4.1` into pre-commit's environment, so no separate install is needed; for the direct command above,
+run `python -m pip install mypy==2.4.1` (the helper rejects any other version). These tools are not
 core runtime dependencies.
 
 ### Optional LLVM backend
