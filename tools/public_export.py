@@ -21,6 +21,15 @@ open pull request conflict on it.  They are recomputed and compared by
 ``provenance_attest_verify.py`` and ``publish_audit.py`` instead, so nothing is
 weakened: a declared tree-derived field that does not match the recomputation
 is still refused, and omitting one is the normal committed shape.
+
+The policy digest is one of them.  It is the digest of the candidate tree's own
+``assets/public_source_profile.json``, so it changed with every admitted path and
+made every two profile-changing pull requests conflict on the same line.  It is
+not where the policy is trusted: the trusted attestation binds the candidate's
+policy bytes to the base policy or to a maintainer policy-delta authority, and
+the publication audit binds them to the externally trusted policy.  The
+verifiers recompute it from those bytes, and every field the policy decides --
+the profile, its version, the exclusion lists -- stays committed and compared.
 """
 
 from __future__ import annotations
@@ -40,11 +49,13 @@ EXPORT_PATH = "PUBLIC_EXPORT.json"
 PROVENANCE_LEDGER_PATH = "assets/public_provenance_ledger.json"
 EXPORT_SCHEMA_VERSION = "3.0.0"
 
-#: Fields whose value depends on the whole tree rather than on the policy alone.
-#: They are recomputed at verification time instead of being committed, which is
-#: what lets two pull requests that touch different paths merge without a
-#: conflict.  The list is part of the document itself, so a candidate cannot
-#: reclassify a security-relevant field as "tree-derived" to escape the check.
+#: Fields recomputed from the candidate tree at verification time instead of
+#: being committed: the tree-wide digests and counts, and the digest of the
+#: candidate's own policy blob.  Not committing them is what lets two pull
+#: requests that touch different paths, or admit different paths into the
+#: policy, merge without a conflict.  The list is part of the document itself,
+#: so a candidate cannot reclassify a security-relevant field as "tree-derived"
+#: to escape the check.
 EXPORT_TREE_DERIVED_FIELDS = (
     "excluded_file_count",
     "excluded_present_paths",
@@ -52,8 +63,28 @@ EXPORT_TREE_DERIVED_FIELDS = (
     "included_content_sha256",
     "included_file_count",
     "manifest_sha256",
+    "policy_sha256",
     "provenance_ledger_sha256",
     "tracked_file_count",
+)
+
+
+
+#: The policy digest.  It is the digest of the candidate tree's own policy blob,
+#: so the verifiers can recompute it, and a committed copy changes with every
+#: admitted path.  A committed control may therefore omit it, provided its
+#: ``tree_derived_fields`` names it.
+POLICY_DIGEST_FIELD = "policy_sha256"
+
+#: The two ``tree_derived_fields`` lists a committed control may record: one that
+#: names the policy digest (the control omits it, and it is recomputed), and one
+#: that does not (the control declares it, and it is compared).  The verifiers
+#: accept both, so the writer can move between them without a flag day.
+EXPORT_TREE_DERIVED_FIELDS_WITH_POLICY_DIGEST = tuple(
+    sorted(set(EXPORT_TREE_DERIVED_FIELDS) | {POLICY_DIGEST_FIELD})
+)
+EXPORT_TREE_DERIVED_FIELDS_WITHOUT_POLICY_DIGEST = tuple(
+    field for field in EXPORT_TREE_DERIVED_FIELDS if field != POLICY_DIGEST_FIELD
 )
 
 
@@ -67,11 +98,12 @@ EXPORT_CONTROL_OMITTED_FIELDS = EXPORT_TREE_DERIVED_FIELDS + ("candidate_tree", 
 def build_control_document(document: dict) -> dict:
     """Return the committed form of a full export document.
 
-    Only the tree-wide and commit-bound fields are dropped.  Everything the
-    policy decides -- the profile, the policy version and digest, the complete
-    exclusion disposition, the schema version -- stays, because those are the
-    fields a human decision can move, and moving them must still conflict
-    visibly in review.
+    Only the tree-derived and commit-bound fields are dropped, the policy digest
+    among them.  Everything the policy decides -- the profile, the policy
+    version, the complete exclusion disposition, the schema version -- stays,
+    because those are the fields a human decision can move, and moving them
+    must still conflict visibly in review.  Admitting a public path moves none
+    of them, so it leaves the committed control byte-identical.
     """
     return {
         key: value

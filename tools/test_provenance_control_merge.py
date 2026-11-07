@@ -16,10 +16,16 @@ generators:
 * two pull requests that touch *different* paths merge with no conflict, and
   the merged controls equal a fresh regeneration of the merged tree, so the
   conflict is gone without the controls going stale;
+* two pull requests that each admit a *different* path into the publication
+  policy also merge with no ``PUBLIC_EXPORT.json`` conflict: the policy digest
+  is recomputed at verification time like the tree-wide fields, so admitting a
+  path leaves the committed control byte-identical;
 * a tampered control is still refused.  Omitting a tree-derived field is the
   new normal shape, but declaring one that disagrees, dropping a field the
-  recomputation requires, reclassifying a field as tree-derived, or editing a
-  ledger hash all still fail closed.
+  recomputation requires, reclassifying a field as tree-derived, shipping a
+  control generated against a different policy, or editing a ledger hash all
+  still fail closed -- whether the control declares ``policy_sha256`` or
+  leaves it to be recomputed.
 """
 
 from __future__ import annotations
@@ -165,6 +171,19 @@ class SyntheticControlRepository:
     def read_controls(self) -> tuple[bytes, bytes]:
         return (self.root / LEDGER).read_bytes(), (self.root / EXPORT).read_bytes()
 
+    def admit(self, path: str, raw: bytes, *, after: str) -> None:
+        """Add *path* and admit it into the policy right after *after*.
+
+        This is the profile change a path-adding pull request makes; the
+        position keeps two admissions on separate lines of the profile, the way
+        two sorted inserts far apart in the real profile are.
+        """
+        document = json.loads(self.files[POLICY])
+        include = document["include_paths"]
+        include.insert(include.index(after) + 1, path)
+        self.files[POLICY] = _canonical(document)
+        self.files[path] = raw
+
 
 class ControlConflictTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -222,6 +241,85 @@ class ControlConflictTests(unittest.TestCase):
         self.assertEqual((self.repo.root / EXPORT).read_bytes(), merged_export)
 
 
+class PolicyChangeMergeTests(unittest.TestCase):
+    """Two pull requests that each change the publication policy."""
+
+    #: Admitted far apart in the profile, the ledger and the sort order.
+    NEW_A = "docs/alpha-notes.md"
+    NEW_B = "tools/beta_helper.py"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = SyntheticControlRepository(Path(self._tmp.name))
+        _ledger, self.export_base = self.repo.read_controls()
+        base_files = dict(self.repo.files)
+
+        _git(self.repo.root, "checkout", "-q", "-b", "admit-a", self.repo.base)
+        self.repo.admit(self.NEW_A, b"# alpha notes\n", after=EXPORT)
+        self.repo.commit("admit a documentation path")
+        _ledger, self.export_a = self.repo.read_controls()
+        self.policy_a = self.repo.files[POLICY]
+
+        _git(self.repo.root, "checkout", "-q", "-b", "admit-b", self.repo.base)
+        self.repo.files = dict(base_files)
+        self.repo.admit(self.NEW_B, b'"""beta helper."""\n', after=PATH_B)
+        self.repo.commit("admit a tool path")
+        _ledger, self.export_b = self.repo.read_controls()
+        self.policy_b = self.repo.files[POLICY]
+
+    def _merge(self) -> subprocess.CompletedProcess:
+        _git(self.repo.root, "checkout", "-q", "admit-a")
+        return _git(self.repo.root, "merge", "--no-edit", "admit-b", check=False)
+
+    def _merged_files(self) -> dict[str, bytes]:
+        return {
+            path: (self.repo.root / path).read_bytes()
+            for path in _git(self.repo.root, "ls-files").stdout.split()
+        }
+
+    def test_each_change_really_changes_the_policy_digest(self) -> None:
+        """Guard the premise: without it the merge test below would prove nothing."""
+        digests = {hashlib.sha256(raw).hexdigest() for raw in (self.policy_a, self.policy_b)}
+        self.assertEqual(len(digests), 2)
+
+    def test_admitting_a_path_leaves_the_committed_export_byte_identical(self) -> None:
+        self.assertEqual(self.export_a, self.export_base)
+        self.assertEqual(self.export_b, self.export_base)
+        self.assertNotIn("policy_sha256", json.loads(self.export_base))
+
+    def test_two_policy_changes_merge_without_an_export_conflict(self) -> None:
+        merge = self._merge()
+        self.assertEqual(
+            merge.returncode, 0,
+            f"two independent admissions must merge without a conflict:\n{merge.stdout}\n{merge.stderr}",
+        )
+        for path in (EXPORT, LEDGER, POLICY):
+            self.assertNotIn(b"<<<<<<<", (self.repo.root / path).read_bytes(), path)
+
+        # The merged tree holds both admissions, and its controls are exactly
+        # what a fresh regeneration of that tree writes.
+        merged = self._merged_files()
+        merged_policy = json.loads(merged[POLICY])
+        self.assertIn(self.NEW_A, merged_policy["include_paths"])
+        self.assertIn(self.NEW_B, merged_policy["include_paths"])
+        expected_ledger, expected_export = _generate_controls(self.repo.root, merged)
+        self.assertEqual(merged[EXPORT], expected_export)
+        self.assertEqual(merged[LEDGER], expected_ledger)
+
+    def test_the_merged_control_verifies_against_the_merged_policy(self) -> None:
+        self.assertEqual(self._merge().returncode, 0)
+        files = self._merged_files()
+        policy = load_policy(self.repo.root / POLICY)
+        generated = public_export.build_document(
+            policy, [(path, raw) for path, raw in sorted(files.items()) if path != EXPORT],
+            provenance_ledger=files[LEDGER],
+        )
+        self.assertEqual(generated["policy_sha256"], policy.digest)
+        declared = json.loads(files[EXPORT])
+        self.assertEqual(verifier._export_field_findings(declared, generated, label="export"), [])
+
+
 class TamperStillFailsTests(unittest.TestCase):
     """Omitting a tree-derived field is normal; forging one is not."""
 
@@ -258,16 +356,91 @@ class TamperStillFailsTests(unittest.TestCase):
         self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(forged))
 
     def test_omitting_a_policy_decided_field_is_refused(self) -> None:
-        forged = dict(self.declared)
-        del forged["policy_sha256"]
-        self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(forged))
+        for field in ("profile", "policy_version", "excluded_paths", "excluded_globs", "tree_derived_fields"):
+            forged = dict(self.declared)
+            del forged[field]
+            self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(forged), field)
 
     def test_reclassifying_a_required_field_as_tree_derived_is_refused(self) -> None:
-        forged = dict(
-            self.declared,
-            tree_derived_fields=sorted(public_export.EXPORT_TREE_DERIVED_FIELDS + ("policy_sha256",)),
-        )
-        self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(forged))
+        for listed in (
+            public_export.EXPORT_TREE_DERIVED_FIELDS_WITHOUT_POLICY_DIGEST + ("policy_version",),
+            public_export.EXPORT_TREE_DERIVED_FIELDS_WITH_POLICY_DIGEST + ("policy_version",),
+        ):
+            forged = dict(self.declared, tree_derived_fields=sorted(listed))
+            del forged["policy_version"]
+            self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(forged), listed)
+
+    # -- the two committed shapes of the policy digest ------------------------
+
+    def _with_declared_digest(self) -> dict:
+        """The control shape whose list does not name the digest: it declares it."""
+        control = {
+            key: value for key, value in self.generated.items()
+            if key not in public_export.EXPORT_CONTROL_OMITTED_FIELDS or key == "policy_sha256"
+        }
+        control["policy_sha256"] = self.generated["policy_sha256"]
+        control["tree_derived_fields"] = list(public_export.EXPORT_TREE_DERIVED_FIELDS_WITHOUT_POLICY_DIGEST)
+        return control
+
+    def _with_recomputed_digest(self) -> dict:
+        """The control shape whose list names the digest: it omits it."""
+        control = {
+            key: value for key, value in self.generated.items()
+            if key not in public_export.EXPORT_CONTROL_OMITTED_FIELDS and key != "policy_sha256"
+        }
+        control["tree_derived_fields"] = list(public_export.EXPORT_TREE_DERIVED_FIELDS_WITH_POLICY_DIGEST)
+        return control
+
+    def test_the_committed_control_omits_the_policy_digest(self) -> None:
+        self.assertNotIn("policy_sha256", self.declared)
+        self.assertIn("policy_sha256", self.declared["tree_derived_fields"])
+        self.assertEqual(self.generated["policy_sha256"], self.policy.digest)
+
+    def test_both_policy_digest_shapes_verify(self) -> None:
+        self.assertEqual(self.generated["policy_sha256"], self.policy.digest)
+        self.assertEqual(self._codes(self._with_declared_digest()), [])
+        self.assertEqual(self._codes(self._with_recomputed_digest()), [])
+        self.assertEqual(self._codes(dict(self._with_recomputed_digest(), policy_sha256=self.policy.digest)), [])
+
+    def test_a_stale_policy_digest_is_refused_in_either_shape(self) -> None:
+        for control in (self._with_declared_digest(), self._with_recomputed_digest()):
+            forged = dict(control, policy_sha256="0" * 64)
+            self.assertEqual(self._codes(forged), ["EXPORT_FIELD_MISMATCH"])
+
+    def test_omitting_the_digest_without_naming_it_is_refused_with_the_refresh(self) -> None:
+        forged = self._with_declared_digest()
+        del forged["policy_sha256"]
+        findings = verifier._export_field_findings(forged, self.generated, label="export")
+        self.assertTrue(findings)
+        self.assertEqual({f.code for f in findings}, {"EXPORT_FIELD_MISMATCH"})
+        for finding in findings:
+            self.assertIn("contrib-refresh", finding.detail)
+            self.assertIn("regen_all.py", finding.detail)
+
+    def test_a_control_generated_against_a_different_policy_is_refused_in_either_shape(self) -> None:
+        """Without the digest, the policy's decisions still bind the control."""
+        for change in (
+            {"name": "another-synthetic-profile"},
+            {"exclude_globs": ["docs/*.tmp"]},
+            {"exclude_paths": ["docs/never.md"]},
+        ):
+            document = dict(SyntheticControlRepository.POLICY_DOCUMENT, **change)
+            other = self.repo.root / "other_policy.json"
+            other.write_bytes(_canonical(document))
+            other_policy = load_policy(other)
+            self.assertNotEqual(other_policy.digest, self.policy.digest)
+            stale = public_export.build_document(
+                other_policy, self.files, provenance_ledger=(self.repo.root / LEDGER).read_bytes(),
+            )
+            declared = {
+                key: value for key, value in stale.items()
+                if key not in public_export.EXPORT_CONTROL_OMITTED_FIELDS
+            }
+            declared["policy_sha256"] = stale["policy_sha256"]
+            recomputed = {key: value for key, value in declared.items() if key != "policy_sha256"}
+            recomputed["tree_derived_fields"] = list(public_export.EXPORT_TREE_DERIVED_FIELDS_WITH_POLICY_DIGEST)
+            for control in (declared, recomputed):
+                self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(control), change)
 
     def test_an_invented_field_is_refused(self) -> None:
         self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(dict(self.declared, smuggled="hello")))

@@ -9,7 +9,8 @@ from the tracked tree. The ledger records a claim (classification and evidence)
 per included path, in the claims-only form (#1673): it carries no content hash,
 so a change to an existing path leaves it unchanged; the hosted attestation
 regenerates the hashes from the trusted authority at landing. The export
-records the publication policy and its digest. Until #849 the only tool that
+records the fields the publication policy decides; its digest, like the
+tree-wide counts, is recomputed at verification time. Until #849 the only tool that
 could regenerate them needed the private trusted detailed ledger, so an outside
 contributor could not make their own pull request green.
 

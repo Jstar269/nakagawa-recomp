@@ -71,7 +71,9 @@ trusted ledger that contributors don't have, so never edit them by hand. For eac
 ledger records where it came from and the evidence for that (its classification and evidence). It
 carries no content hash: the maintainer's **Trusted provenance attestation** regenerates every file's
 SHA-256 from the private authority at landing and compares the committed claims with it, so editing an
-existing file does not change the ledger. The export records the publication policy and its digest.
+existing file does not change the ledger. The export records what the publication policy decides: the profile, its
+version and the exclusion lists. The policy's digest, like the tree-wide counts, is recomputed when the
+checks run, so admitting a new file does not change the export.
 
 For the ordinary case — you changed the contents of paths that already have public entries, and you
 added and removed nothing — run:

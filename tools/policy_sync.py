@@ -55,7 +55,7 @@ def is_high_risk(path: str) -> bool:
 
 
 def _regen_export(policy) -> None:
-    """Rewrite the generated export so it carries the current policy digest.
+    """Regenerate the committed export control from the current policy.
 
     ``PUBLIC_EXPORT.json`` is evidence derived from the policy, never a second
     place where publication decisions live. It is regenerated, not edited.
@@ -72,11 +72,11 @@ def _regen_export(policy) -> None:
         provenance_ledger=ledger_path.read_bytes() if ledger_path.is_file() else None,
         manifest=manifest_path.read_bytes() if manifest_path.is_file() else None,
     )
-    # The committed control carries the policy-derived fields only.  The
-    # tree-wide digests and counts are recomputed by the publication audit and
-    # the trusted attestation at verification time; committing them would make
-    # every unrelated merge rewrite the same line and conflict with every open
-    # pull request.
+    # The committed control carries the policy-decided fields only.  The
+    # tree-wide digests and counts, and the policy digest itself, are recomputed
+    # by the publication audit and the trusted attestation at verification time;
+    # committing them would make every unrelated merge, and every admitted path,
+    # rewrite the same line and conflict with every open pull request.
     public_export.write_control_document(export_path, document)
     print(f"regenerated {export_path.name} for policy digest {policy.digest[:16]}...")
 
@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true",
                         help="add low-risk drifted paths to include_paths (high-risk paths are refused)")
     parser.add_argument("--regen-export", action="store_true",
-                        help="rewrite PUBLIC_EXPORT.json so its policy digest matches the current policy")
+                        help="regenerate the committed PUBLIC_EXPORT.json control from the current policy")
     args = parser.parse_args(argv)
 
     policy = load_policy(args.policy)
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
 
     updated = load_policy(args.policy)
     print(f"\nadded {len(routine)} path(s); policy digest {policy.digest[:16]}... -> {updated.digest[:16]}...")
-    print("Regenerate PUBLIC_EXPORT.json so its policy digest matches, then re-audit.")
+    print("Regenerate PUBLIC_EXPORT.json (--regen-export), then re-audit.")
     return 0
 
 

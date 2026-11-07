@@ -2607,5 +2607,63 @@ class AndroidTreeMetadataTests(unittest.TestCase):
         self.assertEqual(prov, "unclassified")
 
 
+
+class ExportPolicyDigestTests(unittest.TestCase):
+    """A committed export control may declare ``policy_sha256`` or omit it.
+
+    Without it, the publication audit holds the control to the policy through
+    the fields the policy decides; with it, the digest is compared as before.
+    """
+
+    def setUp(self) -> None:
+        self.policy = publication_policy.load_policy(
+            Path(__file__).resolve().parent.parent / "assets" / "public_source_profile.json"
+        )
+        self.control = {
+            "profile": self.policy.name,
+            "policy_version": self.policy.profile_version,
+            "excluded_paths": sorted(self.policy.exclude_paths),
+            "excluded_globs": sorted(self.policy.exclude_globs),
+        }
+
+    def _codes(self, document: dict) -> list[str]:
+        findings = publish_audit._export_staleness_findings(
+            self.policy, Path("PUBLIC_EXPORT.json"), Path("."), document=document,
+        )
+        return [finding.code for finding in findings]
+
+    def test_the_committed_control_is_current(self) -> None:
+        committed = json.loads(
+            (Path(__file__).resolve().parent.parent / "PUBLIC_EXPORT.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("policy_sha256", committed)
+        self.assertEqual(self._codes(committed), [])
+
+    def test_a_control_without_a_digest_is_current_when_its_policy_fields_match(self) -> None:
+        self.assertEqual(self._codes(self.control), [])
+
+    def test_a_policy_decided_field_from_another_policy_is_stale(self) -> None:
+        for field, value in (
+            ("profile", "another-profile"),
+            ("policy_version", "1.0.0"),
+            ("excluded_globs", sorted(self.policy.exclude_globs) + ["smuggled/**"]),
+        ):
+            self.assertEqual(self._codes(dict(self.control, **{field: value})), ["POLICY_EXPORT_STALE"], field)
+
+    def test_a_control_with_neither_a_digest_nor_the_policy_fields_is_stale(self) -> None:
+        for field in ("profile", "policy_version", "excluded_globs"):
+            control = dict(self.control)
+            del control[field]
+            self.assertEqual(self._codes(control), ["POLICY_EXPORT_STALE"], field)
+        self.assertEqual(self._codes({}), ["POLICY_EXPORT_STALE"] * 3)
+
+    def test_a_control_that_declares_the_current_digest_verifies(self) -> None:
+        self.assertEqual(self._codes(dict(self.control, policy_sha256=self.policy.digest)), [])
+
+    def test_a_control_that_declares_a_stale_digest_is_stale(self) -> None:
+        codes = self._codes(dict(self.control, policy_sha256="0" * 64))
+        self.assertEqual(codes, ["POLICY_EXPORT_STALE"])
+        self.assertIn("POLICY_EXPORT_STALE", publish_audit.STALE_CONTROL_CODES)
+
 if __name__ == "__main__":
     unittest.main()
