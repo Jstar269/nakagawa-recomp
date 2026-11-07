@@ -2246,7 +2246,7 @@ def _vfpu_form_vsocp(addr, w):
                             f"uint32_t _x[2],_d[4]; {reads} {calc} {writes}")
 
 
-_VFPU_SPECIAL_FORM_TABLE = {
+_VFPU_SPECIAL_FORM_TABLE: dict[tuple[int, int | None, int], Any] = {
     **{(jump, None, 1): _vfpu_form_vwbn for jump in range(24, 32)},
     (1, 2, 1): _vfpu_form_vrndf, (1, 3, 1): _vfpu_form_vrndf,
     (1, 19, 1): _vfpu_form_vh2f, (1, 19, 2): _vfpu_form_vh2f,
