@@ -57,7 +57,8 @@ def assert_committed_control(case: unittest.TestCase, export: dict) -> None:
     """
     for field in EXPORT_CONTROL_OMITTED_FIELDS:
         case.assertNotIn(field, export, f"{field} must not be committed")
-    case.assertIn("policy_sha256", export)
+    case.assertNotIn("policy_sha256", export, "the policy digest is recomputed, not committed")
+    case.assertIn("profile", export)
     case.assertIn("policy_version", export)
     case.assertIn("excluded_paths", export)
     case.assertIn("tree_derived_fields", export)

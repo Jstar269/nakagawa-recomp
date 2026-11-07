@@ -649,7 +649,10 @@ contributor's pull request only says where each new file came from
 
 1. **Commit the files with their publication entries.** `python tools/policy_sync.py --apply --regen-export` adds the
    paths to `assets/public_source_profile.json` and regenerates `PUBLIC_EXPORT.json`; commit both with the files. The
-   candidate policy hash is the SHA-256 of that committed profile.
+   candidate policy hash is the SHA-256 of that committed profile. The committed export does not record it: the
+   publication audit and the attestation recompute the policy digest from the committed profile. So the export
+   changes only when the profile's name, version or exclusion lists do, and two path-adding pull requests do not
+   conflict on it.
 2. **Record the authority in the private authority checkout on `main`:**
    * an admission authority document under `docs/provenance/admissions/` recording each new path, its
      classification, the SHA-256 of the bytes that were reviewed, and its binding when that is not the default;

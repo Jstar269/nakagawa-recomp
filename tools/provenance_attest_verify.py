@@ -174,6 +174,7 @@ try:
         validate_ledger, verify_derived_policy_delta,
     )
     from .public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
+    from .public_export import LEGACY_EXPORT_TREE_DERIVED_FIELDS as _LEGACY_EXPORT_TREE_DERIVED_FIELDS
     from .public_export import build_control_document as _build_control_document
     from .public_export import build_document as _build_export_document
     from .publication_policy import PolicyError, load_policy
@@ -187,6 +188,7 @@ except ImportError:
         validate_ledger, verify_derived_policy_delta,
     )
     from public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
+    from public_export import LEGACY_EXPORT_TREE_DERIVED_FIELDS as _LEGACY_EXPORT_TREE_DERIVED_FIELDS
     from public_export import build_control_document as _build_control_document
     from public_export import build_document as _build_export_document
     from publication_policy import PolicyError, load_policy
@@ -1192,7 +1194,19 @@ def _export_field_findings(declared: dict, generated: dict, *, label: str) -> li
     value is recomputed here from the candidate tree and the policy, and a
     declared value that disagrees is refused exactly like any other field.  Every
     other field, and any field the recomputation does not produce, stays required.
+
+    ``policy_sha256`` is tree-derived in this sense: it is recomputed from the
+    candidate's own policy blob, whose bytes this verifier has already bound to
+    the trusted base policy or to the maintainer's policy-delta authority.
+
+    A control written before ``policy_sha256`` joined the list still verifies:
+    it declares the older ``tree_derived_fields`` list, which differs from the
+    recomputed one by that single entry, *and* it declares the digest, which is
+    then compared like any other field.  The older list without the digest is
+    the shape of neither generator and is refused, naming the refresh.
     """
+    legacy_list = list(_LEGACY_EXPORT_TREE_DERIVED_FIELDS)
+    legacy_shape = declared.get("tree_derived_fields") == legacy_list and "policy_sha256" in declared
     findings: list[Finding] = []
     for field in sorted(set(generated) | set(declared)):
         if field in EXPORT_ADVISORY_FIELDS:
@@ -1210,11 +1224,21 @@ def _export_field_findings(declared: dict, generated: dict, *, label: str) -> li
                 f"{label} declares {field!r}, which the recomputation does not produce",
             ))
         elif declared[field] != generated[field]:
-            findings.append(Finding(
-                "EXPORT_FIELD_MISMATCH", EXPORT_PATH,
+            if field == "tree_derived_fields" and legacy_shape and generated[field] == list(
+                _EXPORT_TREE_DERIVED_FIELDS
+            ):
+                continue
+            detail = (
                 f"{label} field {field!r} does not match the trusted recomputation "
-                "from the candidate tree and the canonical policy",
-            ))
+                "from the candidate tree and the canonical policy"
+            )
+            if field == "tree_derived_fields" and declared[field] == legacy_list:
+                detail += (
+                    "; a control with the older list must also declare policy_sha256. "
+                    "Regenerate it with make contrib-refresh (mingw32-make on Windows) or "
+                    "python tools/regen_all.py"
+                )
+            findings.append(Finding("EXPORT_FIELD_MISMATCH", EXPORT_PATH, detail))
     return findings
 
 

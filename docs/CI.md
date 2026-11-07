@@ -776,17 +776,18 @@ tool does not touch them.
 
 ### The generated control files must be in the commit
 
-Adding or removing a tracked file makes three generated files stale:
-`assets/public_source_profile.json` (classification),
-`assets/public_provenance_ledger.json` (the path's claim) and `PUBLIC_EXPORT.json`
-(policy digest). Changing an existing file makes none of them stale: the committed
-ledger carries claims, not content hashes (#1673), and the export's committed control
-omits the tree-derived digests, which are recomputed at verification. Regenerating
+Adding or removing a tracked file makes two generated files stale:
+`assets/public_source_profile.json` (classification) and
+`assets/public_provenance_ledger.json` (the path's claim). Changing an existing file
+makes neither stale: the committed ledger carries claims, not content hashes (#1673).
+`PUBLIC_EXPORT.json` goes stale only when the profile's name, version or exclusion
+lists change: its committed control omits the tree-derived digests and the policy
+digest, which are recomputed at verification, so admitting a path leaves it
+byte-identical and two path-adding pull requests do not conflict on it. Regenerating
 them in the working tree is not enough — they have to be **staged and committed**
 with the change they describe (a refresh after merging `main` is its own commit; see
 `REVIEW.md`), or the commit ships a new path without the evidence for it and fails
-with `POLICY_UNCLASSIFIED`, `UNRESOLVED_PUBLIC`, `POLICY_EXPORT_STALE` and
-`PROVENANCE_MISSING` together.
+with `POLICY_UNCLASSIFIED`, `UNRESOLVED_PUBLIC` and `PROVENANCE_MISSING` together.
 
 `make readiness` re-runs the export generator at the end and fails if that
 changes anything, which catches precisely this.
