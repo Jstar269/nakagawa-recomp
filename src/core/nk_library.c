@@ -7,6 +7,7 @@
 #include "nk_json.h"
 #include "nk_library.h"
 #include "nk_platform.h"
+#include "nk_shared_helpers.h"
 #include "nk_user_data_schema.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -19,25 +20,6 @@
 #else
 #include <unistd.h>
 #endif
-
-static FILE *nk_lib_fopen(const char *path, const char *mode) {
-#if defined(_WIN32) || defined(_WIN64)
-    if (!path || !mode) return NULL;
-    WCHAR wpath[32768];
-    WCHAR wmode[32];
-    /* Strict conversion: invalid UTF-8 must fail rather than open a path in
-       which the bad bytes became U+FFFD. */
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
-                            wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1,
-                            wmode, (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0) {
-        return NULL;
-    }
-    return _wfopen(wpath, wmode);
-#else
-    return fopen(path, mode);
-#endif
-}
 
 void nk_library_init(NkLibrary *lib) {
     if (!lib) return;
@@ -333,7 +315,7 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
     char tmp_path[NK_MAX_PATH + 8];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", target);
 
-    FILE *f = nk_lib_fopen(tmp_path, "wb");
+    FILE *f = nk_fopen_utf8(tmp_path, "wb");
     if (!f) return NK_ERROR_IO;
 
     fprintf(f, "{\n  \"schema_version\": %d,\n  \"games\": [\n", NK_LIBRARY_SCHEMA_VERSION);
@@ -589,7 +571,7 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
         return NK_OK;
     }
 
-    FILE *f = nk_lib_fopen(target, "rb");
+    FILE *f = nk_fopen_utf8(target, "rb");
     if (!f) return NK_ERROR_IO;
 
     fseek(f, 0, SEEK_END);

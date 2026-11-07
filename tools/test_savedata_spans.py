@@ -554,8 +554,10 @@ def _build(tmp, savedata_override=None):
     exe = os.path.join(tmp, "sfo_selftest.exe")
     rt = str(ROOT / "src" / "rt")
     build = subprocess.run(
-        [CC, "-std=c11", "-O1"] + _POSIX_PROFILE + ["-I", tmp, "-I", rt, "-o", exe, harness,
-         os.path.join(rt, "debug.c"), os.path.join(rt, "watchpoints_file.c")],
+        [CC, "-std=c11", "-O1"] + _POSIX_PROFILE + [
+            "-I", tmp, "-I", rt, "-I", str(ROOT / "src" / "core"),
+            "-o", exe, harness, str(ROOT / "src" / "core" / "nk_shared_helpers.c"),
+            os.path.join(rt, "debug.c"), os.path.join(rt, "watchpoints_file.c")],
         capture_output=True, text=True,
     )
     if build.returncode != 0:

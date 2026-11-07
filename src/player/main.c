@@ -45,6 +45,7 @@
 #include "setup_staging.h"
 #include "player_ui_test.h"
 #include "nk_platform.h"
+#include "nk_shared_helpers.h"
 #include "nk_portable.h"
 #include "nk_json.h"
 #include "player_host.h"
@@ -2741,11 +2742,8 @@ static void player_package_status_recover_lost_handoff(
 
 static bool copy_bounded_text(char *destination, size_t destination_size,
                               const char *source) {
-    if (!destination || destination_size == 0 || !source) return false;
-    size_t length = strlen(source);
-    if (length >= destination_size) return false;
-    memcpy(destination, source, length + 1);
-    return true;
+    return nk_shared_text_copy(destination, destination_size, source,
+                               NK_SHARED_TEXT_COPY_REQUIRE_FIT);
 }
 
 typedef struct {

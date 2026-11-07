@@ -27,6 +27,7 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
+#include "../core/nk_shared_helpers.h"
 #include "gpu_sdl3vk/sdl3vk.h"
 #include "fbcap.h"
 #include "videorec.h"         /* video recording: the CPU presenters hand over their frame */
@@ -136,29 +137,8 @@ static void sr_gui_boot_event(const char *format, ...) {
     uint64_t timestamp_ns = sr_perf_now_ns();
     va_list args;
     va_start(args, format);
-    vfprintf(stderr, format, args);
+    nk_shared_boot_event_vwrite(stderr, timestamp_ns, format, args);
     va_end(args);
-    if (timestamp_ns) {
-        fprintf(stderr, " t_ns=%llu\n", (unsigned long long)timestamp_ns);
-    } else {
-        fputc('\n', stderr);
-    }
-    fflush(stderr);
-
-    const char *path = getenv("SR_BOOT_EVENT_FILE");
-    if (!path || !*path) return;
-
-    FILE *file = fopen(path, "ab");
-    if (!file) return;
-    va_start(args, format);
-    vfprintf(file, format, args);
-    va_end(args);
-    if (timestamp_ns) {
-        fprintf(file, " t_ns=%llu\n", (unsigned long long)timestamp_ns);
-    } else {
-        fputc('\n', file);
-    }
-    fclose(file);
 }
 #endif /* SR_GUI_INPUT_PATH */
 

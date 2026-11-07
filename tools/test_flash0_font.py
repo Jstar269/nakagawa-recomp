@@ -749,6 +749,7 @@ class Flash0FontDirRefusalNativeTests(unittest.TestCase):
         home = hle_sources.defining_file("flash0_font_sources")
         source.write_text(FONT_DIR_HARNESS_C.replace("@FLASH0_FONT_SOURCES_FILE@", home), encoding="utf-8")
         others = [str(ROOT / relative) for relative in hle_sources.RUNTIME_HLE_SOURCES if relative != home]
+        others.append(str(ROOT / "src" / "core" / "nk_shared_helpers.c"))
         cls.exe = cls.tmp / "harness"
         build = subprocess.run(
             [compiler, "-std=gnu11", "-w", f"-I{ROOT}", f"-I{ROOT / 'src' / 'rt'}",

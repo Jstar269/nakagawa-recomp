@@ -1089,7 +1089,8 @@ def _build(tmp, savedata_override=None, seam_override=None, hooks=False,
                          "unlinkat", "futimens")]
     if unsupported:
         flags += ["-DSR_CD_FORCE_UNSUPPORTED_BACKEND", "-DSR_CD_ALLOW_UNSUPPORTED_HOST"]
-    flags += ["-I", str(tmp), "-I", str(rt), "-o", str(exe), str(harness),
+    flags += ["-I", str(tmp), "-I", str(rt), "-I", str(ROOT / "src" / "core"),
+              "-o", str(exe), str(harness), str(ROOT / "src" / "core" / "nk_shared_helpers.c"),
               str(rt / "debug.c"), str(rt / "watchpoints_file.c")]
     build = subprocess.run(flags, capture_output=True, text=True)
     if build.returncode != 0:

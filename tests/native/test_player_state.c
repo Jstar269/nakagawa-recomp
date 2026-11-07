@@ -6606,6 +6606,7 @@ static void test_homebrew_package_becomes_a_private_disc(void) {
     char data_root[NATIVE_TEST_PATH_MAX + 96];
     char pbp_path[NATIVE_TEST_PATH_MAX + 96];
     char other_path[NATIVE_TEST_PATH_MAX + 96];
+    char expected_iso[NATIVE_TEST_PATH_MAX + 192];
     char partial[NATIVE_TEST_PATH_MAX + 192];
     char code[64];
     char message[512];
@@ -6649,6 +6650,9 @@ static void test_homebrew_package_becomes_a_private_disc(void) {
     assert(package.homebrew && !package.iso_ready);
     assert(nk_disc_id_is_non_retail_key(package.disc_id));
     assert(strcmp(package.title, "My Homebrew") == 0);
+    snprintf(expected_iso, sizeof(expected_iso), "%s%cdiscs%c%s%c%s.iso", data_root, sep, sep,
+             package.disc_id, sep, package.disc_id);
+    assert(strcmp(package.iso_path, expected_iso) == 0);
     assert(strstr(package.iso_path, package.disc_id) != NULL);
     snprintf(partial, sizeof(partial), "%s.converting", package.iso_path);
 

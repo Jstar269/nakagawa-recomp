@@ -73,11 +73,6 @@ char nk_platform_path_separator(void) {
 /* POSIX file names are byte strings and this project's paths are UTF-8, so the
  * narrow CRT calls already carry the exact name the wide Win32 path would
  * have produced. These exist so host code never has to know that. */
-FILE *nk_fopen_utf8(const char *path, const char *mode) {
-    if (!path || !mode) return NULL;
-    return fopen(path, mode);
-}
-
 int nk_remove_utf8(const char *path) {
     if (!path || !*path) return -1;
     return unlink(path);
