@@ -459,16 +459,23 @@ int       ge_wide_wing(void);
 /* The display was given framebuffer `fb_addr`: its canvas exists from now on. The last two
  * distinct addresses keep canvases (double buffering). No effect while Fill is off. */
 void      ge_wide_note_display(uint32_t fb_addr);
-/* Whether a wing primitive was drawn into fb_addr's canvas since ge_wide_shown(fb_addr). A
- * primitive a backend dropped does not count. The first wing draw after ge_wide_shown clears
- * the canvas, so a drawn canvas holds this frame's wings only; the presenter shows black
- * wings for a frame whose wings were not drawn, never stale ones. */
+/* Whether fb_addr's canvas holds wings of the frame in fb_addr: a wing primitive was drawn
+ * there since the canvas was last cleared. A primitive a backend dropped does not count.
+ * ge_wide_shown(fb_addr) marks the frame shown; the next triangle or sprite drawn into fb_addr
+ * begins a new frame and clears the canvas first. So a frame presented twice keeps its wings,
+ * and a new frame whose wings were not drawn shows black wings, never the last frame's. */
 int       ge_wide_drawn(uint32_t fb_addr);
 void      ge_wide_shown(uint32_t fb_addr);
 /* Changes whenever fb_addr's canvas is cleared (a new display buffer, a new wing width); never
  * 0 for an existing canvas, 0 for none. A backend clears its own canvas when it changes, so
  * both renderers start each canvas from the same black, depth-0 state. */
 uint32_t  ge_wide_epoch(uint32_t fb_addr);
+/* The software renderer's Fill picture for fb_addr into out, (480 + 2D) x 272 words: the left
+ * wing, `frame` (480 x 272 words, the frame as the presenter shows it), then the right wing, each
+ * canvas word through convert(word, GE pixel format). Wings the frame did not draw
+ * (ge_wide_drawn) are 0, black. Returns the picture's width, or 0 with Fill off. */
+int       ge_wide_picture(uint32_t fb_addr, const uint32_t *frame, uint32_t *out,
+                          uint32_t (*convert)(uint32_t word, int fmt));
 /* The software canvas of fb_addr: GE_WIDE_CANVAS_W raw framebuffer words per row, in format
  * *fmt (GE pixel format 0..3); NULL when none was drawn by the software rasterizer. */
 const uint32_t *ge_wide_canvas(uint32_t fb_addr, int *fmt);

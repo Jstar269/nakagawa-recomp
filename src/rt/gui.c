@@ -591,6 +591,31 @@ static void gui_ace_smooth_init(void) {
     ace_confirm(ACE_FEATURE_SMOOTH);
 }
 
+/* Widescreen Fill (#1881, wide=fill): the 3D scene continues into wings beside the PSP picture,
+ * which gegpu_present (the GPU renderer) or gui_wide_compose (the software one) puts on either
+ * side of the frame. Smooth motion's HUD mask and depth are sized to the 480-wide frame, so in
+ * this build the two are exclusive: with smooth motion on, Fill reports itself unavailable. */
+static int s_wide_on;
+
+static void gui_wide_init(void) {
+    const AceConfig *effective = ace_effective();
+    s_wide_on = 0;
+    if (!g_ace_on || effective->wide != ACE_WIDE_FILL) return;
+    if (ace_wide_fill_blocked_by_smooth(effective->wide == ACE_WIDE_FILL,
+                                        effective->smooth != ACE_SMOOTH_OFF)) {
+        ace_feature_unavailable(ACE_FEATURE_WIDE, "smooth motion is on, and its HUD mask and depth are "
+                                                  "sized to the 480-wide frame");
+        return;
+    }
+    s_wide_on = 1;
+    ace_confirm(ACE_FEATURE_WIDE);
+}
+
+static void gui_wide_release(void) {
+    if (s_wide_on) (void)ge_wide_set_wing(0);
+    s_wide_on = 0;
+}
+
 static unsigned long long s_fsr1_presents;  /* presents the upscaler made, said at shutdown */
 
 static void *gui_upscale_pass(void *cmd, void *src, int w, int h, int out_w, int out_h) {
@@ -800,6 +825,7 @@ void gui_init(const char *title) {
 #ifndef SR_GUI_PRESENT_SELFTEST
                 gui_ace_ui_init();
                 gui_ace_smooth_init();
+                gui_wide_init();   /* after smooth motion, which it steps aside for */
                 gui_upscale_init();
 #endif
                 sync_sdl_input();
@@ -942,33 +968,62 @@ uint32_t gui_pad_pulses_take(void) {
  * stride is in pixels (PSP buffer width, typically 512). */
 /* Convert the guest framebuffer to the BGRA words both presenters consume. The
  * offscreen sink converts too, so this is not behind a presenter #if. */
+/* One framebuffer word (a 16-bit format in the low half) as the BGRA word the presenters take. */
+static uint32_t bgra_from_fb_word(uint32_t p, int fmt) {
+    int rr, gg, bb;
+    if (fmt == 3) {
+        rr = p & 0xFF; gg = (p >> 8) & 0xFF; bb = (p >> 16) & 0xFF;
+    } else if (fmt == 1) {     /* 5551 */
+        rr = (p & 0x1F) << 3; gg = ((p >> 5) & 0x1F) << 3; bb = ((p >> 10) & 0x1F) << 3;
+    } else if (fmt == 2) {     /* 4444 */
+        rr = (p & 0xF) << 4; gg = ((p >> 4) & 0xF) << 4; bb = ((p >> 8) & 0xF) << 4;
+    } else {                   /* 5650 */
+        rr = (p & 0x1F) << 3; gg = ((p >> 5) & 0x3F) << 2; bb = ((p >> 11) & 0x1F) << 3;
+    }
+    return ((uint32_t)rr << 16) | ((uint32_t)gg << 8) | (uint32_t)bb;
+}
+
 static void convert_fb_pixels(uint32_t fbaddr, int fmt, uint32_t stride) {
     for (int y = 0; y < PSP_H; y++) {
         for (int x = 0; x < PSP_W; x++) {
             uint32_t i = (uint32_t)(y * (int)stride + x);
-            int rr, gg, bb;
+            uint32_t p;
             if (fmt == 3) {
-                uint32_t p;
                 /* display_host_span_valid checks the complete framebuffer before this
                  * conversion. Read framebuffer storage literally: sr_r32 reserves the
                  * GE status port at 0x04084000, which can otherwise replace a pixel when
                  * a PSP VRAM framebuffer spans that address. */
                 memcpy(&p, SR_HOST(fbaddr + i * 4), sizeof p);
-                rr = p & 0xFF; gg = (p >> 8) & 0xFF; bb = (p >> 16) & 0xFF;
             } else {
-                uint16_t p = sr_r16(fbaddr + i * 2);
-                if (fmt == 1) {            /* 5551 */
-                    rr = (p & 0x1F) << 3; gg = ((p >> 5) & 0x1F) << 3; bb = ((p >> 10) & 0x1F) << 3;
-                } else if (fmt == 2) {     /* 4444 */
-                    rr = (p & 0xF) << 4; gg = ((p >> 4) & 0xF) << 4; bb = ((p >> 8) & 0xF) << 4;
-                } else {                   /* 5650 */
-                    rr = (p & 0x1F) << 3; gg = ((p >> 5) & 0x3F) << 2; bb = ((p >> 11) & 0x1F) << 3;
-                }
+                p = sr_r16(fbaddr + i * 2);
             }
-            s_px[y * PSP_W + x] = ((uint32_t)rr << 16) | ((uint32_t)gg << 8) | (uint32_t)bb;
+            s_px[y * PSP_W + x] = bgra_from_fb_word(p, fmt);
         }
     }
 }
+
+#if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
+/* Each present with Fill on: the wing width follows the window's shape (a change clears the
+ * canvases), and the shown display buffer keeps a canvas. */
+static void gui_wide_update(uint32_t fbaddr) {
+    int w = 0, h = 0;
+    if (!s_wide_on) return;
+    if (sdl3vk_window_pixel_size(&w, &h)) (void)ge_wide_set_wing(ge_wide_wing_for(w, h));
+    ge_wide_note_display(fbaddr);
+}
+
+/* The software renderer's Fill picture in s_wide_px (ge_wide_picture): the left wing, s_px
+ * (the frame, with anything drawn over it), then the right wing, converted like the frame.
+ * Wings the shown frame did not draw are black, never an earlier frame's; so are the wings of a
+ * frame the GPU renderer drew and this path presents (its canvases are on the GPU). Returns the
+ * picture's width, or 0 when Fill is off and the frame is presented alone. */
+static uint32_t s_wide_px[SDL3VK_UPLOAD_MAX_W * PSP_H];
+
+static int gui_wide_compose(uint32_t fbaddr) {
+    if (!s_wide_on) return 0;
+    return ge_wide_picture(fbaddr, s_px, s_wide_px, bgra_from_fb_word);
+}
+#endif
 
 /* A guest frame: the conversion plus the first-frame boot milestone. */
 static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
@@ -1189,6 +1244,9 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
                              !(sr_capture_is_armed() && !sr_capture_pending_is_probe());
         if (s_ace_keyboard_now) osk_cpu = 0;
 #endif
+#ifndef SR_GUI_PRESENT_SELFTEST
+        gui_wide_update(fbaddr);
+#endif
         int res = osk_cpu ? GEGPU_PRESENT_NOT_RESIDENT : gegpu_present(fbaddr, fmt, stride);
         sync_sdl_input();
         if (res == GEGPU_PRESENT_WINDOW_CLOSED) {
@@ -1258,7 +1316,16 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
          * frame capture receive, and guest VRAM is untouched. */
         if (osk_cpu && sr_osk_overlay_active())
             osk_overlay_paint(sr_osk_overlay_view(), s_px, PSP_W, PSP_H);
-        int present_result = sdl3vk_present_rgba(s_px);
+        int present_result;
+#ifndef SR_GUI_PRESENT_SELFTEST
+        const int wide_cols = gui_wide_compose(fbaddr);
+        if (wide_cols) {
+            present_result = sdl3vk_present_rgba_ex(s_wide_px, wide_cols, PSP_H);
+            /* Shown: the buffer's next draw begins a new frame and clears its canvas. */
+            if (present_result == 1) ge_wide_shown(fbaddr);
+        } else
+#endif
+        present_result = sdl3vk_present_rgba(s_px);
         sync_sdl_input();
         if (present_result == 0) gui_quit_request();
         accepted = present_result == 1;
@@ -1877,6 +1944,7 @@ static void gui_release_presenter(void) {
         s_pause_vram_px = NULL;
 #ifndef SR_GUI_PRESENT_SELFTEST
         gui_upscale_release();
+        gui_wide_release();
         gui_ace_smooth_release();
         gui_ace_ui_release();
 #endif

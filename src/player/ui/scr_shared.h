@@ -147,6 +147,8 @@ typedef struct {
 
 /* Frame and box helpers (scr_flow.c). */
 float scr_flow_begin(NkUi *ui, float width, float height, float card_width);
+float scr_flow_begin_with_scroll(NkUi *ui, float width, float height, float card_width,
+                                 bool scroll_at_design_size);
 void scr_flow_end(NkUi *ui, const char *hint, const NkUiPromptItem *prompts, size_t count);
 void scr_flow_eyebrow(NkUi *ui, const char *marker, const char *text, uint32_t rgba);
 NkUiStyle scr_flow_box_style(const NkUiTheme *theme, uint32_t fill);
@@ -159,7 +161,8 @@ void scr_input_guide_box(NkUi *ui, NkUiId base, const PlayerUiInputGuide *guide,
 float scr_check_column_width(NkUi *ui, const PlayerUiCheckRow *checks, size_t count, bool status,
                              NkUiTypeRole role, const char *fallback, float design);
 bool scr_wizard_box_begin(NkUi *ui, uint32_t edge);
-WizardColumn scr_wizard_column(NkUi *ui, const WizardRow *rows, size_t count, float width);
+WizardColumn scr_wizard_column(NkUi *ui, const WizardRow *rows, size_t count, float width,
+                              bool stack_at_design_size);
 bool scr_wizard_value(NkUi *ui, NkUiId id, NkUiId text_id, const char *name, const char *value,
                       const char *sentence, bool on, float width, const WizardColumn *column);
 bool scr_wizard_value_state(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,

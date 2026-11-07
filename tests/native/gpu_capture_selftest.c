@@ -177,6 +177,25 @@ int main(void) {
         assert(PLAN_IS(p, 14, 0, 3811, 2160, 8, 0));
         p = sdl3vk_present_plan(SHARP, 480, 272, 3840, 2160, 2048);
         assert(PLAN_IS(p, 14, 0, 3811, 2160, 1, 0));
+        /* Every 480k x 272k source still fits as the 480:272 PSP picture did, to the pixel. */
+        for (int k = 1; k <= 4; k++)
+            for (int dw = 1; dw <= 4000; dw += 13)
+                for (int dh = 1; dh <= 2400; dh += 11) {
+                    int vw = dw, vh = dw * 272 / 480;
+                    if (vh > dh) { vh = dh; vw = dh * 480 / 272; }
+                    for (int m = 0; m < 3; m += 2) {   /* sharp and bilinear keep the fit */
+                        p = sdl3vk_present_plan(modes[m], 480 * k, 272 * k, dw, dh, 4096);
+                        assert(p.w == vw && p.h == vh && p.x == (dw - vw) / 2 && p.y == (dh - vh) / 2);
+                    }
+                }
+        /* A widescreen Fill picture, (480 + 2D) x 272, fits its own shape (#1881): 21:9's D 76
+         * gives 632 columns, 32:9's D 240 gives 960. */
+        p = sdl3vk_present_plan(BILINEAR, 632, 272, 2520, 1080, 4096);
+        assert(PLAN_IS(p, 5, 0, 2509, 1080, 1, 0));
+        p = sdl3vk_present_plan(SHARP, 960, 272, 3840, 1080, 4096);
+        assert(PLAN_IS(p, 14, 0, 3811, 1080, 4, 0));
+        p = sdl3vk_present_plan(INTEGER, 960, 272, 3840, 1080, 4096);
+        assert(PLAN_IS(p, 480, 132, 2880, 816, 1, 1));
 #undef PLAN_IS
     }
     assert(sr_parse_render_scale(NULL, NULL, 4) == 1);

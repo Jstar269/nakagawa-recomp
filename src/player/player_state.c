@@ -20,6 +20,7 @@
 #endif
 
 #include "player_state.h"
+#include "ace.h"
 #include "nk_font.h"
 #include "nk_json.h"
 #include "nk_platform.h"
@@ -1428,6 +1429,7 @@ static const char *const k_part_switch_labels[] = {"On", "Off"};
 static const char *const k_part_switch_words[] = {"on", "off"};
 static const char *const k_part_smooth_words[] = {"x2", "off"};
 static const char *const k_part_sas_words[] = {"sinc", "off"};
+static const char *const k_part_wide_words[] = {"fill", "off"};
 static const char *const k_part_upscale_labels[] = {"FSR 1", "Off"};
 static const char *const k_part_upscale_words[] = {"fsr1", "off"};
 
@@ -1444,19 +1446,22 @@ static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
     {"notice", "Game badge",
      "Names the mode for a few seconds when a game starts.",
      2, k_part_switch_values, k_part_switch_labels, k_part_switch_words, 1},
+    /* Host-only (contract 10.8): what a game reads is unchanged. Objects a game skips as off
+       screen are missing from the sides until that title has its own culling item. */
+    {"wide", "Widescreen",
+     "Shows more 3D space; HUD stays shaped. Some objects pop in. Smooth motion disables it.",
+     2, k_part_switch_values, k_part_switch_labels, k_part_wide_words, 0},
     {"smooth", "Smooth motion",
      "Shows 30 FPS games at 60. Adds about 17 ms of delay.",
      2, k_part_switch_values, k_part_switch_labels, k_part_smooth_words, 0},
     /* A guest-visible item (contract 11.3.1): off by default until its "nothing worse" runs
        exist (11.2 item 4), with its own off switch in the library and each title (item 2). */
     {"sas", "Clean pitched sound",
-     "Resamples pitched sound effects without aliasing. Changes the samples the game mixes.",
+     "Resamples pitched effects without aliasing. The game receives changed samples.",
      2, k_part_switch_values, k_part_switch_labels, k_part_sas_words, 0},
     /* Presentation only (contract section 2.2): the window and its recording, never the guest. */
     {"upscale", "Sharper enlarging",
-     "AMD FSR 1 sharpens the picture when the window is larger than the game. Only what you see "
-     "changes, in the window and in recordings: the game, its memory and screenshots stay the "
-     "same.",
+     "AMD FSR 1 sharpens display and recordings; game memory and screenshots do not change.",
      2, k_part_switch_values, k_part_upscale_labels, k_part_upscale_words, 0},
 };
 
@@ -1496,6 +1501,14 @@ const char *player_enhanced_part_label(int part, int value) {
     int index = enhanced_part_value_index(part, value);
     if (index < 0) index = enhanced_part_value_index(part, 0);
     return info && index >= 0 ? info->labels[index] : "Off";
+}
+
+const char *player_enhanced_part_unavailable_label(int part, int value, int smooth) {
+    if (part == PLAYER_PART_WIDE &&
+        ace_wide_fill_blocked_by_smooth(value != 0, smooth != 0)) {
+        return "Off (Smooth motion is on)";
+    }
+    return NULL;
 }
 
 const char *player_play_mode_name(PlayerPlayMode mode) {
@@ -3201,13 +3214,6 @@ bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t c
         /* The upscaler travels as SR_PRESENT_UPSCALE (player_play_present_upscale), which the
            launcher exports for every session; the runtime's SR_ACE line has no such key. */
         if (p == PLAYER_PART_UPSCALE) continue;
-        /* Ultrawide is not part of this build: the runtime refuses any value but off, and
-           the key sits where the runtime's own format puts it. */
-        if (p == PLAYER_PART_SMOOTH) {
-            n = snprintf(out + used, cap - used, ";wide=off");
-            if (n <= 0 || (size_t)n >= cap - used) { out[0] = '\0'; return false; }
-            used += (size_t)n;
-        }
         n = snprintf(out + used, cap - used, ";%s=%s", k_enhanced_parts[p].key,
                      enhanced_part_word(p, play->part[p]));
         if (n <= 0 || (size_t)n >= cap - used) { out[0] = '\0'; return false; }

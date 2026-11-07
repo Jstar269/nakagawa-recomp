@@ -84,7 +84,8 @@ static void cell_parse(void) {
         { "v1;;af=16;text=on;readout=off;notice=on;wide=off;smooth=off", "empty field" },
         { "v1;af;text=on;readout=off;notice=on;wide=off;smooth=off", "field is not key=value" },
         { "v1;af=;text=on;readout=off;notice=on;wide=off;smooth=off", "field is not key=value" },
-        { "v1;af=16;text=on;readout=off;notice=on;wide=fill;smooth=off", "wide is not part of this build" },
+        { "v1;af=16;text=on;readout=off;notice=on;wide=Fill;smooth=off;sas=off", "bad value" },
+        { "v1;af=16;text=on;readout=off;notice=on;wide=stretch;smooth=off;sas=off", "bad value" },
         { "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=match", "this smooth mode is not part of this build" },
         { "v1;tier=boost;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off", "bad value" },
         { "v1;tier=ace;af=16;text=on;readout=off;notice=on;wide=off;smooth=off;sas=off;tier=ace",
@@ -182,6 +183,19 @@ static void cell_switch(void) {
     ace_feature_unavailable(ACE_FEATURE_READOUT, "no window");
     ace_set_readout(1);
     CHECK(ace_effective()->readout == 0, "a readout this host cannot draw stays off");
+
+    /* wide=fill (#1881): part of this build, named in the words and the stamp's line; off with
+       its feature (the presenter turns it off while smooth motion is on, gui.c). */
+    CHECK(ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=fill;smooth=off;sas=off", NULL) == 1 &&
+          ace_effective()->wide == ACE_WIDE_FILL, "wide=fill turns Ace on with Fill");
+    CHECK(strcmp(ace_spec_text(), "v1;tier=enhanced;af=0;text=off;readout=off;notice=off;wide=fill;"
+                                  "smooth=off;sas=off") == 0,
+          "the Fill run's line keeps wide=fill: '%s'", ace_spec_text());
+    CHECK(ace_feature_words(words, sizeof(words)) > 0 && strcmp(words, "ultrawide") == 0,
+          "wide feature words: '%s'", words);
+    ace_feature_unavailable(ACE_FEATURE_WIDE, "test");
+    CHECK(ace_effective()->wide == ACE_WIDE_OFF && ace_requested()->wide == ACE_WIDE_FILL,
+          "an unavailable Fill is off for the run");
 
     /* sas=sinc: named in the words, the stamp's line and the report; off with its feature. */
     CHECK(ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=off;smooth=off;sas=sinc", NULL) == 1 &&

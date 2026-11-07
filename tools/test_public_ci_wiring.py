@@ -2486,10 +2486,12 @@ class BatchOnlyCodeqlWakeTests(unittest.TestCase):
 class TrustedVerdictTriggerTests(unittest.TestCase):
     """The verdict re-judges on a new head and on every label event, but not on ready_for_review.
 
-    tools/ci_trust_verdict.py never reads the draft state, so ready_for_review could only
-    repeat the same verdict. Every label event still re-judges, whatever the label: a newer
-    run in the head's concurrency group replaces a pending one, so a run that skipped the
-    verdict could leave a stale one standing.
+    A Draft/Ready transition starts a CI run (ci.yml lists ready_for_review and
+    converted_to_draft), and that run's completion re-judges the head, reading the draft
+    state then (DRAFT_LIGHT_CI). A pull_request_target run on the transition could only
+    judge the previous CI run. Every label event still re-judges, whatever the label: a
+    newer run in the head's concurrency group replaces a pending one, so a run that skipped
+    the verdict could leave a stale one standing.
     """
 
     NEEDS = {"approval": {"result": "skipped"}, "approval_record": {"result": "skipped"}}
@@ -2508,14 +2510,20 @@ class TrustedVerdictTriggerTests(unittest.TestCase):
             event["label"] = {"name": label}
         return {"github": {"event_name": "pull_request_target", "event": event}, "needs": self.NEEDS}
 
-    def test_ready_for_review_is_not_a_trigger_and_the_verifier_ignores_draft_state(self) -> None:
+    def test_a_draft_transition_rejudges_through_ci_and_the_verifier_reads_draft_state(self) -> None:
         self.assertIn(
             "  pull_request_target:\n    types: [opened, synchronize, reopened, labeled, unlabeled]\n",
             self.text,
         )
         self.assertNotIn("ready_for_review", _uncommented(self.text))
+        self.assertIn('  workflow_run:\n    workflows: ["CI"]\n    types: [completed]\n', self.text)
+        self.assertIn(
+            "    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
+            _on_block(_workflow_text("ci.yml")),
+        )
         verifier = (ROOT / "tools" / "ci_trust_verdict.py").read_text(encoding="utf-8")
-        self.assertNotIn("draft", verifier.lower())
+        self.assertIn('"draft": pr.get("draft")', verifier)
+        self.assertIn('"DRAFT_LIGHT_CI"', verifier)
 
     def test_new_heads_run_the_verdict(self) -> None:
         for action in ("opened", "synchronize", "reopened"):
@@ -2771,7 +2779,7 @@ class MergeQueueTriggerWiringTests(unittest.TestCase):
             _on_block(self.ci),
             [
                 "  pull_request:",
-                "    types: [opened, synchronize, reopened]",
+                "    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
                 "  push:",
                 "    branches: [main]",
                 "  schedule:",
@@ -2859,6 +2867,108 @@ class MergeQueueTriggerWiringTests(unittest.TestCase):
                           "action-gh-release", "upload-release"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, self.ci)
+
+
+class DraftLightCiWiringTests(unittest.TestCase):
+    """A Draft pull request runs only the quick CI jobs; every other event runs as before.
+
+    Each case runs the classifier on a real event payload, evaluates every ci.yml job's
+    ``if:`` against its outputs, then feeds the resulting job results to the
+    ``CI required`` aggregate, as the workflow does.
+    """
+
+    #: Paths that route every substantive gate, so only the Draft rule can skip one.
+    PATHS = ["src/rt/driver.c", "tools/codegen.py", "docs/CI.md"]
+    QUICK = frozenset({"hygiene", "public_export", "ci_required"})
+    HEAVY = frozenset({"python_tools", "native_tools", "linux_gcc16", "android_build", "windows_runtime"})
+    RESULT_KEYS = {
+        "hygiene": "HYGIENE_RESULT", "public_export": "PUBLIC_EXPORT_RESULT",
+        "python_tools": "PYTHON_RESULT", "native_tools": "NATIVE_RESULT", "android_build": "ANDROID_RESULT",
+        "windows_runtime": "WINDOWS_RESULT",
+    }
+
+    def _classify(self, event_name: str, event: Mapping[str, object], ref: str) -> dict[str, str]:
+        with tempfile.TemporaryDirectory() as scratch:
+            event_path = Path(scratch) / "event.json"
+            event_path.write_text(json.dumps(event), encoding="utf-8")
+            output = Path(scratch) / "github_output"
+            with mock.patch.dict(os.environ, {"GITHUB_REF": ref}), mock.patch("sys.stdout"):
+                self.assertEqual(ci_paths.main([
+                    "--event-name", event_name, "--event-path", str(event_path),
+                    "--github-output", str(output), "--files", *self.PATHS,
+                ]), 0)
+            return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+
+    def _run(self, event_name: str, event: Mapping[str, object], ref: str = "refs/pull/7/merge"
+             ) -> tuple[set[str], dict[str, str], bool]:
+        outputs = self._classify(event_name, event, ref)
+        blocks = _workflow_job_blocks("ci.yml")
+        self.assertEqual(set(blocks) - {"classify"}, self.QUICK | self.HEAVY, "a ci.yml job is unclassified here")
+        needs: dict[str, object] = {"classify": {"result": "success", "outputs": outputs},
+                                    "public_export": {"result": "success"}}
+        context = {"github": {"event_name": event_name, "event": event}, "needs": needs}
+        ran = {job for job in self.QUICK | self.HEAVY if _actions_eval(_job_if(blocks[job]), context)}
+        environment = {key: ("success" if job in ran else "skipped") for job, key in self.RESULT_KEYS.items()}
+        environment["CLASSIFY_RESULT"] = "success"
+        for line in blocks["ci_required"]:
+            match = re.match(r"^\s+([A-Z_]+): \$\{\{ needs\.classify\.outputs\.([a-z_]+) \}\}$", line)
+            if match:
+                environment[match.group(1)] = outputs[match.group(2)]
+        self.assertEqual(environment["DRAFT"], outputs["draft"])
+        return ran, outputs, ci_required.evaluate_environment(environment)
+
+    @staticmethod
+    def _pull_request(action: str, draft: bool) -> dict[str, object]:
+        return {"action": action, "pull_request": {"number": 7, "draft": draft, "base": {"sha": "a" * 40}}}
+
+    def _profile_zero(self, outputs: dict[str, str]) -> bool:
+        block = "\n".join(_workflow_job_blocks("ci.yml")["public_export"])
+        expression = _matched(re.search(r"BUILD_PROFILE_ZERO: >-\s*\$\{\{(.*?)\}\}", block, re.S)).group(1)
+        return _actions_eval(expression, {"needs": {"classify": {"outputs": outputs}}})
+
+    def test_a_draft_runs_only_the_quick_jobs_and_is_never_green(self) -> None:
+        for action in ("opened", "synchronize", "reopened", "converted_to_draft"):
+            with self.subTest(action=action):
+                ran, outputs, green = self._run("pull_request", self._pull_request(action, True))
+                self.assertEqual(ran, set(self.QUICK))
+                self.assertFalse(self._profile_zero(outputs))
+                self.assertFalse(green, "a Draft's light run must never be green")
+
+    def test_ready_for_review_runs_the_full_matrix(self) -> None:
+        ran, outputs, green = self._run("pull_request", self._pull_request("ready_for_review", False))
+        self.assertEqual(ran, set(self.QUICK | self.HEAVY))
+        self.assertTrue(self._profile_zero(outputs))
+        self.assertTrue(green)
+
+    def test_a_push_to_a_pull_request_that_is_not_a_draft_runs_the_full_matrix(self) -> None:
+        for action in ("opened", "synchronize", "reopened"):
+            with self.subTest(action=action):
+                ran, _outputs, green = self._run("pull_request", self._pull_request(action, False))
+                self.assertEqual(ran, set(self.QUICK | self.HEAVY))
+                self.assertTrue(green)
+
+    def test_merge_group_schedule_and_dispatch_run_the_full_matrix(self) -> None:
+        group = {"merge_group": {"base_sha": "a" * 40, "head_sha": "b" * 40}}
+        for event_name, event in (("merge_group", group), ("schedule", {}), ("workflow_dispatch", {})):
+            with self.subTest(event=event_name):
+                ran, outputs, green = self._run(event_name, event, ref="refs/heads/main")
+                self.assertEqual(ran, set(self.QUICK | self.HEAVY))
+                self.assertEqual(outputs["run_main_smoke"], "true")
+                self.assertTrue(green)
+
+    def test_a_push_to_main_keeps_its_smoke_only_policy(self) -> None:
+        ran, outputs, green = self._run("push", {"before": "a" * 40}, ref="refs/heads/main")
+        self.assertEqual(ran, set(self.QUICK))
+        self.assertEqual(outputs["run_main_smoke"], "true")
+        self.assertTrue(green, "a main push skips the substantive jobs by policy and stays green")
+
+    def test_heavy_jobs_are_skipped_through_the_classifier_alone(self) -> None:
+        """One switch: every heavy job gates on allow_substantive, and none reads the draft flag itself."""
+        blocks = _workflow_job_blocks("ci.yml")
+        for job in sorted(self.HEAVY):
+            with self.subTest(job=job):
+                self.assertIn("needs.classify.outputs.allow_substantive == 'true'", _job_if(blocks[job]))
+                self.assertNotIn("draft", _job_if(blocks[job]))
 
 
 class MergeQueueDependencyReviewWiringTests(unittest.TestCase):
