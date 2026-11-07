@@ -12,12 +12,14 @@ and they pin which files may use it.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -171,6 +173,70 @@ class DriverUnitTests(unittest.TestCase):
     def test_windows_separators_in_the_path_are_accepted(self) -> None:
         rc, _ = self._merge("a\nb\n", "a\nours\nb\n", "a\ntheirs\nb\n", "mk\\selftests.mk")
         self.assertEqual(rc, 0)
+
+    def test_comment_or_blank_before_a_recipe_line_is_still_a_recipe_insert(self) -> None:
+        base = "T1:\n\tstep1\n\tstep2\nall: T1\n"
+        rule = "T2:\n\tbuild2\n"
+        for lead in ("# finish T1\n", "\n"):
+            for ours, theirs in ((rule, lead + "\tstep3\n"), (lead + "\tstep3\n", rule)):
+                with self.subTest(lead=lead, ours=ours):
+                    rc, out = self._merge(base, base.replace("\tstep2\n", "\tstep2\n" + ours),
+                                          base.replace("\tstep2\n", "\tstep2\n" + theirs))
+                    self.assertEqual(rc, 1, out)
+                    self.assertIn("<<<<<<<", out)
+
+    def test_inserts_that_each_bring_a_rule_header_still_merge_after_a_comment(self) -> None:
+        base = "a:\n\tx\n\nz:\n\tw\n"
+        rc, out = self._merge(base, "a:\n\tx\n\n# b\nb:\n\ty\n\nz:\n\tw\n",
+                              "a:\n\tx\n\n# c\nc:\n\tq\n\nz:\n\tw\n")
+        self.assertEqual((rc, out), (0, "a:\n\tx\n\n# b\nb:\n\ty\n\n# c\nc:\n\tq\n\nz:\n\tw\n"))
+
+    def test_a_theirs_recipe_line_after_an_ours_rule_header_is_refused(self) -> None:
+        base = "a:\n\tx\n\nz:\n"
+        rc, out = self._merge(base, "a:\n\tx\n\nb:\n\ty\n\nz:\n", "a:\n\tx\n\n\tq\n\nz:\n")
+        self.assertEqual(rc, 1, out)
+
+    def test_a_separator_look_alike_line_keeps_the_edit_conflict(self) -> None:
+        rc, out = self._merge("Heading\n=======\nold body\n", "Heading\nours body\n", "Heading\ntheirs body\n",
+                              "docs/DEBUGGING.md")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("<<<<<<<", out)
+        self.assertIn("ours body", out)
+        self.assertIn("theirs body", out)
+
+    def test_git_is_resolved_to_an_absolute_path_outside_the_working_directory(self) -> None:
+        name = "git.exe" if os.name == "nt" else "git"
+        real = merge_append._git_executable()
+        self.assertIsNotNone(real)
+        with tempfile.TemporaryDirectory() as tmp:
+            here = Path(tmp).resolve()
+            for fake in (name, "git"):
+                (here / fake).write_bytes(b"not git")
+                if os.name != "nt":
+                    (here / fake).chmod(0o755)
+            path_var = os.pathsep.join(["", ".", "relative", str(here), str(here / "sub"), os.environ.get("PATH", "")])
+            old = Path.cwd()
+            os.chdir(here)
+            try:
+                picked = merge_append._git_executable(path_var)
+            finally:
+                os.chdir(old)
+            self.assertIsNotNone(picked)
+            self.assertTrue(Path(picked).is_absolute(), picked)
+            self.assertNotEqual(Path(picked).resolve().parent, here)
+            self.assertNotIn(here, Path(picked).resolve().parents)
+            self.assertEqual(Path(picked).resolve(), Path(real).resolve())
+
+    def test_no_safe_git_fails_closed_and_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            for name, body in (("base", "a\nb\n"), ("cur", "a\nours\nb\n"), ("other", "a\ntheirs\nb\n")):
+                (d / name).write_bytes(body.encode())
+            with mock.patch.object(merge_append, "_git_executable", return_value=None):
+                rc = merge_append.merge(d / "base", d / "cur", d / "other", 7, "mk/selftests.mk")
+            self.assertEqual(rc, 1)
+            self.assertEqual((d / "cur").read_text(), "a\nours\nb\n")
+        self.assertIsNone(merge_append._git_executable(""))
 
 
 class RealMergeTests(unittest.TestCase):
@@ -344,6 +410,30 @@ class RealGitEdgeCaseTests(unittest.TestCase):
                 self.assertNotEqual(rc, 0)
                 self.assertIn(b"<<<<<<<", out)
                 self._reset()
+
+    def test_a_comment_or_blank_then_a_recipe_line_is_not_moved_into_another_rule(self) -> None:
+        base = b"T1:\n\tstep1\n\tstep2\nall: T1\n"
+        rule = b"T2:\n\tbuild2\n"
+        for lead in (b"# finish T1\n", b"\n"):
+            for rule_is_ours in (True, False):
+                with self.subTest(lead=lead, rule_is_ours=rule_is_ours):
+                    step = lead + b"\tstep3\n"
+                    ours, theirs = (rule, step) if rule_is_ours else (step, rule)
+                    # pr-b is the branch merged into ("ours"); pr-a is merged in ("theirs").
+                    rc, out = self._run(base, base.replace(b"\tstep2\n", b"\tstep2\n" + theirs),
+                                        base.replace(b"\tstep2\n", b"\tstep2\n" + ours))
+                    self.assertNotEqual(rc, 0, out)
+                    self.assertIn(b"<<<<<<<", out)
+                    self._reset()
+
+    def test_a_separator_look_alike_content_line_keeps_the_edit_conflict(self) -> None:
+        base = b"Heading\n=======\nold body\n"
+        rc, out = self._run(base, b"Heading\nours body\n", b"Heading\ntheirs body\n")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn(b"<<<<<<<", out)
+        self.assertIn(b">>>>>>>", out)
+        self.assertIn(b"ours body", out)
+        self.assertIn(b"theirs body", out)
 
     def test_a_file_outside_the_allowlist_is_not_unioned_even_with_the_attribute(self) -> None:
         (self.repo / "src").mkdir()

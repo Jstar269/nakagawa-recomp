@@ -15,8 +15,9 @@ This driver is the guarded form. It runs the ordinary three-way merge and looks 
 * if the common ancestor has nothing there (both sides only inserted), it keeps ours, then theirs;
 * if the ancestor has lines there (someone changed or removed them), it leaves the ordinary conflict
   markers for a person, exactly as ``git merge`` does without a driver;
-* it also leaves them when the two insertions share a non-blank line, and when an insertion starts with a
-  tab inside a make recipe, where the order of lines matters. Inserts between targets and in lists merge.
+* it also leaves them when the two insertions share a non-blank line, and when a tab-indented line of an
+  insertion would belong to a rule header outside its own insertion (comments and blank lines between recipe
+  lines do not end a recipe), where the order of lines matters. Inserts between targets and in lists merge.
 
 Only the paths in ``ALLOWED_PATHS`` are ever unioned, so editing ``.gitattributes`` cannot attach the
 driver to code. Setup, once per clone (worktrees share it), is in ``docs/CI.md``; the landing desk runs a
@@ -34,6 +35,7 @@ Arguments are Git's: ``%O`` ancestor, ``%A`` ours (the result is written here), 
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -56,10 +58,53 @@ BASE = b"base"
 THEIRS = b"theirs"
 
 
+def _git_executable(path_var: str | None = None, cwd: str | os.PathLike[str] | None = None) -> str | None:
+    """Return the absolute path of git found on PATH, or None.
+
+    Only absolute PATH entries count. An empty or ``.`` entry, a relative one, and any entry equal to or
+    inside the working directory are skipped, because on Windows a ``git.exe`` in the working directory (the
+    root of the tree being merged) would otherwise run before the real one.
+    """
+    if path_var is None:
+        path_var = os.environ.get("PATH", "")
+    here = Path(cwd if cwd is not None else os.getcwd()).resolve()
+    if os.name == "nt":
+        extensions = [e.lower() for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e]
+        if ".exe" not in extensions:
+            extensions.insert(0, ".exe")
+        names = ["git" + e for e in extensions]
+    else:
+        names = ["git"]
+    for entry in path_var.split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if entry in ("", "."):
+            continue
+        folder = Path(entry)
+        if not folder.is_absolute():
+            continue
+        try:
+            folder = folder.resolve()
+        except OSError:
+            continue
+        if folder == here or here in folder.parents:
+            continue
+        for name in names:
+            candidate = folder / name
+            if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+                return str(candidate)
+    return None
+
+
 def _merge_file(current: Path, base: Path, other: Path, marker: int, *flags: str) -> tuple[int, bytes]:
-    """Run ``git merge-file -p`` and return its status and the merged text, without touching ``current``."""
+    """Run ``git merge-file -p`` and return its status and the merged text, without touching ``current``.
+
+    Status -1 means git could not be found safely; callers treat it like any other merge-file failure.
+    """
+    git = _git_executable()
+    if git is None:
+        return -1, b""
     proc = subprocess.run(
-        ["git", "merge-file", "-p", f"--marker-size={marker}", *flags,
+        [git, "merge-file", "-p", f"--marker-size={marker}", *flags,
          "-L", OURS.decode(), "-L", BASE.decode(), "-L", THEIRS.decode(),
          str(current), str(base), str(other)],
         capture_output=True, check=False,
@@ -71,14 +116,51 @@ def _blank(line: bytes) -> bool:
     return not line.strip()
 
 
-def _in_recipe(out: list[bytes]) -> bool:
-    """True when the next line would continue a make recipe: the last line above that is neither tab-indented
-    nor blank is a rule, not a variable assignment (a tab-indented list item continues an assignment)."""
-    for line in reversed(out):
-        if line.startswith(b"\t") or _blank(line):
+def _owner(layout: list[bytes], index: int) -> int | None:
+    """Index of the line that owns the tab-indented line at ``index``: the nearest line above it that is not
+    blank, not a ``#`` comment (make ignores both inside a recipe) and not itself tab-indented."""
+    for j in range(index - 1, -1, -1):
+        line = layout[j]
+        if _blank(line) or line.startswith((b"#", b"\t")):
             continue
-        return _ASSIGNMENT.match(line) is None
-    return True
+        return j
+    return None
+
+
+def _recipe_order_at_risk(out: list[bytes], ours: list[bytes], theirs: list[bytes]) -> bool:
+    """True when a tab-indented line of either insert is owned by a line outside its own insert.
+
+    Such a line is part of a recipe that continues from above, so the union would put it under another
+    rule or detach it from its own. An owner in ``out`` that is a variable assignment is a list item
+    and is fine. A line of ``theirs`` owned by a line of ``ours`` is always outside its side.
+    """
+    layout = out + ours + theirs
+    start_ours = len(out)
+    start_theirs = len(out) + len(ours)
+    for first, side in ((start_ours, ours), (start_theirs, theirs)):
+        for offset, line in enumerate(side):
+            if not line.startswith(b"\t"):
+                continue
+            owner = _owner(layout, first + offset)
+            if owner is None:
+                return True
+            if owner >= first:
+                continue  # its own insert brings the header (or an earlier line of that insert owns it)
+            if owner < start_ours and _ASSIGNMENT.match(layout[owner]):
+                continue
+            return True
+    return False
+
+
+def _diff3_marker_size(marker: int, *texts: bytes) -> int:
+    """A marker size longer than any run of ``<``, ``|``, ``=`` or ``>`` that starts a line of the inputs, so
+    a content line can never be read as a marker or as the separator."""
+    longest = 0
+    for text in texts:
+        for line in text.splitlines():
+            if line[:1] and line[:1] in b"<|=>":
+                longest = max(longest, len(line) - len(line.lstrip(line[:1])))
+    return max(marker + 1, longest + 1)
 
 
 def union_pure_inserts(diff3_text: bytes, marker: int) -> bytes | None:
@@ -124,8 +206,8 @@ def union_pure_inserts(diff3_text: bytes, marker: int) -> bytes | None:
                 shared = {l.rstrip(b"\r\n") for l in ours if not _blank(l)}
                 if shared & {l.rstrip(b"\r\n") for l in theirs if not _blank(l)}:
                     return None
-                # Recipe line order matters: a tab-indented insert inside a recipe is a person's call.
-                if any(side and side[0].startswith(b"\t") for side in (ours, theirs)) and _in_recipe(out):
+                # Recipe line order matters: a tab-indented line owned from outside its insert is a person's call.
+                if _recipe_order_at_risk(out, ours, theirs):
                     return None
                 out.extend(ours)
                 out.extend(theirs)
@@ -148,8 +230,11 @@ def merge(base: Path, current: Path, other: Path, marker: int, path: str = "") -
         return 1  # git merge-file failed outright (for example a binary file): leave ours as it is
     unioned = None
     if allowed:
-        _, diff3 = _merge_file(current, base, other, marker, "--diff3")
-        unioned = union_pure_inserts(diff3, marker)
+        # A larger marker for this analysis run only, so no content line can pass for the separator.
+        size = _diff3_marker_size(marker, current.read_bytes(), base.read_bytes(), other.read_bytes())
+        diff3_status, diff3 = _merge_file(current, base, other, size, "--diff3")
+        if 0 <= diff3_status <= 127:
+            unioned = union_pure_inserts(diff3, size)
     if unioned is None:
         current.write_bytes(merged)  # the ordinary conflict markers
         return 1

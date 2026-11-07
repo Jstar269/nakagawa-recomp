@@ -995,7 +995,11 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   exception is a push to `main`: it lands a tree whose pull request (or batch) already
   ran that full matrix because of the same path, so the push keeps its compact run.
   Only a changed CI definition (`_is_workflow_ci`) or a change set that cannot be read
-  (no paths, or `<history-unavailable>`) re-runs the matrix on a main push. Unknown paths
+  (no paths, or `<history-unavailable>`) re-runs the matrix on a main push. Here a CI definition
+  means exactly these paths: anything under `.github/workflows/` or `.github/actions/`, and
+  `tools/ci_paths.py`, `tools/ci_required.py`, `tools/ci_test_shards.py` and their
+  `tools/test_` modules (`test_ci_paths.py`, `test_ci_required.py`, `test_ci_test_shards.py`).
+  Other files that configure CI, such as `tools/requirements-lock.txt`, are not in that set. Unknown paths
   made 32 of 79 main pushes repeat the matrix from 2026-11-02 to 2026-11-07 (and 28 of 77
   from 2026-10-31 to 2026-11-05, when three of those 28 failed: two on a tree that had
   passed on its batch head, the third with no same-tree pull request run in the sampled
@@ -1230,9 +1234,12 @@ reads each conflict. It keeps ours and then theirs only when all of these hold:
   removed a line, the ordinary conflict markers stay.
 - The two insertions share no non-blank line. Git's diff3 output does not factor out lines both sides
   inserted, so a union would repeat them (ours `X` against theirs `X`, `Y` would give `X X Y`).
-- The insertion is not made of tab-indented make recipe lines inside a recipe. The order of recipe lines
-  matters (`rm -f x` before `gen x`), and the union order would depend on which side is "ours", so a
-  person decides. Inserts between targets, new target blocks and tab-indented items of a variable such as
+- No tab-indented line of either insertion belongs to a rule header outside that insertion. The driver
+  finds each such line's owner by walking up the merged text and skipping blank lines and `#` comments
+  (make ignores both inside a recipe); the first other non-tab line is the owner. The order of recipe
+  lines matters (`rm -f x` before `gen x`), and the union order would depend on which side is "ours", so a
+  person decides, also when the insertion starts with a comment or blank line. Inserts between targets,
+  new target blocks that bring their own header and tab-indented items of a variable such as
   `PUBLIC_TARGETS` still merge by themselves.
 
 Git's own `merge=union` is not used because it keeps both versions of a line that both sides edited and
@@ -1241,6 +1248,13 @@ leaves no marker.
 The driver only acts on the five paths named in `ALLOWED_PATHS` inside `tools/merge_append.py` itself.
 `.gitattributes` is read from the tree being merged, so a pull request that edits it could otherwise attach
 the driver to a code file. For any other path the driver exits 1 and leaves the ordinary conflict.
+
+The driver runs Git by an absolute path that it finds itself on `PATH`, skipping empty, `.` and relative
+entries and any entry in or equal to the working directory (the root of the tree being merged), so a
+`git.exe` at that root cannot run on Windows. If it finds no Git it writes nothing and exits 1. For its
+own analysis it asks Git for conflict markers longer than any run of `<`, `|`, `=` or `>` that starts a
+line in the three files, so a content line such as `=======` cannot pass for a marker. The conflict
+written for a person keeps the marker size Git asked for.
 
 `docs/ENHANCEMENT_CONTRACT.md` conflicts often too, but it stays out. Its additions are not independent
 items: 18 of the 22 commits that changed it from 2026-11-01 to 2026-11-07 edited existing lines (49 of their
