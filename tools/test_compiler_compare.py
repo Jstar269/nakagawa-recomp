@@ -2,19 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-"""The compiler comparison must not publish a number its veto did not earn.
-
-Issue #317 is only answerable if a candidate compiler is shown to preserve the
-accepted guest contract before its speed is measured, so these tests pin the
-ordering itself rather than the timings: the cosimulation and stale-code /
-exception gates decide the outcome, a failed gate names itself and suppresses
-every timing, a compiler missing from PATH is reported as such, and the report
-shape is stable enough to diff between runs.
-"""
+"""Contract tests for the GCC/Clang comparison and its correctness veto."""
 
 from __future__ import annotations
 
 import json
+import io
 from pathlib import Path
 import subprocess
 import sys
@@ -23,465 +16,670 @@ import unittest
 from unittest import mock
 from typing import Any
 
-ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import compiler_compare  # noqa: E402
 
-MAKE = "mingw32-make"
-#: Stand-ins for what a real corpus build would leave behind.
-FAKE_EXE = b"ELFfake"
-FAKE_OBJECT_BYTES = 32
-GATE_TARGETS = {name: target for name, target, _ in compiler_compare.GATE_CHAIN}
 
-
-def _matrix(*statuses: str) -> dict:
-    return {
-        "schema": compiler_compare.PERF_SCHEMA,
-        "public_source_owned": True,
-        "runs": [
-            {
-                "name": name,
-                "targets": [name],
-                "status": status,
-                "returncode": 0 if status == "PASS" else 1,
-                "duration_s": 1.5 + index,
-                "summary": f"build/compiler-compare/x/perf/{name}/perf.json",
-                "output": f"{name}: SR_PERF summary was not produced",
-            }
-            for index, (name, status) in enumerate(zip(("cosim", "audio"), statuses, strict=False))
-        ],
-    }
-
-
-class _Fake:
-    """Subprocess, PATH and clock doubles; no build and no compiler runs."""
+class FakeToolchain:
+    """Fake compiler, linker and Make output without executing a build."""
 
     def __init__(self, *, available: tuple[str, ...] = ("gcc", "clang"),
-                 failing_gate: str | None = None,
-                 matrix: dict | None = None,
-                 make_missing: bool = False,
-                 matrix_report: bool = True,
-                 corpus_executable: bool = True) -> None:
+                 failing_gate: str | None = None) -> None:
         self.available = available
         self.failing_gate = failing_gate
-        self.matrix = _matrix("PASS", "PASS") if matrix is None else matrix
-        self.make_missing = make_missing
-        self.matrix_report = matrix_report
-        self.corpus_executable = corpus_executable
+        self.workload_status = compiler_compare.GATE_PASS
+        self.gate_calls: list[str] = []
+        self.measurement_calls: list[tuple[str, Path]] = []
+        self.workload_calls: list[dict[str, Any]] = []
+        self.events: list[str] = []
         self.commands: list[list[str]] = []
 
     def which(self, name: str) -> str | None:
-        if name == MAKE:
-            return None if self.make_missing else f"/usr/bin/{MAKE}"
-        return f"/usr/bin/{name}" if name in self.available else None
+        if name in ("mingw32-make", "make"):
+            return "/fake/bin/mingw32-make"
+        linker_name = Path(name).name.lower()
+        if name in ("ld", "ld.exe") or linker_name == "ld.exe":
+            return "/fake/bin/ld.exe"
+        if name in ("ld.lld", "ld.lld.exe") or linker_name == "ld.lld.exe":
+            return "/fake/bin/ld.lld.exe"
+        return f"/fake/bin/{name}.exe" if name in self.available else None
 
-    @staticmethod
-    def _arg(command: list[str], flag: str) -> str | None:
-        """Value of a make ``NAME=value`` assignment or of a ``--flag value`` pair."""
-        if flag.endswith("="):
-            for token in command:
-                if token.startswith(flag):
-                    return token[len(flag):]
-            return None
-        return command[command.index(flag) + 1] if flag in command else None
-
-    def run(self, command: list[str], **kwargs) -> subprocess.CompletedProcess:  # noqa: ARG002
+    def run(self, command: list[str], *, env: dict[str, str],
+            cwd: Path = compiler_compare.ROOT) -> compiler_compare.Outcome:
+        del env, cwd
         self.commands.append(list(command))
-        name = Path(command[0]).name
-        if name == MAKE or name == "make" or name == "gmake":
-            return self._make(list(command))
-        if self._is_perf(command):
-            output = Path(self._arg(command, "--output") or "")
-            if self.matrix_report:
-                output.mkdir(parents=True, exist_ok=True)
-                (output / "benchmark.json").write_text(json.dumps(self.matrix), encoding="utf-8")
-            return subprocess.CompletedProcess(command, 0, "ok")
+        name = Path(command[0]).name.lower()
+        if "-print-prog-name=ld" in command:
+            return compiler_compare.Outcome(0, "/fake/bin/ld.exe\n", 0.001)
+        if "-dumpmachine" in command:
+            return compiler_compare.Outcome(0, "x86_64-w64-mingw32\n", 0.001)
         if "--version" in command:
-            return subprocess.CompletedProcess(command, 0, f"{name} (fake) 0.0\n")
-        return subprocess.CompletedProcess(command, 0, "")
-
-    def _make(self, command: list[str]) -> subprocess.CompletedProcess:
+            return compiler_compare.Outcome(0, f"{name} fake version 1.0\nTarget: x86_64-w64-windows-gnu\n", 0.001)
         if "compiler-info" in command:
-            # Real `compiler-info` echoes one KEY=value line per setting and also
-            # triggers build-profile bookkeeping; only the echoes belong in a report.
-            return subprocess.CompletedProcess(
-                command, 0,
-                "python tools/build_profile.py record --section runtime\n"
-                "CC=fake\nCFLAGS=-O2\nSDL3_DIR=C:/fake\n")
-        for gate, target in GATE_TARGETS.items():
-            if target not in command:
-                continue
-            if gate == compiler_compare.CORPUS_GATE:
-                corpus = Path(self._arg(command, "PRODUCTION_SMOKE_GAP_DIR=") or "")
-                corpus.mkdir(parents=True, exist_ok=True)
-                if self.corpus_executable:
-                    (corpus / f"{compiler_compare.CORPUS_GAME}.exe").write_bytes(FAKE_EXE)
-                (corpus / "chunk.o").write_bytes(b"\x00" * FAKE_OBJECT_BYTES)
-            if gate == self.failing_gate:
-                return subprocess.CompletedProcess(command, 1, f"{gate}: FAIL\n")
-            return subprocess.CompletedProcess(command, 0, f"{gate}: PASS\n")
-        return subprocess.CompletedProcess(command, 0, "")
+            assignments = {token.split("=", 1)[0]: token.split("=", 1)[1]
+                           for token in command if "=" in token}
+            cflags = assignments.get(
+                "CFLAGS", "-O0 -fno-strict-aliasing -Isrc/rt -Isrc/core",
+            )
+            ldflags = assignments.get("LDFLAGS", "-lm")
+            return compiler_compare.Outcome(
+                0,
+                f"CC={assignments.get('CC', 'fake')}\n"
+                f"CFLAGS={cflags}\nGE_CFLAGS={assignments.get('GE_CFLAGS', '-O2')}\n"
+                f"LDFLAGS={ldflags}\nLIBS=-lm\n"
+                "RUNTIME_OPT=-O0\nRECOMP_OPT=-O0\nRECOMP_FLAGS=-O0\n"
+                "CODEGEN_BACKEND=c\nCODEGEN_USER_ARGS=\nCOSIM_CODEGEN_ARGS=--stack-census\n"
+                "SDL3_DIR=C:/msys64/ucrt64\n",
+                0.001,
+            )
+        if Path(command[0]).name.lower().startswith("mingw32-make"):
+            matches = [(name, target) for name, target in compiler_compare.GATE_CHAIN if target in command]
+            if matches:
+                name, _target = matches[0]
+                self.gate_calls.append(name)
+                self.events.append(f"gate:{name}")
+                if name == self.failing_gate:
+                    return compiler_compare.Outcome(1, f"FIRST ERROR: {name} semantic mismatch\n", 0.002)
+                return compiler_compare.Outcome(0, f"{name}: PASS\n", 0.002)
+            return compiler_compare.Outcome(0, "no-op\n", 0.001)
+        return compiler_compare.Outcome(0, "", 0.001)
 
-    @staticmethod
-    def _is_make(command: list[str]) -> bool:
-        return Path(command[0]).name in ("make", "gmake", MAKE, f"{MAKE}.EXE")
+    def trials(self, compiler: str, linker: str, python: str, settings: dict[str, str],
+               build_root: Path, repeats: int, *, env: dict[str, str]) -> list[dict[str, Any]]:
+        del python, settings, env
+        self.events.append("compile-measurements")
+        self.measurement_calls.append((compiler, build_root))
+        return [
+            {
+                "trial": index,
+                "generated_c_compile_wall_seconds": 2.0 + index,
+                "peak_working_set_bytes": 20_000_000 + index,
+                "link_wall_seconds": 0.5 + index / 10,
+                "object_bytes": 1000,
+                "executable_bytes": 4000,
+                "semantic_sha256": "a" * 64,
+                "generated_c_commands": [{"compiler": compiler, "argv": ["-O0", "-c", "fixture_recomp_0.c"]}],
+                "link_commands": [{"compiler": compiler, "argv": ["-O0", "-o", "fixture.exe"]}],
+            }
+            for index in range(1, repeats + 1)
+        ]
 
-    @staticmethod
-    def _is_perf(command: list[str]) -> bool:
-        return any(token.endswith("run_perf_benchmarks.py") for token in command)
-
-    def make_calls(self) -> list[list[str]]:
-        return [command for command in self.commands if self._is_make(command)]
-
-    def gate_calls(self) -> list[list[str]]:
-        """make calls that run a veto gate, excluding the `compiler-info` probe."""
-        return [command for command in self.make_calls()
-                if any(target in command for target in GATE_TARGETS.values())]
-
-    def perf_calls(self) -> list[list[str]]:
-        return [command for command in self.commands if self._is_perf(command)]
-
-    def index_of(self, command: list[str]) -> int:
-        return self.commands.index(command)
-
-
-class _Harness:
-    """Run `compare` against the doubles, yielding the report and the fake.
-
-    Only subprocess and PATH are doubled; durations come from the real clock,
-    because "some positive wall time was measured" is all the contract claims.
-    """
-
-    def __init__(self, case: unittest.TestCase, tmp: Path, fake: _Fake) -> None:
-        self.fake = fake
-        for target, attribute, replacement in (
-            (compiler_compare.subprocess, "run", fake.run),
-            (compiler_compare.shutil, "which", fake.which),
-        ):
-            patch = mock.patch.object(target, attribute, replacement)
-            patch.start()
-            case.addCleanup(patch.stop)
-        self.output = tmp / "build" / "compiler-compare"
-
-    def compare(self, compilers: list[str]) -> dict:
-        returned: dict[str, Any] = compiler_compare.compare(compilers, make=MAKE, python=sys.executable, output=self.output)
-        return returned
-
-
-class _CompareCase:
-    """Mixin that runs `compare` against the doubles inside a scratch tree."""
-
-    def harness(self, **kwargs) -> _Harness:
-        holder = tempfile.TemporaryDirectory()
-        self.addCleanup(holder.cleanup)
-        return _Harness(self, Path(holder.name), _Fake(**kwargs))
-
-
-class TestVetoOrdering(_CompareCase, unittest.TestCase):
-    def test_a_passing_veto_records_the_timings_it_earned(self) -> None:
-        harness = self.harness()
-        entry = harness.compare(["gcc"])["compilers"][0]
-        self.assertEqual(entry["status"], compiler_compare.MEASURED)
-        self.assertIsNone(entry["veto"]["failed_gate"])
-        self.assertGreater(entry["measurements"]["build_seconds"], 0.0)
-        self.assertEqual(entry["measurements"]["executable_bytes"], len(FAKE_EXE))
-        self.assertEqual(entry["measurements"]["object_bytes"], FAKE_OBJECT_BYTES)
-        self.assertEqual(entry["measurements"]["workloads_status"], "PASS")
-
-    def test_the_matrix_runs_only_after_every_gate_passes(self) -> None:
-        harness = self.harness()
-        harness.compare(["gcc"])
-        self.assertEqual(len(harness.fake.perf_calls()), 1)
-        last_gate = harness.fake.gate_calls()[-1]
-        self.assertIn(compiler_compare.GATE_ORDER[-1], last_gate)
-        self.assertGreater(harness.fake.index_of(harness.fake.perf_calls()[0]),
-                           harness.fake.index_of(last_gate))
-
-    def test_a_failing_gate_suppresses_the_matrix_and_every_timing(self) -> None:
-        harness = self.harness(failing_gate="cosim-mutants")
-        report = harness.compare(["gcc"])
-        entry = report["compilers"][0]
-        self.assertEqual(entry["status"], compiler_compare.VETOED)
-        self.assertEqual(entry["veto"]["failed_gate"], "cosim-mutants")
-        self.assertIsNone(entry["measurements"])
-        self.assertEqual(compiler_compare._timing_keys(entry), [])
-        self.assertEqual(harness.fake.perf_calls(), [])
-
-    def test_the_chain_stops_at_the_first_failing_gate(self) -> None:
-        harness = self.harness(failing_gate="cosim-selftest")
-        gates = harness.compare(["gcc"])["compilers"][0]["veto"]["gates"]
-        self.assertEqual([gate["name"] for gate in gates], ["corpus-build", "cosim-selftest"])
-        self.assertEqual(len(harness.fake.gate_calls()), 2)
-
-    def test_a_failing_corpus_build_is_its_own_veto_gate(self) -> None:
-        harness = self.harness(failing_gate="corpus-build")
-        entry = harness.compare(["gcc"])["compilers"][0]
-        self.assertEqual(entry["status"], compiler_compare.VETOED)
-        self.assertEqual(entry["veto"]["failed_gate"], "corpus-build")
-        self.assertEqual([gate["name"] for gate in entry["veto"]["gates"]], ["corpus-build"])
-
-    def test_the_gates_run_in_the_fixed_documented_order(self) -> None:
-        harness = self.harness()
-        gates = harness.compare(["gcc"])["compilers"][0]["veto"]["gates"]
-        self.assertEqual([gate["name"] for gate in gates],
-                         ["corpus-build", "cosim-selftest", "cosim-mutants",
-                          "stale-code-selftest", "cpu-lle-selftest"])
-
-    def test_each_compiler_gets_its_own_build_root_and_workload_prefix(self) -> None:
-        harness = self.harness()
-        report = harness.compare(["gcc", "clang"])
-        roots = [entry["build_root"] for entry in report["compilers"]]
-        self.assertEqual(len(set(roots)), 2)
-        prefixes = [call[call.index("--build-prefix") + 1] for call in harness.fake.perf_calls()]
-        self.assertEqual(len(set(prefixes)), 2)
-        for prefix, root in zip(prefixes, roots, strict=True):
-            self.assertTrue(prefix.startswith(root.replace("\\", "/")), prefix)
-
-    def test_a_missing_make_is_an_error_not_a_timing(self) -> None:
-        harness = self.harness(make_missing=True)
-        with self.assertRaises(compiler_compare.CompareError):
-            harness.compare(["gcc"])
-
-    def test_a_corpus_build_without_its_executable_discards_the_report(self) -> None:
-        holder = tempfile.TemporaryDirectory()
-        self.addCleanup(holder.cleanup)
-        harness = _Harness(self, Path(holder.name), _Fake(corpus_executable=False))
-        self.assertEqual(compiler_compare.main(["--compilers", "gcc", "--output", str(harness.output)]), 2)
-        self.assertFalse((harness.output / "compiler_compare.json").exists())
-
-
-class TestStatusVocabulary(_CompareCase, unittest.TestCase):
-    def test_a_missing_compiler_is_not_available_and_never_a_pass(self) -> None:
-        harness = self.harness(available=("gcc",))
-        report = harness.compare(["gcc", "clang"])
-        unavailable = report["compilers"][1]
-        self.assertEqual(unavailable["name"], "clang")
-        self.assertEqual(unavailable["status"], compiler_compare.NOT_AVAILABLE)
-        self.assertIsNone(unavailable["veto"])
-        self.assertIsNone(unavailable["measurements"])
-        self.assertEqual(compiler_compare._timing_keys(unavailable), [])
-        self.assertEqual(report["summary"][compiler_compare.NOT_AVAILABLE], ["clang"])
-        self.assertEqual(report["summary"][compiler_compare.MEASURED], ["gcc"])
-        # An absent compiler is never handed to make.
-        self.assertFalse([call for call in harness.fake.make_calls() if "CC=clang" in call])
-        self.assertTrue(harness.fake.gate_calls())
-
-    def test_a_vetoed_compiler_is_reported_and_the_run_fails(self) -> None:
-        holder = tempfile.TemporaryDirectory()
-        self.addCleanup(holder.cleanup)
-        harness = _Harness(self, Path(holder.name), _Fake(failing_gate="cosim-selftest"))
-        self.assertEqual(compiler_compare.main(["--compilers", "gcc", "--output", str(harness.output)]), 1)
-        report = json.loads((harness.output / "compiler_compare.json").read_text(encoding="utf-8"))
-        self.assertEqual(report["summary"][compiler_compare.VETOED], ["gcc"])
-
-    def test_a_missing_make_is_an_error_not_a_pass(self) -> None:
-        holder = tempfile.TemporaryDirectory()
-        self.addCleanup(holder.cleanup)
-        missing = _Fake(make_missing=True)
-        harness = _Harness(self, Path(holder.name), missing)
-        self.assertEqual(compiler_compare.main(["--compilers", "gcc", "--output", str(harness.output)]), 2)
-        self.assertFalse((harness.output / "compiler_compare.json").exists())
-
-    def test_a_failing_workload_matrix_is_not_reported_as_measured(self) -> None:
-        harness = self.harness(matrix=_matrix("PASS", "FAIL"))
-        entry = harness.compare(["gcc"])["compilers"][0]
-        self.assertEqual(entry["status"], compiler_compare.WORKLOAD_FAILED)
-        self.assertEqual(entry["veto"]["failed_gate"], None)
-        self.assertEqual(entry["measurements"]["workloads_status"], "FAIL")
-
-    def test_a_failing_workload_keeps_the_evidence_for_its_failure(self) -> None:
-        harness = self.harness(matrix=_matrix("PASS", "FAIL"))
-        entry = harness.compare(["gcc"])["compilers"][0]
-        failed = [run for run in entry["measurements"]["workloads"] if run["status"] == "FAIL"]
-        self.assertEqual([run["name"] for run in failed], ["audio"])
-        self.assertIn("SR_PERF summary was not produced", failed[0]["output"])
-
-    def test_the_recorded_settings_are_the_echoed_ones_not_the_build_bookkeeping(self) -> None:
-        harness = self.harness()
-        entry = harness.compare(["gcc"])["compilers"][0]
-        settings = entry["build_settings"]
-        self.assertIn("CC=fake", settings)
-        self.assertNotIn("build_profile.py", settings)
-        self.assertEqual(entry["version"], "gcc (fake) 0.0")
-
-    def test_a_skipped_workload_is_carried_through_and_never_measured(self) -> None:
-        harness = self.harness(matrix=_matrix("SKIP", "PASS"))
-        report = harness.compare(["gcc"])
-        entry = report["compilers"][0]
-        self.assertEqual(entry["status"], compiler_compare.WORKLOAD_FAILED)
-        self.assertEqual(entry["measurements"]["workloads_status"], "SKIP")
-        self.assertEqual([run["status"] for run in entry["measurements"]["workloads"]], ["SKIP", "PASS"])
-        compiler_compare.validate_report(report)
-
-    def test_a_missing_benchmark_report_fails_the_matrix(self) -> None:
-        harness = self.harness(matrix_report=False)
-        entry = harness.compare(["gcc"])["compilers"][0]
-        self.assertEqual(entry["status"], compiler_compare.WORKLOAD_FAILED)
-        self.assertIn("benchmark report absent", entry["measurements"]["workloads_detail"])
-
-
-class TestReportShape(unittest.TestCase):
-    """The report is the evidence issue #317 rests on; its shape must be stable."""
-
-    def _report(self, root: Path | None = None, **kwargs) -> dict:
-        with tempfile.TemporaryDirectory() as tmp:
-            fake = _Fake(**kwargs)
-            with mock.patch.object(compiler_compare.subprocess, "run", fake.run), \
-                    mock.patch.object(compiler_compare.shutil, "which", fake.which):
-                report = compiler_compare.compare(["gcc", "clang"], make=MAKE,
-                                                  python=sys.executable,
-                                                  output=root or Path(tmp) / "out")
-        compiler_compare.validate_report(report)
-        returned: dict[str, Any] = report
-        return returned
-
-    @staticmethod
-    def _shape(value, path: str = "$"):
-        """The key/type skeleton of a report, independent of any measured value."""
-        if isinstance(value, dict):
-            return {key: TestReportShape._shape(child, f"{path}.{key}")
-                    for key, child in sorted(value.items())}
-        if isinstance(value, list):
-            return {"list": [TestReportShape._shape(child, f"{path}[{index}]")
-                             for index, child in enumerate(value)]}
-        return type(value).__name__
-
-    def test_the_successful_shape_is_exactly_named(self) -> None:
-        report = self._report()
-        self.assertEqual(report["schema"], "nakagawa-compiler-compare-v1")
-        self.assertEqual(report["issue"], 317)
-        self.assertIs(report["public_source_owned"], True)
-        self.assertEqual(sorted(report["summary"]), sorted(compiler_compare.STATUSES))
-        entry = report["compilers"][0]
-        self.assertEqual(sorted(entry["measurements"]), [
-            "build_seconds", "executable_bytes", "object_bytes", "workloads",
-            "workloads_detail", "workloads_status",
-        ])
-        self.assertEqual(sorted(entry["veto"]["gates"][0]), [
-            "command", "name", "output", "returncode", "status", "target",
-        ])
-
-    def test_the_shape_is_deterministic_across_runs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "out"
-            first = self._shape(self._report(root))
-            second = self._shape(self._report(root))
-        self.assertEqual(json.dumps(first, sort_keys=True), json.dumps(second, sort_keys=True))
-
-    def test_a_vetoed_entry_reports_no_measurement_shape(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            report = self._report(Path(tmp) / "out", failing_gate="cpu-lle-selftest")
-        for entry in report["compilers"]:
-            self.assertEqual(entry["status"], compiler_compare.VETOED)
-            self.assertEqual(entry["veto"]["failed_gate"], "cpu-lle-selftest")
-            self.assertEqual(self._shape(entry["measurements"]), "NoneType")
-            self.assertEqual([gate["name"] for gate in entry["veto"]["gates"]],
-                             list(compiler_compare.GATE_ORDER))
-
-    def test_an_unavailable_compiler_is_reported_next_to_a_measured_one(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            report = self._report(Path(tmp) / "out", available=("gcc",))
-        statuses = {entry["name"]: entry["status"] for entry in report["compilers"]}
-        self.assertEqual(statuses, {"gcc": compiler_compare.MEASURED,
-                                    "clang": compiler_compare.NOT_AVAILABLE})
-        self.assertEqual(report["summary"][compiler_compare.NOT_AVAILABLE], ["clang"])
-
-
-class TestReportValidator(unittest.TestCase):
-    """The ordering invariant is enforced in the product, not only in a test."""
-
-    def _vetoed_entry(self) -> dict:
-        gates = [{"name": name, "target": target, "status": "PASS", "returncode": 0,
-                  "command": ["make", target], "output": ""}
-                 for name, target, _ in compiler_compare.GATE_CHAIN[:2]]
-        gates[-1]["status"] = "FAIL"
-        gates[-1]["returncode"] = 1
+    def workloads(self, compiler_path: str, make: str, python: str, settings: dict[str, str],
+                  perf_dir: Path, build_prefix: Path, *,
+                  env: dict[str, str]) -> dict[str, Any]:
+        del make, python, env
+        self.events.append("runtime-workloads")
+        self.workload_calls.append({
+            "compiler_path": compiler_path,
+            "linker": settings["LINKER_SELECTION"],
+            "build_prefix": build_prefix,
+            "perf_dir": perf_dir,
+            "cc": compiler_path,
+            "ldflags": settings["LDFLAGS"],
+        })
         return {
-            "name": "clang", "path": "/usr/bin/clang", "version": "clang 1", "build_root": "b",
-            "build_settings": "", "measurements": None,
-            "veto": {"status": "FAIL", "failed_gate": gates[-1]["name"], "gates": gates},
-            "status": compiler_compare.VETOED,
+            "status": self.workload_status,
+            "detail": "fake workload detail" if self.workload_status != compiler_compare.GATE_PASS else None,
+            "workloads": [{
+                "name": "audio", "targets": ["audio-selftest"],
+                "status": self.workload_status, "duration_s": 1.25,
+                "summary": "build/perf/audio/perf.json", "output": "fake workload output",
+            }],
         }
 
-    def _report(self, entry: dict) -> dict:
-        return {"schema": compiler_compare.SCHEMA, "issue": compiler_compare.ISSUE,
-                "public_source_owned": True, "compilers": [entry]}
 
-    def test_a_clean_vetoed_entry_is_accepted(self) -> None:
-        compiler_compare.validate_report(self._report(self._vetoed_entry()))
+class CompilerCompareTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.output = Path(self.temp.name) / "out"
+        self.actual_workload_measurements = compiler_compare._workload_measurements
+        self.fake = FakeToolchain()
+        patches: list[Any] = [
+            mock.patch.object(compiler_compare.shutil, "which", self.fake.which),
+            mock.patch.object(compiler_compare, "_run", self.fake.run),
+            mock.patch.object(compiler_compare, "_measurement_trials", self.fake.trials),
+            mock.patch.object(compiler_compare, "_workload_measurements", self.fake.workloads),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
 
-    def test_a_timing_published_under_a_veto_is_rejected(self) -> None:
-        entry = self._vetoed_entry()
-        entry["build_seconds"] = 3.5
+    def compare(self, *, compilers: list[str] | None = None,
+                linkers: list[str] | None = None) -> dict[str, Any]:
+        return compiler_compare.compare(
+            compilers or ["gcc"], linkers or ["default"], make="mingw32-make",
+            python=sys.executable, output=self.output, repeats=3,
+        )
+
+    def test_settings_parser_keeps_exact_effective_flag_lines(self) -> None:
+        parsed = compiler_compare._parse_settings(
+            "build-profile bookkeeping\nCC=clang\nCFLAGS=-O0 -fno-fast-math\n"
+            "LDFLAGS=-fuse-ld=lld\nCODEGEN_USER_ARGS=--omit-aot=0x08800000\n"
+        )
+        self.assertEqual(parsed["CC"], "clang")
+        self.assertEqual(parsed["CFLAGS"], "-O0 -fno-fast-math")
+        self.assertEqual(parsed["LDFLAGS"], "-fuse-ld=lld")
+        self.assertEqual(parsed["CODEGEN_USER_ARGS"], "--omit-aot=0x08800000")
+
+    def test_windows_make_paths_use_forward_slashes(self) -> None:
+        self.assertEqual(
+            compiler_compare._make_path(r"C:\msys64\ucrt64\bin\mingw32-make.exe"),
+            "C:/msys64/ucrt64/bin/mingw32-make.exe",
+        )
+        self.assertEqual(
+            compiler_compare._make_build_path(compiler_compare.ROOT / "build" / "cc317"),
+            "build/cc317",
+        )
+
+    def test_first_error_prefers_compiler_and_source_owned_failure_lines(self) -> None:
+        linker = "ld.exe: cannot find generated_fixture.o: No such file or directory\ncollect2.exe: error: ld returned 1"
+        smoke = "PRODUCTION_SMOKE_VERIFY status=FAIL: link map omitted object\nmake: *** Error 1"
+        self.assertEqual(compiler_compare._first_error(linker), linker.splitlines()[0])
+        self.assertEqual(compiler_compare._first_error(smoke), smoke.splitlines()[0])
+
+    def test_fast_math_and_reassociation_are_rejected(self) -> None:
+        for flag in compiler_compare.FORBIDDEN_FP_FLAGS:
+            with self.subTest(flag=flag), self.assertRaises(compiler_compare.CompareError):
+                compiler_compare._fp_flags_ok({"CFLAGS": f"-O2 {flag}"})
+
+    def test_ucrt_linker_may_live_in_the_target_specific_toolchain_subtree(self) -> None:
+        compiler_compare._check_ucrt_paths(
+            "C:/msys64/ucrt64/bin/gcc.exe",
+            "C:/msys64/ucrt64/x86_64-w64-mingw32/bin/ld.exe",
+            {"SDL3_PROVIDER": "msys2_ucrt64", "SDL3_DIR": "C:/msys64/ucrt64"},
+        )
+
+    def test_gcc_only_macro_tracking_flag_is_removed_for_controlled_comparison(self) -> None:
+        flags = compiler_compare._comparison_recomp_flags(
+            "-O0 -w -fno-strict-aliasing -ftrack-macro-expansion=0 "
+            "-DSR_FLIGHT_RECORDER_LINKED",
+        )
+        self.assertNotIn(compiler_compare.GCC_ONLY_TRACKING_FLAG, flags)
+        self.assertIn("-fno-strict-aliasing", flags)
+
+    def test_optimization_level_is_pinned_after_existing_make_flags(self) -> None:
+        flags = compiler_compare._set_optimization_level("-O2 -Wall -fno-strict-aliasing", "-O0")
+        self.assertEqual(flags, "-Wall -fno-strict-aliasing -O0")
+
+    def test_veto_precedes_every_measurement_and_runs_required_tests(self) -> None:
+        report = self.compare()
+        entry = report["toolchains"][0]
+        self.assertEqual(entry["status"], compiler_compare.STATUS_MEASURED)
+        self.assertEqual(self.fake.gate_calls, [name for name, _ in compiler_compare.GATE_CHAIN])
+        self.assertEqual(len(self.fake.measurement_calls), 1)
+        self.assertEqual(len(self.fake.workload_calls), 1)
+        self.assertEqual(self.fake.events[-2:], ["compile-measurements", "runtime-workloads"])
+        self.assertEqual(entry["veto"]["status"], "PASS")
+        self.assertEqual(entry["measurements"]["repeats"], 3)
+        self.assertEqual(entry["measurements"]["workloads_status"], compiler_compare.GATE_PASS)
+        self.assertEqual(entry["build_settings"]["CONTROL_FLAGS"], " ".join(compiler_compare.CONTROL_FLAGS))
+        self.assertIn("fake version", entry["compiler_version"])
+        self.assertIn("fake version", entry["linker_version"])
+        self.assertEqual(entry["compiler_target"], "x86_64-w64-mingw32")
+
+    def test_failed_veto_stops_at_first_error_and_publishes_no_measurement(self) -> None:
+        self.fake.failing_gate = "display-smoke"
+        report = self.compare()
+        entry = report["toolchains"][0]
+        self.assertEqual(entry["status"], compiler_compare.STATUS_FAILED_VETO)
+        self.assertEqual(entry["veto"]["failed_gate"], "display-smoke")
+        self.assertIn("FIRST ERROR", entry["veto"]["gates"][-1]["output"])
+        self.assertIn("FIRST ERROR", entry["veto"]["gates"][-1]["first_error"])
+        self.assertIsNone(entry["measurements"])
+        self.assertEqual(compiler_compare._timing_keys(entry), [])
+        self.assertEqual(self.fake.measurement_calls, [])
+        self.assertEqual(self.fake.workload_calls, [])
+        self.assertEqual(len(self.fake.gate_calls), 3)
+
+    def test_runtime_matrix_uses_each_toolchain_and_its_own_build_prefix(self) -> None:
+        report = self.compare(compilers=["gcc", "clang"], linkers=["default", "lld"])
+        self.assertEqual(len(self.fake.workload_calls), 4)
+        prefixes = [call["build_prefix"] for call in self.fake.workload_calls]
+        self.assertEqual(len(set(prefixes)), 4)
+        for call in self.fake.workload_calls:
+            self.assertEqual(call["cc"], call["compiler_path"])
+            self.assertEqual(
+                "-fuse-ld=lld" in call["ldflags"], call["linker"] == "lld",
+            )
+        self.assertEqual([entry["status"] for entry in report["toolchains"]],
+                         [compiler_compare.STATUS_MEASURED] * 4)
+
+    def test_runtime_workload_commands_use_each_rows_build_root(self) -> None:
+        commands: list[list[str]] = []
+
+        def capture(command: list[str], *, env: dict[str, str],
+                    cwd: Path = compiler_compare.ROOT) -> compiler_compare.Outcome:
+            del env, cwd
+            commands.append(list(command))
+            output = Path(command[command.index("--output") + 1])
+            (output / "benchmark.json").write_text(json.dumps({
+                "schema": compiler_compare.PERF_SCHEMA,
+                "runs": [{
+                    "name": "audio", "targets": ["audio-selftest"],
+                    "status": compiler_compare.GATE_PASS, "duration_s": 1.0,
+                    "summary": None,
+                }],
+            }), encoding="utf-8")
+            return compiler_compare.Outcome(0, "", 0.001)
+
+        rows = [(compiler, linker) for compiler in ("gcc", "clang")
+                for linker in ("default", "lld")]
+        row_prefixes = [self.output / "rows" / compiler / linker for compiler, linker in rows]
+        settings = {
+            "CFLAGS": "-O0 -fno-fast-math -fno-associative-math",
+            "GE_CFLAGS": "",
+            "RECOMP_FLAGS": "-O0 -fno-fast-math -fno-associative-math",
+            "LIBS": "-lm",
+            "SDL3_DIR": "C:/msys64/ucrt64",
+        }
+        with mock.patch.object(compiler_compare, "_run", side_effect=capture):
+            for (compiler, linker), build_prefix in zip(rows, row_prefixes, strict=True):
+                row_settings = {
+                    **settings,
+                    "LDFLAGS": "-fuse-ld=lld" if linker == "lld" else "",
+                    "RECOMP_CC_IS_CLANG_OVERRIDE": "clang" if compiler == "clang" else "",
+                }
+                self.actual_workload_measurements(
+                    f"/fake/bin/{compiler}.exe", "/fake/bin/mingw32-make.exe", sys.executable,
+                    row_settings, build_prefix / "perf", build_prefix, env={},
+                )
+
+        self.assertEqual(len(commands), len(rows))
+        for command, build_prefix in zip(commands, row_prefixes, strict=True):
+            make_args = [command[index + 1] for index, token in enumerate(command[:-1])
+                         if token == "--make-arg"]
+            expected = f"BUILD_ROOT={compiler_compare._make_build_path(build_prefix)}"
+            self.assertIn(expected, make_args)
+            self.assertEqual([item for item in make_args if item.startswith("BUILD_ROOT=")], [expected])
+
+    def test_failed_runtime_matrix_is_retained_after_the_veto(self) -> None:
+        self.fake.workload_status = compiler_compare.GATE_FAIL
+        report = self.compare()
+        entry = report["toolchains"][0]
+        self.assertEqual(entry["status"], compiler_compare.STATUS_WORKLOAD_FAILED)
+        self.assertEqual(entry["measurements"]["workloads_status"], compiler_compare.GATE_FAIL)
+        self.assertIn("fake workload detail", entry["measurements"]["workloads_detail"])
+        self.assertIn("fake workload output", entry["measurements"]["workloads"][0]["output"])
+        compiler_compare.validate_report(report)
+
+    def test_skipped_runtime_workload_is_never_reported_as_measured(self) -> None:
+        self.fake.workload_status = compiler_compare.GATE_SKIP
+        report = self.compare()
+        entry = report["toolchains"][0]
+        self.assertEqual(entry["status"], compiler_compare.STATUS_WORKLOAD_FAILED)
+        self.assertEqual(entry["measurements"]["workloads_status"], compiler_compare.GATE_SKIP)
+        compiler_compare.validate_report(report)
+
+    def test_veto_gate_order_includes_native_vfpu_and_exception_paths(self) -> None:
+        self.assertEqual(compiler_compare.GATE_ORDER, (
+            "production-smoke", "production-smoke-gap", "display-smoke", "cosim-selftest",
+            "cosim-mutants", "native-core-tests", "vfpu-interp-selftest", "fp-convert-selftest",
+            "cpu-lle-selftest", "stale-code-selftest",
+        ))
+        self.assertIn(("cosim-selftest", "cosim-selftest"), compiler_compare.GATE_CHAIN)
+        self.assertIn(("display-smoke", "display-smoke-run"), compiler_compare.GATE_CHAIN)
+        self.assertIn(("native-core-tests", "native-core-tests"), compiler_compare.GATE_CHAIN)
+        self.assertIn(("vfpu-interp-selftest", "vfpu-interp-selftest"), compiler_compare.GATE_CHAIN)
+        self.assertIn(("cpu-lle-selftest", "cpu-lle-selftest"), compiler_compare.GATE_CHAIN)
+
+    def test_default_and_lld_are_distinct_toolchain_rows(self) -> None:
+        report = self.compare(linkers=["default", "lld"])
+        self.assertEqual([entry["name"] for entry in report["toolchains"]],
+                         ["gcc/default", "gcc/lld"])
+        self.assertEqual([entry["linker_selection"] for entry in report["toolchains"]],
+                         ["default", "lld"])
+        lld_settings = report["toolchains"][1]["build_settings"]
+        self.assertIn("-fuse-ld=lld", lld_settings["LDFLAGS"])
+
+    def test_hashes_are_compared_across_compiler_rows(self) -> None:
+        report = self.compare(compilers=["gcc", "clang"])
+        self.assertEqual(report["semantic_hash_comparison"]["status"], "MATCH")
+        clang_settings = report["toolchains"][1]["build_settings"]
+        self.assertEqual(clang_settings["RECOMP_CC_IS_CLANG_OVERRIDE"], "clang")
+
+    def test_minimum_median_and_hash_stability_are_reported(self) -> None:
+        report = self.compare()
+        summary = report["toolchains"][0]["measurements"]["summary"]
+        self.assertEqual(summary["generated_c_compile_wall_seconds"]["min"], 3.0)
+        self.assertEqual(summary["generated_c_compile_wall_seconds"]["median"], 4.0)
+        self.assertEqual(summary["semantic_sha256"], "a" * 64)
+        self.assertTrue(summary["semantic_hash_stable"])
+
+    def test_v2_report_keeps_runtime_workload_results_in_its_shape(self) -> None:
+        report = self.compare()
+        self.assertEqual(report["schema"], "nakagawa-compiler-compare-v2")
+        self.assertIs(report["public_source_owned"], True)
+        settings = report["toolchains"][0]["build_settings"]
+        self.assertEqual(settings["CC"], "/fake/bin/gcc.exe")
+        self.assertNotIn("build_profile.py", json.dumps(settings))
+        measurements = report["toolchains"][0]["measurements"]
+        self.assertEqual(sorted(measurements), [
+            "repeats", "summary", "trials", "workloads", "workloads_detail", "workloads_status",
+        ])
+        self.assertEqual(measurements["workloads"][0]["name"], "audio")
+
+    def test_report_shape_is_deterministic_across_runs(self) -> None:
+        def shape(value):
+            if isinstance(value, dict):
+                return {key: shape(child) for key, child in sorted(value.items())}
+            if isinstance(value, list):
+                return [shape(child) for child in value]
+            return type(value).__name__
+
+        first = shape(self.compare())
+        second = shape(self.compare())
+        self.assertEqual(first, second)
+
+    def test_report_validator_rejects_foreign_schema_unknown_and_out_of_order_gates(self) -> None:
+        self.fake.failing_gate = "display-smoke"
+        report = self.compare()
+        gates = report["toolchains"][0]["veto"]["gates"]
+        original_name = gates[0]["name"]
+        gates.reverse()
         with self.assertRaises(compiler_compare.CompareError):
-            compiler_compare.validate_report(self._report(entry))
-
-    def test_a_timing_published_under_an_unavailable_compiler_is_rejected(self) -> None:
-        entry = {"name": "clang", "status": compiler_compare.NOT_AVAILABLE,
-                 "veto": None, "measurements": None, "build_seconds": 3.5}
+            compiler_compare.validate_report(report)
+        gates.reverse()
+        gates[0]["name"] = "not-a-veto-gate"
         with self.assertRaises(compiler_compare.CompareError):
-            compiler_compare.validate_report(self._report(entry))
-
-    def test_a_workload_timing_published_under_a_veto_is_rejected(self) -> None:
-        entry = self._vetoed_entry()
-        entry["measurements"] = {"workloads": [{"name": "cosim", "duration_s": 1.0}]}
+            compiler_compare.validate_report(report)
+        gates[0]["name"] = original_name
+        report["toolchains"][0]["veto"]["failed_gate"] = "production-smoke"
         with self.assertRaises(compiler_compare.CompareError):
-            compiler_compare.validate_report(self._report(entry))
-
-    def test_a_measurement_published_under_a_veto_is_rejected(self) -> None:
-        entry = self._vetoed_entry()
-        entry["measurements"] = {"build_seconds": 1.0, "executable_bytes": 1, "object_bytes": 1,
-                                 "workloads_status": "PASS", "workloads": []}
-        with self.assertRaises(compiler_compare.CompareError):
-            compiler_compare.validate_report(self._report(entry))
-
-    def test_a_veto_naming_a_gate_that_did_not_fail_is_rejected(self) -> None:
-        entry = self._vetoed_entry()
-        entry["veto"]["failed_gate"] = compiler_compare.CORPUS_GATE
-        with self.assertRaises(compiler_compare.CompareError):
-            compiler_compare.validate_report(self._report(entry))
-
-    def test_out_of_order_gates_are_rejected(self) -> None:
-        entry = self._vetoed_entry()
-        entry["veto"]["gates"].reverse()
-        with self.assertRaises(compiler_compare.CompareError):
-            compiler_compare.validate_report(self._report(entry))
-
-    def test_an_unknown_gate_is_rejected(self) -> None:
-        entry = self._vetoed_entry()
-        entry["veto"]["gates"][0]["name"] = "smoke-of-the-week"
-        with self.assertRaises(compiler_compare.CompareError):
-            compiler_compare.validate_report(self._report(entry))
-
-    def test_a_measured_compiler_must_carry_its_measurements(self) -> None:
-        entry = self._vetoed_entry()
-        entry["status"] = compiler_compare.MEASURED
-        entry["veto"] = {"status": "PASS", "failed_gate": None, "gates": entry["veto"]["gates"][:2]}
-        with self.assertRaises(compiler_compare.CompareError):
-            compiler_compare.validate_report(self._report(entry))
-
-    def test_an_unavailable_compiler_may_not_carry_a_veto(self) -> None:
-        entry = self._vetoed_entry()
-        entry["status"] = compiler_compare.NOT_AVAILABLE
-        with self.assertRaises(compiler_compare.CompareError):
-            compiler_compare.validate_report(self._report(entry))
-
-    def test_a_foreign_schema_is_rejected(self) -> None:
-        report = self._report(self._vetoed_entry())
-        report["schema"] = "something-else"
+            compiler_compare.validate_report(report)
+        report["toolchains"][0]["veto"]["failed_gate"] = gates[-1]["name"]
+        report["schema"] = "foreign-schema"
         with self.assertRaises(compiler_compare.CompareError):
             compiler_compare.validate_report(report)
 
+    def test_report_validator_rejects_timing_under_unavailable_compiler(self) -> None:
+        self.fake.available = ()
+        report = self.compare(compilers=["clang"])
+        report["toolchains"][0]["duration_s"] = 1.0
+        with self.assertRaises(compiler_compare.CompareError):
+            compiler_compare.validate_report(report)
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_report_validator_rejects_missing_measurements_and_unavailable_veto(self) -> None:
+        report = self.compare()
+        measured = report["toolchains"][0]
+        measured["measurements"] = None
+        with self.assertRaises(compiler_compare.CompareError):
+            compiler_compare.validate_report(report)
+
+        report = self.compare()
+        unavailable = report["toolchains"][0]
+        unavailable["status"] = compiler_compare.STATUS_NOT_AVAILABLE
+        with self.assertRaises(compiler_compare.CompareError):
+            compiler_compare.validate_report(report)
+
+    def test_missing_compiler_is_not_available_and_never_measured(self) -> None:
+        self.fake.available = ("gcc",)
+        report = self.compare(compilers=["clang"])
+        entry = report["toolchains"][0]
+        self.assertEqual(entry["status"], compiler_compare.STATUS_NOT_AVAILABLE)
+        self.assertIsNone(entry["measurements"])
+        self.assertEqual(self.fake.measurement_calls, [])
+
+    def test_missing_compiler_can_be_reported_beside_a_measured_pair(self) -> None:
+        report = self.compare(compilers=["gcc", "missing"])
+        statuses = {entry["name"]: entry["status"] for entry in report["toolchains"]}
+        self.assertEqual(statuses, {
+            "gcc/default": compiler_compare.STATUS_MEASURED,
+            "missing/default": compiler_compare.STATUS_NOT_AVAILABLE,
+        })
+        self.assertFalse(any("CC=missing" in command for command in self.fake.commands))
+
+    def test_missing_make_is_an_error_and_never_a_measurement(self) -> None:
+        with self.assertRaises(compiler_compare.CompareError):
+            compiler_compare.compare(["gcc"], ["default"], make="missing-make",
+                                     python=sys.executable, output=self.output)
+        self.assertEqual(self.fake.gate_calls, [])
+        self.assertEqual(self.fake.measurement_calls, [])
+
+    def test_report_validator_rejects_timing_leaked_under_failed_veto(self) -> None:
+        self.fake.failing_gate = "cosim-selftest"
+        report = self.compare()
+        entry = report["toolchains"][0]
+        entry["generated_c_compile_wall_seconds"] = 1.0
+        with self.assertRaises(compiler_compare.CompareError):
+            compiler_compare.validate_report(report)
+
+    def test_report_markdown_has_summary_table_and_no_timing_for_failure(self) -> None:
+        self.fake.failing_gate = "cosim-selftest"
+        report = self.compare()
+        rendered = compiler_compare.render_markdown(report)
+        self.assertIn("| Compiler | Linker | Veto |", rendered)
+        self.assertIn("FAILED_VETO", rendered)
+        self.assertIn("cosim-selftest", rendered)
+        self.assertIn("| — | — | — | — | — | — | — |", rendered)
+
+    def test_main_writes_json_and_markdown_report_files(self) -> None:
+        with mock.patch("sys.stdout", io.StringIO()):
+            result = compiler_compare.main([
+                "--compilers", "gcc", "--linkers", "default",
+                "--make", "mingw32-make", "--python", sys.executable,
+                "--repeats", "3", "--output", str(self.output),
+            ])
+        self.assertEqual(result, 0)
+        report = json.loads((self.output / "compiler_compare.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["schema"], compiler_compare.SCHEMA)
+        markdown = (self.output / "compiler_compare.md").read_text(encoding="utf-8")
+        self.assertIn("Semantic SHA-256", markdown)
+
+    def test_main_writes_veto_report_and_returns_failure(self) -> None:
+        self.fake.failing_gate = "cosim-selftest"
+        with mock.patch("sys.stdout", io.StringIO()):
+            result = compiler_compare.main([
+                "--compilers", "gcc", "--linkers", "default",
+                "--make", "mingw32-make", "--python", sys.executable,
+                "--repeats", "3", "--output", str(self.output),
+            ])
+        self.assertEqual(result, 1)
+        report = json.loads((self.output / "compiler_compare.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["summary"][compiler_compare.STATUS_FAILED_VETO], ["gcc/default"])
+
+    def test_main_returns_named_failure_when_requested_compiler_is_missing(self) -> None:
+        self.fake.available = ("gcc",)
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            result = compiler_compare.main([
+                "--compilers", "gcc,clang", "--linkers", "default",
+                "--make", "mingw32-make", "--python", sys.executable,
+                "--repeats", "3", "--output", str(self.output),
+            ])
+        self.assertNotEqual(result, 0)
+        self.assertIn('"name": "clang/default"', output.getvalue())
+        self.assertIn('"reason": "compiler not found: clang"', output.getvalue())
+
+    def test_main_missing_make_returns_two_without_a_report(self) -> None:
+        original_which = self.fake.which
+
+        def missing_make(name: str) -> str | None:
+            return None if name == "mingw32-make" else original_which(name)
+
+        with mock.patch.object(compiler_compare.shutil, "which", side_effect=missing_make), \
+                mock.patch("sys.stderr", io.StringIO()):
+            result = compiler_compare.main([
+                "--compilers", "gcc", "--linkers", "default",
+                "--make", "mingw32-make", "--python", sys.executable,
+                "--repeats", "3", "--output", str(self.output),
+            ])
+        self.assertEqual(result, 2)
+        self.assertFalse((self.output / "compiler_compare.json").exists())
+
+    def test_report_reader_rejects_malformed_fake_compiler_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "events.jsonl"
+            path.write_text("{not-json}\n", encoding="utf-8")
+            with self.assertRaises(compiler_compare.CompareError):
+                compiler_compare._read_events(path)
+
+    def test_fake_compiler_events_parse_into_times_sizes_and_semantic_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "fixture.o").write_bytes(b"o" * 11)
+            (root / "fixture.exe").write_bytes(b"e" * 17)
+            events = [
+                {
+                    "category": "compile", "generated_c": True, "duration_s": 0.25,
+                    "peak_working_set_bytes": 12345, "compiler": "gcc",
+                    "argv": ["-O0", "-c", "fixture_recomp_0.c"],
+                },
+                {
+                    "category": "link", "generated_c": False, "duration_s": 0.10,
+                    "peak_working_set_bytes": 23456, "compiler": "gcc",
+                    "argv": ["-O0", "-o", "fixture.exe", "fixture.o"],
+                },
+            ]
+            event_file = root / "compiler_events.jsonl"
+            event_file.write_text(
+                "\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8",
+            )
+            parsed = compiler_compare._read_events(event_file)
+            summary = compiler_compare._trial_summary(parsed, root, [("cosim-selftest", "PASS\n")])
+        self.assertEqual(summary["generated_c_compile_wall_seconds"], 0.25)
+        self.assertEqual(summary["peak_working_set_bytes"], 12345)
+        self.assertEqual(summary["link_wall_seconds"], 0.10)
+        self.assertEqual(summary["object_bytes"], 11)
+        self.assertEqual(summary["executable_bytes"], 17)
+        self.assertEqual(len(summary["semantic_sha256"]), 64)
+        self.assertEqual(summary["compiler_commands"][0]["argv"][0], "-O0")
+        with self.assertRaises(compiler_compare.CompareError):
+            compiler_compare._trial_summary(
+                parsed, root, [("cosim-selftest", "PASS\n")], linker="lld",
+            )
+
+    def test_trial_without_an_executable_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            events = [
+                {"category": "compile", "generated_c": True, "duration_s": 0.25,
+                 "peak_working_set_bytes": 12345, "compiler": "gcc", "argv": ["-c", "x_recomp.c"]},
+                {"category": "link", "generated_c": False, "duration_s": 0.10,
+                 "peak_working_set_bytes": 23456, "compiler": "gcc", "argv": ["-o", "x.exe"]},
+            ]
+            with self.assertRaisesRegex(compiler_compare.CompareError, "produced no executable"):
+                compiler_compare._trial_summary(events, root, [("production-smoke", "PASS\n")])
+
+    def test_compiler_argument_parser_identifies_generated_c_and_link_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            for source_name in ("fixture_recomp.c", "fixture_recomp_0.c"):
+                source = root / source_name
+                source.write_text("void fixture(void) {}\n", encoding="utf-8")
+                category, generated = compiler_compare._classify_compiler_args(
+                    ["-O0", "-c", str(source), "-o", str(root / (source.stem + ".o"))], root,
+                )
+                self.assertEqual((category, generated), ("compile", True), source_name)
+            category, generated = compiler_compare._classify_compiler_args(
+                ["-O0", "-o", str(root / "fixture.exe"), str(root / "fixture.o")], root,
+            )
+            self.assertEqual((category, generated), ("link", False))
+
+    def test_semantic_hash_normalizes_trial_build_roots(self) -> None:
+        first = compiler_compare._semantic_digest([("display-smoke-run", "PASS: C:/root/a")],
+                                                  Path("C:/root/a"))
+        second = compiler_compare._semantic_digest([("display-smoke-run", "PASS: C:/root/b")],
+                                                   Path("C:/root/b"))
+        self.assertEqual(first, second)
+
+    def test_semantic_hash_normalizes_relative_make_build_roots(self) -> None:
+        first_root = compiler_compare.ROOT / "build" / "cc317" / "trial-1"
+        second_root = compiler_compare.ROOT / "build" / "cc317" / "trial-2"
+        first = compiler_compare._semantic_digest(
+            [("production-smoke", "wrote build/cc317/trial-1/game.exe\nPASS\n")], first_root,
+        )
+        second = compiler_compare._semantic_digest(
+            [("production-smoke", "wrote build/cc317/trial-2/game.exe\nPASS\n")], second_root,
+        )
+        self.assertEqual(first, second)
+
+    def test_semantic_hash_ignores_host_addresses_and_timing_fields(self) -> None:
+        first = "SR_HOST=0x00000277B35C4040 -> calling fn 00007FF763502801 aot_ms=111.519 encoder_write_ms=4242 status=PASS"
+        second = "SR_HOST=0x000001A2B1B57040 -> calling fn 00007FF6BA002801 aot_ms=144.635 encoder_write_ms=4218 status=PASS"
+        a = compiler_compare._semantic_digest([("production-smoke", first)], compiler_compare.ROOT / "build" / "a")
+        b = compiler_compare._semantic_digest([("production-smoke", second)], compiler_compare.ROOT / "build" / "b")
+        self.assertEqual(a, b)
+
+
+class RuntimeWorkloadRunnerTests(unittest.TestCase):
+    def _run_with_matrix(self, matrix: dict[str, Any] | None, captured: list[dict[str, Any]]):
+        def fake_run(command: list[str], *, env: dict[str, str], **_kwargs):
+            output_dir = Path(command[command.index("--output") + 1])
+            captured.append({
+                "command": command,
+                "cc": env.get("CC"),
+                "ldflags": env.get("LDFLAGS"),
+                "cflags": env.get("CFLAGS"),
+            })
+            if matrix is not None:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / "benchmark.json").write_text(json.dumps(matrix), encoding="utf-8")
+            return compiler_compare.Outcome(0, "fake runner output\n", 0.1)
+
+        return fake_run
+
+    @staticmethod
+    def _matrix() -> dict[str, Any]:
+        return {
+            "schema": compiler_compare.PERF_SCHEMA,
+            "runs": [{
+                "name": "audio", "targets": ["audio-selftest"], "status": "PASS",
+                "duration_s": 1.25, "summary": "build/perf/audio/perf.json", "output": "PASS",
+            }],
+        }
+
+    def test_runtime_matrix_inherits_compiler_flags_and_keeps_workload_times(self) -> None:
+        captured: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = {
+                "CFLAGS": "-O0 -fno-fast-math", "LDFLAGS": "-lm -fuse-ld=lld",
+                "RECOMP_CC_IS_CLANG_OVERRIDE": "clang", "LINKER_SELECTION": "lld",
+            }
+            with mock.patch.object(compiler_compare, "_run",
+                                  self._run_with_matrix(self._matrix(), captured)):
+                result = compiler_compare._workload_measurements(
+                    "C:/msys64/ucrt64/bin/clang.exe", "C:/msys64/ucrt64/bin/mingw32-make.exe",
+                    sys.executable, settings, root / "perf", root / "perf-build",
+                    env={"PATH": "fake"},
+                )
+        self.assertEqual(result["status"], compiler_compare.GATE_PASS)
+        self.assertEqual(result["workloads"][0]["duration_s"], 1.25)
+        self.assertEqual(captured[0]["cc"], "C:/msys64/ucrt64/bin/clang.exe")
+        self.assertIn("-fuse-ld=lld", captured[0]["ldflags"])
+        self.assertIn("-fno-fast-math", captured[0]["cflags"])
+        self.assertIn("--build-prefix", captured[0]["command"])
+        make_args = [captured[0]["command"][index + 1]
+                     for index, value in enumerate(captured[0]["command"][:-1])
+                     if value == "--make-arg"]
+        self.assertIn("CC=C:/msys64/ucrt64/bin/clang.exe", make_args)
+        self.assertIn("LDFLAGS=-lm -fuse-ld=lld", make_args)
+
+    def test_missing_runtime_matrix_report_fails_with_its_reason(self) -> None:
+        captured: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "perf").mkdir()
+            (root / "perf" / "benchmark.json").write_text('{"stale": true}', encoding="utf-8")
+            with mock.patch.object(compiler_compare, "_run",
+                                  self._run_with_matrix(None, captured)):
+                result = compiler_compare._workload_measurements(
+                    "C:/msys64/ucrt64/bin/gcc.exe", "C:/msys64/ucrt64/bin/mingw32-make.exe",
+                    sys.executable, {"CFLAGS": "-O0", "LDFLAGS": "-lm"},
+                    root / "perf", root / "perf-build",
+                    env={"PATH": "fake"},
+                )
+        self.assertEqual(result["status"], compiler_compare.GATE_FAIL)
+        self.assertIn("benchmark report absent", result["detail"])
+        self.assertEqual(result["workloads"], [])
 
 
 class TimingOnlyWorkloadTests(unittest.TestCase):
-    """The platform ladder clears SR_*, so its benchmark runs can never write a perf summary (#317)."""
+    """The platform ladder clears SR_*, so its benchmark runs are timed, not failed."""
 
     def _run(self, name: str) -> dict:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
         import run_perf_benchmarks
         done = subprocess.CompletedProcess(args=[], returncode=0, stdout="built and ran\n")
         with tempfile.TemporaryDirectory() as temp, \
@@ -503,7 +701,52 @@ class TimingOnlyWorkloadTests(unittest.TestCase):
         self.assertNotIn("note", record)
 
     def test_every_timing_only_workload_is_a_real_ladder_workload(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
         import run_perf_benchmarks
         names = {name for name, _targets in run_perf_benchmarks.WORKLOADS}
         self.assertTrue(run_perf_benchmarks.TIMING_ONLY <= names)
         self.assertTrue(all(name.startswith("platform-ladder-") for name in run_perf_benchmarks.TIMING_ONLY))
+
+    def test_runtime_runner_passes_explicit_compiler_and_linker_to_make(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import run_perf_benchmarks
+        captured: list[list[str]] = []
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout="built and ran\n")
+
+        def fake_run(command, **_kwargs):
+            captured.append(list(command))
+            return done
+
+        with tempfile.TemporaryDirectory() as temp, \
+                mock.patch.object(run_perf_benchmarks.subprocess, "run", side_effect=fake_run):
+            run_perf_benchmarks._run_one(
+                "make", sys.executable, "audio", ("audio-selftest",), Path(temp), False,
+                "build/cc317/gcc/lld", make_assignments=("CC=C:/msys64/ucrt64/bin/gcc.exe",
+                                                        "LDFLAGS=-fuse-ld=lld"),
+            )
+        self.assertIn("CC=C:/msys64/ucrt64/bin/gcc.exe", captured[0])
+        self.assertIn("LDFLAGS=-fuse-ld=lld", captured[0])
+
+    def test_runtime_runner_cli_forwards_make_assignments(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import run_perf_benchmarks
+        captured: list[tuple[str, ...]] = []
+
+        def fake_run_one(*_args, make_assignments=(), **_kwargs):
+            captured.append(make_assignments)
+            return {"name": "audio", "status": "PASS"}
+
+        with tempfile.TemporaryDirectory() as temp, \
+                mock.patch.object(run_perf_benchmarks.shutil, "which", return_value="make"), \
+                mock.patch.object(run_perf_benchmarks, "WORKLOADS", (("audio", ("audio-selftest",)),)), \
+                mock.patch.object(run_perf_benchmarks, "_run_one", side_effect=fake_run_one):
+            result = run_perf_benchmarks.main([
+                "--make", "make", "--output", temp, "--make-arg", "CC=clang",
+                "--make-arg", "LDFLAGS=-fuse-ld=lld",
+            ])
+        self.assertEqual(result, 0)
+        self.assertEqual(captured, [("CC=clang", "LDFLAGS=-fuse-ld=lld")])
+
+
+if __name__ == "__main__":
+    unittest.main()
