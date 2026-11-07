@@ -547,7 +547,7 @@ def _wrapper_cc(python: str, compiler_path: str) -> str:
         on_path = shutil.which(python_path.name) or shutil.which("python")
         if on_path and Path(on_path).resolve() == python_path.resolve():
             launcher = python_path.name
-        elif os.name == "nt":
+        elif sys.platform == "win32":
             short_buffer = ctypes.create_unicode_buffer(32768)
             short_length = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW(
                 str(python_path), short_buffer, len(short_buffer),
@@ -1034,7 +1034,7 @@ class _PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
 
 
 def _process_tree_working_set(root_pid: int) -> int:
-    if os.name != "nt":
+    if sys.platform != "win32":
         raise OSError("process-tree working-set sampling is currently implemented for Windows")
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     psapi = ctypes.WinDLL("psapi", use_last_error=True)
