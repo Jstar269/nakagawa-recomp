@@ -399,6 +399,12 @@ self-tests, registered NIDs and the reviewed allowlist in that file (one entry p
 with its reason). A fix for one game goes in its title config, not the core. Markdown linting is separate from the native and Windows jobs. Those jobs remain
 synthetic/public-input gates; no private game input is put in Actions.
 
+The shared pre-commit hooks include `mypy-tools`, which requires mypy 2.4.1 and checks the clean
+issue #1391 scope. Hygiene skips that local-system hook because the `python_tools` job installs
+the same version from a hash-locked requirements file, runs the clean-scope check, then runs the
+full `tools/` per-module ratchet. This keeps the developer hook and hosted checks on one pin
+without repeating the full scan in two jobs.
+
 The Windows job also runs `mingw32-make production-smoke` in the existing MSYS2 UCRT64/GCC,
 SDL3, and Vulkan environment. That target generates its PSP-shaped input from committed source,
 uses the ordinary loader/import/analyzer/codegen pipeline, links the complete public-safe

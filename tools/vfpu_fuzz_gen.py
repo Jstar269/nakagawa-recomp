@@ -177,6 +177,7 @@ def main(argv: list[str]) -> int:
             return 2
         return 0
 
+    words: dict[int, int]
     if synthetic:
         # PUBLIC SYNTHETIC MODE
         if len(args) < 1:
@@ -236,7 +237,7 @@ def main(argv: list[str]) -> int:
 
         if elf_path.endswith(".txt"):
             # Legacy: load from a pre-extracted word list file (local only)
-            words: dict[int, int] = {}
+            words = {}
             with open(elf_path, "r", encoding="utf-8") as f:
                 for i, line in enumerate(f):
                     line = line.strip()

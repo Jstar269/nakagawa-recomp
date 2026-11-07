@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import fnmatch
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -27,6 +29,7 @@ sys.path.insert(0, str(ROOT / "fixtures" / "showcase"))
 import ci_required  # noqa: E402
 import ci_paths  # noqa: E402
 import ci_test_shards  # noqa: E402
+import mypy_baseline  # noqa: E402
 import showcase as showcase_cli  # noqa: E402
 from makefile_text import read_makefile  # noqa: E402
 
@@ -113,6 +116,39 @@ def _cmake_sources_and_definitions() -> tuple[dict[str, set[str]], dict[str, set
 
 
 class PublicCiWiringTests(unittest.TestCase):
+    def test_mypy_clean_scope_is_explicit_and_uses_the_shared_pin(self) -> None:
+        expected = (
+            "tools/verify_vfpu_provenance.py",
+            "tools/hle_manifest.py",
+            "tools/psp_import_table.py",
+            "tools/import_audit_gate.py",
+            "tools/vfpu_fuzz_gen.py",
+            "tools/test_import_audit.py",
+            "tools/test_hle_manifest.py",
+            "tools/test_enhancement_package.py",
+            "tools/mypy_baseline.py",
+        )
+        self.assertEqual(mypy_baseline.MYPY_VERSION, "2.4.1")
+        self.assertEqual(mypy_baseline.CLEAN_SCOPE_FILES, expected)
+        with mock.patch.object(mypy_baseline, "_installed_mypy_version", return_value="2.4.1"), \
+                mock.patch.object(
+                    mypy_baseline.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+                ) as run:
+            self.assertEqual(mypy_baseline.main(["--scope", "issue-1391"]), 0)
+        self.assertEqual(tuple(run.call_args.args[0][-len(expected):]), expected)
+
+    def test_mypy_clean_scope_rejects_any_reported_error(self) -> None:
+        diagnostic = "tools/hle_manifest.py:7: error: invalid fixture [misc]\n"
+        completed = subprocess.CompletedProcess([], 1, stdout=diagnostic, stderr="")
+        with mock.patch.object(mypy_baseline, "_installed_mypy_version", return_value="2.4.1"), \
+                mock.patch.object(mypy_baseline.subprocess, "run", return_value=completed), \
+                contextlib.redirect_stderr(io.StringIO()) as captured:
+            result = mypy_baseline.main(["--scope", "issue-1391"])
+        self.assertEqual(result, 1)
+        self.assertIn(diagnostic.rstrip(), captured.getvalue())
+
     def test_python_tools_ci_enforces_mypy_baseline(self) -> None:
         python_tools = _ci_job_blocks()["python_tools"]
         step = _ci_step(python_tools, "Enforce tools mypy baseline")
@@ -121,7 +157,16 @@ class PublicCiWiringTests(unittest.TestCase):
         text = "\n".join(step)
         self.assertIn("mypy==2.4.1", text)
         self.assertIn("--require-hashes", text)
+        self.assertIn("python tools/mypy_baseline.py --scope issue-1391", text)
         self.assertIn("python tools/mypy_baseline.py", text)
+        config = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        self.assertRegex(config, r"(?ms)- id: mypy-tools\n.*?entry: python tools/mypy_baseline\.py --scope issue-1391\n")
+        self.assertIn("files: ^tools/.*\\.py$", config)
+        hygiene = _ci_job_blocks()["hygiene"]
+        shared = _ci_step(hygiene, "Run shared all-files checks")
+        self.assertIsNotNone(shared)
+        assert shared is not None
+        self.assertIn("SKIP: mypy-tools", "\n".join(shared))
 
     def test_windows_installer_is_a_read_only_heavy_required_gate(self) -> None:
         jobs = _ci_job_blocks()

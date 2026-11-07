@@ -173,6 +173,9 @@ jobs:
           python -m pip install --disable-pip-version-check --no-build-isolation --no-binary=PyYAML --require-hashes -r "$RUNNER_TEMP/pre-commit-requirements.txt"
 
       - name: Run shared all-files checks
+        env:
+          # The Python tooling job runs these exact pinned mypy checks.
+          SKIP: mypy-tools
         run: pre-commit run --all-files --show-diff-on-failure
 
       - name: Enforce tracked-tree reference ratchet
@@ -487,6 +490,7 @@ jobs:
           typing-extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
           LOCK
           python -m pip install --disable-pip-version-check --require-hashes -r "$RUNNER_TEMP/mypy-requirements.txt"
+          python tools/mypy_baseline.py --scope issue-1391
           python tools/mypy_baseline.py
 
       - name: >-

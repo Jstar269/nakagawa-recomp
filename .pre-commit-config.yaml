@@ -71,6 +71,15 @@ repos:
 
   - repo: local
     hooks:
+      # pre-commit installs the shared pin (the same version as the CI lockfile) into the hook's own
+      # environment, so contributors need no mypy of their own; the helper still rejects any other version.
+      - id: mypy-tools
+        name: mypy clean tools scope
+        entry: python tools/mypy_baseline.py --scope issue-1391
+        language: python
+        additional_dependencies: ["mypy==2.4.1"]
+        files: ^tools/.*\.py$
+        pass_filenames: false
       - id: staged-whitespace-check
         name: reject new trailing whitespace
         entry: git diff --cached --check
