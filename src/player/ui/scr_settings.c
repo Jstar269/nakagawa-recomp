@@ -564,6 +564,11 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
                     (void)snprintf(line, sizeof(line),
                                    "This release has no Windows download. Its page on GitHub "
                                    "lists what it offers.");
+                } else if (model->update_installed_by_setup) {
+                    (void)snprintf(line, sizeof(line),
+                                   "This copy was installed with Setup. Download the new "
+                                   "Setup from the release page on GitHub and run it: it "
+                                   "updates this copy and keeps your games and saves.");
                 } else if (model->update_unverifiable) {
                     (void)snprintf(line, sizeof(line),
                                    "This build can't check update signatures, so it doesn't "

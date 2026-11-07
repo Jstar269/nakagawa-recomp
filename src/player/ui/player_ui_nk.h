@@ -666,6 +666,7 @@ typedef struct {
     bool update_can_download;       /* a Windows ZIP and a Windows build */
     bool update_unverifiable;       /* this build has no update-signing key */
     bool update_unsigned;           /* the release lists no signature */
+    bool update_installed_by_setup; /* put here by the installer: update by running its Setup.exe */
     const char *update_zip_name;
     unsigned long long update_zip_bytes;
     unsigned long long update_received_bytes;

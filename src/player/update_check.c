@@ -954,6 +954,23 @@ static bool listed_files_present(const char *root, char *missing, size_t missing
 }
 #endif
 
+bool nk_update_installed_by_setup(const char *exe_dir) {
+    char uninstaller[NK_MAX_PATH];
+    size_t bin_end, bin_start, install_end;
+    int n;
+    if (!exe_dir || !exe_dir[0]) return false;
+    /* <install>/bin, with Inno's uninstaller beside bin. */
+    bin_end = trimmed_length(exe_dir);
+    bin_start = last_component(exe_dir, bin_end);
+    if (bin_end - bin_start != 3 || strncmp(exe_dir + bin_start, "bin", 3) != 0 || bin_start < 2) {
+        return false;
+    }
+    install_end = bin_start - 1;
+    n = snprintf(uninstaller, sizeof(uninstaller), "%.*s%cunins000.exe", (int)install_end, exe_dir,
+                 nk_platform_path_separator());
+    return n > 0 && (size_t)n < sizeof(uninstaller) && nk_platform_file_exists(uninstaller);
+}
+
 bool nk_update_install_supported(void) {
 #if defined(_WIN32) || defined(_WIN64)
     return true;
