@@ -113,9 +113,10 @@ static int set_env(const char *name, const char *value) {
  * ignores the switch. Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does
  * not accept. */
 int main(int argc, char **argv) {
-    int twin_arg = 0, authentic = 0;
+    int twin_arg = 0, authentic = 0, repl_only = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--authentic") == 0) { authentic = 1; continue; }
+        if (strcmp(argv[i], "--repl-only") == 0) { repl_only = 1; continue; }
         if (strcmp(argv[i], "--twin") == 0) twin_arg = 1;
         const char *name = strcmp(argv[i], "--scale") == 0 ? "SR_GPU_SCALE"
                          : strcmp(argv[i], "--case") == 0  ? "SR_GPU_COHERENCE_CASE"
@@ -129,6 +130,7 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
+    (void)repl_only;   /* read only in the texture scaling build */
     if (!host_mem_type_selection_ok()) return 1;
     uint8_t *arena = (uint8_t *)calloc(0x0c000000u, 1);
     if (!arena) return 2;
@@ -152,7 +154,17 @@ int main(int argc, char **argv) {
 #ifdef SR_GPU_TEXSCALE_SELFTEST
     /* Texture scaling and the smart 2D filter take effect only in Ace Mode (tex_scale.h). The
      * factor defaults to 2; `--tex-scale N` picks another. */
-    if (!ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=off;smooth=off;sas=off", NULL) ||
+    if (repl_only) {
+        /* SR_TEX_REPLACE alone (the documented default use): no texture scaling, no smart 2D, and
+         * the pack written and named before the renderer reads it. */
+        if (!ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=off;smooth=off;sas=off", NULL) ||
+            !set_env("SR_TEX_SCALE", "off") || !set_env("SR_SMART_2D", "off") ||
+            !gegpu_texrepl_only_prepare(SR_SELFTEST_BUILD_ROOT)) {
+            fprintf(stderr, "gpu texscale selftest: FAIL the Ace line, the settings or the synthetic pack were refused\n");
+            free(arena);
+            return 1;
+        }
+    } else if (!ace_init_spec("v1;af=0;text=off;readout=off;notice=off;wide=off;smooth=off;sas=off", NULL) ||
         (!getenv("SR_TEX_SCALE") && !set_env("SR_TEX_SCALE", "2")) || !set_env("SR_SMART_2D", "on")) {
         fprintf(stderr, "gpu texscale selftest: FAIL the Ace line or the settings were refused\n");
         free(arena);
@@ -179,7 +191,7 @@ int main(int argc, char **argv) {
 #elif defined(SR_GPU_SNAPSHOT_SYNC_SELFTEST)
     ok = gegpu_snapshot_sync_selftest();
 #elif defined(SR_GPU_TEXSCALE_SELFTEST)
-    ok = gegpu_texscale_selftest();
+    ok = repl_only ? gegpu_texrepl_only_selftest() : gegpu_texscale_selftest();
 #else
     ok = gegpu_coherence_selftest();
     if (ok == 77) {   /* --case gpu-timestamps on a queue without timestamp queries */

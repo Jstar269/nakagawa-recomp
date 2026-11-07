@@ -93,6 +93,12 @@ uint64_t nk_tex_scale_budget_used(void);
  * full or memory ran out (the texture is drawn unscaled). */
 int nk_tex_scale_submit(uint64_t serial, uint64_t hash, const uint32_t *rgba, int w, int h,
                         int factor, int clamp_u, int clamp_v);
+/* Queue a finished image: `rgba` is already (w*factor) x (h*factor) (R in the low byte), as a
+ * texture-replacement file is (texrepl.h). It is copied and comes back from nk_tex_scale_take
+ * like a scaled result, with `serial` and `hash`; no scaling and no worker are involved. Refused
+ * like nk_tex_scale_submit when the queue or the host-memory cap has no room. */
+int nk_tex_scale_submit_ready(uint64_t serial, uint64_t hash, const uint32_t *rgba, int w, int h,
+                              int factor);
 /* Whether a submit of a w x h texture at `factor` would be accepted now: queue room, and its host
  * memory within the cap. The same test nk_tex_scale_submit makes. */
 int nk_tex_scale_can_submit(int w, int h, int factor);

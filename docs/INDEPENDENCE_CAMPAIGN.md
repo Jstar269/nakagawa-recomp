@@ -190,6 +190,7 @@ Sizes are `wc -l` at base `6a4f359`, as above, and are not refreshed.
 | G16 | Plain AT3 decoder subset `src/rt/atrac3p/libavcodec/atrac3.c` + `src/rt/atrac3p/libavcodec/atrac3data.h` + `src/rt/atrac3p/libavcodec/bytestream.h` | FFmpeg n4.4, LGPL-2.1-or-later (exact pin and file deltas in `src/rt/atrac3p/PROVENANCE.md`) | 1,360 | `hle.c` sceAtrac codecType `0x1001` bridge | `atrac3p-bridge-selftest`, `hle-thread-selftest` (synthetic RIFF/header and decode bookkeeping) | Low: host decoder at the explicit sceAtrac boundary; first-frame `fact` delay remains `NOT_MEASURED` pending a PSP measurement |
 | G17 | H.264 decoder subset `src/rt/h264_ffmpeg_sub/*` (208 byte-identical upstream files, authored configuration stand-ins and the `nk_h264_api` layer) | FFmpeg n4.4, LGPL-2.1-or-later (exact pin and blob manifest in `src/rt/h264_ffmpeg_sub/PROVENANCE.md`) | ~210 files | `src/rt/h264_ffmpeg.c` (`sr_h264` seam backend on Linux, later Android) | `psmf-media-selftest` (`H264_FFMPEG=1`, source-authored H.264 fixture) | Low: host decoder at the `sceMpeg`/`sceVideocodec` boundary; Media Foundation stays the Windows backend |
 | G18 | MP3 frame decoder `src/rt/minimp3/minimp3.h` + `src/rt/minimp3/LICENSE` (byte-identical upstream) | minimp3, CC0-1.0 (exact pin and blob manifest in `src/rt/minimp3/PROVENANCE.md`) | 1 header | `src/rt/mp3_bridge.c` (project-authored) for the `hle.c` sceMp3 handlers | `hle-thread-selftest`, `tools/test_mp3_tone_fixture.py` (synthetic tone fixture) | Low: host decoder at the `sceMp3` boundary |
+| G19 | Texture replacement `src/rt/texrepl.c` (quick hash, palette hash and pack lookup; added 2026-11-06, #1880) | PPSSPP (`GPU/Common/TextureDecoder.cpp`, `GPU/Common/TextureReplacer.cpp`, `GPU/Common/TextureCacheCommon.cpp`) at 3bc60270, derived-translated | 965 | Ace texture replacement (`tex_xs_offer` in `ge_gpu.c`) | `texrepl-selftest` (PPSSPP hash vectors), `gpu-texscale-selftest` replace cell | None: host-only lookup of user packs; must stay bit-compatible with PPSSPP packs |
 
 ## 3. Third-party dependencies — keep, with reasons
 
@@ -328,6 +329,9 @@ replacement by an LLE path that makes the component unnecessary ·
   byte-identical under the 2026-10-24 public-domain rule; keep `mp3_bridge` and the sceMp3
   handlers as separate records. Validate decoding with the synthetic tone fixture; claim
   hardware-equivalent sceMp3 timing only after a PSP result.
+- **G19 texture replacement → evidence, not rewrite.** The hash and lookup must match PPSSPP's bit
+  for bit, because pack file names depend on them, so the derived code stays labelled `derived-translated`
+  with its upstream notice. Validate with the selftest's PPSSPP hash vectors and synthetic packs.
 
 ## 5. Clean-room protocol for AI-agent work
 
