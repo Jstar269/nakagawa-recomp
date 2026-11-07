@@ -216,6 +216,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_SETTINGS_ACCESSIBILITY, FLOW_SETTINGS_ACE, FLOW_SETTINGS_ACE_OFF,
                FLOW_SETTINGS_ACE_TITLE,
                FLOW_SETTINGS_REPORT, FLOW_SETTINGS_REPORT_NO_PYTHON, FLOW_SETTINGS_REFRESH,
+               FLOW_SETTINGS_PRESET,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
@@ -393,6 +394,15 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     }
     settings.pacing = "PSP timing";
     settings.scaling = "Sharp";
+    settings.preset = "Medium";
+    if (which == FLOW_SETTINGS_PRESET) {
+        /* Ultra chosen (#2150): the row and the notice line say its upscaler is not set; the
+           note is player_app_graphics_preset_note's, the longest a preset writes. */
+        settings.preset = "Ultra (no upscaler)";
+        settings.preset_notice = "Ultra is used in Enhanced and Ace, without its FSR 1 upscaler "
+                                 "for now. Authentic uses your own display settings.";
+        settings.preset_notice_warns = true;
+    }
     settings.vsync = true;
     /* The refresh-rate advisory case runs on a 144 Hz display; the rest on 60 Hz. */
     settings.display_refresh_hz = which == FLOW_SETTINGS_REFRESH ? 144.0 : 60.0;
@@ -2630,6 +2640,8 @@ static void test_settings_pages(void) {
          "the fullscreen button toggles game fullscreen"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_SCALING, PLAYER_UI_SETTINGS_CYCLE_SCALING,
          "the scaling button cycles the scaling"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_PRESET, PLAYER_UI_SETTINGS_CYCLE_PRESET,
+         "the graphics preset button steps the preset"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_VOLUME_DOWN, PLAYER_UI_SETTINGS_VOLUME_DOWN,
          "minus lowers the volume"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_VOLUME_UP, PLAYER_UI_SETTINGS_VOLUME_UP,
@@ -2743,6 +2755,17 @@ static void test_settings_pages(void) {
     CHECK(dump_flow_case(FLOW_SETTINGS, dump, sizeof(dump)) &&
               strstr(dump, "Your display runs at") == NULL,
           "Settings on a 60 Hz display shows no refresh-rate advisory");
+    CHECK(flow_case_fits(FLOW_SETTINGS_PRESET, 960, 540, dump, sizeof(dump)),
+          "Settings with a graphics preset's note fits 960 x 540");
+    CHECK(strstr(dump, "Ultra is used in Enhanced and Ace, without its FSR 1") != NULL &&
+              strstr(dump, "Changes are saved as you make them") == NULL,
+          "a graphics preset's note takes the Settings notice line");
+    CHECK(strstr(dump, "\"ULTRA (NO UPSCALER)\"") != NULL,
+          "the graphics preset row says Ultra's upscaler is not set");
+    CHECK(dump_flow_case(FLOW_SETTINGS, dump, sizeof(dump)) &&
+              strstr(dump, "Changes are saved as you make them") != NULL &&
+              strstr(dump, "is used in Enhanced and Ace") == NULL,
+          "with Custom the notice line is the page's own");
     CHECK(activate_flow_button(PLAYER_UI_ID_TAB_ABOUT, FLOW_SETTINGS).kind ==
               PLAYER_UI_ACTION_OPEN_ABOUT,
           "the ABOUT tab on Settings opens About");

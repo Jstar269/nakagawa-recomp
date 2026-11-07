@@ -35,6 +35,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -231,6 +232,7 @@ void sdl3vk_set_logic_slowed_cb(int (*cb)(unsigned *rate)) {
 static void (*s_ui_pass)(const Sdl3VkUiPass *frame);
 static Sdl3VkShowPass s_show_pass;
 static Sdl3VkUpscalePass s_upscale_pass;
+static Sdl3VkUpscalePass s_rec_upscale_pass;  /* the recording's own upscaler (#2138) */
 /* What the last present's frame blit read: its source image and size, its place in the window and
  * its filter. The capture selftest checks the presentation upscaler's image is what reaches the
  * window. */
@@ -246,6 +248,10 @@ void sdl3vk_set_show_pass(Sdl3VkShowPass pass) {
 
 void sdl3vk_set_upscale_pass(Sdl3VkUpscalePass pass) {
     s_upscale_pass = pass;
+}
+
+void sdl3vk_set_record_upscale_pass(Sdl3VkUpscalePass pass) {
+    s_rec_upscale_pass = pass;
 }
 
 void sdl3vk_set_ui_pass(void (*pass)(const Sdl3VkUiPass *frame)) {
@@ -1160,6 +1166,11 @@ static NkInputGate    s_gate;
 static uint32_t       s_raw_buttons;
 static uint8_t        s_raw_lx = 128, s_raw_ly = 128;
 static uint32_t       s_claim_saved_pulse, s_claim_saved_pad_pulse;
+/* Mouse aiming (#1791): the movement since the last poll, kept as floats so a slow drag
+ * that SDL reports in fractions of a count is not lost, and what carries between polls. */
+static float          s_mouse_fx, s_mouse_fy;
+static NkAimState     s_aim_state;
+static bool           s_mouse_captured;
 #define KEY_QUEUE_CAP 64
 static Sdl3VkKeyEvent s_key_queue[KEY_QUEUE_CAP];
 static int            s_key_head, s_key_count;
@@ -1242,6 +1253,76 @@ static uint32_t gamepad_button(Uint8 button) {
     return psp_btn;
 }
 
+/* Mouse aiming works in counts per reference poll of 1/60 s (NK_AIM_FULL_DEFLECTION_COUNTS),
+ * but the host polls once per presented frame, so the movement is scaled by the time since
+ * the last aim poll: the same hand speed gives the same nub whatever the frame rate, and a
+ * frame hitch does not saturate it. */
+#define AIM_REFERENCE_POLL_NS 16666667ull
+#define AIM_MIN_POLL_NS 4166667ull       /* polls closer than 1/240 s count as 1/240 s */
+#define AIM_STALL_NS 250000000ull        /* a longer gap is a stall, not a hand movement */
+
+static uint64_t aim_clock_ns_default(void) { return SDL_GetTicksNS(); }
+/* Test seams: the clock, and the call that grabs or frees the pointer. */
+static uint64_t (*s_aim_clock_ns)(void) = aim_clock_ns_default;
+static bool aim_relative_mode_default(bool want) {
+    if (!s_win || s_window_hidden) return false;   /* headless runs never grab the pointer */
+    return SDL_SetWindowRelativeMouseMode(s_win, want);
+}
+static bool (*s_aim_relative_mode)(bool) = aim_relative_mode_default;
+static uint64_t s_aim_last_ns;                    /* 0 = no previous aim poll */
+static float    s_aim_rem_x, s_aim_rem_y;         /* scaled fractions kept for the next poll */
+
+/* Scale the raw movement to counts per reference poll and hand over the whole counts; the
+ * fraction stays for the next poll. `scale` is reference period / elapsed. */
+static int32_t aim_take_counts(float *raw, float *rem, float scale) {
+    const float scaled = *raw * scale + *rem;
+    const float whole = truncf(scaled);
+    *raw = 0.0f;
+    *rem = scaled - whole;
+    if (whole > 2147483000.0f) return INT32_MAX;
+    if (whole < -2147483000.0f) return INT32_MIN;
+    return (int32_t)whole;
+}
+
+/* Nothing the mouse did earlier may reach the game later: a focus change, an overlay claim
+ * or a profile that turns aiming off all start the next poll from rest. */
+static void aim_reset(void) {
+    s_mouse_fx = s_mouse_fy = 0.0f;
+    s_aim_rem_x = s_aim_rem_y = 0.0f;
+    s_aim_last_ns = 0;
+    nk_aim_state_reset(&s_aim_state);
+}
+
+/* The window grabs the pointer while aiming is on and the game has the input, and gives it
+ * back as soon as either stops. The flag follows what the window really did, so a request
+ * that could not be applied (no window, hidden window) is asked again next poll instead of
+ * being remembered as done. */
+static void aim_set_capture(bool want) {
+    if (want == s_mouse_captured) return;
+    if (s_aim_relative_mode(want)) s_mouse_captured = want;
+}
+
+/* The nub for this poll's movement. The first poll after a reset, and a stall, count as one
+ * reference poll and drop the movement that built up. */
+static bool aim_poll(const NkAimConfig *cfg, uint8_t *lx, uint8_t *ly) {
+    const uint64_t now = s_aim_clock_ns();
+    uint64_t dt = AIM_REFERENCE_POLL_NS;
+    if (s_aim_last_ns != 0 && now > s_aim_last_ns) {
+        dt = now - s_aim_last_ns;
+        if (dt > AIM_STALL_NS) {
+            s_mouse_fx = s_mouse_fy = 0.0f;
+            s_aim_rem_x = s_aim_rem_y = 0.0f;
+            dt = AIM_REFERENCE_POLL_NS;
+        } else if (dt < AIM_MIN_POLL_NS) {
+            dt = AIM_MIN_POLL_NS;
+        }
+    }
+    s_aim_last_ns = now ? now : 1;
+    const float scale = (float)AIM_REFERENCE_POLL_NS / (float)dt;
+    return nk_aim_apply(cfg, &s_aim_state, aim_take_counts(&s_mouse_fx, &s_aim_rem_x, scale),
+                        aim_take_counts(&s_mouse_fy, &s_aim_rem_y, scale), lx, ly);
+}
+
 static void pause_request_latch(int request) {
     if (s_claim_sink) return;
     /* The person's own request wins over the pad-lost one if both arrive together. */
@@ -1263,6 +1344,9 @@ static void poll_input_on_this_stack(void *arg) {
                 SDL_CloseGamepad(s_pad); s_pad = NULL;
                 pause_request_latch(SDL3VK_PAUSE_REQUEST_PAD_LOST);
             }
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            aim_reset();
             break;
         default: break;
         }
@@ -1295,6 +1379,10 @@ static void poll_input_on_this_stack(void *arg) {
             break;
         case SDL_EVENT_TEXT_INPUT:
             if (s_text_claim) queue_text_utf8(ev.text.text);
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            s_mouse_fx += ev.motion.xrel;
+            s_mouse_fy += ev.motion.yrel;
             break;
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
             /* Guide asks for the pause and is consumed, whatever the profile binds to it. */
@@ -1345,6 +1433,19 @@ static void poll_input_on_this_stack(void *arg) {
             stick_prof = &def_profile;
         }
         (void)nk_input_profile_eval_key_analog(stick_prof, k, key_count, &lx, &ly);
+    }
+    /* Mouse aiming (#1791): a moving mouse takes the nub; a still one leaves the controller's
+     * and the keyboard's value. Off unless the profile turns it on, and never under SR_PADSCRIPT
+     * or while the overlay has the input. */
+    {
+        const NkInputProfile *aim_prof = padscript_active() ? NULL : sdl3vk_get_input_profile();
+        const bool aim_on = aim_prof && aim_prof->aim.mouse && !s_claim_sink;
+        aim_set_capture(aim_on);
+        if (aim_on) {
+            (void)aim_poll(&aim_prof->aim, &lx, &ly);
+        } else {
+            aim_reset();
+        }
     }
     s_raw_buttons = b;
     s_raw_lx = lx; s_raw_ly = ly;
@@ -1872,6 +1973,7 @@ static int s_rec_state = -1;      /* -1 undecided, 0 off, 1 recording */
 static uint32_t s_rec_w, s_rec_h; /* the record target's size, fixed at the first use */
 static RecImage s_rec_target, s_rec_pre;
 static CapBuffer s_rec_buf[PRESENT_FRAMES];
+static int s_rec_filter[PRESENT_FRAMES]; /* the SrVideoRecFilter each slot's picture was made with */
 static PresentFrame *s_rec_pending; /* the slot whose readback holds the newest recorded picture */
 
 static void rec_image_free(RecImage *r) {
@@ -1927,7 +2029,8 @@ static int rec_resolve(void) {
     if (!f) return 0;
     CapBuffer *c = &s_rec_buf[f - s_frame];
     if (!wait_present_frame(f) || !cap_invalidate_readback(c)) return 0;
-    sr_videorec_frame(c->map, s_rec_w, s_rec_h, s_rec_w * 4u, SR_CAP_ORDER_BGRX);
+    sr_videorec_frame_filtered(c->map, s_rec_w, s_rec_h, s_rec_w * 4u, SR_CAP_ORDER_BGRX,
+                               s_rec_filter[f - s_frame]);
     return 1;
 }
 
@@ -1980,7 +2083,21 @@ static int rec_record(VkCommandBuffer cmd, PresentFrame *f, VkImage show, int sh
     blt.dstSubresource = blt.srcSubresource;
     blt.srcOffsets[1].z = 1;
     blt.dstOffsets[1].z = 1;
-    if (plan.prescale > 1 &&
+    /* With the presentation upscaler on, the recording is enlarged by it as the window is, at
+     * the recording's own size, through its own pass (the window's would rebuild its images for
+     * every size change between the two). The blit below then copies the result 1:1. Only an
+     * enlargement, as in the window: EASU is not a downscaler. */
+    VkImage upscaled = VK_NULL_HANDLE;
+    if (s_rec_upscale_pass && plan.w >= showw && plan.h >= showh && (plan.w > showw || plan.h > showh))
+        upscaled = (VkImage)s_rec_upscale_pass((void *)cmd, (void *)show, showw, showh, plan.w,
+                                               plan.h);
+    int prescaled = 0;
+    if (upscaled) {
+        blit_src = upscaled;
+        bw = plan.w;
+        bh = plan.h;
+        plan.nearest = 1;
+    } else if (plan.prescale > 1 &&
         rec_image_ensure(&s_rec_pre, plan.prescale * showw, plan.prescale * showh,
                          VK_FORMAT_R8G8B8A8_UNORM)) {
         barrier(cmd, s_rec_pre.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1998,7 +2115,16 @@ static int rec_record(VkCommandBuffer cmd, PresentFrame *f, VkImage show, int sh
         blit_src = s_rec_pre.img;
         bw = s_rec_pre.w;
         bh = s_rec_pre.h;
+        prescaled = 1;
     }
+    /* What record.json says made this picture: the blits issued here, never the scaling
+     * setting's name. Sharp at an exact multiple, and bilinear there too, are one nearest blit;
+     * sharp shrinking, or without its prescale image, is one linear blit. A 1:1 copy is none. */
+    int filter = upscaled ? SR_VIDEOREC_FILTER_FSR1
+               : prescaled ? SR_VIDEOREC_FILTER_SHARP
+               : plan.nearest ? SR_VIDEOREC_FILTER_NEAREST
+               : SR_VIDEOREC_FILTER_LINEAR;
+    if (plan.w == showw && plan.h == showh) filter = SR_VIDEOREC_FILTER_NONE;
     if (plan.w > 0 && plan.h > 0) {
         blt.srcOffsets[1].x = bw;              blt.srcOffsets[1].y = bh;
         blt.dstOffsets[0].x = plan.x;          blt.dstOffsets[0].y = plan.y;
@@ -2014,6 +2140,7 @@ static int rec_record(VkCommandBuffer cmd, PresentFrame *f, VkImage show, int sh
         *why = "record copy failed";
         return 0;
     }
+    s_rec_filter[f - s_frame] = filter;
     return 1;
 }
 
@@ -3055,6 +3182,7 @@ void sdl3vk_shutdown(void) {
     }
     if (s_pad)         { SDL_CloseGamepad(s_pad); s_pad = NULL; }
     if (s_win)         { SDL_DestroyWindow(s_win); s_win = NULL; }
+    s_mouse_captured = false;                      /* the window took its grab with it */
     if (s_sdl_subsystems) {
         SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
         s_sdl_subsystems = 0;

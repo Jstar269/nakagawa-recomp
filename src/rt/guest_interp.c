@@ -1507,13 +1507,16 @@ static SrGuestInterpCtl classify_control(
     return SR_CTL_REJECT;
 }
 
-/* A load of $sp that keeps it within the stack a call allocated, between where $sp was and
- * where the caller left it, frees only that call's own space, as an alloca free does. Any
- * other load of $sp moves to another frame: a longjmp or a context switch (#1935). */
+/* A load of $sp that keeps it within the stack the run's frame allocated, between where $sp
+ * was and `frame_sp`, where the frame was entered, frees only that frame's own space, as an
+ * alloca free does. Any other load of $sp moves to another frame: a longjmp or a context
+ * switch (#1935). `frame_sp` is a linked call's entry $sp or a TAIL step's own (NULL: the run
+ * has no frame of its own, and every load leaves). Generated code makes the same check
+ * against the body's entry $sp (_sp_load_check in tools/codegen.py). */
 static int sp_load_leaves_frame(uint32_t opcode, uint32_t before, uint32_t after,
-                                const SrGuestInterpCallBoundary *boundary) {
+                                const uint32_t *frame_sp) {
     if ((opcode >> 26) != 0x23u || ((opcode >> 16) & 31u) != 29u) return 0;
-    return boundary == NULL || after < before || after >= boundary->entry_sp;
+    return frame_sp == NULL || after < before || after >= *frame_sp;
 }
 
 /* A `jr $ra` that returns past the call this run is part of (#2016): to the resume PC of an
@@ -1533,12 +1536,20 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
     CpuState *s,
     uint32_t entry,
     const SrGuestInterpCallBoundary *boundary,
+    int tail_step,
     SrGuestInterpFault *fault) {
     uint32_t pc = entry;
     unsigned long long instruction_count = 0u;
     const int log_dispatch = getenv("SR_DISPLOG") != NULL;
-    /* Whether this run has loaded $sp out of the stack its call allocated (#1935). */
+    /* Whether this run has loaded $sp out of the stack its frame allocated (#1935). */
     int loaded_sp = 0;
+    /* A TAIL step's frame is the $sp it was entered at, as a native body's _sp_entry is. */
+    const uint32_t tail_entry_sp = s->r[29];
+    const uint32_t *frame_sp = boundary != NULL ? &boundary->entry_sp
+                               : tail_step ? &tail_entry_sp : NULL;
+    /* Whether `pc` was reached by a computed transfer (jr/jalr), not a static one or by
+     * running on: a TAIL step's record keeps the target's body only for the latter. */
+    int reached_by_computed = 0;
     set_fault(fault, entry, 0u, entry, 0);
     /* Establish the COP0 delay-slot contract (spec 3.5): straight-line code
      * runs with in_delay_slot clear; the branch path below sets it around
@@ -1592,8 +1603,10 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
 
         /* Safe-point poll (spec 3.5): before each instruction, never between
          * a branch and its delay slot (the slot below runs without polling).
-         * The Phase 1 poll never reports an interrupt; the call and its flow
-         * propagation stay so later phases cannot skip the site. */
+         * The poll takes a deliverable interrupt here (cpu_lle.c, issue #325:
+         * only with the LLE CPU on and an INTC configured), so this site is
+         * where host-side controller changes reach interpreted code; the flow
+         * it sets enters the interrupt vector. Do not remove or reorder it. */
         if (sr_cpu_poll(s, pc) < 0) {
             return map_flow_result(s, -1, fault, pc, 0u);
         }
@@ -1616,6 +1629,25 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                 fprintf(stderr,
                         "GUEST_INTERP_AOT_HANDOFF pc=0x%08" PRIx32 " instructions=%llu\n",
                         pc, instruction_count);
+            }
+            if (boundary == NULL && tail_step) {
+                /* A TAIL step out of a drain (dispatch_tail_step) leaves as a native body
+                 * entered there does (emit_tail_transfer in tools/codegen.py): it records the
+                 * transfer for the drain, with the entry $sp it owes once the chain completes
+                 * while every $sp load it ran stayed in its frame. The drain keeps the first
+                 * restore of the chain, so the record matters only when no earlier body owes
+                 * one: a head that switched stacks or longjmped (#1935). As in generated code, a
+                 * static transfer or a fall-through keeps its target's body, so the target
+                 * runs in this drain; a computed one is dispatched by address, a step of its
+                 * own. Under the stack census a native body records no restore, and its
+                 * wrapper restores instead. */
+                RecompFn const next_fn = reached_by_computed ? NULL : sr_lookup(pc);
+#if defined(SR_STACK_CENSUS_ENABLED)
+                sr_tail_record(s, pc, next_fn, 0u, 0u);
+#else
+                sr_tail_record(s, pc, next_fn, tail_entry_sp, loaded_sp ? 0u : 1u);
+#endif
+                return SR_GUEST_INTERP_AOT_HANDOFF;
             }
             if (boundary == NULL) {
                 dispatch(s, pc);
@@ -1699,6 +1731,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                 if (sr_perf_enabled) sr_perf_interp_instruction();
                 sr_exec_interp_instructions++;
                 pc += 8u;
+                reached_by_computed = 0;
                 s->pc = pc;
                 continue;
             }
@@ -1733,7 +1766,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             const uint32_t delay_sp = s->r[29];
             SrGuestInterpResult delay_result = execute_noncontrol(
                 s, pc + 4u, delay_opcode, &delay_store_address, &delay_store_size, fault);
-            if (sp_load_leaves_frame(delay_opcode, delay_sp, s->r[29], boundary)) loaded_sp = 1;
+            if (sp_load_leaves_frame(delay_opcode, delay_sp, s->r[29], frame_sp)) loaded_sp = 1;
             s->in_delay_slot = 0u;
             s->next_pc = saved_next_pc;
             if (delay_result != SR_GUEST_INTERP_AOT_HANDOFF) {
@@ -1768,6 +1801,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                 }
                 dispatch_call(s, transfer.target, resume_pc);
                 pc = resume_pc;
+                reached_by_computed = 0;
                 s->pc = pc;
                 continue;
             }
@@ -1800,6 +1834,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                 return SR_GUEST_INTERP_RETURN_TARGET_MISMATCH;
             }
             pc = transfer.taken ? transfer.target : pc + 8u;
+            reached_by_computed = transfer.taken && transfer.computed;
             s->pc = pc;
             continue;
         }
@@ -1810,7 +1845,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
         const uint32_t sp_before = s->r[29];
         SrGuestInterpResult result = execute_noncontrol(
             s, pc, opcode, &store_address, &store_size, fault);
-        if (sp_load_leaves_frame(opcode, sp_before, s->r[29], boundary)) loaded_sp = 1;
+        if (sp_load_leaves_frame(opcode, sp_before, s->r[29], frame_sp)) loaded_sp = 1;
         if (result != SR_GUEST_INTERP_AOT_HANDOFF) {
             if (result == SR_GUEST_INTERP_EXCEPTION ||
                 result == SR_GUEST_INTERP_ERET) {
@@ -1823,6 +1858,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
         if (sr_perf_enabled) sr_perf_interp_instruction();
         sr_exec_interp_instructions++;
         pc += 4u;
+        reached_by_computed = 0;
         s->pc = pc;
     }
 }
@@ -1834,7 +1870,22 @@ SrGuestInterpResult sr_guest_interp_run(
     int exec_previous = sr_exec_enter(SR_EXEC_TIER_INTERP);
     sr_exec_interp_entry(entry);
     if (sr_perf_enabled) sr_perf_interp_begin(entry);
-    SrGuestInterpResult result = sr_guest_interp_run_internal(s, entry, NULL, fault);
+    SrGuestInterpResult result = sr_guest_interp_run_internal(s, entry, NULL, 0, fault);
+    if (sr_perf_enabled) sr_perf_interp_end(s->pc, (int)result);
+    sr_exec_interp_exit(result == SR_GUEST_INTERP_AOT_HANDOFF || result == SR_GUEST_INTERP_CALL_RETURN,
+                        result == SR_GUEST_INTERP_CALL_RETURN);
+    sr_exec_leave(exec_previous);
+    return result;
+}
+
+SrGuestInterpResult sr_guest_interp_run_tail_step(
+    CpuState *s,
+    uint32_t entry,
+    SrGuestInterpFault *fault) {
+    int exec_previous = sr_exec_enter(SR_EXEC_TIER_INTERP);
+    sr_exec_interp_entry(entry);
+    if (sr_perf_enabled) sr_perf_interp_begin(entry);
+    SrGuestInterpResult result = sr_guest_interp_run_internal(s, entry, NULL, 1, fault);
     if (sr_perf_enabled) sr_perf_interp_end(s->pc, (int)result);
     sr_exec_interp_exit(result == SR_GUEST_INTERP_AOT_HANDOFF || result == SR_GUEST_INTERP_CALL_RETURN,
                         result == SR_GUEST_INTERP_CALL_RETURN);
@@ -1850,7 +1901,7 @@ SrGuestInterpResult sr_guest_interp_run_with_boundary(
     int exec_previous = sr_exec_enter(SR_EXEC_TIER_INTERP);
     sr_exec_interp_entry(entry);
     if (sr_perf_enabled) sr_perf_interp_begin(entry);
-    SrGuestInterpResult result = sr_guest_interp_run_internal(s, entry, boundary, fault);
+    SrGuestInterpResult result = sr_guest_interp_run_internal(s, entry, boundary, 0, fault);
     if (sr_perf_enabled) sr_perf_interp_end(s->pc, (int)result);
     sr_exec_interp_exit(result == SR_GUEST_INTERP_AOT_HANDOFF || result == SR_GUEST_INTERP_CALL_RETURN,
                         result == SR_GUEST_INTERP_CALL_RETURN);

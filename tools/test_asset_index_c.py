@@ -174,12 +174,13 @@ class TestProjectFontBuildWiring(unittest.TestCase):
     def test_makefile_uses_one_rule_family_for_all_project_slots(self):
         makefile = read_makefile(ROOT)
         self.assertIn("define PROJECT_FONT_RULE", makefile)
-        for target in ("japanese", "korean"):
-            self.assertIn(f"PROJECT_FONT_RULE,{target},", makefile)
+        self.assertIn("PROJECT_FONT_RULE,korean,", makefile)
         # #2005: one Latin face per console Latin index, through the same rule family.
         self.assertIn("$(call PROJECT_FONT_RULE,", makefile)
         self.assertIn("PROJECT_LATIN_FACE_RULE,0,latin,nkltn.pgf,", makefile)
         self.assertIn("PROJECT_LATIN_FACE_RULE,8,latin-small,nkltns.pgf,", makefile)
+        # #2005: the Japanese font has its own rule, because it reads a second (fallback) font.
+        self.assertIn("$(PROJECT_FONT_GENERATED_DIR)/nkjpn.pgf:", makefile)
         styles = tuple(f"latin-{i}" for i in (1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15))
         for target in ("japanese", "latin", "latin-small", "korean", *styles):
             self.assertIn(f"project-{target}-font", makefile)

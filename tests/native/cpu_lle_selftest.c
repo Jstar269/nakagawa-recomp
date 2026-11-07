@@ -1316,25 +1316,228 @@ static void test_intc_cause_guest_writes(void) {
           "a trapping write must not set any IP bit (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
 }
 
-/* Every MIPS32 condition for taking the interrupt holds, and PR 5 still delivers nothing:
- * the poll reports none and leaves CpuState and the controller exactly as they were. */
-static void test_intc_poll_reports_none(void) {
+/* ---- Interrupt delivery at safe points (spec 3.6, PR 6, issue #325) -----------------
+ *
+ * The controller is the synthetic fixture above (8 sources on IP2; the line is the measured
+ * one, the source numbers are configuration). Delivery follows the MIPS32 rule: Status.IE
+ * set, EXL and ERL clear, and a Cause.IP bit, the INTC bit read live, under its Status.IM bit.
+ * The interrupt vector is the synthetic default, TEST_VECTOR, which setup_spans owns.
+ *
+ * Failing-before evidence: on origin/main b55f6cd3 sr_cpu_poll returns 0 and changes nothing
+ * whatever the state, and sr_cp0_mtc0/sr_cpu_eret never deliver, so every "taken" check in
+ * test_intc_poll_delivery, test_intc_safe_points and test_intc_delivery_aot_interp_parity
+ * fails there. */
+
+#define INTC_IM2 (1u << 10)   /* Status.IM2 = the controller's line */
+
+static void intc_delivery_seed(CpuState *s, uint32_t status) {
+    fresh_state(s);
+    intc_configure_fixture();
+    sr_cpu_lle_set_enabled(1);
+    s->cop0[SR_CP0_STATUS] = status;
+    s->cop0[SR_CP0_EPC] = 0x12345678u;
+    s->pc = TEST_BASE;
+}
+
+static void check_interrupt_taken(const CpuState *s, uint32_t epc, const char *what) {
+    const uint32_t cause = s->cop0[SR_CP0_CAUSE];
+    CHECK(s->flow_kind == SR_FLOW_EXCEPTION && s->flow_target == TEST_VECTOR &&
+          s->pc == TEST_VECTOR,
+          "%s: the interrupt must enter the interrupt vector (flow %u target 0x%08x pc 0x%08x)",
+          what, s->flow_kind, s->flow_target, s->pc);
+    CHECK(s->cop0[SR_CP0_EPC] == epc, "%s: EPC must be 0x%08x (got 0x%08x)", what, epc,
+          s->cop0[SR_CP0_EPC]);
+    CHECK(CAUSE_EXCCODE(cause) == SR_EXC_INT && (cause & SR_CAUSE_BD) == 0u,
+          "%s: Cause must be ExcCode Int with BD clear (got 0x%08x)", what, cause);
+    CHECK((s->cop0[SR_CP0_STATUS] & SR_STATUS_EXL) != 0u, "%s: entry must set Status.EXL", what);
+}
+
+/* sr_cpu_poll takes the interrupt only when every condition holds, and changes nothing
+ * otherwise. */
+static void test_intc_poll_delivery(void) {
     CpuState s;
     CpuState before;
 
-    fresh_state(&s);
-    intc_configure_fixture();
+    /* Every condition holds: taken at the poll's resume PC, the source still pending. */
+    intc_delivery_seed(&s, SR_STATUS_IE | INTC_IM2);
     CHECK(sr_intc_raise(2u) == 0 && sr_intc_set_enable_mask(0x04u) == 0, "assert source 2");
-    s.cop0[SR_CP0_STATUS] = SR_STATUS_IE | SR_STATUS_IM_MASK;   /* kernel, EXL/ERL 0 */
-    s.cop0[SR_CP0_EPC] = 0x12345678u;
-    s.pc = TEST_BASE;
-    memcpy(&before, &s, sizeof s);
-    CHECK(sr_cpu_poll(&s, TEST_BASE) == 0, "poll must report no interrupt");
-    CHECK(memcmp(&s, &before, sizeof s) == 0,
-          "poll must not change CpuState (Cause 0x%08x, EPC 0x%08x, pc 0x%08x, flow %u)",
-          s.cop0[SR_CP0_CAUSE], s.cop0[SR_CP0_EPC], s.pc, s.flow_kind);
+    CHECK(sr_cpu_poll(&s, TEST_BASE + 8u) == -1, "an eligible poll must transfer");
+    check_interrupt_taken(&s, TEST_BASE + 8u, "eligible poll");
+    CHECK((s.cop0[SR_CP0_CAUSE] & INTC_TEST_IP_BIT) != 0u,
+          "the saved Cause must show IP2 (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
     CHECK(sr_intc_pending_mask() == 0x04u && sr_intc_enable_mask() == 0x04u,
-          "poll must not consume or mask the pending source");
+          "taking the interrupt must not acknowledge the source");
+    /* EXL now blocks a second (nested) entry while the source stays pending. */
+    sr_cpu_clear_flow(&s);
+    memcpy(&before, &s, sizeof s);
+    CHECK(sr_cpu_poll(&s, TEST_VECTOR) == 0 && memcmp(&s, &before, sizeof s) == 0,
+          "a poll inside the handler (EXL set) must not nest");
+
+    /* Each missing condition: no transfer, no change. */
+    static const struct {
+        const char *what;
+        uint32_t status;
+        uint32_t enable;      /* controller enable mask; source 2 is pending */
+        uint32_t stored_ip;   /* stored Cause.IP bits before the poll */
+        int lle;
+        int configured;
+    } off[] = {
+        { "LLE CPU off",             SR_STATUS_IE | INTC_IM2,                  0x04u, 0u, 0, 1 },
+        { "no controller",           SR_STATUS_IE | INTC_IM2,                  0x04u, 0u, 1, 0 },
+        { "Status.IE clear",         INTC_IM2,                                 0x04u, 0u, 1, 1 },
+        { "Status.EXL set",          SR_STATUS_IE | SR_STATUS_EXL | INTC_IM2,  0x04u, 0u, 1, 1 },
+        { "Status.ERL set",          SR_STATUS_IE | SR_STATUS_ERL | INTC_IM2,  0x04u, 0u, 1, 1 },
+        { "IM2 clear",               SR_STATUS_IE | (SR_STATUS_IM_MASK & ~INTC_IM2), 0x04u, 0u, 1, 1 },
+        { "source masked",           SR_STATUS_IE | INTC_IM2,                  0x00u, 0u, 1, 1 },
+        { "stale stored IP2",        SR_STATUS_IE | INTC_IM2,                  0x00u, INTC_TEST_IP_BIT, 1, 1 },
+        { "IP0 set, IM0 clear",      SR_STATUS_IE | INTC_IM2,                  0x00u, 0x100u, 1, 1 },
+    };
+    for (unsigned i = 0; i < sizeof off / sizeof off[0]; i++) {
+        intc_delivery_seed(&s, off[i].status);
+        CHECK(sr_intc_raise(2u) == 0 && sr_intc_set_enable_mask(off[i].enable) == 0,
+              "%s: controller setup", off[i].what);
+        if (!off[i].configured)
+            sr_intc_reset();
+        sr_cpu_lle_set_enabled(off[i].lle);
+        s.cop0[SR_CP0_CAUSE] = off[i].stored_ip;
+        memcpy(&before, &s, sizeof s);
+        CHECK(sr_cpu_poll(&s, TEST_BASE + 8u) == 0, "%s: the poll must not transfer", off[i].what);
+        CHECK(memcmp(&s, &before, sizeof s) == 0,
+              "%s: the poll must not change CpuState (Cause 0x%08x EPC 0x%08x flow %u)",
+              off[i].what, s.cop0[SR_CP0_CAUSE], s.cop0[SR_CP0_EPC], s.flow_kind);
+    }
+    CHECK(sr_cpu_poll(NULL, TEST_BASE) == 0, "a NULL CPU must not transfer");
+
+    /* A software interrupt (MIPS32: IP0 under IM0) is delivered like a hardware line. */
+    intc_delivery_seed(&s, SR_STATUS_IE | 0x100u);
+    s.cop0[SR_CP0_CAUSE] = 0x100u;
+    CHECK(sr_cpu_poll(&s, TEST_BASE) == -1, "an enabled software interrupt must transfer");
+    check_interrupt_taken(&s, TEST_BASE, "software interrupt");
+
+    /* The measured Status words of PSP-INTR-CAUSE-001: the suspended word (IE clear) holds
+     * the pending source back, the resumed word takes it. */
+    intc_delivery_seed(&s, 0x00088600u);
+    CHECK(sr_intc_raise(0u) == 0 && sr_intc_set_enable_mask(0x01u) == 0, "assert source 0");
+    CHECK(sr_cpu_poll(&s, TEST_BASE) == 0 && s.flow_kind == SR_FLOW_NONE,
+          "Status 0x00088600 (suspended) must not deliver");
+    s.cop0[SR_CP0_STATUS] = 0x00088601u;
+    CHECK(sr_cpu_poll(&s, TEST_BASE + 4u) == -1, "Status 0x00088601 (resumed) must deliver");
+    check_interrupt_taken(&s, TEST_BASE + 4u, "resumed Status word");
+    CHECK(s.cop0[SR_CP0_STATUS] == 0x00088603u,
+          "entry must set only EXL in the measured Status word (got 0x%08x)",
+          s.cop0[SR_CP0_STATUS]);
+    sr_intc_reset();
+}
+
+/* Helper safe points: an mtc0 to Status or Cause and an eret check for an interrupt after
+ * their write, the same in generated code and in the interpreter. */
+static void test_intc_safe_points(void) {
+    CpuState s;
+    unsigned taken;
+
+    /* (a) mtc0 Status sets IE with the line high: taken before the next instruction. */
+    intc_delivery_seed(&s, INTC_IM2);
+    CHECK(sr_intc_raise(3u) == 0 && sr_intc_set_enable_mask(0x08u) == 0, "assert source 3");
+    s.r[8] = SR_STATUS_IE | INTC_IM2;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_STATUS, 0u, TEST_BASE) == -1,
+          "mtc0 Status enabling an asserted line must transfer");
+    check_interrupt_taken(&s, TEST_BASE + 4u, "mtc0 Status");
+
+    /* A pending but masked source is not delivered by the write; it is kept, and the first
+     * safe point after the device enables it delivers it. */
+    intc_delivery_seed(&s, INTC_IM2);
+    CHECK(sr_intc_raise(3u) == 0, "raise source 3, masked");
+    s.r[8] = SR_STATUS_IE | INTC_IM2;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_STATUS, 0u, TEST_BASE) == 0 && s.flow_kind == SR_FLOW_NONE,
+          "mtc0 Status with the source masked must not transfer");
+    CHECK(sr_intc_set_enable_mask(0x08u) == 0 && s.flow_kind == SR_FLOW_NONE,
+          "a device-side enable must not deliver by itself");
+    CHECK(sr_cpu_poll(&s, TEST_BASE + 8u) == -1, "the next safe point must deliver");
+    check_interrupt_taken(&s, TEST_BASE + 8u, "masked then enabled");
+
+    /* mtc0 Cause setting a software bit under IM0. */
+    intc_delivery_seed(&s, SR_STATUS_IE | 0x100u);
+    s.r[8] = 0x100u;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) == -1,
+          "mtc0 Cause raising an enabled software interrupt must transfer");
+    check_interrupt_taken(&s, TEST_BASE + 4u, "mtc0 Cause IP0");
+
+    /* Other COP0 writes are not safe points: with an interrupt already eligible (a host-side
+     * change no safe point has seen) an EPC write does not deliver it. */
+    intc_delivery_seed(&s, SR_STATUS_IE | INTC_IM2);
+    CHECK(sr_intc_raise(3u) == 0 && sr_intc_set_enable_mask(0x08u) == 0, "assert source 3");
+    s.r[8] = TEST_BASE + 0x40u;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_EPC, 0u, TEST_BASE) == 0 && s.flow_kind == SR_FLOW_NONE,
+          "mtc0 EPC must not be a safe point");
+
+    /* (a) in a delay slot: fails closed; the write itself has landed, EPC is untouched. */
+    intc_delivery_seed(&s, INTC_IM2);
+    CHECK(sr_intc_raise(3u) == 0 && sr_intc_set_enable_mask(0x08u) == 0, "assert source 3");
+    s.in_delay_slot = 1u;
+    s.next_pc = TEST_BASE;
+    s.r[8] = SR_STATUS_IE | INTC_IM2;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_STATUS, 0u, TEST_BASE + 4u) == -2 &&
+          s.flow_kind == SR_FLOW_FATAL && s.flow_target == TEST_BASE + 4u,
+          "a delay-slot mtc0 enabling an interrupt must fail closed (flow %u target 0x%08x)",
+          s.flow_kind, s.flow_target);
+    CHECK(s.cop0[SR_CP0_EPC] == 0x12345678u && (s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) == 0u,
+          "the fail-closed path must not enter an exception");
+    /* ... and one that leaves nothing deliverable runs on. */
+    intc_delivery_seed(&s, INTC_IM2);
+    s.in_delay_slot = 1u;
+    s.next_pc = TEST_BASE;
+    s.r[8] = SR_STATUS_IE | INTC_IM2;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_STATUS, 0u, TEST_BASE + 4u) == 0 &&
+          s.flow_kind == SR_FLOW_NONE, "a delay-slot mtc0 with nothing pending must run on");
+
+    /* (b) eret clears EXL with the line high: taken at the eret target. */
+    intc_delivery_seed(&s, SR_STATUS_EXL | SR_STATUS_IE | INTC_IM2);
+    CHECK(sr_intc_raise(3u) == 0 && sr_intc_set_enable_mask(0x08u) == 0, "assert source 3");
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    s.llbit = 1u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) == -1, "eret must transfer");
+    check_interrupt_taken(&s, TEST_BASE + 0x10u, "eret into a pending interrupt");
+    CHECK(s.llbit == 0u, "the eret still clears LLbit");
+    /* With nothing pending eret is a plain return. */
+    intc_delivery_seed(&s, SR_STATUS_EXL | SR_STATUS_IE | INTC_IM2);
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) == -1 && s.flow_kind == SR_FLOW_ERET &&
+          s.pc == TEST_BASE + 0x10u && (s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) == 0u,
+          "eret with nothing pending must return (flow %u pc 0x%08x)", s.flow_kind, s.pc);
+
+    /* The shape of PSP-HLE-INTR-001 (a): a source raised three times while suspended is one
+     * pending latch and one delivery; the handler acknowledges it and its eret returns. */
+    intc_delivery_seed(&s, INTC_IM2);
+    CHECK(sr_intc_set_enable_mask(0x08u) == 0, "enable source 3");
+    for (unsigned i = 0; i < 3u; i++)
+        CHECK(sr_intc_raise(3u) == 0 && sr_cpu_poll(&s, TEST_BASE) == 0,
+              "suspended raise %u must not deliver", i);
+    taken = 0u;
+    s.r[8] = SR_STATUS_IE | INTC_IM2;
+    if (sr_cp0_mtc0(&s, 8u, SR_CP0_STATUS, 0u, TEST_BASE) == -1) taken++;
+    check_interrupt_taken(&s, TEST_BASE + 4u, "resume after three raises");
+    sr_cpu_clear_flow(&s);
+    CHECK(sr_intc_clear(3u) == 0, "the handler acknowledges source 3");
+    if (sr_cpu_eret(&s, TEST_VECTOR + 8u) == -1 && s.flow_kind == SR_FLOW_EXCEPTION) taken++;
+    CHECK(taken == 1u && s.flow_kind == SR_FLOW_ERET && s.pc == TEST_BASE + 4u,
+          "three suspended raises must give exactly one delivery (taken %u, flow %u, pc 0x%08x)",
+          taken, s.flow_kind, s.pc);
+
+    /* The shape of PSP-HLE-INTR-001 (b): the source fires again while the handler runs
+     * (EXL set: no nesting); it is delivered once after the eret, at the same resume point. */
+    intc_delivery_seed(&s, SR_STATUS_IE | INTC_IM2);
+    CHECK(sr_intc_raise(3u) == 0 && sr_intc_set_enable_mask(0x08u) == 0, "assert source 3");
+    CHECK(sr_cpu_poll(&s, TEST_BASE + 4u) == -1, "first delivery");
+    sr_cpu_clear_flow(&s);
+    CHECK(sr_intc_clear(3u) == 0 && sr_intc_raise(3u) == 0, "acknowledged, then raised again");
+    CHECK(sr_cpu_poll(&s, TEST_VECTOR + 4u) == 0, "no nested delivery inside the handler");
+    CHECK(sr_cpu_eret(&s, TEST_VECTOR + 8u) == -1, "the handler's eret");
+    check_interrupt_taken(&s, TEST_BASE + 4u, "re-pended during the handler");
+    sr_cpu_clear_flow(&s);
+    CHECK(sr_intc_clear(3u) == 0, "the second handler acknowledges");
+    CHECK(sr_cpu_eret(&s, TEST_VECTOR + 8u) == -1 && s.flow_kind == SR_FLOW_ERET &&
+          s.pc == TEST_BASE + 4u, "the second eret returns to the interrupted code");
+    sr_intc_reset();
 }
 
 /* PSP-INTR-CAUSE-001 (PSP-3000 6.6.1, 2026-10-29): kernel-mode reads inside a
@@ -2705,9 +2908,9 @@ static void test_eret_clears_link(void) {
  * see the INTC block above). tools/test_cpu_lle.py emits INTC_CAUSE_SEQUENCE as real
  * --lle-cpu generated C (f_08810a40) and this test runs the same words through the
  * production interpreter. Each lane is checked against the expected values and against
- * the other lane. Status has IE 1, EXL 0 and every IM bit set in kernel mode, so the
- * interpreter's per-instruction poll sees an eligible asserted line at every safe point
- * and must still deliver nothing (delivery is PR 6). */
+ * the other lane. Status has every IM bit set in kernel mode with IE clear (interrupts
+ * suspended, like the PSP-INTR-CAUSE-001 reads), so neither the interpreter's per-instruction
+ * poll nor the mtc0 Cause safe point may deliver; delivery has its own parity test below. */
 
 #define INTC_CAUSE_ENTRY 0x08810A40u
 
@@ -2735,7 +2938,7 @@ static void intc_cause_seed(CpuState *s, const IntcCauseLane *lane) {
     CHECK(sr_intc_raise(4u) == 0, "raise source 4");
     CHECK(sr_intc_set_enable_mask(lane->asserted ? 0x10u : 0u) == 0, "set the lane's mask");
     sr_cpu_lle_set_enabled(1);
-    s->cop0[SR_CP0_STATUS] = SR_STATUS_IE | SR_STATUS_IM_MASK;
+    s->cop0[SR_CP0_STATUS] = SR_STATUS_IM_MASK;   /* IE clear: suspended */
     s->cop0[SR_CP0_CAUSE] = lane->stale_cause;
     s->r[9] = 0xFFFFFFFFu;
     s->r[31] = TEST_SPAN_END;   /* the interpreter stops cleanly on the return */
@@ -2802,6 +3005,132 @@ static void test_intc_cause_aot_interp_parity(void) {
     sr_intc_reset();
 }
 
+/* Interrupt delivery through both CPU tiers (spec 3.6, PR 6, issue #325). tools/test_cpu_lle.py
+ * emits INTC_DELIVERY_SEQUENCES as --lle-cpu generated C (f_08810c00, f_08810c40,
+ * f_08810c80); this test runs the same words through the production interpreter. Each lane
+ * is checked against the expected values and against the other lane. */
+
+#define INTC_DELIVERY_MTC0_ENTRY 0x08810C00u
+#define INTC_DELIVERY_DELAY_ENTRY 0x08810C40u
+#define INTC_DELIVERY_ERET_ENTRY 0x08810C80u
+
+void f_08810c00(CpuState *s);
+void f_08810c40(CpuState *s);
+void f_08810c80(CpuState *s);
+
+/* Word-for-word the INTC_DELIVERY_SEQUENCES tools/test_cpu_lle.py emits. */
+static const uint32_t INTC_DELIVERY_MTC0_SEQUENCE[] = {
+    0x40886000u,   /* 0x00 mtc0  t0, Status */
+    0x24090001u,   /* 0x04 addiu t1, zero, 1 */
+    0x03E00008u,   /* 0x08 jr    ra */
+    0x00000000u,   /* 0x0c nop */
+};
+static const uint32_t INTC_DELIVERY_DELAY_SEQUENCE[] = {
+    0x10000002u,   /* 0x00 beq   zero, zero, 0x0c */
+    0x40886000u,   /* 0x04 mtc0  t0, Status (delay slot) */
+    0x24090001u,   /* 0x08 addiu t1, zero, 1 */
+    0x03E00008u,   /* 0x0c jr    ra */
+    0x00000000u,   /* 0x10 nop */
+};
+static const uint32_t INTC_DELIVERY_ERET_SEQUENCE[] = {
+    0x42000018u,   /* 0x00 eret */
+    0x240A0002u,   /* 0x04 addiu t2, zero, 2 */
+    0x24090001u,   /* 0x08 addiu t1, zero, 1 */
+    0x03E00008u,   /* 0x0c jr    ra */
+    0x00000000u,   /* 0x10 nop */
+};
+
+typedef struct {
+    const char *what;
+    uint32_t entry;
+    void (*aot)(CpuState *s);
+    const uint32_t *words;
+    unsigned count;
+    uint32_t status;            /* Status before the run */
+    uint32_t enable;            /* controller enable mask; source 4 is pending */
+    SrGuestInterpResult interp; /* the interpreter's result */
+    uint32_t flow;              /* the flow both tiers end with */
+    uint32_t flow_target;
+    uint32_t epc;               /* EPC after the run (0x12345678 = untouched) */
+    uint32_t t1;                /* t1 after the run: 1 only if the resume point ran */
+} IntcDeliveryLane;
+
+static void intc_delivery_lane_seed(CpuState *s, const IntcDeliveryLane *lane) {
+    intc_delivery_seed(s, lane->status);
+    CHECK(sr_intc_raise(4u) == 0 && sr_intc_set_enable_mask(lane->enable) == 0,
+          "%s: controller setup", lane->what);
+    s->cop0[SR_CP0_EPC] = lane->entry == INTC_DELIVERY_ERET_ENTRY
+        ? INTC_DELIVERY_ERET_ENTRY + 8u : 0x12345678u;
+    s->r[8] = SR_STATUS_IE | INTC_IM2;
+    s->r[31] = TEST_SPAN_END;   /* the interpreter stops cleanly on the return */
+    s->pc = lane->entry;
+}
+
+static void intc_delivery_check(const CpuState *s, const IntcDeliveryLane *lane,
+                                const char *tier) {
+    CHECK(s->flow_kind == lane->flow && s->flow_target == lane->flow_target,
+          "%s (%s): flow %u/0x%08x, want %u/0x%08x", lane->what, tier, s->flow_kind,
+          s->flow_target, lane->flow, lane->flow_target);
+    CHECK(s->cop0[SR_CP0_EPC] == lane->epc, "%s (%s): EPC 0x%08x, want 0x%08x", lane->what,
+          tier, s->cop0[SR_CP0_EPC], lane->epc);
+    CHECK(s->r[9] == lane->t1 && s->r[10] == 0u,
+          "%s (%s): t1 0x%08x t2 0x%08x, want t1 0x%08x and t2 0", lane->what, tier,
+          s->r[9], s->r[10], lane->t1);
+    if (lane->flow == SR_FLOW_EXCEPTION)
+        check_interrupt_taken(s, lane->epc, lane->what);
+    CHECK(sr_intc_pending_mask() == 0x10u, "%s (%s): the run must not acknowledge the source",
+          lane->what, tier);
+}
+
+static void test_intc_delivery_aot_interp_parity(void) {
+    const IntcDeliveryLane lanes[] = {
+        { "mtc0 Status, line high", INTC_DELIVERY_MTC0_ENTRY, f_08810c00,
+          INTC_DELIVERY_MTC0_SEQUENCE, 4u, INTC_IM2, 0x10u, SR_GUEST_INTERP_EXCEPTION,
+          SR_FLOW_EXCEPTION, TEST_VECTOR, INTC_DELIVERY_MTC0_ENTRY + 4u, 0u },
+        { "mtc0 Status, source masked", INTC_DELIVERY_MTC0_ENTRY, f_08810c00,
+          INTC_DELIVERY_MTC0_SEQUENCE, 4u, INTC_IM2, 0x00u, SR_GUEST_INTERP_FETCH_BOUNDARY,
+          SR_FLOW_NONE, 0u, 0x12345678u, 1u },
+        { "delay-slot mtc0 Status, line high", INTC_DELIVERY_DELAY_ENTRY, f_08810c40,
+          INTC_DELIVERY_DELAY_SEQUENCE, 5u, INTC_IM2, 0x10u, SR_GUEST_INTERP_FLOW_FATAL,
+          SR_FLOW_FATAL, INTC_DELIVERY_DELAY_ENTRY + 4u, 0x12345678u, 0u },
+        { "eret, line high", INTC_DELIVERY_ERET_ENTRY, f_08810c80,
+          INTC_DELIVERY_ERET_SEQUENCE, 5u, SR_STATUS_EXL | SR_STATUS_IE | INTC_IM2, 0x10u,
+          SR_GUEST_INTERP_EXCEPTION, SR_FLOW_EXCEPTION, TEST_VECTOR,
+          INTC_DELIVERY_ERET_ENTRY + 8u, 0u },
+    };
+    for (unsigned l = 0; l < sizeof lanes / sizeof lanes[0]; l++) {
+        const IntcDeliveryLane *lane = &lanes[l];
+        CpuState aot;
+        CpuState interp;
+        SrGuestInterpFault fault;
+        SrGuestInterpResult r;
+
+        intc_delivery_lane_seed(&aot, lane);
+        lane->aot(&aot);
+        intc_delivery_check(&aot, lane, "AOT");
+
+        intc_delivery_lane_seed(&interp, lane);
+        llsc_place(lane->entry, lane->words, lane->count);
+        memset(&fault, 0, sizeof fault);
+        r = sr_guest_interp_run(&interp, lane->entry, &fault);
+        CHECK(r == lane->interp, "%s: interpreter result %s, want %s", lane->what,
+              sr_guest_interp_result_name(r), sr_guest_interp_result_name(lane->interp));
+        intc_delivery_check(&interp, lane, "interpreter");
+
+        for (unsigned i = 0; i < 32u; i++)
+            CHECK(aot.r[i] == interp.r[i], "%s: r%u AOT=0x%08x INTERP=0x%08x",
+                  lane->what, i, aot.r[i], interp.r[i]);
+        for (unsigned i = 0; i < 32u; i++)
+            CHECK(aot.cop0[i] == interp.cop0[i], "%s: cop0[%u] AOT=0x%08x INTERP=0x%08x",
+                  lane->what, i, aot.cop0[i], interp.cop0[i]);
+        CHECK(aot.flow_kind == interp.flow_kind && aot.flow_target == interp.flow_target,
+              "%s: flow AOT=%u/0x%08x INTERP=%u/0x%08x", lane->what, aot.flow_kind,
+              aot.flow_target, interp.flow_kind, interp.flow_target);
+        sr_cpu_lle_set_enabled(0);
+    }
+    sr_intc_reset();
+}
+
 int main(int argc, char **argv) {
     sr_mem_init();
     setup_spans();
@@ -2851,9 +3180,11 @@ int main(int argc, char **argv) {
     test_intc_unconfigured_fails_closed();
     test_intc_masked_pending_retention();
     test_intc_cause_guest_writes();
-    test_intc_poll_reports_none();
+    test_intc_poll_delivery();
+    test_intc_safe_points();
     test_hw_psp_intr_cause_ip2_while_suspended();
     test_intc_cause_aot_interp_parity();
+    test_intc_delivery_aot_interp_parity();
     test_llsc_measured_windows();
     sr_cpu_lle_reset_config();
     if (g_failed) {

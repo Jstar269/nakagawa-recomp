@@ -73,6 +73,8 @@ _RUNS_BEFORE_PROCESS_TEST = (
     # translation from tools/code_capture.py, the binding that takes the call (#1933).
     "build/mygame/code_capture_selftest_capture build/mygame/code-capture-selftest",
     "build/mygame/code_capture_selftest_bound build/mygame/code-capture-selftest",
+    # pipeline-cache-selftest: the Vulkan pipeline cache file's checks, no GPU (#2149).
+    "build/mygame/pipeline_cache_selftest build/mygame/pipeline_cache_scratch",
     "build/test_pgf_public",
     "build/test_core_catalog",
     "build/test_parsers_hostile",
@@ -86,12 +88,14 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/test_disc_expand",
     "build/test_disc_verify",
     "build/test_nk_zip",
+    "build/test_steam_shortcuts",
     "build/test_safe_math",
     "build/test_pcm_wav_dump",
     "build/test_fuzz_parsers --iters 100",
     "build/mygame/psmf_producer_selftest --fuzz-iters 100",
     "build/test_input_profile",
     "build/test_nk_sig",
+    "build/test_nk_achievements",
     "build/test_portable_mode",
 )
 _PROCESS_TEST = "build/test_win32_process" if os.name == "nt" else "build/test_posix_process"

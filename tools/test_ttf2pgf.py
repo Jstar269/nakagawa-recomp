@@ -72,6 +72,8 @@ KOREAN_FONT_DIR = ROOT / "fixtures" / "fonts" / "gowundodum"
 KOREAN_FONT = KOREAN_FONT_DIR / "GowunDodum-Regular.ttf"
 KOREAN_PIN = KOREAN_FONT_DIR / "PIN.json"
 LIBERATION_DIR = ROOT / "fixtures" / "fonts" / "liberation"
+NOTO_JP_FONT = ROOT / "assets" / "fonts" / "ui" / "noto-sans-jp" / "NotoSansJP-Regular.ttf"
+NOTO_JP_PIN = ROOT / "fixtures" / "fonts" / "notosansjp" / "PIN.json"
 #: The console's Latin index order within a size group (#2005): family, then style.
 LATIN_FACES = (
     ("LiberationSans-Regular", "Regular"), ("LiberationSerif-Regular", "Regular"),
@@ -918,6 +920,35 @@ class JapaneseCodePointCoverageTests(unittest.TestCase):
         missing = [code for code in codes if font.glyph_id(code) is None]
         self.assertEqual(missing, [], "the selected Japanese font must cover every assigned JIS code point")
 
+    def test_japanese_text_set_holds_both_kanji_levels_and_all_of_cp932(self) -> None:
+        """#2005: the first set stopped at JIS level 1; the text set adds level 2 and CP932."""
+        points = ttf2pgf.japanese_text_code_points()
+        self.assertEqual(len(points.codes), 7575)
+        self.assertEqual(points.codes, tuple(sorted(set(points.codes))))
+        self.assertEqual(points.source, "builtin:jis-x-0208-cp932-japanese")
+        self.assertEqual(points.sha256, ttf2pgf.JAPANESE_TEXT_CODE_POINTS_SHA256)
+        codes = set(points.codes)
+        kanji = set(ttf2pgf._jis_x_0208_rows(range(16, 85)))
+        self.assertEqual(len(kanji), 6355, "JIS X 0208 levels 1 and 2")
+        self.assertTrue(kanji <= codes)
+        self.assertTrue(set(ttf2pgf._cp932_double_byte_codes()) <= codes)
+        self.assertTrue(set(ttf2pgf.jis_x_0208_japanese_code_points().codes) <= codes)
+        self.assertTrue(set(range(0xA0, 0x100)) <= codes)
+        # Level 2 kanji, NEC row 13 and an IBM extension are all in it.
+        self.assertTrue({0x5F0C, 0x9ED1, 0x2460, 0x2252, 0x7E8A}.issubset(codes))
+        self.assertFalse(any(0xE000 <= code <= 0xF8FF for code in codes), "no user-defined area")
+
+    def test_noto_sans_jp_draws_the_text_set_with_m_plus_for_one_point(self) -> None:
+        data = NOTO_JP_FONT.read_bytes()
+        pin = load_pin(NOTO_JP_PIN, data)
+        self.assertEqual(pin.spdx, "OFL-1.1")
+        ttf2pgf.validate_output_name("Nakagawa Open Japanese", pin)
+        noto = ttf2pgf._Ttf(data)
+        mplus = ttf2pgf._Ttf(JAPANESE_FONT.read_bytes())
+        codes = ttf2pgf.japanese_text_code_points().codes
+        self.assertEqual([code for code in codes if noto.glyph_id(code) is None], [0x2252])
+        self.assertIsNotNone(mplus.glyph_id(0x2252))
+
 
 class ProjectCodePointCoverageTests(unittest.TestCase):
     """Built-in Latin and Korean repertoires stay stable and pinned fonts cover them."""
@@ -1520,8 +1551,42 @@ class ProjectLatinStrikeTests(unittest.TestCase):
                 self.assertEqual(glyphs[0x2026].adjust_y, glyphs[ord(".")].adjust_y)
 
 
-class SpacingOptionTests(CliRefusalMixin):
-    """#2005: tracking and tabular digits are explicit, recorded and bounded options."""
+class ProjectCjkSizeTests(unittest.TestCase):
+    """#2005: the Japanese and Korean fonts are set at the console's 10.125 pt (18 px at 128 dpi),
+    where they used to be 12 px. A kanji or kana moves 18 px, as on the console, and a Hangul
+    syllable about 18.36 px on average (the console's measured average)."""
+
+    KANA_KANJI = {0x3042, 0x30A2, 0x4E00, 0x6F22, 0x5B57, 0x9ED1, 0x5F0C, 0x3001}
+
+    def _convert(self, variable: str, data: bytes, codes: set[int], **extra: object) -> ttf2pgf.Conversion:
+        arguments = _convert_arguments(_makefile_flags(variable))
+        arguments.pop("baseline_ellipsis", None)
+        arguments.update(extra)
+        return convert(data, input_path="font.ttf", output_path="cjk.pgf", code_points=_code_set(codes),
+                       **arguments)
+
+    def test_japanese_font_is_set_at_ten_point_one_two_five(self) -> None:
+        conversion = self._convert("PROJECT_JAPANESE_FONT_ARGS", NOTO_JP_FONT.read_bytes(), self.KANA_KANJI,
+                                   font_name="Nakagawa Open Japanese")
+        self.assertEqual(struct.unpack_from("<iiii", conversion.image, 0x24), (648, 648, 8192, 8192))
+        self.assertEqual(struct.unpack_from("<ii", conversion.image, 0xD4), (1013, -139))
+        for glyph in conversion.glyphs:
+            with self.subTest(code=f"U+{glyph.code:04X}"):
+                self.assertEqual(glyph.advance_x, 18 * 64)
+
+    def test_korean_font_is_set_at_ten_point_one_two_five(self) -> None:
+        hangul = set(ttf2pgf.ks_x_1001_korean_code_points().codes) & set(range(0xAC00, 0xD7A4))
+        sample = set(sorted(hangul)[::10])
+        conversion = self._convert("PROJECT_KOREAN_FONT_ARGS", KOREAN_FONT.read_bytes(), sample,
+                                   font_name="Nakagawa Open Korean")
+        self.assertEqual(struct.unpack_from("<iiii", conversion.image, 0x24), (648, 648, 8192, 8192))
+        self.assertEqual(struct.unpack_from("<ii", conversion.image, 0xD4), (1000, -250))
+        average = sum(cast(int, glyph.advance_x) for glyph in conversion.glyphs) / 64 / len(conversion.glyphs)
+        self.assertLessEqual(abs(average - 18.356), 0.25)
+
+
+class SpacingAndFallbackOptionTests(CliRefusalMixin):
+    """#2005: tracking, tabular digits and a second font are explicit, recorded and bounded options."""
 
     def setUp(self) -> None:
         self.data = FONT.read_bytes()
@@ -1591,6 +1656,43 @@ class SpacingOptionTests(CliRefusalMixin):
             self.assertEqual(caught.exception.reason, reason)
         self.assert_cli_refused("tracking-out-of-range", self.tmp / "out.pgf", FONT, "--codes", "0x48-0x48",
                                 "--tracking", "17")
+
+    def test_fallback_draws_only_what_the_first_font_lacks_and_is_recorded(self) -> None:
+        mplus = JAPANESE_FONT.read_bytes()
+        mplus_pin = load_pin(JAPANESE_PIN, mplus)
+        codes = _code_set({0x41, 0x48, 0x3042})
+        conversion = self._convert(codes=None, code_points=codes, fallback_data=mplus,
+                                   fallback_path=str(JAPANESE_FONT), fallback_pin=mplus_pin)
+        fallback = conversion.manifest["fallback"]
+        self.assertEqual(fallback["codes"], [0x3042])
+        self.assertEqual(fallback["input"]["sha256"], hashlib.sha256(mplus).hexdigest())
+        self.assertEqual(fallback["input"]["path"], "MPLUS1p-Regular.ttf")
+        self.assertEqual(fallback["license"]["spdx"], "OFL-1.1")
+        alone = convert(mplus, input_path=str(JAPANESE_FONT), output_path="out.pgf",
+                        code_points=_code_set({0x3042}), ppem=13, pin=mplus_pin)
+        self.assertEqual(_glyph_map(conversion.glyphs)[0x3042].samples, alone.glyphs[0].samples)
+        plain = _glyph_map(self._convert(codes=(0x41, 0x48)).glyphs)
+        self.assertEqual(_glyph_map(conversion.glyphs)[0x48].samples, plain[0x48].samples)
+        self.assertNotIn("fallback", self._convert().manifest)
+
+    def test_fallback_misuse_is_refused(self) -> None:
+        mplus = JAPANESE_FONT.read_bytes()
+        mplus_pin = load_pin(JAPANESE_PIN, mplus)
+        for kwargs, reason in (
+            ({"fallback_data": mplus, "fallback_path": "m.ttf", "fallback_pin": mplus_pin}, "fallback-unused"),
+            ({"fallback_data": mplus, "fallback_path": None}, "conflicting-parameters"),
+            ({"fallback_data": mplus, "fallback_path": "m.ttf"}, "conflicting-parameters"),
+            ({"fallback_pin": mplus_pin}, "conflicting-parameters"),
+        ):
+            with self.subTest(kwargs=sorted(kwargs)), self.assertRaises(TtfConvertError) as caught:
+                self._convert(**kwargs)
+            self.assertEqual(caught.exception.reason, reason)
+
+    def test_a_static_font_with_a_stat_table_is_accepted(self) -> None:
+        """Noto Sans JP's static instance carries STAT, which static family members carry too."""
+        font = ttf2pgf._Ttf(NOTO_JP_FONT.read_bytes())
+        self.assertIsNotNone(font.glyph_id(0x4E00))
+        self.assertNotIn("STAT", ttf2pgf.VARIABLE_FONT_TABLES)
 
 
 class NameDenylistTests(unittest.TestCase):

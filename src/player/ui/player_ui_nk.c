@@ -87,6 +87,8 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
 
 struct PlayerUiNk {
     SDL_Window *window;     /* the launcher window: Settings reads its display's refresh rate */
+    bool clock_held;        /* frames are drawn at held_clock_s, not the time of day (#2124) */
+    double held_clock_s;
     NkUi *ui;
     NkUiSdlr *backend;
     NkUiTtf *ttf;
@@ -133,6 +135,8 @@ struct PlayerUiNk {
     char input_summary[128];
     char title_input_summary[128];
     char settings_controller[160];
+    /* The graphics preset's note on the main Settings page (#2150). */
+    char settings_preset_note[192];
     char settings_interface_size[16];
     char settings_saves[NK_MAX_PATH];
     /* The play mode on the open title's page: what it turns on, and its last session, read
@@ -235,6 +239,7 @@ struct PlayerUiNk {
     char play_reported[PLAYER_UI_TITLE_CAP][16];   /* the play mode badge last printed */
     char enhanced_reported[512];                    /* Settings > Enhanced as last printed */
     char ace_line_reported[256];                    /* the open title's play line last printed */
+    char preset_note_reported[200];                 /* the main Settings page's preset note */
     int disc_reported_view;  /* the game-found card whose rows were printed, or -1 */
 #endif
     bool ready;
@@ -498,8 +503,20 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
            player_ui_nk_draws_view(app->active_view);
 }
 
+void player_ui_nk_hold_clock(PlayerUiNk *player, double now_s) {
+    if (player == NULL || !isfinite(now_s)) return;
+    player->clock_held = true;
+    player->held_clock_s = now_s;
+}
+
+/* The clock the launcher draws with: the time since SDL started, or the held time. */
+static double player_ui_nk_now_s(const PlayerUiNk *player) {
+    if (player != NULL && player->clock_held) return player->held_clock_s;
+    return (double)SDL_GetTicksNS() / 1000000000.0;
+}
+
 uint32_t player_ui_nk_wait_ms(const PlayerUiNk *player, uint32_t idle_ms) {
-    double now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    double now_s = player_ui_nk_now_s(player);
     double wait_s;
     if (player == NULL) {
         return idle_ms;
@@ -950,6 +967,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.resolution = player_ui_resolution_word(app->settings.resolution_scale);
     model.pacing = app->settings.fps_cap < 0 ? "PSP timing" : "No extra cap";
     model.scaling = player_present_scaling_label(app->settings.present_scaling);
+    model.preset = player_app_graphics_preset_label(app);
     model.vsync = app->settings.vsync;
     model.display_refresh_hz = player_ui_display_refresh_hz(player->window);
     model.fullscreen = app->settings.fullscreen;
@@ -1002,6 +1020,29 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     if (app->settings_newer_schema && app->settings_notice[0] != '\0') {
         model.notice = app->settings_notice;
     }
+    /* The graphics preset (#2150) says on the main page, where its row is, that it is used
+       in Enhanced and Ace only and what it could not set. It is derived from the choice, so
+       it goes with Custom and is back after a restart. */
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_MAIN &&
+        player_app_graphics_preset_note(app, player->settings_preset_note,
+                                        sizeof(player->settings_preset_note),
+                                        &model.preset_notice_warns)) {
+        model.preset_notice = player->settings_preset_note;
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_MAIN) {
+        /* The preset row and note the main page draws; printed on change. */
+        char line[sizeof(player->preset_note_reported)];
+        snprintf(line, sizeof(line), "value=%s|warns=%d|note=%s", model.preset,
+                 model.preset_notice_warns ? 1 : 0,
+                 model.preset_notice != NULL ? model.preset_notice : "");
+        if (strcmp(line, player->preset_note_reported) != 0) {
+            snprintf(player->preset_note_reported, sizeof(player->preset_note_reported), "%s",
+                     line);
+            printf("[PLAYER_UI_TEST] next_ui_settings_preset %s\n", line);
+        }
+    }
+#endif
     for (size_t i = 0u; i < app->prerequisites.items.count &&
                         model.tool_count < PLAYER_UI_SETTINGS_TOOLS; ++i) {
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
@@ -1960,7 +2001,7 @@ bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
     size_t count;
     double now_s;
     if (player == NULL || !player->ready || event == NULL) return false;
-    now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    now_s = player_ui_nk_now_s(player);
     if (player_ui_nk_find_open(player)) {
         /* The box takes what is typed: SDL's text input brings the characters,
            Backspace deletes one, and a printable key is not also a shortcut
@@ -2267,7 +2308,7 @@ static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int in
     }
 #endif
     {
-        double now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+        double now_s = player_ui_nk_now_s(player);
         if (strcmp(player->ace_last_disc, game->disc_id) != 0 || now_s - player->ace_last_read_s >= 2.0) {
             snprintf(player->ace_last_disc, sizeof(player->ace_last_disc), "%s", game->disc_id);
             player->ace_last_read_s = now_s;
@@ -2802,7 +2843,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     nk_ui_set_layout_debug(player->ui,
                            app->settings.developer_mode && app->dev_log.inspect_layout);
     nk_ui_sdlr_set_scale(player->backend, scale.density);
-    now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    now_s = player_ui_nk_now_s(player);
     repeat_count = nk_ui_input_poll(&player->input.input, now_s, repeats,
                                     sizeof(repeats) / sizeof(repeats[0]));
     for (size_t i = 0u; i < repeat_count; ++i) {
