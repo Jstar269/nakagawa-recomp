@@ -36,6 +36,7 @@ COSIM_FP_CONVERT_PRELUDE ?=
 COSIM_FP_CONVERT_PRELUDE_FLAG = $(if $(strip $(COSIM_FP_CONVERT_PRELUDE)),-include "$(COSIM_FP_CONVERT_PRELUDE)",)
 COSIM_FPU_REFERENCE_SRC ?= fixtures/cosim/fpu_reference.c
 COSIM_CODEGEN_ARGS ?= --stack-census
+COSIM_LDFLAGS ?= $(filter -fuse-ld=lld,$(LDFLAGS))
 
 # The loader and codegen rules are named directly rather than through `pipeline`.
 # This guest deliberately imports nothing, and tools/imports.py fails closed on an
@@ -105,7 +106,7 @@ cosim-selftest-promoted:
 # deliberate -- this gate should stay runnable anywhere the toolchain is,
 # not inherit the graphics stack's environment requirements.
 cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
-	$(CC) $(CFLAGS) $(COSIM_FP_CONVERT_PRELUDE_FLAG) -DSR_INSTRUCTION_TRACE \
+	$(CC) $(CFLAGS) $(COSIM_LDFLAGS) $(COSIM_FP_CONVERT_PRELUDE_FLAG) -DSR_INSTRUCTION_TRACE \
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
 		-o $(BUILD_DIR)/cosim_selftest.exe \
 		$(COSIM_HARNESS) $(COSIM_FPU_REFERENCE_SRC) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \

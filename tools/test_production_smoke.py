@@ -491,6 +491,53 @@ class TestProductionSmoke(unittest.TestCase):
             finally:
                 os.chdir(cwd)
 
+    def test_verify_accepts_lld_link_map_input_sections(self):
+        with tempfile.TemporaryDirectory(prefix="nk_prod_smoke_lld_") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            relative_dir = "sub_build"
+            build_dir = self._fabricated_aot_tree(temp_root, relative_dir)
+            map_path = build_dir / "production_smoke.map"
+            paths = map_path.read_text(encoding="utf-8").splitlines()
+            map_path.write_text(
+                "Address  Size     Align Out     In      Symbol\n"
+                + "\n".join(
+                    f"00001000 00000020 16 {path}:(.text)" for path in paths
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cwd = os.getcwd()
+            try:
+                os.chdir(temp_root)
+                generator.verify(Path(relative_dir), mode="aot")
+            finally:
+                os.chdir(cwd)
+
+    def test_verify_lld_link_map_reports_an_omitted_object(self):
+        with tempfile.TemporaryDirectory(prefix="nk_prod_smoke_lld_missing_") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            relative_dir = "sub_build"
+            build_dir = self._fabricated_aot_tree(temp_root, relative_dir)
+            map_path = build_dir / "production_smoke.map"
+            paths = map_path.read_text(encoding="utf-8").splitlines()
+            omitted_object = paths.pop(0).rsplit("/", 1)[-1]
+            retained_object = paths[0].rsplit("/", 1)[-1]
+            map_path.write_text(
+                "Address  Size     Align Out     In      Symbol\n"
+                + "\n".join(f"00001000 00000020 16 {path}:(.text)" for path in paths)
+                + "\n",
+                encoding="utf-8",
+            )
+            cwd = os.getcwd()
+            try:
+                os.chdir(temp_root)
+                with self.assertRaisesRegex(RuntimeError, "production link map omits") as raised:
+                    generator.verify(Path(relative_dir), mode="aot")
+            finally:
+                os.chdir(cwd)
+            self.assertIn(omitted_object, str(raised.exception))
+            self.assertNotIn(retained_object, str(raised.exception))
+
     def _assert_title_link_uses_response_file(self, makefile):
         """The title link reads its objects from a response file, never the command line.
 
@@ -1623,11 +1670,15 @@ class TestPresenterContract(unittest.TestCase):
         # Only -1 from sdl3vk_present_image_ex is remapped; 0 (close) and 1 (shown) are returned
         # unchanged. The mapping is the last statement, after the present call. The image shown
         # is the target's own, or its host twin at the twin's scale while the twin is in step (#2050).
+        # With widescreen Fill on, it is the composed picture (left wing, that image, right wing) at
+        # the same scale; only a frame actually shown marks its wings shown (#1881).
         self.assertIn("VkImage shown = present_image(t);", present)
-        self.assertIn(
-            "int pr = sdl3vk_present_image_ex((void *)shown, DRAW_W * present_scale(t), FB_H * present_scale(t));",
-            present,
-        )
+        self.assertIn("int show_w = DRAW_W * present_scale(t), show_h = FB_H * present_scale(t);", present)
+        self.assertIn("VkImage wide = wide_compose(t, fbaddr, &show_w, &show_h);", present)
+        self.assertIn("int pr = sdl3vk_present_image_ex((void *)(wide ? wide : shown), show_w, show_h);", present)
+        self.assertIn("if (pr == GEGPU_PRESENT_SHOWN) ge_wide_shown(fbaddr);", present)
+        self.assertLess(present.index("wide_compose(t, fbaddr"), present.index("sdl3vk_present_image_ex("))
+        self.assertLess(present.index("sdl3vk_present_image_ex("), present.index("ge_wide_shown(fbaddr)"))
         self.assertIn("    if (pr == -1) return GEGPU_PRESENT_TARGET_FAILED;\n    return pr;\n}", present)
         # Only the two intended returns carry the code: the unprepared target and the failed present.
         self.assertEqual(present.count("GEGPU_PRESENT_TARGET_FAILED"), 2)

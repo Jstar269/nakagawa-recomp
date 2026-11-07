@@ -20,13 +20,13 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 | Event/change | Jobs that run | Jobs intentionally skipped |
 | --- | --- | --- |
-| Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and CI required | only jobs irrelevant to the changed paths |
+| Draft pull request (opened, a push, reopened, or converted to Draft) | the quick jobs: classification, hygiene/security with its Markdown step, the public export audit, and CI required, which fails with `DRAFT_LIGHT_CI` (see [Draft pull requests](#draft-pull-requests)) | Python tooling, native/translation, the GCC 16 canary, the Android launcher build, Windows and the profile-zero fixture build, whatever the changed paths |
 | Ready pull request, docs-only | classification, hygiene/security with its Markdown step, CI required | Python/native, Windows |
 | Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
 | Ready pull request, recipe-only edit of phony targets in `Makefile` | classification, hygiene/security, Python tooling on the Makefile-coupled modules over three shards, native/translation, Windows, CI required | the Python modules that cannot observe a Makefile recipe |
 | Ready pull request, ordinary tools Python file | classification, hygiene/security, Python tooling, CI required | native/translation, Windows |
 | Ready pull request, only `tools/test_*.py` modules that no native or Windows gate runs | classification, hygiene/security, Python tooling, CI required | native/translation, Windows (see [Tests-only changes](#tests-only-changes)) |
-| Status-only transition (draft <-> ready) | no run: `.github/workflows/ci.yml` does not list `ready_for_review` or `converted_to_draft` | every gate, because the head did not change |
+| Marked Ready (`ready_for_review`) | the path-applicable jobs of a ready pull request, on the head the Draft run left light | only jobs irrelevant to the changed paths |
 | Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
 | Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, CI required | Python/native, Windows |
 | Mixed documentation/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the applicable product gates |
@@ -47,7 +47,7 @@ of 2026-11-02, whole history, hosted runners):
 | `CodeQL wake` then `Trusted CodeQL` | 1 wake + prepare + 3 analyses + upload (6 jobs) | none on a pull request head that is not a `batch/` branch of this repository; on a batch head, 6 jobs when the diff touches C/C++, Python or workflow files, otherwise 3 (wake, prepare, upload) | `codeql.yml` is 38.5k hosted minutes over 2,732 runs, about 14 minutes a run |
 | `ClusterFuzzLite` | 1 job, every pull request | 1 job only when the fuzz target's inputs change; none otherwise | 6.8k minutes over 1,767 runs, about 3.8 minutes a run |
 | `OSV-Scanner`, `Dependency Review`, `Provenance attestation` | 1 job each | unchanged | cheap per run (4.5-5.6k runs) but supply-chain controls |
-| `Trusted CI verdict` | about 4 runs, 1 job each | 2 runs (a new head, CI's completion); none for a superseded head's cancelled CI or for `ready_for_review` | 16 s average run |
+| `Trusted CI verdict` | about 4 runs, 1 job each | 2 runs (a new head, CI's completion); none for a superseded head's cancelled CI. `ready_for_review` starts none itself; the CI run it starts re-judges the head when it completes | 16 s average run |
 
 ### Jobs per run
 
@@ -213,8 +213,9 @@ historical 531 s average is therefore the runner limit (about 20 concurrent jobs
 a property of the workflow: the verdict job is created when a producer finishes, which is
 when the repository's own matrix has most jobs queued, and it waits in the same queue as
 the Windows and Python legs. The way to shorten it is to start fewer jobs per push, which
-is what the path gates above do. The verdict no longer runs on `ready_for_review`: the
-verifier never reads the draft state, so that event could only repeat the same verdict. Every
+is what the path gates above do. The verdict does not run on `ready_for_review` itself: that
+event starts a full CI run, whose completion re-judges the head, and a verdict run on the
+transition could only judge the previous CI run. Every
 label event still re-judges, whatever the label. A newer run for a head replaces that head's
 pending run, so a run that judged nothing could leave a verdict standing that a withdrawn
 approval should have changed.
@@ -254,24 +255,46 @@ for the README badge.
 Triage findings through the usual issue process. The workflow does not change branch-protection
 settings.
 
-A draft pull request now receives the same path-applicable substantive gates as
-a ready pull request. No `Ready for review` transition or manual
-`workflow_dispatch` is needed to discover whether the exact head passes.
-`.github/workflows/ci.yml` declares its `pull_request` trigger list as exactly
-`opened`, `synchronize` and `reopened` - the events that can carry a new head -
-so a `Ready for review` (or back-to-draft) transition, which cannot change the
-head, does not start a second run over a tree that already carries its
-validation. `provenance-attestation.yml` lists `ready_for_review`, so marking a pull
-request Ready re-runs only that workflow. `ci.yml` still cancels superseded runs, and docs-only or other
-irrelevant jobs remain skipped by the classifier. `workflow_dispatch` remains
-available when a maintainer deliberately wants the complete matrix regardless of
-changed paths.
+A Draft pull request runs only the quick checks: `Classify change`, `Hygiene and security`
+(with its Markdown step), the public export audit and `CI required`. For a `pull_request`
+event whose payload says `draft: true`, `tools/ci_paths.py` exports `allow_substantive=false`
+and `draft=true`. Every substantive job gates on `allow_substantive`, so Python tooling,
+native/translation, the GCC 16 canary, the Android launcher build, the Windows runtime gate and
+the profile-zero fixture build are skipped, whatever the changed paths. The path flags (`run_python`, `run_native`,
+`run_windows`, `run_markdown`) are unchanged, so the Ready run routes exactly the gates a
+ready pull request gets. OSV-Scanner, Dependency Review and the provenance attestation run on
+a Draft as before. This keeps the hosted runners free for landing runs, which otherwise queue
+behind every Draft's full matrix.
+
+A Draft's run is never green, so no Draft can join a landing batch:
+
+- `CI required` fails on `draft=true` with `DRAFT_LIGHT_CI`, and its log and annotation name
+  the quick jobs' results. A failing quick job is still a real failure to fix.
+- The Trusted CI verdict reads the pull request's draft state from GitHub and reports the
+  finding `DRAFT_LIGHT_CI`, whatever the candidate's CI reported. A draft state that is not
+  `false` counts as a Draft. A Draft that is also behind `main` reports both codes, so it
+  never looks like a head that fails only on `CI_DEFINITION_BEHIND`. The verdict always runs
+  the default branch's verifier, so this rule applies to every pull request once it is on
+  `main`.
+
+The full matrix runs when the pull request is marked Ready for review. `.github/workflows/ci.yml`
+lists `ready_for_review`, which starts the full run on the same head, and every later push to a
+pull request that is not a Draft runs it through `synchronize`. It also lists
+`converted_to_draft`, which starts a light run; the shared concurrency group cancels a full run
+still in progress, so a Draft holds no substantive runner. The CI run's completion re-judges the
+verdict. `provenance-attestation.yml` lists `ready_for_review` as well. Pushes to `main`, the
+nightly schedule, manual `workflow_dispatch` runs and merge groups are never Drafts and run as
+before.
+
+Mark a pull request Ready when you want the full checks. The cost is that a Draft learns of a
+Python, native or Windows failure only after that, so run the focused local gates for the files
+you changed first (`AGENTS.md` section 9).
 
 The `CI required` job is the stable aggregate status required by branch
 protection. It runs with `always()`, accepts an intentionally skipped irrelevant
 job, and fails when a classifier-applicable job fails, is cancelled, or is
 otherwise incomplete. A failed hygiene/security job or public-export job is never
-hidden by the aggregate.
+hidden by the aggregate. On a Draft it always fails (`DRAFT_LIGHT_CI`).
 
 ### ClusterFuzzLite C fuzzing
 
@@ -983,14 +1006,15 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   without that range fails closed to the full matrix. The classifier output for a
   group is identical to a manual dispatch for the same paths, which
   `MergeGroupRoutingTests` pins.
-- **Draft status does not suppress substantive validation.** A draft and a ready
-  pull request receive the same path classification and applicable gates, so
-  progress does not depend on a status transition or manual dispatch. The
-  classifier still exports `draft` for diagnostics and keeps the main-push
-  suppression policy separate. Because the gates do not depend on draft status,
-  `.github/workflows/ci.yml` lists only the head-changing events in its
-  `pull_request` types (`opened`, `synchronize`, `reopened`): a status transition
-  would duplicate gates over a tree that already ran them.
+- **A Draft runs only the quick jobs.** For a `pull_request` event whose payload
+  says `draft: true`, the classifier exports `allow_substantive=false` and
+  `draft=true`; every substantive job gates on `allow_substantive`, and `CI required`
+  fails on `draft=true` (`DRAFT_LIGHT_CI`). The path flags do not change, so a Draft
+  and its Ready run route the same gates (`DraftLightRoutingTests`). No other event
+  can be a Draft: merge groups, the schedule, manual dispatches and pushes classify
+  as before. `.github/workflows/ci.yml` lists `ready_for_review` and
+  `converted_to_draft` beside the head-changing events (`opened`, `synchronize`,
+  `reopened`), so each transition starts the run it needs.
 - **`hygiene` is ungated, and that is load-bearing.** The all-files pre-commit
   run — which includes `publish_audit --provenance-self-consistency`,
   `policy_sync`, and the Betterleaks scan — executes on every event, so the
@@ -1224,6 +1248,7 @@ and each token's remaining budget.
 | `STALE_HEAD`, `RUN_HEAD_MISMATCH` | the head is no longer the pull request's head, or a result names another SHA |
 | `RUN_FOR_OTHER_PR`, `AMBIGUOUS_HEAD` | the intended run belongs to another pull request, or another open pull request has the same head |
 | `PR_NOT_OPEN`, `BASE_NOT_DEFAULT` | nothing to judge for a merge into `main` |
+| `DRAFT_LIGHT_CI` | the pull request is a Draft, or its draft state cannot be read: CI ran only the quick checks ([Draft pull requests](#draft-pull-requests)); mark it Ready for review |
 
 The intended producers are `CI required` and `Hygiene and security` from `ci.yml`, `OSV
 Vulnerability Scan` from `osv-scanner.yml`, `dependency-review` from `dependency-review.yml`
@@ -1351,6 +1376,9 @@ request a draft that is closed unmerged:
    change is wanted.
 3. Revert `ci.yml`, apply the label to an earlier head first, then push. Expect the label
    removed and `CI_CHANGE_UNAPPROVED` or `JOB_FAILED` for the new head.
+
+While each pull request is a Draft the verdict also reports `DRAFT_LIGHT_CI` and the broken
+Python test does not run; mark it Ready (it still cannot merge) to see the test fail.
 
 Record the run links in #373.
 

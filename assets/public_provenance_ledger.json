@@ -1496,6 +1496,14 @@
       }
     },
     {
+      "path": "docs/COMPILER_COMPARISON.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      }
+    },
+    {
       "path": "docs/DCO_POLICY.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -4475,6 +4483,28 @@
         "upstream": "documented upstream family",
         "license": "GPL-3.0-only",
         "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "src/core/nk_shared_helpers.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shared-helpers-2068",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/core/nk_shared_helpers.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shared-helpers-2068",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       }
     },
     {
@@ -12688,6 +12718,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "pd-libs-tests-20261024",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tests/native/test_shared_helpers.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "shared-helpers-2068",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null

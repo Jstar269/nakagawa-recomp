@@ -637,6 +637,7 @@ class IsoParityTests(unittest.TestCase):
 
         has_launch = (ROOT / "src" / "core" / "nk_launch.c").is_file()
         core_srcs = [
+            ROOT / "src" / "core" / "nk_shared_helpers.c",
             ROOT / "src" / "core" / "nk_iso.c",
             ROOT / "src" / "core" / "nk_library.c",
             ROOT / "src" / "core" / "nk_title_manifest.c",

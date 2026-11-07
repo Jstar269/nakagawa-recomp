@@ -6,6 +6,7 @@
 #include "nk_input_profile.h"
 #include "nk_json.h"
 #include "nk_platform.h"
+#include "nk_shared_helpers.h"
 #include "nk_user_data_schema.h"
 #include <ctype.h>
 #include <stdarg.h>
@@ -38,23 +39,6 @@ static int nk_ascii_casecmp(const char *a, const char *b) {
         b++;
     }
     return nk_ascii_lower((unsigned char)*a) - nk_ascii_lower((unsigned char)*b);
-}
-
-static FILE *nk_input_fopen(const char *path, const char *mode) {
-#if defined(_WIN32) || defined(_WIN64)
-    if (!path || !mode) return NULL;
-    WCHAR wpath[32768];
-    WCHAR wmode[32];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
-                            wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1,
-                            wmode, (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0) {
-        return NULL;
-    }
-    return _wfopen(wpath, wmode);
-#else
-    return fopen(path, mode);
-#endif
 }
 
 static void diag_set(char *buf, size_t sz, const char *fmt, ...) {
@@ -2243,7 +2227,7 @@ static NkResult profile_document_write(
     char tmp_path[NK_MAX_PATH + 8];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", file_path);
 
-    FILE *f = nk_input_fopen(tmp_path, "wb");
+    FILE *f = nk_fopen_utf8(tmp_path, "wb");
     if (!f) {
         diag_set(diag_buf, diag_buf_sz, "failed to open temporary file '%s' for writing", tmp_path);
         return NK_ERROR_IO;
@@ -2367,7 +2351,7 @@ NkResult nk_input_profile_file_load(
         return NK_ERROR_FILE_NOT_FOUND;
     }
 
-    FILE *f = nk_input_fopen(file_path, "rb");
+    FILE *f = nk_fopen_utf8(file_path, "rb");
     if (!f) {
         diag_set(diag_buf, diag_buf_sz, "failed to open profile file '%s'", file_path);
         return NK_ERROR_IO;

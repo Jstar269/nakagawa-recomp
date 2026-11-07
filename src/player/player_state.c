@@ -20,9 +20,11 @@
 #endif
 
 #include "player_state.h"
+#include "ace.h"
 #include "nk_font.h"
 #include "nk_json.h"
 #include "nk_platform.h"
+#include "nk_shared_helpers.h"
 #include "nk_psp_container.h"
 #include "nk_psp_keystore.h"
 #include "nk_psp_npumdimg.h"
@@ -155,11 +157,10 @@ NkLaunchDataRootStatus player_app_game_data_root_status(
 
 static bool player_join_path(char *out, size_t out_size, const char *root,
                              const char *relative) {
-    char sep = nk_platform_path_separator();
-    int written;
     if (!out || !out_size || !root || !root[0] || !relative || !relative[0]) return false;
-    written = snprintf(out, out_size, "%s%c%s", root, sep, relative);
-    return written > 0 && (size_t)written < out_size;
+    return nk_shared_path_join(out, out_size, root, relative,
+                               nk_platform_path_separator(), NK_SHARED_PATH_JOIN_ALWAYS,
+                               NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH);
 }
 
 void player_app_note_library_load(PlayerApp *app, NkResult load_result) {
@@ -1428,6 +1429,7 @@ static const char *const k_part_switch_labels[] = {"On", "Off"};
 static const char *const k_part_switch_words[] = {"on", "off"};
 static const char *const k_part_smooth_words[] = {"x2", "off"};
 static const char *const k_part_sas_words[] = {"sinc", "off"};
+static const char *const k_part_wide_words[] = {"fill", "off"};
 static const char *const k_part_upscale_labels[] = {"FSR 1", "Off"};
 static const char *const k_part_upscale_words[] = {"fsr1", "off"};
 
@@ -1444,19 +1446,22 @@ static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
     {"notice", "Game badge",
      "Names the mode for a few seconds when a game starts.",
      2, k_part_switch_values, k_part_switch_labels, k_part_switch_words, 1},
+    /* Host-only (contract 10.8): what a game reads is unchanged. Objects a game skips as off
+       screen are missing from the sides until that title has its own culling item. */
+    {"wide", "Widescreen",
+     "Shows more 3D space; HUD stays shaped. Some objects pop in. Smooth motion disables it.",
+     2, k_part_switch_values, k_part_switch_labels, k_part_wide_words, 0},
     {"smooth", "Smooth motion",
      "Shows 30 FPS games at 60. Adds about 17 ms of delay.",
      2, k_part_switch_values, k_part_switch_labels, k_part_smooth_words, 0},
     /* A guest-visible item (contract 11.3.1): off by default until its "nothing worse" runs
        exist (11.2 item 4), with its own off switch in the library and each title (item 2). */
     {"sas", "Clean pitched sound",
-     "Resamples pitched sound effects without aliasing. Changes the samples the game mixes.",
+     "Resamples pitched effects without aliasing. The game receives changed samples.",
      2, k_part_switch_values, k_part_switch_labels, k_part_sas_words, 0},
     /* Presentation only (contract section 2.2): the window and its recording, never the guest. */
     {"upscale", "Sharper enlarging",
-     "AMD FSR 1 sharpens the picture when the window is larger than the game. Only what you see "
-     "changes, in the window and in recordings: the game, its memory and screenshots stay the "
-     "same.",
+     "AMD FSR 1 sharpens display and recordings; game memory and screenshots do not change.",
      2, k_part_switch_values, k_part_upscale_labels, k_part_upscale_words, 0},
 };
 
@@ -1496,6 +1501,14 @@ const char *player_enhanced_part_label(int part, int value) {
     int index = enhanced_part_value_index(part, value);
     if (index < 0) index = enhanced_part_value_index(part, 0);
     return info && index >= 0 ? info->labels[index] : "Off";
+}
+
+const char *player_enhanced_part_unavailable_label(int part, int value, int smooth) {
+    if (part == PLAYER_PART_WIDE &&
+        ace_wide_fill_blocked_by_smooth(value != 0, smooth != 0)) {
+        return "Off (Smooth motion is on)";
+    }
+    return NULL;
 }
 
 const char *player_play_mode_name(PlayerPlayMode mode) {
@@ -3201,13 +3214,6 @@ bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t c
         /* The upscaler travels as SR_PRESENT_UPSCALE (player_play_present_upscale), which the
            launcher exports for every session; the runtime's SR_ACE line has no such key. */
         if (p == PLAYER_PART_UPSCALE) continue;
-        /* Ultrawide is not part of this build: the runtime refuses any value but off, and
-           the key sits where the runtime's own format puts it. */
-        if (p == PLAYER_PART_SMOOTH) {
-            n = snprintf(out + used, cap - used, ";wide=off");
-            if (n <= 0 || (size_t)n >= cap - used) { out[0] = '\0'; return false; }
-            used += (size_t)n;
-        }
         n = snprintf(out + used, cap - used, ";%s=%s", k_enhanced_parts[p].key,
                      enhanced_part_word(p, play->part[p]));
         if (n <= 0 || (size_t)n >= cap - used) { out[0] = '\0'; return false; }
@@ -5072,14 +5078,9 @@ static int player_format_boot_event_path(char *out, size_t out_size,
     }
 
     unsigned long process_id = nk_platform_process_id();
-    int written = snprintf(out, out_size, "%s%cplayer-boot-%lu-%u.events",
-                           cache_dir, nk_platform_path_separator(),
-                           process_id, sequence);
-    if (written <= 0 || (size_t)written >= out_size) {
-        out[0] = '\0';
-        return 0;
-    }
-    return written;
+    return nk_shared_boot_event_format_path(out, out_size, cache_dir,
+                                            nk_platform_path_separator(),
+                                            process_id, sequence);
 }
 
 /* Per-process launch sequence for the boot-event marker pathname. Single
@@ -5467,11 +5468,8 @@ void player_app_request_launch(PlayerApp *app, int game_index) {
 
 static bool player_copy_bounded_text(char *destination, size_t destination_size,
                                      const char *source) {
-    if (!destination || destination_size == 0 || !source) return false;
-    size_t length = strlen(source);
-    if (length >= destination_size) return false;
-    memcpy(destination, source, length + 1);
-    return true;
+    return nk_shared_text_copy(destination, destination_size, source,
+                               NK_SHARED_TEXT_COPY_REQUIRE_FIT);
 }
 
 static bool player_plan_take_entry(PlayerStagePlan *plan, const NkTitleEntry *entry) {
@@ -8345,6 +8343,20 @@ static bool player_homebrew_iso_ready(const char *iso_path, const char *key) {
     return ready;
 }
 
+static bool player_psn_disc_iso_path(char *out, size_t out_size, const char *data_root,
+                                     const char *disc_id) {
+    char relative[64];
+    char separator = nk_platform_path_separator();
+    int written;
+    if (!out || out_size == 0u || !data_root || !disc_id) return false;
+    written = snprintf(relative, sizeof(relative), "discs%c%s%c%s.iso", separator,
+                       disc_id, separator, disc_id);
+    if (written < 0 || (size_t)written >= sizeof(relative)) return false;
+    return nk_shared_path_join(out, out_size, data_root, relative, separator,
+                               NK_SHARED_PATH_JOIN_ALWAYS,
+                               NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH);
+}
+
 static bool player_homebrew_package_inspect(const char *pbp_path, const NkPbpInfo *info,
                                             PlayerPsnPackage *package,
                                             char *code, size_t code_size,
@@ -8353,9 +8365,7 @@ static bool player_homebrew_package_inspect(const char *pbp_path, const NkPbpInf
     NkPbpHomebrew program;
     char label[160];
     char data_root[NK_MAX_PATH];
-    char sep = nk_platform_path_separator();
     int rc;
-    int written;
     snprintf(label, sizeof(label), "%.120s", info->title[0] ? info->title : "This package");
     nk_psp_ctx_init(&ctx, NULL);
     rc = nk_pbp_homebrew_inspect_file(&ctx, pbp_path, info, &program);
@@ -8391,9 +8401,8 @@ static bool player_homebrew_package_inspect(const char *pbp_path, const NkPbpInf
                           "Nakagawa's data folder could not be found.");
         return false;
     }
-    written = snprintf(package->iso_path, sizeof(package->iso_path), "%s%cdiscs%c%s%c%s.iso",
-                       data_root, sep, sep, program.key, sep, program.key);
-    if (written < 0 || (size_t)written >= sizeof(package->iso_path) ||
+    if (!player_psn_disc_iso_path(package->iso_path, sizeof(package->iso_path), data_root,
+                                  program.key) ||
         strlen(pbp_path) >= sizeof(package->pbp_path)) {
         player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
                           "The path to Nakagawa's data folder is too long.");
@@ -8415,9 +8424,7 @@ bool player_psn_package_inspect(const char *pbp_path, PlayerPsnPackage *package,
     NkPbpInfo info;
     char label[160];
     char data_root[NK_MAX_PATH];
-    char sep = nk_platform_path_separator();
     int rc;
-    int written;
     if (code != NULL && code_size > 0) code[0] = '\0';
     if (message != NULL && message_size > 0) message[0] = '\0';
     if (package == NULL || pbp_path == NULL) return false;
@@ -8471,9 +8478,8 @@ bool player_psn_package_inspect(const char *pbp_path, PlayerPsnPackage *package,
                           "Nakagawa's data folder could not be found.");
         return false;
     }
-    written = snprintf(package->iso_path, sizeof(package->iso_path), "%s%cdiscs%c%s%c%s.iso",
-                       data_root, sep, sep, info.disc_id, sep, info.disc_id);
-    if (written < 0 || (size_t)written >= sizeof(package->iso_path) ||
+    if (!player_psn_disc_iso_path(package->iso_path, sizeof(package->iso_path), data_root,
+                                  info.disc_id) ||
         strlen(pbp_path) >= sizeof(package->pbp_path)) {
         player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
                           "The path to Nakagawa's data folder is too long.");

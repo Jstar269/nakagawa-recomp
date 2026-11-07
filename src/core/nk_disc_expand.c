@@ -22,6 +22,7 @@
 
 #include "nk_iso.h"
 #include "nk_platform.h"
+#include "nk_shared_helpers.h"
 #include "nk_psp_inflate.h"
 #include "nk_psp_sha1.h"
 
@@ -576,8 +577,9 @@ bool nk_disc_expanded_size(const char *source_path, NkDiscFormat *out_format,
 }
 
 static bool path_join(char *out, size_t out_size, const char *dir, const char *name) {
-    int written = snprintf(out, out_size, "%s%c%s", dir, nk_platform_path_separator(), name);
-    return written > 0 && (size_t)written < out_size;
+    return nk_shared_path_join(out, out_size, dir, name,
+                               nk_platform_path_separator(), NK_SHARED_PATH_JOIN_ALWAYS,
+                               NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH);
 }
 
 static bool path_suffix(char *out, size_t out_size, const char *path, const char *suffix) {
