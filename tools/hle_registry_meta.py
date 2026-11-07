@@ -39,6 +39,15 @@ Only deviations from `unreviewed` are listed; keep entries evidence-based and
 cite the issue that tracks finishing the handler where one exists.
 """
 
+from typing import NotRequired, TypedDict
+
+
+class HandlerMetadata(TypedDict):
+    status: str
+    description: NotRequired[str]
+    evidence: NotRequired[list[str]]
+    limitation: NotRequired[str]
+
 # Handlers that unconditionally fabricate success for every NID routed to
 # them. Anything registered to one of these is classified fake_success.
 GENERIC_SUCCESS_HANDLERS = {
@@ -64,7 +73,7 @@ HANDLER_STATUSES = {
 #   - 'partial' and 'compatibility': MUST carry a non-empty 'limitation' string.
 #     Handlers without recorded limitations must cite a factual gap from code or
 #     be marked "limitation not yet reviewed (#341)".
-HANDLER_METADATA = {
+HANDLER_METADATA: dict[str, HandlerMetadata] = {
     # This marker handler is intercepted by sr_syscall; each registration
     # carries its PSP-visible refusal code in sr_hle_register_unsupported.
     "h_ControlledUnsupported": {
@@ -2724,10 +2733,7 @@ HANDLER_METADATA = {
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.
-HANDLER_STATUS = {
-    h: meta["status"] if isinstance(meta, dict) else meta
-    for h, meta in HANDLER_METADATA.items()
-}
+HANDLER_STATUS: dict[str, str] = {h: meta["status"] for h, meta in HANDLER_METADATA.items()}
 
 # handler name -> evidence list (for complete handlers)
 HANDLER_EVIDENCE = {
@@ -2927,7 +2933,14 @@ KNOWN_NID_ISSUES = {
 # Currently empty: the 0x1b4217bc alias_mismatch/mislabeled_nid waivers were
 # retired when the 603_605 SDK-version variant was rerouted to
 # h_SetCompiledSdkVersion under its canonical name (issue #71).
-WAIVERS = ()
+class FindingWaiver(TypedDict):
+    nid: int
+    finding: str
+    handler: str
+    issue: str
+
+
+WAIVERS: tuple[FindingWaiver, ...] = ()
 
 # Issue #341 acceptance: no handler the public profile-zero guest imports stays
 # silently `unreviewed`. These are the NIDs the guest built from

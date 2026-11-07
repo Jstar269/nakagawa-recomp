@@ -160,8 +160,8 @@ def main(argv: list[str] | None = None) -> int:
             errors.extend(verify_upstream(manifest, args.upstream_checkout))
         if args.upstream_api:
             errors.extend(verify_upstream_api(manifest))
-    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
-        print(f"VFPU provenance verification failed: {error}", file=sys.stderr)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        print(f"VFPU provenance verification failed: {exc}", file=sys.stderr)
         return 1
 
     if errors:

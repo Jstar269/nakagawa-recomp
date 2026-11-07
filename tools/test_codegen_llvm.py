@@ -26,6 +26,7 @@ Tests that need Clang, opt or a C compiler report SKIP when the tool is absent.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -207,6 +209,28 @@ class LoweringTests(unittest.TestCase):
         codegen.ADDRESS_SPACE = codegen.AddressSpace("sr_m0_base", "m0")
         with self.assertRaisesRegex(codegen_llvm.LLVMUnsupported, "runtime-placed"):
             self.lower(program(JR_RA, NOP))
+
+    def test_a_transfer_without_its_delay_slot_is_refused_not_crashed(self):
+        # A transfer the planner left without a slot used to fail with AttributeError inside the
+        # lowering; it must raise LLVMUnsupported, which codegen.py's llvm_body() turns into
+        # "keep the C body" (an llvm_fallbacks entry) for that function.
+        real_plan = codegen_llvm.P.plan_function
+
+        def slotless(*args, **kwargs):
+            plan = real_plan(*args, **kwargs)
+            plan.steps = [
+                dataclasses.replace(step, slot=None) if isinstance(step, codegen_llvm.P.Transfer) else step
+                for step in plan.steps
+            ]
+            return plan
+
+        words = program(beq(4, 5, 3), addu(4, 4, 4), NOP, NOP, NOP, JR_RA, NOP)
+        # Control: the unmodified plan lowers.
+        self.assertIsInstance(self.lower(words), codegen_llvm.LLVMBody)
+        with mock.patch.object(codegen_llvm.P, "plan_function", slotless):
+            with self.assertRaisesRegex(codegen_llvm.LLVMUnsupported, "no delay-slot operation"):
+                self.lower(words)
+        self.assertTrue(issubclass(codegen_llvm.LLVMUnsupported, Exception))
 
     def test_hst_emission_sites_cover_every_hst_address_in_emit_function(self):
         # Every `hst_profile and ... addr == <literal>` site in emit_function or
