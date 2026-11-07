@@ -96,6 +96,7 @@ PUBLIC_TARGETS := \
 	gui-present-selftest \
 	clay-layout-selftest \
 	ed25519-verify-selftest \
+	achievements-selftest \
 	nk-ui-core-selftest \
 	nk-ui-player-screens-selftest \
 	nk-ui-player-screens-capture \
@@ -278,6 +279,7 @@ HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_clay-layout-selftest := build and run the vendored Clay layout selftest
+HELP_DESCRIPTION_achievements-selftest := run the RetroAchievements bridge (vendored rcheevos) against an in-process fake server, with no network
 HELP_DESCRIPTION_ed25519-verify-selftest := check nk_ed25519_verify (vendored Monocypher) against the RFC 8032 vectors and nk_minisign_verify against real minisign output
 HELP_DESCRIPTION_nk-ui-player-screens-selftest := build and run nk_ui Library, Title detail and router snapshots
 HELP_DESCRIPTION_nk-ui-player-screens-capture := save offscreen synthetic Library and Title detail captures (set NK_UI_CAPTURE_DIR)
