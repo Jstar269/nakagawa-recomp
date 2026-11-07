@@ -526,7 +526,7 @@ The folders are the per-user ones of [`SETUP.md`](SETUP.md) (on Windows
 | --- | --- | --- | --- |
 | `<data>/library.json` (`src/core/nk_library.c`; read too by `tools/nk_core/library.py` and `nk_cli`) | `schema_version` 1, the only version so far (v0.0.1 and later). `source_image_path`, added after v0.0.1, is an optional member v0.0.1 skips | (none exist) | Refused; the Library screen names it. The older `.bak` beside it is not loaded in its place, and no save replaces either file |
 | `<config>/settings.json` (`src/player/player_state.c`) | `schema_version` 1 (before v0.0.1), 2 (v0.0.1 and later) | 1 to 2: an `fps_cap` of 30 or 60 becomes PSP timing; `settings.json.v1.bak` on the first save | Refused; this session runs on defaults and every Settings page says changes are not saved |
-| `<config>/input_profile.json` (`src/core/nk_input_profile.c`) | `schema_version` 1, 2 (per-title map, #520), 3 (keyboard keys, #1299; v0.0.1 and later), 4 (analog stick keys) | 1 to 2: no per-title map; 2 to 3: default keys; 3 to 4: default stick keys (I, K, J, L), with a direction left unbound when its default key is already a button's key. `.v1.bak`, `.v2.bak` or `.v3.bak` on the first save | Refused; the Controls page names it and its changes do not replace it |
+| `<config>/input_profile.json` (`src/core/nk_input_profile.c`) | `schema_version` 1, 2 (per-title map, #520), 3 (keyboard keys, #1299; v0.0.1 and later), 4 (analog stick keys), 5 (mouse aiming, #1791) | 1 to 2: no per-title map; 2 to 3: default keys; 3 to 4: default stick keys (I, K, J, L), with a direction left unbound when its default key is already a button's key; 4 to 5: aiming off. `.v1.bak` to `.v4.bak` on the first save | Refused; the Controls page names it and its changes do not replace it |
 | `<saves>/<DISC_ID>/` | The PSP's own Memory Stick layout (`PSP/SAVEDATA/...`), defined by the PSP rather than by Nakagawa; the root rule (`nk_launch.c`) is unchanged since v0.0.1 | n/a | n/a |
 | `<data>/packages/<DISC_ID>/package.json`, `build-report.json`, `completion-manifest.json` | `nakagawa-aot-package` schema 2, cache key and completion schema 2, and the ABI epochs of section 6 (all unchanged since v0.0.1) | Built output, not user data: a package from another epoch is INCOMPATIBLE and its card offers REBUILD PACKAGE | INCOMPATIBLE with the card line "built by a newer Nakagawa (package format N; this player reads 2)". The player never changes it; only a rebuild the user asks for replaces it |
 | `<data>/title-input-identities/<DISC_ID>/title-input-identity.json` | `schema_version` 2 | Rebuilt by the next package build | Read as absent; the package card asks for a rebuild |
@@ -560,8 +560,8 @@ includes is listed.
 
 This section records what the Windows portable ZIP holds today and where the player keeps
 everything it writes ([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)). The
-installer, upgrade and uninstall rules that #324 also asks for are not built yet; the portable
-ZIP is the one supported distribution form.
+installer that #324 also asks for is not built yet; the portable ZIP is the one supported
+distribution form, and the upgrade and uninstall rules are at the end of this section.
 
 ### The install image (read-only)
 
@@ -664,3 +664,21 @@ INSTALL unpacks it into `<folder>.partial` beside the running version, checks ev
 `SHA256SUMS.txt` lists, and renames it into place. It never replaces the running version and
 never touches the per-user folders. Removing an extracted folder removes the install image
 only; the per-user folders above stay until the user deletes them.
+
+### Upgrade and uninstall rules
+
+* **Upgrade is side by side.** A new version is a new folder; the old one keeps running until the user
+  deletes it, so an interrupted update leaves the old version whole and at worst a `.partial` folder
+  that the next update replaces. In-place staging (`tools/stage_install.py --dest`) swaps `bin/` and
+  `source/` by rename and removes the old copy only afterwards.
+* **A runtime or AOT epoch change forces a rebuild, never a stale launch.** Packages live in the
+  per-user data folder and are keyed on the epochs of Section 6. A package built by another epoch
+  is INCOMPATIBLE: the card offers REBUILD PACKAGE and the old code is never started. Saves and
+  title inputs are not keyed on an epoch and survive.
+* **Uninstall removes only what the install wrote.** `python tools/stage_install.py --uninstall --dest
+  <folder>` removes `bin/`, `source/`, the icon, the install marker and the shortcuts and desktop entries the
+  marker records, and nothing else: it never reads or deletes the per-user folders above, a file
+  the user added beside the install survives, a recorded path with a name the tool does not write is skipped, and
+  a folder with no marker is refused. In portable mode `bin/data` and `bin/portable.txt` stay. An unpacked ZIP is
+  removed by deleting its folder. `tools/test_stage_install.py` (`UninstallTests`) covers each rule. An
+  installer's uninstaller (not built; Inno Setup is the chosen wrapper) is to follow the same rule.

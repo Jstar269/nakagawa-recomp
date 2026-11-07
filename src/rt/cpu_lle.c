@@ -3,6 +3,7 @@
 //
 // LLE Phase 1 (PR 2): COP0 access, mode checks, exception entry, and eret.
 // PR 5 (spec 6.1): synthetic INTC pending/enable state and Cause.IP mirroring.
+// PR 6 (spec 3.6, issue #325): interrupt delivery at guest safe points.
 //
 // Return contract for every helper below: 0 means "no transfer, keep
 // executing"; any negative value means flow metadata was set and the caller
@@ -14,6 +15,9 @@
 
 #include "recomp.h"
 #include "flight_recorder.h"
+
+#include <inttypes.h>
+#include <stdio.h>
 
 /* Synthetic defaults (spec 3.3/3.7): fixture contracts, not PSP claims. */
 #define SR_LLE_VECTOR_GENERAL_DEFAULT   0x80000180u
@@ -176,19 +180,100 @@ void sr_cpu_clear_flow(CpuState *s) {
     s->flow_target = 0u;
 }
 
+/* Interrupt delivery (spec 3.6; LLE PR 6; issue #325).
+ *
+ * An interrupt is taken when every MIPS32 condition holds (MIPS32 Privileged
+ * Resource Architecture, "Interrupts"): Status.IE set, Status.EXL and
+ * Status.ERL clear, and some Cause.IP bit whose Status.IM bit is set. The
+ * INTC-owned IP bit is read live from the controller, so a stored stale copy
+ * never decides. What is measured (PSP-INTR-CAUSE-001): the controller drives
+ * IP2, and while Status.IE is clear a pending source shows on IP2 and no
+ * handler runs. The rest (the IM map, software-interrupt delivery, the
+ * mtc0-to-delivery latency) is the generic MIPS32 rule, a synthetic contract
+ * like the rest of this file, not a PSP measurement.
+ *
+ * Fail closed: nothing is ever delivered unless the LLE CPU is enabled and a
+ * controller is configured, and no runtime source configures one (the INTC
+ * comment in cpu_lle.h). Default production behavior is unchanged.
+ *
+ * Safe points. Eligibility changes only through (a) a guest mtc0 to Status
+ * or Cause, (b) eret, which clears EXL, and (c) host-side controller or
+ * CpuState changes. (a) and (b) deliver inside sr_cp0_mtc0 and sr_cpu_eret,
+ * which generated code and the interpreter both call, so both tiers take the
+ * interrupt at the same instruction boundary with the same EPC. The
+ * interpreter also polls before every instruction (guest_interp.c), which
+ * covers (c) there. The AOT tier has no poll of its own for (c): a device
+ * producer that raises a source while native code runs needs a safe point at
+ * its return to the guest, and must add one when it is integrated (no
+ * producer exists yet; timer expiry is BLOCKED, spec 6.2/6.3). */
+
+/* Cause.IP as a delivery decision sees it: the stored bits with the
+ * controller's bit replaced by the live line. Changes nothing. */
+static uint32_t sr_cpu_live_cause_ip(const CpuState *s) {
+    uint32_t ip = s->cop0[SR_CP0_CAUSE] & SR_CAUSE_IP_MASK;
+    uint32_t bit = 1u << (8u + s_intc.cpu_ip_bit);
+    ip &= ~bit;
+    if ((s_intc.pending & s_intc.enabled) != 0u) {
+        ip |= bit;
+    }
+    return ip;
+}
+
+static int sr_cpu_interrupt_eligible(const CpuState *s) {
+    uint32_t status;
+
+    if (!s || !s_lle_enabled || !s_intc.configured) {
+        return 0;
+    }
+    status = s->cop0[SR_CP0_STATUS];
+    if ((status & SR_STATUS_IE) == 0u ||
+        (status & (SR_STATUS_EXL | SR_STATUS_ERL)) != 0u) {
+        return 0;
+    }
+    return (status & SR_STATUS_IM_MASK & sr_cpu_live_cause_ip(s)) != 0u;
+}
+
+/* Take the interrupt with EPC at resume_pc, the first instruction that has not
+ * run. Safe points are never inside a delay slot, so BD is clear. Cause.IP is
+ * refreshed first so the handler's view and the saved word agree. The source
+ * stays pending: only the device side acknowledges it (sr_intc_clear), so a
+ * source raised any number of times while masked is one pending latch and one
+ * delivery, and one raised again inside the handler is delivered once more
+ * after the eret. */
+static int sr_cpu_take_interrupt(CpuState *s, uint32_t resume_pc) {
+    (void)sr_intc_cpu_pending(s);
+    return sr_cpu_raise_exception(
+        s, SR_EXC_INT, resume_pc, resume_pc, 0u, 0u, 0u);
+}
+
 int sr_cpu_poll(CpuState *s, uint32_t resume_pc) {
-    /* No delivery yet. PR 5 added INTC pending/enable state and Cause.IP
-     * mirroring (sr_intc_*), refreshed at guest COP0 Cause accesses, which
-     * both tiers make through the same helpers. Spec 3.6 also has this poll
-     * sync Cause.IP and enter the interrupt vector, but that is PR 6: the AOT
-     * tier has no poll sites yet, so any side effect here would run in the
-     * interpreter only and the tiers would diverge. Timer advancement stays
-     * out as well: the timer oracle questions (spec 6.3) are BLOCKED, and a
-     * fabricated interrupt would invent that behavior. Report none and change
-     * nothing. */
-    (void)s;
-    (void)resume_pc;
-    return 0;
+    if (!sr_cpu_interrupt_eligible(s)) {
+        return 0;
+    }
+    return sr_cpu_take_interrupt(s, resume_pc);
+}
+
+/* Safe point after a guest mtc0 to Status or Cause at instr_pc. Outside a
+ * delay slot the interrupt is taken before the next instruction. Inside one
+ * the next instruction is the branch target, which this helper is not given,
+ * so an mtc0 there that makes an interrupt deliverable fails closed instead of
+ * picking an EPC (both tiers run the slot's mtc0 through this helper). */
+static int sr_cpu_mtc0_safe_point(CpuState *s, uint32_t instr_pc) {
+    if (!sr_cpu_interrupt_eligible(s)) {
+        return 0;
+    }
+    if (s->in_delay_slot != 0u) {
+        fprintf(stderr,
+                "SR_CPU_FATAL: mtc0 at 0x%08" PRIx32 " in a delay slot made an interrupt "
+                "deliverable; the delay-slot safe point is not modeled (issue #325)\n",
+                instr_pc);
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_CPU_FLOW, instr_pc,
+                        s->cop0[SR_CP0_STATUS], SR_EXC_INT);
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = instr_pc;
+        return -2;
+    }
+    return sr_cpu_take_interrupt(s, instr_pc + 4u);
 }
 
 /* Only sel 0 registers modeled in Phase 1 read or write architectural state.
@@ -560,7 +645,9 @@ int sr_cp0_mtc0(
         s->cop0[SR_CP0_STATUS] =
             (s->cop0[SR_CP0_STATUS] & (uint32_t)~SR_STATUS_WRITABLE_MASK) |
             (value & SR_STATUS_WRITABLE_MASK);
-        break;
+        /* Setting IE or an IM bit, or clearing EXL, can make an interrupt
+         * deliverable (safe point (a) above). */
+        return sr_cpu_mtc0_safe_point(s, instr_pc);
     case SR_CP0_CAUSE:
         /* Hardware pending bits are INTC-owned; guest writes can only set the
          * software pair (spec 3.2). The INTC bit is then re-derived from the
@@ -569,7 +656,8 @@ int sr_cp0_mtc0(
             (s->cop0[SR_CP0_CAUSE] & (uint32_t)~SR_CAUSE_IP_SW_MASK) |
             (value & SR_CAUSE_IP_SW_MASK);
         (void)sr_intc_cpu_pending(s);
-        break;
+        /* A software IP bit can make an interrupt deliverable. */
+        return sr_cpu_mtc0_safe_point(s, instr_pc);
     case SR_CP0_COUNT:
     case SR_CP0_COMPARE:
         /* Stored plainly. Spec 6.2 routes these through a virtual-time timer
@@ -625,5 +713,11 @@ int sr_cpu_eret(CpuState *s, uint32_t instr_pc) {
     s->pc = target;
     s->flow_kind = SR_FLOW_ERET;
     s->flow_target = target;
+    /* Clearing EXL can make an interrupt deliverable (safe point (b) above):
+     * it is taken before the first instruction at the target, which becomes
+     * EPC, and the flow becomes that exception entry. */
+    if (sr_cpu_interrupt_eligible(s)) {
+        return sr_cpu_take_interrupt(s, target);
+    }
     return -1;
 }

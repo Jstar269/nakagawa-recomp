@@ -86,6 +86,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/test_disc_expand",
     "build/test_disc_verify",
     "build/test_nk_zip",
+    "build/test_steam_shortcuts",
     "build/test_safe_math",
     "build/test_pcm_wav_dump",
     "build/test_fuzz_parsers --iters 100",

@@ -22,8 +22,8 @@
 *.[pP][rR][xX]
 *.[pP][bB][pP]
 # Source-owned profile-zero fixture (#557): only fixtures/profile_zero/prebuilt/SHA256SUMS
-# is committed. The PSPDEV build output itself is generated (by CI's profile_zero_fixture
-# job or a local PSPDEV rebuild) and stays ignored by the *.prx / *.pbp rules above (#1100).
+# is committed. The PSPDEV build output itself is generated (by the profile-zero steps of
+# CI's public_export job or a local PSPDEV rebuild) and stays ignored by the *.prx / *.pbp rules above (#1100).
 *.[cC][sS][oO]
 *.[zZ][sS][oO]
 *.[cC][hH][dD]
