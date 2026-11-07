@@ -1166,7 +1166,7 @@ def _load_v4_component(authority_root: Path, key: str) -> dict:
         raise AdmitError("COMPOSE_V4_COMPONENT_MISSING", f"no V4 delta {key} in the authority checkout")
     raw = path.read_bytes()
     try:
-        document = provenance_ledger._read_policy_delta_v4_document(raw)
+        document: dict = provenance_ledger._read_policy_delta_v4_document(raw)
     except RefreshError as error:
         raise AdmitError("COMPOSE_V4_COMPONENT_INVALID", f"V4 delta {key[:12]}: {error}") from error
     if raw != provenance_ledger.policy_delta_v3_bytes(document):

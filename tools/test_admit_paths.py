@@ -1475,7 +1475,11 @@ class ComposeV4Test(unittest.TestCase):
 
         with self.subTest("overlapping exclude entries"):
             first = self._component(fixture, unexcludes)
-            second = self._component(fixture, lambda document: (unexcludes(document), excludes("docs/x.md")(document)))
+            def unexclude_and_exclude(document: dict) -> None:
+                unexcludes(document)
+                excludes("docs/x.md")(document)
+
+            second = self._component(fixture, unexclude_and_exclude)
             worktree, _ = self._candidate(fixture, [unexcludes, excludes("docs/x.md")], {})
             self._assert_refused(fixture, "COMPOSE_V4_EXCLUDE_OVERLAP", worktree, [first, second])
 
