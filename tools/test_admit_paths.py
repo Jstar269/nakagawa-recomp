@@ -1529,6 +1529,74 @@ class ComposeV4Test(unittest.TestCase):
             git(fixture.authority, "commit", "-qam", "the upstream record now names another revision")
             self._assert_refused(fixture, "COMPOSE_V4_CLAIM_MISMATCH", worktree, [up, a])
 
+    def test_more_refusals(self) -> None:
+        fixture = _Fixture(self, records=[self.RECORD])
+        a = self._component(fixture, self._adds("docs/a.md"), {"docs/a.md": ("# a\n", "claim")})
+        b = self._component(fixture, self._adds("docs/b.md"), {"docs/b.md": ("# b\n", "claim")})
+        both, candidate = self._candidate(fixture, [self._adds("docs/a.md", "docs/b.md")],
+                                          {"docs/a.md": "# a\n", "docs/b.md": "# b\n"})
+        v4_dir = fixture.authority / admit_paths.POLICY_DELTAS_V4
+
+        def commit_misfiled(name: str, raw: bytes) -> str:
+            key = hashlib.sha256(name.encode()).hexdigest()
+            (v4_dir / f"{key}.json").write_bytes(raw)
+            git(fixture.authority, "add", "-A")
+            git(fixture.authority, "commit", "-qm", f"misfiled {name}")
+            return key
+
+        with self.subTest("a component that does not parse"):
+            junk = commit_misfiled("junk", b"not a json document\n")
+            self._assert_refused(fixture, "COMPOSE_V4_COMPONENT_INVALID", both, [a, junk])
+        with self.subTest("a component that parses but is not canonical"):
+            raw = (v4_dir / f"{b}.json").read_bytes()
+            loose = commit_misfiled("loose", json.dumps(json.loads(raw), indent=4).encode() + b"\n")
+            self._assert_refused(fixture, "COMPOSE_V4_COMPONENT_INVALID", both, [a, loose])
+        for name in ("not hex", "A" * 64, "a" * 63):
+            with self.subTest(f"a name that is not 64 lowercase hex: {name!r}"):
+                self._assert_refused(fixture, "COMPOSE_V4_COMPONENTS_INVALID", both, [a, name])
+
+        with self.subTest("one path in different lists of two components"):
+            adds_x = self._component(fixture, self._adds("docs/x.md"), {"docs/x.md": ("# x\n", "claim")})
+            excludes_x = self._component(
+                fixture, lambda document: document.__setitem__(
+                    "exclude_paths", sorted({*document["exclude_paths"], "docs/x.md"})))
+            worktree, _ = self._candidate(
+                fixture, [self._adds("docs/x.md"), lambda document: document.__setitem__(
+                    "exclude_paths", sorted({*document["exclude_paths"], "docs/x.md"}))], {"docs/x.md": "# x\n"})
+            self._assert_refused(fixture, "COMPOSE_V4_PATH_OVERLAP", worktree, [adds_x, excludes_x])
+
+        with self.subTest("a base that is not an ancestor of the batch"):
+            elsewhere = git(fixture.pr, "commit-tree", f"{fixture.base}^{{tree}}", "-p", fixture.base,
+                            "-m", "another line of history")
+            before = git(fixture.authority, "rev-parse", "HEAD")
+            with self.assertRaises(AdmitError) as caught:
+                admit_paths.compose_policy_delta_v4(worktree=both, base=elsewhere, components=[a, b],
+                                                    private_repo=fixture.authority)
+            self.assertEqual(caught.exception.code, "TRUSTED_BASE_NOT_ANCESTOR")
+            self.assertEqual(git(fixture.authority, "rev-parse", "HEAD"), before)
+
+        with self.subTest("a batch profile that is not canonical"):
+            worktree = fixture.worktree("compose-loose-profile")
+            write(worktree, "docs/a.md", "# a\n")
+            write(worktree, "docs/b.md", "# b\n")
+            document = json.loads(candidate.decode("utf-8"))
+            (worktree / admit_paths.POLICY).write_text(json.dumps(document, indent=4) + "\n", encoding="utf-8")
+            git(worktree, "add", "-A")
+            git(worktree, "commit", "-qm", "a profile in another format")
+            self._assert_refused(fixture, "POLICY_PROFILE_NOT_CANONICAL", worktree, [a, b])
+
+        with self.subTest("an authority checkout with an uncommitted record"):
+            stray = fixture.authority / "docs/provenance/uncommitted.json"
+            stray.write_text("{}\n", encoding="utf-8")
+            before = git(fixture.authority, "rev-parse", "HEAD")
+            with self.assertRaises(AdmitError) as caught:
+                self._compose(fixture, both, [a, b])
+            self.assertEqual(caught.exception.code, "AUTHORITY_DIRTY")
+            self.assertEqual(git(fixture.authority, "rev-parse", "HEAD"), before)
+            self.assertTrue(stray.is_file(), "the stray file is left as it was")
+            stray.unlink()
+            self.assertEqual(git(fixture.authority, "status", "--porcelain"), "")
+
     def test_cli_mode(self) -> None:
         fixture = _Fixture(self)
         files = {"docs/a.md": "# a\n", "docs/b.md": "# b\n"}
