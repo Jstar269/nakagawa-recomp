@@ -533,6 +533,8 @@
     "src/core/nk_launch.h",
     "src/core/nk_library.c",
     "src/core/nk_library.h",
+    "src/core/nk_pbp_homebrew.c",
+    "src/core/nk_pbp_homebrew.h",
     "src/core/nk_pgf_host.c",
     "src/core/nk_platform.h",
     "src/core/nk_platform_posix.c",

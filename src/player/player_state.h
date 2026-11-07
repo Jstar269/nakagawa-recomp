@@ -654,6 +654,9 @@ typedef struct {
     char title[MAX_TITLE_LEN];
     /* A checked conversion is already at iso_path. */
     bool iso_ready;
+    /* An EBOOT.PBP holding unencrypted homebrew (#2143): iso_path is a small private disc
+       image written from the package, and disc_id is the library key that image will have. */
+    bool homebrew;
     /* NK_DISC_FORMAT_NONE for a PSN package; otherwise the compressed image's
        format, and iso_path and disc_id are known once it is expanded. */
     NkDiscFormat disc_format;

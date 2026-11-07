@@ -31,6 +31,27 @@ recorded evidence supports. Every other retail disc is **Experimental** or **Unt
 **EXPERIMENTAL** badge the player puts on an imported disc only means no one knows yet how well it runs; it doesn't
 set a status here.
 
+## Homebrew limits
+
+PSP homebrew is unencrypted and needs no keys, so it is the one kind of program Nakagawa can take from an
+`EBOOT.PBP` package. Picking one in the launcher writes a small private disc image from the package
+([#2143](https://github.com/Jstar269/nakagawa-recomp/issues/2143); how to add it is in
+[`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md#homebrew)) and imports it like any other disc. Homebrew is **Experimental**: nobody has checked it unless a row below says so. Some kinds of homebrew
+cannot run, and each stops with a named refusal rather than a silent failure:
+
+| Kind | Result | Why |
+| :--- | :--- | :--- |
+| Kernel-mode homebrew and custom-firmware plugins (PRX plugins, the old 1.50-era kernel programs) | Refused at import: `HOMEBREW_KERNEL_MODE_UNSUPPORTED` | They need the PSP's kernel and firmware, which the project deliberately doesn't emulate or carry. The player reads the module's kernel-mode attribute (a module whose module information lies outside the program is refused as malformed, never taken as user mode); code generation refuses custom-firmware-only imports when it builds the program. |
+| Homebrew that generates code at run time, such as an emulator with a JIT dynamic recompiler | The run stops at `target-not-executable` | Only code the analyzer found ahead of time runs, plus the fail-closed interpreter inside analyzer-owned spans. Generated code is outside both. An emulator's interpreter mode may still work. |
+| Script engines (Lua players and similar) | Fine | Scripts are data, not code. |
+| Network homebrew | The ad hoc and infrastructure network functions are refused | Network access is refused until opt-in online play exists. |
+| An encrypted program in a package, a PSOne Classic, a firmware updater | Refused at import: `PBP_ENCRYPTED_EXECUTABLE_UNSUPPORTED`, `PSONE_CLASSIC_UNSUPPORTED`, `FIRMWARE_OUT_OF_SCOPE` | Not homebrew. A PSN release of a UMD game is converted to a disc image instead. |
+
+The player classifies a package in `src/core/nk_pbp_homebrew.c` and names the refusal in
+`player_psn_package_inspect`; `tests/native/test_player_state.c` covers the import, each refusal, hostile
+packages and four modules built by the real PSPSDK. The kernel-mode check there reads the module attribute;
+custom-firmware-only imports are refused later, when code generation reads the program's import table.
+
 ## Title compatibility
 
 The table lists the project's own test programs, the two showcase demos, the game the project is built around, and

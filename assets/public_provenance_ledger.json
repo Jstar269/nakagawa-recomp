@@ -4075,6 +4075,28 @@
       }
     },
     {
+      "path": "src/core/nk_pbp_homebrew.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk-pbp-homebrew-2143",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/core/nk_pbp_homebrew.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk-pbp-homebrew-2143",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "src/core/nk_pgf_host.c",
       "classification": "project_authored_attested",
       "evidence": {
