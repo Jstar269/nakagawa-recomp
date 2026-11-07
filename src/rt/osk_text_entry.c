@@ -131,8 +131,8 @@ static void entry_reap_worker(void) {
     s_worker = NULL;
 }
 
-int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
-                           uint32_t input_type) {
+static int osk_text_entry_poll_live(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
+                                    uint32_t input_type) {
     if (!out || cap < 2) return 0;
     if (cap > OSK_TEXT_UNITS) cap = OSK_TEXT_UNITS;
     if (osk_text_entry_unanswerable()) return SR_OSK_TEXT_PENDING;
@@ -173,7 +173,7 @@ int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t 
     return SR_OSK_TEXT_PENDING;
 }
 
-void sr_osk_text_entry_abandon(void) {
+static void osk_text_entry_abandon_live(void) {
     sr_osk_overlay_abandon();
     if (InterlockedCompareExchange(&s_state, ENTRY_ABANDONED, ENTRY_OPEN) == ENTRY_OPEN) {
         entry_close_box(InterlockedCompareExchangePointer(&s_box, NULL, NULL));
@@ -186,8 +186,8 @@ void sr_osk_text_entry_abandon(void) {
 
 /* No native input box exists on this host: sr_osk_input answers cancelled at once without
  * waiting, so asking it from the scheduler thread cannot stop guest time. */
-int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
-                           uint32_t input_type) {
+static int osk_text_entry_poll_live(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
+                                    uint32_t input_type) {
     if (!out || cap < 2) return 0;
     if (osk_text_entry_unanswerable()) return SR_OSK_TEXT_PENDING;
     if (sr_osk_overlay_host()) return sr_osk_overlay_poll(desc, initial, out, cap, input_type);
@@ -195,8 +195,19 @@ int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t 
     return sr_osk_input(desc, initial, out, cap) == 1;
 }
 
-void sr_osk_text_entry_abandon(void) {
+static void osk_text_entry_abandon_live(void) {
     sr_osk_overlay_abandon();
 }
 
 #endif /* _WIN32 */
+
+/* Every answer goes through the replay module: SR_RECORD writes it down, SR_REPLAY serves the
+ * recorded one instead of asking a person (replay_checkpoint.h). */
+int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
+                           uint32_t input_type) {
+    return sr_replay_osk_poll(desc, initial, out, cap, input_type, osk_text_entry_poll_live);
+}
+
+void sr_osk_text_entry_abandon(void) {
+    sr_replay_osk_abandon(osk_text_entry_abandon_live);
+}

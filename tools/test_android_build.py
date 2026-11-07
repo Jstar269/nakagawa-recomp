@@ -148,6 +148,14 @@ class AndroidAppContractTests(unittest.TestCase):
         self.assertIn('return "nk_android_title_main";', title)
         self.assertIn("int nk_android_title_main(int argc, char **argv)", shim)
 
+    def test_data_folder_has_the_name_every_host_uses(self) -> None:
+        """The user data folder is called Nakagawa on every host; on Android it is in the
+        app-private files folder and reaches the native layer as NK_ANDROID_DATA_DIR."""
+        java = ANDROID / "app" / "src" / "main" / "java" / "io" / "github" / "jstar269" / "nakagawa"
+        host = (java / "NakagawaHost.java").read_text(encoding="utf-8")
+        self.assertIn('return new File(context.getFilesDir(), "Nakagawa");', host)
+        self.assertIn('setenv("NK_ANDROID_DATA_DIR", data.getAbsolutePath());', host)
+
     def test_local_android_state_is_ignored(self) -> None:
         ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
         for entry in ("/android/local.properties", "/android/.gradle/", "/android/app/.cxx/",

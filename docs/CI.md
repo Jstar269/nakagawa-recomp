@@ -108,8 +108,8 @@ The jobs:
   the group, so the first runs after this change restore no entry until a run on `main` has
   saved one per group.
 
-`CI required` needs `classify`, `hygiene`, `public_export`, `python_tools`, `native_tools` and
-`windows_runtime`. The Markdown lint, the main smoke and the fixture build reach it through the
+`CI required` needs `classify`, `hygiene`, `public_export`, `python_tools`, `native_tools`,
+`windows_runtime` and `android_build`. The Markdown lint, the main smoke and the fixture build reach it through the
 two always-required jobs they now belong to, so `tools/ci_required.py` no longer takes a result
 or run flag of their own. Each merged job's `timeout-minutes` covers its parts: hygiene 35
 (15 + 10 + 10), public export 30 (15 + 15), each Windows group 25 per part (50, 75 and
@@ -381,6 +381,24 @@ aggregates the parts, so `CI required` fails when any part fails.
 `tools/test_public_ci_wiring.py` (`NativeToolsPartitionTests`) fails if a serial gate is
 dropped, runs in more than one part, or changes its command.
 
+### Android launcher build
+
+The `android_build` job (#360) runs whenever the native gates do (`run_native`), beside
+them, and `CI required` reads its result (`ANDROID_RESULT`). On `ubuntu-24.04` it installs
+the SDK platform, build-tools, NDK and CMake versions that `android/app/build.gradle.kts`
+names, downloads the Gradle distribution named in
+`android/gradle/wrapper/gradle-wrapper.properties` and checks it against that file's
+`distributionSha256Sum`, then builds the launcher-only debug APK for arm64-v8a
+(`gradle -p android assembleDebug -Pnk.abis=arm64-v8a`) and checks that it carries
+`libmain.so`, `libSDL3.so` and `libSDL3_ttf.so` for that ABI and no other ABI. No title is
+bundled and nothing runs: running needs a device or an emulator
+([`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md)). The APK is kept for 14 days as the
+artifact `nakagawa-android-arm64-debug`, for installing on a phone
+([Test on a phone](ANDROID_DEVELOPMENT.md#test-on-a-phone)). The repository keeps no Gradle wrapper
+jar or scripts, as it keeps no other generated executable (#1100).
+`tools/test_public_ci_wiring.py` (`AndroidBuildWiringTests`) fails when the job's versions,
+the Gradle files and `ANDROID_DEVELOPMENT.md` disagree.
+
 The full-tree pre-commit run retains the publication audit and the Betterleaks
 current-tree scan; the hook runs Betterleaks in directory mode over the files it
 is given (every tracked file under `--all-files`, the staged files at the commit
@@ -392,6 +410,12 @@ scan in git mode and the synthetic canary gate. It also runs the core purity gat
 self-tests, registered NIDs and the reviewed allowlist in that file (one entry per literal,
 with its reason). A fix for one game goes in its title config, not the core. Markdown linting is separate from the native and Windows jobs. Those jobs remain
 synthetic/public-input gates; no private game input is put in Actions.
+
+The shared pre-commit hooks include `mypy-tools`, which requires mypy 2.4.1 and checks the clean
+issue #1391 scope. Hygiene skips that local-system hook because the `python_tools` job installs
+the same version from a hash-locked requirements file, runs the clean-scope check, then runs the
+full `tools/` per-module ratchet. This keeps the developer hook and hosted checks on one pin
+without repeating the full scan in two jobs.
 
 The Windows job also runs `mingw32-make production-smoke` in the existing MSYS2 UCRT64/GCC,
 SDL3, and Vulkan environment. That target generates its PSP-shaped input from committed source,
@@ -496,7 +520,15 @@ that edge pixel's 1x sample, with linear and nearest filtering and with repeat a
 while a sheared strip stays unclamped.
 Last, `gpu-coherence-selftest-snapbar-mutants` builds three broken variants of
 the destination-snapshot copy's barriers (`SR_GPU_SNAPBAR_MUTANT`), and the submit-batch case must
-fail each one with its own message. Then `ge-first-bad-draw-selftest` runs
+fail each one with its own message. `fsr3-pass-selftest` runs FSR 3's eight compute passes on
+lavapipe, headless, under the validation layer with synchronisation validation of shader accesses,
+and an exit 77 skip fails it, including one for synchronisation validation that is not active.
+`fsr3-fg-pass-selftest` runs frame generation's device refusal (G-R) there: lavapipe's subgroups
+are too small for optical flow, so the pass must refuse it with one reason and no Vulkan call; the
+frame cells need a GPU the pass accepts and run locally (`make fsr3-fg-pass-selftest`,
+`make fsr3-fg-pass-mutants`). A further step downloads the DirectXShaderCompiler release that `tools/shader_embed.py` pins, checks its SHA-256 before use, and
+recompiles every FSR 3 pass from the imported HLSL: any byte that differs from the embedded SPIR-V,
+or a compiler that is not the pinned one, fails it. Then `ge-first-bad-draw-selftest` runs
 `ge_replay --first-bad-draw` on a generated capture: the unchanged backend must report
 `NO_DIFFERENCE`, and two executed mutants that change one draw's Vulkan blend or depth state
 (`SR_GE_FBD_MUTANT`) must each be named as that draw, in linear and bisect mode. A second generated

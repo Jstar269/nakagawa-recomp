@@ -517,7 +517,9 @@ covers the maintainer's workspace, how new paths are admitted, and how pull requ
   CodeQL run for the batch, then a rebase-merge. A path-adding PR admitted with a V4 policy
   delta needs no re-key when another path-adding PR lands first or when its claim-bound files are
   edited; one admitted with a V3 delta needs one `--rekey` once its files change, and one admitted
-  before V3 deltas existed needs one `--rekey`, and a batch carries at most one profile-changing PR
+  before V3 deltas existed needs one `--rekey`. A batch may carry several profile-changing PRs: the
+  desk writes the union of their admitted V4 deltas with `admit_paths.py --compose-v4`, which records
+  no new decision and refuses components that overlap
   ([landing order](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path)).
   Never hold a ready pull request for an unrelated one.
 - At the end of a mission, also state whether canonical main was fast-forwarded or left

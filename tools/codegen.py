@@ -23,7 +23,8 @@ import struct
 import re
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
+from typing import Any
 
 # The packaged Windows embeddable interpreter can omit this script's directory
 # from its fixed ``._pth`` search path. Restore it before importing local tools.
@@ -195,8 +196,13 @@ def _enhancement_rewrite(addr: int) -> dict | None:
     site = ENHANCEMENT_SITES.get(addr)
     if site is None:
         return None
+    rewrite = site["rewrite"]
+    if not isinstance(rewrite, dict):
+        raise enhancement_package.EnhancementPackageError(
+            f"enhancement site at 0x{addr:08x} has a non-object rewrite"
+        )
     ENHANCEMENT_APPLIED.add(addr)
-    return site["rewrite"]
+    return rewrite
 
 
 def _refuse_argument_site_on_a_loop(entry: int) -> None:
@@ -3372,6 +3378,7 @@ _SV_SPECIAL = {0x0006e9bc, 0x0006ea1c, 0x00108630, 0x0010433c}
 
 # GUEST_PATCHES -- reviewed, traceable per-guest instruction overrides.
 # Each entry carries a rationale + issue id so every hand-patch is auditable.
+# Patch kinds have different payload keys, so the audit reads their fields by kind.
 # kind:
 #   "cond"   : force the branch condition to `value` (always/never taken) and
 #              optionally inject `stmt`.
@@ -3379,7 +3386,7 @@ _SV_SPECIAL = {0x0006e9bc, 0x0006ea1c, 0x00108630, 0x0010433c}
 _GUEST_PATCH_KEYS: set[int] = set()
 # 0x0004cdc8 (forced host0 asset route) retired under #363 (2026-10-27): with the UMD block
 # device readable in sectors, the title's own archive reader serves every asset.
-GUEST_PATCHES = {
+GUEST_PATCHES: dict[int, dict[str, Any]] = {
 }
 # Static-verify exclusions: the four stand-alone specials plus every patched addr.
 _SV_SPECIAL |= _GUEST_PATCH_KEYS
@@ -3910,8 +3917,8 @@ def _emit_jal(ctx, out, addr, w, ds, dsw):
         _call_stmt = "    " + emit_checked_dispatch_call(
             G(target), G((addr + 8) & 0xFFFFFFFF))
     if _jal_rw is not None:
-        # A gate on a call (gate_30hz or gate_30hz_hold; no other rewrite plans a
-        # call site): the delay slot above always runs; the call is gated while the
+        # A gate on a call (gate_30hz, gate_30hz_hold or gate_30hz_alt; no other rewrite
+        # plans a call site): the delay slot above always runs; the call is gated while the
         # toggle is on. A gate_30hz_hold call returns its float argument unchanged
         # when skipped. A site with ``requires`` makes the call every update, as
         # stock, until each required site has applied (section 9.6).
@@ -3921,11 +3928,51 @@ def _emit_jal(ctx, out, addr, w, ds, dsw):
         _ready = ""
         if "requires" in _jal_rw:
             _ready = f" || !nk_enh_ready({_jal_rw['site_index']}u)"
-        out.append(
-            f"    if (!nk_enhancement_on(){_ready} || nk_enhancement_gate_30hz()) {{\n"
-            f"{_call_stmt}\n"
-            f"    }}{_held}"
-        )
+        if "alternates" in _jal_rw:
+            # gate_30hz_alt (contract sections 9.2 and 9.5): the site keeps its own phase on
+            # the update count. It makes its alternates only in the update right after one in
+            # which it made the stock call, and a second visit in one update repeats that
+            # update's choice. On an alternate update each alternate is called in list order
+            # with $a0 as it was after the delay slot and $ra = site + 8.
+            _resume = (addr + 8) & 0xFFFFFFFF
+            _lines = [
+                "    { static uint32_t _nk_alt_last; static unsigned char _nk_alt_seen, _nk_alt_stock;",
+                "      uint32_t _nk_u = nk_enhancement_updates; int _nk_st;",
+                "      if (_nk_alt_seen && _nk_alt_last == _nk_u) _nk_st = _nk_alt_stock;",
+                "      else _nk_st = !(_nk_alt_seen && _nk_alt_last + 1u == _nk_u && _nk_alt_stock);",
+                f"      if (!nk_enhancement_on(){_ready}) _nk_st = 1;",
+                "      _nk_alt_seen = 1u; _nk_alt_last = _nk_u; _nk_alt_stock = (unsigned char)_nk_st;",
+                "      if (_nk_st) {",
+                _call_stmt,
+                "      } else { uint32_t _nk_a0 = s->r[4];",
+            ]
+            for _alt in _jal_rw["alternates"]:
+                _lines.append(f"    s->r[4] = _nk_a0; s->r[31] = {G(_resume)};")
+                if _alt in known or _alt in resume_owners:
+                    _lines += [
+                        "#ifdef SR_VERIFY",
+                        "    sr_verify_suppress_direct = 1;",
+                        "#endif",
+                        f"    {{ int _nk_b = sr_aot_return_boundary_begin(s, {G(_resume)}, {G(addr)}, 1u);",
+                        "#ifdef SR_VERIFY",
+                        "      sr_verify_suppress_direct = 0;",
+                        f"      if (!_nk_b) sr_verify_begin(s, {G(_alt)}, {G(addr)}, {G(_resume)});",
+                        "#endif",
+                        f"      if (_nk_b) return; {emit_body_call(ADDRESS_SPACE.symbol(_alt, resume_owners))} "
+                        "if (sr_aot_return_boundary_end(s)) return; }",
+                    ]
+                else:
+                    _lines.append("    " + emit_checked_dispatch_call(G(_alt), G(_resume)))
+                if lle_cpu:
+                    _lines.append(f"    {_flow_return(resumable)}")
+            _lines.append("    } }")
+            out.extend(_lines)
+        else:
+            out.append(
+                f"    if (!nk_enhancement_on(){_ready} || nk_enhancement_gate_30hz()) {{\n"
+                f"{_call_stmt}\n"
+                f"    }}{_held}"
+            )
     else:
         out.extend(_call_stmt.split("\n"))
     _emit_slot_exit(ctx, out, addr)
@@ -4363,10 +4410,10 @@ class RuntimeModuleTranslation:
     alignment: int = 1
     relocatable: bool = True
     unsupported_reason: str | None = None
-    texts: list = None
-    functions: list = None        # (link address, nwords)
-    spans: list = None            # (start, end) link space
-    stubbed: list = None          # (link address, reason)
+    texts: list[ModuleText] = dataclass_field(default_factory=list)
+    functions: list[tuple[int, int]] = dataclass_field(default_factory=list)  # (link address, nwords)
+    spans: list[tuple[int, int]] = dataclass_field(default_factory=list)      # (start, end) link space
+    stubbed: list[tuple[int, str]] = dataclass_field(default_factory=list)    # (link address, reason)
     # A code overlay (analyze.code_overlay_layout) is bound when guest memory holds these
     # leading bytes of the file (its header and text), not when the game loads a module.
     overlay_check_len: int = 0

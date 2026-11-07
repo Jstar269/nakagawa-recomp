@@ -179,7 +179,7 @@ def classify(handler: str, mechanical_stubs: frozenset[str] | set[str] = frozens
     :func:`mechanical_stub_handlers`) are classified identically without
     hand-listing their names, so new stubs cannot slip through.
     """
-    status = meta.HANDLER_STATUS.get(handler, "unreviewed")
+    status: str = meta.HANDLER_STATUS.get(handler, "unreviewed")
     if handler in meta.GENERIC_SUCCESS_HANDLERS or status == "stub" or handler in mechanical_stubs:
         return "fake_success", "stub"
     if status == "controlled_unsupported":
@@ -559,8 +559,8 @@ def validate_status_evidence_ratchet() -> None:
 
 def validate_meta(regs: list[dict]) -> None:
     """Both-direction cross-check between curated metadata and the extraction."""
-    handlers = {r["handler"] for r in regs}
-    nids = {r["nid"] for r in regs}
+    handlers: set[str] = {r["handler"] for r in regs}
+    nids: set[int] = {r["nid"] for r in regs}
     stale = sorted(set(meta.HANDLER_STATUS) - handlers)
     if stale:
         raise ManifestError(f"HANDLER_STATUS names handlers hle.c no longer registers: {stale}")

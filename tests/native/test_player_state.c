@@ -7014,6 +7014,123 @@ static void expect_input(const PlayerInputReport *input, PlayerInputClass input_
                                      ? files_needed : (size_t)PLAYER_INPUT_FILES_MAX));
 }
 
+/* #2140: the card names which build of the program a disc holds when the title's manifest
+   records builds, refuses a known-bad one, and says nothing for a title that records none. */
+static void test_game_build_check_names_the_executable_build(void) {
+    const char sep = nk_platform_path_separator();
+    char root[256];
+    char user[300];
+    char iso[NK_MAX_PATH];
+    unsigned char program[88];
+    uint8_t digest[32];
+    char sha_hex[65];
+    char manifest[4096];
+    char err[512] = "";
+    NkSha256 sha;
+    NkTitleEntry entry;
+    NkIsoExecutableReport report;
+    const PlayerPreflightCheck *check;
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    assert(strlen(native_test_get_root()) < 200);
+    snprintf(root, sizeof(root), "%.200s%cgame-build", native_test_get_root(), sep);
+    snprintf(user, sizeof(user), "%s%cuser", root, sep);
+    snprintf(iso, sizeof(iso), "%s%cgame.iso", root, sep);
+    assert(nk_platform_mkdir_p(user));
+    player_app_set_runtime_root(app, user);
+    build_synthetic_mips_elf(program);
+    write_sysdir_eboot_iso(iso, program, sizeof(program));
+    nk_sha256_init(&sha);
+    nk_sha256_update(&sha, program, sizeof(program));
+    nk_sha256_finish(&sha, digest);
+    for (int i = 0; i < 32; i++) snprintf(sha_hex + i * 2, 3, "%02x", digest[i]);
+
+    memset(&report, 0, sizeof(report));
+    report.eboot.kind = NK_ISO_EXEC_MIPS_ELF32;
+    report.selected = NK_ISO_EXEC_SELECTION_EBOOT;
+    snprintf(report.selected_path, sizeof(report.selected_path), "EBOOT.BIN");
+    snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "TEST00031");
+    snprintf(app->inspecting_game.title_id, sizeof(app->inspecting_game.title_id), "build-check-v1");
+    snprintf(app->inspecting_game.iso_path, sizeof(app->inspecting_game.iso_path), "%s", iso);
+
+    /* A title that records no builds gets no row. */
+    snprintf(manifest, sizeof(manifest),
+        "{\"schema_version\":1,\"id\":\"build-check-v1\",\"display_name\":\"Build Check\","
+        "\"kind\":\"retail\",\"disc\":{\"id\":\"TEST00031\",\"region\":\"OTHER\","
+        "\"revision_policy\":\"exact-disc-id\"},"
+        "\"executable\":{\"base\":0,\"entry\":142606336,\"bss_metadata_source\":\"elf\","
+        "\"extra_executable_spans\":[]},\"modules\":[],"
+        "\"filesystem\":{\"data_root\":\"data\",\"memory_stick_root\":\"ms\","
+        "\"device_prefixes\":[\"host0:\"]},\"hle_profile\":\"standard\","
+        "\"feature_requirements\":[\"allegrex\"],\"verification_profile\":\"smoke\"}");
+    assert(nk_title_manifest_parse_buffer(manifest, strlen(manifest), true, &entry, err, sizeof(err)));
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    assert(find_preflight_check(&app->wizard.preflight, "GAME_BUILD") == NULL);
+
+    /* The disc's build is listed: the row is Ready and names the label. */
+    snprintf(manifest, sizeof(manifest),
+        "{\"schema_version\":1,\"id\":\"build-check-v1\",\"display_name\":\"Build Check\","
+        "\"kind\":\"retail\",\"disc\":{\"id\":\"TEST00031\",\"region\":\"OTHER\","
+        "\"revision_policy\":\"exact-disc-id\",\"builds\":[{\"executable_sha256\":\"%s\","
+        "\"status\":\"supported\",\"label\":\"DISC_VERSION 1.00\"}]},"
+        "\"executable\":{\"base\":0,\"entry\":142606336,\"bss_metadata_source\":\"elf\","
+        "\"extra_executable_spans\":[]},\"modules\":[],"
+        "\"filesystem\":{\"data_root\":\"data\",\"memory_stick_root\":\"ms\","
+        "\"device_prefixes\":[\"host0:\"]},\"hle_profile\":\"standard\","
+        "\"feature_requirements\":[\"allegrex\"],\"verification_profile\":\"smoke\"}", sha_hex);
+    nk_title_catalog_clear_overlay();
+    assert(nk_title_manifest_parse_buffer(manifest, strlen(manifest), true, &entry, err, sizeof(err)));
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    check = find_preflight_check(&app->wizard.preflight, "GAME_BUILD");
+    assert(check != NULL && check->status == PREFLIGHT_OK);
+    assert(strstr(check->message, "DISC_VERSION 1.00") != NULL);
+    assert(!player_preflight_check_blocks(check));
+
+    /* The same digest marked known-bad: the row refuses and blocks, with the reason. */
+    snprintf(manifest, sizeof(manifest),
+        "{\"schema_version\":1,\"id\":\"build-check-v1\",\"display_name\":\"Build Check\","
+        "\"kind\":\"retail\",\"disc\":{\"id\":\"TEST00031\",\"region\":\"OTHER\","
+        "\"revision_policy\":\"exact-disc-id\",\"builds\":[{\"executable_sha256\":\"%s\","
+        "\"status\":\"known-bad\",\"label\":\"patched copy\","
+        "\"reason\":\"A patched executable.\"}]},"
+        "\"executable\":{\"base\":0,\"entry\":142606336,\"bss_metadata_source\":\"elf\","
+        "\"extra_executable_spans\":[]},\"modules\":[],"
+        "\"filesystem\":{\"data_root\":\"data\",\"memory_stick_root\":\"ms\","
+        "\"device_prefixes\":[\"host0:\"]},\"hle_profile\":\"standard\","
+        "\"feature_requirements\":[\"allegrex\"],\"verification_profile\":\"smoke\"}", sha_hex);
+    nk_title_catalog_clear_overlay();
+    assert(nk_title_manifest_parse_buffer(manifest, strlen(manifest), true, &entry, err, sizeof(err)));
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    check = find_preflight_check(&app->wizard.preflight, "GAME_BUILD");
+    assert(check != NULL && check->status == PREFLIGHT_UNSUPPORTED);
+    assert(player_preflight_check_blocks(check));
+    assert(strstr(check->plain, "A patched executable.") != NULL);
+    assert(strcmp(player_preflight_status_word(check), "Can't use") == 0);
+
+    /* A build the manifest does not list: experimental, the recorded addresses not applied. */
+    snprintf(manifest, sizeof(manifest),
+        "{\"schema_version\":1,\"id\":\"build-check-v1\",\"display_name\":\"Build Check\","
+        "\"kind\":\"retail\",\"disc\":{\"id\":\"TEST00031\",\"region\":\"OTHER\","
+        "\"revision_policy\":\"exact-disc-id\",\"builds\":[{\"executable_sha256\":\"%064d\","
+        "\"status\":\"supported\",\"label\":\"DISC_VERSION 1.01\"}]},"
+        "\"executable\":{\"base\":0,\"entry\":142606336,\"bss_metadata_source\":\"elf\","
+        "\"extra_executable_spans\":[]},\"modules\":[],"
+        "\"filesystem\":{\"data_root\":\"data\",\"memory_stick_root\":\"ms\","
+        "\"device_prefixes\":[\"host0:\"]},\"hle_profile\":\"standard\","
+        "\"feature_requirements\":[\"allegrex\"],\"verification_profile\":\"smoke\"}", 1);
+    nk_title_catalog_clear_overlay();
+    assert(nk_title_manifest_parse_buffer(manifest, strlen(manifest), true, &entry, err, sizeof(err)));
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    check = find_preflight_check(&app->wizard.preflight, "GAME_BUILD");
+    assert(check != NULL && check->status == PREFLIGHT_IN_PROGRESS);
+    assert(!player_preflight_check_blocks(check));
+    assert(strstr(check->plain, "not applied") != NULL);
+    assert(strstr(check->plain, "DISC_VERSION 1.01") != NULL);
+
+    nk_title_catalog_clear_overlay();
+    free(app);
+}
+
 /* #308: what kind of program input a disc is, the files an encrypted disc
    still needs, and checking again in place once the user has put them in the
    title's folder. The synthetic ~PSP containers here do not decrypt with the
@@ -14202,6 +14319,7 @@ int main(int argc, char **argv) {
     printf("[PLAYER_STATE_TEST] Subtest 26: program input classification and check again\n");
     fflush(stdout);
     test_input_classification_and_check_again();
+    test_game_build_check_names_the_executable_build();
 
     free(app);
     printf("[PLAYER_STATE_TEST] ALL PLAYER STATE TESTS PASSED!\n");

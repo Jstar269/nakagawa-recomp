@@ -133,7 +133,7 @@ PLAYER_SOURCES = (
 #: Uppercase literals in those sources that are not failure codes.
 PLAYER_NOT_CODES = {
     # preflight check names (the bring-up report's preflight_checks[].code)
-    "AUDIO_OUTPUT", "DATA_ROOT", "DISC_SFO", "GUEST_MODULES", "RUNTIME_PACKAGE", "SYSTEM_FONTS",
+    "AUDIO_OUTPUT", "DATA_ROOT", "DISC_SFO", "GAME_BUILD", "GUEST_MODULES", "RUNTIME_PACKAGE", "SYSTEM_FONTS",
     "TITLE_PROFILE",
     # PARAM.SFO keys, disc folders and placeholders
     "DISC_ID", "DISC_VERSION", "PSP_GAME",

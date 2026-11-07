@@ -178,6 +178,119 @@ motion-match-selftest:
 		src/rt/motion_match.c -lm
 	$(BUILD_DIR)/motion_match_selftest$(EXE_EXT)
 
+# fsr3-host-selftest - FSR 3's CPU side (src/rt/fsr3_host.c, src/rt/fsr3_jitter.c) against the record
+# of AMD's own host code (tests/native/fsr3_host_oracle.md): every clear, discard and dispatch, the
+# resource behind each binding, the staged constants, the jitter and the f16 and RCAS helpers. Pure C,
+# no GPU and no game data. fsr3-mutants then requires 19 semantic defects in copies of the port to
+# build and fail it on the line each one changes; the one inside libm's last unit runs only against
+# a C library the selftest compares exactly (UCRT) and is NOT_RUN elsewhere.
+native-core-tests: fsr3-host-selftest fsr3-mutants
+.PHONY: fsr3-host-selftest fsr3-mutants
+# Optional argv flags for the exhaustive 2^32-input f16 check; set on the make command line.
+FSR3_HOST_SELFTEST_ARGS =
+fsr3-host-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-Ithird_party/fidelityfx_sdk/upscalers/fsr3/include/gpu -o $(BUILD_DIR)/fsr3_host_selftest$(EXE_EXT) \
+		tests/native/fsr3_host_selftest.c src/rt/fsr3_host.c src/rt/fsr3_jitter.c -lm
+	$(BUILD_DIR)/fsr3_host_selftest$(EXE_EXT) tests/native/fsr3_host_oracle.txt $(FSR3_HOST_SELFTEST_ARGS)
+fsr3-mutants: fsr3-host-selftest
+	"$(PYTHON)" tools/fsr3_mutants.py --build-dir $(BUILD_DIR)/fsr3-mutants --cc "$(CC)"
+
+# fsr3-fg-host-selftest - FSR 3 frame generation's CPU side (src/rt/fsr3_fg_host.c) against the record
+# of AMD's own frame interpolation and optical flow, driven as AMD's frame generation provider drives
+# them (tests/native/fsr3_fg_host_oracle.md): every staged constant buffer, clear, barrier, discard,
+# copy and dispatch, and the resource behind each binding, line for line; then the refusals. Pure C, no
+# GPU and no game data.
+# fsr3-fg-state-selftest - G-S: frame generation's state machine (src/rt/fsr3_fg_state.c), when it runs,
+# its frame IDs and resets, and which image each flip and VBLANK presents, against a table written
+# from the FSR 3 design (section 10.2) and Smooth Motion's pacing. Pure C.
+# fsr3-fg-mutants then requires 35 semantic defects in copies of the two to build and fail their
+# cell on the line each one changes.
+native-core-tests: fsr3-fg-host-selftest fsr3-fg-state-selftest fsr3-fg-mutants
+.PHONY: fsr3-fg-host-selftest fsr3-fg-state-selftest fsr3-fg-mutants
+fsr3-fg-host-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-Ithird_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu \
+		-o $(BUILD_DIR)/fsr3_fg_host_selftest$(EXE_EXT) tests/native/fsr3_fg_host_selftest.c src/rt/fsr3_fg_host.c -lm
+	$(BUILD_DIR)/fsr3_fg_host_selftest$(EXE_EXT) tests/native/fsr3_fg_host_oracle.txt
+fsr3-fg-state-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/fsr3_fg_state_selftest$(EXE_EXT) tests/native/fsr3_fg_state_selftest.c src/rt/fsr3_fg_state.c
+	$(BUILD_DIR)/fsr3_fg_state_selftest$(EXE_EXT)
+fsr3-fg-mutants: fsr3-fg-host-selftest fsr3-fg-state-selftest
+	"$(PYTHON)" tools/fsr3_mutants.py --fg --build-dir $(BUILD_DIR)/fsr3-fg-mutants --cc "$(CC)"
+
+# fsr3-shader-verify - the FSR 3 shader sets, the upscaler (fsr3) and frame generation (fsr3fg)
+# (schema 2: sources, include closures, embeddings, the pinned DXC's options and defines).
+# fsr3-shader-repro-verify also recompiles both with DXC and requires the same bytes; a DXC that is
+# not the pinned release is a SKIP, printed, and the tool's exit 77 (the hosted job runs the tool
+# itself, so there a SKIP fails).
+# fsr3-pass-selftest - FSR 3's eight passes (src/rt/gpu_sdl3vk/fsr3_pass.c) on a headless Vulkan
+# device under the validation layers, synchronisation validation of shader accesses included: P-0
+# creates the pipelines, and F-S, F-M, F-R, F-T, F-C and F-D run synthetic scenes drawn as the GE
+# draws them against their truth. Linked from the pass, the host and the C library alone. No Vulkan
+# headers, loader, device or validation layer, or no synchronisation validation: SKIP (exit 77),
+# visible in the log; NK_UI_VK_REQUIRE=1 makes a skip fail. fsr3-pass-mutants runs each cell's mutants (minutes on a GPU, longer on
+# lavapipe), so it is not part of native-core-tests.
+native-core-tests: fsr3-pass-selftest
+.PHONY: fsr3-shader-verify fsr3-shader-repro-verify fsr3-pass-selftest fsr3-pass-mutants
+DXC ?= dxc
+fsr3-shader-verify:
+	"$(PYTHON)" tools/shader_embed.py verify --shader-set fsr3
+	"$(PYTHON)" tools/shader_embed.py verify --shader-set fsr3fg
+fsr3-shader-repro-verify:
+	@for set in fsr3 fsr3fg; do \
+		rc=0; "$(PYTHON)" tools/shader_embed.py verify --shader-set $$set --recompile --dxc "$(DXC)" || rc=$$?; \
+		if [ $$rc -eq 77 ]; then echo "SKIP fsr3-shader-repro-verify $$set (exit 77; the reason is printed above)"; \
+		elif [ $$rc -ne 0 ]; then exit $$rc; fi; \
+	done
+fsr3-pass-selftest: fsr3-shader-verify
+	@if ! printf '%s\n' '#include <vulkan/vulkan.h>' | $(CC) -E -x c $(VULKAN_INC_FLAGS) - >/dev/null 2>&1; then \
+		echo "SKIP fsr3-pass-selftest (the Vulkan headers were not found)"; \
+		if [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then exit 1; fi; exit 0; \
+	fi; \
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -Isrc/rt/gpu_sdl3vk \
+		-Ithird_party/fidelityfx_sdk/upscalers/fsr3/include/gpu $(VULKAN_INC_FLAGS) \
+		src/rt/gpu_sdl3vk/fsr3_pass.c src/rt/gpu_sdl3vk/fsr3_pass_selftest.c src/rt/fsr3_host.c \
+		src/rt/fsr3_jitter.c -lm $(NK_UI_VK_SELFTEST_LIBS) -o $(BUILD_DIR)/fsr3_pass_selftest$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_DIR)/fsr3_pass_selftest$(EXE_EXT) || rc=$$?; \
+	if [ $$rc -eq 77 ] && [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then \
+		echo "FAIL fsr3-pass-selftest (skipped, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
+	elif [ $$rc -eq 77 ]; then echo "SKIP fsr3-pass-selftest (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL fsr3-pass-selftest (exit $$rc)"; exit $$rc; fi
+fsr3-pass-mutants: fsr3-shader-verify
+	"$(PYTHON)" tools/fsr3_mutants.py --pass --build-dir $(BUILD_DIR)/fsr3-pass-mutants --cc "$(CC)"
+
+# fsr3-fg-pass-selftest - FSR 3 frame generation's seventeen passes (src/rt/gpu_sdl3vk/fsr3_fg_pass.c)
+# on a headless Vulkan device under the validation layers, synchronisation validation of shader
+# accesses included: G-R refuses devices without what optical flow needs (subgroups of 32) with one
+# reason and no Vulkan call, G-0 creates the pipelines and runs whole frames, and G-M, G-D, G-H and
+# G-C generate frames of synthetic scenes (a moving quad, what it uncovers, a static HUD over a pan
+# with and without its HUD-less colour, a cut) against their truth. Linked from the pass, its host and
+# the C library alone. Skips (exit 77) as fsr3-pass-selftest does, and on a device the pass refuses,
+# where G-R still runs; FSR3FG_PASS_ARGS="--cell G-R" runs that cell alone, which a refused device
+# passes. fsr3-fg-pass-mutants runs each cell's mutants on a GPU, so it is not part of
+# native-core-tests.
+native-core-tests: fsr3-fg-pass-selftest
+.PHONY: fsr3-fg-pass-selftest fsr3-fg-pass-mutants
+FSR3FG_PASS_ARGS ?=
+fsr3-fg-pass-selftest: fsr3-shader-verify
+	@if ! printf '%s\n' '#include <vulkan/vulkan.h>' | $(CC) -E -x c $(VULKAN_INC_FLAGS) - >/dev/null 2>&1; then \
+		echo "SKIP fsr3-fg-pass-selftest (the Vulkan headers were not found)"; \
+		if [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then exit 1; fi; exit 0; \
+	fi; \
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -Isrc/rt/gpu_sdl3vk \
+		-Ithird_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu $(VULKAN_INC_FLAGS) \
+		src/rt/gpu_sdl3vk/fsr3_fg_pass.c src/rt/gpu_sdl3vk/fsr3_fg_pass_selftest.c src/rt/fsr3_fg_host.c \
+		-lm $(NK_UI_VK_SELFTEST_LIBS) -o $(BUILD_DIR)/fsr3_fg_pass_selftest$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_DIR)/fsr3_fg_pass_selftest$(EXE_EXT) $(FSR3FG_PASS_ARGS) || rc=$$?; \
+	if [ $$rc -eq 77 ] && [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then \
+		echo "FAIL fsr3-fg-pass-selftest (skipped, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
+	elif [ $$rc -eq 77 ]; then echo "SKIP fsr3-fg-pass-selftest (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL fsr3-fg-pass-selftest (exit $$rc)"; exit $$rc; fi
+fsr3-fg-pass-mutants: fsr3-shader-verify
+	"$(PYTHON)" tools/fsr3_mutants.py --fg-pass --build-dir $(BUILD_DIR)/fsr3-fg-pass-mutants --cc "$(CC)"
+
 # osk-overlay-selftest - the in-window on-screen keyboard's state machine (src/rt/osk_overlay.c):
 # navigation, typing, the guest's length bound with UTF-16 pairs, backspace, confirm and cancel,
 # the UTF-16 answer, the inputtype rules, edge-based pad input and the session the HLE keyboard
@@ -501,7 +614,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(H264_SUB_OBJS) $(GENERIC_TITLE_CONFIG_HE
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		$(HLE_THREAD_SELFTEST_SOURCE) $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		$(HLE_THREAD_SELFTEST_SOURCE) $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/replay_checkpoint.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -540,7 +653,7 @@ hle-title-selftest-one: $(RT_GE_O) $(H264_SUB_OBJS) $(TITLE_CONFIG_TOOL) tools/t
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o $(HLE_TITLE_SELFTEST_EXE) \
-		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/replay_checkpoint.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -580,7 +693,7 @@ $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(H264_SUB_OBJS) $(PSP_ORACLE
 		-Wno-infinite-recursion -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses -Wno-pointer-sign \
 		-I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/replay_checkpoint.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
@@ -645,6 +758,26 @@ domain-mode-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/domain_mode_selftest.exe \
 		tests/native/domain_mode_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/domain_mode_selftest.exe
+
+# nkstate-selftest — the save-state/replay container (#2146, #2147), src/rt/nkstate.c. No
+# game inputs needed. A synthetic guest decoder runs through production dispatch (the
+# interpreter floor), is saved mid-run, restored into a clobbered arena and continued; the
+# trace, CpuState and memory must equal an uninterrupted run. Also every load refusal (each
+# names its field), a missing exporter and a busy subsystem blocking a capture, a lossy
+# loader caught by the save-back check, and one golden file tools/test_nkstate.py also
+# builds; and the replay checkpoints (src/rt/replay_checkpoint.c): two identical runs
+# match, and an injected RAM or register difference is named by chunk or thread at the
+# frame it happened. SR_RECORD/SR_REPLAY run in fresh child processes: a replay ends in the
+# recorded state without asking the (fake) keyboard user, and a changed word, an extra poll,
+# an early stop, an edited or truncated file and the host clock each end in their own named
+# verdict. Exit code 0 = all hold.
+nkstate-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/nkstate_selftest.exe \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		tests/native/nkstate_selftest.c src/rt/nkstate.c src/rt/replay_checkpoint.c \
+		src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/stale_code.c \
+		src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
+	$(BUILD_DIR)/nkstate_selftest.exe
 
 # dispatch-isolation-selftest — executable proof that the TYPED dispatch binding a
 # title configuration owns (dispatch aliases) acts only where that configuration names

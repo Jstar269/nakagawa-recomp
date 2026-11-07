@@ -70,6 +70,19 @@ proposals. Each claim covers only the exact fixture named:
   and `invalid-tail-s0-d-try` each returned `0x80000104` with no byte changed:
   size 0 with a NULL destination, a NULL source, both pointers owned, or
   destination `0xFFFFFFFF`. The size check precedes the pointer checks.
+- **DMA over-long requests inside owned memory** (issue #303, Tier B): on a PSP-3000 / 6.61 /
+  ARK-5.1.0, pspver 6.6.0 (2026-11-06, boots 139 (memcpy-dst), 140 (memcpy-src), 141 (try-dst) and 142 (try-src), commit `8db3ec9d`, each
+  acceptance-eligible with `setup_mask=0x07`), `invalid-tail-b1-delta-0001`, `invalid-tail-b1-delta-0004`,
+  `invalid-tail-b1-delta-1000`, `invalid-tail-b1-delta-2000`, `invalid-tail-b2-delta-0001`,
+  `invalid-tail-b2-delta-0004`, `invalid-tail-b2-delta-1000`, `invalid-tail-b2-delta-2000`,
+  `invalid-tail-b3-delta-0001`, `invalid-tail-b3-delta-0004`, `invalid-tail-b3-delta-1000`,
+  `invalid-tail-b3-delta-2000`, `invalid-tail-b4-delta-0001`, `invalid-tail-b4-delta-0004`,
+  `invalid-tail-b4-delta-1000` and `invalid-tail-b4-delta-2000` each returned 0 and moved all 0xc000 + delta
+  requested bytes, from `sceDmacMemcpy` (B1, B2) and `sceDmacTryMemcpy` (B3, B4), with the over-long end at
+  the destination (B1, B3) or the source (B2, B4). With a destination tail the owned post-guard and overflow
+  band changed exactly as far as the request reached; with a source tail the over-read guard bytes arrived in
+  the destination. Nothing past a request changed and the source stayed intact. Every request lies inside
+  memory the probe owns, so these cells say nothing about a span across an unmapped edge.
 - **VFPU fixtures** (live record: issue #40): Group A vhdp/vdot NaN/Inf
   matrix, 13 records PASS across 4 launches in two sessions; Group B 91-cell
   overlap matrix, all PASS across 3 bitwise-identical launches; same qualified
@@ -182,8 +195,8 @@ proposals. Each claim covers only the exact fixture named:
   and destination residues, paired unaligned addresses, and overlap in both
   directions. It records cache-disciplined copy observations and owned-buffer
   guards; the previously measured size matrix is not repeated. The Tier S
-  invalid-tail cells below were measured on 2026-11-03; the Tier B cells are
-  built but `NOT_RUN`. Both tiers exercise only
+  invalid-tail cells below were measured on 2026-11-03 and the Tier B cells on
+  2026-11-06. Both tiers exercise only
   zero-length pointer validation and bounded copies wholly inside owned RAM.
   Kernel validation of an actually invalid span, including the K3/K4 atomicity
   distinction, remains in the works under #303.
@@ -260,7 +273,9 @@ destination, a NULL source, both pointers owned, and destination `0xFFFFFFFF`,
 all with size 0. No payload, guard or source byte changed. The size check
 therefore precedes the pointer checks; `src/rt/hle_cache_dma.c` already orders
 them so, and `test_dmac_hardware_semantics` pins the three bad-pointer shapes.
-The Tier B launches were not run.
+The four Tier B launches ran on 2026-11-06 (boots 139 (memcpy-dst), 140 (memcpy-src), 141 (try-dst) and 142 (try-src), commit `8db3ec9d`, each acceptance-eligible,
+`setup_mask=0x07`): every B1-B4 request returned 0 and moved all 0xc000 + delta bytes, nothing past a request
+changed, and the source was intact.
 
 Tier B keeps each entire request inside the same allocation or a module-owned
 array. The four existing launch names map to B1-B4, each with
@@ -1296,6 +1311,120 @@ One console is one data point; see §11. Nothing here closes issue #70
   - *Triangle pairs.* A two-triangle quad at integer through-mode coordinates stores the same pixels as the
     sprite over the same rectangle, in one PRIM and in two (`tab-1p-*` against `ab-1p-*`, `tab-np-*` against
     `ab-np-*`), so the shared diagonal is drawn once.
+
+- **PSP-3000 single-case runs of the `ge-light` and `ge-clut-mip` probes (2026-11-06)**: system software
+  6.61, ARK-5.1.0 (owner); `pspver` 6.6.0, the firmware declared to the runner. PSPLink 3.2.1, operator-declared
+  model PSP-3000, XMB context. `ge-light` (case 139) of `b55f6cd3` on boot 133 and `ge-clut-mip` (case 154) of
+  `2795f150` on boot 134, each in `fixtures/psp_oracle/probe_ge_sample.c` and each after the `transport-write`
+  preflight (PSP-TRANSPORT-001 is not re-cited). All four envelopes are acceptance-eligible with 0 blockers:
+  evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict golden
+  sequence (`ge-light` 700 records and the done record, `ge-clut-mip` 94 and the done record), all PASS; every
+  list reached GE idle. An earlier `ge-light` launch on boot 132 was not eligible (the runner's checkout was
+  dirty) and gave the same normal and pixel records. The raw envelopes and host0 logs stay in the private
+  campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-06) |
+  | --- | --- | --- | --- |
+  | `PSP-GE-LIGHT-001` | `k1-*`, `k2-*`, `k3p5-*`, `k8-*`, `k10-*`, `k16-*`, `k31-*`, `k64-*`, `k100-*`, `k128-*`, `s-*`, `d-*`, `ge-light-done` (`b55f6cd3`, boot 133) | the power function's formula, other light types, colours or several lights, the wait timings | MEASURED (`ge-light`) |
+  | `PSP-GE-MIP-002` | `t8-off-*`, `t8-on-*`, `t8-on-b40-*`, `t4-off-*`, `t4-on-*`, `t4-on-small-*`, `c16-t4-on-*`, `c16-t8-on-*`, `t4-on-csa1-*`, `t8-on-mask1f-*`, `t16-on-*`, `cap32-csa16-b20-*`, `cap32-csa16-b40-*`, `cap16-csa16-b20-*`, `ge-clut-mip-done` (`2795f150`, boot 134) | the CLUT index shift, computed levels, linear mip filtering, what a 0x40-block load does, the wait timings | MEASURED (`ge-clut-mip`) |
+
+  `ge-light` (#1732): per specular coefficient k, one flat-shaded quad per pixel of a 16x17 window, lit by one
+  directional light along (0, 0, 1), with the normal's z spread over 0..1; family s uses light component 1 and
+  white specular colours, family d component 2 and white diffuse colours. What the cells establish, for these
+  exact states only:
+  - *The two families agree.* Every pixel has R = G = B and alpha 0, and s and d give the same pixel for every
+    normal and every k.
+  - *k = 1 is exact.* Each of the 272 pixels is round(255 z).
+  - *k >= 2 is an approximation.* The pixel never decreases as z rises, is at most 0.5 above 255 z^k (computed
+    on the host in double precision) and up to 16 (k 2) to 30 (k 128) below it, so the GE does not compute a
+    correctly rounded power.
+
+  `ge-clut-mip` (#2031): a four-level indexed texture whose level-L texel in column x holds index
+  base + 4 L + (x & 3), drawn at a constant level, through a CLUT whose entry k names k and the load it came
+  from. With t the texel index:
+  - *TEXMODE bit 8 clear:* every level reads entry t.
+  - *Bit 8 set:* a T4 level reads t + 16 L, in an 8888 and a 4444 CLUT; a T8 level reads t + 256 L wrapped in
+    CLUT RAM, which holds 512 4444 entries (level 2 reads t) or 256 8888 entries (every level reads t); T16
+    reads t. The start offset (CLUTFORMAT bits 16-20) adds to the per-level offset, and a level past a
+    16-entry load reads what an earlier load left in CLUT RAM.
+  - *Unexplained:* a LOADCLUT of 0x40 blocks leaves every pixel a grey ramp (`0x00d6d6d6` to `0x00d9d9d9`) that
+    matches neither table.
+  - Pixel x of level L reads texel x >> L, as `ge-mip` measured.
+
+- **PSP-3000 single-case run of the `hle-audio-rest` probe on commit `8db3ec9d` (2026-11-06)**: system software
+  6.61, ARK-5.1.0 (owner); `pspver` 6.6.0, the firmware declared to the runner. PSPLink 3.2.1, operator-declared
+  model PSP-3000, XMB context. `hle-audio-rest` (case 159, `fixtures/psp_oracle/probe_hle_measure.c`) on boot 138,
+  after the `transport-write` preflight (PSP-TRANSPORT-001 is not re-cited). Both envelopes are acceptance-eligible
+  with 0 blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence (102 records and the done record), all PASS. The raw envelopes and host0 logs stay in the private
+  campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-06, `8db3ec9d`) |
+  | --- | --- | --- | --- |
+  | `PSP-HLE-AUDIO-REST-001` | `audio-rest-1024-*`, `audio-rest-2048-*`, `audio-rest-4096-*`, `hle-audio-rest-done` (boot 138) | mono channels, other sizes or frequencies, several channels at once, non-blocking output, the game context | MEASURED (`hle-audio-rest`) |
+
+  `hle-audio-rest` (#279): for each stereo channel of F = 1024, 2048 and 4096 frames, 32 back-to-back blocking
+  outputs, with the rest length read right after each return. For these exact states:
+  - *Return value:* `sceAudioOutputBlocking` returns F, not 0.
+  - *Timing:* the first call returns at once (about 0.1 ms); each later one returns one block after the previous
+    return (mean 23.37, 46.47 and 92.90 ms against blocks of 23.22, 46.44 and 92.88 ms at 44.1 kHz).
+  - *Rest length at return:* `sceAudioGetChannelRestLen` and `sceAudioGetChannelRestLength` agree and read F or
+    F - 64, so a channel holds one block (less any 64-sample unit already played) when a blocking output returns,
+    never two.
+  - *Drain:* after the last return the rest length reaches 0 within about one block, and `sceAudioChRelease` then
+    returns 0.
+
+- **PSP-3000 single-case run of the `ge-rtt` probe on commit `cb3702cf` (2026-11-06)**: system software 6.61,
+  ARK-5.1.0 (owner); `pspver` 6.6.0, the firmware declared to the runner. PSPLink 3.2.1, operator-declared model
+  PSP-3000, XMB context. `ge-rtt` (case 158, `fixtures/psp_oracle/probe_ge_sample.c`) on boot 137, after the
+  `transport-write` preflight (PSP-TRANSPORT-001 is not re-cited). Both envelopes are acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict golden
+  sequence (126 records and the done record), all PASS; every list reached GE idle. The raw envelopes and host0
+  logs stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-06, `cb3702cf`) |
+  | --- | --- | --- | --- |
+  | `PSP-GE-RTT-001` | `cpu-*`, `flush-*`, `noflush-*`, `warm-noflush-*`, `warm-flush-*`, `warm-texsync-*`, `warm-both-*`, `565-flush-*`, `565-warm-noflush-*`, `ge-rtt-done` (boot 137) | the texture cache's size, line or eviction rule, fetches across lists, a 5650 target with a TEXFLUSH after a warm fetch, other formats, the wait timings | MEASURED (`ge-rtt`) |
+
+  `ge-rtt` (#343): in one display list each cell draws a flat colour C1 over the first 16x4 texels of a VRAM
+  target the CPU filled with a pattern P0, and fetches those texels into a colour buffer before and after the
+  draw. Every list starts with TEXFLUSH. What the cells establish, for these exact states only:
+  - *Cold fetch:* a fetch of a region not fetched earlier in the list reads what the CPU wrote (`cpu`) or what
+    the GE drew, with or without TEXFLUSH after the draw (`flush`, `noflush`, `565-flush`).
+  - *Warm fetch:* once the region has been fetched, a fetch after the draw reads the old P0 texels
+    (`warm-noflush`, `565-warm-noflush`) unless TEXFLUSH comes between the draw and the fetch (`warm-flush`, and
+    `warm-both` with TEXSYNC before it). TEXSYNC alone does not (`warm-texsync`).
+  - *5650:* a 5650 target sampled as 5650 writes each channel expanded by replicating its high bits (C1, stored
+    as `0x241c`, reads `0x002182e7`).
+
+- **PSP-3000 single-case runs of the `hle-std-handles` and `ge-weight` probes on commit `d5fed0ba`
+  (2026-11-06)**: system software 6.61, ARK-5.1.0 (owner); `pspver` 6.6.0, the firmware declared to the runner.
+  PSPLink 3.2.1, operator-declared model PSP-3000, XMB context. `hle-std-handles` (case 156,
+  `fixtures/psp_oracle/probe_hle_measure.c`) on boot 135 and `ge-weight` (case 157,
+  `fixtures/psp_oracle/probe_ge_sample.c`) on boot 136, each after the `transport-write` preflight
+  (PSP-TRANSPORT-001 is not re-cited). All four envelopes are acceptance-eligible with 0 blockers: evidence class
+  `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict golden sequence
+  (`hle-std-handles` 4 records and the done record, `ge-weight` 288 and the done record), all PASS; every
+  `ge-weight` list reached GE idle. The raw envelopes and host0 logs stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-06, `d5fed0ba`) |
+  | --- | --- | --- | --- |
+  | `PSP-HLE-STDIO-001` | `stdio-handles`, `stdio-write-stdout`, `stdio-write-stderr`, `stdio-close-stdout`, `hle-std-handles-done` (boot 135) | a read from Stdin, the handles in the game context, the UID values on other boots | MEASURED (`hle-std-handles`) |
+  | `PSP-GE-WEIGHT-001` | `f32-w1-*`, `u8-w1-*`, `u16-w1-*`, `u8-hi-*`, `u16-hi-*`, `f32-neg-*`, `f32-c1-*`, `f32-c3-*`, `f32-c4-*`, `f32-c5-*`, `f32-c6-*`, `f32-c7-*`, `f32-c8-*`, `u8-c3-*`, `u8-c5-*`, `u16-c3-*`, `ge-weight-done` (boot 136) | sub-pixel rounding of weighted positions, weights with lighting or normals, morph targets, the wait timings | MEASURED (`ge-weight`) |
+
+  `hle-std-handles` (#341): `sceKernelStdin`, `sceKernelStdout` and `sceKernelStderr` return three distinct
+  kernel UIDs, not 1. A one-byte `sceIoWrite` returns 1 on Stdout and on Stderr. `sceIoClose` of the Stdout UID
+  returns `0x800200d1` and closes nothing: a write afterwards returns 1 and `sceKernelStdout` returns the same UID.
+
+  `ge-weight` (#343): sixteen transform-mode draws whose slot 0 carries each one-pixel quad through bone 0 at
+  weight 1.0 while the target slot moves it by 16 w pixels, so the row a sample lands on reads the weight the GE
+  used. Every sample of every cell lands on the modelled row:
+  - *Scale:* u8 weights are w / 128 and u16 weights w / 32768, both unsigned and both usable above 1.0
+    (u8 to `0xf8`, u16 to `0xf800`); float weights are used as they are, negative included.
+  - *Count and slots:* VTYPE bits 14-16 give 1 to 8 weights, and slot k selects bone k; no decoy bone (every
+    unused slot's) moved a quad.
+  - *Layout:* weights, then the colour aligned to 4 bytes, then the position, with the vertex size a multiple of
+    4, for three and five u8 weights and three u16 weights.
 
 - **PSP-3000 single-case run of the `insn-trace` probe on commit `84568280` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000, case 119 in `fixtures/psp_oracle/probe_insn_trace.c` with
@@ -3173,6 +3302,16 @@ not expected PSP values.
 | `ge-sync-ids` | `PSP-GE-SYNC-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86; single launch, not in the campaign queue; captured earlier from `96fe29f6` and `f6da6125`) | #1374: `sceGeListSync`, `sceGeDrawSync` and `sceGeListDeQueue` on an unknown queue id, on completed lists before and after later lists, on a list a `sceGeBreak(1)` reset removed, and with sync types other than 0 and 1, each blocking call bounded in a helper thread. See [PSP-GE-SYNC-001 runs 2026-10-31](#psp-ge-sync-001-runs-2026-10-31). |
 | `ge-mip` | `PSP-GE-MIP-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86, 57 cells; 2026-11-03, `99a384bb`, boot 111, 66 cells; single launches, not in the campaign queue) | #1373: the raw pixels of a 16x4 window after 66 textured draws over eight one-colour mip levels: constant, automatic, slope and the unused level mode, biases and their rounding, blends, the highest-level clamp, footprints along either axis, and transform-mode quads at fixed and varying w, mirrored ramps included. 330 result records (285 in the 57-cell run, whose windows the 66-cell run repeats bit for bit). |
 | `memory-edge` | `PSP-MEMEDGE-001` | `CAPTURED` (2026-11-02, `bb3f36e4`, boot 104, game context, firmware 6.6.1; single launch, not in the campaign queue; 33 PASS and 42 intentional SKIP, so not acceptance-eligible) | #303, #1380: the top of user RAM from the partition allocator and the end of VRAM from the DMA engine; `sceIoWrite`, `sceIoRead`, `sceDmacMemcpy` and `sceDmacTryMemcpy` with a buffer whose last 0x100 bytes sit at the edge and lengths 0x100 plus 0, 1, 4 and 0x1000. See [PSP-MEMEDGE-001 capture 2026-11-02](#psp-memedge-001-capture-2026-11-02). |
+| `ge-clut-mip` | `PSP-GE-MIP-002` | `MEASURED` (2026-11-06, PSP-3000, boot 134, `2795f150`; 94 records) | Multi-CLUT mip sampling cells across palette formats, banks and level selection. |
+| `ge-weight` | `PSP-GE-WEIGHT-001` | `MEASURED` (2026-11-06, PSP-3000, boot 136, `d5fed0ba`; 288 records) | Weighted-vertex format and count combinations with raw GE output windows. |
+| `ge-rtt` | `PSP-GE-RTT-001` | `MEASURED` (2026-11-06, PSP-3000, boot 137, `cb3702cf`; 126 records) | Render-to-texture CPU reads, flush variants and output pixels. |
+| `hle-std-handles` | `PSP-HLE-STDIO-001` | `MEASURED` (2026-11-06, PSP-3000, boot 135, `d5fed0ba`; 4 records) | Standard-handle write and close results; the probe does not read stdin. |
+| `hle-audio-rest` | `PSP-HLE-AUDIO-REST-001` | `MEASURED` (2026-11-06, PSP-3000, boot 138, `8db3ec9d`; 102 records) | RestLen and RestLength after 32 blocking-output calls at 1024, 2048 and 4096 frames. |
+| `sas-adsr` | `PSP-SAS-002` | `NOT_RUN` (current status encoding) | The current PASS/ERROR status encoding has not been run on hardware. Historical envelope values from 2026-11-05 remain in the fixture index. |
+| `sas-mix` | `PSP-SAS-003` | `NOT_RUN` | Built synthetic volume, WithMix and pitch cells for #2135 and #2054; no hardware result is claimed. |
+| `vcodec-words` | `PSP-VCODEC-001` | `NOT_RUN` | Built Media Engine boundary-word cells over synthetic AVC access units; no hardware result is claimed. |
+| `hle-utility-dialogs` | `PSP-HLE-UTILITY-DIALOG-001` | `NOT_RUN` | Built #1386 dialog timing and wrong-state cells; no hardware result is claimed. |
+| `mpeg-ycbcr` | `PSP-MPEG-YCBCR-001` | `NOT_RUN` (modes 2 and 3; rerun required) | Each mode now begins from a fresh stream, ringbuffer and MPEG context; no mode 2 or 3 result is measured. |
 
 ### PSP-MEMEDGE-001 capture 2026-11-02
 

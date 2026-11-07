@@ -36,6 +36,16 @@
 #include "osk_text_entry.h"
 #include "osk_overlay.h"
 
+/* The replay module (replay_checkpoint.c) is not linked here: every answer passes straight to
+ * the live keyboard, as it does in a run with neither SR_RECORD nor SR_REPLAY set. */
+int sr_replay_osk_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
+                       uint32_t input_type, SrReplayOskLive live) {
+    return live(desc, initial, out, cap, input_type);
+}
+void sr_replay_osk_abandon(void (*live_abandon)(void)) {
+    live_abandon();
+}
+
 static int s_failures;
 static int s_checks;
 
