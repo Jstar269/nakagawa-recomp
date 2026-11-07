@@ -895,6 +895,18 @@ static void test_install_folder(void) {
         assert(!nk_update_installed_by_setup("bin"));
         snprintf(other, sizeof(other), "%s%cnotbin", install, sep);
         assert(!nk_update_installed_by_setup(other));
+        /* The player's download and install steps refuse such a copy with a named error, and a
+           check (which writes nothing) is not asked. */
+        {
+            NkUpdateError refused;
+            memset(&refused, 'x', sizeof(refused));
+            assert(nk_update_refuse_for_setup_copy(bin, &refused));
+            assert(strcmp(refused.code, "UPDATE_INSTALLED_BY_SETUP") == 0);
+            assert(strstr(refused.message, "Setup") != NULL);
+            assert(!nk_update_refuse_for_setup_copy(install, &refused));  /* not the bin folder */
+            assert(refused.code[0] == '\0');
+            assert(!nk_update_refuse_for_setup_copy(NULL, &refused));
+        }
     }
 
     {

@@ -1320,6 +1320,14 @@ static void player_update_start(PlayerApp *app, PlayerUpdateJobKind kind) {
     char data_dir[NK_MAX_PATH];
     char log_dir[NK_MAX_PATH];
     if (s_update_job != NULL) return;   /* one step at a time */
+    if (kind != PLAYER_UPDATE_JOB_CHECK) {
+        /* A copy the Windows installer put in place updates through the next Setup, never a ZIP. */
+        NkUpdateError refused;
+        if (nk_update_refuse_for_setup_copy(app->install_root, &refused)) {
+            player_update_fail(app, step, refused.code, refused.title, refused.message);
+            return;
+        }
+    }
     job = (PlayerUpdateJob *)calloc(1, sizeof(*job));
     if (!job) {
         player_update_fail(app, step, "UPDATE_START_FAILED", "Couldn't start",

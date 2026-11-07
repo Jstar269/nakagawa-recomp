@@ -971,6 +971,16 @@ bool nk_update_installed_by_setup(const char *exe_dir) {
     return n > 0 && (size_t)n < sizeof(uninstaller) && nk_platform_file_exists(uninstaller);
 }
 
+bool nk_update_refuse_for_setup_copy(const char *exe_dir, NkUpdateError *error) {
+    clear_error(error);
+    if (!nk_update_installed_by_setup(exe_dir)) return false;
+    set_error(error, "UPDATE_INSTALLED_BY_SETUP", "Update with Setup",
+              "This copy was installed with Setup, so it updates by running the new release's Setup, "
+              "not by unpacking a ZIP beside it. Download the new Setup from the release page and "
+              "run it; it keeps your games, saves and settings.");
+    return true;
+}
+
 bool nk_update_install_supported(void) {
 #if defined(_WIN32) || defined(_WIN64)
     return true;

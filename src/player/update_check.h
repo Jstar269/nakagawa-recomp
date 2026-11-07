@@ -172,6 +172,12 @@ bool nk_update_install(const char *zip_path, const char *target_dir, const char 
    and never unpacks a ZIP beside it. False for a ZIP or portable copy, a NULL or
    empty exe_dir, and any folder not named bin. */
 bool nk_update_installed_by_setup(const char *exe_dir);
+/* Defence in depth for the player's download and install steps: when exe_dir is a copy the
+   installer put in place (nk_update_installed_by_setup), fills error with UPDATE_INSTALLED_BY_SETUP
+   and returns true, and the step must not start. The Settings page already offers only the release
+   page for such a copy, so this is reached only if something starts a step anyway. Returns false and
+   clears error otherwise. */
+bool nk_update_refuse_for_setup_copy(const char *exe_dir, NkUpdateError *error);
 /* Whether nk_update_install can work on this host: Windows only. Elsewhere the
    Settings page offers the release page, not a download. */
 bool nk_update_install_supported(void);
