@@ -46,7 +46,8 @@ outside a comment. A head whose copy differs from the default branch's is
     byte-identical to the approved head's (see "Carried approval" below; the
     workflow removes the label on any push that cannot be carried);
 ``CI_DEFINITION_BEHIND``
-    when only the default branch changed it. Merge ``main``; no label waives it.
+    when only the default branch changed it. The integrator merges ``main`` when
+    it lands the pull request, not the author, and no label waives it.
 ``CI_CONTEXT_COLLISION``
     a candidate workflow other than the verdict workflow names the verdict
     context, or any check run is named like it (the verdict is a status).
@@ -425,7 +426,8 @@ def _check_definitions(snapshot: dict) -> list[Finding]:
         if change["kind"] == "behind":
             findings.append(Finding(
                 "CI_DEFINITION_BEHIND", path,
-                "the default branch changed this CI definition after the branch point; merge main",
+                "the default branch changed this CI definition after the branch point; the integrator"
+                " merges main when it lands the pull request, not the author",
             ))
         elif approved:
             findings.append(Finding("CI_CHANGE_APPROVED", path, reason, fatal=False))
