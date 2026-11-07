@@ -6770,6 +6770,50 @@
       }
     },
     {
+      "path": "src/rt/gpu_sdl3vk/tex_scale.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tex-scale-1273",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/tex_scale.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tex-scale-1273",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/tex_scale_gpu_selftest.inc",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tex-scale-1273",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/tex_scale_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tex-scale-1273",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "src/rt/guest_interp.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -10652,6 +10696,28 @@
       }
     },
     {
+      "path": "src/rt/videorec.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "videorec-1273",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/videorec.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "videorec-1273",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "src/rt/watchpoints_file.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -12000,6 +12066,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "hle-pure-state-helpers-moved-1531",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tests/native/videorec_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "videorec-1273",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -13434,6 +13511,64 @@
         "upstream": "documented upstream family",
         "license": "MIT OR Unlicense",
         "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/xbrz/License.txt",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "xbrz-license-texscale",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "GPL-3.0-only",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/xbrz/PROVENANCE.md",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tex-scale-1273",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "third_party/xbrz/xbrz.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "xbrz-translation-texscale",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "GPL-3.0-only",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/xbrz/xbrz.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "xbrz-translation-texscale",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "GPL-3.0-only",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/xbrz/xbrz_golden.cpp",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "tex-scale-1273",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       }
     },
     {

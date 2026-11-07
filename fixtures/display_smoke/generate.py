@@ -860,6 +860,7 @@ def run(
     offscreen: bool = False,
     flight_output: Path | None = None,
     flight_trigger: str | None = None,
+    extra_env: dict[str, str | None] | None = None,
 ) -> int:
     # The runtime is spawned with cwd=ROOT, so a relative build_dir would make the
     # CHILD resolve the executable/image paths against ROOT rather than the
@@ -919,6 +920,16 @@ def run(
             env.pop(key, None)
         if flight_trigger is not None:
             env["SR_FLIGHT_TRIGGER"] = flight_trigger
+    # A recording is opted into per route: an inherited one would change what this run writes.
+    for key in ("SR_VIDEOREC_DIR", "SR_VIDEOREC_CODEC", "SR_VIDEOREC_SIZE", "SR_VIDEOREC_START",
+                "SR_VIDEOREC_FFMPEG", "NK_VIDEOREC_FAKE_FFMPEG"):
+        env.pop(key, None)
+    # extra_env names a value to set, or None to remove the variable for this route.
+    for key, value in (extra_env or {}).items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
     completed = subprocess.run(
         command, cwd=run_cwd, env=env, capture_output=True, text=True
     )
@@ -1241,13 +1252,14 @@ FLIGHT_KIND_PRESENT_SET_FRAMEBUF = 28
 FLIGHT_KIND_PRESENT_FRAME = 29
 
 
-def _without_host_present_events(bundle: dict) -> dict:
+def _without_host_present_events(bundle: dict, keep_vblank_count: bool = False) -> dict:
     """Project out successful-present events and renumber the rest as a complete run.
 
     SetFrameBuf events keep their buffer, format and stride, but their arg3 is the
     VBLANK count at the call. Paced runs service VBLANKs on the host clock, so that
     count differs between two identical runs on a loaded runner; it is zeroed here
-    and the guest-determined arguments are still compared.
+    and the guest-determined arguments are still compared. On the deterministic clock
+    the count is guest time, so ``keep_vblank_count`` keeps it in the comparison.
     """
     projected = json.loads(json.dumps(bundle))
     kept = [
@@ -1255,7 +1267,8 @@ def _without_host_present_events(bundle: dict) -> dict:
         if not (event["class"] == "present" and event["kind"] == FLIGHT_KIND_PRESENT_FRAME)
     ]
     for event in kept:
-        if event["class"] == "present" and event["kind"] == FLIGHT_KIND_PRESENT_SET_FRAMEBUF:
+        if (not keep_vblank_count and event["class"] == "present"
+                and event["kind"] == FLIGHT_KIND_PRESENT_SET_FRAMEBUF):
             event["arg3"] = 0
     for index, event in enumerate(kept, start=1):
         event["sequence"] = index
@@ -1430,6 +1443,160 @@ def flight_smoke(build_dir: Path) -> int:
         f"bounds={frames // 2}..{frames} pixel_frames={pixel_frames[0]},{pixel_frames[1]} "
         "pixels=EXACT identical=MATCH mutation=FIRST_GE_DRAW_COUNT "
         f"trigger=GE_DRAW_1@{terminal['sequence']}"
+    )
+    return 0
+
+
+def _videorec_frames(video: Path, frames: int) -> list[int]:
+    """Decode raw BGRX frames into the guest frame index each picture shows.
+
+    The fake encoder stores what the recorder piped to it unchanged, so its video.mkv
+    holds the same raw frames a raw recording's video.bgr0 does.
+
+    Every recorded picture must be one complete guest frame of the stripe pattern, exactly,
+    and the guest frame index may only stay or grow from one recorded frame to the next.
+    """
+    size = DISPLAY_WIDTH * DISPLAY_HEIGHT * 4
+    data = video.read_bytes()
+    if len(data) % size:
+        raise RuntimeError(f"{video.name} is {len(data)} bytes, not a whole number of frames")
+    expected_cache: dict[int, bytes] = {}
+    shown: list[int] = []
+    for index in range(len(data) // size):
+        bgrx = data[index * size:(index + 1) * size]
+        rgb = bytearray(DISPLAY_WIDTH * DISPLAY_HEIGHT * 3)
+        rgb[0::3] = bgrx[2::4]
+        rgb[1::3] = bgrx[1::4]
+        rgb[2::3] = bgrx[0::4]
+        frame = rgb[0]
+        if frames <= 256 and frame >= frames:
+            raise RuntimeError(f"recorded frame {index} shows guest frame {frame}, outside the run")
+        if frame not in expected_cache:
+            expected_cache[frame] = _expected_present_pixels(frame)
+        if bytes(rgb) != expected_cache[frame]:
+            raise RuntimeError(f"recorded frame {index} is not exactly guest frame {frame}")
+        if shown and frame < shown[-1]:
+            raise RuntimeError(f"recorded frame {index} goes back to guest frame {frame}")
+        shown.append(frame)
+    return shown
+
+
+# The fake encoder sleeps this long after each frame it reads, so the recorder's pipe writes
+# block: a stall at least as long as a 4K-frame FFV1 encode on a slow host.
+VIDEOREC_STALL_MS = 40
+# Deterministic clock, not paced: recording refuses to start on the paced clock (#2080 review).
+_DETERMINISTIC = {"SR_DETERMINISTIC_CLOCK": "1", "SR_NOVBPACE": None}
+
+
+def videorec_smoke(build_dir: Path, fake_ffmpeg: Path) -> int:
+    """Record the fixture's run through a stalled encoder and prove the guest is unchanged (#1273).
+
+    Two offscreen runs on the deterministic clock, one recording through ``fake_ffmpeg`` (the
+    videorec selftest acting as FFmpeg) that stalls every frame write. The guest's GE and
+    SetFrameBuf flight events, including the VBLANK count at each SetFrameBuf, match after host
+    presents are projected out, so the stall moved no guest event in guest time. Both runs finish
+    with the exact framebuffer word; record.json is PASS and muxed, shows the stall in
+    ``encoder_write_ms``, and the recording holds one exact guest picture per VBLANK with a
+    silent WAV exactly as long as the video.
+    """
+    build_dir = build_dir.resolve()
+    fake_ffmpeg = fake_ffmpeg.resolve()
+    if not fake_ffmpeg.is_file():
+        raise RuntimeError(f"the fake encoder {fake_ffmpeg.name} was not built")
+    manifest = _read_manifest(build_dir / "fixture")
+    frames = int(manifest["frames"])
+    with tempfile.TemporaryDirectory(prefix="display-smoke-videorec-") as temp_dir:
+        temp = Path(temp_dir)
+        plain_dir = temp / "plain"
+        rec_dir = temp / "recorded"
+        out_dir = temp / "video"
+        plain_dir.mkdir()
+        rec_dir.mkdir()
+        plain_path = plain_dir / "flight.json"
+        rec_path = rec_dir / "flight.json"
+        run(build_dir, gui=True, offscreen=True, flight_output=plain_path, extra_env=_DETERMINISTIC)
+        run(build_dir, gui=True, offscreen=True, flight_output=rec_path,
+            extra_env={**_DETERMINISTIC, "SR_VIDEOREC_DIR": str(out_dir),
+                       "SR_VIDEOREC_CODEC": "ffv1", "SR_VIDEOREC_FFMPEG": str(fake_ffmpeg),
+                       "NK_VIDEOREC_FAKE_FFMPEG": f"enc=slow:{VIDEOREC_STALL_MS};mux=ok"})
+        log = (build_dir / f"{ARTIFACT_STEM}.gui-offscreen.stderr.log").read_text(
+            encoding="utf-8", errors="replace")
+        if "VIDEOREC: PASS" not in log:
+            raise RuntimeError("the recording run did not report VIDEOREC: PASS")
+
+        plain = json.loads(plain_path.read_text(encoding="utf-8"))
+        recorded = json.loads(rec_path.read_text(encoding="utf-8"))
+        for label, bundle, run_dir in (
+            ("plain", plain, plain_dir), ("recorded", recorded, rec_dir)
+        ):
+            if bundle["recorder"]["dropped"] != 0:
+                raise RuntimeError(f"{label} flight bundle dropped events")
+            _require_vblank_progress(bundle, label)
+            _require_exact_present_pixels(run_dir / "frame_first.ppm", frames, label)
+        plain_path.write_text(
+            json.dumps(_without_host_present_events(plain, keep_vblank_count=True), sort_keys=True),
+            encoding="utf-8")
+        rec_path.write_text(
+            json.dumps(_without_host_present_events(recorded, keep_vblank_count=True),
+                       sort_keys=True),
+            encoding="utf-8")
+        match = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "flight_diff.py"), str(plain_path),
+             str(rec_path)],
+            capture_output=True, text=True, check=False,
+        )
+        if match.returncode != 0 or "MATCH:" not in match.stdout:
+            raise RuntimeError(
+                "the stalled recording changed the guest's flight events or their VBLANK "
+                f"counts: {match.stdout}{match.stderr}")
+
+        record = json.loads((out_dir / "record.json").read_text(encoding="utf-8"))
+        if record["status"] != "PASS":
+            raise RuntimeError(f"record.json reports {record['status']}: {record['reason']}")
+        if (record["encoder"], record["muxed"], record["clock"]) != ("ffv1", True, "deterministic"):
+            raise RuntimeError("record.json is not an encoded, muxed, deterministic-clock recording")
+        # The fixture's guest returns to the driver, which names that end and its exit status.
+        if (record["run_end"], record["exit_status"]) != ("the run returned to the driver", 0):
+            raise RuntimeError(
+                f"the recording ended at {record['run_end']!r} with exit status "
+                f"{record['exit_status']!r}, not the driver's clean end")
+        if (record["width"], record["height"]) != (DISPLAY_WIDTH, DISPLAY_HEIGHT):
+            raise RuntimeError("the offscreen recording is not at the presenter's 480x272")
+        count = int(record["frames"])
+        stall_ms = int(record["encoder_write_ms"])
+        # The encoder pipe holds about two frames on Windows (videorec.c sizes it) and the
+        # 64 KiB default on POSIX, so once it fills each write waits out most of a stall.
+        if stall_ms < count * VIDEOREC_STALL_MS // 2:
+            raise RuntimeError(
+                f"encoder writes took {stall_ms} ms for {count} frames: the stall did not happen")
+        rows = (out_dir / "frames.csv").read_text(encoding="utf-8").splitlines()[1:]
+        if count < 2 or len(rows) != count:
+            raise RuntimeError(f"record.json counts {count} frames, frames.csv {len(rows)}")
+        vcounts = [int(row.split(",")[1]) for row in rows]
+        if vcounts != list(range(vcounts[0], vcounts[0] + count)):
+            raise RuntimeError("the recording does not hold one frame per VBLANK")
+        video = out_dir / "video.mkv"
+        shown = _videorec_frames(video, frames)
+        if len(shown) != count:
+            raise RuntimeError(f"{video.name} holds {len(shown)} frames, record.json {count}")
+        if (out_dir / "recording.mkv").read_bytes() != video.read_bytes():
+            raise RuntimeError("the fake mux did not copy the encoded video into recording.mkv")
+        cells = [row.split(",") for row in rows]
+        new = sum(1 for cell in cells if cell[3] == "new")
+        if new != int(record["new_frames"]) or len(set(shown)) > new:
+            raise RuntimeError("new frames in frames.csv and the pictures disagree")
+        flips = sum(int(cell[4]) for cell in cells)
+        if flips < 1 or flips != int(record["guest_flips"]):
+            raise RuntimeError(f"frames.csv counts {flips} guest flips, record.json {record['guest_flips']}")
+        wav = (out_dir / "audio.wav").read_bytes()
+        samples = (len(wav) - 44) // 4
+        if samples != count * 44144100 // 60000 or any(wav[44:]):
+            raise RuntimeError(f"audio.wav holds {samples} samples; the fixture is silent")
+    print(
+        f"DISPLAY_SMOKE_VIDEOREC status=PASS frames={count} new={new} guest_flips={flips} "
+        f"guest_frames={shown[0]}..{shown[-1]} audio_samples={samples} "
+        f"encoder_write_ms={stall_ms} stall_ms_per_frame={VIDEOREC_STALL_MS} "
+        "clock=deterministic guest=MATCH vblank_counts=MATCH pixels=EXACT"
     )
     return 0
 
@@ -1731,6 +1898,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     vramdump_parser.add_argument("--build-dir", type=Path, required=True)
     flight_parser = subparsers.add_parser("flight")
     flight_parser.add_argument("--build-dir", type=Path, required=True)
+    videorec_parser = subparsers.add_parser("videorec")
+    videorec_parser.add_argument("--build-dir", type=Path, required=True)
+    videorec_parser.add_argument("--fake-ffmpeg", type=Path, required=True,
+                                 help="the videorec selftest binary, run as a stalling FFmpeg")
     fsr1_parser = subparsers.add_parser("fsr1")
     fsr1_parser.add_argument("--build-dir", type=Path, required=True)
     player_parser = subparsers.add_parser("run-player")
@@ -1756,6 +1927,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_vramdump(args.build_dir)
         if args.command == "flight":
             return flight_smoke(args.build_dir)
+        if args.command == "videorec":
+            return videorec_smoke(args.build_dir, args.fake_ffmpeg)
         if args.command == "fsr1":
             return fsr1_smoke(args.build_dir)
         if args.command == "run-player":

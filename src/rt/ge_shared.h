@@ -418,6 +418,17 @@ typedef struct GeTnlPrim {
 
 /* Implemented in ge.c. */
 void      ge_set_gpu_hooks(const GeGpuHooks *h);
+const GeGpuHooks *ge_get_gpu_hooks(void);
+
+/* Draw observer, for replay tools only (ge_replay --first-bad-draw, #2141). ge.c calls it
+ * before each draw command of a list (PRIM, BEZIER, SPLINE, VAP and TRANSFERSTART), with
+ * `index` counting the draws that ran since ge_set_draw_observer, the command word, its
+ * address and the address the running list started at. A nonzero return stops the run before
+ * that command: ge_run_list returns the command's address, and nothing of it has run. NULL,
+ * the default, observes nothing. */
+typedef int (*GeDrawObserver)(void *ctx, unsigned long index, uint32_t op,
+                              uint32_t cmd_addr, uint32_t list_addr);
+void      ge_set_draw_observer(GeDrawObserver fn, void *ctx);
 
 /* ---- widescreen Fill (#1881), the renderer layer ------------------------------------------
  *

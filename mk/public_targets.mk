@@ -133,6 +133,7 @@ PUBLIC_TARGETS := \
 	atrac3p-bridge-selftest \
 	ge-texture-ref-selftest \
 	fbcap-selftest \
+	videorec-selftest \
 	osk-text-entry-selftest \
 	osk-overlay-selftest \
 	ace-selftest \
@@ -152,7 +153,12 @@ PUBLIC_TARGETS := \
 	gpu-coherence-selftest-snapbar-mutants \
 	gpu-snapsync-selftest \
 	gpu-ace-selftest \
+	tex-scale-selftest \
+	tex-scale-gate-mutant \
+	gpu-texscale-selftest \
+	gpu-texscale-mutant \
 	ge-replay \
+	ge-first-bad-draw-selftest \
 	run \
 	run_elf \
 	vfpu_fuzz \
@@ -304,6 +310,7 @@ HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
 HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
 HELP_DESCRIPTION_ge-texture-ref-selftest := run the GE texture sampling reference selftest
 HELP_DESCRIPTION_fbcap-selftest := run the presenter-neutral frame capture selftest
+HELP_DESCRIPTION_videorec-selftest := run the run-recorder (video and audio capture) selftest
 HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blocking text-entry selftest
 HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-machine selftest (pure C)
 HELP_DESCRIPTION_ace-selftest := run Ace Mode's CPU-only selftest (launch line, 30 Hz detector, readout, report; pure C)
@@ -323,7 +330,12 @@ HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
 HELP_DESCRIPTION_gpu-coherence-selftest-snapbar-mutants := prove the GPU coherence selftest kills three broken snapshot-copy barrier variants
 HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
 HELP_DESCRIPTION_gpu-ace-selftest := run Ace Mode's texture filtering selftest on a real Vulkan device (SKIPs without one)
+HELP_DESCRIPTION_tex-scale-selftest := run the xBRZ texture scaling selftest against the pinned upstream goldens (no GPU)
+HELP_DESCRIPTION_tex-scale-gate-mutant := prove the texture scaling selftest kills a build without the Ace gate
+HELP_DESCRIPTION_gpu-texscale-selftest := run texture scaling and the smart 2D filter on a real Vulkan device (SKIPs without one)
+HELP_DESCRIPTION_gpu-texscale-mutant := prove the texture scaling selftest kills a cache that binds a stale scaled copy
 HELP_DESCRIPTION_ge-replay := run the graphics-engine replay selftest
+HELP_DESCRIPTION_ge-first-bad-draw-selftest := prove ge_replay --first-bad-draw finds the draw an executed Vulkan mutant changes (SKIPs without Vulkan)
 HELP_DESCRIPTION_run := build and launch the current title runtime
 HELP_DESCRIPTION_run_elf := build the reference interpreter runner
 HELP_DESCRIPTION_vfpu_fuzz := build and run the VFPU differential fuzzer

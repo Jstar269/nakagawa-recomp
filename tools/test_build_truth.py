@@ -461,12 +461,14 @@ class CpuStateAbiProfileTests(unittest.TestCase):
 SDL3VK_C = "src/rt/gpu_sdl3vk/sdl3vk.c"
 FBCAP_C = "src/rt/fbcap_policy.c"
 CAPTURE_C = "src/rt/fbcap.c"
+# The run recorder (#1273): sdl3vk.c hands it each recorded picture.
+RECORDER_C = "src/rt/videorec.c"
 SDL3VK_VAR = "$(SDL3VK_SRCS)"
 
 
 def _supplies_capture(text: str) -> bool:
-    """True when a Makefile statement links the capture policy AND service."""
-    return SDL3VK_VAR in text or (FBCAP_C in text and CAPTURE_C in text)
+    """True when a Makefile statement links the capture policy, service AND recorder."""
+    return SDL3VK_VAR in text or (FBCAP_C in text and CAPTURE_C in text and RECORDER_C in text)
 
 
 def _logical_lines(makefile: str) -> list[tuple[int, str]]:
@@ -581,6 +583,7 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         self.assertIn(SDL3VK_C, definitions[0])
         self.assertIn(FBCAP_C, definitions[0])
         self.assertIn(CAPTURE_C, definitions[0])
+        self.assertIn(RECORDER_C, definitions[0])
 
     def test_sdl3vk_srcs_carries_the_coroutine_thread_stack_call(self) -> None:
         """The event pump goes through sr_coro_call_on_thread_stack (Android JNI, #360)."""

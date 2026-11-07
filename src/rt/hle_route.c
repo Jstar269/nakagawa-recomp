@@ -245,6 +245,7 @@ static void route_fail(const char *fmt, ...) {
         hle_exit_audio_stats();
         hle_exit_close_audio_dump();
         sr_compat_report();
+        (void)sr_videorec_finish_status("a route check failed", ROUTE_FAIL_EXIT);
         sr_perf_shutdown();
         SR_VERIFY_REPORT_NOW();
         _Exit(ROUTE_FAIL_EXIT);
@@ -1694,6 +1695,7 @@ static FILE *s_sample_out;
 
 static void hle_state_sample_refuse(const char *path, int line, const char *why) {
     fprintf(stderr, "SR_SAMPLE_SPEC: %s line %d: %s; the run stops here\n", path, line, why);
+    (void)sr_videorec_finish_status("SR_SAMPLE_SPEC was refused", 2);
     sr_perf_shutdown();
     SR_VERIFY_REPORT_NOW();
     fflush(stderr);

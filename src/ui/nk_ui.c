@@ -563,7 +563,7 @@ void nk_ui_begin(NkUi *ui, double now_s) {
     }
     ui->pointer_sent = false;
     nk_ui_update_focus_from_events(ui);
-    now_s = isfinite(now_s) ? now_s : 37.0;
+    now_s = isfinite(now_s) ? now_s : NK_UI_STILL_TIME_S;
     /* Clay's time-based layout and scrolling advance by the time since the last
        frame. The first frame, and a clock that stands still or steps back, add
        none. */
@@ -1403,7 +1403,7 @@ bool nk_ui_waves_element(NkUi *ui, NkUiId id, NkUiRect rect, unsigned tint_index
     ui->waves.id = id;
     /* The waves step at 30 Hz (NK_UI_MOTION_WAVE_FRAME), so a backend can keep
        the last frame for every UI redraw in between. */
-    nk_ui_waves_command(ui->prefs.reduce_motion ? 37.0 :
+    nk_ui_waves_command(ui->prefs.reduce_motion ? NK_UI_STILL_TIME_S :
                             floor(ui->now_s / NK_UI_MOTION_WAVE_FRAME) * NK_UI_MOTION_WAVE_FRAME,
                         (float)(bounds.x1 - bounds.x0), (float)(bounds.y1 - bounds.y0),
                         &palette, &ui->waves.command);

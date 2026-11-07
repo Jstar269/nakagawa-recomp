@@ -27,6 +27,7 @@
 #include "../perf.h"
 #include "../fbcap_policy.h"
 #include "../fbcap.h"
+#include "../videorec.h"
 #include "../recomp.h"   /* sr_parse_display_bounds, sr_pick_display */
 #include "../sr_coro.h"
 
@@ -34,6 +35,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1159,6 +1161,11 @@ static NkInputGate    s_gate;
 static uint32_t       s_raw_buttons;
 static uint8_t        s_raw_lx = 128, s_raw_ly = 128;
 static uint32_t       s_claim_saved_pulse, s_claim_saved_pad_pulse;
+/* Mouse aiming (#1791): the movement since the last poll, kept as floats so a slow drag
+ * that SDL reports in fractions of a count is not lost, and what carries between polls. */
+static float          s_mouse_fx, s_mouse_fy;
+static NkAimState     s_aim_state;
+static bool           s_mouse_captured;
 #define KEY_QUEUE_CAP 64
 static Sdl3VkKeyEvent s_key_queue[KEY_QUEUE_CAP];
 static int            s_key_head, s_key_count;
@@ -1241,6 +1248,76 @@ static uint32_t gamepad_button(Uint8 button) {
     return psp_btn;
 }
 
+/* Mouse aiming works in counts per reference poll of 1/60 s (NK_AIM_FULL_DEFLECTION_COUNTS),
+ * but the host polls once per presented frame, so the movement is scaled by the time since
+ * the last aim poll: the same hand speed gives the same nub whatever the frame rate, and a
+ * frame hitch does not saturate it. */
+#define AIM_REFERENCE_POLL_NS 16666667ull
+#define AIM_MIN_POLL_NS 4166667ull       /* polls closer than 1/240 s count as 1/240 s */
+#define AIM_STALL_NS 250000000ull        /* a longer gap is a stall, not a hand movement */
+
+static uint64_t aim_clock_ns_default(void) { return SDL_GetTicksNS(); }
+/* Test seams: the clock, and the call that grabs or frees the pointer. */
+static uint64_t (*s_aim_clock_ns)(void) = aim_clock_ns_default;
+static bool aim_relative_mode_default(bool want) {
+    if (!s_win || s_window_hidden) return false;   /* headless runs never grab the pointer */
+    return SDL_SetWindowRelativeMouseMode(s_win, want);
+}
+static bool (*s_aim_relative_mode)(bool) = aim_relative_mode_default;
+static uint64_t s_aim_last_ns;                    /* 0 = no previous aim poll */
+static float    s_aim_rem_x, s_aim_rem_y;         /* scaled fractions kept for the next poll */
+
+/* Scale the raw movement to counts per reference poll and hand over the whole counts; the
+ * fraction stays for the next poll. `scale` is reference period / elapsed. */
+static int32_t aim_take_counts(float *raw, float *rem, float scale) {
+    const float scaled = *raw * scale + *rem;
+    const float whole = truncf(scaled);
+    *raw = 0.0f;
+    *rem = scaled - whole;
+    if (whole > 2147483000.0f) return INT32_MAX;
+    if (whole < -2147483000.0f) return INT32_MIN;
+    return (int32_t)whole;
+}
+
+/* Nothing the mouse did earlier may reach the game later: a focus change, an overlay claim
+ * or a profile that turns aiming off all start the next poll from rest. */
+static void aim_reset(void) {
+    s_mouse_fx = s_mouse_fy = 0.0f;
+    s_aim_rem_x = s_aim_rem_y = 0.0f;
+    s_aim_last_ns = 0;
+    nk_aim_state_reset(&s_aim_state);
+}
+
+/* The window grabs the pointer while aiming is on and the game has the input, and gives it
+ * back as soon as either stops. The flag follows what the window really did, so a request
+ * that could not be applied (no window, hidden window) is asked again next poll instead of
+ * being remembered as done. */
+static void aim_set_capture(bool want) {
+    if (want == s_mouse_captured) return;
+    if (s_aim_relative_mode(want)) s_mouse_captured = want;
+}
+
+/* The nub for this poll's movement. The first poll after a reset, and a stall, count as one
+ * reference poll and drop the movement that built up. */
+static bool aim_poll(const NkAimConfig *cfg, uint8_t *lx, uint8_t *ly) {
+    const uint64_t now = s_aim_clock_ns();
+    uint64_t dt = AIM_REFERENCE_POLL_NS;
+    if (s_aim_last_ns != 0 && now > s_aim_last_ns) {
+        dt = now - s_aim_last_ns;
+        if (dt > AIM_STALL_NS) {
+            s_mouse_fx = s_mouse_fy = 0.0f;
+            s_aim_rem_x = s_aim_rem_y = 0.0f;
+            dt = AIM_REFERENCE_POLL_NS;
+        } else if (dt < AIM_MIN_POLL_NS) {
+            dt = AIM_MIN_POLL_NS;
+        }
+    }
+    s_aim_last_ns = now ? now : 1;
+    const float scale = (float)AIM_REFERENCE_POLL_NS / (float)dt;
+    return nk_aim_apply(cfg, &s_aim_state, aim_take_counts(&s_mouse_fx, &s_aim_rem_x, scale),
+                        aim_take_counts(&s_mouse_fy, &s_aim_rem_y, scale), lx, ly);
+}
+
 static void pause_request_latch(int request) {
     if (s_claim_sink) return;
     /* The person's own request wins over the pad-lost one if both arrive together. */
@@ -1262,6 +1339,9 @@ static void poll_input_on_this_stack(void *arg) {
                 SDL_CloseGamepad(s_pad); s_pad = NULL;
                 pause_request_latch(SDL3VK_PAUSE_REQUEST_PAD_LOST);
             }
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            aim_reset();
             break;
         default: break;
         }
@@ -1294,6 +1374,10 @@ static void poll_input_on_this_stack(void *arg) {
             break;
         case SDL_EVENT_TEXT_INPUT:
             if (s_text_claim) queue_text_utf8(ev.text.text);
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            s_mouse_fx += ev.motion.xrel;
+            s_mouse_fy += ev.motion.yrel;
             break;
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
             /* Guide asks for the pause and is consumed, whatever the profile binds to it. */
@@ -1344,6 +1428,19 @@ static void poll_input_on_this_stack(void *arg) {
             stick_prof = &def_profile;
         }
         (void)nk_input_profile_eval_key_analog(stick_prof, k, key_count, &lx, &ly);
+    }
+    /* Mouse aiming (#1791): a moving mouse takes the nub; a still one leaves the controller's
+     * and the keyboard's value. Off unless the profile turns it on, and never under SR_PADSCRIPT
+     * or while the overlay has the input. */
+    {
+        const NkInputProfile *aim_prof = padscript_active() ? NULL : sdl3vk_get_input_profile();
+        const bool aim_on = aim_prof && aim_prof->aim.mouse && !s_claim_sink;
+        aim_set_capture(aim_on);
+        if (aim_on) {
+            (void)aim_poll(&aim_prof->aim, &lx, &ly);
+        } else {
+            aim_reset();
+        }
     }
     s_raw_buttons = b;
     s_raw_lx = lx; s_raw_ly = ly;
@@ -1851,6 +1948,169 @@ static int prescale_ensure(int w, int h) {
     return 1;
 }
 
+/* ---- video recording (videorec.h, #1273) ---------------------------------------------------
+ * With SR_VIDEOREC_DIR set, every present also scales the picture it shows, with the window's
+ * own plan and filters, into a record target of one fixed size (SR_VIDEOREC_SIZE, or the
+ * window's size at the first recorded present), without the HUD or the pause overlay. The
+ * target is copied to the frame slot's own readback buffer in the same command buffer; the
+ * recorder reads that buffer when the next VBLANK writes its frame (rec_resolve), and a present
+ * reads it before it reuses the slot. Each use of the target and of its sharp-scaling image
+ * starts from UNDEFINED behind a transfer-stage barrier, like the window's prescale image. */
+typedef struct RecImage {
+    VkImage img;
+    VkDeviceMemory mem;
+    int w, h;
+} RecImage;
+
+static int s_rec_state = -1;      /* -1 undecided, 0 off, 1 recording */
+static uint32_t s_rec_w, s_rec_h; /* the record target's size, fixed at the first use */
+static RecImage s_rec_target, s_rec_pre;
+static CapBuffer s_rec_buf[PRESENT_FRAMES];
+static PresentFrame *s_rec_pending; /* the slot whose readback holds the newest recorded picture */
+
+static void rec_image_free(RecImage *r) {
+    if (r->img) vkDestroyImage(s_dev, r->img, NULL);
+    if (r->mem) vkFreeMemory(s_dev, r->mem, NULL);
+    memset(r, 0, sizeof *r);
+}
+
+static int rec_image_ensure(RecImage *r, int w, int h, VkFormat fmt) {
+    if (r->img && r->w == w && r->h == h) return 1;
+    if (r->img) {
+        if (!wait_all_present_frames()) return 0;
+        rec_image_free(r);
+    }
+    VkImageCreateInfo imi = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    imi.imageType = VK_IMAGE_TYPE_2D;
+    imi.format = fmt;
+    imi.extent.width = (uint32_t)w; imi.extent.height = (uint32_t)h; imi.extent.depth = 1;
+    imi.mipLevels = 1; imi.arrayLayers = 1; imi.samples = VK_SAMPLE_COUNT_1_BIT;
+    imi.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imi.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    imi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(s_dev, &imi, NULL, &r->img) != VK_SUCCESS) {
+        r->img = VK_NULL_HANDLE;
+        return 0;
+    }
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(s_dev, r->img, &mr);
+    VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    mai.allocationSize = mr.size;
+    mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mai.memoryTypeIndex == UINT32_MAX ||
+        vkAllocateMemory(s_dev, &mai, NULL, &r->mem) != VK_SUCCESS ||
+        vkBindImageMemory(s_dev, r->img, r->mem, 0) != VK_SUCCESS) {
+        rec_image_free(r);
+        return 0;
+    }
+    r->w = w;
+    r->h = h;
+    return 1;
+}
+
+static int rec_on(void) {
+    if (s_rec_state < 0) s_rec_state = sr_videorec_active() ? 1 : 0;
+    return s_rec_state;
+}
+
+/* Hand the newest recorded picture to the recorder (SrVideoRecResolver): wait for the present
+ * that copied it, then pass the mapped readback. */
+static int rec_resolve(void) {
+    PresentFrame *f = s_rec_pending;
+    s_rec_pending = NULL;
+    if (!f) return 0;
+    CapBuffer *c = &s_rec_buf[f - s_frame];
+    if (!wait_present_frame(f) || !cap_invalidate_readback(c)) return 0;
+    sr_videorec_frame(c->map, s_rec_w, s_rec_h, s_rec_w * 4u, SR_CAP_ORDER_BGRX);
+    return 1;
+}
+
+/* Record the shown picture into the record target and its copy into f's readback buffer.
+ * Returns 0 (with the reason) when it could not; the present itself goes on. */
+static int rec_record(VkCommandBuffer cmd, PresentFrame *f, VkImage show, int showw, int showh,
+                      const char **why) {
+    if (!s_rec_w) {
+        uint32_t w = 0, h = 0;
+        if (!sr_videorec_requested_size(&w, &h)) {
+            w = s_swap_ext.width & ~1u;
+            h = s_swap_ext.height & ~1u;
+        }
+        s_rec_w = w;
+        s_rec_h = h;
+        fprintf(stderr, "sdl3vk: recording the presented picture at %ux%u\n", w, h);
+    }
+    if (s_rec_w < 16u || s_rec_h < 16u || s_rec_w > s_max_image_dim || s_rec_h > s_max_image_dim) {
+        *why = "record size is outside the device's image limits";
+        return 0;
+    }
+    if (!rec_image_ensure(&s_rec_target, (int)s_rec_w, (int)s_rec_h, VK_FORMAT_B8G8R8A8_UNORM)) {
+        *why = "no record target image";
+        return 0;
+    }
+    CapBuffer *cb = &s_rec_buf[f - s_frame];
+    if (!cap_ensure(cb, s_rec_w, s_rec_h)) {
+        *why = "no record readback buffer";
+        return 0;
+    }
+    VkImage dst = s_rec_target.img;
+    barrier(cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            0, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    {
+        VkClearColorValue black = {{0, 0, 0, 1}};
+        VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        vkCmdClearColorImage(cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rng);
+    }
+    barrier(cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    Sdl3VkPresentPlan plan = sdl3vk_present_plan(s_scaling, showw, showh, (int)s_rec_w,
+                                                 (int)s_rec_h, (int)s_max_image_dim);
+    VkImage blit_src = show;
+    int bw = showw, bh = showh;
+    VkImageBlit blt = {0};
+    blt.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blt.srcSubresource.layerCount = 1;
+    blt.dstSubresource = blt.srcSubresource;
+    blt.srcOffsets[1].z = 1;
+    blt.dstOffsets[1].z = 1;
+    if (plan.prescale > 1 &&
+        rec_image_ensure(&s_rec_pre, plan.prescale * showw, plan.prescale * showh,
+                         VK_FORMAT_R8G8B8A8_UNORM)) {
+        barrier(cmd, s_rec_pre.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        blt.srcOffsets[1].x = showw;          blt.srcOffsets[1].y = showh;
+        blt.dstOffsets[1].x = s_rec_pre.w;    blt.dstOffsets[1].y = s_rec_pre.h;
+        vkCmdBlitImage(cmd, show, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       s_rec_pre.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blt,
+                       VK_FILTER_NEAREST);
+        barrier(cmd, s_rec_pre.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        blit_src = s_rec_pre.img;
+        bw = s_rec_pre.w;
+        bh = s_rec_pre.h;
+    }
+    if (plan.w > 0 && plan.h > 0) {
+        blt.srcOffsets[1].x = bw;              blt.srcOffsets[1].y = bh;
+        blt.dstOffsets[0].x = plan.x;          blt.dstOffsets[0].y = plan.y;
+        blt.dstOffsets[1].x = plan.x + plan.w; blt.dstOffsets[1].y = plan.y + plan.h;
+        vkCmdBlitImage(cmd, blit_src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blt,
+                       plan.nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+    }
+    barrier(cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    if (!cap_record(cmd, cb, dst, (int)s_rec_w, (int)s_rec_h)) {
+        *why = "record copy failed";
+        return 0;
+    }
+    return 1;
+}
+
 /* The developer profile HUD (#314): the live view's rows for the newest closed telemetry
  * interval (sr_perf_live_rows, the PERF line's definitions), the hottest AOT-to-interpreter
  * PC of the run, and one bar per closed interval, newest on the right, splitting its wall
@@ -2040,6 +2300,9 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
     /* A picture probe read back by an earlier present is published once its frame's fence
      * has signalled; never waited for here, and always before this slot is reused. */
     (void)cap_probe_resolve(0);
+    /* A recorded picture still in this slot's readback goes to the recorder before reuse. */
+    if (s_rec_pending == f) sr_videorec_resolve_pending();
+    int rec_in_submit = 0;
     if (upload) { memcpy(f->staging_map, upload, PSP_W * PSP_H * 4); src = f->fbimg; }
     VkCommandBuffer cmd = f->cmd;
 
@@ -2208,6 +2471,19 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
+        /* SR_VIDEOREC_DIR: the shown picture, scaled as the window shows it, for the recorder. */
+        rec_in_submit = 0;
+        if (rec_on() && sr_videorec_wants_frames()) {
+            const char *rec_why = NULL;
+            if (rec_record(cmd, f, show, showw, showh, &rec_why)) {
+                rec_in_submit = 1;
+            } else {
+                static int rec_warned;
+                if (!rec_warned++)
+                    fprintf(stderr, "sdl3vk: a present was not recorded: %s\n", rec_why);
+            }
+        }
+
         int cap_in_submit = 0;
         if (sr_capture_is_armed()) {
             CapBuffer *cb = sr_capture_pending_is_probe() ? &s_probe : &s_cap;
@@ -2352,6 +2628,11 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         break;
     }
     if (!presented) { why = "swapchain still out of date after recreation"; goto fail; }
+    /* Only a picture that reached the screen is recorded; the recorder reads it at its VBLANK. */
+    if (rec_in_submit) {
+        s_rec_pending = f;
+        sr_videorec_frame_pending(rec_resolve);
+    }
 
     /* Complete the armed capture only now that this frame is known to have reached the
      * presentation engine, so a published file always corresponds to a presented frame.
@@ -2793,6 +3074,16 @@ void sdl3vk_shutdown(void) {
     cap_free_buffer(&s_cap);
     cap_free_buffer(&s_probe);
     prescale_free();
+    /* A recorded picture no VBLANK has written yet goes to the recorder before its buffer goes. */
+    if (s_rec_pending) {
+        if (s_dev) sr_videorec_resolve_pending();
+        else sr_videorec_frame_pending(NULL);
+        s_rec_pending = NULL;
+    }
+    for (int i = 0; i < PRESENT_FRAMES; i++) cap_free_buffer(&s_rec_buf[i]);
+    rec_image_free(&s_rec_target);
+    rec_image_free(&s_rec_pre);
+    s_rec_w = s_rec_h = 0;
     for (int i = PRESENT_FRAMES - 1; i >= 0; i--) {
         PresentFrame *f = &s_frame[i];
         if (f->fbimg)       vkDestroyImage(s_dev, f->fbimg, NULL);
@@ -2833,6 +3124,7 @@ void sdl3vk_shutdown(void) {
     }
     if (s_pad)         { SDL_CloseGamepad(s_pad); s_pad = NULL; }
     if (s_win)         { SDL_DestroyWindow(s_win); s_win = NULL; }
+    s_mouse_captured = false;                      /* the window took its grab with it */
     if (s_sdl_subsystems) {
         SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
         s_sdl_subsystems = 0;

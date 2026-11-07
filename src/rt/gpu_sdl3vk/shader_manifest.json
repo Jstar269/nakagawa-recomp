@@ -20,11 +20,11 @@
     },
     {
       "embedded": "psp_frag.inc",
-      "embedded_sha256": "e8d1c4103f4518448346e29a0497915685c45edc48b3b6e774c316b89653223f",
+      "embedded_sha256": "2ec844b12bca1e428173038fb742132dd7b7c13ea5afb6457ea8d9ec6a4c39a9",
       "source": "shaders/psp.frag",
-      "source_sha256": "969081fc0c87ea9b201c1883b62415724cc8ee3203160d899a57d7fe09bf1335",
-      "spirv_bytes": 34156,
-      "spirv_sha256": "6491a36d5059919e6327399105c8e34b7b7f9c4466d3951520f1661e0db71fdd",
+      "source_sha256": "135f7d908cca971ccf4493c3d5d22dd51492c323ac02d5a0562f71cf2894cda0",
+      "spirv_bytes": 35408,
+      "spirv_sha256": "4c4b160805e64c10fcd49f53a31d40523cd71606ea2ebd1070da26973c16dc6e",
       "stage": "frag"
     },
     {

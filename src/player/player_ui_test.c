@@ -1732,6 +1732,13 @@ void player_ui_test_hold_disc_check(void) {
     if (hold && hold[0]) SDL_Delay((Uint32)strtoul(hold, NULL, 10));
 }
 
+/* NK_UI_TEST_SCREENSHOT_DELAY_MS waits before --screenshot draws its frame, so a test can
+   capture one view at two different times since SDL started (#2124). */
+void player_ui_test_delay_screenshot(void) {
+    const char *delay = getenv("NK_UI_TEST_SCREENSHOT_DELAY_MS");
+    if (delay && delay[0]) SDL_Delay((Uint32)strtoul(delay, NULL, 10));
+}
+
 /* The launch worker's synthetic slow start: the launch takes this long before its checks. */
 const char *player_ui_test_slow_start_text(void) {
     return getenv("NK_UI_TEST_SLOW_START_MS");

@@ -138,6 +138,10 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {{
     return 0x0a000010u;
 }}
 void sched_init(CpuState *cpu) {{ s_cpu = cpu; }}
+/* driver.c's main() hands the scheduler's clock to the real run recorder (videorec.c, linked
+   below). This harness runs no scheduler, so the clock is the paced one, and a requested
+   recording is refused for needing SR_DETERMINISTIC_CLOCK=1. */
+int sched_clock_deterministic(void) {{ return 0; }}
 void sched_preempt_timer_start(void) {{}}
 /* sceKernelLoadExec restart seam (driver.c --sched loop). This harness never queues a
  * LoadExec request, so take reports none and the loop ends; the rest are reachable only
@@ -597,7 +601,7 @@ int main(int argc, char **argv) {{
             compiled = subprocess.run(
                 [CC, "-std=c11", "-O2", f"-I{RT_DIR}", f"-I{tmpdir}", "-Wall", "-Wextra", "-Werror",
                  str(src), str(RT_DIR / "title_config.c"), str(RT_DIR / "perf.c"),
-                 str(RT_DIR / "ace.c"), "-o", str(exe)],
+                 str(RT_DIR / "ace.c"), str(RT_DIR / "videorec.c"), "-o", str(exe)],
                 capture_output=True, text=True,
             )
             self.assertEqual(compiled.returncode, 0, compiled.stderr)

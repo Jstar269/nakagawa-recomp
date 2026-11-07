@@ -314,8 +314,11 @@ Unset is off. With Enhanced or Ace on, the launcher also exports `SR_ACE_REPORT`
 
 With `SR_ACE=off` (the default: players opt in) every Ace branch sits behind one switch that stays false: the Vulkan
 device is created with no features, every sampler and the texture descriptor pool are as before, the presenter
-registers no UI pass, the observation counters do not run, and nothing is printed. `gpu-coherence-selftest` checks
-the samplers and the pool; `display-smoke` keeps its image hash.
+registers no UI pass, and the observation counters do not run. Nothing is printed, except one `TEX_SCALE: off`
+line when the environment asks for texture scaling or the smart 2D filter, which names the request and does not obey
+it (section 10.10), and one `TWIN: off` or `TWIN: refused` line when `SR_GPU_TWIN_COLOR` is set, which changes
+nothing else (section 10.11). `gpu-coherence-selftest` checks the samplers and the pool; `display-smoke` keeps its
+image hash.
 
 ### 10.3. What Ace Changes, and What It Never Changes
 
@@ -524,9 +527,129 @@ when `"enhanced"` is absent, maps them as below, and writes the new keys from th
 `tests/native/test_player_state.c` (`test_play_mode_settings`, `test_play_mode_settings_mapping`) checks the names,
 the precedence, the off switches at both levels and this mapping.
 
+### 10.10. Texture Scaling and the Smart 2D Filter
+
+Two features in the Vulkan GE renderer (#1273). Both are guest-visible (section 11.1) and are not admitted under
+section 11.2: section 11.3.3 is their entry and says what the guest can observe, and this section says how they draw.
+The code is `src/rt/gpu_sdl3vk/tex_scale.c` and its hook in `ge_gpu.c`'s texture cache; the scaler is xBRZ 1.9
+(`third_party/xbrz/`, GPL-3.0).
+
+- **Settings.** `SR_TEX_SCALE=off|2|3|4|5|6` (the xBRZ factor), `SR_SMART_2D=off|on` and `SR_TEX_SCALE_BUDGET_MB`
+  (1 to 8192, default 512: the GPU memory the scaled copies may hold), read when the renderer starts. Both features
+  take effect only in Ace Mode: in an authentic run they stay off whatever the environment says, and a request
+  prints one `TEX_SCALE: off (texture scaling and the smart 2D filter need Ace Mode)` line. A value outside the list
+  prints `TEX_SCALE: refused (<reason>)` and leaves both off. There is no launch-line key, library setting or
+  per-title setting yet: they come in the launch-line pull request that follows the Ace settings work (#2074), and
+  only that pull request admits the features (section 11.3.3).
+- **What is scaled.** A texture the texture cache decodes, with one level (no mipmaps), after its palette lookup.
+  The factor drops for a texture whose scaled side would pass 2048 texels, and a texture that would pass 2048 at 2x
+  is not scaled. The image is padded by two texels, repeated or clamped by the texture's wrap mode, so a repeating
+  texture tiles without a seam.
+- **Never scaled.** A render target sampled as a texture: bound directly, it never enters the cache; read back
+  through the cache, it is decoded unscaled; and a texture whose VRAM range meets any live render target's is not
+  scaled.
+- **Never stale.** A scaled copy records the cache entry's upload and the content hash it was made from, and is
+  bound only while both still match. A texture the guest rewrites, or a CLUT texture drawn with another palette (a
+  different cache key), is drawn unscaled until its own copy is ready, and never with the old one.
+- **Never waited on.** Two worker threads scale; the renderer only queues the decoded texels and stores finished
+  copies at a later lookup. The jobs, waiting, running or finished, are at most 64 and hold at most 128 MiB of host
+  memory together (one job is always accepted, so the largest copy, 16 MiB, can be made). Storing a copy is an upload
+  on the renderer thread, so at most 8 MiB of copies are stored per present, the first copy of a present always;
+  the rest wait in the job table for the next present. Until its copy is stored, or with the job table full, a
+  texture is drawn unscaled. Nothing is hidden or skipped.
+- **Budget.** The copies hold at most `SR_TEX_SCALE_BUDGET_MB` of GPU memory. A copy that would not fit first frees
+  copies that no draw has bound for 60 presents (one to two seconds), the longest idle first, until a quarter of the
+  budget is spare besides the new copy; that drains the GE once, as a cache eviction does. A copy bound in those 60
+  presents is never freed, so when the copies in use fill the budget, the new texture is drawn unscaled. It is
+  offered again on a later draw, at most once per present and only when it could fit, and so is a texture whose
+  copy was freed.
+- **Sampling.** A copy is sampled on its own texel lattice: the fragment shader's PSP sample-point rule (nearest at
+  the texel centre, linear on the 1/16 grid) runs at the copy's resolution, from the factor the draw carries in its
+  flags.
+- **One texel per pixel.** A draw that maps one texel to one pixel (the smart 2D test below, whatever the filter)
+  binds the unscaled texture even when a copy is ready. xBRZ adds no detail at that size, and because it scales a
+  whole atlas (a font page), a copy carries a neighbouring cell into a cell's edge: the marks LittleBigPlanet's text
+  showed. Magnified and 3D draws keep the copy.
+- **Smart 2D.** A textured draw that maps one texel to one pixel on each axis (either direction), axis-aligned,
+  without perspective and with its edge on a texel boundary, samples nearest: a HUD, a font or a sprite stays crisp
+  at a render scale above 1x. The map may differ from 1:1 by 1/64 texel over the draw's whole span, and the
+  coordinate every pixel centre samples must lie on a texel centre or at most 1/32 texel above it, never more than
+  1/65536 below (the test's own float rounding). The PSP's linear rule floors to a 1/16 step, so a centre even
+  slightly below takes part of the texel before, while above it up to the next step reads the texel alone; the
+  shader's rounding to 1/4096 is left whole for the host's interpolation error. A triangle must carry the same 1/w
+  at all three vertices, bit for bit: the shader divides by the interpolated 1/w at each pixel, so any difference
+  bends the map between the vertices. At 1x every draw the test accepts reads the same whole texel with either
+  filter, so the frame is unchanged; `tex-scale-selftest` checks that against the shader's two rules, with its
+  per-pixel division, over offsets and drifts on both sides of the lattice, and refuses the draws just below it.
+  Every other draw, a 3D one included, keeps the game's filter.
+- **Guest memory.** Neither feature writes guest memory, the CLUT or a texture source; texture readbacks and
+  render-to-texture results are unchanged. What a present commits to guest VRAM does change, which makes both
+  features guest-visible: section 11.3.3 is their entry, and this section covers only their presentation.
+- **Stamps.** `TEX_SCALE: on (xbrz=<factor>, smart2d=on|off, budget_mb=<n>)` at start; at exit,
+  `TEX_SCALE: draws (scaled_binds=, onetoone_unscaled=, scaled_uploads=, stale=, smart2d=, reclaimed=,
+  budget_short=, upload_capped=)` and
+  `TEX_SCALE: exit (scaled=, queue_full=, discarded=, budget_peak_mb=, worker_ms=)`.
+  A run with either feature on also prints, at start, the line section 11.3.3 describes.
+  Section 10.4 applies: the run is an Ace run.
+- **A title it breaks.** A title whose fonts or pixel art suffer gets its off switch in its own package, never as
+  per-title code in a generic file.
+- **Hot Shots Tennis and LittleBigPlanet keep smart 2D off.** Both draw text from an anti-aliased glyph page, one
+  texel to one pixel. Nearest sampling turns each glyph texel into a hard block at a render scale above 1x, so the
+  filter makes their text worse, not crisper. The evidence is the before-and-after runs at render scale 4 recorded in
+  #2092. `SR_SMART_2D` is off by default for every title, so nothing in the runtime names them. Their per-title
+  setting comes with the launch-line pull request that follows #2074 (section 11.3.3).
+- **Tests.** `tex-scale-selftest` checks the C port against goldens from the upstream release, the borders, the job
+  queue, the settings (an authentic start with both variables set keeps both off) and the classifier, with refused
+  draws at the edge of its tolerance. `tex-scale-gate-mutant` builds the selftest without the Ace gate and passes only
+  when the settings cell fails for that reason. `gpu-texscale-selftest` runs the production path on a Vulkan device
+  at render scales 1, 4 and 2, the budget's reclamation included; `gpu-texscale-mutant` builds a cache that binds a
+  copy without its content check (state, serial and hash) and passes only when the rewrite cell fails for that
+  reason.
+
+### 10.11. Full 32-Bit Colour (the Host Twin)
+
+The game's 16-bit render targets are presented in full 32-bit colour without dither (#2050), in the Vulkan GE renderer.
+It is a presentation-only change (section 2.2): it changes only the image the host shows, never what the guest
+draws, reads or waits for. The code is the host twin in `src/rt/gpu_sdl3vk/ge_gpu.c` (its header and the comment
+at `s_twin`).
+
+- **How.** Every render target and depth buffer gets a host-only twin at the user's render scale. Every write to the
+  authentic image reaches its twin, in order: each render op is drawn a second time into the twin without dither or
+  the 16-bit colour snap, and uploads, CPU-write patches, depth uploads, block transfers and destination snapshots
+  are repeated on it. Twin passes sample twins, so a render-to-texture chain stays full colour. The presenter shows
+  a twin only while it holds every write its image took; otherwise it shows the authentic image and re-seeds the twin.
+- **Guest memory.** The authentic chain keeps the user's render scale, and nothing reads a twin back. Guest VRAM,
+  every readback, every block transfer into RAM and the frame each present commits to guest VRAM are the twin-off
+  run's at the same scale, byte for byte (`gpu-coherence-selftest` twin-scene, at scales 1, 2 and 4). Present-source
+  captures follow the shown image, so they hold the twin's picture; `SR_GPU_TWIN_CAPTURE=authentic` shows and
+  captures the authentic image instead.
+- **What the guest can observe (section 11.1).** Each of the four items is unchanged:
+  - VRAM bytes and other guest memory: unchanged, byte for byte (twin-scene, above).
+  - Readbacks: unchanged. GE and display readbacks, block transfers into RAM and the committed frame read the
+    authentic image, as with the twin off (twin-scene).
+  - Timing the guest can measure: unchanged. The guest timing model (VBLANK schedule, GE timing, media clocks) does
+    not follow host GPU work (section 10.3). The second draw of each render op, and the drain when a twin allocation
+    fails, are host waits.
+  - I/O speed: unchanged. The twin performs no guest I/O.
+- **Default.** Off. It stays off by default until section 11.2 item 4's "nothing worse" runs pass: picture-gate or
+  route runs on *Hot Shots Tennis* and *LittleBigPlanet*, and a library sweep, each with the twin on against the same
+  run with it off. When the Ace launch line carries its key (`twin`, below), the key follows section 11.2 item 2.
+- **Setting.** `SR_GPU_TWIN_COLOR=1` (full colour) or `native` (the twin with the authentic colour, which the identity
+  self-tests use), read when the renderer starts. Unset, empty, `0` and `off` are off. Any other value prints
+  `TWIN: refused (...)` and leaves it off. It takes effect only in Ace Mode: in an authentic run it stays off whatever
+  the environment says, and a request prints one `TWIN: off (the host twin needs Ace Mode)` line. Until the Ace
+  launch line carries its key (`twin`, beside `tex`, `s2d` and `glyphs`, with the per-title switches of section
+  10.5, after #2074), the variable is the only way to turn it on, and it is off by default.
+- **Cost.** Each render op is drawn twice at the render scale, and the twins use as much GPU memory as the targets.
+- **Fail-closed.** A GPU without nearest blits of RGBA8 and D16 prints `TWIN: unavailable (...)` and runs without it.
+  If any twin allocation fails during the run, one `TWIN: off for the rest of the run (...)` line is printed, every
+  twin is freed, and the run continues exactly as a twin-off run at the user's scale (`twin-alloc-fail`).
+- **Stamps.** `TWIN: on (colour=full|native, scale=<n>x)` at start, and `TWIN: exit (ops=, copies=, reseeds=,
+  authentic_presents=, alloc_failures=)` at exit. Section 10.4 applies: the run is an Ace run, refused as evidence.
+
 ## 11. Guest-Visible Items
 
-Sections 10.3, 10.6 and 10.8 describe host-only features: what the guest reads, in its registers, memory and timing, is the
+Sections 10.3, 10.6, 10.8 and 10.11 describe host-only features: what the guest reads, in its registers, memory and timing, is the
 same with them on or off. The owner's decision of 2026-11-04 (#2055) is that Enhanced does not have to stay fully
 Authentic: a change that improves a game without making anything worse is allowed, even when the guest can observe
 it. This section is the class for those changes. It adds to the classes above and removes none of them.
@@ -546,7 +669,7 @@ An item is guest-visible when, with it on, any of the following differs from the
 - the speed of I/O the guest performs: disc, Memory Stick or savedata reads and writes.
 
 The item's contract entry (section 11.2) names each of these that applies. An item that changes none of them is
-host-only and follows sections 10.2 to 10.6 and 10.8, not this section. One existing feature already sits on this line:
+host-only and follows sections 10.2 to 10.6, 10.8 and 10.11, not this section. One existing feature already sits on this line:
 texture filtering changes the frame that every present commits to guest VRAM, so a game that copies its screen keeps
 the filtered picture (the "Pixels" bullet of section 10.3). It keeps that entry, and is not held to items 2 to 5 of
 section 11.2 retroactively; a change to it is. A new item is not admitted by analogy with it. Render scale, below,
@@ -742,3 +865,37 @@ its own entry.
   that: an event window keeps its stock count and instants, and a held ease keeps its 30 Hz values. The private
   comparison runs of section 11.2, item 4 are recorded in the pull request that turns a title's 60 FPS game logic
   on by default, not here; until they exist it stays off by default, as it is today.
+
+#### 11.3.3. Texture Scaling and the Smart 2D Filter (Not Yet Admitted)
+
+The two features of section 10.10 (#1273). Their presentation is described there; this entry is what the guest can
+observe.
+
+- **Status: guest-visible, not admitted under section 11.2.** Each present commits the frame it shows to guest VRAM,
+  so a frame drawn with a scaled copy, or with a 1:1 draw sampled nearest by smart 2D, is the frame the guest keeps.
+  The features stay outside section 11.2 until the requirements below exist. Until then they are reachable only
+  through environment variables, for development.
+- **Key.** None yet. `SR_TEX_SCALE` and `SR_SMART_2D` are environment variables, not keys on the launch line (section
+  10.1), and have no library or per-title setting. Those come in the launch-line pull request that follows the Ace
+  settings work (#2074): it adds `tex`, `s2d` and `glyphs` (#2110) to `SR_ACE` in one change, with the library and
+  per-title switches. This entry is completed in that pull request, and only then are the features admitted.
+- **Never silent.** A run with either feature on prints, after its `TEX_SCALE: on` line, one line naming the features
+  as guest-visible, on through the environment and not admitted under section 11.2. The `tex-scale-selftest`
+  settings cell pins it.
+- **What it changes:** the frame a present commits, wherever a draw used a scaled copy or smart 2D at a render scale
+  above 1x.
+- **VRAM bytes:** differ in those frames, at those draws' pixels.
+- **Readbacks:** differ the same way, for a GE or display readback, save picture or screenshot that covers them.
+  Texture readbacks and render-to-texture results are unchanged (section 10.10).
+- **Timing:** differs. Scaling runs on worker threads, but storing a finished copy is an upload on the renderer
+  thread, the thread the guest runs on, and a budget reclaim drains the GE once (section 10.10), so a guest frame can
+  take longer. Measured at render scale 4 with `SR_TEX_SCALE=4 SR_SMART_2D=on` against the same build with both
+  off, in 200-second attract runs before the per-present store bound: *Hot Shots Tennis* presented 94.1% of its
+  frame intervals at one VBLANK against 98.9% (625 two-VBLANK intervals against 99); *LittleBigPlanet* 98.7%
+  against 97.1%, no loss. Storing is now bounded to 8 MiB of copies per present, the first copy of a present
+  always (up to 16 MiB); the bounded build's pacing has not been measured. The VBLANK schedule, the GE timing model
+  and the media clocks are unchanged.
+- **I/O speed:** unchanged.
+- **Tier:** Enhanced. **Default:** off, and Ace-only: in an authentic run both stay off whatever the environment says.
+- **Nothing worse (section 11.2, item 4):** not shown. *Hot Shots Tennis* and *LittleBigPlanet* keep smart 2D off
+  (section 10.10), and neither feature may be on by default before the runs item 4 lists exist.
