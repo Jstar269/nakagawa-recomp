@@ -1242,6 +1242,12 @@ The driver only acts on the five paths named in `ALLOWED_PATHS` inside `tools/me
 `.gitattributes` is read from the tree being merged, so a pull request that edits it could otherwise attach
 the driver to a code file. For any other path the driver exits 1 and leaves the ordinary conflict.
 
+`docs/ENHANCEMENT_CONTRACT.md` conflicts often too, but it stays out. Its additions are not independent
+items: 18 of the 22 commits that changed it from 2026-11-01 to 2026-11-07 edited existing lines (49 of their
+74 hunks), so most of its conflicts are edits the driver would leave anyway. The rest add numbered sections
+(`10.12`, `11.3.4`), and two pull requests that each add the next number would merge into two sections with
+one number and no marker.
+
 Turn it on once per clone (worktrees of a clone share the setting). In a contributor's own clone:
 
 ```bash
@@ -1255,7 +1261,7 @@ desk's machine. The desk sets the driver in its own clone's config to an absolut
 outside every worktree, and runs it with `-I` so the current directory and the user site are ignored:
 
 ```bash
-git config merge.nk-append.driver "python -I C:/nk/tools-pinned/merge_append.py %O %A %B %L %P"
+git config merge.nk-append.driver "python -I /path/to/reviewed/merge_append.py %O %A %B %L %P"
 ```
 
 That copy is refreshed only from a reviewed `origin/main` commit (never from a worktree during a batch), and

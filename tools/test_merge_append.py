@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import merge_append  # noqa: E402
 
 DRIVER = "python tools/merge_append.py %O %A %B %L %P"  # a contributor's own clone
-DESK_DRIVER = "python -I C:/nk/tools-pinned/merge_append.py %O %A %B %L %P"  # the landing desk's reviewed copy
+DESK_DRIVER = "python -I /path/to/reviewed/merge_append.py %O %A %B %L %P"  # the landing desk's reviewed copy
 # Files whose conflicts are independent items. Prose, code and generated files are not allowed.
 ALLOWED = set(merge_append.ALLOWED_PATHS)
 FORBIDDEN_SUFFIXES = {".c", ".h", ".inc", ".py", ".json", ".yml", ".yaml", ".sh", ".ps1", ".cpp", ".kts"}
@@ -51,6 +51,13 @@ class AttributeListTests(unittest.TestCase):
         for path in listed:
             self.assertTrue((ROOT / path).is_file(), f"{path} is listed for the merge driver but does not exist")
             self.assertNotIn(Path(path).suffix, FORBIDDEN_SUFFIXES, f"{path}: code and data never use the driver")
+
+    def test_the_enhancement_contract_stays_out(self) -> None:
+        # Most of its conflicts edit existing lines, and its additions are numbered sections that
+        # two pull requests would number alike (docs/CI.md, "Merging parallel additions").
+        self.assertNotIn("docs/ENHANCEMENT_CONTRACT.md", ALLOWED)
+        self.assertIn("`docs/ENHANCEMENT_CONTRACT.md` conflicts often too, but it stays out.",
+                      (ROOT / "docs" / "CI.md").read_text(encoding="utf-8"))
 
     def test_docs_give_the_driver_command_the_tests_run(self) -> None:
         text = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
