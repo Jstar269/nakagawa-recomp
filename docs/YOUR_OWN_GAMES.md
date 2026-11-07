@@ -208,6 +208,25 @@ alphabetical order, up to 8 manifests). The command-line tool `tools/nk_cli.py
 build-package` also looks in this folder, after the titles in the repository, and
 finds the same title the player does.
 
+## Graphics presets
+
+**Settings > Graphics preset** picks a set of display settings in one choice. A preset is used only when a game
+plays in Enhanced or Ace. In Authentic, a game always runs with your own **Resolution**, **Scaling**, **VSync** and
+**Game fullscreen** settings, whatever the preset, because a larger render scale also changes what the game can
+copy from its own screen, such as a save picture. Choosing a preset doesn't change those settings. Changing one of
+them yourself sets the preset back to **Custom**, which uses your settings everywhere.
+
+| Preset | Resolution | Scaling | VSync | Game fullscreen |
+| --- | --- | --- | --- | --- |
+| Low | 1x (480x272) | Sharp | On | your setting |
+| Medium | 2x | Sharp | On | your setting |
+| High | 4x | Sharp | On | your setting |
+| Ultra | 4x | Sharp | On | your setting |
+| Handheld | 2x | Sharp | On | On |
+
+Ultra is also meant to turn on the FSR 1 upscaler, which Settings can't set yet
+([#2122](https://github.com/Jstar269/nakagawa-recomp/issues/2122)), so its row reads **Ultra (no upscaler)**.
+
 ## Keep it to your own games
 
 - Only use games you own.

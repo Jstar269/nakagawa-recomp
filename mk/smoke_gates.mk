@@ -340,6 +340,11 @@ platform-ladder-overlay:
 platform-ladder-clean:
 	$(MAKE) BUILD_DIR=$(PLATFORM_LADDER_DIR) clean
 
+# This target is the explicit request to run the profile-zero package and runtime route, so it
+# runs the route case that the Python discover suite defers to its nightly tier (docs/CI.md,
+# "Python test tiers"). Without NK_TEST_TIER=full here, the hosted Windows routes step and every
+# local `make profile-zero-e2e` skipped the route itself (#306).
+profile-zero-e2e: export NK_TEST_TIER := full
 profile-zero-e2e:
 	"$(PYTHON)" -m unittest tools.test_profile_zero_e2e -v
 
