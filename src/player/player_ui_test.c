@@ -1883,6 +1883,9 @@ static bool player_update_test_open(void *context, const char *url, const char *
         if (delay_text && player_ui_test_parse_positive_u64(delay_text, &delay_ms) &&
             delay_ms <= 60000u) {
             SDL_Delay((Uint32)delay_ms);
+        } else if (delay_text && delay_text[0]) {
+            fprintf(stderr, "[PLAYER_UI_TEST] Ignoring NK_UI_TEST_UPDATE_REQUEST_DELAY_MS=%s: "
+                            "expected 1 to 60000.\n", delay_text);
         }
     }
     name = strcmp(url, NK_UPDATE_RELEASES_URL) == 0 ? "releases.json" : name + 1;

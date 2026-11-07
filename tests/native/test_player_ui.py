@@ -1152,6 +1152,7 @@ class NativePlayerUiTests(unittest.TestCase):
         package_built_by: str | None = None,
         disc_list: str | None = None,
         enhancement_packages: dict[str, str] | None = None,
+        expect_failure: bool = False,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -1460,6 +1461,12 @@ class NativePlayerUiTests(unittest.TestCase):
             wall_seconds = time.perf_counter() - started
             if os.environ.get(PLAYER_UI_ECHO_ENV) == "1":
                 sys.stderr.write(completed.stdout)
+            if expect_failure:
+                # A script the harness must stop: only the exit code and output count.
+                self.assertNotEqual(completed.returncode, 0,
+                                    completed.stdout + completed.stderr)
+                return {"stdout": completed.stdout, "stderr": completed.stderr,
+                        "returncode": completed.returncode}
             if completed.returncode != 0:
                 self.fail(
                     f"player returned {completed.returncode}\n"
@@ -3026,6 +3033,23 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(steps[-1]["update"], "failed", steps)
         self.assertEqual(steps[-1]["error"], "UPDATE_INSTALL_INCOMPLETE")
         self.assertEqual(steps[-1]["install"], "none")
+
+    def test_wait_update_fails_on_timeout_and_refuses_bad_steps(self) -> None:
+        """WAIT_UPDATE is a ceiling, never a pass: a phase that never comes fails the run
+        and names the phase it last saw, and a malformed step stops the script before
+        any wait starts."""
+        run = self.next_ui_run("library", ("WAIT_UPDATE=installed,300",),
+                               expect_failure=True, timeout=60)
+        self.assertIn("[PLAYER_UI_TEST] wait_update result=FAIL target=installed actual=idle",
+                      run["stderr"], run["stdout"])
+        self.assertNotIn("result=PASS", run["stdout"])
+        for step in ("WAIT_UPDATE=nonsense,1000", "WAIT_UPDATE=installed",
+                     "WAIT_UPDATE=,1000", "WAIT_UPDATE=installed,0",
+                     "WAIT_UPDATE=installed,-5", "WAIT_UPDATE=installed,4294967296"):
+            with self.subTest(step=step):
+                run = self.next_ui_run("library", (step,), expect_failure=True, timeout=60)
+                self.assertIn("Invalid synthetic event script", run["stderr"], run["stdout"])
+                self.assertNotIn("wait_update target=", run["stdout"])
 
     def test_update_check_at_start_is_off_by_default_and_quiet_when_offline(self) -> None:
         """No setting, no request: the player is offline by default (AGENTS.md section 5)."""
