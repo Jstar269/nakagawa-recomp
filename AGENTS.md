@@ -4,17 +4,14 @@ This file is for AI coding agents working in this repository; a human contributo
 rules. `CLAUDE.md` and `.github/copilot-instructions.md` only point here and add no rules
 ([how each tool reaches this file](docs/AI_USAGE.md#how-each-tool-reads-these-rules)). Personal
 instruction files and tool settings stay local; `.gitignore` keeps them out of the repository.
-
-- **Where to start** is the quick start. Most tasks need nothing more.
-- **Sections 1 to 11** are the full contract. Code, tests and other documents cite them by number.
-- **Maintainer process**, at the end, applies only to agents the maintainer runs.
+**Where to start** is the quick start and covers most tasks; sections 1 to 11, which code, tests and
+documents cite by number, are the full contract; **Maintainer process** applies only to agents the
+maintainer runs.
 
 ## Where to start
 
-Nakagawa Recomp is a static recompiler for PSP games. It translates a game's MIPS code into C ahead
-of time, compiles that C together with a native runtime that stands in for the PSP's operating system
-and hardware, and runs the result in a native player (C, SDL3 and Vulkan). Users bring their own
-game; this repository contains no game data and never will.
+Nakagawa Recomp is a static recompiler for PSP games. Users bring their own game; this repository
+contains no game data and never will.
 
 1. Read [`README.md`](README.md), then [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
    design. [`docs/CODE_TOUR.md`](docs/CODE_TOUR.md) follows one game through the code, file by file.
@@ -25,7 +22,8 @@ game; this repository contains no game data and never will.
    least one label and a milestone ([which milestone](CONTRIBUTING.md#start-here)).
 3. Start a branch from freshly fetched `origin/main` after the preflight in Section 1: the problem is
    not already fixed there, and no open pull request already covers it.
-4. Make the change, with a test that fails before it and passes after it.
+4. Make the change, with a test that fails before it and passes after it. A documentation change
+   runs the documentation gates instead.
 5. Run the checks for the files you changed (below, and Section 9).
 6. Open the pull request and fill in the template. Draft, Ready and when to merge `main`: Section 10.
 
@@ -34,44 +32,42 @@ commit, pull request or other external change.
 
 ### Build and test
 
-**Windows 11** is the supported desktop platform. You need PowerShell 7.6 or later, MSYS2 UCRT64
-(GCC, GNU Make, SDL3, SDL3_ttf, the Vulkan headers and loader), CPython 3.15 (3.14 is also accepted)
-and the Vulkan SDK. [`docs/SETUP.md`](docs/SETUP.md) has the full steps, including the
-[`PATH` order](docs/SETUP.md#path-order) that matters on Windows. From the repository root, with
-MSYS2 UCRT64's `bin` folder on `PATH`:
+**Windows 11** is the supported desktop platform. [`docs/SETUP.md`](docs/SETUP.md) lists the
+toolchain and its setup, including the [`PATH` order](docs/SETUP.md#path-order) that matters on
+Windows. From the repository root, with MSYS2 UCRT64's `bin` folder on `PATH`:
 
 ```powershell
 python -m pip install .                                # Python tooling, once
 python tools/nk_doctor.py --scope build                # checks your toolchain
-mingw32-make --no-print-directory display-smoke        # builds and checks the whole pipeline on a synthetic fixture; no game needed
+mingw32-make --no-print-directory display-smoke        # the whole pipeline on a synthetic fixture
 mingw32-make --no-print-directory native-core-tests    # the native runtime self-tests
-mingw32-make contrib-check                             # the checks that apply to the files you changed
+mingw32-make contrib-check
 ```
 
 **Linux** (Ubuntu 24.04, native or under WSL 2) builds the runtime and runs the tests headlessly; the
 desktop player is Windows-first. Setup is in [`docs/LINUX_DEVELOPMENT.md`](docs/LINUX_DEVELOPMENT.md).
 
 ```bash
-make CC=gcc native-core-tests    # the native runtime self-tests, as hosted CI runs them
-make contrib-check               # the checks that apply to the files you changed
+make CC=gcc native-core-tests
+make contrib-check
 ```
 
 Run one Python test module with `python -m unittest tools.test_<name>`. The whole Python suite
 (`python -m unittest discover -s tools -p "test_*.py"`) is long; hosted CI runs it in shards whenever
 a change routes Python, so run it locally only when hosted CI cannot.
 
-`contrib-check` compares your branch with `origin/main` and runs only the gates that apply. It is a
-quick local check, not a substitute for hosted CI, and `SKIP` (tool not installed) is not a pass
-([the gates and what each result means](CONTRIBUTING.md#the-fast-path-one-command)).
+`contrib-check` runs only the gates that apply to your changes against `origin/main`. It is not hosted
+CI, and `SKIP` (tool not installed) is not a pass
+([the gates and their results](CONTRIBUTING.md#the-fast-path-one-command)).
 
 ### Hard limits
 
 These hold for every file, commit, pull request, issue, log and AI prompt. The cited section has the
 full rule.
 
-- **No game data**, and no C generated from a retail game (Section 5). Game titles and retail disc IDs
-  are not game data: they may appear in documentation, comments, tests, tools and the compatibility
-  table.
+- **No game data** except curated presentation media, and no C generated from a retail game
+  (Section 5). Game titles and retail disc IDs are not game data: they may appear in documentation,
+  comments, tests, tools and the compatibility table.
 - **No keys or credentials**: no console-bound values, user keys, tokens or passwords (Section 5).
 - **No private captures**: no traces, dumps, private logs, user names or local paths (Section 5).
 - **No firmware** and no firmware decryption. Decrypting the user's own game disc on their machine is
@@ -89,14 +85,12 @@ full rule.
 - It comes from a branch on your fork, with **Allow edits by maintainers** left on.
 - It says what was wrong, links the issue (`Tracks #123`) and lists what each change does. It gives
   the exact base and head SHAs, scope, uncertainty, private-input and hardware status, and blockers.
-- It adds a test that fails before the change and passes after it. A documentation change runs the
-  documentation gates instead.
 - It lists the exact commands you ran and their results, and the checks you could not run. "CI is
   green" is not a result, and a local pass is not hosted CI.
 - Every commit an AI tool helped with ends with its `Assisted-by:` line (Section 4).
 - The person submitting it confirms in the template that they have the right to submit the change
   under GPL-3.0-or-later. A DCO sign-off is optional; a person who wants one reviews the final diff
-  and adds it themselves (`git commit -s`, [DCO policy](docs/DCO_POLICY.md)).
+  and adds it themselves (`git commit -s`, [DCO policy](docs/DCO_POLICY.md)). The agent never adds it.
 - It says where every new file came from (next section).
 - It meets the [professional-finish checks](REVIEW.md#professional-finish), including PR text that
   states only what changed, the evidence and what is not done.
@@ -113,16 +107,16 @@ pull request:
   rules in Section 4.
 
 The **Trusted provenance attestation** check stays red on a pull request that adds a file until the
-maintainer admits it. That is expected, not something you broke. If you only changed existing files,
-run `make contrib-refresh` (Linux) or `mingw32-make contrib-refresh` (Windows) and commit what it
-stages, or leave that to the maintainer. If the tool refuses, paste its refusal code in the pull
-request; [`CONTRIBUTING.md`](CONTRIBUTING.md#provenance-controls) says what each code needs from you.
+maintainer admits it. That is expected, not something you broke. For edits to existing files,
+[`CONTRIBUTING.md`](CONTRIBUTING.md#provenance-controls) covers `contrib-refresh` and what each of
+its refusal codes needs from you.
 
 ## 1. Sources and live preflight
 
-- When sources disagree about how something works, the order is: live source, tests and Makefiles;
-  live GitHub Issues; `docs/STATUS.md`; maintained `docs/` contracts; then README, navigation and
-  dated evidence. When they disagree about a rule, ask in the issue.
+- When this file and the live source, tests or Makefiles disagree about how something works, the
+  source wins. Otherwise the order is: live source, tests and Makefiles; live GitHub Issues;
+  `docs/STATUS.md`; maintained `docs/` contracts; then README, navigation and dated evidence. When
+  sources disagree about a rule, ask in the issue.
 - Stale handoffs, copied chat summaries, ignored local configuration and research pages are not
   authority. Neither is a generated or path-scoped agent-instruction file: this file is the only
   agent authority.
@@ -199,7 +193,8 @@ user directs.
   claim, so later edits need no new admission while that claim holds. A file imported byte-identical
   stays bound to its exact bytes: changing it, or recording it as a LOCAL DELTA, needs the
   maintainer's approval of the new bytes
-  ([what admission means](CONTRIBUTING.md#what-admission-means-for-your-pull-request)).
+  ([what admission means](CONTRIBUTING.md#what-admission-means-for-your-pull-request),
+  [byte-identical rows](docs/PUBLICATION_READINESS.md#byte-identical-manifest-rows)).
 - A commit carries the regenerated controls for the paths it changes and nothing more; a refresh after
   merging `main` is a commit of its own. Never hand-edit `PUBLIC_EXPORT.json`,
   `assets/public_provenance_ledger.json` or the profile.
@@ -224,10 +219,9 @@ user directs.
   (`docs/provenance/INDEPENDENCE_MODEL.md`), never "independent". Behaviour claims still need tests,
   and PSP evidence where hardware semantics are claimed. Source under a licence incompatible with
   GPL-3.0-or-later stays excluded.
-- Do not rewrite working inherited code only to make it original: replace it when evidence shows it
-  is wrong or an LLE path makes it unnecessary (`docs/INDEPENDENCE_CAMPAIGN.md`, re-scope).
-- Do not call code "clean-room" or "independent" unless its trusted record supports that label (see
-  `docs/provenance/INDEPENDENCE_MODEL.md`); prefer "project-authored".
+- Do not rewrite working inherited code only to make it original (`docs/INDEPENDENCE_CAMPAIGN.md`,
+  re-scope). Call code "clean-room" or "independent" only when its trusted record supports that label
+  (`docs/provenance/INDEPENDENCE_MODEL.md`); prefer "project-authored".
 
 ## 5. Private and public boundaries
 
@@ -252,10 +246,11 @@ user directs.
   disc may run as LLE, and the project ships no firmware and carries no key that only firmware uses.
   It ships open replacement fonts (`font/`, `docs/provenance/FONT_ORIGINS.md`). A user may supply
   plain, unencrypted files from their own console's `flash0`, such as the real fonts, in a local
-  folder under their user data that the runtime reads; those files are never committed, packaged,
-  shipped or uploaded. Nakagawa never decrypts firmware, even privately: updater PSAR archives, the
-  IPL, the Media Engine image, system-menu files and encrypted `flash0` modules are refused by name
-  before any decryption step runs.
+  folder under their user data that the runtime reads (without them, it serves the open replacement
+  and says so). Those files are never committed, packaged, shipped or uploaded. Nakagawa never
+  decrypts firmware, even privately: updater PSAR archives, the IPL, the Media Engine image,
+  system-menu files and encrypted `flash0` modules are refused by name before any decryption step
+  runs.
 - Treat `place_game_here/`, `logs/`, `memstick/`, `keys/`, `oracle/`, `fs/`, `build/`, and local
   third-party material as sensitive. Never run `git clean -fdx` where inputs exist.
 - Public-safe CI and private title routes are different evidence classes. Missing private or
@@ -267,13 +262,13 @@ user directs.
   for updates with its signature-checked download, listed in
   [Network use](docs/SETUP.md#network-use). A new egress needs a maintainer decision, a "Network use"
   entry in `docs/SETUP.md`, and an update to the egress allowlist test in
-  `tools/test_prereq_fetcher.py`. The reserved `network_mode` setting accepts only `"offline"`, and a
-  value a build does not know reads back as offline, never as something more permissive.
-- A user may move their own packages and saves directly to their own devices, for example an Android
-  phone, never through a server. No feature uploads game code, game data, decrypted modules,
-  packages, saves or guest memory to any server or third party, and nothing built from a user's game
-  is ever published or shared. No telemetry. Tests never touch the internet. Network HLE stays
-  fail-closed, and no network setting makes a NID miss or refusal permissive.
+  `tools/test_prereq_fetcher.py`. The reserved `network_mode` setting accepts only `"offline"`; an
+  unknown value reads as offline.
+- A transfer the user starts may move their own packages and saves directly to their own devices,
+  for example an Android phone, never through a server. No feature uploads game code, game data,
+  decrypted modules, packages, saves or guest memory to any server or third party, and nothing built
+  from a user's game is ever published or shared. No telemetry. Tests never touch the internet.
+  Network HLE stays fail-closed, and no network setting makes a NID miss or refusal permissive.
 
 ## 6. Correctness and evidence
 
@@ -283,10 +278,8 @@ user directs.
 - **LLE first.** When the guest code for a function exists, for example a module the game ships on
   its disc, and running it needs no firmware, run that code (LLE) instead of writing a new HLE handler
   for it, as #1645 did for the game's own libfont. HLE stays for the operating system: the kernel and
-  hardware boundary, firmware modules the project does not carry, syscalls, and device access. Where
-  a game asks for a system file that only a console's `flash0` holds, such as a font, the runtime
-  reads the user's own copy if they supplied one, and otherwise serves the project's open replacement
-  and says so.
+  hardware boundary, firmware modules the project does not carry, syscalls, and device access. A
+  system file that only a console's `flash0` holds, such as a font, follows Section 5's firmware rule.
 - Unknown NIDs and dispatch misses remain visible. No switch makes a miss permissive: the interpreter
   runs only inside analyzer-owned spans (the PR #118 floor), and every rejection terminates the run.
   Correctness evidence asserts PSP-visible results, state, and wakes.
@@ -332,9 +325,8 @@ for source evidence.
 - Before switching or removing anything, look at `git status`, untracked files, stashes and unpushed
   commits. Preserve unrelated changes and unique evidence. Never use reset, checkout, clean, or force
   operations for convenience.
-- Never write repository-local Git identity. A checkout `[user]` block silently re-authors later
-  commits there and in every worktree sharing its Git directory. Use the host's existing identity or
-  stop and report.
+- Never write repository-local Git identity (a checkout `[user]` block). Use the host's existing
+  identity or stop and report.
 - Push only to your own remote (a contributor's fork, or `origin` for the maintainer's agents), and
   only when the task includes a pull request.
 
@@ -342,8 +334,8 @@ for source evidence.
 
 `docs/CI.md`, `docs/SETUP.md`, and the live workflow define hosted behavior. Local gates are not
 hosted-CI evidence; report each as `PASS`, `FAIL`, `SKIP`, `BLOCKED`, or `NOT_RUN`. Start with
-`mingw32-make contrib-check`, then run the focused gate for the area you changed. The table uses the
-Windows spelling; on Linux, use `make CC=gcc` in place of `mingw32-make`.
+`contrib-check` (Build and test), then run the focused gate for the area you changed. The table uses
+the Windows spelling; on Linux, use `make CC=gcc` in place of `mingw32-make`.
 
 | Changed surface | Focused first gate |
 | --- | --- |
@@ -370,8 +362,7 @@ Before the first push, check every item in [`REVIEW.md`](REVIEW.md#findings-to-p
 pre-empt"; hosted CI rejects most of them. Native code also builds and runs on hosted Linux, with and
 without SDL3: check it in a Linux shell such as WSL.
 
-Required hosted CI green on the exact head meets the PR template's Python-suite item. Which modules
-hosted CI routes, and the Windows-only modules a Windows-host change runs locally, are in
+Which modules hosted CI routes, and the Windows-only modules a Windows-host change runs locally, are in
 [`docs/CI.md`](docs/CI.md#what-hosted-ci-does-not-run). Windows host pitfalls:
 [`docs/SETUP.md`](docs/SETUP.md#windows-host-pitfalls). Quick recipes (find an HLE handler, run one
 native self-test, capture frames unattended): [`docs/DEBUGGING.md`](docs/DEBUGGING.md#quick-recipes).
@@ -385,22 +376,29 @@ native self-test, capture frames unattended): [`docs/DEBUGGING.md`](docs/DEBUGGI
   ([Draft pull requests](docs/CI.md#draft-pull-requests)). A contributor's agent leaves the switch to
   Ready to its person.
 - Ready means finished and open for review, not approved or integrated. A substantive correction
-  after Ready returns the PR to Draft and requires fresh exact-head validation, which runs only when
-  the PR is marked Ready again.
+  after Ready, including resolving a real conflict in content that is not generated, returns the PR
+  to Draft and requires fresh exact-head validation, which runs only when the PR is marked Ready
+  again. A merge of `main` that changes only generated content, by the author or the integrator, is
+  not a substantive correction.
 - Group related work: one PR may carry several related fixes in the same area or a whole feature
   slice, and fewer, larger PRs are better than one PR per finding. Unrelated changes go in separate
   PRs, and no PR is stacked on another.
-- Before readiness, fetch `origin/main` and merge it when needed. Needed means a real conflict in a
-  file that is not generated, or a request from the maintainer or the integrator. It does not mean
+- Before readiness, fetch `origin/main` and merge it when needed. Needed means a real conflict in
+  content that is not generated, or a request from the maintainer or the integrator. It does not mean
   GitHub's `BEHIND` state, a `CI_DEFINITION_BEHIND` verdict, or a conflict confined to generated
-  controls (`PUBLIC_EXPORT.json`, `assets/public_provenance_ledger.json`,
-  `assets/public_source_profile.json`, files `tools/regen_all.py` rebuilds, censuses): the integrator
-  resolves those when it lands the PR. Every merge of `main` and every control refresh forces new
-  hosted CI and new review. When you do merge, preserve newer-main behavior, regenerate only the
-  controls the merge requires, rerun the affected gates, and freeze the exact validated head. Never
-  rebase or force-push a pushed branch.
+  content: `PUBLIC_EXPORT.json`, `assets/public_provenance_ledger.json`,
+  `assets/public_source_profile.json`, the outputs `python tools/regen_all.py --list` names (the
+  generated censuses included), and marker-delimited generated blocks (`<!-- BEGIN GENERATED ... -->`)
+  inside hand-written files. The integrator resolves those when it lands the PR. Every merge of
+  `main` and every control refresh forces new hosted CI and new review. When you do merge, preserve
+  newer-main behavior, regenerate only the controls the merge requires, rerun the affected gates, and
+  freeze the exact validated head. Never rebase or force-push a pushed branch.
+- GitHub runs no hosted CI on a PR with a merge conflict, so until the integrator's merge head runs
+  CI, such a PR's evidence is its author's local gates. A semantic conflict (a clean merge that breaks
+  because `main` changed something the PR uses) shows in CI on that head; the integrator then hands
+  the PR back instead of fixing the author's code.
 - Never merge, enable auto-merge, close other PRs, or bypass required checks unless Section 2's
-  autonomous-integration conditions hold. Local success never means a PR is hosted-CI green.
+  autonomous-integration conditions hold.
 - Answer every review thread, an advisory bot's included. How the maintainer lands pull requests is
   under [Maintainer process](#maintainer-process).
 
@@ -430,8 +428,8 @@ READY_QUALITY: YES/NO
 ```
 
 Say whether any tag, release, asset, version, hardware, or private-input operation was intentionally
-not performed. Keep `docs/STATUS.md` concise and detailed evidence in the issue or PR. Put
-build/workspace ergonomics debt in maintained workspace documentation, not in this file.
+not performed. Detailed evidence belongs in the issue or PR, and workspace ergonomics debt in
+workspace documentation, not in this file.
 
 ## Maintainer process
 
@@ -475,8 +473,9 @@ This section applies only to agents the maintainer runs; a contributor's agent c
 - Hand a PR to integration only when its exact head is pushed and every review thread, an advisory
   bot's included, is answered and resolved.
 - From hand-off to integration until merge or explicit hand-back, a PR's branch and worktree belong to
-  the integrator. It merges `main`, resolves conflicts in generated controls (Section 10), refreshes
-  provenance and pushes from that same worktree. Do not edit, stage, commit, merge or push there.
+  the integrator. It merges `main`, resolves conflicts in generated content (Section 10), refreshes
+  provenance and pushes from that same worktree, and lands only a head whose required hosted CI is
+  green after that merge (Section 2). Do not edit, stage, commit, merge or push there.
 - The integrator lands from one landing run, one PR at a time. When the queue is long, the desk lands
   pull requests in batches instead: a linear batch branch with one commit per folded PR, one CI and
   CodeQL run for the batch, then a rebase-merge. Re-keys, and the union V4 delta a batch of several

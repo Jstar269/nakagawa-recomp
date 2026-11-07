@@ -88,7 +88,9 @@ file's bytes change. Add `CONTRIB_REFRESH_CHECK=--check` to see what would chang
 anything.
 
 **After the ledger lost its hashes (#1673).** A branch made before that change may still carry the
-older ledger with a `sha256` per entry. When you merge `main` and Git reports a conflict in
+older ledger with a `sha256` per entry. A conflict confined to that file is not a reason to merge
+`main`: the integrator resolves it at landing ([AGENTS.md section 10](AGENTS.md#10-pr-and-integration-authorization)).
+If you merge `main` for another reason and Git reports a conflict in
 `assets/public_provenance_ledger.json`, take `main`'s copy (`git checkout --theirs -- <path>` during a
 merge), stage it, finish the merge, then run `make contrib-refresh` and commit what it stages.
 

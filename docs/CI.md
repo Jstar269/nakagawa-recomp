@@ -1241,7 +1241,7 @@ and each token's remaining budget.
 | Code | Fails when |
 | --- | --- |
 | `CI_CHANGE_UNAPPROVED` | the head changes `.github/workflows/**`, `.github/actions/**`, `.pre-commit-config.yaml`, a CI tool (`tools/ci_paths.py`, `tools/ci_required.py`, `tools/ci_test_shards.py`, `tools/ci_test_weights.json`, `tools/requirements-lock.txt`, `tools/ci_trust_verdict.py`) or any `tools/` file a default-branch workflow runs, without a current `ci-change-approved` label |
-| `CI_DEFINITION_BEHIND` | `main` changed one of those files after the branch point; the integrator merges `main` when it lands the pull request, not the author (`AGENTS.md` section 10), and no label waives it |
+| `CI_DEFINITION_BEHIND` | `main` changed one of those files after the branch point; the integrator merges `main` when it lands the pull request; the author merges it only for a real conflict in content that is not generated, or when asked (`AGENTS.md` section 10). No label waives it |
 | `CI_CONTEXT_COLLISION` | another workflow names `Trusted CI verdict`, or a check run uses that name |
 | `FOREIGN_PRODUCER` | a check run or status under an intended context is not from the intended workflow path and event at this head |
 | `JOB_MISSING`, `JOB_FAILED`, `JOB_CANCELLED`, `DUPLICATE_CONTEXT` | the latest non-cancelled intended run lacks the job, the job did not succeed, every run was cancelled, or two jobs share the name |
