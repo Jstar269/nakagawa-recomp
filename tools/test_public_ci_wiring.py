@@ -345,7 +345,7 @@ class PublicCiWiringTests(unittest.TestCase):
 
         required_start = ci.index("  ci_required:\n")
         required_job = ci[required_start:]
-        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, windows_runtime]", required_job)
+        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]", required_job)
         self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required_job)
         self.assertIn("NATIVE_RESULT: ${{ needs.native_tools.result }}", required_job)
         self.assertIn("RUN_NATIVE: ${{ needs.classify.outputs.run_native }}", required_job)
@@ -1801,7 +1801,7 @@ class PublicExportJobTests(unittest.TestCase):
 
     def test_ci_required_still_requires_hygiene_and_export(self) -> None:
         required = "\n".join(self.blocks["ci_required"])
-        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, windows_runtime]", required)
+        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]", required)
         self.assertIn("HYGIENE_RESULT: ${{ needs.hygiene.result }}", required)
         self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required)
 
