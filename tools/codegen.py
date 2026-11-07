@@ -4277,61 +4277,65 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                        sp_kept, foreign_loads if sp_kept else frozenset())
     _BODY_SP_CHECKS.clear()
     _BODY_SP_CHECKS.update(ctx.sp_checks)
-    consumed = set()
-    promo = RegisterPromotion() if OPTIONS.promote_registers else None
-    for addr in sorted(insns):
-        if addr in consumed:
-            continue
-        if addr in labels:
-            if promo is not None:
-                out.extend(promo.flush())
-            out.append(f"  L_{addr:08x}: ;")
-        w = ADDRESS_SPACE.instruction_word(addr, read32(elf, addr))
-        if w is None:
-            continue
-        if promo is not None:
-            promoted = None
-            if (not is_control(w) and not _is_cop0_move(w) and addr not in sv_points
-                    and addr not in continuations and addr not in ctx.sp_checks
-                    and _enhancement_rewrite(addr) is None
-                    and not (hst_profile and addr in _HST_INLINE_SITES)):
-                promoted = promo.try_line(addr, w, lle_cpu=lle_cpu)
-            if promoted is not None:
-                out.extend(promoted)
+    # Cleared however the body ends: an Unsupported raised mid-body must not leave its
+    # checks for delay_slot_lines' callers outside emit_function (form_sweep, tests).
+    try:
+        consumed = set()
+        promo = RegisterPromotion() if OPTIONS.promote_registers else None
+        for addr in sorted(insns):
+            if addr in consumed:
                 continue
+            if addr in labels:
+                if promo is not None:
+                    out.extend(promo.flush())
+                out.append(f"  L_{addr:08x}: ;")
+            w = ADDRESS_SPACE.instruction_word(addr, read32(elf, addr))
+            if w is None:
+                continue
+            if promo is not None:
+                promoted = None
+                if (not is_control(w) and not _is_cop0_move(w) and addr not in sv_points
+                        and addr not in continuations and addr not in ctx.sp_checks
+                        and _enhancement_rewrite(addr) is None
+                        and not (hst_profile and addr in _HST_INLINE_SITES)):
+                    promoted = promo.try_line(addr, w, lle_cpu=lle_cpu)
+                if promoted is not None:
+                    out.extend(promoted)
+                    continue
+                out.extend(promo.flush())
+
+            if hst_profile and _emit_hst_patch_site(hst_profile, addr, w, out, consumed):
+                continue
+
+            if not is_control(w):
+                _emit_non_control_word(ctx, out, addr, w, sv_points)
+                continue
+            if is_eret(w):
+                _emit_eret(out, addr, w)
+                continue
+            _emit_control_transfer(ctx, out, consumed, addr, w)
+        if continuations:
+            _emit_continuation_blocks(ctx, out)
+        if promo is not None:
             out.extend(promo.flush())
-
-        if hst_profile and _emit_hst_patch_site(hst_profile, addr, w, out, consumed):
-            continue
-
-        if not is_control(w):
-            _emit_non_control_word(ctx, out, addr, w, sv_points)
-            continue
-        if is_eret(w):
-            _emit_eret(out, addr, w)
-            continue
-        _emit_control_transfer(ctx, out, consumed, addr, w)
-    if continuations:
-        _emit_continuation_blocks(ctx, out)
-    if promo is not None:
-        out.extend(promo.flush())
-        declaration = promo.declaration()
-        if declaration is not None:
-            out.insert(1, declaration)
-        PROMOTION_STATS["functions"] += 1
-    falls_as_guest = any(addr not in insns for addr in guest_exits)
-    out.append(f"    {emit_host_fallthrough(resumable or falls_as_guest, stack_census=stack_census)}")
-    out.append("}")
-    out.append("")
-    if any(BODY_CALL_DRAIN in line for line in out):
-        # A direct CALL nests a native frame without entering the dispatcher, so the body
-        # applies the dispatcher's host-stack bound itself, before anything else (the
-        # dispatcher preflights before its own SR_YIELD). Every native recursion of
-        # generated code passes through a direct CALL or the dispatcher, so leaves and
-        # dispatch-only bodies stay unchecked. Keyed on the CALL's own drain, so every
-        # call form that uses emit_body_call is covered. See SR_HOST_STACK_CHECK in recomp.h.
-        out.insert(1, emit_host_stack_check(G(start)))
-    _BODY_SP_CHECKS.clear()
+            declaration = promo.declaration()
+            if declaration is not None:
+                out.insert(1, declaration)
+            PROMOTION_STATS["functions"] += 1
+        falls_as_guest = any(addr not in insns for addr in guest_exits)
+        out.append(f"    {emit_host_fallthrough(resumable or falls_as_guest, stack_census=stack_census)}")
+        out.append("}")
+        out.append("")
+        if any(BODY_CALL_DRAIN in line for line in out):
+            # A direct CALL nests a native frame without entering the dispatcher, so the body
+            # applies the dispatcher's host-stack bound itself, before anything else (the
+            # dispatcher preflights before its own SR_YIELD). Every native recursion of
+            # generated code passes through a direct CALL or the dispatcher, so leaves and
+            # dispatch-only bodies stay unchecked. Keyed on the CALL's own drain, so every
+            # call form that uses emit_body_call is covered. See SR_HOST_STACK_CHECK in recomp.h.
+            out.insert(1, emit_host_stack_check(G(start)))
+    finally:
+        _BODY_SP_CHECKS.clear()
     return out
 
 #: ``--extra-elf=<module>@runtime``: the module is placed by the runtime's guest
