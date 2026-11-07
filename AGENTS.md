@@ -4,6 +4,7 @@ This file is for AI coding agents working in this repository; a human contributo
 rules. `CLAUDE.md` and `.github/copilot-instructions.md` only point here and add no rules
 ([how each tool reaches this file](docs/AI_USAGE.md#how-each-tool-reads-these-rules)). Personal
 instruction files and tool settings stay local; `.gitignore` keeps them out of the repository.
+
 **Where to start** is the quick start and covers most tasks; sections 1 to 11, which code, tests and
 documents cite by number, are the full contract; **Maintainer process** applies only to agents the
 maintainer runs.
@@ -378,21 +379,22 @@ native self-test, capture frames unattended): [`docs/DEBUGGING.md`](docs/DEBUGGI
 - Ready means finished and open for review, not approved or integrated. A substantive correction
   after Ready, including resolving a real conflict in content that is not generated, returns the PR
   to Draft and requires fresh exact-head validation, which runs only when the PR is marked Ready
-  again. A merge of `main` that changes only generated content, by the author or the integrator, is
-  not a substantive correction.
+  again. A clean merge of `main`, or one whose conflicts are only generated content, by the author or
+  the integrator, is not a substantive correction.
 - Group related work: one PR may carry several related fixes in the same area or a whole feature
   slice, and fewer, larger PRs are better than one PR per finding. Unrelated changes go in separate
   PRs, and no PR is stacked on another.
 - Before readiness, fetch `origin/main` and merge it when needed. Needed means a real conflict in
   content that is not generated, or a request from the maintainer or the integrator. It does not mean
   GitHub's `BEHIND` state, a `CI_DEFINITION_BEHIND` verdict, or a conflict confined to generated
-  content: `PUBLIC_EXPORT.json`, `assets/public_provenance_ledger.json`,
-  `assets/public_source_profile.json`, the outputs `python tools/regen_all.py --list` names (the
-  generated censuses included), and marker-delimited generated blocks (`<!-- BEGIN GENERATED ... -->`)
-  inside hand-written files. The integrator resolves those when it lands the PR. Every merge of
-  `main` and every control refresh forces new hosted CI and new review. When you do merge, preserve
-  newer-main behavior, regenerate only the controls the merge requires, rerun the affected gates, and
-  freeze the exact validated head. Never rebase or force-push a pushed branch.
+  content the integrator regenerates at landing: `PUBLIC_EXPORT.json`,
+  `assets/public_provenance_ledger.json`, `assets/public_source_profile.json`, and the outputs
+  `python tools/regen_all.py` rebuilds (the generated censuses and `<!-- BEGIN GENERATED ... -->`
+  blocks included); the integrator resolves those when it lands the PR. Outputs `regen_all.py --list`
+  marks skipped, such as the shaders and the profile-zero digests, stay the author's to regenerate.
+  Every merge of `main` and every control refresh forces new hosted CI and new review. When you do
+  merge, preserve newer-main behavior, regenerate only the controls the merge requires, rerun the
+  affected gates, and freeze the exact validated head. Never rebase or force-push a pushed branch.
 - GitHub runs no hosted CI on a PR with a merge conflict, so until the integrator's merge head runs
   CI, such a PR's evidence is its author's local gates. A semantic conflict (a clean merge that breaks
   because `main` changed something the PR uses) shows in CI on that head; the integrator then hands
@@ -428,8 +430,8 @@ READY_QUALITY: YES/NO
 ```
 
 Say whether any tag, release, asset, version, hardware, or private-input operation was intentionally
-not performed. Detailed evidence belongs in the issue or PR, and workspace ergonomics debt in
-workspace documentation, not in this file.
+not performed. Keep `docs/STATUS.md` concise, detailed evidence in the issue or PR, and workspace
+ergonomics debt in workspace documentation, not in this file.
 
 ## Maintainer process
 
