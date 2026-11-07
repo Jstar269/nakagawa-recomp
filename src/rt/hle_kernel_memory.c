@@ -610,6 +610,18 @@ static uint32_t h_ReferFplStatus(CpuState *s) {
 /* UNMEASURED: no VPL exhausted code is recorded; this is the pre-measurement value, not the FPL
  * code. */
 #define VPL_EXHAUSTED 0x800200d9u
+/* pspautotests tests/threads/vpl/try.expected ("More than remaining", "All remaining", "1 byte
+ * (none left)"): a request that no free block can hold answers SCE_KERNEL_ERROR_NO_MEMORY. The
+ * point where a pool runs out still differs, because the PSP's per-block header accounting
+ * (poolSize 0xFFE0 for a 0x10000 pool) is not modelled. */
+#define VPL_NO_SPACE 0x80020190u
+/* pspautotests tests/threads/vpl/allocate.expected and try.expected: a request of 0 bytes, of
+ * -1 bytes, or larger than the pool answers 0x800201B7 from Allocate, AllocateCB (with and
+ * without timeout) and TryAllocate. */
+#define VPL_ILLEGAL_SIZE 0x800201b7u
+/* Pool names, by pool slot: VplPool has no name field (pspautotests tests/threads/vpl/refer.expected
+ * prints name=refer). */
+static char s_vpl_names[VPL_MAX][32];
 
 /* Grow a pool array to hold `need` entries. A host that cannot provide them stops the run
  * by name: refusing the guest would report a full pool that is not full. */
@@ -684,6 +696,8 @@ static uint32_t h_CreateVpl(CpuState *s) {
             vpl_release(p);
             p->base = base; p->size = size; p->block_uid = block_uid; p->used = 1;
             p->attr = A2;
+            memset(s_vpl_names[i], 0, sizeof s_vpl_names[i]);
+            if (A0) (void)guest_cstr(A0, s_vpl_names[i], (int)sizeof s_vpl_names[i]);
             vpl_insert_free(p, base, size);
             return (uint32_t)(0x600 + i);
         }
@@ -693,8 +707,7 @@ static uint32_t h_CreateVpl(CpuState *s) {
 }
 
 static uint32_t vpl_try_allocate_internal(VplPool *p, uint32_t request, uint32_t *addr_out) {
-    if (request == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
-    if (request > p->size) return VPL_EXHAUSTED; /* also keeps the rounding below from wrapping */
+    if (request == 0 || request > p->size) return VPL_ILLEGAL_SIZE; /* also keeps the rounding below from wrapping */
     uint32_t need = (request + (VPL_ALIGN - 1u)) & ~(VPL_ALIGN - 1u);
     for (int i = 0; i < p->nfree; ++i) {
         if (p->free[i].size >= need) {
@@ -710,14 +723,14 @@ static uint32_t vpl_try_allocate_internal(VplPool *p, uint32_t request, uint32_t
             return 0;
         }
     }
-    return VPL_EXHAUSTED;
+    return VPL_NO_SPACE;
 }
 
 static uint32_t h_TryAllocateVpl(CpuState *s) {
     VplPool *p = vpl_lookup(A0);
     uint32_t request = A1, out = A2;
     if (!p) return SCE_KERNEL_ERROR_UNKNOWN_VPLID;
-    if (request == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
+    if (request == 0 || request > p->size) return VPL_ILLEGAL_SIZE;
     if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     uint32_t addr = 0;
     uint32_t err = vpl_try_allocate_internal(p, request, &addr);
@@ -732,7 +745,7 @@ static uint32_t allocate_vpl_common(CpuState *s, int is_cb) {
     uint32_t uid = A0, request = A1, out = A2, toptr = A3;
     VplPool *p = vpl_lookup(uid);
     if (!p) return SCE_KERNEL_ERROR_UNKNOWN_VPLID;
-    if (request == 0) return VPL_EXHAUSTED;
+    if (request == 0 || request > p->size) return VPL_ILLEGAL_SIZE;
     if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
 
     uint64_t end_time = 0;
@@ -887,8 +900,14 @@ static uint32_t h_ReferVplStatus(CpuState *s) {
     uint32_t info = A1;
     if (!p) return SCE_KERNEL_ERROR_UNKNOWN_VPLID;
     if (!info || !sr_guest_span_writable(info, 52u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    /* SceKernelVplInfo: size, name[32], attr, poolSize, freeSize, numWaitThreads. */
+    /* SceKernelVplInfo: size, name[32], attr, poolSize, freeSize, numWaitThreads.
+     * pspautotests tests/threads/vpl/refer.expected: an input size of 0 leaves the record
+     * untouched (result 0); any other input size writes the 0x34-byte record. The pool size the
+     * PSP reports (0xFFE0 for a 0x10000 pool, 8 bytes of header per allocation) is NOT modelled
+     * here: this runtime reports the full pool size. */
+    if (MEM_R32(info) == 0u) return 0;
     MEM_W32(info + 0, 52u);
+    for (uint32_t i = 0; i < 32u; ++i) MEM_W8(info + 4u + i, (uint8_t)s_vpl_names[p - s_vpls][i]);
     MEM_W32(info + 36, p->attr);
     MEM_W32(info + 40, p->size);
     uint32_t free_size = 0;
@@ -898,6 +917,13 @@ static uint32_t h_ReferVplStatus(CpuState *s) {
     return 0;
 }
 #define TLSPL_BAD_ID 0x800200d3u
+/* pspautotests tests/threads/tls/{create,delete,free,refer}.expected */
+#define TLSPL_UNKNOWN_ID 0x800201d0u   /* a uid that names no pool */
+#define TLSPL_POOL_LIMIT 0x800201d1u   /* the 17th live pool */
+#define TLSPL_HELD_BLOCKS 0x800201d2u  /* delete with a block still held */
+#define TLSPL_BAD_PARTITION_A 0x800200d1u /* partitions 1, 3, 4 */
+#define TLSPL_BAD_PARTITION_B 0x800200d2u /* partitions <= 0, 7..10; alignments that are not powers of two */
+#define TLSPL_BAD_SIZE_VALUE 0x800201b7u  /* block size or count of 0 or 0xFFFFFFFF */
 #define TLSPL_NO_MEMORY 0x80020190u
 #define TLSPL_BUSY 0x800201a8u
 #define TLSPL_ILLEGAL_SIZE 0x800201bcu
@@ -933,29 +959,33 @@ static uint32_t h_CreateTlspl(CpuState *s) {
     uint32_t num_blocks = stack_arg(s, 0);
     uint32_t options = stack_arg(s, 1);
     uint32_t alignment = 4u;
-    if (A0 && !guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (A1 != TLSPL_USER_PARTITION) {
+    /* pspautotests tests/threads/tls/create.expected: a NULL name is 0x80020190; partitions 2 and 6
+     * succeed, 1/3/4 answer 0x800200D1 and <=0 / 7..10 answer 0x800200D2; attr 0, 1, 0x100 and 0x4000
+     * succeed (other bits 0x80020191); a block size or count of 0 or -1 is 0x800201B7; the options
+     * size word is ignored; alignments 0 and the powers of two to 0x10000 succeed and anything else
+     * is 0x800200D2; the 17th live pool is 0x800201D1. Partitions 5 and 11+, and alignments above
+     * 0x10000, are not measured and keep the old refusal. */
+    if (!A0) return TLSPL_NO_MEMORY;
+    if (!guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    int32_t partition = (int32_t)A1;
+    if (partition != 2 && partition != 6) {
+        if (partition == 1 || partition == 3 || partition == 4) return TLSPL_BAD_PARTITION_A;
+        if (partition <= 0 || (partition >= 7 && partition <= 10)) return TLSPL_BAD_PARTITION_B;
         fprintf(stderr, "TLSPL_PARTITION_UNMODELED: sceKernelCreateTlspl partition=%u; in the works (#339)\n", A1);
         return TLSPL_BAD_ID;
     }
-    if (A2 & ~(TLSPL_ATTR_WAIT_PRIORITY | TLSPL_ATTR_MEM_BOTTOM)) {
-        fprintf(stderr, "TLSPL_ATTRIBUTES_UNMODELED: sceKernelCreateTlspl attr=0x%08x; in the works (#339)\n", A2);
-        return TLSPL_ILLEGAL_ATTR;
-    }
-    if (A2 & TLSPL_ATTR_MEM_BOTTOM) {
-        fprintf(stderr, "TLSPL_MEMORY_BOTTOM_UNMODELED: sceKernelCreateTlspl (0x8daff657); in the works (#339)\n");
-        return TLSPL_ILLEGAL_ATTR;
-    }
-    if (!block_size || !num_blocks) return TLSPL_ILLEGAL_SIZE;
+    if (A2 & ~(TLSPL_ATTR_WAIT_PRIORITY | TLSPL_ATTR_MEM_BOTTOM | 1u)) return TLSPL_ILLEGAL_ATTR;
+    if (block_size == 0u || block_size == 0xffffffffu ||
+        num_blocks == 0u || num_blocks == 0xffffffffu) return TLSPL_BAD_SIZE_VALUE;
 
     if (options) {
         if (!sr_guest_span_readable(options, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-        if (MEM_R32(options) < 8u) return TLSPL_ILLEGAL_SIZE;
         alignment = MEM_R32(options + 4u);
         if (!alignment) alignment = 4u;
     }
-    if (alignment < 4u || alignment > TLSPL_MAX_ALIGNMENT ||
-        (alignment & (alignment - 1u)) != 0u) {
+    if ((alignment & (alignment - 1u)) != 0u) return TLSPL_BAD_PARTITION_B;
+    if (alignment < 4u) alignment = 4u;
+    if (alignment > 0x10000u) {
         fprintf(stderr, "TLSPL_ALIGNMENT_UNMODELED: sceKernelCreateTlspl alignment=%u; in the works (#339)\n", alignment);
         return TLSPL_ILLEGAL_SIZE;
     }
@@ -969,11 +999,25 @@ static uint32_t h_CreateTlspl(CpuState *s) {
     for (int i = 0; i < TLSPL_MAX; ++i) {
         if (!s_tlspls[i].used) { p = &s_tlspls[i]; break; }
     }
-    if (!p) return TLSPL_NO_MEMORY;
+    if (!p) return TLSPL_POOL_LIMIT;
 
     uint32_t total_size = (uint32_t)total64;
-    uint32_t block_uid = alloc_block(total_size);
+    /* The partition hands out 0x100-aligned blocks: a larger alignment takes slack, so the base
+     * can be rounded up (the PSP's exact placement and slack are not measured). */
+    uint64_t slack = alignment > TLSPL_MAX_ALIGNMENT ? alignment : 0u;
+    if (total64 + slack > UINT32_MAX - 0xffu) return TLSPL_ILLEGAL_SIZE;
+    uint32_t block_uid;
+    if (A2 & TLSPL_ATTR_MEM_BOTTOM) {
+        /* attr 0x4000: the pool comes from the top of the partition (alloc_block_high). */
+        if (!partition_high_modelled())
+            return hle_unmodelled_stop("sceKernelCreateTlspl",
+                                       "attr 0x4000 in a partition based below the runtime stacks is not modelled");
+        block_uid = alloc_block_high((uint32_t)(total64 + slack));
+    } else {
+        block_uid = alloc_block((uint32_t)(total64 + slack));
+    }
     if (block_uid == 0xFFFFFFFFu) return TLSPL_NO_MEMORY;
+    uint32_t pool_base = (block_addr(block_uid) + (alignment - 1u)) & ~(alignment - 1u);
     uint32_t *thread_uids = (uint32_t *)calloc((size_t)num_blocks, sizeof(*thread_uids));
     if (!thread_uids) {
         (void)free_block(block_uid);
@@ -986,7 +1030,7 @@ static uint32_t h_CreateTlspl(CpuState *s) {
     memcpy(p->name, name, sizeof(p->name));
     p->attr = A2;
     p->block_uid = block_uid;
-    p->base = block_addr(block_uid);
+    p->base = pool_base;
     p->block_size = block_size;
     p->stride = (uint32_t)stride64;
     p->num_blocks = num_blocks;
@@ -999,14 +1043,10 @@ static uint32_t h_CreateTlspl(CpuState *s) {
 
 static uint32_t h_DeleteTlspl(CpuState *s) {
     TlsplPool *p = tlspl_find(A0);
-    if (!p) return TLSPL_BAD_ID;
-    if (p->free_blocks != p->num_blocks) {
-        uint32_t held_blocks = p->num_blocks - p->free_blocks;
-        fprintf(stderr,
-                "TLSPL_DELETE_WITH_HELD_BLOCKS: pool 0x%x has %u/%u blocks held; in the works (#339)\n",
-                p->uid, held_blocks, p->num_blocks);
-        return TLSPL_BUSY;
-    }
+    if (!p) return TLSPL_UNKNOWN_ID;
+    /* pspautotests tests/threads/tls/delete.expected "Waits (2 slots)": a pool with a held block
+     * answers 0x800201D2. Waking blocked allocators is not modelled. */
+    if (p->free_blocks != p->num_blocks) return TLSPL_HELD_BLOCKS;
     uint32_t block_uid = p->block_uid;
     free(p->thread_uids);
     memset(p, 0, sizeof(*p));
@@ -1014,17 +1054,22 @@ static uint32_t h_DeleteTlspl(CpuState *s) {
 }
 
 static uint32_t h_FreeTlspl(CpuState *s) {
+    /* pspautotests tests/threads/tls/free.expected: an unknown uid is 0x800201D0; "Twice" (a second
+     * free by the thread that already freed) is OK, so a free by a thread holding nothing answers 0;
+     * the block is cleared on free ("After free: 00000000"). */
     TlsplPool *p = tlspl_find(A0);
-    if (!p) return TLSPL_BAD_ID;
+    if (!p) return TLSPL_UNKNOWN_ID;
     uint32_t thread_uid = sched_current_uid();
     if (!thread_uid) return TLSPL_BAD_ID;
     for (uint32_t i = 0; i < p->num_blocks; ++i) {
         if (p->thread_uids[i] == thread_uid) {
+            uint32_t addr = p->base + i * p->stride;
+            for (uint32_t j = 0; j < p->block_size; ++j) MEM_W8(addr + j, 0u);
             tlspl_release_thread(p, thread_uid);
             return 0;
         }
     }
-    return TLSPL_BAD_ID;
+    return 0;
 }
 
 static uint32_t h_GetTlsAddr(CpuState *s) {
@@ -1062,16 +1107,21 @@ static uint32_t h_GetTlsAddr(CpuState *s) {
 static uint32_t h_ReferTlsplStatus(CpuState *s) {
     TlsplPool *p = tlspl_find(A0);
     uint32_t info = A1;
-    if (!p) return TLSPL_BAD_ID;
-    if (!info || !sr_guest_span_writable(info, 56u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    /* SceKernelTlsplInfo: size, name[32], attr, blockSize, numBlocks, freeBlocks, numWaitThreads. */
-    MEM_W32(info + 0u, 56u);
+    if (!p) return TLSPL_UNKNOWN_ID;
+    if (!info || !sr_guest_span_writable(info, 60u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    /* SceKernelTlsplInfo: size, name[32], attr, index, blockSize, totalBlocks, freeBlocks,
+     * numWaitThreads (pspautotests tests/threads/tls/refer.expected, size=60). An input size of 0
+     * leaves the record untouched (result 0); any other input size writes all 0x3c bytes. index is
+     * the pool's slot number (tls/create.expected: the 16th live pool reads index=15). */
+    if (MEM_R32(info) == 0u) return 0;
+    MEM_W32(info + 0u, 60u);
     for (uint32_t i = 0; i < sizeof(p->name); ++i) MEM_W8(info + 4u + i, (uint8_t)p->name[i]);
     MEM_W32(info + 36u, p->attr);
-    MEM_W32(info + 40u, p->block_size);
-    MEM_W32(info + 44u, p->num_blocks);
-    MEM_W32(info + 48u, p->free_blocks);
-    MEM_W32(info + 52u, 0u);
+    MEM_W32(info + 40u, (uint32_t)(p - s_tlspls));
+    MEM_W32(info + 44u, p->block_size);
+    MEM_W32(info + 48u, p->num_blocks);
+    MEM_W32(info + 52u, p->free_blocks);
+    MEM_W32(info + 56u, 0u);
     return 0;
 }
 
@@ -1098,8 +1148,11 @@ static uint32_t h_ReferTlsplStatus(CpuState *s) {
  *  - Lock and TryLock accept only type 0: types 1, 2 and -1 answer INVALID_MODE (0x80000107) and
  *    write neither output, Lock as TryLock, while the lock is free (measured on a PSP-3000 6.61 by
  *    PSP-KERNEL-SEM-001 vmem-trylock-type-* and vmem-lock-type-1, 2026-10-31, probe 0c3cf0da). The
- *    type is checked first; its order against the other checks is UNMEASURED. Unlock's argument is
- *    not checked: Unlock keeps its measured route.
+ *    type is checked first; its order against the other checks is UNMEASURED.
+ *  - Unlock takes the same mode argument: pspautotests tests/power/volatile/unlock.expected
+ *    "Modes" (recorded on a PSP) answers 0x80000107 for -2, -1, 1..7, 0x10, 0x100, 0x1000 and
+ *    0x7FFFFFFF and 0 for mode 0; a refused Unlock leaves the lock held. The mode is checked
+ *    before the not-locked 0x800201ae; the file does not measure that order (UNMEASURED).
  *  - The lock has no owning thread: Unlock from any thread releases it, as the semaphore overflow
  *    code above suggests (an inference). Terminating or deleting the thread that took the lock
  *    therefore leaves it held. A waiting thread that is terminated, deleted or released by
@@ -1196,7 +1249,7 @@ static int volatile_mem_grant_next(void) {
     return 0;
 }
 
-static uint32_t h_VolatileMemLock(CpuState *s) {
+uint32_t h_VolatileMemLock(CpuState *s) {
     if (A0 != 0u) return VOLATILE_MEM_INVALID_MODE;
     if (sched_is_intr_context()) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;   /* L412 */
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;      /* L290-L293 */
@@ -1221,7 +1274,7 @@ static uint32_t h_VolatileMemLock(CpuState *s) {
     return result;
 }
 
-static uint32_t h_VolatileMemTryLock(CpuState *s) {
+uint32_t h_VolatileMemTryLock(CpuState *s) {
     if (A0 != 0u) return VOLATILE_MEM_INVALID_MODE;
     if (s_volatile_locked) return VOLATILE_MEM_HELD;
     if (!volatile_mem_outputs_writable(A1, A2)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
@@ -1229,8 +1282,8 @@ static uint32_t h_VolatileMemTryLock(CpuState *s) {
     return 0;
 }
 
-static uint32_t h_VolatileMemUnlock(CpuState *s) {
-    (void)s;
+uint32_t h_VolatileMemUnlock(CpuState *s) {
+    if (A0 != 0u) return VOLATILE_MEM_INVALID_MODE;   /* unlock.expected "Modes" */
     if (!s_volatile_locked) return VOLATILE_MEM_NOT_HELD;
     s_volatile_locked = 0;
     if (volatile_mem_grant_next()) sched_preempt();   /* a stronger new holder runs now */

@@ -229,6 +229,10 @@ def resolve_toolchain_root() -> Path | None:
     mingw_env = os.environ.get("MINGW_PREFIX")
     if mingw_env:
         candidates.append(Path(mingw_env))
+    msys_bin_env = os.environ.get("MSYS_PATH")
+    if msys_bin_env:
+        msys_bin = Path(msys_bin_env)
+        candidates.append(msys_bin.parent if msys_bin.name.lower() == "bin" else msys_bin)
     gcc_path = shutil.which("gcc")
     if gcc_path:
         gcc_bin = Path(gcc_path).resolve().parent
