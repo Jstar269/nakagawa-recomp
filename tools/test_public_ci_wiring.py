@@ -3014,11 +3014,12 @@ class DraftLightCiWiringTests(unittest.TestCase):
     #: Paths that route every substantive gate, so only the Draft rule can skip one.
     PATHS = ["src/rt/driver.c", "tools/codegen.py", "docs/CI.md"]
     QUICK = frozenset({"hygiene", "public_export", "ci_required"})
-    HEAVY = frozenset({"python_tools", "native_tools", "linux_gcc16", "android_build", "windows_runtime"})
+    HEAVY = frozenset({"python_tools", "native_tools", "linux_gcc16", "android_build", "windows_runtime",
+                       "windows_installer"})
     RESULT_KEYS = {
         "hygiene": "HYGIENE_RESULT", "public_export": "PUBLIC_EXPORT_RESULT",
         "python_tools": "PYTHON_RESULT", "native_tools": "NATIVE_RESULT", "android_build": "ANDROID_RESULT",
-        "windows_runtime": "WINDOWS_RESULT",
+        "windows_runtime": "WINDOWS_RESULT", "windows_installer": "INSTALLER_RESULT",
     }
 
     def _classify(self, event_name: str, event: Mapping[str, object], ref: str) -> dict[str, str]:
@@ -3042,6 +3043,15 @@ class DraftLightCiWiringTests(unittest.TestCase):
                                     "public_export": {"result": "success"}}
         context = {"github": {"event_name": event_name, "event": event}, "needs": needs}
         ran = {job for job in self.QUICK | self.HEAVY if _actions_eval(_job_if(blocks[job]), context)}
+        # A job that reads another job's result (the installer reads windows_runtime's) is
+        # settled once the results it needs are known.
+        while True:
+            needs.update({job: {"result": "success" if job in ran else "skipped"}
+                          for job in self.QUICK | self.HEAVY})
+            settled = {job for job in self.QUICK | self.HEAVY if _actions_eval(_job_if(blocks[job]), context)}
+            if settled == ran:
+                break
+            ran = settled
         environment = {key: ("success" if job in ran else "skipped") for job, key in self.RESULT_KEYS.items()}
         environment["CLASSIFY_RESULT"] = "success"
         for line in blocks["ci_required"]:

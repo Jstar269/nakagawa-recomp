@@ -253,11 +253,13 @@ def _draft_env(**overrides: str) -> dict[str, str]:
         "PYTHON_RESULT": "skipped",
         "NATIVE_RESULT": "skipped",
         "WINDOWS_RESULT": "skipped",
+        "INSTALLER_RESULT": "skipped",
         "RUN_MARKDOWN": "true",
         "RUN_MAIN_SMOKE": "false",
         "RUN_PYTHON": "false",
         "RUN_NATIVE": "false",
         "RUN_WINDOWS": "false",
+        "RUN_INSTALLER": "false",
         "ALLOW_SUBSTANTIVE": "false",
         "DRAFT": "true",
     }
@@ -276,13 +278,14 @@ class DraftLightRunTests(unittest.TestCase):
     def test_a_draft_is_not_green_even_if_every_substantive_job_passed(self) -> None:
         env = _draft_env(
             PYTHON_RESULT="success", NATIVE_RESULT="success", ANDROID_RESULT="success",
-            WINDOWS_RESULT="success", RUN_PYTHON="true", RUN_NATIVE="true", RUN_WINDOWS="true",
-            ALLOW_SUBSTANTIVE="true",
+            WINDOWS_RESULT="success", INSTALLER_RESULT="success", RUN_PYTHON="true", RUN_NATIVE="true",
+            RUN_WINDOWS="true", RUN_INSTALLER="true", ALLOW_SUBSTANTIVE="true",
         )
         self.assertFalse(evaluate_environment(env))
         results = _results(**{"python-tools": "success", "native-tools": "success", "android-build": "success",
-                              "windows-runtime": "success"})
-        applicable = {"python-tools": True, "native-tools": True, "android-build": True, "windows-runtime": True}
+                              "windows-runtime": "success", "windows-installer": "success"})
+        applicable = {"python-tools": True, "native-tools": True, "android-build": True, "windows-runtime": True,
+                      "windows-installer": True}
         self.assertFalse(required_gate_passes(results, applicable, allow_substantive=True, draft=True))
         # The same results for a pull request that is not a Draft pass, exactly as before.
         self.assertTrue(required_gate_passes(results, applicable, allow_substantive=True, draft=False))
