@@ -829,9 +829,10 @@ static uint32_t h_DisplayWaitVblankStart(CpuState *s) {
  * vertical periods, then returns at the following VBLANK start. The CB form
  * also services the caller's callbacks in each period. */
 static uint32_t display_wait_vblank_start_periods(uint32_t periods, int callbacks) {
-    if (periods == 0u) {
+    if ((int32_t)periods <= 0) {
         /* The waits-matrix transcription records INVALID_VALUE (0x800001fe)
-         * for an invalid count before the blocking-context result. */
+         * for an invalid count before the blocking-context result; pspautotests
+         * tests/display/vblankmulti.expected adds -1 and 0x80000000: the count is a signed int. */
         return 0x800001feu;
     }
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;

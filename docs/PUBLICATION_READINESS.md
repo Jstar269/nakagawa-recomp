@@ -757,8 +757,36 @@ landings need no further re-key:
 python tools/admit_paths.py --batch-resume <file.json> --base <new-base> --private-repo <authority checkout>
 ```
 
-The landing desk lands at most one profile-changing pull request per batch: a batch that folds two of them changes
-the profile by the union of both, and no single delta records that union.
+A landing batch that folds several profile-changing pull requests changes the profile by the union of their
+changes, and the attestation looks up the one V4 delta named after that union. The desk writes it from the pull
+requests' admitted V4 deltas:
+
+```text
+python tools/admit_paths.py --compose-v4 <batch worktree> --base <main> --components <key> <key> [...] \
+    --private-repo <authority checkout> --push
+```
+
+Like `--rekey`, it records no new decision: the private commit names only the component deltas. Every component
+must be a V4 admission. A pull request admitted with a V3 or older delta has no V4 file under its name, so re-key it
+with `--rekey` before it joins a composed batch. It refuses (`COMPOSE_V4_*`) when:
+
+* fewer than two distinct components are named, or a name is not 64 hex digits (`COMPOSE_V4_COMPONENTS_INVALID`);
+* a component has no V4 file in the authority checkout (`COMPOSE_V4_COMPONENT_MISSING`), which is what a V3 or older
+  admission gives;
+* a component file does not parse or is not in canonical form (`COMPOSE_V4_COMPONENT_INVALID`), or is not filed under
+  the name of its own selector (`COMPOSE_V4_COMPONENT_KEY_MISMATCH`);
+* two components name the same added, removed or excluded path (`COMPOSE_V4_PATH_OVERLAP`,
+  `COMPOSE_V4_EXCLUDE_OVERLAP`), or more than one carries rule changes (`COMPOSE_V4_RULE_CHANGES_SHARED`);
+* a component's claim, or a byte-bound path's bytes, no longer matches (`COMPOSE_V4_CLAIM_MISMATCH`,
+  `COMPOSE_V4_BYTES_MISMATCH`);
+* the batch's profile change has a path no component covers, or lacks one a component names
+  (`COMPOSE_V4_PATH_UNCOVERED`, `COMPOSE_V4_COMPONENT_NOT_IN_CANDIDATE`), or the union differs from the delta derived
+  from the two profiles (`COMPOSE_V4_UNION_MISMATCH`).
+
+When it refuses, the desk takes the pull request the refusal names out of the batch (it needs a re-key or a new
+admission) and builds the batch again with the others; when the refusal names none, it keeps only the first profile
+pull request and the rest wait for a later batch. A composed record that was pushed stays on private `main`
+if the batch later fails; it grants nothing a component did not already grant.
 
 ### V4 policy deltas
 

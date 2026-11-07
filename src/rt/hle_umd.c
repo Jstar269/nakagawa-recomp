@@ -99,9 +99,39 @@ static void sr_umd_signal_ready(void) {
  * still unsatisfied reports SCE_KERNEL_ERROR_WAIT_TIMEOUT. A wait that something
  * ended with a result (sceUmdCancelWaitDriveStat, sceKernelReleaseWaitThread)
  * returns that result whatever the drive state. */
+/* Validation shared by the three waits, pspautotests tests/umd/api/api.expected "Wait stat
+ * validation" and "Dispatch disabled": a stat of 0 or with a bit outside 0x01|0x02|0x08|0x10|0x20
+ * answers 0x80010016, checked first; with dispatch (or interrupts) disabled the answer is
+ * 0x800201a7 whether or not the wait is satisfied. Returns 0 to go on. */
+static uint32_t umd_wait_precheck(uint32_t want) {
+    if (want == 0u || (want & ~0x3Bu) != 0u) return 0x80010016u;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    return 0u;
+}
+
+/* PSP rounds small UMD wait timeouts upward (api.expected "Timeouts": 5, 20, 100, 200 -> ~250 us). */
+static uint32_t umd_round_timeout(uint32_t timeout) {
+    if (timeout <= 4u) return 15u;
+    if (timeout <= 215u) return 250u;
+    return timeout;
+}
+
 static uint32_t umd_wait_drive_stat(uint32_t want, uint32_t timeout_us) {
+    uint32_t refused = umd_wait_precheck(want);
+    if (refused) return refused;
     if ((s_umd_drive_stat & want) == want) return 0;
-    (void)sched_block_on_timeout(0x554D44u, timeout_us);
+    if (timeout_us == 0u) {
+        /* api.expected "Zero timeout": timeout 0 waits until cancelled. Without a current thread
+         * nothing can wait, so that case keeps the old timeout answer. */
+        if (sched_current_uid() == 0u) return 0x800201A8u;
+        for (;;) {
+            sched_block_on(0x554D44u);
+            uint32_t result = 0u;
+            if (sched_take_wake_result(&result)) return result;
+            if ((s_umd_drive_stat & want) == want) return 0u;
+        }
+    }
+    (void)sched_block_on_timeout(0x554D44u, umd_round_timeout(timeout_us));
     uint32_t result = 0u;
     if (sched_take_wake_result(&result)) return result;
     return (s_umd_drive_stat & want) == want ? 0u : 0x800201A8u;
@@ -109,7 +139,7 @@ static uint32_t umd_wait_drive_stat(uint32_t want, uint32_t timeout_us) {
 
 static uint32_t h_UmdWaitDriveStat(CpuState *s) {
     (void)s;
-    return umd_wait_drive_stat(A0, 50000u);
+    return umd_wait_drive_stat(A0, 0u);   /* sceUmdWaitDriveStat has no timeout */
 }
 
 /* sceUmdWaitDriveStatWithTimer(stat, timeout_us): same as the untimed wait but the
@@ -117,23 +147,27 @@ static uint32_t h_UmdWaitDriveStat(CpuState *s) {
  * silently ignored that argument. */
 static uint32_t h_UmdWaitDriveStatWithTimer(CpuState *s) {
     (void)s;
-    return umd_wait_drive_stat(A0, A1 ? A1 : 50000u);
+    return umd_wait_drive_stat(A0, A1);   /* 0 is an untimed wait */
 }
 
 static uint32_t h_UmdWaitDriveStatCB(CpuState *s) {
     uint32_t self = sched_current_uid();
+    uint32_t refused = umd_wait_precheck(A0);
+    if (refused) return refused;
     if (sr_thread_has_pending_callbacks(self))
         sr_thread_dispatch_callbacks();
 
     if ((s_umd_drive_stat & A0) == A0) return 0;
 
-    uint32_t timeout = A1 ? A1 : 8000u;
-    /* PSP hardware rounds very small UMD wait timeouts upward. */
-    if (timeout <= 4u) timeout = 15u;
-    else if (timeout <= 215u) timeout = 250u;
-
     sched_set_current_cb_wait(1);
-    int timed_out = sched_block_on_timeout(0x554D44u, timeout);
+    int timed_out = 0;
+    if (A1 == 0u) {
+        /* api.expected "Zero timeout": 0 waits until cancelled or the drive is ready. */
+        if (self == 0u) timed_out = 1;
+        else sched_block_on(0x554D44u);
+    } else {
+        timed_out = sched_block_on_timeout(0x554D44u, umd_round_timeout(A1));
+    }
     sched_set_current_cb_wait(0);
 
     /* Taken before callbacks run: a callback that blocks would replace it. */
@@ -197,14 +231,17 @@ static uint32_t h_UmdRegisterUMDCallBack(CpuState *s) {
     return 0;
 }
 
-/* PSPSDK pspumd.h documents only a negative result for an unknown callback ID.
- * Match the kernel callback delete path's UNKNOWN_UID result until hardware
- * measurements establish sceUmdUnRegisterUMDCallBack's exact error code. */
+/* sceUmdUnRegisterUMDCallBack(uid): see the cells cited in the body. */
 static uint32_t h_UmdUnRegisterUMDCallBack(CpuState *s) {
     (void)s;
-    if (!s_umd_cb_uid || s_umd_cb_uid != A0) return 0x800201a1u;
+    /* pspautotests tests/umd/register.expected: an unmatched uid answers 0x80010016; a matching
+     * uid answers the uid itself for a compiled SDK version up to 0x3000000 and 0 from 0x3000001.
+     * Not modelled: that file's final "Zero" row, where uid 0 answers 0 after a register and
+     * unregister cycle. */
+    if (!s_umd_cb_uid || s_umd_cb_uid != A0) return 0x80010016u;
+    uint32_t uid = s_umd_cb_uid;
     s_umd_cb_uid = 0u;
-    return 0u;
+    return g_sdk_version > 0x3000000u ? 0u : uid;
 }
 
 void hle_register_umd_callback_handlers(void) {

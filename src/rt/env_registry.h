@@ -118,6 +118,7 @@
     X("SR_GPU_GE", "flag-nonzero", "off (software GE)", "gui.c", "Enables the GPU GE renderer when set to a non-empty value other than 0.") \
     X("SR_GPU_LOG", "flag-nonzero", "off", "gpu_sdl3vk/ge_gpu.c", "Enables verbose logging in the Vulkan GE backend and also turns on its statistics.") \
     X("SR_GPU_NORTT", "flag-nonzero", "off", "gpu_sdl3vk/ge_gpu.c", "When nonzero, changes how a texture sourced from a render target is bound in the GPU path.") \
+    X("SR_GPU_PIPELINE_CACHE", "string", "on", "gpu_sdl3vk/ge_gpu.c", "Vulkan GE pipeline cache in <data root>/cache/gegpu: unset, empty, 1 or on keeps it; 0 or off turns it off; another value is refused (no cache).") \
     X("SR_GPU_PRESENT_DBG", "flag-presence", "off (first 3 early exits still logged)", "gpu_sdl3vk/ge_gpu.c", "Logs every GPU present call and every early-exit decline to stderr.") \
     X("SR_GPU_READBACK_FULL", "flag-nonzero", "off (only the rows guest memory keeps are copied)", "gpu_sdl3vk/ge_gpu.c", "When enabled, a readback to guest memory copies the whole scaled target, the reference path for the narrowed copy.") \
     X("SR_GPU_SCALE", "number", "1 (falls back to SR_RESOLUTION_SCALE)", "gpu_sdl3vk/ge_gpu.c", "Internal render scale multiplier for the GPU GE renderer.") \
@@ -233,7 +234,7 @@
     X("SR_TRACE_V", "list", "unset: no vblank indices", "flight_recorder.c", "Comma-separated vblank indices (below 128) in which the PC trace window records.") \
     X("SR_TRACK_LAST_WRITER", "flag-nonzero", "off", "debug.c", "When set and not 0, enables tracking of the last writer of memory words.") \
     X("SR_UI_ROOT", "path", "unset (overlay default)", "gui.c", "Root directory of the overlay UI pages and fonts.") \
-    X("SR_USER_DATA_ROOT", "path", "platform data directory", "hle_host.c", "Absolute directory used as the user data root; an invalid value is refused.") \
+    X("SR_USER_DATA_ROOT", "path", "platform data directory", "hle_host.c,gpu_sdl3vk/pipeline_cache.h", "Absolute directory used as the user data root; an invalid value is refused.") \
     X("SR_VALUE_WATCH_N", "string", "unset", "debug.c", "Value watch slot N (0..15), formatted 0xVALUE,label; reports when the watched value is seen.") \
     X("SR_VBLANK_Q_US", "number", "16000", "sched.c", "Vblank pacing quantum in microseconds.") \
     X("SR_VBLOG", "flag-presence", "off", "debug.h,sched.c", "Enables per-VBLANK scheduler logging.") \

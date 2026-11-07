@@ -4592,6 +4592,9 @@ int sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid) 
 }
 
 uint32_t sched_thread_exit_status(uint32_t uid) {
+    /* pspautotests tests/threads/threads/exitstatus.expected "Zero: 80020198": uid 0 is not the
+     * current thread for this call. */
+    if (uid == 0u) return SCE_KERNEL_ERROR_UNKNOWN_THID;
     uid = resolve_thread_uid(uid);
     TCB *t = tcb_by_uid(uid);
     if (!t) return SCE_KERNEL_ERROR_UNKNOWN_THID;

@@ -1578,7 +1578,7 @@ def _module_spellings(name: str, disc_name: str | None) -> str:
 def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, str]:
     env = os.environ.copy()
     if os.name == "nt":
-        ucrt_bin = Path("C:/msys64/ucrt64/bin")
+        ucrt_bin = Path(env.get("MSYS_PATH") or "C:/msys64/ucrt64/bin")
         if not shutil.which("gcc", path=env.get("PATH", "")) and ucrt_bin.is_dir():
             env["PATH"] = str(ucrt_bin) + os.pathsep + env.get("PATH", "")
         python_bin = str(Path(sys.executable).resolve().parent)
