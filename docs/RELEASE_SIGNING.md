@@ -126,6 +126,14 @@ SmartScreen. v0.0.1 shipped without one; the release notes explain the SmartScre
 is ready for the day the maintainer has a code-signing certificate. It signs on the maintainer's machine:
 no certificate, key or password is in the repository, CI or a script argument.
 
+**Status ([#1284](https://github.com/Jstar269/nakagawa-recomp/issues/1284)).** The project takes only a free signing
+route; a paid certificate is out of scope. No free route to a publicly trusted Authenticode certificate is in place,
+so releases ship unsigned until one is. That does not weaken the other checks: the SHA-256 and `.minisig` of the
+checksum file above, the SLSA build attestations (`gh attestation verify`) and the reproducible package let anyone
+check what they downloaded, and the release notes explain the SmartScreen prompt. A self-signed certificate is not
+a route: Windows does not trust it, so it would not remove the prompt. When a free route exists, only the
+**Requirements** step below changes.
+
 **What is signed.** `bin/nakagawa_player.exe` and `bin/production_smoke.exe`, the two executables this
 project builds. Third-party DLLs keep the bytes their upstream shipped. The showcase demo executables under
 `bin/demos/` stay unsigned: each demo's `completion-manifest.json` lists its executable's SHA-256, and the
