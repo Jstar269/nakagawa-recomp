@@ -134,7 +134,13 @@ static int msg_pipe_trace_call(uint32_t calls) {
 
 static uint32_t h_CreateMsgPipe(CpuState *s) {
     /* a0=name, a1=partition, a2=attr, a3=bufferSize, t0=option. */
-    (void)A1;
+    /* pspautotests tests/threads/msgpipe/create.expected: partitions 2 and 6 are accepted;
+     * 1, 3 and 4 answer 0x800200D1; -5, -1, 0 and 7..10 answer 0x800200D2; attributes outside
+     * the mask 0x51FF answer 0x80020191; sizes 0xFFFFFFFF and 0x04000000 answer 0x80020190
+     * (NO_MEMORY). The file records each argument wrong on its own, so the order between the
+     * three checks below is not measured; partition 5 and sizes between 1 MiB and 64 MiB are
+     * unrecorded and keep their earlier handling (5 accepted, the model ceiling refused). */
+    int32_t partition = (int32_t)A1;
     /* Issue #178: validate against the documented PSP-resource model BEFORE any
      * host allocation. Sizes above MSG_PIPE_MAX_CAPACITY are
      * outside the modeled range. They fail before malloc, before a UID is
@@ -145,7 +151,10 @@ static uint32_t h_CreateMsgPipe(CpuState *s) {
      * name that is unmapped or unterminated fails closed with ILLEGAL_ADDR
      * (project choice) instead of silently becoming "". */
     if (!A0) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
-    if (A3 > MSG_PIPE_MAX_CAPACITY) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (partition == 1 || partition == 3 || partition == 4) return 0x800200d1u;
+    if (partition <= 0 || partition >= 7) return 0x800200d2u;
+    if (A2 & ~0x51ffu) return 0x80020191u;
+    if (A3 > MSG_PIPE_MAX_CAPACITY) return 0x80020190u; /* NO_MEMORY, as recorded for 0xFFFFFFFF and 0x04000000 */
     char name[32];
     if (!guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     /* A3 <= MSG_PIPE_MAX_CAPACITY (1 MiB), so the allocation is bounded and
@@ -1334,12 +1343,16 @@ static uint32_t h_SignalSema(CpuState *s) {
  * blocking forms use, so the family cannot drift to two different spellings of
  * one error. sceKernelPollSema has no context gate because it never blocks. */
 static uint32_t h_PollSema(CpuState *s) {
-    Sync *m = sync_find(A0, SYNC_KIND_SEMA); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     int need = (int)A1;
+    /* pspautotests tests/threads/semaphores/poll.expected: "NULL" id with count 0 answers
+     * 800201BD while a NULL/invalid/deleted id with count 1 answers 80020199, so a count <= 0
+     * is checked before the id lookup. */
+    if (need <= 0) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+    Sync *m = sync_find(A0, SYNC_KIND_SEMA); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     /* Measured (PSP-B1-01): count validation answers ILLEGAL_COUNT even
      * on an empty semaphore; SEMA_ZERO is only for a valid count it cannot
      * satisfy. */
-    if (need <= 0 || need > m->maxc) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
+    if (need > m->maxc) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     if (m->count < need) return 0x800201adu;   /* SCE_KERNEL_ERROR_SEMA_ZERO */
     m->count -= need;
     return 0;
@@ -1737,13 +1750,34 @@ static uint32_t h_TryLockLwMutex(CpuState *s) {
         ? 0u : SCE_KERNEL_ERROR_LWMUTEX_FAILED_TO_OWN;
 }
 
-/* The 6.00+ export reports a lock it cannot take as LOCKED (0x800201CB): SDK-built code relies on
- * it (the retail libpsmfplayer treats only 0x800201CB from sceKernelTryLockLwMutex_600 as
- * contention and otherwise proceeds as the owner). The original export keeps the hardware-measured
- * 0x800201C4 above. */
+/* The 6.00+ export has its own result mapping, recorded by pspautotests
+ * tests/threads/lwmutex/try600.expected (the original export keeps the mapping of
+ * try.expected above): count <= 0, or count > 1 on a non-recursive mutex, is ILLEGAL_COUNT
+ * (0x800201BD) with the mutex unchanged; a self-held non-recursive mutex is 0x800201CF; a
+ * recursive level that would pass INT_MAX is 0x800201CD with the level unchanged; a mutex held
+ * by another thread is LOCKED (0x800201CB, which the retail libpsmfplayer tests for); a deleted
+ * workarea (uid word 0xFFFFFFFF) is NOT_FOUND (0x800201CA). The cells that hand it a workarea
+ * with uid 0 ("(fake)") are not modelled: they keep the previous LOCKED answer. */
 static uint32_t h_TryLockLwMutex600(CpuState *s) {
-    uint32_t r = h_TryLockLwMutex(s);
-    return r == SCE_KERNEL_ERROR_LWMUTEX_FAILED_TO_OWN ? SCE_KERNEL_ERROR_LWMUTEX_LOCKED : r;
+    uint32_t wa = A0;
+    if (!lwmutex_workarea_ok(wa)) return 0x80000103u;
+    int count = (int)A1;
+    if (count <= 0) return 0x800201bdu;
+    uint32_t uid = MEM_R32(wa + LWMUTEX_UID);
+    if (uid == LWMUTEX_DELETED_WORD) return SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND;
+    if (sync_find(uid, SYNC_KIND_LWMUTEX)) {
+        int recursive = (MEM_R32(wa + LWMUTEX_ATTR) & LWMUTEX_ATTR_RECURSIVE) != 0;
+        if (!recursive && count > 1) return 0x800201bdu;
+        int level = (int)MEM_R32(wa + LWMUTEX_LOCK_LEVEL);
+        if (recursive && level > 0 && MEM_R32(wa + LWMUTEX_LOCK_THREAD) == sched_current_uid() &&
+            (int64_t)level + (int64_t)count > 0x7fffffffLL)
+            return 0x800201cdu;
+    }
+    switch (lwmutex_acquire(wa, count, 0)) {
+    case LWMUTEX_TAKEN: return 0u;
+    case LWMUTEX_NOT_RECURSIVE: return SCE_KERNEL_ERROR_LWMUTEX_RECURSIVE_NOT_ALLOWED;
+    default: return SCE_KERNEL_ERROR_LWMUTEX_LOCKED;
+    }
 }
 
 static uint32_t h_UnlockLwMutex(CpuState *s) {
@@ -2207,7 +2241,10 @@ static uint32_t h_CancelMutex(CpuState *s) {
     Mutex *m = mutex_find(uid);
     if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MUTEXID;
 
-    if (new_count < 0 || new_count > 1) {
+    /* pspautotests tests/threads/mutex/cancel.expected: "Negative -3/-1: OK" with the
+     * following refer showing current=0, lockThread=0 (a negative count releases like 0);
+     * "Greater than max: Failed (800201BD)". */
+    if (new_count > 1) {
         return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     }
 

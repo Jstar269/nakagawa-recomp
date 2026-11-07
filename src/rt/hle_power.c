@@ -256,6 +256,11 @@ void sr_hle_power_register_lock(void) {
     sr_hle_register(0xeadb1bd7, "sceKernelPowerLock", h_PowerLock);
     sr_hle_register(0x3aee7261, "sceKernelPowerUnlock", h_PowerUnlock);
     sr_hle_register(0x090ccb3f, "sceKernelPowerTick", h_PowerTick);
+    /* The scePower aliases of the sceKernel volatile-memory lock answer the same cells
+     * (pspautotests tests/power/volatile/unlock, lock and trylock.expected, "(scePower)"). */
+    sr_hle_register(0x23c31ffe, "scePowerVolatileMemLock", h_VolatileMemLock);
+    sr_hle_register(0xfa97a599, "scePowerVolatileMemTryLock", h_VolatileMemTryLock);
+    sr_hle_register(0xb3edd801, "scePowerVolatileMemUnlock", h_VolatileMemUnlock);
 }
 
 /* scePowerRegisterCallback and scePowerUnregisterCallback. Both sr_hle_init() branches call this. */

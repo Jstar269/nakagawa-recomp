@@ -287,7 +287,7 @@ value in the snapshot column below is the pinned `base[]` entry in
 * **UNTESTABLE** - no substrate exists to construct the context.
 * **control** - executed and pinned, but hardware has no cell to compare against.
 
-Totals over 54 probes x 4 columns (216 cells): **50 CONFORMS, 91 known deviations, 20 NOT RUN, 0 UNTESTABLE, 55 controls.**
+Totals over 54 probes x 4 columns (216 cells): **65 CONFORMS, 76 known deviations, 20 NOT RUN, 0 UNTESTABLE, 55 controls.**
 
 The 91 known deviations by implementation owner, recomputed from the run rather than carried
 forward: **PR-C2 20, PR-D 18, PR-E 30, #2 (plain Mutex) 18, #79 (VolatileMemLock) 5.**
@@ -524,30 +524,30 @@ route hardware uses rather than by an unsatisfiable-wait accident.
 | `sceKernelVolatileMemLock` | While locked | intr-off | L292 | 0x800201a7 | 0x00000000 | known deviation | context |
 | `sceKernelVolatileMemLock` | While locked | intr-ctx | - | unknown | 0x00000000 | control | unknown |
 | `sceKernelVolatileMemLock` | While locked | disp-off | L293 | 0x800201a7 | 0x00000000 | known deviation | context |
-| `sceUmdWaitDriveStat` | Invalid type | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceUmdWaitDriveStat` | Invalid type | intr-off | L296 | 0x80010016 | 0x00000000 | known deviation | param |
-| `sceUmdWaitDriveStat` | Invalid type | intr-ctx | L413 | 0x80010016 | 0x00000000 | known deviation | param |
-| `sceUmdWaitDriveStat` | Invalid type | disp-off | L297 | 0x80010016 | 0x00000000 | known deviation | param |
+| `sceUmdWaitDriveStat` | Invalid type | normal | - | unknown | 0x80010016 | control | n/a |
+| `sceUmdWaitDriveStat` | Invalid type | intr-off | L296 | 0x80010016 | 0x80010016 | CONFORMS | param |
+| `sceUmdWaitDriveStat` | Invalid type | intr-ctx | L413 | 0x80010016 | 0x80010016 | CONFORMS | param |
+| `sceUmdWaitDriveStat` | Invalid type | disp-off | L297 | 0x80010016 | 0x80010016 | CONFORMS | param |
 | `sceUmdWaitDriveStat` | Valid type | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceUmdWaitDriveStat` | Valid type | intr-off | L298 | 0x800201a7 | 0x00000000 | known deviation | context |
+| `sceUmdWaitDriveStat` | Valid type | intr-off | L298 | 0x800201a7 | 0x800201a7 | CONFORMS | context |
 | `sceUmdWaitDriveStat` | Valid type | intr-ctx | L414 | 0x80020064 | 0x00000000 | known deviation | context |
-| `sceUmdWaitDriveStat` | Valid type | disp-off | L299 | 0x800201a7 | 0x00000000 | known deviation | context |
-| `sceUmdWaitDriveStatWithTimer` | Invalid type | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceUmdWaitDriveStatWithTimer` | Invalid type | intr-off | L302 | 0x80010016 | 0x00000000 | known deviation | param |
-| `sceUmdWaitDriveStatWithTimer` | Invalid type | intr-ctx | L415 | 0x80010016 | 0x00000000 | known deviation | param |
-| `sceUmdWaitDriveStatWithTimer` | Invalid type | disp-off | L303 | 0x80010016 | 0x00000000 | known deviation | param |
+| `sceUmdWaitDriveStat` | Valid type | disp-off | L299 | 0x800201a7 | 0x800201a7 | CONFORMS | context |
+| `sceUmdWaitDriveStatWithTimer` | Invalid type | normal | - | unknown | 0x80010016 | control | n/a |
+| `sceUmdWaitDriveStatWithTimer` | Invalid type | intr-off | L302 | 0x80010016 | 0x80010016 | CONFORMS | param |
+| `sceUmdWaitDriveStatWithTimer` | Invalid type | intr-ctx | L415 | 0x80010016 | 0x80010016 | CONFORMS | param |
+| `sceUmdWaitDriveStatWithTimer` | Invalid type | disp-off | L303 | 0x80010016 | 0x80010016 | CONFORMS | param |
 | `sceUmdWaitDriveStatWithTimer` | Valid type | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceUmdWaitDriveStatWithTimer` | Valid type | intr-off | L304 | 0x800201a7 | 0x00000000 | known deviation | context |
+| `sceUmdWaitDriveStatWithTimer` | Valid type | intr-off | L304 | 0x800201a7 | 0x800201a7 | CONFORMS | context |
 | `sceUmdWaitDriveStatWithTimer` | Valid type | intr-ctx | L416 | 0x80020064 | 0x00000000 | known deviation | context |
-| `sceUmdWaitDriveStatWithTimer` | Valid type | disp-off | L305 | 0x800201a7 | 0x00000000 | known deviation | context |
-| `sceUmdWaitDriveStatCB` | Invalid type | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceUmdWaitDriveStatCB` | Invalid type | intr-off | L308 | 0x80010016 | 0x00000000 | known deviation | param |
-| `sceUmdWaitDriveStatCB` | Invalid type | intr-ctx | L417 | 0x80010016 | 0x00000000 | known deviation | param |
-| `sceUmdWaitDriveStatCB` | Invalid type | disp-off | L309 | 0x80010016 | 0x00000000 | known deviation | param |
+| `sceUmdWaitDriveStatWithTimer` | Valid type | disp-off | L305 | 0x800201a7 | 0x800201a7 | CONFORMS | context |
+| `sceUmdWaitDriveStatCB` | Invalid type | normal | - | unknown | 0x80010016 | control | n/a |
+| `sceUmdWaitDriveStatCB` | Invalid type | intr-off | L308 | 0x80010016 | 0x80010016 | CONFORMS | param |
+| `sceUmdWaitDriveStatCB` | Invalid type | intr-ctx | L417 | 0x80010016 | 0x80010016 | CONFORMS | param |
+| `sceUmdWaitDriveStatCB` | Invalid type | disp-off | L309 | 0x80010016 | 0x80010016 | CONFORMS | param |
 | `sceUmdWaitDriveStatCB` | Valid type | normal | - | unknown | 0x00000000 | control | n/a |
-| `sceUmdWaitDriveStatCB` | Valid type | intr-off | L310 | 0x800201a7 | 0x00000000 | known deviation | context |
+| `sceUmdWaitDriveStatCB` | Valid type | intr-off | L310 | 0x800201a7 | 0x800201a7 | CONFORMS | context |
 | `sceUmdWaitDriveStatCB` | Valid type | intr-ctx | L418 | 0x80020064 | 0x00000000 | known deviation | context |
-| `sceUmdWaitDriveStatCB` | Valid type | disp-off | L311 | 0x800201a7 | 0x00000000 | known deviation | context |
+| `sceUmdWaitDriveStatCB` | Valid type | disp-off | L311 | 0x800201a7 | 0x800201a7 | CONFORMS | context |
 | `sceCtrlReadBufferPositive` | Bad count | normal | - | unknown | not run | NOT RUN | n/a |
 | `sceCtrlReadBufferPositive` | Bad count | intr-off | L220 | 0x80000104 | not run | NOT RUN | param |
 | `sceCtrlReadBufferPositive` | Bad count | intr-ctx | L389 | 0x80000104 | not run | NOT RUN | param |
