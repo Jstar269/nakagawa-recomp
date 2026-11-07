@@ -109,7 +109,7 @@ class InstallTests(unittest.TestCase):
     def test_refuses_a_folder_the_windows_installer_set_up(self):
         """#2208: Setup.exe leaves unins000.exe beside the program and has its own uninstall; the stager
         must never share the folder, even though it holds no stager marker."""
-        for name in stage_install.INSTALLER_UNINSTALL_FILES:
+        for name in ("unins000.exe", "unins000.dat"):  # Inno Setup's uninstaller and its data
             with self.subTest(name=name):
                 dest = self.root / f"installed-{name}"
                 dest.mkdir()
@@ -124,6 +124,20 @@ class InstallTests(unittest.TestCase):
         (dest / "unins000.exe").write_bytes(b"inno")
         with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_DESTINATION_INSTALLER_OWNED"):
             stage_install.stage_install(dest, self.player, repo=self.repo, stage_dlls=_fake_stager)
+
+    def test_uninstall_refuses_a_folder_the_windows_installer_set_up(self):
+        """A mixed folder (stager marker plus Setup's files) must not be uninstalled from here: that would leave
+        Setup's uninstaller and its Apps & features entry pointing at nothing."""
+        dest = self.root / "mixed-uninstall"
+        stage_install.stage_install(dest, self.player, repo=self.repo, stage_dlls=_fake_stager)
+        (dest / "unins000.exe").write_bytes(b"inno")
+        for call in (lambda: stage_install.plan_uninstall(dest),
+                     lambda: stage_install.uninstall(dest),
+                     lambda: stage_install.uninstall(dest, dry_run=True)):
+            with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_DESTINATION_INSTALLER_OWNED"):
+                call()
+        self.assertTrue((dest / "bin" / "nakagawa_player.exe").is_file())
+        self.assertTrue((dest / stage_install.MARKER).is_file())
 
     def test_missing_player_is_named(self):
         with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_PLAYER_MISSING"):
@@ -202,6 +216,56 @@ class InstallTests(unittest.TestCase):
                          (second / "bin" / "nakagawa_player.exe").resolve())
 
 
+class ShortcutRefusalThroughMainTests(unittest.TestCase):
+    """main() checks every requested shortcut before it stages or writes anything (#2208)."""
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name)
+        self.player = self.root / "player.exe"
+        self.player.write_bytes(b"MZ")
+
+    def _run(self, *arguments):
+        err = io.StringIO()
+        with mock.patch.object(stage_install, "IS_WINDOWS", True), \
+                mock.patch.object(stage_install, "desktop_folder", return_value=self.root / "Desktop"), \
+                mock.patch.object(stage_install, "start_menu_folder", return_value=self.root / "Start"), \
+                mock.patch.object(stage_install, "stage_install") as staging, \
+                mock.patch.object(stage_install, "read_shortcut_target", side_effect=self._target), \
+                mock.patch.object(stage_install, "write_shortcut") as writer, \
+                mock.patch.object(stage_install, "record_integration") as recorder, \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            status = stage_install.main(["--dest", str(self.root / "install"), "--player", str(self.player),
+                                         *arguments])
+        return status, err.getvalue(), staging, writer, recorder
+
+    def _target(self, shortcut):
+        return str(self.root / "other" / "bin" / "nakagawa_player.exe")
+
+    def test_a_refused_second_shortcut_leaves_nothing_staged_or_written(self):
+        other = self.root / "other" / "bin"
+        other.mkdir(parents=True)
+        (other / "nakagawa_player.exe").write_bytes(b"MZ")
+        (self.root / "Start").mkdir()
+        (self.root / "Start" / stage_install.SHORTCUT_NAME).write_bytes(b"lnk")  # owned by the other copy
+        status, err, staging, writer, recorder = self._run("--desktop-shortcut", "--start-menu-shortcut")
+        self.assertEqual(status, 1)
+        self.assertIn("INSTALL_SHORTCUT_OTHER_COPY", err)
+        staging.assert_not_called()
+        writer.assert_not_called()
+        recorder.assert_not_called()
+        self.assertFalse((self.root / "install").exists())
+
+    def test_each_shortcut_is_recorded_as_it_is_written(self):
+        status, _, staging, writer, recorder = self._run("--desktop-shortcut", "--start-menu-shortcut")
+        self.assertEqual(status, 0)
+        self.assertEqual(writer.call_count, 2)
+        self.assertEqual([call.args[1] for call in recorder.call_args_list],
+                         [[self.root / "Desktop" / stage_install.SHORTCUT_NAME],
+                          [self.root / "Start" / stage_install.SHORTCUT_NAME]])
+
+
 class ShortcutFlagTests(unittest.TestCase):
     """--desktop-shortcut and --start-menu-shortcut through main(), with the install and the
     shortcut writer stubbed, so the routing is checked on any host."""
@@ -243,12 +307,14 @@ class ShortcutFlagTests(unittest.TestCase):
         self.assertEqual(self.written, [self.programs / "Nakagawa Recomp.lnk"])
         self.assertEqual(self.recorded, [[self.programs / "Nakagawa Recomp.lnk"]])
 
-    def test_both_shortcuts_are_written_and_recorded_together(self):
+    def test_both_shortcuts_are_written_and_each_recorded_as_written(self):
         with mock.patch.object(stage_install, "IS_WINDOWS", True):
             self.assertEqual(self._main("--desktop-shortcut", "--start-menu-shortcut"), 0)
         both = [self.desktop / "Nakagawa Recomp.lnk", self.programs / "Nakagawa Recomp.lnk"]
         self.assertEqual(self.written, both)
-        self.assertEqual(self.recorded, [both], "one marker update lists both shortcuts")
+        # Recorded as each is written (record_integration keeps what was recorded before), so a later failure
+        # still leaves the earlier shortcuts in the marker for --uninstall.
+        self.assertEqual(self.recorded, [[path] for path in both])
 
     def test_no_flag_writes_no_shortcut(self):
         with mock.patch.object(stage_install, "IS_WINDOWS", True):

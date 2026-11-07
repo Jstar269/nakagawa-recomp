@@ -20,7 +20,11 @@ The install uses the release layout the player already searches
                                      console icon)
 
 Only a folder this tool created (it holds ``.nakagawa-install.json``) is ever
-replaced, so pointing ``--dest`` at an unrelated folder fails closed. A
+replaced, so pointing ``--dest`` at an unrelated folder fails closed. A folder the
+Windows installer set up (it holds ``unins000.exe``) is refused for staging and for
+``--uninstall`` (``INSTALL_DESTINATION_INSTALLER_OWNED``), and a shortcut that starts a
+different existing copy is never replaced (``INSTALL_SHORTCUT_OTHER_COPY``, checked for
+every requested shortcut before anything is staged). A
 shortcut is a Windows ``.lnk`` written through ``WScript.Shell``; it starts the
 player with ``--ui=next`` by default, the way Explorer would start it, and
 carries the player's AppUserModelID (``APP_USER_MODEL_ID``, #2006), so a pinned
@@ -157,14 +161,20 @@ def export_source(repo: Path, destination: Path, revision: str = "HEAD") -> str:
 INSTALLER_UNINSTALL_FILES = ("unins000.exe", "unins000.dat")
 
 
-def _check_destination(dest: Path) -> None:
-    if dest.exists() and not dest.is_dir():
-        raise InstallError(f"INSTALL_DESTINATION_INVALID: {dest} is not a folder")
+def _check_not_installer_owned(dest: Path) -> None:
+    """Refuse a folder the Windows installer set up. Staging into it or uninstalling it from here would leave
+    Setup's uninstaller and its Apps & features entry pointing at a different program, or at nothing."""
     if any((dest / name).exists() for name in INSTALLER_UNINSTALL_FILES):
         raise InstallError(
             f"INSTALL_DESTINATION_INSTALLER_OWNED: {dest} was set up by the Windows installer (Setup.exe), "
             "which has its own uninstall in Apps & features; two uninstallers must never share a folder. "
             "Choose another folder")
+
+
+def _check_destination(dest: Path) -> None:
+    if dest.exists() and not dest.is_dir():
+        raise InstallError(f"INSTALL_DESTINATION_INVALID: {dest} is not a folder")
+    _check_not_installer_owned(dest)
     if dest.is_dir() and any(dest.iterdir()) and not (dest / MARKER).is_file():
         raise InstallError(
             f"INSTALL_DESTINATION_NOT_OWNED: {dest} already holds files this tool did not "
@@ -467,6 +477,7 @@ def _check_shortcut_not_another_copys(shortcut: Path, dest: Path) -> None:
         return
     target = read_shortcut_target(shortcut)
     if not target:
+        print(f"stage_install: note: could not read where {shortcut} points, so it is replaced", file=sys.stderr)
         return
     ours = dest / "bin" / "nakagawa_player.exe"
     existing = Path(target)
@@ -861,6 +872,7 @@ def plan_uninstall(dest: Path) -> dict:
     ``INSTALL_MARKER_INVALID`` for one whose marker is not what ``stage_install`` writes."""
     dest = dest.resolve()
     _check_uninstall_destination(dest)
+    _check_not_installer_owned(dest)
     if not (dest / MARKER).is_file():
         raise InstallError(
             f"INSTALL_DESTINATION_NOT_OWNED: {dest} has no {MARKER}, so this tool did not "
@@ -1010,6 +1022,19 @@ def main(argv=None) -> int:
         if args.shortcut is not None and not IS_WINDOWS:
             raise InstallError("INSTALL_SHORTCUT_UNSUPPORTED: --shortcut writes a Windows .lnk; "
                                "on Linux use --desktop-shortcut")
+        shortcuts: list[Path] = []
+        if IS_WINDOWS:
+            if args.shortcut is not None:
+                shortcuts.append(args.shortcut)
+            else:
+                if args.desktop_shortcut:
+                    shortcuts.append(desktop_folder() / SHORTCUT_NAME)
+                if args.start_menu_shortcut:
+                    shortcuts.append(start_menu_folder() / SHORTCUT_NAME)
+            # Every requested shortcut is checked before anything is staged or written, so a refusal leaves
+            # nothing half done.
+            for shortcut in shortcuts:
+                _check_shortcut_not_another_copys(shortcut, args.dest.resolve())
         record = stage_install(args.dest, args.player, revision=args.revision)
         print(f"stage_install: staged {record['player']} and source {record['source_commit'][:12]} "
               f"into {args.dest.resolve()}")
@@ -1019,19 +1044,11 @@ def main(argv=None) -> int:
                 record_integration(args.dest, [entry, icon])
                 print(f"stage_install: desktop entry {entry}")
         else:
-            shortcuts = []
-            if args.shortcut is not None:
-                shortcuts.append(args.shortcut)
-            else:
-                if args.desktop_shortcut:
-                    shortcuts.append(desktop_folder() / SHORTCUT_NAME)
-                if args.start_menu_shortcut:
-                    shortcuts.append(start_menu_folder() / SHORTCUT_NAME)
             for shortcut in shortcuts:
                 write_shortcut(shortcut, args.dest, args.arguments)
+                # Recorded as each is written, so --uninstall removes it even if a later one fails.
+                record_integration(args.dest, [shortcut])
                 print(f"stage_install: shortcut {shortcut}")
-            if shortcuts:
-                record_integration(args.dest, shortcuts)
     except InstallError as exc:
         print(f"stage_install: FAIL: {exc}", file=sys.stderr)
         return 1
