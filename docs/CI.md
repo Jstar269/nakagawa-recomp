@@ -108,8 +108,8 @@ The jobs:
   the group, so the first runs after this change restore no entry until a run on `main` has
   saved one per group.
 
-`CI required` needs `classify`, `hygiene`, `public_export`, `python_tools`, `native_tools` and
-`windows_runtime`. The Markdown lint, the main smoke and the fixture build reach it through the
+`CI required` needs `classify`, `hygiene`, `public_export`, `python_tools`, `native_tools`,
+`windows_runtime` and `android_build`. The Markdown lint, the main smoke and the fixture build reach it through the
 two always-required jobs they now belong to, so `tools/ci_required.py` no longer takes a result
 or run flag of their own. Each merged job's `timeout-minutes` covers its parts: hygiene 35
 (15 + 10 + 10), public export 30 (15 + 15), each Windows group 25 per part (50, 75 and
@@ -357,6 +357,24 @@ Steps that read what an earlier step built share its part. `needs.native_tools.r
 aggregates the parts, so `CI required` fails when any part fails.
 `tools/test_public_ci_wiring.py` (`NativeToolsPartitionTests`) fails if a serial gate is
 dropped, runs in more than one part, or changes its command.
+
+### Android launcher build
+
+The `android_build` job (#360) runs whenever the native gates do (`run_native`), beside
+them, and `CI required` reads its result (`ANDROID_RESULT`). On `ubuntu-24.04` it installs
+the SDK platform, build-tools, NDK and CMake versions that `android/app/build.gradle.kts`
+names, downloads the Gradle distribution named in
+`android/gradle/wrapper/gradle-wrapper.properties` and checks it against that file's
+`distributionSha256Sum`, then builds the launcher-only debug APK for arm64-v8a
+(`gradle -p android assembleDebug -Pnk.abis=arm64-v8a`) and checks that it carries
+`libmain.so`, `libSDL3.so` and `libSDL3_ttf.so` for that ABI and no other ABI. No title is
+bundled and nothing runs: running needs a device or an emulator
+([`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md)). The APK is kept for 14 days as the
+artifact `nakagawa-android-arm64-debug`, for installing on a phone
+([Test on a phone](ANDROID_DEVELOPMENT.md#test-on-a-phone)). The repository keeps no Gradle wrapper
+jar or scripts, as it keeps no other generated executable (#1100).
+`tools/test_public_ci_wiring.py` (`AndroidBuildWiringTests`) fails when the job's versions,
+the Gradle files and `ANDROID_DEVELOPMENT.md` disagree.
 
 The full-tree pre-commit run retains the publication audit and the Betterleaks
 current-tree scan; the hook runs Betterleaks in directory mode over the files it
