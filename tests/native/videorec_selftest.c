@@ -905,6 +905,71 @@ static void test_fatal_stop(const char *root, const char *self) {
           "and its run_end says no route named the end, never the clean end");
 }
 
+/* record.json's text, or "" when it cannot be read. */
+static void read_record_text(const char *dir, char *text, size_t cap) {
+    char p[700];
+    path_in(p, sizeof p, dir, "record.json");
+    text[0] = '\0';
+    FILE *f = fopen(p, "rb");
+    if (f) { size_t got = fread(text, 1, cap - 1u, f); text[got] = '\0'; fclose(f); }
+}
+
+/* #2138: record.json names the filter that made the written frames' pictures. A repeat counts
+ * under the picture it repeats; frames made two ways read "mixed"; the CPU presenters' frames at
+ * their own size are "none"; an unknown filter fails the recording. */
+static void test_filters(const char *root) {
+    char dir[600], text[8192];
+    static uint32_t px[W * H];
+    fill(px, 0x00102030u);
+
+    snprintf(dir, sizeof dir, "%s/filter-mixed", root);
+    CHECK(sr_videorec_test_start(dir, "raw"), "the filter recording starts");
+    sr_videorec_frame_filtered(px, W, H, W * 4u, SR_CAP_ORDER_BGRX, SR_VIDEOREC_FILTER_FSR1);
+    sr_videorec_vblank(100, vtime(100));
+    sr_videorec_vblank(101, vtime(101)); /* a repeat of the fsr1 picture */
+    sr_videorec_frame_filtered(px, W, H, W * 4u, SR_CAP_ORDER_BGRX, SR_VIDEOREC_FILTER_SHARP);
+    sr_videorec_vblank(102, vtime(102));
+    SrVideoRecStats st;
+    sr_videorec_test_stats(&st);
+    CHECK(st.frames == 3 && st.filter_frames[SR_VIDEOREC_FILTER_FSR1] == 2 &&
+          st.filter_frames[SR_VIDEOREC_FILTER_SHARP] == 1, "frames count under their picture's filter");
+    CHECK(sr_videorec_finish() == 1, "a recording made two ways reports PASS");
+    read_record_text(dir, text, sizeof text);
+    CHECK(strstr(text, "\"filter\": \"mixed\"") != NULL, "frames made two ways read mixed");
+    CHECK(strstr(text, "\"filter_frames\": {\"none\": 0, \"nearest\": 0, \"sharp\": 1, "
+                       "\"linear\": 0, \"fsr1\": 2}") != NULL, "and record.json counts each");
+
+    snprintf(dir, sizeof dir, "%s/filter-fsr1", root);
+    CHECK(sr_videorec_test_start(dir, "raw"), "the fsr1 recording starts");
+    sr_videorec_frame_filtered(px, W, H, W * 4u, SR_CAP_ORDER_BGRX, SR_VIDEOREC_FILTER_FSR1);
+    for (uint32_t v = 10; v < 14; v++) sr_videorec_vblank(v, vtime(v));
+    CHECK(sr_videorec_finish() == 1, "an fsr1 recording reports PASS");
+    read_record_text(dir, text, sizeof text);
+    CHECK(strstr(text, "\"filter\": \"fsr1\"") != NULL &&
+          strstr(text, "\"fsr1\": 4}") != NULL, "a recording made through FSR 1 says so");
+
+    snprintf(dir, sizeof dir, "%s/filter-none", root);
+    CHECK(sr_videorec_test_start(dir, "raw"), "the unscaled recording starts");
+    sr_videorec_frame(px, W, H, W * 4u, SR_CAP_ORDER_BGRX);
+    sr_videorec_vblank(20, vtime(20));
+    CHECK(sr_videorec_finish() == 1, "an unscaled recording reports PASS");
+    read_record_text(dir, text, sizeof text);
+    CHECK(strstr(text, "\"filter\": \"none\"") != NULL, "a picture at its own size is none");
+
+    snprintf(dir, sizeof dir, "%s/filter-bad", root);
+    CHECK(sr_videorec_test_start(dir, "raw"), "the bad-filter recording starts");
+    sr_videorec_frame_filtered(px, W, H, W * 4u, SR_CAP_ORDER_BGRX, SR_VIDEOREC_FILTER_COUNT);
+    sr_videorec_frame_filtered(px, W, H, W * 4u, SR_CAP_ORDER_BGRX, -1);
+    sr_videorec_vblank(30, vtime(30)); /* a picture taken under any name would be written here */
+    CHECK(sr_videorec_finish() == 0, "an unknown filter fails the recording");
+    CHECK(record_says(dir, "FAIL", "unknown filter"), "and record.json says why");
+    CHECK(sr_videorec_filter_name(SR_VIDEOREC_FILTER_COUNT) == NULL &&
+          strcmp(sr_videorec_filter_name(SR_VIDEOREC_FILTER_NEAREST), "nearest") == 0 &&
+          strcmp(sr_videorec_filter_name(SR_VIDEOREC_FILTER_LINEAR), "linear") == 0,
+          "filter names");
+    sr_videorec_test_reset();
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "-hide_banner") == 0) return fake_ffmpeg(argc, argv);
     if (argc == 4 && strcmp(argv[1], "--exit-child") == 0)
@@ -920,6 +985,7 @@ int main(int argc, char **argv) {
     test_stale_folder(root);
     test_name_taken(root);
     test_audio_failures(root);
+    test_filters(root);
     char self[1024];
     CHECK(self_path(self, sizeof self), "the selftest finds its own path for the fake FFmpeg");
     test_encoder_failures(root, self);

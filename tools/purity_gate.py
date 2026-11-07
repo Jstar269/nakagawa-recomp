@@ -79,6 +79,9 @@ ALLOWLIST: tuple[Allowed, ...] = (
     Allowed("src/rt/hle.c", 0x08FFDF00, 1,
             "HLE_TEST_SCHED_CALL_ENTRY: synthetic guest entry inside #ifdef "
             "SR_HLE_THREAD_SELFTEST, compiled only into the thread self-test"),
+    Allowed("src/rt/ge_replay.c", 0x08800000, 1,
+            "start of the PSP user partition as the placement of ge_replay's generated "
+            "--write-synthetic capture (the first-bad-draw selftest); no game is involved"),
     Allowed("src/rt/ge.c", 0x09D517ED, 1,
             "GE_POW_TH word: the high half of -log2 of a ge_powf reciprocal in Q63, a "
             "number of the power function's log table, not an address"),
