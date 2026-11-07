@@ -71,6 +71,8 @@ static uint64_t s_enc_write_us; /* host time spent handing frames to the encoder
 /* Two packed BGRX pictures: the one last written (s_out) and the newest presented one, which a
  * present writes into the other buffer so a gap frame can still repeat the written picture. */
 static uint8_t *s_buf[2];
+static int s_buf_filter[2];     /* each picture's SrVideoRecFilter */
+static uint64_t s_filter_frames[SR_VIDEOREC_FILTER_COUNT]; /* written frames, by filter */
 static int s_out;
 static uint8_t *s_cur;
 static uint32_t s_w, s_h;
@@ -864,9 +866,23 @@ int sr_videorec_requested_size(uint32_t *w, uint32_t *h) {
 
 /* ---- frames ---------------------------------------------------------------------------- */
 
+static const char *const k_vr_filter_names[SR_VIDEOREC_FILTER_COUNT] = {
+    "none", "nearest", "sharp", "linear", "fsr1"
+};
+
+const char *sr_videorec_filter_name(int filter) {
+    return filter >= 0 && filter < SR_VIDEOREC_FILTER_COUNT ? k_vr_filter_names[filter] : NULL;
+}
+
 void sr_videorec_frame(const void *px, uint32_t w, uint32_t h, uint32_t row_bytes,
                        sr_cap_order order) {
+    sr_videorec_frame_filtered(px, w, h, row_bytes, order, SR_VIDEOREC_FILTER_NONE);
+}
+
+void sr_videorec_frame_filtered(const void *px, uint32_t w, uint32_t h, uint32_t row_bytes,
+                                sr_cap_order order, int filter) {
     if (!sr_videorec_wants_frames() || !px || !w || !h || row_bytes < w * 4u) return;
+    if (!sr_videorec_filter_name(filter)) { vr_fail("a presenter named an unknown filter"); return; }
     if (!s_buf[0]) {
         if ((uint64_t)w * h * 4u > (uint64_t)1 << 31) { vr_fail("frame too large"); return; }
         s_buf[0] = (uint8_t *)calloc((size_t)w * h, 4u);
@@ -897,6 +913,7 @@ void sr_videorec_frame(const void *px, uint32_t w, uint32_t h, uint32_t row_byte
             }
         }
     }
+    s_buf_filter[1 - s_out] = filter;
     s_have_frame = 1;
     s_cur_new = 1;
 }
@@ -985,6 +1002,7 @@ static void vr_write_frame(uint32_t vcount, uint64_t guest_us, const char *kind)
         vr_fail("frames.csv write failed");
     s_guest_flips += flips;
     s_block_flips += flips;
+    s_filter_frames[s_buf_filter[s_out]]++;
     s_frames++;
     if (s_frames % 60u == 0u) vr_srt_cue(s_frames - 60u, s_frames);
     if (s_frames % VR_FREE_CHECK_FRAMES == 0u) vr_check_free_space();
@@ -1128,6 +1146,22 @@ typedef struct {
     uint64_t end;
 } VrFinal;
 
+/* "filter": the one filter every written frame's picture was made with, "mixed" when they
+ * differ, null with no frame; "filter_frames": the written frames by filter. */
+static int vr_write_filters(FILE *j) {
+    int used = -1, kinds = 0;
+    for (int i = 0; i < SR_VIDEOREC_FILTER_COUNT; i++)
+        if (s_filter_frames[i]) { used = i; kinds++; }
+    int ok = kinds == 0 ? fprintf(j, ",\n  \"filter\": null") >= 0
+             : fprintf(j, ",\n  \"filter\": \"%s\"",
+                       kinds > 1 ? "mixed" : k_vr_filter_names[used]) >= 0;
+    ok = ok && fprintf(j, ",\n  \"filter_frames\": {") >= 0;
+    for (int i = 0; ok && i < SR_VIDEOREC_FILTER_COUNT; i++)
+        ok = fprintf(j, "%s\"%s\": %llu", i ? ", " : "", k_vr_filter_names[i],
+                     (unsigned long long)s_filter_frames[i]) >= 0;
+    return ok && fprintf(j, "}") >= 0;
+}
+
 static int vr_fill_full(FILE *j, const void *ctx) {
     const VrFinal *f = (const VrFinal *)ctx;
     return fprintf(j, "{\n  \"schema\": 2,\n  \"status\": \"%s\",\n  \"reason\": ",
@@ -1136,6 +1170,7 @@ static int vr_fill_full(FILE *j, const void *ctx) {
            fprintf(j, ",\n  \"run_end\": ") >= 0 && vr_json_str(j, s_run_end) &&
            (s_exit_status == VR_EXIT_UNKNOWN ? fprintf(j, ",\n  \"exit_status\": null")
                                              : fprintf(j, ",\n  \"exit_status\": %d", s_exit_status)) >= 0 &&
+           vr_write_filters(j) &&
            fprintf(j,
                    ",\n  \"clock\": \"deterministic\",\n"
                    "  \"encoder\": \"%s\",\n"
@@ -1286,6 +1321,7 @@ void sr_videorec_test_stats(SrVideoRecStats *out) {
     out->height = s_h;
     out->first_vcount = s_vcount0;
     out->failed = s_failed;
+    memcpy(out->filter_frames, s_filter_frames, sizeof out->filter_frames);
 }
 
 void sr_videorec_test_reset(void) {
@@ -1297,6 +1333,8 @@ void sr_videorec_test_reset(void) {
     free(s_buf[0]);
     free(s_buf[1]);
     s_buf[0] = s_buf[1] = NULL;
+    s_buf_filter[0] = s_buf_filter[1] = SR_VIDEOREC_FILTER_NONE;
+    memset(s_filter_frames, 0, sizeof s_filter_frames);
     s_out = 0;
     free(s_ring);
     s_state = VR_UNREAD;
