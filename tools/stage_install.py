@@ -686,8 +686,8 @@ def check_release_assets(names) -> list[str]:
                 problems.append(f"ASSET_CHECKSUM_MISSING: {archive}.sha256")
     for setup in setups:
         installer = setup.group(0)
-        if not any(_PLAYER_ZIP.fullmatch(archive) and _PLAYER_ZIP.fullmatch(archive)[1] == setup[1]
-                   for archive in players.get(setup[2], [])):
+        zips = [_PLAYER_ZIP.fullmatch(archive) for archive in players.get(setup[2], [])]
+        if not any(found and found[1] == setup[1] for found in zips):
             problems.append(f"ASSET_INSTALLER_WITHOUT_ZIP: {installer} needs {setup[2]} ZIP of the same version "
                             "beside it; the installer is never the only download")
         if f"{installer}.sha256" not in names:
