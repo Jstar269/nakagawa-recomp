@@ -62,7 +62,7 @@
     X("SR_DETERMINISTIC_CLOCK", "string", "empty (off)", "sched.c", "1 makes guest time follow the guest work, not the host clock; empty or 0 keeps the paced or turbo clock. 1 with SR_NOVBPACE=0 is rejected.") \
     X("SR_DETERMINISTIC_SLICE_US", "number", "100", "sched.c", "Guest microseconds the deterministic clock charges per scheduler boundary; a value outside 1..100000 or not a number is rejected.") \
     X("SR_DEVELOPER_MODE", "flag-nonzero", "off", "gpu_sdl3vk/sdl3vk.c", "Marks a hand-started run as a developer run in the SDL3 Vulkan presenter.") \
-    X("SR_DISC_ID", "string", "unset", "gui.c", "Disc identifier string shown in the in-game pause overlay, set by the launcher.") \
+    X("SR_DISC_ID", "string", "unset", "gui.c,replay_checkpoint.c", "Disc identifier string shown in the in-game pause overlay, set by the launcher.") \
     X("SR_DISPLOG", "flag-presence", "off", "guest_interp.c,recomp.c", "Logs each guest dispatch with target, source pc and return address to stderr.") \
     X("SR_DLGLOG", "flag-presence", "off", "debug.h,hle_utility.c,savedata.c", "Prints diagnostic lines to stderr for utility dialogs and savedata dialog calls.") \
     X("SR_EXEC_SHARE_JSON", "path", "unset (no JSON written)", "perf.c", "File to which the execution-share profile is written as JSON at exit.") \
@@ -193,7 +193,11 @@
     X("SR_PSMF_SELFTEST_DEBUG", "flag-presence", "off", "psmf_producer_selftest.c", "Makes the PSMF producer self-test print extra statistics lines to stderr.") \
     X("SR_QUIET", "flag-nonzero", "off", "driver.c", "When nonzero, redirects stdout and stderr to the null device.") \
     X("SR_REAL_MODULE_START", "string", "unset (module_start runs for libfont only)", "hle_kernel_module.c,hle_thread_selftest.c", "1 lets module_start run for any module, 0 for none; other values are ignored with a warning.") \
+    X("SR_RECORD", "path", "unset (no recording)", "replay_checkpoint.c", "Records the run (checkpoints, pad samples, keyboard answers) to this file for SR_REPLAY; needs SR_DETERMINISTIC_CLOCK=1.") \
     X("SR_REDUCE_MOTION", "string", "Automatic (system setting)", "gui.c,overlay/overlay_host.c", "Player's Reduce motion choice for the overlay, falling back to the platform preference.") \
+    X("SR_REPLAY", "path", "unset (no replay)", "replay_checkpoint.c", "Replays an SR_RECORD file in a fresh run, checking each checkpoint; prints one REPLAY_ verdict and goes live when used up.") \
+    X("SR_REPLAY_CHECKPOINTS", "path", "unset (no checkpoints)", "replay_checkpoint.c", "Writes digests of the threads, scheduler, VRAM and RAM every N vblanks to this file; tools/nkstate.py ckpt-diff names where two runs split.") \
+    X("SR_REPLAY_CHECKPOINT_EVERY", "number", "60", "replay_checkpoint.c", "Vblanks between checkpoints for SR_REPLAY_CHECKPOINTS and SR_RECORD, 1..100000; another value stops the run.") \
     X("SR_RESOLUTION_SCALE", "number", "1", "gpu_sdl3vk/ge_gpu.c", "Internal render scale for the Vulkan GE backend; SR_GPU_SCALE is read first as the other spelling.") \
     X("SR_ROUTE_LEARN", "flag-presence", "off", "hle_route.c", "When set, enables route learning mode in the input route code.") \
     X("SR_ROUTE_NO_EXIT", "flag-presence", "off (route failure exits the process)", "hle_route.c", "Keeps the process running instead of exiting after a route failure report.") \

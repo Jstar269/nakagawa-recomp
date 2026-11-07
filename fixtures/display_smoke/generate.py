@@ -1217,7 +1217,8 @@ def run_vramdump(build_dir: Path) -> int:
         # load lets it, so the window starts at the first vblank and the run is judged on its
         # own trace (#2200).
         window = range(VRAMDUMP_FIRST_VBLANK, VRAMDUMP_FIRST_VBLANK + VRAMDUMP_WINDOW)
-        selected_vblanks = ",".join(str(vblank) for vblank in window)
+        selection = list(window)
+        selected_vblanks = ",".join(str(vblank) for vblank in selection)
         captured = launch(capture_dir, capture_vblank=selected_vblanks)
         baseline_ppm = baseline_dir / "frame_first.ppm"
         capture_ppm = capture_dir / "frame_first.ppm"
@@ -1235,7 +1236,6 @@ def run_vramdump(build_dir: Path) -> int:
         captured_output = captured.stdout + captured.stderr
         if failure := vramdump_capture_failure(captured_output, window):
             raise RuntimeError(failure)
-
         # PASS must mean a presented frame: with no presenter (no --gui) nothing is
         # presented, so the same selection must capture nothing and never say PASS.
         headless_dir = root / "headless-run"

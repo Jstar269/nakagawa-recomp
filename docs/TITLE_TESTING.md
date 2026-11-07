@@ -229,6 +229,61 @@ in the reference's `.json` sidecar and a `FAIL` against a reference taken with a
 `slice_us` in its sidecar: re-accept it with `check --accept`. Outside the gate, a pad script or
 a capture window does not turn the clock on; those runs keep their paced timing.
 
+## PPSSPP reference capture
+
+`tools/ppsspp_ref.py` takes references from a second implementation instead of from Nakagawa's
+own earlier runs ([#1882](https://github.com/Jstar269/nakagawa-recomp/issues/1882)), so it can catch
+a frame that was wrong from the start. It drives a local PPSSPP through PPSSPP's WebSocket debugger,
+replays a pad script frame-exact in emulated time, and stores one PNG per scene. It then grades
+Nakagawa's headless captures of the same frames against those PNGs. PPSSPP is not a hardware
+oracle: a `PASS` means the frame agrees with PPSSPP, not that it matches the PSP. PPSSPP is never
+bundled; the tool reads its path from `$PPSSPP_EXE` or `--ppsspp`.
+
+```powershell
+python -m unittest tools.test_ppsspp_ref                                     # public proof, no PPSSPP or game needed
+python tools/ppsspp_ref.py plan <private scenes.json>                        # the timeline, launches nothing
+python tools/ppsspp_ref.py capture <private scenes.json> --allow-ppsspp-registration
+python tools/ppsspp_ref.py compare <private scenes.json>
+```
+
+A scene file is private JSON next to the title's other private inputs. It names the `disc`, an
+optional `pad` script, the `out` folder for the references, and `scenes`, each with a `name`, a
+`frame`, the `nakagawa` capture to grade, a `threshold` and a `max_percent`. Optional keys are
+`rtc` (default 2012-01-01, the date the deterministic clock uses), `timeout` and `ini` overrides.
+References and diff images are game pixels: the tool refuses an output folder inside the checkout.
+
+- **Timing.** The driver resets the game with the CPU stopped at boot, then runs from one event to
+  the next with `cpu.runUntilTime`. Frame `n` is the display period that starts at vblank `n` (1001/60
+  ms each, counted from boot). A capture is taken half a period after vblank `n`. A press for frame
+  `n` is set half a period before vblank `n`, so the controller sample at vblank `n` is the first to
+  see it. PPSSPP's reported time can trail the deadline by a microsecond or so, because it
+  truncates whenever its clock rebases. So a stop up to 1000 µs early is accepted, and so is one up
+  to the next vblank's margin late. A stop outside that window is a `FAIL`, and each run prints
+  how far its stops strayed.
+- **Input.** Only the legacy `<frame> <mask> <width> [<lx> <ly>]` table is accepted, with the same
+  rules for overlapping rows as the runtime. A route program waits on guest state that PPSSPP cannot
+  report, so it is refused. Nakagawa's scripted input waits for the guest to read each press
+  ([Scripted input is delivered in guest time](DEBUGGING.md#scripted-input-is-delivered-in-guest-time)),
+  and PPSSPP does not. A route whose presses land only because of that wait therefore disagrees,
+  and the disagreement is a `FAIL`.
+- **Determinism.** `capture` runs PPSSPP twice by default (`--runs N`) and stores a scene only when
+  every run produced the same pixels. The settings it pins (software renderer, no frame skipping, no
+  update check, no cheats, no state loading) and the PPSSPP version go into each reference's
+  `.json` sidecar.
+- **Verdicts.** `compare` prints one line per scene: `PASS`, `FAIL` (over the tolerance, a size
+  mismatch or an unreadable reference), `NO_REFERENCE` or `NOT_RUN <reason>`. It then prints a
+  summary. Any `FAIL` exits 1, and `NO_REFERENCE` or `NOT_RUN` exits 3: neither is a pass. Every scene
+  that differs gets `<scene>.diff.png` in `<out>/diff`: the capture dimmed to a third, with every
+  pixel over the threshold in magenta.
+- **What PPSSPP must have.** `capture` needs a PPSSPP whose debugger has `cpu.runUntilTime` and
+  reports its process id in `version`. Both arrived after v1.20.4. With an older build the result
+  is `NOT_RUN ppsspp-too-old` and nothing is stored. A missing PPSSPP or disc is
+  `NOT_RUN no-ppsspp` or `NOT_RUN no-disc`.
+- **Network.** The tool connects only to `127.0.0.1`. PPSSPP's debugger web server, though,
+  reports the machine's local IP address and port to `report.ppsspp.org` while it runs, for its
+  remote-disc discovery. `capture` will not start PPSSPP until `--allow-ppsspp-registration` says you
+  accept that; without the flag it reports `NOT_RUN registration-not-accepted`.
+
 ## Local presented-frame acceptance
 
 For a locally authorized title run using an already prepared library entry, the

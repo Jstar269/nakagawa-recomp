@@ -12,6 +12,7 @@
 
 #include "hle_internal.h"
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
+#include "replay_checkpoint.h" /* sr_replay_pad_skip, sr_replay_pad_sample */
 
 #define ROUTE_MAX_CP     32
 #define ROUTE_MAX_ALT    4
@@ -1450,7 +1451,7 @@ void sr_ctrl_sample(void) {
     /* The pause request is already a scheduler rendezvous. Do not commit a pad
      * sample at the request boundary; the first post-resume sample owns that
      * guest-time input transition. */
-    if (sched_pause_pending()) return;
+    if (sr_replay_pad_skip(sched_pause_pending())) return; /* SR_RECORD/SR_REPLAY: replay_checkpoint.h */
     /* The left stick. Digital mode reads it centred whatever holds it (measured, see hle.c).
      * In analog mode the live stick is the window's pad (a test build's stand-in replaces it),
      * and a route step that holds the stick replaces both for the samples it holds it, then
@@ -1487,6 +1488,9 @@ void sr_ctrl_sample(void) {
      * project choice, not yet measured on hardware. */
     keyboard_took_sample = keyboard_took_sample || sr_osk_overlay_active();
     if (keyboard_took_sample) buttons = 0u;
+    /* The sample is final here: SR_RECORD writes it down and SR_REPLAY hands back the recorded
+     * one, before anything below reads it (replay_checkpoint.h). */
+    sr_replay_pad_sample(&buttons, &lx, &ly, &keyboard_took_sample);
     /* A line per change of what the guest is handed, the stick included: padscript_from_log
      * rebuilds a replay from these lines, so a stick that moved with no button change has to
      * appear here, or the replay would hold the stick where the last button left it. */

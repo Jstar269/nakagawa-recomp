@@ -407,7 +407,7 @@ nk-ui-focus-selftest:
 		if [ "$$rc" = 77 ]; then echo "SKIP nk-ui-focus-selftest SDL translation leg (exit 77): SDL3 not found by build discovery"; \
 		elif [ "$$rc" != 0 ]; then exit "$$rc"; fi
 
-native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player $(LIBCHDR_LIB) clay-layout-selftest nk-ui-core-selftest nk-ui-player-screens-selftest nk-ui-overlay-screens-selftest nk-ui-overlay-host-selftest nk-ui-sdlr-selftest nk-ui-vk-selftest nk-ui-focus-selftest
+native-core-tests: cpu-lle-selftest domain-mode-selftest nkstate-selftest native-core-objects-core native-core-objects-player $(LIBCHDR_LIB) clay-layout-selftest nk-ui-core-selftest nk-ui-player-screens-selftest nk-ui-overlay-screens-selftest nk-ui-overlay-host-selftest nk-ui-sdlr-selftest nk-ui-vk-selftest nk-ui-focus-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" src/rt/pgf_public.c \
 		tests/native/test_pgf_public.c -o $(BUILD_ROOT)/test_pgf_public$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pgf_public$(EXE_EXT)

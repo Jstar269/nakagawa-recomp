@@ -735,6 +735,37 @@ int main(int argc, char *argv[]) {
     if (argc >= 2 && strcmp(argv[1], "--launch-loose-roots") == 0) {
         return launch_loose_roots_transport(argc, argv);
     }
+    if (argc >= 5 && strcmp(argv[1], "--identify-build") == 0) {
+        /* --identify-build <manifest> <iso> <executable>: register the manifest as an overlay,
+           then name the build the disc holds (#2140). Prints "status|label|sha256|text". */
+        char err_buf[512] = {0};
+        NkTitleEntry entry;
+        NkBuildIdentity id;
+        char text[512];
+        static const char * const names[] = {"untracked", "supported", "experimental", "known-bad", "unlisted"};
+        FILE *f = fopen(argv[2], "rb");
+        char *buf;
+        size_t rd;
+        if (!f) { printf("REJECT: Could not open file\n"); return 1; }
+        buf = (char *)malloc(NK_MANIFEST_MAX_BYTES + 1);
+        if (!buf) { fclose(f); return 1; }
+        rd = fread(buf, 1, NK_MANIFEST_MAX_BYTES, f);
+        fclose(f);
+        buf[rd] = '\0';
+        if (!nk_title_manifest_parse_buffer(buf, rd, true, &entry, err_buf, sizeof(err_buf))) {
+            printf("REJECT: %s\n", err_buf);
+            free(buf);
+            return 1;
+        }
+        free(buf);
+        if (!nk_title_manifest_identify_build(entry.primary_disc_id, argv[3], argv[4], &id)) {
+            printf("REJECT: identify failed\n");
+            return 1;
+        }
+        nk_title_manifest_describe_build(&id, text, sizeof(text));
+        printf("%s|%s|%s|%s\n", names[id.status], id.label, id.sha256, text);
+        return 0;
+    }
     if (argc >= 3 && strcmp(argv[1], "--check") == 0) {
         const char *manifest_path = argv[2];
         char err_buf[512] = {0};

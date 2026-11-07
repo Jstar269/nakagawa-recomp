@@ -40,6 +40,7 @@ EXE_EXT = ".exe" if _WINDOWS else ""
 class TitleManifestParityTests(unittest.TestCase):
     _temp_dir: tempfile.TemporaryDirectory | None = None
     native_exe: Path
+    test_max_executable_bytes: int = 64 * 1024
 
     @classmethod
     def setUpClass(cls):
@@ -53,6 +54,7 @@ class TitleManifestParityTests(unittest.TestCase):
         cls.native_exe = Path(cls._temp_dir.name) / f"test_manifest_parser{EXE_EXT}"
         cmd = [
             "gcc", "-std=c99", "-Wall", "-Wextra",
+            f"-DNK_TITLE_MANIFEST_MAX_EXECUTABLE_BYTES={cls.test_max_executable_bytes}",
             "-Isrc/core", "-Isrc/core/generated",
             "src/core/nk_iso.c", "src/core/nk_library.c", "src/core/nk_launch.c",
             "src/core/nk_title_manifest.c", "src/core/nk_json.c", "src/core/generated/nk_title_catalog.c",
@@ -332,6 +334,205 @@ class TitleManifestParityTests(unittest.TestCase):
             self.assertFalse(c_ok, c_message)
             self.assertIn("boolean", py_message)
             self.assertIn("boolean", c_message)
+
+    def test_disc_builds_parity(self):
+        """disc.builds (#2140): both parsers accept a valid list and refuse every malformed one alike."""
+        manifest = json.loads(
+            (ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
+        )
+        manifest["kind"] = "retail"
+        manifest.pop("profile_zero", None)
+        good = {
+            "executable_sha256": "a" * 64, "status": "supported", "label": "DISC_VERSION 1.00",
+        }
+        bad_cases = {
+            "uppercase digest": [dict(good, executable_sha256="A" * 64)],
+            "short digest": [dict(good, executable_sha256="a" * 63)],
+            "non-hex digest": [dict(good, executable_sha256="g" * 64)],
+            "unknown status": [dict(good, status="mostly-fine")],
+            "known-bad without reason": [dict(good, status="known-bad")],
+            "empty label": [dict(good, label="")],
+            "non-ASCII label": [dict(good, label="v1.00 é")],
+            "unknown field": [dict(good, extra=1)],
+            "duplicate digest": [good, dict(good, label="again")],
+            "empty list": [],
+            "too many": [dict(good, executable_sha256=f"{i:064x}") for i in range(17)],
+            "not a list": dict(good),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "builds.json"
+
+            def verdict(builds):
+                manifest["disc"] = {
+                    "id": "TEST00001", "region": "OTHER",
+                    "revision_policy": "exact-disc-id", "builds": builds,
+                }
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                return self._run_python(path), self._run_native(path, allow_override=True)
+
+            valid = [
+                good,
+                dict(good, executable_sha256="b" * 64, status="experimental", label="APP_VER 1.01"),
+                dict(good, executable_sha256="c" * 64, status="known-bad", label="patched",
+                     reason="A patched executable; its addresses differ."),
+            ]
+            (py_ok, py_message), (c_ok, c_message) = verdict(valid)
+            self.assertTrue(py_ok, py_message)
+            self.assertTrue(c_ok, c_message)
+            for label, builds in bad_cases.items():
+                (py_ok, py_message), (c_ok, c_message) = verdict(builds)
+                self.assertFalse(py_ok, f"Python accepted {label}: {py_message}")
+                self.assertFalse(c_ok, f"Native accepted {label}: {c_message}")
+
+    def test_build_identity_native_matches_python(self):
+        """The native identifier names the build a disc holds as the Python prep engine does (#2140)."""
+        import hashlib
+
+        from nk_core.prep_engine import identify_build_in
+        from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
+
+        elf = build_plain_mips_elf()
+        digest = hashlib.sha256(elf).hexdigest()
+        manifest = json.loads(
+            (ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
+        )
+        manifest["kind"] = "retail"
+        manifest.pop("profile_zero", None)
+        listed = {"executable_sha256": digest, "status": "supported", "label": "DISC_VERSION 1.00"}
+        other = {"executable_sha256": "1" * 64, "status": "supported", "label": "DISC_VERSION 1.01"}
+        bad = {"executable_sha256": digest, "status": "known-bad", "label": "patched copy",
+               "reason": "A patched executable; its addresses differ."}
+        cases = [
+            ("untracked", None, "", ""),
+            ("supported", [listed], "DISC_VERSION 1.00", "(supported)"),
+            ("experimental", [dict(listed, status="experimental")], "DISC_VERSION 1.00", "(experimental)"),
+            ("known-bad", [bad], "patched copy", "addresses differ"),
+            ("unlisted", [other], "", "Supported build: DISC_VERSION 1.01"),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            iso = Path(temporary) / "disc.iso"
+            create_test_iso_with_executables(iso, elf, disc_id="TEST00001")
+            path = Path(temporary) / "builds.json"
+            for want, builds, label, fragment in cases:
+                disc = {"id": "TEST00001", "region": "OTHER", "revision_policy": "exact-disc-id"}
+                if builds is not None:
+                    disc["builds"] = builds
+                manifest["disc"] = disc
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                result = subprocess.run(
+                    [str(self.native_exe), "--identify-build", str(path), str(iso), "EBOOT.BIN"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, f"{want}: {result.stdout}{result.stderr}")
+                status, found_label, sha, text = result.stdout.strip().split("|", 3)
+                self.assertEqual(status, want)
+                self.assertEqual(found_label, label)
+                self.assertIn(fragment, text)
+                if builds is not None:
+                    self.assertEqual(sha, digest)
+                    self.assertEqual(identify_build_in(builds, "EBOOT.BIN", sha)["status"],
+                                     "supported" if want == "supported" else
+                                     "experimental" if want == "experimental" else
+                                     "known-bad" if want == "known-bad" else "unlisted")
+
+    def test_build_identity_size_limit_native_matches_python(self):
+        """Review S2: both Python and native build identification refuse an executable over the bound.
+
+        A 512 MiB synthetic ISO fixture is impractical in unit tests; the bound is
+        made injectable on both sides (the C test build defines NK_TITLE_MANIFEST_MAX_EXECUTABLE_BYTES
+        via -D on the compiler line, and the Python test patches tools.nk_core.iso_inspect.MAX_EXECUTABLE_BYTES).
+        An executable at the bound is still hashed by both legs, while an executable
+        just over the bound is refused by both legs as unlisted.
+        """
+        import hashlib
+        import nk_core.iso_inspect as iso_inspect
+        from nk_core.prep_engine import identify_build_in
+        from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
+
+        elf = build_plain_mips_elf()
+        bound = self.test_max_executable_bytes
+        self.assertGreater(bound, len(elf))
+
+        manifest_template = json.loads(
+            (ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
+        )
+        manifest_template["kind"] = "retail"
+        manifest_template.pop("profile_zero", None)
+
+        orig_max = iso_inspect.MAX_EXECUTABLE_BYTES
+        try:
+            iso_inspect.MAX_EXECUTABLE_BYTES = bound
+            with tempfile.TemporaryDirectory() as temporary:
+                temp_dir = Path(temporary)
+                # Case 1: Exactly at the bound (should be hashed by both legs)
+                exact_payload = elf + b"\0" * (bound - len(elf))
+                exact_digest = hashlib.sha256(exact_payload).hexdigest()
+                exact_iso = temp_dir / "exact.iso"
+                create_test_iso_with_executables(exact_iso, exact_payload, disc_id="TEST00001")
+
+                exact_manifest_path = temp_dir / "exact.json"
+                exact_manifest = dict(manifest_template)
+                exact_manifest["disc"] = {
+                    "id": "TEST00001",
+                    "region": "OTHER",
+                    "revision_policy": "exact-disc-id",
+                    "builds": [{"executable_sha256": exact_digest, "status": "supported", "label": "EXACT_BOUND"}],
+                }
+                exact_manifest_path.write_text(json.dumps(exact_manifest), encoding="utf-8")
+
+                # Python leg at bound
+                py_hash_exact = iso_inspect.iso_executable_sha256(exact_iso, "EBOOT.BIN")
+                self.assertEqual(py_hash_exact, exact_digest)
+                py_id_exact = identify_build_in(exact_manifest["disc"]["builds"], "EBOOT.BIN", py_hash_exact)
+                self.assertEqual(py_id_exact["status"], "supported")
+                self.assertEqual(py_id_exact["executable_sha256"], exact_digest)
+
+                # Native leg at bound
+                res_exact = subprocess.run(
+                    [str(self.native_exe), "--identify-build", str(exact_manifest_path), str(exact_iso), "EBOOT.BIN"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(res_exact.returncode, 0, f"Native identify failed at bound: {res_exact.stderr}")
+                status_exact, label_exact, sha_exact, _ = res_exact.stdout.strip().split("|", 3)
+                self.assertEqual(status_exact, "supported")
+                self.assertEqual(label_exact, "EXACT_BOUND")
+                self.assertEqual(sha_exact, exact_digest)
+
+                # Case 2: Just over the bound (should be refused by both legs)
+                over_payload = elf + b"\0" * (bound + 1 - len(elf))
+                over_digest = hashlib.sha256(over_payload).hexdigest()
+                over_iso = temp_dir / "over.iso"
+                create_test_iso_with_executables(over_iso, over_payload, disc_id="TEST00001")
+
+                over_manifest_path = temp_dir / "over.json"
+                over_manifest = dict(manifest_template)
+                over_manifest["disc"] = {
+                    "id": "TEST00001",
+                    "region": "OTHER",
+                    "revision_policy": "exact-disc-id",
+                    "builds": [{"executable_sha256": over_digest, "status": "supported", "label": "OVER_BOUND"}],
+                }
+                over_manifest_path.write_text(json.dumps(over_manifest), encoding="utf-8")
+
+                # Python leg over bound
+                py_hash_over = iso_inspect.iso_executable_sha256(over_iso, "EBOOT.BIN")
+                self.assertIsNone(py_hash_over)
+                py_id_over = identify_build_in(over_manifest["disc"]["builds"], "EBOOT.BIN", py_hash_over)
+                self.assertEqual(py_id_over["status"], "unlisted")
+                self.assertEqual(py_id_over["executable_sha256"], "")
+
+                # Native leg over bound
+                res_over = subprocess.run(
+                    [str(self.native_exe), "--identify-build", str(over_manifest_path), str(over_iso), "EBOOT.BIN"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(res_over.returncode, 0, f"Native identify failed over bound: {res_over.stderr}")
+                status_over, label_over, sha_over, _ = res_over.stdout.strip().split("|", 3)
+                self.assertEqual(status_over, "unlisted")
+                self.assertEqual(label_over, "")
+                self.assertEqual(sha_over, "")
+        finally:
+            iso_inspect.MAX_EXECUTABLE_BYTES = orig_max
 
     def test_hostile_mutations_parity(self):
         """Both parsers must fail closed on hostile mutations."""
