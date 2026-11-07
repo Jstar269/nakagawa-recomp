@@ -1206,6 +1206,41 @@ default branch, because a group's parent may be an earlier group that never land
 is observation only and not a required check; the hosted `Trusted provenance
 attestation` remains the pull-request gate.
 
+## Merging parallel additions
+
+Some files get a new item from almost every pull request: a self-test block in `mk/selftests.mk`, a
+target in `mk/public_targets.mk`, a source in `mk/runtime_sources.mk` or `CMakeLists.txt`, a row in a
+`docs/DEBUGGING.md` table. Two pull requests that add at the same place conflict in Git although
+neither touches the other's lines. `.gitattributes` marks those five files `merge=nk-append`, and
+`tools/merge_append.py` is the merge driver behind that name. It runs the ordinary three-way merge and
+reads each conflict. If the common ancestor has nothing there, both sides only inserted, and the driver
+keeps ours and then theirs. If the ancestor has lines there, one side changed or removed them, and the
+driver leaves the ordinary conflict markers. Git's own `merge=union` is not used because it keeps both
+versions of a line that both sides edited and leaves no marker.
+
+Turn it on once per clone (worktrees of a clone share the setting):
+
+```bash
+git config merge.nk-append.name "append-only list merge"
+git config merge.nk-append.driver "python tools/merge_append.py %O %A %B %L %P"
+```
+
+Without the setting, Git ignores the attribute and merges as usual. The driver runs wherever Git
+merges on that machine (`git merge`, `git merge --squash`, `git cherry-pick`, `git rebase`). GitHub's
+own mergeability check and its **Update branch** button do not run it, so a pull request can still show
+a conflict on GitHub that a local merge resolves. The rest of the conflict-prone files stay out on
+purpose, and `tools/test_merge_append.py` keeps the list honest:
+
+- `docs/ENHANCEMENT_CONTRACT.md`, `docs/CI.md` and `docs/COMPATIBILITY.md` are prose. Parallel edits
+  there rewrite the same paragraph or renumber a section, and the driver would only leave them as
+  conflicts. Keep a change to a shared paragraph small, and put a new item in its own bullet or row.
+- `src/rt/gpu_sdl3vk/ge_gpu_selftest.inc`, `src/player/player_state.c`, `tools/codegen.py` and every other
+  C or Python file are code. Two insertions at one spot there can need an order or a shared brace.
+- The root `Makefile` only includes the `mk/` files, so it is no longer an append point.
+
+Add a file to the list only when every conflict it can have is two independent items. In a recipe,
+that means separate commands, never a line and its continuation.
+
 ## Trusted CI verdict
 
 `.github/workflows/ci-trust-verdict.yml` and `tools/ci_trust_verdict.py` (#373, which also
