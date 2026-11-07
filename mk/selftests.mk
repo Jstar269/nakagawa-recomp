@@ -186,11 +186,13 @@ motion-match-selftest:
 # a C library the selftest compares exactly (UCRT) and is NOT_RUN elsewhere.
 native-core-tests: fsr3-host-selftest fsr3-mutants
 .PHONY: fsr3-host-selftest fsr3-mutants
+# Optional argv flags for the exhaustive 2^32-input f16 check; set on the make command line.
+FSR3_HOST_SELFTEST_ARGS =
 fsr3-host-selftest:
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
 		-Ithird_party/fidelityfx_sdk/upscalers/fsr3/include/gpu -o $(BUILD_DIR)/fsr3_host_selftest$(EXE_EXT) \
 		tests/native/fsr3_host_selftest.c src/rt/fsr3_host.c src/rt/fsr3_jitter.c -lm
-	$(BUILD_DIR)/fsr3_host_selftest$(EXE_EXT) tests/native/fsr3_host_oracle.txt
+	$(BUILD_DIR)/fsr3_host_selftest$(EXE_EXT) tests/native/fsr3_host_oracle.txt $(FSR3_HOST_SELFTEST_ARGS)
 fsr3-mutants: fsr3-host-selftest
 	"$(PYTHON)" tools/fsr3_mutants.py --build-dir $(BUILD_DIR)/fsr3-mutants --cc "$(CC)"
 

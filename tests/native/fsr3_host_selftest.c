@@ -14,8 +14,8 @@
  * J: the phase count and the first 72 offsets against Halton(2, 3) computed exactly in integers,
  * and the clip-space offset for the GE canvas; then the record's jitter phase counts and offsets,
  * AMD's f32-to-f16 conversion for every sign and exponent, and the RCAS constants for a sweep of
- * sharpness. With FSR3_HOST_EXHAUSTIVE=1 the cell also hashes the f16 conversion of all 2^32
- * floats against the record's hash.
+ * sharpness. With --exhaustive the cell also hashes the f16 conversion of all 2^32 floats
+ * against the record's hash.
  *
  * The record's provenance: tests/native/fsr3_host_oracle.md. No game data.
  */
@@ -279,15 +279,14 @@ static void check_f16(const char *line) {
     }
 }
 
-static void check_f16_all(const char *line) {
+static void check_f16_all(const char *line, int exhaustive) {
     unsigned long long want;
     if (sscanf(line, "f16all %llx", &want) != 1) {
         CHECK(0, "unreadable: %s", line);
         return;
     }
-    const char *env = getenv("FSR3_HOST_EXHAUSTIVE");
-    if (!env || strcmp(env, "1") != 0) {
-        printf("NOTE f16 over all 2^32 floats not run (FSR3_HOST_EXHAUSTIVE=1 runs it); every sign and exponent was checked\n");
+    if (!exhaustive) {
+        printf("NOTE f16 over all 2^32 floats not run (pass --exhaustive to run it); every sign and exponent was checked\n");
         return;
     }
     unsigned long long h = 14695981039346656037ull;
@@ -355,10 +354,11 @@ static void j_unit(void) {
 /* ---- the replay --------------------------------------------------------------------------------- */
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "usage: fsr3_host_selftest <fsr3_host_oracle.txt>\n");
+    if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[2], "--exhaustive") != 0)) {
+        fprintf(stderr, "usage: fsr3_host_selftest <fsr3_host_oracle.txt> [--exhaustive]\n");
         return 2;
     }
+    const int exhaustive = argc == 3;
     FILE *f = fopen(argv[1], "rb");
     if (!f) {
         fprintf(stderr, "FAIL cannot open %s\n", argv[1]);
@@ -453,7 +453,7 @@ int main(int argc, char **argv) {
             check_f16(line);
             helpers++;
         } else if (!strncmp(line, "f16all ", 7)) {
-            check_f16_all(line);
+            check_f16_all(line, exhaustive);
             helpers++;
         } else if (!strncmp(line, "rcas ", 5)) {
             check_rcas(line);
