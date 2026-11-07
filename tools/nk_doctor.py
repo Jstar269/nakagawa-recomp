@@ -26,6 +26,7 @@ from typing import Sequence
 
 from nk_doctor_core import Report
 from nk_doctor_checks import (
+    TitleDiagnosticContext,
     check_agent_identity,
     check_build_products,
     check_build_profile,
@@ -81,6 +82,87 @@ def render_json(report: Report, strict: bool) -> str:
         "results": [asdict(result) for result in report.results],
     }
     return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _long_path_candidates(
+    root: Path,
+    title_context: TitleDiagnosticContext,
+    user_data_root: Path | None,
+) -> tuple[tuple[str, Path], ...]:
+    """Name expected input, build, and output paths without opening those paths."""
+    candidates: list[tuple[str, Path]] = []
+
+    def add(label: str, path: Path | None) -> None:
+        if path is not None:
+            candidates.append((label, path))
+
+    if title_context.has_declared_executable_path and title_context.game_elf_candidates:
+        add("configured executable input", title_context.game_elf_candidates[0])
+    elif title_context.game_elf_candidates:
+        for path in title_context.game_elf_candidates:
+            add("executable input candidate", path)
+    add("configured PSP header input", title_context.psp_header_path)
+    add("configured disc image input", title_context.disc_image)
+    add("manifest asset input root", title_context.data_root)
+    if title_context.module_dir is not None:
+        if title_context.required_modules:
+            for name in title_context.required_modules:
+                add("required PRX input", title_context.module_dir / name)
+        else:
+            add("module input root", title_context.module_dir)
+
+    sr_dataroot = os.environ.get("SR_DATAROOT")
+    if sr_dataroot:
+        path = Path(sr_dataroot)
+        if path.is_absolute():
+            add("configured asset input root", path)
+
+    build_dir_value = os.environ.get("BUILD_DIR")
+    if build_dir_value:
+        build_dir = Path(build_dir_value)
+        if not build_dir.is_absolute():
+            build_dir = root / build_dir
+    else:
+        build_root_value = os.environ.get("NK_BUILD_ROOT") or os.environ.get("BUILD_ROOT")
+        if build_root_value:
+            build_root = Path(build_root_value)
+            if not build_root.is_absolute():
+                build_root = root / build_root
+            build_dir = build_root / title_context.game_name
+        else:
+            build_dir = root / "build" / title_context.game_name
+    add("build executable output", build_dir / f"{title_context.game_name}.exe")
+    add("build image output", build_dir / f"{title_context.game_name}_image.bin")
+
+    memstick_value = os.environ.get("SR_MEMSTICK")
+    if memstick_value:
+        memstick_root = Path(memstick_value)
+        if memstick_root.is_absolute():
+            add("configured save output root", memstick_root)
+    else:
+        add("save output root", root / "memstick")
+    log_root_value = os.environ.get("LOG_DIR")
+    log_root = Path(log_root_value) if log_root_value else root / "logs"
+    if not log_root.is_absolute():
+        log_root = root / log_root
+    for log_name in ("stdout_run.log", "stderr_run.log", "build_out_recomp.log"):
+        add("run log output", log_root / log_name)
+    for label, relative in (
+        ("screenshot output root", Path("docs/ui-baseline")),
+        ("oracle evidence root", Path("oracle")),
+        ("oracle fixture output root", Path("fixtures/psp_oracle/build")),
+        ("compile database output", Path("compile_commands.json")),
+        ("tool scratch output root", Path("scratch")),
+        ("temporary test output root", Path("tmp")),
+        ("agent state output root", Path(".codex-remote-attachments")),
+    ):
+        add(label, root / relative)
+
+    if user_data_root is not None:
+        path = user_data_root if user_data_root.is_absolute() else Path.cwd() / user_data_root
+        add("per-user package output root", path)
+
+    return tuple(candidates)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -202,15 +284,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         game_name=args.game_name,
     )
 
+    check_long_paths(
+        report,
+        root,
+        extra_paths=_long_path_candidates(root, title_context, args.user_data_root),
+    )
+
     if args.scope in {"repo", "all"}:
         check_repository_contract(report)
         check_agent_identity(report)
-        check_long_paths(report, root)
         check_worktree_accumulation(report, root)
     if args.scope in {"build", "run", "all"}:
         check_platform(report)
-    if args.scope == "build":
-        check_long_paths(report, root)
     if args.scope in {"build", "all"}:
         check_toolchain(report, args.msys_path, args.vulkan_sdk, root, sdl3_path=args.sdl3_path)
     if args.scope in {"inputs", "build", "all"}:

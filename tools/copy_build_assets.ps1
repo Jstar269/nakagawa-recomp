@@ -27,6 +27,17 @@ param(
 
 New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
 
+$gccCmd = Get-Command gcc -ErrorAction SilentlyContinue
+# Same order as tools/nk_cli.py: gcc on PATH wins; MSYS_PATH (or the default MSYS2 UCRT64 folder) is the fallback.
+$defaultMsysBin = if ($env:MSYS_PATH) { $env:MSYS_PATH } else { "C:\msys64\ucrt64\bin" }
+$binDir = if ($gccCmd) {
+    Split-Path $gccCmd.Source
+} elseif (Test-Path -LiteralPath $defaultMsysBin -PathType Container) {
+    $defaultMsysBin
+} else {
+    ''
+}
+
 $copiedSdl = $false
 if ($Sdl3DllPath -and (Test-Path $Sdl3DllPath)) {
     Copy-Item $Sdl3DllPath $BuildDir -Force
@@ -39,9 +50,7 @@ if (-not $copiedSdl) {
     } elseif (Test-Path '../SDL3.dll') {
         Copy-Item '../SDL3.dll' $BuildDir -Force
     } else {
-        $gccCmd = Get-Command gcc -ErrorAction SilentlyContinue
-        if ($gccCmd) {
-            $binDir = Split-Path $gccCmd.Source
+        if ($binDir) {
             $toolchainSdl = Join-Path $binDir 'SDL3.dll'
             if (Test-Path $toolchainSdl) {
                 Copy-Item $toolchainSdl $BuildDir -Force
@@ -101,8 +110,7 @@ if (Test-Path -LiteralPath $generatedFontDir -PathType Container) {
     }
 }
 
-# Discover toolchain directory for MinGW/UCRT runtime DLLs if imported
-$binDir = if ($gccCmd) { Split-Path $gccCmd.Source } elseif (Test-Path "C:\msys64\ucrt64\bin") { "C:\msys64\ucrt64\bin" } else { '' }
+# Copy runtime DLLs from the resolved toolchain directory when imported.
 
 if ($binDir) {
     $runtimeDlls = @('libgcc_s_seh-1.dll', 'libwinpthread-1.dll', 'libstdc++-6.dll')
