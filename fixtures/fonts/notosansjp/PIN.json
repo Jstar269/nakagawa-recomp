@@ -1,0 +1,24 @@
+{
+  "schema": "font-pin/v1",
+  "family": "Noto Sans JP",
+  "file": "../../../assets/fonts/ui/noto-sans-jp/NotoSansJP-Regular.ttf",
+  "sha256": "a66655d7b24ac6f793f73914c60ad44522b9fbd9e5f9b3706220b66c44fdaad2",
+  "size_bytes": 5766828,
+  "license": {
+    "spdx": "OFL-1.1",
+    "copyright": "Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'",
+    "license_text": "../../../assets/fonts/ui/noto-sans-jp/OFL.txt",
+    "license_text_sha256": "babcfe66c8a098b2fa279bc724a3a342f8124f77ce18941fbcc1bbb39823cded",
+    "upstream_license_text_sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+    "upstream_license_text_url": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/notosansjp/OFL.txt",
+    "reserved_font_names": ["Source"]
+  },
+  "source": {
+    "url": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf",
+    "repository": "https://github.com/google/fonts",
+    "path": "ofl/notosansjp/NotoSansJP[wght].ttf",
+    "retrieved": "2026-11-04",
+    "upstream_sha256": "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f",
+    "derivation": "The project UI font: the static wght=400 instance of the pinned variable font (assets/fonts/ui/manifest.json, docs/provenance/FONT_ORIGINS.md section 8). The Japanese project PGF reads the same file."
+  }
+}
