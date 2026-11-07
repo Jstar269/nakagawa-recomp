@@ -1058,7 +1058,7 @@ jobs:
           }
           export VK_ICD_FILENAMES="$lvp_icd"
           xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 \
-            make CC=gcc gpu-coherence-selftest
+            make CC=gcc gpu-coherence-selftest vram-view-identity-selftest
 
       # Ace Mode's texture scaling and smart 2D filter on the same production path
       # (src/rt/gpu_sdl3vk/tex_scale_gpu_selftest.inc), and the mutant that binds a scaled

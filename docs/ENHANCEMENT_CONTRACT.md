@@ -46,10 +46,14 @@ Presentation enhancements operate strictly after or alongside the host graphics 
   window with AMD FidelityFX Super Resolution 1 (EASU, then RCAS) in place of the bilinear or
   nearest filter. It reads the shown image and writes private images only; captures still hold
   the guest's frame (`gpu-capture-selftest`, run by hosted CI on lavapipe, presents through the
-  real pass and checks both), and guest VRAM and every guest flight event match with it off
-  (`display-smoke-fsr1`, which needs a Vulkan device and a display, so it is a local gate). It is
-  not part of Authentic: the launcher exports `SR_PRESENT_UPSCALE=off` for an authentic session
-  whatever the setting or the inherited environment (section 10.1), and a run with it on says
+  real pass and checks both). A run recording, which holds the picture the window shows, is
+  enlarged by its own FSR 1 pass at the recording's size and names the scaling it used in `record.json`
+  (the same selftest compares it with the pass's output, byte for byte), and guest VRAM and every
+  guest flight event match with it off (`display-smoke-fsr1`, which needs a Vulkan device and a
+  display, so it is a local gate). In the player it is the Enhanced part "Sharper enlarging"
+  (`"upscale"`, off by default) on Settings > Enhanced and each title's page. It is not part of
+  Authentic: the launcher exports `SR_PRESENT_UPSCALE=off` for an authentic session whatever the
+  setting or the inherited environment (section 10.1), and a run with it on says
   `ACE_MODE: present upscale fsr1`, emits a `phase=present_upscale` boot event and carries
   `"present_upscale": "fsr1"` in its flight bundle's `runtime.enhancements`, so neither
   `flight_diff.py` nor `boot_gate.py` takes it as authentic evidence. `picture_gate.py` and
@@ -288,8 +292,8 @@ The player offers three play modes per game (#2055):
 - **Authentic** is the standard: the game as released, recreating the PSP as closely as the project can. It is the
   default for a new library.
 - **Enhanced** turns on the project-authored improvements that work for any game: texture filtering, crisp system
-  text, the speed readout, the game badge, smooth motion and clean pitched sound (off by default) today. Each one is a *part* that can be turned off for
-  the library or for a single game.
+  text, the speed readout, the game badge, smooth motion, clean pitched sound and sharper enlarging (the last two off
+  by default) today. Each one is a *part* that can be turned off for the library or for a single game.
 - **Ace** is Enhanced plus the improvements made for that game alone. Today that is the title's 60 FPS game logic
   package (section 9). The player offers Ace only for a title with a usable package; its own parts can be turned off
   for that game too.
@@ -308,7 +312,8 @@ required, in any order, each once; a value for a feature this build does not car
 refuses the line. So does anything else: the run is Authentic and one `ACE_MODE: refused (<reason>)` line says why.
 Unset is off. With Enhanced or Ace on, the launcher also exports `SR_ACE_REPORT`, the per-run report under
 `<user data>/ace/`. Ace's 60 FPS game logic is not on this line: it selects the title's enhanced package variant
-(section 9.4).
+(section 9.4). Nor is sharper enlarging (`"upscale"`, #2122): the launcher exports it as `SR_PRESENT_UPSCALE`, `fsr1`
+for an Enhanced or Ace run with the part on and `off` otherwise, and always `off` for Authentic (section 2.2).
 
 ### 10.2. Authentic Is Untouched
 
@@ -501,7 +506,7 @@ help text says so.
 
 ```json
 "enhanced": {"default": "enhanced", "af": "16", "text": "on", "readout": "off", "notice": "on", "smooth": "off",
-            "sas": "off"},
+            "sas": "off", "upscale": "off"},
 "title_play": {"ULUS10000": {"mode": "ace", "af": "8"}, "ULES00000": {"mode": "library", "logic_60": "off"}}
 ```
 
@@ -525,7 +530,8 @@ when `"enhanced"` is absent, maps them as below, and writes the new keys from th
   game logic was not in effect while Authentic was chosen.
 
 `tests/native/test_player_state.c` (`test_play_mode_settings`, `test_play_mode_settings_mapping`) checks the names,
-the precedence, the off switches at both levels and this mapping.
+the precedence, the off switches at both levels and this mapping; `test_play_mode_upscale_settings` checks sharper
+enlarging (`"upscale"`: `fsr1` or `off`) and the upscaler it sets for the launch.
 
 ### 10.10. Texture Scaling and the Smart 2D Filter
 
