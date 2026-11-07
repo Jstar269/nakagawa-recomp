@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -137,8 +138,8 @@ class TestFormatPortabilityCheck(unittest.TestCase):
         gcc = ucrt_bin / "gcc.exe"
         gcc.write_bytes(b"synthetic executable path marker")
         with mock.patch.dict(os.environ, {"MSYS_PATH": str(ucrt_bin)}), \
-                mock.patch("tools.format_portability_check.sys.platform", "win32"), \
-                mock.patch("tools.format_portability_check.shutil.which", return_value=None):
+                mock.patch("tools.format_portability_check.sys", types.SimpleNamespace(platform="win32")), \
+                mock.patch("tools.format_portability_check.shutil", types.SimpleNamespace(which=lambda *_: None)):
             self.assertEqual(resolve_compiler("gcc"), str(gcc))
 
 

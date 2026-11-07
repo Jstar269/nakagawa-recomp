@@ -28,12 +28,11 @@ param(
 New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
 
 $gccCmd = Get-Command gcc -ErrorAction SilentlyContinue
+# Same order as tools/nk_cli.py: gcc on PATH wins; MSYS_PATH (or the default MSYS2 UCRT64 folder) is the fallback.
 $defaultMsysBin = if ($env:MSYS_PATH) { $env:MSYS_PATH } else { "C:\msys64\ucrt64\bin" }
-$binDir = if ($env:MSYS_PATH) {
-    $env:MSYS_PATH
-} elseif ($gccCmd) {
+$binDir = if ($gccCmd) {
     Split-Path $gccCmd.Source
-} elseif (Test-Path -LiteralPath $defaultMsysBin) {
+} elseif (Test-Path -LiteralPath $defaultMsysBin -PathType Container) {
     $defaultMsysBin
 } else {
     ''

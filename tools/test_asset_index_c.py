@@ -266,6 +266,30 @@ class TestProjectFontAssetCopy(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual((build / "SDL3.dll").read_bytes(), sdl.read_bytes())
 
+    @unittest.skipUnless(os.name == "nt", "the Windows staging route copies DLLs")
+    def test_gcc_on_path_wins_over_a_stale_msys_path(self):
+        with tempfile.TemporaryDirectory(prefix="project-font-gcc-first-") as tmp:
+            root = Path(tmp)
+            build = root / "build"
+            generated = build / "project-font"
+            generated.mkdir(parents=True)
+            for name in self.OUTPUTS:
+                (generated / name).write_bytes(f"synthetic project asset: {name}\n".encode("ascii"))
+            gcc_bin = root / "gcc-bin"
+            gcc_bin.mkdir()
+            (gcc_bin / "gcc.exe").write_bytes(b"synthetic executable path marker")
+            sdl = gcc_bin / "SDL3.dll"
+            sdl.write_bytes(b"synthetic SDL3 runtime")
+            stale = root / "stale-msys" / "bin"
+            stale.mkdir(parents=True)
+            env = os.environ.copy()
+            env["MSYS_PATH"] = str(stale)
+            env["PATH"] = os.pathsep.join([str(gcc_bin), str(Path(sys.executable).parent)])
+
+            result = self._run_copy(build, env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((build / "SDL3.dll").read_bytes(), sdl.read_bytes())
+
     def test_missing_project_slot_output_fails_by_name(self):
         with tempfile.TemporaryDirectory(prefix="project-font-missing-") as tmp:
             build = Path(tmp) / "build"
