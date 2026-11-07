@@ -108,8 +108,8 @@ The jobs:
   the group, so the first runs after this change restore no entry until a run on `main` has
   saved one per group.
 
-`CI required` needs `classify`, `hygiene`, `public_export`, `python_tools`, `native_tools` and
-`windows_runtime`. The Markdown lint, the main smoke and the fixture build reach it through the
+`CI required` needs `classify`, `hygiene`, `public_export`, `python_tools`, `native_tools`,
+`windows_runtime` and `android_build`. The Markdown lint, the main smoke and the fixture build reach it through the
 two always-required jobs they now belong to, so `tools/ci_required.py` no longer takes a result
 or run flag of their own. Each merged job's `timeout-minutes` covers its parts: hygiene 35
 (15 + 10 + 10), public export 30 (15 + 15), each Windows group 25 per part (50, 75 and
