@@ -21,17 +21,17 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Event/change | Jobs that run | Jobs intentionally skipped |
 | --- | --- | --- |
 | Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and CI required | only jobs irrelevant to the changed paths |
-| Ready pull request, docs-only | classification, hygiene/security, Markdown, CI required | Python/native, Windows |
+| Ready pull request, docs-only | classification, hygiene/security with its Markdown step, CI required | Python/native, Windows |
 | Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
-| Ready pull request, recipe-only edit of phony targets in `Makefile` | classification, hygiene/security, Python tooling on the Makefile-coupled modules over four shards, native/translation, Windows, CI required | the Python modules that cannot observe a Makefile recipe |
+| Ready pull request, recipe-only edit of phony targets in `Makefile` | classification, hygiene/security, Python tooling on the Makefile-coupled modules over three shards, native/translation, Windows, CI required | the Python modules that cannot observe a Makefile recipe |
 | Ready pull request, ordinary tools Python file | classification, hygiene/security, Python tooling, CI required | native/translation, Windows |
 | Ready pull request, only `tools/test_*.py` modules that no native or Windows gate runs | classification, hygiene/security, Python tooling, CI required | native/translation, Windows (see [Tests-only changes](#tests-only-changes)) |
 | Status-only transition (draft <-> ready) | no run: `.github/workflows/ci.yml` does not list `ready_for_review` or `converted_to_draft` | every gate, because the head did not change |
 | Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
 | Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, CI required | Python/native, Windows |
 | Mixed documentation/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the applicable product gates |
-| Ordinary push to `main` after a validated merge | classification, hygiene/security, Markdown when needed, compact main smoke, CI required | expensive platform matrix; the merged PR carried it |
-| Workflow push to `main` | the full applicable validation above plus main smoke | none of the substantive public gates |
+| Ordinary push to `main` after a validated merge | classification, hygiene/security with its Markdown step when needed and its compact main smoke steps, CI required | expensive platform matrix; the merged PR carried it |
+| Workflow push to `main` | the full applicable validation above plus the main smoke steps | none of the substantive public gates |
 | Manual `workflow_dispatch` | the full matrix and full Python tier, regardless of paths | none |
 | Nightly schedule (`17 3 * * *` UTC) | the full matrix and full Python tier | none |
 | Merge-queue group (`merge_group`, `checks_requested`) | the full matrix, as for a manual dispatch, regardless of paths; every required check reports on the group commit | none |
@@ -48,6 +48,82 @@ of 2026-11-02, whole history, hosted runners):
 | `ClusterFuzzLite` | 1 job, every pull request | 1 job only when the fuzz target's inputs change; none otherwise | 6.8k minutes over 1,767 runs, about 3.8 minutes a run |
 | `OSV-Scanner`, `Dependency Review`, `Provenance attestation` | 1 job each | unchanged | cheap per run (4.5-5.6k runs) but supply-chain controls |
 | `Trusted CI verdict` | about 4 runs, 1 job each | 2 runs (a new head, CI's completion); none for a superseded head's cancelled CI or for `ready_for_review` | 16 s average run |
+
+### Jobs per run
+
+GitHub's free plan runs about 20 jobs at once for this repository. A full `CI` run (a workflow
+change, a manual run, the nightly schedule, a merge group) used to need 23 jobs, so a second
+pull request's run waited for runners while the first ran. The same checks now run in 14
+jobs. Nothing was dropped and no command changed; jobs were merged and their steps run one
+after another. Three things differ in when or how a step runs, and none of them skips a step
+where it ran before:
+
+- The main smoke steps no longer wait for the public-export job. The old `main_smoke` job
+  needed `public_export` to succeed; as hygiene steps they wait only for hygiene's own steps,
+  so they run in more cases, not fewer.
+- The profile-zero steps now also wait for the export step to succeed, because they follow
+  it in one job. Their consumers already needed `public_export` to succeed, and a failed
+  export still fails `CI required`.
+- The profile-zero steps' `python3` is the job's CPython 3.15.2, not the runner image's own.
+
+The jobs:
+
+| Job | Before (run 42270920833) | Now |
+| --- | --- | --- |
+| `classify` | 1 job | unchanged |
+| `hygiene` ("Hygiene and security") | 3 jobs: `hygiene` 2.2 min, `markdown` 0.4 min, `main_smoke` (pushes to `main` and full-matrix events only) | 1 job, about 2.5 min: hygiene's steps, then the main smoke steps, then the Markdown lint |
+| `public_export` | 2 jobs: `public_export` 0.2 min, `profile_zero_fixture` 0.4 min | 1 job, about 0.7 min: the export audit, then the profile-zero fixture build |
+| `linux_gcc16` | 1 job, 3.3 min | unchanged (not required, a container job on a hosted runner) |
+| `native_tools` | 3 parts, 7.9-9.2 min | unchanged |
+| `python_tools` | 6 shards, 4.2-18.2 min | 3 shards, about 16.5 min each |
+| `windows_runtime` | 6 parts, 4.2-9.7 min (4.5-12.0 in run 42258417250) | 3 groups of parts, about 10-13 min each |
+| `ci_required` | 1 job | unchanged |
+
+- **Hygiene.** The check keeps its name, which the ruleset and the
+  [Trusted CI verdict](#trusted-ci-verdict) require. The main smoke steps carry
+  `run_main_smoke` and follow hygiene's own steps, so, as before, they run only after every
+  hygiene check passed. The Markdown steps carry `run_markdown` with `!cancelled()`: the
+  Markdown job never waited for hygiene, so its lint still runs and reports when an earlier
+  step failed. Node.js is set up after pre-commit, so no hook's environment changes.
+- **Public export.** The export step runs first, on the clean checkout, under its own
+  condition; the job and that step still read no path output. The profile-zero steps follow,
+  under the former job's condition (`allow_substantive` and `run_python` or `run_windows`,
+  carried by the job's `BUILD_PROFILE_ZERO`), and upload the same `profile-zero-fixture`
+  artifact. Their `python3` is now the job's CPython 3.15.2 rather than the runner image's.
+  The Python, native and Windows jobs wait for this job as before; native now also waits for
+  the fixture build, about 25 seconds.
+- **Python.** Three shards over the full suite, and three over the Makefile-coupled subset
+  (see [Python test sharding](#python-test-sharding)). `test_production_smoke` alone takes
+  about 12.5 minutes, so six shards were never shorter than that either.
+- **Windows.** The six parts keep their steps and conditions (`contains(matrix.parts, '<part>')`)
+  and run in three matrix groups: `smoke-routes` (smoke, routes), `ladder-fuzz` (ladder,
+  fuzz-0, fuzz-1) and `selftests`. A group runs the shared setup and the runtime-object
+  compile gate once, then its parts in the workflow's step order. Parts in one group share the
+  checkout and its build tree. The ladder builds under `build/platform-ladder`. The two fuzz
+  shards used to run on separate runners and now share `build/windows-runtime`; that is
+  harmless, because each regenerates its cases header and `vfpu_fuzz_build` has no output
+  file, so it always relinks and reruns the fuzzer. In `smoke-routes`, `native-core-tests`
+  (routes) and the player targets (smoke) share `build/` through selftest targets that have no
+  output file, so their recipes compile and run every time. The compiler cache is keyed on
+  the group, so the first runs after this change restore no entry until a run on `main` has
+  saved one per group.
+
+`CI required` needs `classify`, `hygiene`, `public_export`, `python_tools`, `native_tools`,
+`windows_runtime` and `android_build`. The Markdown lint, the main smoke and the fixture build reach it through the
+two always-required jobs they now belong to, so `tools/ci_required.py` no longer takes a result
+or run flag of their own. Each merged job's `timeout-minutes` covers its parts: hygiene 35
+(15 + 10 + 10), public export 30 (15 + 15), each Windows group 25 per part (50, 75 and
+25), and each Python shard 60, twice the former 30 because it does about twice the work.
+
+The trade-offs: a step that fails stops the later steps of its own job, so a pull request that
+fails, for example, the Windows smoke part does not learn about its routes part in the same run
+(the Markdown lint is the exception above). A Python shard now takes about as long as the old
+slowest shard, and the longest Windows group about 13 minutes instead of 10-12, which is still
+shorter than a Python shard, so a run on idle runners takes about as long as before, and less
+time waiting when other runs are queued.
+`tools/test_public_ci_wiring.py` (`PublicExportJobTests`, `WindowsRuntimePartitionTests`)
+pins the merged jobs: every former step with its command and condition, its order, and every
+Windows part in exactly one group.
 
 #### Tests-only changes
 
@@ -241,9 +317,9 @@ the page's status text in step with `README.md`, `docs/COMPATIBILITY.md` and the
 ### Hygiene beside the substantive gates
 
 The native job waits only for `classify` and the public-export audit
-(`needs: [classify, public_export]`); the Python and Windows jobs also wait for the
-profile-zero fixture build (`profile_zero_fixture`). None of them waits for
-`hygiene`, which runs beside them. Before this change they waited for hygiene too,
+(`needs: [classify, public_export]`), as do the Python and Windows jobs, which also use
+the profile-zero fixture that job builds. None of them waits for `hygiene`, which runs
+beside them. Before this change they waited for hygiene too,
 so its all-files pre-commit run, Betterleaks history scan and canaries (98 s median
 across 40 recent pull requests, as measured from their job timings) sat in front of
 every expensive gate. The public-export audit stays a dependency: it is the
@@ -251,9 +327,10 @@ publication-integrity boundary, it runs in about 52 s, and it keeps the candidat
 export ordered before any substantive job starts. `CI required` still requires the
 hygiene result (`HYGIENE_RESULT`) and the public-export result, so no failure is
 hidden. The trade-off is that a pull request that fails hygiene now also spends
-runner time on the expensive gates that started beside it. `main_smoke` is not
-changed: it runs on pushes to `main` and on manual and merge-queue runs (the full-matrix
-events), never on pull requests, and it is not a substantive gate.
+runner time on the expensive gates that started beside it. The main smoke is not
+changed: its steps, now in the hygiene job after hygiene's own, run on pushes to `main` and
+on manual and merge-queue runs (the full-matrix events), never on pull requests, and they are
+not a substantive gate.
 
 ### Native gates in parallel parts
 
@@ -280,6 +357,24 @@ Steps that read what an earlier step built share its part. `needs.native_tools.r
 aggregates the parts, so `CI required` fails when any part fails.
 `tools/test_public_ci_wiring.py` (`NativeToolsPartitionTests`) fails if a serial gate is
 dropped, runs in more than one part, or changes its command.
+
+### Android launcher build
+
+The `android_build` job (#360) runs whenever the native gates do (`run_native`), beside
+them, and `CI required` reads its result (`ANDROID_RESULT`). On `ubuntu-24.04` it installs
+the SDK platform, build-tools, NDK and CMake versions that `android/app/build.gradle.kts`
+names, downloads the Gradle distribution named in
+`android/gradle/wrapper/gradle-wrapper.properties` and checks it against that file's
+`distributionSha256Sum`, then builds the launcher-only debug APK for arm64-v8a
+(`gradle -p android assembleDebug -Pnk.abis=arm64-v8a`) and checks that it carries
+`libmain.so`, `libSDL3.so` and `libSDL3_ttf.so` for that ABI and no other ABI. No title is
+bundled and nothing runs: running needs a device or an emulator
+([`ANDROID_DEVELOPMENT.md`](ANDROID_DEVELOPMENT.md)). The APK is kept for 14 days as the
+artifact `nakagawa-android-arm64-debug`, for installing on a phone
+([Test on a phone](ANDROID_DEVELOPMENT.md#test-on-a-phone)). The repository keeps no Gradle wrapper
+jar or scripts, as it keeps no other generated executable (#1100).
+`tools/test_public_ci_wiring.py` (`AndroidBuildWiringTests`) fails when the job's versions,
+the Gradle files and `ANDROID_DEVELOPMENT.md` disagree.
 
 The full-tree pre-commit run retains the publication audit and the Betterleaks
 current-tree scan; the hook runs Betterleaks in directory mode over the files it
@@ -396,7 +491,18 @@ that edge pixel's 1x sample, with linear and nearest filtering and with repeat a
 while a sheared strip stays unclamped.
 Last, `gpu-coherence-selftest-snapbar-mutants` builds three broken variants of
 the destination-snapshot copy's barriers (`SR_GPU_SNAPBAR_MUTANT`), and the submit-batch case must
-fail each one with its own message. The job also runs
+fail each one with its own message. Then `ge-first-bad-draw-selftest` runs
+`ge_replay --first-bad-draw` on a generated capture: the unchanged backend must report
+`NO_DIFFERENCE`, and two executed mutants that change one draw's Vulkan blend or depth state
+(`SR_GE_FBD_MUTANT`) must each be named as that draw, in linear and bisect mode. A second generated
+capture holds one PRIM of two overlapping translucent sprites on a 16-bit target, and the tool must
+find exactly its overlap as the first bad draw: the known shader-blend batch-order difference
+(#2109), which that fix turns into `NO_DIFFERENCE`. Four more generated captures check that the
+tool fails closed: a 512-wide scissor (ge.c rasterizes inside 480x272), 33 targets or a stride of
+1088 are `INCOMPLETE`, and a capture with no draw is `NO_DRAWS`. The same step then runs
+`vram-view-identity-selftest` (#314): the GE decoders the pause menu's VRAM viewer calls, run at
+a paused VBLANK, must leave later presented frames, guest memory and the GE state as a run
+without them does, and a mutant viewer that stores one byte must fail. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by
@@ -518,7 +624,7 @@ disposition in [`docs/INDEPENDENCE_CAMPAIGN.md`](INDEPENDENCE_CAMPAIGN.md). Path
 `status=missing` fail closed. A reviewed baseline (`KNOWN_DISPOSITION_GAPS`)
 allows existing gaps to shrink but never grow; stale baseline entries fail
 closed. The check is wired into `make check`, `make readiness`, pre-commit, and
-hosted CI (`native_tools` and `main_smoke`).
+hosted CI (`native_tools` and the main smoke steps of `hygiene`).
 
 The base defaults to `merge-base(HEAD, origin/main)`. When the pull request's
 exact base differs, set `PROVENANCE_BASE_SHA` to its full 40-character commit
@@ -731,12 +837,15 @@ output before using it (a failing planner must stop the step instead of handing
 weights when the suite's cost moves materially, or when the shards' step times drift
 apart. The shard step runs `unittest -v`, and every hosted log line carries a
 timestamp, so each module's time on the hosted runner, under coverage, is the time
-from its first test line to the next module's first test line. The current weights
-come from run 41105240488: its four shards took 456, 554, 315 and 303 seconds, and
-the same modules plan to about 407 seconds each with the refreshed weights. The suite
-now runs on six shards (about 272 seconds each by those weights), and the
-Makefile-coupled subset on four: on the busy self-hosted pool a four-shard step took
-17-30 minutes on 2026-11-01 and 2026-11-02 and reached the 30-minute job limit.
+from its first test line to the next module's first test line (a shard's last module
+ends at unittest's `Ran N tests` line). The current weights come from run 42270920833
+(2026-11-06): its six shards' test steps took 17.2, 5.0, 5.4, 8.1, 7.9 and 3.5 minutes,
+because the old weights put `test_production_smoke` at 197 seconds where it now takes
+about 748. The suite now runs on three shards, which plan to about 943 seconds (15.7
+minutes) each by the refreshed weights, and the Makefile-coupled subset on three as
+well (about 15.3 minutes each); see [Jobs per run](#jobs-per-run). Each shard does about
+twice the work a six-shard step did, so the job limit doubled to 60 minutes: on the busy
+self-hosted pool a step that planned to about 7 minutes took 17-20 minutes on 2026-11-01.
 `python tools/ci_test_shards.py --check` rejects weights for modules that no longer
 exist, and `--plan` prints the resulting partition with per-shard estimates.
 
@@ -746,7 +855,9 @@ When the classifier routes the Python suite, every PR runs all discovered module
 in the PR tier. Only cases marked `NIGHTLY_TIER:` are deferred: the composite
 public-export gate report, the profile-zero package/runtime route, the slow
 make-built platform-ladder runtime checks, the full-history report generation,
-and the matrix inventory report. Their constituent legal-blocker, publication,
+and the matrix inventory report. The profile-zero route still runs on every routed
+PR, through its own make gate (`make profile-zero-e2e` sets `NK_TEST_TIER=full`)
+in `windows_runtime` and `native_tools` below. Their constituent legal-blocker, publication,
 fail-closed NID/dispatch, cosimulation, provenance, import-audit, and security
 gates remain in their normal PR jobs and tests. `python_tools` includes a
 one-line summary of skips by `NIGHTLY_TIER`, `WINDOWS_ONLY`, and `PRIVATE_INPUT`.
@@ -889,10 +1000,10 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   revision cannot provide. A recipe-only edit still runs the native and Windows
   gates, which execute recipes. Python runs only the modules whose transitive tool
   closure reads the `Makefile` or runs `make` (`ci_test_shards.py --select
-  makefile`), on four shards; any other Python-routing change in the same diff
-  restores the full six-shard suite. That closure covers most of the suite's
+  makefile`), on three shards; any other Python-routing change in the same diff
+  restores the full suite, also on three. That closure covers most of the suite's
   weight, because most heavy modules build through `make`, so the saving is the
-  unrelated modules and two runners rather than the Python job as a whole.
+  unrelated modules rather than the Python job as a whole or a runner.
 - **The published surface is derived, not listed.** `_is_public_surface` asks the
   publication policy instead of maintaining a second list that can drift; it
   fails closed to "published" when the policy cannot be read. The `public_surface`
@@ -910,22 +1021,22 @@ belongs to a new subsystem.
 ## Cost and caching rules
 
 GitHub-hosted Windows time is billed at a higher multiplier than Linux time. The
-workflow therefore starts the Windows runner only after the cheaper Linux classify,
-public-export and fixture jobs, cancels superseded PR runs, and avoids repeating the full matrix on
+workflow therefore starts the Windows runner only after the cheaper Linux classify
+and public-export jobs (the second also builds the fixture), cancels superseded PR runs, and avoids repeating the full matrix on
 ordinary main pushes. Besides dependency and tool caches (pip, the SDL3 installs),
 the only cache is the Windows compiler cache below. Build trees and generated
 shader/code output are not cached across jobs or runs, so the repository's
 content-addressed invalidation and freshness checks remain the source of truth.
 No volatile dollar figure is part of the repository contract.
 
-Every `windows_runtime` compile goes through `ccache` (#735 item 2). Inside one part it serves repeated compiles of the
+Every `windows_runtime` compile goes through `ccache` (#735 item 2). Inside one group it serves repeated compiles of the
 same sources (the platform ladder builds the runtime once per rung, the smoke part
 once per smoke). Between runs it is persisted with the Actions cache:
 
-- Each part restores its own entry. The key names the part, the toolchain (the
+- Each matrix group restores its own entry. The key names the group, the toolchain (the
   installed package versions and `gcc -v`), the flags (`Makefile` and `mk/`) and
   the exact hashes of every file a compile can read or be generated from. Without
-  an exact match it restores the newest entry for the same part and toolchain,
+  an exact match it restores the newest entry for the same group and toolchain,
   preferring one with the same flags.
 - ccache keys each object on the compiler's contents (`compiler_check=content`,
   since every run installs the toolchain afresh), the full command line and the
@@ -938,13 +1049,13 @@ once per smoke). Between runs it is persisted with the Actions cache:
 
 `gcc` is a native symlink to the UCRT64 toolchain's `ccache.exe`, so `CC` stays
 `gcc`, and SDL3 discovery and the toolchain check (`tools/nk_doctor_checks.py`)
-follow the link into `/ucrt64/bin`. Each part's last step prints the cache
+follow the link into `/ucrt64/bin`. Each group's last step prints the cache
 statistics, including which saved entry was restored, and fails if no compile
 went through the cache.
 
 Hosted GitHub Actions execution is active. The `main` ruleset requires `Trusted CI verdict`
 and `CodeQL` on exact pull-request heads (since 2026-10-29, #373). Path-gated workflows also run the applicable
-classifier, Markdown, native/translation, main-smoke, Python, and
+classifier, Markdown and main-smoke steps (in hygiene), native/translation, Python, and
 Windows gates. A green public-safe run proves only the paths it executes; it is
 not a complete private-title gameplay route, and local verification remains
 local-only.
@@ -1240,8 +1351,8 @@ repository guarantee.
 
 ## Self-hosted Linux runners
 
-GitHub's free plan runs about 20 jobs at once for this repository, and one CI run
-needs most of them, so a second run waits for runners. To keep landings moving, the
+GitHub's free plan runs about 20 jobs at once for this repository, and one full CI run
+needs 14 of them ([Jobs per run](#jobs-per-run)), so a second run can wait for runners. To keep landings moving, the
 maintainer runs a small pool of self-hosted Linux runners, labelled `nk-wsl`, on their
 own PC. Contributors need nothing from it: every run they can start uses GitHub's
 hosted images, exactly as before.
@@ -1249,8 +1360,9 @@ hosted images, exactly as before.
 **What runs there.** The classifier's `linux_runner` and `linux_runner_2604` outputs
 (`tools/ci_paths.py`) name the runner for every Linux job of CI except `classify`, which
 decides and so stays hosted: the native and translation gates and the Python shards
-(hosted fallback `ubuntu-24.04`), and hygiene, Markdown, the export audit, the
-profile-zero fixture, main smoke and `CI required` (hosted fallback `ubuntu-26.04`; the
+(hosted fallback `ubuntu-24.04`), and hygiene with its Markdown and main smoke steps,
+the export audit with the profile-zero fixture build, and `CI required` (hosted fallback
+`ubuntu-26.04`; the
 pool's image is Ubuntu 24.04 for all of them). The Windows gates stay on GitHub's
 Windows runners. The outputs name the pool only for a trusted run, whose code is
 already the maintainer's:
@@ -1336,7 +1448,7 @@ first on `PATH` (#294). The contract is explicit:
 
 | Job / environment | Python running `tools/*` and the fixture generators |
 | --- | --- |
-| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.15.2 |
+| Linux jobs (`classify`, `hygiene`, `public_export`, `python_tools`, `native_tools`, `ci_required`) | `actions/setup-python` CPython 3.15.2 |
 | `windows_runtime` (MSYS2 UCRT64 shell) | Windows CPython 3.15.2 from `actions/setup-python`, passed through `PYTHON`; MSYS2's UCRT64 Python 3.14.8 is not used for repository tools |
 | Local Windows runs | Windows CPython 3.15.x from the python.org installer; set `PYTHON` explicitly when MSYS2 comes first on `PATH` |
 
@@ -1416,14 +1528,22 @@ developer runs locally, without private inputs:
   `profile-zero-e2e` for the two profile-zero manifests. That gate
   validates the guest ProgramImage, generates a public AOT package, launches it
   through the headless production runtime, and checks all seven named
-  guest-service cases for each manifest. It runs in the `routes` part of the
-  25-minute `windows_runtime` job and took about 123 seconds locally for both package
+  guest-service cases for each manifest. It runs in the `routes` part, in the
+  `smoke-routes` group (50 minutes) of the `windows_runtime` job, and took about 123 seconds locally for both package
   builds and runtime launches. The guest bytes are built from the fixture's own
-  `main.c` and `Makefile` by the `profile_zero_fixture` job (pinned PSPDEV, checked
+  `main.c` and `Makefile` by the profile-zero steps of the `public_export` job (pinned PSPDEV, checked
   against the committed `fixtures/profile_zero/prebuilt/SHA256SUMS`) and downloaded
   as an artifact, so the repository stores no generated executable (#1100) and the
   Windows runner still executes the whole route; where PSPDEV is installed, the
   gate rebuilds the fixture itself and fails if any byte differs from `SHA256SUMS`.
+  The make target runs the route case at the full test tier, and the step sets
+  `NK_PROFILE_ZERO_REQUIRED=1`, so a missing Vulkan SDK or SDL3 fails it rather than
+  skipping it. The `player` part of `native_tools` runs the same gate on Linux, where
+  PSPDEV is installed and the guest is rebuilt from source. On both hosts the gate also
+  runs each package on the deterministic guest clock and compares digests of its
+  result file, save and first rasterized frame with the values pinned in
+  `tools/test_profile_zero_e2e.py` (`CROSS_HOST_DIGESTS`), so Windows and Linux must
+  produce the same bytes (#306).
   The same job builds Nakagawa Font Copy (`src/psp_companion/Makefile`), the PSP app
   behind the player's font import, through its user-mode import gate; nothing from
   that build is uploaded. Public
@@ -1431,8 +1551,8 @@ developer runs locally, without private inputs:
   test reports an explicit `SKIP` with the printed missing-dependency reason.
   The job also runs the production smoke with its executable staged into a fresh
   directory outside the build tree (`production-smoke-staged`).
-- The `public_export` job ("Public export candidate audit") is ungated and runs
-  in parallel with `hygiene` (#735 item 5). Its step "Exercise public-export
+- The `public_export` job ("Public export audit and profile-zero fixture") is ungated
+  and runs in parallel with `hygiene` (#735 item 5). Its step "Exercise public-export
   generation and candidate audit" runs on `security_publication` changes and every
   manual `workflow_dispatch`, and the job reports success when the step is skipped.
   `ci_required` requires the job to succeed. One

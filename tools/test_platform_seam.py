@@ -64,6 +64,9 @@ ALLOWLIST: Mapping[str, tuple[int, str]] = {
            "glibc test for bionic"),
     "src/core/nk_psp_npumdimg.c": (
         8, "linked into the decrypt tool, which has no platform layer: wide file calls"),
+    "src/core/nk_steam_shortcuts.c": (
+        3, "Add to Steam (#2152): Steam's Windows registry key and process probe; elsewhere the "
+           "caller names the Steam folder, and the process probe answers UNSUPPORTED"),
     "src/core/nk_title_manifest.c": (
         8, "its own UTF-8 file primitives and durable replace (the file-local copies "
            "nk_platform.h lists)"),

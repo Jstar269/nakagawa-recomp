@@ -17,7 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Iterable
 import time
 import uuid
 
@@ -330,25 +330,41 @@ def check_long_paths(
     root: Path | None = None,
     deepest_rel: Path | str | None = None,
     tracked_rel: Path | str | None = None,
+    extra_paths: Iterable[tuple[str, Path]] = (),
 ) -> None:
     """Advisory diagnostic for Windows MAX_PATH (260) hazards and LongPathsEnabled policy.
 
-    The measured length is the repository root plus the longest path that will
-    exist under it: the deepest expected build output and, when the checkout can
-    enumerate it, the longest tracked file. The longest of those is the path most
-    likely to cross a limit, and it is named in the result.
+    Compare the deepest expected build output, the longest tracked path, and any
+    configured input/output paths supplied by the CLI. These are path strings
+    only: no private input tree is walked to estimate its depth.
     """
     resolved_root = (root or report.root).resolve()
     build_rel = Path(deepest_rel) if deepest_rel is not None else DEEPEST_EXPECTED_BUILD_PATH
     if tracked_rel is None:
         tracked_rel = longest_tracked_relative_path(resolved_root)
-    candidates: list[tuple[str, Path]] = [("build output", build_rel)]
+
+    def absolute_path(path: Path) -> Path:
+        return path if path.is_absolute() else resolved_root / path
+
+    def relative_to_root(path: Path) -> Path | None:
+        try:
+            return path.relative_to(resolved_root)
+        except ValueError:
+            return None
+
+    build_path = absolute_path(build_rel)
+    candidates: list[tuple[str, Path, Path | None]] = [
+        ("build output", build_path, relative_to_root(build_path))
+    ]
     if tracked_rel is not None:
-        candidates.append(("tracked path", Path(tracked_rel)))
-    deepest_source, deepest_relative = max(
-        candidates, key=lambda item: len(str(resolved_root / item[1]))
+        tracked_path = absolute_path(Path(tracked_rel))
+        candidates.append(("tracked path", tracked_path, relative_to_root(tracked_path)))
+    for source, path in extra_paths:
+        resolved_path = absolute_path(path)
+        candidates.append((source, resolved_path, relative_to_root(resolved_path)))
+    deepest_source, expected_deepest, deepest_relative = max(
+        candidates, key=lambda item: len(str(item[1]))
     )
-    expected_deepest = resolved_root / deepest_relative
     total_len = len(str(expected_deepest))
     exceeds_260 = total_len > MAX_PATH
     exceeds_advisory = total_len > LONG_PATH_ADVISORY_LIMIT
@@ -357,7 +373,7 @@ def check_long_paths(
         "long_paths_enabled": None,
         "total_len": total_len,
         "deepest_path": str(expected_deepest),
-        "deepest_relative": deepest_relative.as_posix(),
+        "deepest_relative": deepest_relative.as_posix() if deepest_relative is not None else None,
         "deepest_source": deepest_source,
         "root_len": len(str(resolved_root)),
         "advisory_limit": LONG_PATH_ADVISORY_LIMIT,
@@ -366,16 +382,20 @@ def check_long_paths(
         "exceeds_advisory": exceeds_advisory,
     }
     detail = (
-        f"deepest expected path length={total_len} (root {len(str(resolved_root))} + "
-        f"{deepest_source} {deepest_relative.as_posix()}; advisory "
+        f"longest expected path length={total_len} ({deepest_source}; advisory "
         f"{LONG_PATH_ADVISORY_LIMIT}, MAX_PATH {MAX_PATH}): {expected_deepest}"
+    )
+    summary_label = (
+        "Deepest expected build path"
+        if deepest_source == "build output"
+        else f"Longest expected {deepest_source} path"
     )
 
     if not is_windows:
         report.pass_(
             "LONG_PATHS",
-            f"Expected build path length ({total_len} chars) within filesystem limits",
-            detail=f"Non-Windows platform; deepest expected path: {expected_deepest}",
+            f"Expected path length ({total_len} chars) within the Windows path limits",
+            detail=f"Non-Windows platform; {detail}",
             metadata=metadata,
         )
         return
@@ -386,42 +406,51 @@ def check_long_paths(
     if exceeds_260 and not long_paths_enabled:
         report.warn(
             "LONG_PATHS",
-            f"Deepest expected build path ({total_len} chars) exceeds 260 characters and Windows LongPathsEnabled policy is disabled",
+            f"{summary_label} ({total_len} chars) exceeds 260 characters and Windows LongPathsEnabled policy is disabled",
             path=expected_deepest,
             detail=f"LongPathsEnabled={long_paths_enabled}, {detail}",
-            remediation="Enable LongPathsEnabled in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem or move the repository to a shorter path (for example directly under the drive root).",
+            remediation=(
+                f"Shorten the checkout or configured path by at least {total_len - MAX_PATH + 1} "
+                f"character(s); '{expected_deepest}' is the path at risk. Enable LongPathsEnabled "
+                "in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem if legacy tools must "
+                "support long paths."
+            ),
             metadata=metadata,
         )
     elif exceeds_260 and long_paths_enabled:
         report.warn(
             "LONG_PATHS",
-            f"Deepest expected build path ({total_len} chars) exceeds 260 characters",
+            f"{summary_label} ({total_len} chars) exceeds 260 characters",
             path=expected_deepest,
             detail=f"LongPathsEnabled={long_paths_enabled}, {detail}",
-            remediation="Windows LongPathsEnabled is enabled, but legacy Win32 tools without long-path manifests may still fail. Consider using a shorter repository root.",
+            remediation=(
+                f"Shorten the checkout or configured path by at least {total_len - MAX_PATH + 1} "
+                f"character(s); '{expected_deepest}' is the path at risk. LongPathsEnabled is "
+                "enabled, but legacy Win32 tools without long-path manifests may still fail."
+            ),
             metadata=metadata,
         )
     elif exceeds_advisory and not long_paths_enabled:
         report.warn(
             "LONG_PATHS",
-            f"Deepest expected build path ({total_len} chars) exceeds the "
+            f"{summary_label} ({total_len} chars) exceeds the "
             f"{LONG_PATH_ADVISORY_LIMIT}-character advisory margin and Windows "
             "LongPathsEnabled policy is disabled",
             path=expected_deepest,
             detail=f"LongPathsEnabled={long_paths_enabled}, {detail}",
             remediation=(
-                f"Shorten the checkout by at least {total_len - LONG_PATH_ADVISORY_LIMIT} "
+                f"Shorten the checkout or configured path by at least "
+                f"{total_len - LONG_PATH_ADVISORY_LIMIT} "
                 f"character(s); '{expected_deepest}' is the path at risk. Alternatively "
                 "enable LongPathsEnabled in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem. "
-                "Build outputs append suffixes to this path, so a build can fail before the "
-                "260-character limit itself is reached."
+                "Tools can fail before the 260-character limit itself is reached."
             ),
             metadata=metadata,
         )
     elif not long_paths_enabled:
         report.warn(
             "LONG_PATHS",
-            f"Windows LongPathsEnabled policy is disabled (deepest expected build path: {total_len}/{MAX_PATH} chars)",
+            f"Windows LongPathsEnabled policy is disabled (longest expected path: {total_len}/{MAX_PATH} chars)",
             path=expected_deepest,
             detail=f"LongPathsEnabled={long_paths_enabled}, {detail}",
             remediation="Enable LongPathsEnabled in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem to avoid MAX_PATH issues in deep directories.",
@@ -430,7 +459,7 @@ def check_long_paths(
     else:
         report.pass_(
             "LONG_PATHS",
-            "Repository path length within 260 characters and Windows LongPathsEnabled is enabled",
+            "Expected input, build, and output paths within 260 characters and Windows LongPathsEnabled is enabled",
             path=expected_deepest,
             detail=f"LongPathsEnabled={long_paths_enabled}, {detail}",
             metadata=metadata,

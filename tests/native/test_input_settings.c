@@ -312,6 +312,48 @@ static void test_deadzone_and_trigger_bounds(void) {
 }
 
 /* -----------------------------------------------------------------------------
+ * Mouse aiming settings (#1791): bounded, saved with the profile, reset with it.
+ * -------------------------------------------------------------------------- */
+static void test_mouse_aim_settings(void) {
+    printf("[INPUT_SETTINGS_TEST] Mouse aiming settings (#1791)...\n");
+    InputSettingsState state;
+    input_settings_init(&state);
+    char path[512];
+    snprintf(path, sizeof(path), "%s/mouse_aim_profile.json", SR_SELFTEST_BUILD_ROOT);
+
+    assert(!state.profile.aim.mouse && state.profile.aim.sensitivity == NK_AIM_SENSITIVITY_DEFAULT);
+    assert(input_settings_set_aim_mouse(&state, true) && state.profile.aim.mouse && state.dirty);
+    assert(input_settings_adjust_aim_sensitivity(&state, 50) && state.profile.aim.sensitivity == 150);
+    assert(input_settings_adjust_aim_sensitivity(&state, -10000) &&
+           state.profile.aim.sensitivity == NK_AIM_SENSITIVITY_MIN);
+    assert(input_settings_adjust_aim_sensitivity(&state, 100000) &&
+           state.profile.aim.sensitivity == NK_AIM_SENSITIVITY_MAX);
+    assert(input_settings_adjust_aim_smoothing(&state, 30) && state.profile.aim.smoothing == 30);
+    assert(input_settings_adjust_aim_smoothing(&state, 1000) && state.profile.aim.smoothing == NK_AIM_SMOOTHING_MAX);
+    assert(input_settings_adjust_aim_smoothing(&state, -1000) && state.profile.aim.smoothing == 0);
+    assert(input_settings_toggle_aim_invert(&state, NK_PSP_AXIS_ANALOG_Y) && state.profile.aim.invert_y);
+    assert(!state.profile.aim.invert_x);
+    assert(!input_settings_toggle_aim_invert(&state, 7));
+    assert(!input_settings_set_aim_mouse(NULL, true) && !input_settings_adjust_aim_smoothing(NULL, 1));
+
+    /* Saved with the profile and read back by a new run. */
+    assert(input_settings_adjust_aim_sensitivity(&state, -(NK_AIM_SENSITIVITY_MAX - 220)) &&
+           state.profile.aim.sensitivity == 220);
+    assert(input_settings_save(&state, path) == NK_OK);
+    InputSettingsState again;
+    input_settings_init(&again);
+    assert(input_settings_load(&again, path) == NK_OK);
+    assert(again.profile.aim.mouse && again.profile.aim.sensitivity == 220 && again.profile.aim.invert_y &&
+           !again.profile.aim.invert_x);
+
+    /* Reset to defaults turns aiming off again. */
+    input_settings_reset_to_defaults(&again);
+    assert(!again.profile.aim.mouse && again.profile.aim.sensitivity == NK_AIM_SENSITIVITY_DEFAULT &&
+           !again.profile.aim.invert_y);
+    printf("[INPUT_SETTINGS_TEST] Mouse aiming settings PASSED!\n");
+}
+
+/* -----------------------------------------------------------------------------
  * 6. Reset to Defaults
  * -------------------------------------------------------------------------- */
 static void test_reset_to_defaults(void) {
@@ -1350,6 +1392,7 @@ int main(void) {
     test_conflict_detection();
     test_deadzone_and_trigger_bounds();
     test_reset_to_defaults();
+    test_mouse_aim_settings();
     test_save_load_roundtrip();
     test_sr_padscript_semantics_untouched();
     test_env_clearing_consistency();

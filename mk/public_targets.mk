@@ -96,6 +96,7 @@ PUBLIC_TARGETS := \
 	gui-present-selftest \
 	clay-layout-selftest \
 	ed25519-verify-selftest \
+	achievements-selftest \
 	nk-ui-core-selftest \
 	nk-ui-player-screens-selftest \
 	nk-ui-player-screens-capture \
@@ -151,13 +152,20 @@ PUBLIC_TARGETS := \
 	atrac3p-title-accept \
 	gpu-coherence-selftest \
 	gpu-coherence-selftest-snapbar-mutants \
+	gpu-coherence-pcache-mutant \
+	vram-view-identity-selftest \
 	gpu-snapsync-selftest \
 	gpu-ace-selftest \
 	tex-scale-selftest \
+	pipeline-cache-selftest \
 	tex-scale-gate-mutant \
+	texrepl-selftest \
+	texrepl-mutant \
 	gpu-texscale-selftest \
 	gpu-texscale-mutant \
+	gpu-texrepl-mutant \
 	ge-replay \
+	ge-first-bad-draw-selftest \
 	run \
 	run_elf \
 	vfpu_fuzz \
@@ -271,6 +279,7 @@ HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_clay-layout-selftest := build and run the vendored Clay layout selftest
+HELP_DESCRIPTION_achievements-selftest := run the RetroAchievements bridge (vendored rcheevos) against an in-process fake server, with no network
 HELP_DESCRIPTION_ed25519-verify-selftest := check nk_ed25519_verify (vendored Monocypher) against the RFC 8032 vectors and nk_minisign_verify against real minisign output
 HELP_DESCRIPTION_nk-ui-player-screens-selftest := build and run nk_ui Library, Title detail and router snapshots
 HELP_DESCRIPTION_nk-ui-player-screens-capture := save offscreen synthetic Library and Title detail captures (set NK_UI_CAPTURE_DIR)
@@ -327,13 +336,20 @@ HELP_DESCRIPTION_audio-resampler-bench := run the synthetic-input audio resample
 HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
 HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
 HELP_DESCRIPTION_gpu-coherence-selftest-snapbar-mutants := prove the GPU coherence selftest kills three broken snapshot-copy barrier variants
+HELP_DESCRIPTION_gpu-coherence-pcache-mutant := prove pipeline-cache-cold fails when pipelines bypass the Vulkan pipeline cache
+HELP_DESCRIPTION_vram-view-identity-selftest := check that the GE decoders the pause menu's VRAM viewer calls leave later frames, guest memory and the GE state unchanged (#314; needs a Vulkan device and fails without one)
 HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
 HELP_DESCRIPTION_gpu-ace-selftest := run Ace Mode's texture filtering selftest on a real Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_tex-scale-selftest := run the xBRZ texture scaling selftest against the pinned upstream goldens (no GPU)
+HELP_DESCRIPTION_pipeline-cache-selftest := run the GPU pipeline cache file checks and their atomic write (no GPU)
 HELP_DESCRIPTION_tex-scale-gate-mutant := prove the texture scaling selftest kills a build without the Ace gate
+HELP_DESCRIPTION_texrepl-selftest := run the texture replacement pack selftest (PPSSPP hashes, pack layout, lookup order, budget; no GPU)
+HELP_DESCRIPTION_texrepl-mutant := prove the texture replacement selftest kills a palette identity without the CLUTFORMAT word
 HELP_DESCRIPTION_gpu-texscale-selftest := run texture scaling and the smart 2D filter on a real Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_gpu-texscale-mutant := prove the texture scaling selftest kills a cache that binds a stale scaled copy
+HELP_DESCRIPTION_gpu-texrepl-mutant := prove the replace cells kill a stub lookup and a palette identity without the CLUTFORMAT word
 HELP_DESCRIPTION_ge-replay := run the graphics-engine replay selftest
+HELP_DESCRIPTION_ge-first-bad-draw-selftest := prove ge_replay --first-bad-draw finds the draw an executed Vulkan mutant changes (SKIPs without Vulkan)
 HELP_DESCRIPTION_run := build and launch the current title runtime
 HELP_DESCRIPTION_run_elf := build the reference interpreter runner
 HELP_DESCRIPTION_vfpu_fuzz := build and run the VFPU differential fuzzer

@@ -1519,7 +1519,11 @@ One console is one data point; see §11. Nothing here closes issue #70
   masked window, VCOUNT frozen while masked). For the LLE CPU, `SR_INTC_PSP_CPU_IP_BIT` in
   `src/rt/cpu_lle.h` records IP2 as the controller's line, and
   `test_hw_psp_intr_cause_ip2_while_suspended` in `tests/native/cpu_lle_selftest.c` reproduces the measured
-  Cause words with Status.IE clear. Interrupt delivery at safe points (`sr_cpu_poll`) stays unimplemented.
+  Cause words with Status.IE clear. Interrupt delivery at safe points (`sr_cpu_poll`, #325) follows the generic
+  MIPS32 rule behind the opt-in LLE CPU and a controller only the selftests configure; `test_intc_poll_delivery`
+  checks that the measured suspended Status word 0x00088600 holds a pending source back and the resumed word
+  0x00088601 takes it. The other delivery rules (IM map, software interrupts, delay-slot and mtc0 timing) are
+  not measured.
 
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
   - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.

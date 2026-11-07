@@ -60,7 +60,8 @@ enum {
     PLAYER_UI_TEST_ACTION_WAIT_ART_DELAY_ACTIVE = -20261008,
     PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_STATUS = -20261009,
     PLAYER_UI_TEST_ACTION_WAIT_REPORT = -20261010,
-    PLAYER_UI_TEST_ACTION_GAME_EXIT = -20261011
+    PLAYER_UI_TEST_ACTION_GAME_EXIT = -20261011,
+    PLAYER_UI_TEST_ACTION_WAIT_UPDATE = -20261012
 };
 
 #define UI_TEST_MAX_PACKAGE_STATUS_THREAD_CREATE_FAILURES 8
@@ -116,6 +117,8 @@ typedef struct PlayerUiTest {
     NkRuntimePackageStatus wait_package_status_target;
     bool waiting_for_report;
     uint32_t wait_report_mask;   /* bit n set: PlayerReportPhase n ends the wait */
+    bool waiting_for_update;     /* WAIT_UPDATE: until app->update.phase is the target */
+    PlayerUpdatePhase wait_update_target;
     bool waiting_for_art_attempt;
     bool waiting_for_art_delay;
     uint64_t wait_art_delay_deadline;
@@ -199,6 +202,7 @@ void player_ui_test_report_post_build_validation(int status, const char *reason,
 void player_ui_test_report_post_build_transition(PlayerApp *app, const char *disc_id,
                                                  int current_index);
 void player_ui_test_hold_disc_check(void);
+void player_ui_test_delay_screenshot(void);
 /* The raw NK_UI_TEST_SLOW_START_MS setting, or NULL. */
 const char *player_ui_test_slow_start_text(void);
 void player_ui_test_slow_start(const PlayerUiTestLaunch *launch);
@@ -310,6 +314,7 @@ static inline void player_ui_test_report_post_build_transition(PlayerApp *app,
     (void)app; (void)disc_id; (void)current_index;
 }
 static inline void player_ui_test_hold_disc_check(void) {}
+static inline void player_ui_test_delay_screenshot(void) {}
 static inline const char *player_ui_test_slow_start_text(void) { return NULL; }
 static inline void player_ui_test_slow_start(const PlayerUiTestLaunch *launch) {
     (void)launch;
