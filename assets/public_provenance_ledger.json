@@ -15752,6 +15752,17 @@
       }
     },
     {
+      "path": "tools/ppsspp_ref.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ppsspp-ref-capture-1882",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/progress_tracker.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -18015,6 +18026,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ppmdiff-coverage-fail-closed-382",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_ppsspp_ref.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ppsspp-ref-capture-1882",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
