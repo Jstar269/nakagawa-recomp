@@ -1649,7 +1649,6 @@
     "tools/test_dispatch_c.py",
     "tools/test_dispatch_call_boundary.py",
     "tools/test_dispatch_fatal_policy.py",
-    "tools/test_display_smoke_vramdump.py",
     "tools/test_dmac_semantics.py",
     "tools/test_domain_mode.py",
     "tools/test_elf_bounds.py",
