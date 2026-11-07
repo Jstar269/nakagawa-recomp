@@ -331,8 +331,10 @@ isolated directory at least three times. The report records generated-C compile 
 sampled peak compiler-process-tree working set, link wall time, object and executable sizes,
 and SHA-256 hashes of normalized fixture-run output. After those repeats, it also runs the
 existing #282 runtime workload matrix once for that compiler/linker pair, using explicit Make
-assignments and a separate build prefix. The report retains each workload's status, elapsed
-time, output and SR_PERF summary path. A failed or skipped runtime matrix is
+assignments, a separate `BUILD_DIR` prefix and a per-row `BUILD_ROOT` for targets that honor it.
+The platform-ladder workloads use fixed trees under `build/platform-ladder`, so they are not
+row-isolated; `run_perf_benchmarks.py` runs all workloads sequentially. The report retains each
+workload's status, elapsed time, output and SR_PERF summary path. A failed or skipped runtime matrix is
 `WORKLOAD_FAILED`, not `MEASURED`. GCC/Clang and the default/lld linker are separate report
 rows; the lld row adds `-fuse-ld=lld` to that run's `LDFLAGS`.
 The common runtime and generated-code flags explicitly disable fast-math and reassociation.
@@ -353,7 +355,8 @@ The harness writes `compiler_compare.json` and `compiler_compare.md` beneath
 `--output`. It stores every effective Make flag and the observed compiler argument
 vectors. The repeated-run hash summary identifies unstable output rather than collapsing it
 into a pass. Exit status is `0` when at least one row is measured and none is
-`FAILED_VETO`, `FAILED_MEASUREMENT` or `WORKLOAD_FAILED`; a missing Make executable or invalid
+`NOT_AVAILABLE`, `FAILED_VETO`, `FAILED_MEASUREMENT` or `WORKLOAD_FAILED`; a requested compiler or linker
+that is unavailable has a named `NOT_AVAILABLE` row and returns `1`. A missing Make executable or invalid
 configuration is exit `2`. No game title, ISO, ELF or PRX input is read. Findings belong
 in issue #317. The measured result snapshot is in
 [`../docs/COMPILER_COMPARISON.md`](../docs/COMPILER_COMPARISON.md).

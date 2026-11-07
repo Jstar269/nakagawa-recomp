@@ -133,6 +133,7 @@ class CompilerCompareTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.output = Path(self.temp.name) / "out"
+        self.actual_workload_measurements = compiler_compare._workload_measurements
         self.fake = FakeToolchain()
         patches: list[Any] = [
             mock.patch.object(compiler_compare.shutil, "which", self.fake.which),
@@ -243,6 +244,54 @@ class CompilerCompareTests(unittest.TestCase):
             )
         self.assertEqual([entry["status"] for entry in report["toolchains"]],
                          [compiler_compare.STATUS_MEASURED] * 4)
+
+    def test_runtime_workload_commands_use_each_rows_build_root(self) -> None:
+        commands: list[list[str]] = []
+
+        def capture(command: list[str], *, env: dict[str, str],
+                    cwd: Path = compiler_compare.ROOT) -> compiler_compare.Outcome:
+            del env, cwd
+            commands.append(list(command))
+            output = Path(command[command.index("--output") + 1])
+            (output / "benchmark.json").write_text(json.dumps({
+                "schema": compiler_compare.PERF_SCHEMA,
+                "runs": [{
+                    "name": "audio", "targets": ["audio-selftest"],
+                    "status": compiler_compare.GATE_PASS, "duration_s": 1.0,
+                    "summary": None,
+                }],
+            }), encoding="utf-8")
+            return compiler_compare.Outcome(0, "", 0.001)
+
+        rows = [(compiler, linker) for compiler in ("gcc", "clang")
+                for linker in ("default", "lld")]
+        row_prefixes = [self.output / "rows" / compiler / linker for compiler, linker in rows]
+        settings = {
+            "CFLAGS": "-O0 -fno-fast-math -fno-associative-math",
+            "GE_CFLAGS": "",
+            "RECOMP_FLAGS": "-O0 -fno-fast-math -fno-associative-math",
+            "LIBS": "-lm",
+            "SDL3_DIR": "C:/msys64/ucrt64",
+        }
+        with mock.patch.object(compiler_compare, "_run", side_effect=capture):
+            for (compiler, linker), build_prefix in zip(rows, row_prefixes, strict=True):
+                row_settings = {
+                    **settings,
+                    "LDFLAGS": "-fuse-ld=lld" if linker == "lld" else "",
+                    "RECOMP_CC_IS_CLANG_OVERRIDE": "clang" if compiler == "clang" else "",
+                }
+                self.actual_workload_measurements(
+                    f"/fake/bin/{compiler}.exe", "/fake/bin/mingw32-make.exe", sys.executable,
+                    row_settings, build_prefix / "perf", build_prefix, env={},
+                )
+
+        self.assertEqual(len(commands), len(rows))
+        for command, build_prefix in zip(commands, row_prefixes, strict=True):
+            make_args = [command[index + 1] for index, token in enumerate(command[:-1])
+                         if token == "--make-arg"]
+            expected = f"BUILD_ROOT={compiler_compare._make_build_path(build_prefix)}"
+            self.assertIn(expected, make_args)
+            self.assertEqual([item for item in make_args if item.startswith("BUILD_ROOT=")], [expected])
 
     def test_failed_runtime_matrix_is_retained_after_the_veto(self) -> None:
         self.fake.workload_status = compiler_compare.GATE_FAIL
@@ -428,6 +477,19 @@ class CompilerCompareTests(unittest.TestCase):
         self.assertEqual(result, 1)
         report = json.loads((self.output / "compiler_compare.json").read_text(encoding="utf-8"))
         self.assertEqual(report["summary"][compiler_compare.STATUS_FAILED_VETO], ["gcc/default"])
+
+    def test_main_returns_named_failure_when_requested_compiler_is_missing(self) -> None:
+        self.fake.available = ("gcc",)
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            result = compiler_compare.main([
+                "--compilers", "gcc,clang", "--linkers", "default",
+                "--make", "mingw32-make", "--python", sys.executable,
+                "--repeats", "3", "--output", str(self.output),
+            ])
+        self.assertNotEqual(result, 0)
+        self.assertIn('"name": "clang/default"', output.getvalue())
+        self.assertIn('"reason": "compiler not found: clang"', output.getvalue())
 
     def test_main_missing_make_returns_two_without_a_report(self) -> None:
         original_which = self.fake.which

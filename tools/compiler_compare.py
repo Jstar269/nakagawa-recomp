@@ -10,7 +10,9 @@ run the synthetic smoke and cosimulation corpus at least three times, then run
 the existing #282 runtime workload matrix once with the same compiler/linker
 settings. Callers must run this program through their machine RAM lock; it does
 not acquire one. Compiler defaults remain untouched. lld is an independently
-selected factor.
+selected factor. Runtime workload rows run sequentially, with a per-row
+BUILD_ROOT for targets that honor it. The platform-ladder workloads use fixed
+trees under build/platform-ladder and remain shared across toolchain rows.
 """
 
 from __future__ import annotations
@@ -645,9 +647,11 @@ def _workload_measurements(compiler_path: str, make: str, python: str, settings:
                            env: dict[str, str]) -> dict[str, Any]:
     """Run the existing public #282 runtime matrix after the semantic veto.
 
-    Every compiler/linker pair gets a disjoint make-relative build prefix. The
-    runner inherits this pair's compiler and frozen flags so runtime results do
-    not silently fall back to the host default compiler or linker.
+    Every compiler/linker pair gets a disjoint make-relative BUILD_DIR prefix
+    and a row-specific BUILD_ROOT for workloads that honor it. The platform
+    ladder uses fixed trees under build/platform-ladder; its workloads run
+    sequentially. The runner inherits this pair's compiler and frozen flags so
+    runtime results do not silently fall back to the host default compiler or linker.
     """
     perf_dir.mkdir(parents=True, exist_ok=True)
     (perf_dir / "benchmark.json").unlink(missing_ok=True)
@@ -666,6 +670,7 @@ def _workload_measurements(compiler_path: str, make: str, python: str, settings:
         f"GE_CFLAGS={settings.get('GE_CFLAGS', '')}",
         f"RECOMP_FLAGS={_comparison_recomp_flags(settings.get('RECOMP_FLAGS', ''))}",
         f"LDFLAGS={settings.get('LDFLAGS', '')}",
+        f"BUILD_ROOT={_make_build_path(build_prefix)}",
         f"LIBS={settings.get('LIBS', '')}",
         "CODEGEN_BACKEND=c",
         "CODEGEN_USER_ARGS=",
@@ -995,7 +1000,7 @@ def compare(compilers: list[str], linkers: list[str], *, make: str, python: str,
             "compile_wall_time": "sum of serial compiler-driver wall times for generated C sources under each isolated trial root",
             "peak_memory": f"sampled aggregate process-tree working set; {int(SAMPLE_INTERVAL_SECONDS * 1000)} ms interval",
             "link_wall_time": "sum of serial compiler-driver wall times for link invocations under each isolated trial root",
-            "runtime_workloads": "existing #282 run_perf_benchmarks matrix after the complete veto, with a disjoint build prefix and the row's compiler/linker flags",
+            "runtime_workloads": "existing #282 run_perf_benchmarks matrix after the complete veto, with a row-specific BUILD_ROOT where honored, sequential fixed-tree platform-ladder workloads, and the row's compiler/linker flags",
             "semantic_hash": "SHA-256 of combined stdout/stderr from repeated fixture targets after normalizing build roots, host addresses and host timing fields",
             "inputs": "clears ambient game, title, codegen, SR and NK overrides; uses only pinned source-owned fixtures and toolchain paths",
         },
@@ -1212,8 +1217,8 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(report, indent=2, sort_keys=True))
     print(markdown)
     return 0 if report["summary"][STATUS_MEASURED] and not (
-        report["summary"][STATUS_FAILED_VETO] or report["summary"][STATUS_FAILED_MEASUREMENT]
-        or report["summary"][STATUS_WORKLOAD_FAILED]
+        report["summary"][STATUS_NOT_AVAILABLE] or report["summary"][STATUS_FAILED_VETO]
+        or report["summary"][STATUS_FAILED_MEASUREMENT] or report["summary"][STATUS_WORKLOAD_FAILED]
     ) else 1
 
 
