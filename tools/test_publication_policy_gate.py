@@ -32,11 +32,13 @@ What each group proves:
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 import json
 import hashlib
 import subprocess
 import tempfile
 import sys
+from typing import Protocol, TypeVar
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -189,10 +191,19 @@ def write_text_lf(path: Path, text: str) -> None:
         handle.write(text)
 
 
+_EnterContextValue = TypeVar("_EnterContextValue")
+
+
+class _EnterContext(Protocol):
+    def enterContext(self, cm: AbstractContextManager[_EnterContextValue]) -> _EnterContextValue: ...
+
+
 class FixtureMixin:
     """Builds a minimal synthetic candidate tree plus a matching policy."""
 
-    def build_candidate(self, extra_files: dict[str, bytes] | None = None) -> Path:
+    # The protocol models unittest.TestCase.enterContext without changing the mixin's MRO.
+
+    def build_candidate(self: _EnterContext, extra_files: dict[str, bytes] | None = None) -> Path:
         candidate = Path(self.enterContext(__import__("tempfile").TemporaryDirectory())) / "candidate"
         candidate.mkdir()
         for name, text in REQUIRED_FILES.items():
@@ -696,8 +707,9 @@ class TestTreeBinding(unittest.TestCase):
         return root
 
     def _git(self, root: Path, *argv: str) -> str:
-        return run_git(argv, cwd=root, check=True,
-                       capture_output=True, text=True).stdout.strip()
+        # The text=True subprocess option gives stdout a string type.
+        stdout: str = run_git(argv, cwd=root, check=True, capture_output=True, text=True).stdout
+        return stdout.strip()
 
     def _bind(self, root: Path, tree: str, *extra: str) -> subprocess.CompletedProcess:
         return subprocess.run(

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
-"""Enforce a per-module ratchet for the existing tools/ mypy errors."""
+"""Check the focused clean scope and ratchet the full tools/ typing backlog."""
 
 from __future__ import annotations
 
@@ -30,6 +30,18 @@ MYPY_ARGS = [
     "tools",
 ]
 COMMAND = ["python", "-m", "mypy", *MYPY_ARGS]
+CLEAN_SCOPE_FILES = (
+    "tools/verify_vfpu_provenance.py",
+    "tools/hle_manifest.py",
+    "tools/psp_import_table.py",
+    "tools/import_audit_gate.py",
+    "tools/vfpu_fuzz_gen.py",
+    "tools/test_import_audit.py",
+    "tools/test_hle_manifest.py",
+    "tools/test_enhancement_package.py",
+    "tools/mypy_baseline.py",
+)
+CLEAN_SCOPE_ARGS = [*MYPY_ARGS[:-1], *CLEAN_SCOPE_FILES]
 ERROR = re.compile(r"^(?P<path>tools[/\\].+?\.py):\d+(?::\d+)?: error:")
 
 
@@ -124,14 +136,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="lower the baseline to current counts; increases still fail",
     )
+    parser.add_argument(
+        "--scope",
+        choices=("tools", "issue-1391"),
+        default="tools",
+        help="check the full ratchet or require a clean issue #1391 scope",
+    )
     args = parser.parse_args(argv)
 
     try:
         actual_version = _installed_mypy_version()
         if actual_version != MYPY_VERSION:
             raise ValueError(f"mypy {MYPY_VERSION} is required, found {actual_version}")
+        mypy_args = CLEAN_SCOPE_ARGS if args.scope == "issue-1391" else MYPY_ARGS
         run = subprocess.run(
-            [sys.executable, "-m", "mypy", *MYPY_ARGS],
+            [sys.executable, "-m", "mypy", *mypy_args],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -142,6 +161,17 @@ def main(argv: list[str] | None = None) -> int:
         current = _collect_errors(run.stdout)
         if (run.returncode == 1) != bool(current):
             raise ValueError("mypy exit status does not match its error diagnostics")
+
+        if args.scope == "issue-1391":
+            if args.update:
+                raise ValueError("--update applies only to the full tools/ ratchet")
+            if current:
+                print(run.stdout, end="", file=sys.stderr)
+                print(f"mypy clean scope FAIL: {sum(current.values())} errors in {len(current)} modules",
+                      file=sys.stderr)
+                return 1
+            print(f"mypy clean scope PASS: 0 errors in {len(CLEAN_SCOPE_FILES)} requested modules")
+            return 0
 
         if args.update:
             if BASELINE.exists():

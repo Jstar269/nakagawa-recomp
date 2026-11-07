@@ -39,7 +39,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import codegen_llvm
 import enhancement_package
+import lowering_plan
 from enhancement_package import (
     AOT_ENHANCEMENT_PACKAGE_EPOCH,
     HOOK_KEYS,
@@ -1553,6 +1555,39 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         finally:
             codegen.ENHANCEMENT_SITES = saved
             codegen.ENHANCEMENT_APPLIED.clear()
+
+    def test_invalid_resolved_rewrite_fails_before_marking_the_site_applied(self) -> None:
+        saved_sites = codegen.ENHANCEMENT_SITES
+        saved_applied = set(codegen.ENHANCEMENT_APPLIED)
+        saved_space = codegen.ADDRESS_SPACE
+        try:
+            codegen.ADDRESS_SPACE = codegen.AddressSpace()
+            codegen.ENHANCEMENT_SITES = {0x1300: {"rewrite": "not-an-object"}}
+            codegen.ENHANCEMENT_APPLIED.clear()
+            with self.assertRaises(enhancement_package.EnhancementPackageError):
+                codegen._enhancement_rewrite(0x1300)
+            self.assertNotIn(0x1300, codegen.ENHANCEMENT_APPLIED)
+        finally:
+            codegen.ENHANCEMENT_SITES = saved_sites
+            codegen.ENHANCEMENT_APPLIED.clear()
+            codegen.ENHANCEMENT_APPLIED.update(saved_applied)
+            codegen.ADDRESS_SPACE = saved_space
+
+    def test_missing_llvm_transfer_fields_fail_closed(self) -> None:
+        transfer_without_slot = lowering_plan.Transfer(0x1000, 0, "call")
+        transfer_without_condition = lowering_plan.Transfer(0x1004, 0, "branch-tail")
+        with self.assertRaises(codegen_llvm.LLVMUnsupported):
+            codegen_llvm._require_delay_slot(transfer_without_slot)
+        with self.assertRaises(codegen_llvm.LLVMUnsupported):
+            codegen_llvm._require_condition(transfer_without_condition)
+
+    def test_runtime_module_translation_collections_default_independently(self) -> None:
+        first = codegen.RuntimeModuleTranslation(0, "synthetic", 0, "0" * 64, 0)
+        second = codegen.RuntimeModuleTranslation(1, "other", 0, "1" * 64, 1)
+        self.assertEqual((first.texts, first.functions, first.spans, first.stubbed), ([], [], [], []))
+        self.assertEqual((second.texts, second.functions, second.spans, second.stubbed), ([], [], [], []))
+        first.texts.append(codegen.ModuleText("synthetic body"))
+        self.assertEqual(second.texts, [])
 
     def test_vfpu_single_load_is_scaled_or_mapped_after_the_load(self) -> None:
         """lv.s loads the VFPU register first; the rewrite then scales or maps that register."""

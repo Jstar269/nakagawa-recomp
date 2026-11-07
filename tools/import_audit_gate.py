@@ -196,18 +196,18 @@ def check_fixtures(manifest: dict) -> None:
         or interleaved.findings != interleaved_again.findings
     ):
         fail("interleaved fixture parse is not deterministic")
-    for sectionless in (False, True):
+    for sectionless_mode in (False, True):
         blob = build_interleaved_import_elf(
             INTERLEAVED_SHAPE, INTERLEAVED_NIDS,
-            sectionless=sectionless, corrupt="nid_region_mismatch",
+            sectionless=sectionless_mode, corrupt="nid_region_mismatch",
         )
         try:
             parse_import_table(blob)
         except ImportTableError:
             continue
         except Exception as e:  # noqa: BLE001
-            fail(f"interleaved nid_region_mismatch (sectionless={sectionless}) escaped with {type(e).__name__}: {e}")
-        fail(f"interleaved nid_region_mismatch (sectionless={sectionless}) parsed without an error")
+            fail(f"interleaved nid_region_mismatch (sectionless={sectionless_mode}) escaped with {type(e).__name__}: {e}")
+        fail(f"interleaved nid_region_mismatch (sectionless={sectionless_mode}) parsed without an error")
 
     again = classify_imports(parse_import_table(build_import_elf(MIXED_FIXTURE_LIBS)).funcs, manifest)
     blob_a = json.dumps(report, indent=2, sort_keys=True)
@@ -228,7 +228,7 @@ def main() -> int:
     check_baseline(manifest)
     check_fixtures(manifest)
     regs = manifest["registrations"]
-    counts = {}
+    counts: dict[str, int] = {}
     for r in regs:
         counts[r["classification"]] = counts.get(r["classification"], 0) + 1
     print(

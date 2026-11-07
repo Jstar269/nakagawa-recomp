@@ -696,16 +696,16 @@ def build_stripped_module_elf(
     if not 0 < len(name) < 28:
         raise ValueError("module name must fit the 28-byte field with its terminator")
     seg[modinfo - BASE_VADDR + 4:modinfo - BASE_VADDR + 5 + len(name)] = name + b"\0"
-    name_addrs = [alloc(name.encode("ascii") + b"\0") for name, _nids in libs]
+    name_addrs = [alloc(lib_name.encode("ascii") + b"\0") for lib_name, _nids in libs]
     nid_addrs = [alloc(b"".join(struct.pack("<I", n) for n in nids)) for _name, nids in libs]
     expected: dict[int, tuple[str, int]] = {}
-    for i, ((name, nids), name_addr, nid_addr, stub_addr) in enumerate(zip(
+    for i, ((lib_name, nids), name_addr, nid_addr, stub_addr) in enumerate(zip(
             libs, name_addrs, nid_addrs, stub_addrs, strict=True)):
         struct.pack_into(
             "<IHHBBHII", seg, libstub - BASE_VADDR + 20 * i,
             name_addr, 0x0011, 0x4001, 5, 0, len(nids), nid_addr, stub_addr)
         for k, nid in enumerate(nids):
-            expected[stub_addr + 8 * k] = (name, nid)
+            expected[stub_addr + 8 * k] = (lib_name, nid)
     struct.pack_into("<5I", seg, modinfo - BASE_VADDR + 32, gp, 0, 0, libstub, libstub + 20 * len(libs))
     if decoy:
         decoy_info = alloc(b"\0" * 52)

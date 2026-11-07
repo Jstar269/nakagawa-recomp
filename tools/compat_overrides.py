@@ -66,6 +66,8 @@ faithful_abi_bridge/hle_boundary entries, which the temporary-patch gate does
 not cover and which #363 still owns.
 """
 
+from typing import Any
+
 import re
 import sys
 from pathlib import Path
@@ -179,7 +181,7 @@ CODEGEN_TEMPORARY_PATCH_TEST = (
 # 0x00048320 (force single-iteration pass) and 0x00010950 (bypass worker frame-init spin
 # loop) were retired under #363. 0x00010950 sat inside the retail allocator body that the
 # runtime host-bridges, so its patched branch was never emitted into the title C.
-GUEST_PATCHES = [
+GUEST_PATCHES: list[dict[str, Any]] = [
 ]
 
 # --- tools/codegen.py: custom per-address stubs -----------------------------
@@ -316,8 +318,8 @@ RETIRED_DISPATCH_HOOKS = [
          reason="see 0x102e1c (PLT_WALK_1)",
          test="none"),
 ]
-DISPATCH_HOOKS = []  # Trace-only hooks were deleted from generic dispatch.
-DISPATCH_RANGE_HOOKS = []  # Compatibility debt (#363): no generic target-pattern swallowing.
+DISPATCH_HOOKS: list[dict[str, Any]] = []  # Trace-only hooks were deleted from generic dispatch.
+DISPATCH_RANGE_HOOKS: list[dict[str, Any]] = []  # Compatibility debt (#363): no generic target-pattern swallowing.
 RETIRED_DISPATCH_TARGETS = [
     # Decision (c) for every entry: delete. Former broad resource predicates and exact
     # success/no-op cases are preserved only as a guard inventory; each now reaches
@@ -458,7 +460,7 @@ RETIRED_DIAGNOSTIC_GROUPS = [
          reason="additional HST-only scheduler observations found during the #363 source census; "
                 "generic SR_TRACE_PC/SR_WATCH replaces the bespoke probes"),
 ]
-DIAGNOSTIC_GROUPS = []
+DIAGNOSTIC_GROUPS: list[dict[str, Any]] = []
 
 
 # --- src/rt/hle.c: guest addresses used as addresses ------------------------
@@ -559,7 +561,7 @@ RETIRED_HLE_DIAGNOSTIC_GROUPS = [
          accidental_inheritance="no -- diagnostic output only",
          test="none"),
 ]
-HLE_GUEST_ADDRESS_GROUPS = []
+HLE_GUEST_ADDRESS_GROUPS: list[dict[str, Any]] = []
 
 # These four groups were EXPLICIT_COMPATIBILITY_OVERRIDE in generic hle.c before
 # 2026-08-27, then PROFILE_OWNED_CONFIGURATION via runtime_bindings. All four are now

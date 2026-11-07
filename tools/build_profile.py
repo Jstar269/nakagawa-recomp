@@ -94,7 +94,8 @@ def file_content_identity(path: str) -> dict[str, str]:
 def profile_payload(
     compiler: str, entries: list[str], files: list[str] | None = None
 ) -> dict:
-    payload = {
+    # The serialized profile mixes compiler metadata, entry strings and file rows.
+    payload: dict[str, object] = {
         "compiler": compiler_identity(compiler),
         "entries": entries,
     }
@@ -113,12 +114,12 @@ def profile_hashes(
     for compiler, entries in profiles:
         if compiler not in compiler_identities:
             compiler_identities[compiler] = compiler_identity(compiler)
-        payload = {
+        payload: dict[str, object] = {
             "compiler": compiler_identities[compiler],
             "entries": entries,
         }
         if files:
-            identities = []
+            identities: list[dict[str, str]] = []
             for path in files:
                 if path not in file_identities:
                     file_identities[path] = file_content_identity(path)
