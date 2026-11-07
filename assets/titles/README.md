@@ -180,14 +180,15 @@ executable locally and writes the result to `build.json` in the title's private 
 | :--- | :--- |
 | a `supported` or `experimental` digest | the build and its status are recorded |
 | a `known-bad` digest | the import is refused (`BUILD_KNOWN_BAD`) with the reason |
-| a digest not in a non-empty list | recorded as `unlisted`: experimental, and the title's runtime bindings are not applied |
+| a digest not in a non-empty list | recorded as `unlisted`: experimental, and runtime bindings are stripped at package build time (`build-package` via `tools/nk_cli.py` `_apply_executable_build`) |
 | a title with no `builds` list | recorded as `untracked`: neither confirmed nor questioned |
 
 The same check runs where the build happens and where the user looks:
 
 - `build-package` (and the player's BUILD PACKAGE) hashes the disc's executable again. A `known-bad`
   build stops the build with its reason. An unlisted build is built without the manifest's
-  `runtime_bindings` and `required_runtime_bindings`, with a warning that names the supported
+  `runtime_bindings` and `required_runtime_bindings` (`tools/nk_cli.py` `_apply_executable_build`),
+  with a warning that names the supported
   builds, so another build's addresses are never applied.
 - The game card gets a "Program version" row for a title that lists builds (`GAME_BUILD`, from
   `nk_title_manifest_identify_build`): Ready with the build's label, "Not recorded" for an unlisted

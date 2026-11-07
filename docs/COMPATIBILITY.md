@@ -39,8 +39,9 @@ true for one exact executable. A title's manifest can list its builds by the SHA
 (`disc.builds`, see [`assets/titles/README.md`](../assets/titles/README.md#recording-executable-builds)). On import
 Nakagawa hashes the user's own executable locally and records which build it found in the title's private folder
 (`build.json`). A build the manifest marks `known-bad` is refused with its reason. A build the manifest does not list
-is imported as experimental and the title's recorded addresses are not applied to it, so the run never silently uses
-another build's addresses. A title that lists no builds is not questioned.
+is imported as experimental; when its package is built (`build-package` via `tools/nk_cli.py` `_apply_executable_build`),
+the title's recorded addresses (`runtime_bindings` and `required_runtime_bindings`) are stripped, so the run never
+silently uses another build's addresses. A title that lists no builds is not questioned.
 
 ## Title compatibility
 
