@@ -1693,7 +1693,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
     def test_lle_scaled_store_never_writes_the_fpr(self) -> None:
         """Under --lle-cpu a faulting swc1 returns early, so the rewrite must not touch s->f."""
         swc1 = 0xE4A40010  # swc1 $f4, 0x10($a1)
-        saved = (codegen.ENHANCEMENT_SITES, codegen.OPTIONS.lle_cpu)
+        saved_sites = codegen.ENHANCEMENT_SITES
         try:
             codegen.ENHANCEMENT_SITES = {
                 0x1300: {"id": "F4", "rewrite": {"kind": "scale_f_store", "reg": 4, "factor": 0.5}}
@@ -1701,7 +1701,8 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             codegen.ENHANCEMENT_APPLIED.clear()
             for lle in (False, True):
                 with self.subTest(lle_cpu=lle):
-                    line = codegen.normal_line(0x1300, swc1, lle_cpu=lle)
+                    options = codegen.CodegenOptions(lle_cpu=lle)
+                    line = codegen.normal_line(0x1300, swc1, options=options)
                     enhanced = line.split("else", 1)[0]
                     self.assertNotIn("s->f[4] =", enhanced)
                     self.assertNotIn("s->f[4] *=", enhanced)
@@ -1710,7 +1711,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                     if lle:
                         self.assertIn("return;", enhanced)
         finally:
-            codegen.ENHANCEMENT_SITES, codegen.OPTIONS.lle_cpu = saved
+            codegen.ENHANCEMENT_SITES = saved_sites
             codegen.ENHANCEMENT_APPLIED.clear()
 
 

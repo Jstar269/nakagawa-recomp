@@ -648,14 +648,16 @@ class FunctionLowering:
 
 
 def lower(cg, elf, start, ranges, known, *, c_text: str, resume_owners=None, resumable=False,
-          profile=None, dispatch_boundaries=None, stack_census=False) -> LLVMBody:
+          profile=None, dispatch_boundaries=None, stack_census=False, options=None) -> LLVMBody:
     """Lower one function the C emitter already translated; raises LLVMUnsupported.
 
-    ``cg`` is the running codegen module (its flags and address space are live state).
+    ``cg`` supplies codegen helpers and the active address space; ``options`` is this
+    translation's explicit option object.
     """
+    options = cg._options_for_call(options)
     plan = P.plan_function(cg, elf, start, ranges, known, resume_owners=resume_owners,
                            resumable=resumable, profile=profile,
-                           dispatch_boundaries=dispatch_boundaries)
+                           dispatch_boundaries=dispatch_boundaries, options=options)
     lowering = FunctionLowering(plan, stack_census)
     function = lowering.lower()
     returned: LLVMBody = LLVMBody.make(lowering.definition_name, start, lowering.module, function, len(c_text))

@@ -27,10 +27,7 @@ def _mk(words, labels: set[int] | frozenset[int] = frozenset()):
 
 class StaticVerifyTests(unittest.TestCase):
     def setUp(self):
-        codegen.OPTIONS.static_verify = True
-
-    def tearDown(self):
-        codegen.OPTIONS.static_verify = False
+        self.options = codegen.CodegenOptions(static_verify=True)
 
     def test_lui_addiu_chain_is_predicted(self):
         # lui $a0, 0x2d ; addiu $a0, $a0, -0x518  -> a0 = 0x002cfae8
@@ -39,7 +36,7 @@ class StaticVerifyTests(unittest.TestCase):
             0x1004: (0x09 << 26) | (4 << 21) | (4 << 16) | (0xFAE8),
         }
         elf, insns, labels = _mk(words)
-        pts = codegen.sv_plan(elf, insns, labels)
+        pts = codegen.sv_plan(elf, insns, labels, options=self.options)
         self.assertEqual(pts, {0x1004: [(4, 0x002CFAE8)]})
 
     def test_unknown_input_is_never_asserted(self):
@@ -51,7 +48,7 @@ class StaticVerifyTests(unittest.TestCase):
             0x2008: (0x0D << 26) | (0 << 21) | (5 << 16) | 5,
         }
         elf, insns, labels = _mk(words)
-        pts = codegen.sv_plan(elf, insns, labels)
+        pts = codegen.sv_plan(elf, insns, labels, options=self.options)
         self.assertEqual(pts, {0x2008: [(5, 5)]})
 
     def test_state_resets_at_labels_and_branches(self):
@@ -65,7 +62,7 @@ class StaticVerifyTests(unittest.TestCase):
             0x300C: (0x0D << 26) | (5 << 16) | 2,
         }
         elf, insns, labels = _mk(words, labels={0x300C})
-        pts = codegen.sv_plan(elf, insns, labels)
+        pts = codegen.sv_plan(elf, insns, labels, options=self.options)
         self.assertNotIn(0x300C, pts)
         self.assertNotIn(0x3008, pts)
 
@@ -77,7 +74,7 @@ class StaticVerifyTests(unittest.TestCase):
             0x4008: (8 << 21) | (0 << 16) | (10 << 11) | 0x2A,
         }
         elf, insns, labels = _mk(words)
-        pts = codegen.sv_plan(elf, insns, labels)
+        pts = codegen.sv_plan(elf, insns, labels, options=self.options)
         self.assertEqual(pts, {0x4008: [(8, 0x80000000), (9, 0xF8000000), (10, 1)]})
 
     def test_syscall_resets_lattice(self):
@@ -89,17 +86,17 @@ class StaticVerifyTests(unittest.TestCase):
             0x5008: (0x0D << 26) | (5 << 16) | 2,
         }
         elf, insns, labels = _mk(words)
-        pts = codegen.sv_plan(elf, insns, labels)
+        pts = codegen.sv_plan(elf, insns, labels, options=self.options)
         for addr, checks in pts.items():
             for reg, _ in checks:
                 self.assertNotEqual(reg, 4, f"r4 asserted after syscall at 0x{addr:x}")
 
     def test_disabled_by_default(self):
-        codegen.OPTIONS.static_verify = False
         words = {0x6000: (0x0F << 26) | (4 << 16) | 1,
                  0x6004: (0x0D << 26) | (4 << 21) | (4 << 16) | 2}
         elf, insns, labels = _mk(words)
-        self.assertEqual(codegen.sv_plan(elf, insns, labels), {})
+        self.assertEqual(codegen.sv_plan(
+            elf, insns, labels, options=codegen.CodegenOptions()), {})
 
 
 if __name__ == "__main__":

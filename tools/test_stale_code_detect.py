@@ -348,19 +348,15 @@ class FakeElf:
 
 class TestStaleCodegenGate(unittest.TestCase):
     def test_flag_defaults_off(self):
-        self.assertFalse(codegen.OPTIONS.stale_detect)
+        self.assertFalse(codegen.CodegenOptions().stale_detect)
 
     def test_cache_op_is_noop_by_default_and_hook_when_enabled(self):
         cache_word = (0x2F << 26) | (4 << 21) | (2 << 16) | 0x10
         stmt, _, _ = codegen.effect(0x1000, cache_word)
         self.assertEqual(stmt, "(void)0;")
-        old = codegen.OPTIONS.stale_detect
-        codegen.OPTIONS.stale_detect = True
-        try:
-            stmt, _, _ = codegen.effect(0x1000, cache_word)
-            self.assertIn("sr_stale_note_cache_op", stmt)
-        finally:
-            codegen.OPTIONS.stale_detect = old
+        stmt, _, _ = codegen.effect(
+            0x1000, cache_word, options=codegen.CodegenOptions(stale_detect=True))
+        self.assertIn("sr_stale_note_cache_op", stmt)
 
     def test_fnv_vectors_match_runtime(self):
         self.assertEqual(codegen.stale_fnv1a([]), 0x811C9DC5)
@@ -398,19 +394,14 @@ class TestStaleCodegenEmission(unittest.TestCase):
         Path(path).write_bytes(eh + ph + code)
 
     def _run_codegen(self, tmp_dir, stale):
-        old = codegen.OPTIONS.stale_detect
-        codegen.OPTIONS.stale_detect = False
-        try:
-            elf = str(Path(tmp_dir) / "min.elf")
-            out = str(Path(tmp_dir) / "min_recomp.c")
-            self._write_min_elf(elf)
-            args = ["codegen.py", elf, out, "--base=0x0"]
-            if stale:
-                args.append("--stale-detect")
-            self.assertEqual(codegen.main(args), 0)
-            return Path(out).read_text(encoding="ascii")
-        finally:
-            codegen.OPTIONS.stale_detect = old
+        elf = str(Path(tmp_dir) / "min.elf")
+        out = str(Path(tmp_dir) / "min_recomp.c")
+        self._write_min_elf(elf)
+        args = ["codegen.py", elf, out, "--base=0x0"]
+        if stale:
+            args.append("--stale-detect")
+        self.assertEqual(codegen.main(args), 0)
+        return Path(out).read_text(encoding="ascii")
 
     def test_default_output_has_no_stale_records(self):
         with tempfile.TemporaryDirectory(prefix="staleemit_") as tmp_dir:
