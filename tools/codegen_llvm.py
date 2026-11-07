@@ -155,6 +155,22 @@ _BINARY = {"add": "add", "sub": "sub", "and": "and_", "or": "or_", "xor": "xor"}
 _COND = {"eq": "eq", "ne": "ne", "lez": "sle", "gtz": "sgt", "ltz": "slt", "gez": "sge"}
 
 
+def _require_delay_slot(transfer: P.Transfer) -> P.Op:
+    if transfer.slot is None:
+        raise LLVMUnsupported(
+            f"{transfer.kind} transfer at 0x{transfer.addr:08x} has no delay-slot operation"
+        )
+    return transfer.slot
+
+
+def _require_condition(transfer: P.Transfer) -> P.Cond:
+    if transfer.cond is None:
+        raise LLVMUnsupported(
+            f"conditional transfer at 0x{transfer.addr:08x} has no branch condition"
+        )
+    return transfer.cond
+
+
 class FunctionLowering:
     """Render one function's lowering plan (tools/lowering_plan.py) as LLVM IR.
 
@@ -563,7 +579,7 @@ class FunctionLowering:
             self.begin(t.addr, t.word)
             self.W(t.link_reg, link_value)
             self.end()
-            self.instruction(t.slot)
+            self.instruction(_require_delay_slot(t))
             call_target()
             then()
         elif t.kind in ("call-computed", "tail-computed"):     # jalr / jr rs
@@ -573,7 +589,7 @@ class FunctionLowering:
             if t.link_reg is not None:
                 self.W(t.link_reg, link_value)
             self.end()
-            self.instruction(t.slot)
+            self.instruction(_require_delay_slot(t))
             if t.kind == "call-computed":
                 self.checked_dispatch_call(latched, link_value)
                 then()
@@ -588,12 +604,12 @@ class FunctionLowering:
                 self.call("sr_raw_syscall", self.s, self.c32(t.slot_syscall),
                           self.c32(t.addr + 4))
             else:
-                self.instruction(t.slot)
+                self.instruction(_require_delay_slot(t))
             self.host_return()
         elif t.kind.startswith("jump-"):                       # j
             self.begin(t.addr, t.word)
             self.end()
-            self.instruction(t.slot)
+            self.instruction(_require_delay_slot(t))
             if t.kind == "jump-tail":
                 self.tail_transfer(self.c32(t.target), t.symbol)
             else:
@@ -601,23 +617,23 @@ class FunctionLowering:
                     self.yield_(t.addr)
                 self.goto(self.at_label(t.target))
         else:                                                  # conditional: cond, link, slot
-            taken_cond = self.cond(t.cond)
+            taken_cond = self.cond(_require_condition(t))
             self.begin(t.addr, t.word)
             if t.link_reg is not None:
                 self.W(t.link_reg, link_value)
             self.end()
             if t.kind == "call":                               # linked branch CALL (#968)
-                self.instruction(t.slot)
+                self.instruction(_require_delay_slot(t))
                 _, join = self.split(taken_cond, "call")
                 call_target()
                 self.enter(join)
                 then()
                 return
             if not t.likely:
-                self.instruction(t.slot)
+                self.instruction(_require_delay_slot(t))
             _, join = self.split(taken_cond, "taken")
             if t.likely:
-                self.instruction(t.slot)
+                self.instruction(_require_delay_slot(t))
             if t.kind == "branch-label":
                 if t.backward:
                     self.yield_(t.addr)

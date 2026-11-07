@@ -1776,6 +1776,17 @@ class EvidenceTierTests(unittest.TestCase):
                         "tests": [{"id": "PSP-UNKNOWN-001", "hardware_evidence": evidence}],
                     })
 
+    def test_dmac_note_does_not_call_measured_tier_b_cells_unrun_or_uncited(self) -> None:
+        document = json.loads(hle_manifest.PSP_ORACLE_MANIFEST.read_text(encoding="utf-8"))
+        row = next(test for test in document["tests"] if test["id"] == "PSP-DMAC-001")
+        note = row["measurement_note"]
+        self.assertNotIn("Tier B owned-overrun controls are built but hardware NOT_RUN", note)
+        self.assertNotIn("B1-B4 subcells remain uncited", note)
+        self.assertIn("sixteen Tier B cells", note)
+        self.assertIn("2026-11-06 PSP-3000 runs", note)
+        self.assertIn("Tier E", note)
+        self.assertIn("measured Tier B cells", row["invariant"])
+
     @staticmethod
     def _measured_row(**overrides) -> dict:
         """A MEASURED row citing a committed section that really names its case."""
@@ -1909,15 +1920,16 @@ class EvidenceTierTests(unittest.TestCase):
                 "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
                 "PSP-DMAC-002",
                 "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-FPU-CC-001", "PSP-GE-001",
-                "PSP-GE-CONTROL-001", "PSP-GE-MIP-001", "PSP-GE-OVERLAP-001", "PSP-GE-RASTER-001",
+                "PSP-GE-CONTROL-001", "PSP-GE-LIGHT-001", "PSP-GE-MIP-001", "PSP-GE-MIP-002",
+                "PSP-GE-OVERLAP-001", "PSP-GE-RASTER-001", "PSP-GE-RTT-001",
                 "PSP-GE-SAMPLE-001",
-                "PSP-GE-SYNC-001", "PSP-GE-TIMING-001",
-                "PSP-HLE-AUDIO-SRC-001",
+                "PSP-GE-SYNC-001", "PSP-GE-TIMING-001", "PSP-GE-WEIGHT-001",
+                "PSP-HLE-AUDIO-REST-001", "PSP-HLE-AUDIO-SRC-001",
                 "PSP-HLE-CTRL-LATCH-001",
                 "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-INTR-001",
                 "PSP-HLE-KERNEL-STATUS-001",
                 "PSP-HLE-POWER-001", "PSP-HLE-POWER-002", "PSP-HLE-SAVEDATA-GETSIZE-001",
-                "PSP-HLE-SYSPARAM-001",
+                "PSP-HLE-STDIO-001", "PSP-HLE-SYSPARAM-001",
                 "PSP-HLE-TIMER-ORDER-001", "PSP-HLE-UTILITY-NONE-001", "PSP-HLE-VTIMER-001", "PSP-HLE-VTIMER-002",
                 "PSP-HLE-VTIMER-003", "PSP-INTR-CAUSE-001", "PSP-IO-001", "PSP-IO-EOF-001", "PSP-IO-EOF-002", "PSP-KERNEL-001",
                 "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-SEM-001", "PSP-KERNEL-STATUS-001",

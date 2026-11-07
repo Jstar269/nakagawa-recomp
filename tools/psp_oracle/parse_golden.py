@@ -117,6 +117,10 @@ def _validate_scalar_shape(sequence: SequenceReport,
     for case_id, record in sequence.results.items():
         values = dict(record.values)
         expected = {"result", *(f"out{i}" for i in range(out_counts[case_id]))}
+        if (sequence.spec.test_id == "PSP-VCODEC-001" and case_id == "vc-csc-struct"
+                and record.status == "FAIL"):
+            # Refused geometry did not call firmware, so the failure row has no return value.
+            expected.remove("result")
         if set(values) != expected:
             raise ProtocolError(
                 f"{sequence.spec.test_id}: {case_id} fields must be "
@@ -1936,6 +1940,58 @@ _register_campaign_probe(
     tuple(row for row, _ in HLE_UTILITY_NONE_ROWS), dict(HLE_UTILITY_NONE_ROWS),
 )
 
+# hle-std-handles (156, probe_hle_measure.c): #341's three standard handles, a one-byte write
+# to Stdout and to Stderr, and a write to Stdout after closing it (the Stdin read is not run).
+HLE_STD_HANDLES_ROWS = (
+    ("stdio-handles", 3), ("stdio-write-stdout", 2), ("stdio-write-stderr", 2),
+    ("stdio-close-stdout", 3),
+)
+_register_campaign_probe(
+    "hle-std-handles", "PSP-HLE-STDIO-001",
+    tuple(row for row, _ in HLE_STD_HANDLES_ROWS), dict(HLE_STD_HANDLES_ROWS),
+)
+
+# hle-audio-rest (159, probe_hle_measure.c): #279's rest length after each of 32 blocking
+# outputs on a 1024-, 2048- and 4096-frame stereo channel, then the drain and the release.
+HLE_AUDIO_REST_FRAMES = (1024, 2048, 4096)
+HLE_AUDIO_REST_BLOCKS = 32
+HLE_AUDIO_REST_ROWS = tuple(
+    row
+    for frames in HLE_AUDIO_REST_FRAMES
+    for row in ((f"audio-rest-{frames}-reserve", 3),
+                *((f"audio-rest-{frames}-b{block:02d}", 5) for block in range(HLE_AUDIO_REST_BLOCKS)),
+                (f"audio-rest-{frames}-drain", 4))
+)
+_register_campaign_probe(
+    "hle-audio-rest", "PSP-HLE-AUDIO-REST-001",
+    tuple(row for row, _ in HLE_AUDIO_REST_ROWS), dict(HLE_AUDIO_REST_ROWS),
+)
+
+# hle-utility-dialogs (161, probe_hle_measure.c): #1386 in game context. Three savedata GETSIZE
+# timing runs; then for the gamedata install dialog, netconf (action 0) and game sharing, each
+# after its precheck or net setup: one timing run (InitStart to NONE, each status change's
+# vblank) and the wrong-state calls in INIT, RUNNING, FINISHED and SHUTDOWN, each on a fresh
+# dialog; then the gamedata directory cleanup or the net teardown. No message dialog is opened
+# (it leaves RUNNING only through a button or Abort). Every row is emitted on every run with a
+# fixed word count; a SKIP row carries its reason in result.
+HLE_UTILITY_DIALOGS_STATES = ("init", "running", "finished", "shutdown")
+HLE_UTILITY_DIALOGS_ROWS = (
+    *((f"savedata-timing-r{run}", 24) for run in (1, 2, 3)),
+    ("gamedata-precheck", 5), ("gamedata-timing", 24),
+    *((f"gamedata-state-{state}", 21) for state in HLE_UTILITY_DIALOGS_STATES),
+    ("gamedata-cleanup", 23),
+    ("netconf-setup", 5), ("netconf-timing", 24),
+    *((f"netconf-state-{state}", 21) for state in HLE_UTILITY_DIALOGS_STATES),
+    ("netconf-teardown", 5),
+    ("sharing-setup", 5), ("sharing-timing", 24),
+    *((f"sharing-state-{state}", 21) for state in HLE_UTILITY_DIALOGS_STATES),
+    ("sharing-teardown", 5),
+)
+_register_campaign_probe(
+    "hle-utility-dialogs", "PSP-HLE-UTILITY-DIALOG-001",
+    tuple(row for row, _ in HLE_UTILITY_DIALOGS_ROWS), dict(HLE_UTILITY_DIALOGS_ROWS),
+)
+
 # io-umd-eof (137, probe_kernel_semantics.c): #1380 on the UMD, read-only: the drive state
 # before and after; for two disc0: files (a = UMD_DATA.BIN, b = PSP_GAME/PARAM.SFO) the open
 # and size, seeks past the end, reads past and across the end, negative seeks and seeks at and
@@ -2295,6 +2351,159 @@ GE_OVERLAP_CASES = tuple(case for cell in GE_OVERLAP_CELLS
 _register_campaign_probe(
     "ge-overlap", "PSP-GE-OVERLAP-001", GE_OVERLAP_CASES,
     {case: (9 if case.endswith("-draw") else 16) for case in GE_OVERLAP_CASES},
+)
+
+# ge-clut-mip (154, probe_ge_sample.c): the #2031 GE multi-CLUT mip cells. Per cell of the
+# gc_cells table, in order: one `-draw` record (9 words) and the window's first row (`-r0`).
+GE_CLUT_MIP_FAMILIES = ("t8-off", "t8-on", "t8-on-b40", "t4-off", "t4-on", "t4-on-small",
+                        "c16-t4-on", "c16-t8-on", "t4-on-csa1", "t8-on-mask1f", "t16-on")
+GE_CLUT_MIP_CELLS = (*(f"{family}-l{level}" for family in GE_CLUT_MIP_FAMILIES
+                       for level in range(4)),
+                     "cap32-csa16-b20", "cap32-csa16-b40", "cap16-csa16-b20")
+GE_CLUT_MIP_CASES = tuple(case for cell in GE_CLUT_MIP_CELLS
+                          for case in (f"{cell}-draw", f"{cell}-r0"))
+_register_campaign_probe(
+    "ge-clut-mip", "PSP-GE-MIP-002", GE_CLUT_MIP_CASES,
+    {case: (9 if case.endswith("-draw") else 16) for case in GE_CLUT_MIP_CASES},
+)
+
+# sas-mix (155, probe.c): the #2135 and #2054 SAS volume, WithMix and pitch cells, every record
+# 16 words except the 4-word load record. The cell names and grain counts are probe.c's
+# k_sas_mix_volume, k_sas_mix_withmix and k_sas_mix_pitch tables, in order; a pitch cell writes
+# eight 32-sample left-channel records per grain.
+SAS_MIX_VOLUME_CELLS = ("def-m0", "def-m1", "zero", "half", "full-m1", "send-only-m1",
+                        *(f"e-{side}-{edge}" for edge in ("m1000", "1001", "m1001")
+                          for side in ("l", "r", "sl", "sr")),
+                        "reinit")
+SAS_MIX_WITHMIX_CELLS = ("unity", "half", "zero-neg", "over", "extreme", "keyed-zero",
+                         "keyed-unity", "raw-unity")
+SAS_MIX_PITCH_CELLS = (("vag-1000", 4), ("vag-1800", 4), ("vag-2a00", 4), ("pcm-2000", 2),
+                       ("pcm-0800", 2))
+SAS_MIX_CASES = (
+    "sas-mix-load",
+    *(f"sas-mix-v-{cell}-{part}" for cell in SAS_MIX_VOLUME_CELLS for part in ("calls", "out")),
+    *(f"sas-mix-w-{cell}-{part}" for cell in SAS_MIX_WITHMIX_CELLS
+      for part in ("calls", "s0", "s1", "s2")),
+    *(case for cell, grains in SAS_MIX_PITCH_CELLS
+      for case in (f"sas-mix-p-{cell}-calls",
+                   *(f"sas-mix-p-{cell}-g{r:02x}" for r in range(8 * grains)))),
+)
+_register_campaign_probe(
+    "sas-mix", "PSP-SAS-003", SAS_MIX_CASES,
+    {case: (4 if case == "sas-mix-load" else 16) for case in SAS_MIX_CASES},
+)
+
+# sas-adsr (152, probe.c): the #1296 envelope heights. probe.c's k_sas_adsr_pairs (9 SimpleADSR
+# pairs, 1024 grains each), k_sas_adsr_mode_rows (32 SetADSRmode rows, 16 grains each) and
+# k_sas_adsr_runs (name and on + off grains), in order; heights are 16 per record.
+SAS_ADSR_PAIR_COUNT = 9
+SAS_ADSR_PAIR_GRAINS = 1024
+SAS_ADSR_MODE_ROW_COUNT = 32
+SAS_ADSR_RUNS = (("expatk", 80), ("expatk-g64", 160), ("bound", 32), ("bound-half", 32),
+                 ("g64-p1", 160), ("g64-p2", 160))
+SAS_ADSR_CASES = (
+    "sas-adsr-load",
+    *(case for pair in range(SAS_ADSR_PAIR_COUNT)
+      for case in (f"sas-adsr-p{pair}-calls",
+                   *(f"sas-adsr-p{pair}-h{row:02x}" for row in range(SAS_ADSR_PAIR_GRAINS // 16)))),
+    *(case for row in range(SAS_ADSR_MODE_ROW_COUNT)
+      for case in (f"sas-adsr-m{row:02d}-calls", f"sas-adsr-m{row:02d}-h")),
+    *(case for name, grains in SAS_ADSR_RUNS
+      for case in (f"sas-adsr-{name}-calls", *(f"sas-adsr-{name}-h{row:02x}" for row in range(grains // 16)))),
+)
+_register_campaign_probe(
+    "sas-adsr", "PSP-SAS-002", SAS_ADSR_CASES,
+    {case: (4 if case == "sas-adsr-load" else 11
+            if case.startswith("sas-adsr-p") and case.endswith("-calls") else 16)
+     for case in SAS_ADSR_CASES},
+)
+
+# vcodec-words (160, probe.c): the #286 (W-LLE-1) Media Engine boundary words. The fixed sequence
+# run_vcodec_words emits on every path (a call that was not made keeps its record's shape, status
+# SKIP): the load record; per codec type 0 and 1 the zero-filled context through Open, GetEDRAM,
+# Init and SetMemory (three 32-word chunks of the 96-word context each) and its teardown; per
+# picture width 480 (d480) and 464 (d464) the sceMpegCreate context, three decoded access units
+# with their output structs and band summaries, AU a0's eight band buffers in 120-word chunks,
+# for d480 the CscInit and CscAvc cells (four pixel modes, the first 8192 bytes of each in 128-word
+# chunks) and the teardown; the five CheckNeedMem cells; the unload record. Every step record is
+# 34 words (return, microseconds, 32 context words).
+VCODEC_STEP_WORDS = 34
+VCODEC_CHUNK_WORDS = 120
+# Chunk records per band: 4 luma bands of 32640 bytes and 4 chroma bands of 16320 bytes.
+VCODEC_BAND_CHUNKS = (68, 68, 68, 68, 34, 34, 34, 34)
+VCODEC_CSC_CHUNKS = 16
+VCODEC_CSC_CHUNK_WORDS = 128
+VCODEC_AUS = 3
+VCODEC_AU_ROWS = (("ctx", VCODEC_STEP_WORDS), ("b2", 32), ("yuv", 48), ("b3", 32), ("sei", 48),
+                  ("bands", 32))
+VCODEC_AC_CELLS = ("1000", "1001", "1002", "1000-p5c5c", "1000-p5c28")
+
+
+def _vcodec_type_rows(codec_type: int) -> tuple[tuple[str, int], ...]:
+    rows: list[tuple[str, int]] = []
+    for step in ("open", "edram", "init", "setmem"):
+        rows.extend((f"vc-t{codec_type}-{step}-c{chunk}", VCODEC_STEP_WORDS) for chunk in range(3))
+    rows.extend((f"vc-t{codec_type}-{step}", VCODEC_STEP_WORDS) for step in ("stop", "release", "delete"))
+    return tuple(rows)
+
+
+def _vcodec_decode_rows(tag: str, with_csc: bool) -> tuple[tuple[str, int], ...]:
+    rows: list[tuple[str, int]] = [(f"vc-{tag}-input", 9)]
+    rows.extend((f"vc-{tag}-{step}", VCODEC_STEP_WORDS) for step in ("open", "edram", "init", "setmem"))
+    for au in range(VCODEC_AUS):
+        rows.extend((f"vc-{tag}-a{au}-{name}", words) for name, words in VCODEC_AU_ROWS)
+        if au == 0:
+            for band, chunks in enumerate(VCODEC_BAND_CHUNKS):
+                rows.extend((f"vc-{tag}-a0-b{band}-c{chunk:02d}", VCODEC_CHUNK_WORDS)
+                            for chunk in range(chunks))
+    if with_csc:
+        rows.extend((("vc-csc-init", 2), ("vc-csc-struct", 15)))
+        for mode in range(4):
+            rows.append((f"vc-csc-m{mode}", 10))
+            rows.extend((f"vc-csc-m{mode}-d{chunk:02d}", VCODEC_CSC_CHUNK_WORDS)
+                        for chunk in range(VCODEC_CSC_CHUNKS))
+        rows.append(("vc-csc-modes", 2))
+    rows.extend((f"vc-{tag}-{step}", VCODEC_STEP_WORDS) for step in ("stop", "release", "delete"))
+    return tuple(rows)
+
+
+VCODEC_WORDS_ROWS = (
+    ("vc-load", 5),
+    *_vcodec_type_rows(0),
+    *_vcodec_type_rows(1),
+    *_vcodec_decode_rows("d480", True),
+    *_vcodec_decode_rows("d464", False),
+    *((f"vc-ac-{cell}", 67) for cell in VCODEC_AC_CELLS),
+    ("vc-unload", 5),
+)
+_register_campaign_probe(
+    "vcodec-words", "PSP-VCODEC-001",
+    tuple(row for row, _ in VCODEC_WORDS_ROWS), dict(VCODEC_WORDS_ROWS),
+)
+
+# ge-weight (157, probe_ge_sample.c): the #343 weighted-vertex cells. Per cell of the gw_cells
+# table, in order: one `-draw` record (10 words: the GE wait outcome, the list length, the vertex
+# type, the vertex size and the weight count) and seventeen `-rN` window rows.
+GE_WEIGHT_CELLS = ("f32-w1", "u8-w1", "u16-w1", "u8-hi", "u16-hi", "f32-neg", "f32-c1",
+                   *(f"f32-c{count}" for count in range(3, 9)), "u8-c3", "u8-c5", "u16-c3")
+GE_WEIGHT_CASES = tuple(case for cell in GE_WEIGHT_CELLS
+                        for case in (f"{cell}-draw", *(f"{cell}-r{y}" for y in range(17))))
+_register_campaign_probe(
+    "ge-weight", "PSP-GE-WEIGHT-001", GE_WEIGHT_CASES,
+    {case: (10 if case.endswith("-draw") else 16) for case in GE_WEIGHT_CASES},
+)
+
+# ge-rtt (158, probe_ge_sample.c): the #343 render-to-texture cells. Per cell of the grt_cells
+# table, in order: one `-draw` record (10 words: the GE wait outcome, the list length, T's format
+# word, the SAMPLE count and the operation mask), one `-t0` record (T's first row, 16 words) and
+# twelve `-rN` window rows.
+GE_RTT_CELLS = ("cpu", "flush", "noflush", "warm-noflush", "warm-flush", "warm-texsync",
+                "warm-both", "565-flush", "565-warm-noflush")
+GE_RTT_CASES = tuple(case for cell in GE_RTT_CELLS
+                     for case in (f"{cell}-draw", f"{cell}-t0", *(f"{cell}-r{y}" for y in range(12))))
+_register_campaign_probe(
+    "ge-rtt", "PSP-GE-RTT-001", GE_RTT_CASES,
+    {case: (10 if case.endswith("-draw") else 16) for case in GE_RTT_CASES},
 )
 
 # module-start (124, probe_module_start.c): the module_start thread cell. A fixed-shape

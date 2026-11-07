@@ -51,7 +51,6 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 import struct
-from typing import NamedTuple
 
 # Hard resource caps. A malformed header must not be able to request work or
 # memory proportional to a forged length field.
@@ -460,10 +459,12 @@ def parse_export_table(data: bytes) -> ExportTable | None:
     return ExportTable(module_attributes, tuple(libraries))
 
 
-class ImportWindow(NamedTuple):
+@dataclass(frozen=True)
+class ImportWindow:
     """One PspLibStubEntry window: a library's run of numFuncs stub slots.
 
     library is None for a window that imports nothing (its name is never read).
+    It is a record because its integer ``count`` field is not tuple.count.
     """
 
     library: str | None

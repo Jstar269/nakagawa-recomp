@@ -36,6 +36,7 @@ _SCRATCH = Path(_SCRATCH_ROOT.name).as_posix()
 _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/cpu_lle_selftest",
     "build/mygame/domain_mode_selftest",
+    "build/mygame/nkstate_selftest",
     "build/mygame/clay_layout_selftest",
     "build/test_nk_ui_core",
     "build/test_player_screens",
@@ -50,6 +51,9 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/osk_text_entry_selftest",
     "build/mygame/ace_selftest build/mygame",
     "build/mygame/motion_match_selftest",
+    "build/mygame/fsr3_host_selftest tests/native/fsr3_host_oracle.txt",
+    "build/mygame/fsr3_fg_host_selftest tests/native/fsr3_fg_host_oracle.txt",
+    "build/mygame/fsr3_fg_state_selftest",
     "build/mygame/osk_overlay_selftest",
     "build/mygame/ge_float24_selftest",
     "build/mygame/ge_cpu_profile_validate_selftest",

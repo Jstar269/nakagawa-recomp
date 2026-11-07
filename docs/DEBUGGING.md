@@ -1374,6 +1374,124 @@ a capture window alone does not turn it on, so existing routes keep their paced 
 archive reset, completeness verdict); `tools/test_visual_oracle.py` exercises them against real
 processes and directories.
 
+#### Finding where two runs split (replay checkpoints)
+
+When two runs of the same route end differently, `SR_REPLAY_CHECKPOINTS=<file>` (#2147) names the
+first VBLANK, and the part of the guest state, where they stopped agreeing. Every
+`SR_REPLAY_CHECKPOINT_EVERY` vblanks (default 60, 1..100000) the runtime writes one line of SHA-256
+digests. It digests the guest state, never the guest bytes:
+
+| Digest | What it covers |
+| --- | --- |
+| `cpu.<uid>` | one guest thread's `CpuState`; the running thread's live registers |
+| `sched` | each thread's uid, state, priority and wait object, plus the guest clock |
+| `vram.<addr>` | VRAM in 1 MiB chunks |
+| `ram.<addr>` | main RAM in 1 MiB chunks, named by guest address |
+
+```powershell
+$env:SR_DETERMINISTIC_CLOCK = "1"
+$env:SR_REPLAY_CHECKPOINTS = "logs/run-a.ckpt"   # then run again with logs/run-b.ckpt
+python tools/nkstate.py ckpt-diff logs/run-a.ckpt logs/run-b.ckpt
+```
+
+`ckpt-diff` prints one line:
+
+- `MATCH checkpoints=<n>`, exit 0;
+- `MISMATCH frame=<vcount> index=<k> kind=<frame|names|digest> digest=<name>`, exit 1. `names` means a
+  thread or region appeared or went; `frame` means the runs reached the checkpoint on different
+  vblanks;
+- `NOT_RUN ...`, exit 3: the runs used another cadence or clock (`different-settings`), one stopped
+  before the other (`ended-early`), a line is `malformed`, or there are `no-checkpoints`. `NOT_RUN` is
+  never a match.
+
+Use the deterministic clock. Under the paced clock, guest time follows the host, so `sched` differs
+from the first checkpoint on by design. To narrow a mismatch:
+
+- a `ram.<addr>` chunk: set a memory watch on that MiB;
+- a `cpu.<uid>` thread: arm `SR_FLIGHT_TRIGGER` near the mismatching vblank on the next run.
+
+Hashing all of RAM takes a noticeable fraction of a second per checkpoint, so raise
+`SR_REPLAY_CHECKPOINT_EVERY` on long runs. A checkpoint file holds no game bytes, but it describes a
+private run, so keep it in your logs folder and do not attach it to a public report.
+
+How this differs from the other tools:
+
+- `SR_INLOG` and `SR_PADSCRIPT` (above) repeat a run's *input*; they do not say where two runs split.
+- `ROUTE_SIG` is a signature of one frame's picture, not of the guest state.
+- `tools/flight_diff.py` compares two flight-recorder event bundles. Its `checkpoint:` trigger
+  counts events; it does not compare state.
+
+#### Recording and replaying a run (#2147)
+
+`SR_RECORD=<file>` records a run, and `SR_REPLAY=<file>` replays that recording in a fresh run of the
+same executable. Both need `SR_DETERMINISTIC_CLOCK=1`. With it the guest clock and the RTC follow guest
+time, not the host clock, so what is left to record is what came from outside the guest: the pad
+and the on-screen-keyboard text. A recording holds:
+
+- a header binding it to one build: the cadence, the clock, a digest of the executable, the disc ID
+  (`SR_DISC_ID`), and the `CpuState` ABI version and size;
+- each pad sample the guest was handed (`NKPAD`): buttons, stick, and whether the on-screen keyboard
+  took it, as runs of equal samples. A sample skipped because a pause was requested is recorded as a
+  skip, and the replay skips it too;
+- each keyboard request's answer and how many polls it stayed open first (`NKANSW`);
+- the run's own checkpoints, every `SR_REPLAY_CHECKPOINT_EVERY` vblanks (`NKCKPT`);
+- `NKREC_END` at a normal exit.
+
+Each line is written as soon as it is known, so a run stopped by a capture or a vblank budget keeps a
+recording up to its last checkpoint.
+
+```powershell
+$env:SR_DETERMINISTIC_CLOCK = "1"
+$env:SR_RECORD = "logs/run.nkrec"                  # the first run
+# later, in a new process:
+Remove-Item Env:SR_RECORD
+$env:SR_REPLAY = "logs/run.nkrec"
+```
+
+The replay serves the recorded answers instead of opening the keyboard. It checks each checkpoint as it
+reaches it and writes exactly one verdict to stderr:
+
+| Verdict | Meaning |
+| --- | --- |
+| `REPLAY_REFUSED reason=<name> line=<n>` | exit 1 before the guest runs: another executable, disc, `CpuState` ABI or clock, or a line it cannot read |
+| `REPLAY_MISMATCH frame=<f> index=<i> kind=<k> digest=<name>` | exit 1 at the first checkpoint that differs, naming the thread, scheduler or memory chunk |
+| `REPLAY_MISSING_ANSWER call=osk request=<k> frame=<f> detail=<why>` | exit 1: the guest asked for an answer the recording does not hold. Nothing is made up |
+| `REPLAY_COMPLETE frame=<f> checkpoints=<n> answers=<k>` | every checkpoint matched. Input recorded after the last one is still served; the pad and the keyboard each go live when the recording runs out |
+| `REPLAY_NOT_RUN reached=<f> end=<f> checkpoints=<i>/<n>` | at exit, when the run stopped before the recording was used up. This is never a pass |
+
+The pad is recorded after the route, the stick mode and the keyboard have shaped it, so a replay needs
+neither the person nor the script, and a pause requested during a replay does not change it. Route
+bookkeeping still runs during a replay, so an `SR_ROUTE` run replays with the same route. `ckpt-diff` compares two recordings, or a recording with a checkpoint
+stream taken on the same cadence. A recording holds no game bytes, but it describes a private run:
+keep it with your logs.
+
+#### Save states (#2146)
+
+A save state is an `nkstate` file (`src/rt/nkstate.h`; `python tools/nkstate.py info <file>` prints
+it). It holds:
+
+- a header binding it to one build: the `CpuState` ABI version and size, the executable identity,
+  the runtime build identity (`SR_BUILD_ID`) and the disc ID;
+- one segment per subsystem, each with its own version and SHA-256.
+
+A load refuses another build, a changed segment or a changed header, and names the field that
+differs. It loads nothing until the whole file has been checked. After loading, it checks that each
+subsystem saves back to the exact bytes it was given. A capture is refused, naming the subsystem,
+when a required subsystem has no save and load, or when a subsystem is busy (for example a display
+list in flight). There is no best-effort state.
+
+A state holds game memory, so it stays in the user's private folder like saves. It is never
+committed, uploaded or attached to a report.
+
+What a state cannot capture yet: a guest thread parked inside native code. Every guest thread runs on
+its own host coroutine, and a thread waiting in an import or at a loop back-edge is in the middle of
+native frames that its `CpuState` does not describe. So #2146 builds save states first as a verified
+deterministic replay: the run is replayed from boot under `SR_DETERMINISTIC_CLOCK=1`, and its
+checkpoints are compared on the way. Today the container, its refusals, the checkpoints and
+`SR_RECORD`/`SR_REPLAY`, pad input included, exist; the player's save and load keys are still to
+come. Direct states and fast rewind need the runtime to resume a thread at a guest PC with no host
+frames, which is tracked in #2172.
+
 #### Running on a disposable Memory Stick
 
 A soak or title route writes to whichever Memory Stick the session resolves.
