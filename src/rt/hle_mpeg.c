@@ -1412,6 +1412,14 @@ static struct {
     int win_started, exit_hooked;
     unsigned windows, paired;
     int64_t av_first, av_last, av_min, av_max, av_sum;   /* x9 */
+    /* The audio offset splits into the guest boundary (the sceAudioOutput* submit, a time a PSP
+     * shows too) and the host output lead after it (frames our queue held ahead of the block).
+     * The lead of every matched block is kept, so av_submit = video offset minus the audio offset
+     * at the submit is the A/V offset at guest boundaries only, comparable with a PSP's. */
+    int64_t win_alead_sum_us;
+    uint64_t alead_n, alead_sum_us;
+    int64_t alead_max_us;
+    int64_t av_submit_sum;                               /* x9, over the paired windows */
 } s_psmf_av;
 
 #ifdef SR_MPEG_MEDIA_SELFTEST
@@ -1453,6 +1461,11 @@ static void psmf_av_window_close(int64_t end_us) {
     int64_t vm = v->win_n ? v->win_sum_x9 / (int64_t)v->win_n : 0;
     int64_t am = a->win_n ? a->win_sum_x9 / (int64_t)a->win_n : 0;
     int64_t av = vm - am;
+    /* Every matched audio sample carries its lead (psmf_av_audio_play), so the window's lead and
+     * its offset at the submit are means over the same samples as am. */
+    int64_t alead = a->win_n ? s_psmf_av.win_alead_sum_us / (int64_t)a->win_n : 0;
+    int64_t am_submit = a->win_n ? (a->win_sum_x9 - s_psmf_av.win_alead_sum_us * 9) / (int64_t)a->win_n : 0;
+    int64_t av_submit = vm - am_submit;
     int paired = v->win_n && a->win_n;
     s_psmf_av.windows++;
     if (paired) {
@@ -1461,16 +1474,20 @@ static void psmf_av_window_close(int64_t end_us) {
         if (av < s_psmf_av.av_min) s_psmf_av.av_min = av;
         if (av > s_psmf_av.av_max) s_psmf_av.av_max = av;
         s_psmf_av.av_sum += av;
+        s_psmf_av.av_submit_sum += av_submit;
         s_psmf_av.paired++;
     }
-    char vo[32], ao[32], avs[32], line[512];
+    char vo[32], ao[32], avs[32], al[32], avsub[32], line[512];
     psmf_av_fmt(vo, sizeof(vo), v->win_n != 0, vm);
     psmf_av_fmt(ao, sizeof(ao), a->win_n != 0, am);
     psmf_av_fmt(avs, sizeof(avs), paired, av);
+    psmf_av_fmt(al, sizeof(al), a->win_n != 0, alead * 9);
+    psmf_av_fmt(avsub, sizeof(avsub), paired, av_submit);
     int n = snprintf(line, sizeof(line),
-                     "PSMF_AV_PRESENT: win=%u end_us=%lld vn=%llu an=%llu voff_us=%s aoff_us=%s av_us=%s\n",
+                     "PSMF_AV_PRESENT: win=%u end_us=%lld vn=%llu an=%llu voff_us=%s aoff_us=%s av_us=%s"
+                     " alead_us=%s av_submit_us=%s\n",
                      s_psmf_av.windows, (long long)end_us, (unsigned long long)v->win_n,
-                     (unsigned long long)a->win_n, vo, ao, avs);
+                     (unsigned long long)a->win_n, vo, ao, avs, al, avsub);
     if (n > 0 && (size_t)n < sizeof(line)) fputs(line, stderr);
 #ifdef SR_MPEG_MEDIA_SELFTEST
     if (n > 0 && (size_t)n < sizeof(line)) {
@@ -1480,6 +1497,7 @@ static void psmf_av_window_close(int64_t end_us) {
 #endif
     v->win_sum_x9 = a->win_sum_x9 = 0;
     v->win_n = a->win_n = 0;
+    s_psmf_av.win_alead_sum_us = 0;
 }
 
 void psmf_av_window_tick(int64_t now_us) {
@@ -1582,6 +1600,20 @@ void psmf_av_match(PsmfAvStream *st, PsmfAvEntry *e, int64_t play_us, int play_o
     if (lat > st->lat_max_us) st->lat_max_us = lat;
 }
 
+/* An audio block meets its play time: the guest submit at submit_us, then lead_us of host
+ * queue ahead of the buffer, then offset_us into it.  A matched block's lead is kept so the
+ * report can give the offset at the submit as well (s_psmf_av.win_alead_sum_us). */
+static void psmf_av_audio_play(PsmfAvStream *st, PsmfAvEntry *e, int64_t submit_us, int64_t lead_us,
+                               int64_t offset_us, int lead_ok) {
+    uint64_t before = st->matched;
+    psmf_av_match(st, e, submit_us + lead_us + offset_us, lead_ok);
+    if (st->matched == before) return;
+    s_psmf_av.win_alead_sum_us += lead_us;
+    s_psmf_av.alead_sum_us += (uint64_t)lead_us;
+    s_psmf_av.alead_n++;
+    if (lead_us > s_psmf_av.alead_max_us) s_psmf_av.alead_max_us = lead_us;
+}
+
 /* A framebuffer became the visible one (sceDisplaySetFrameBuf sync=0, or the VBLANK latch). */
 void psmf_av_video_presented(uint32_t addr, int32_t stride, int32_t fmt) {
     if (!psmf_av_on()) return;
@@ -1635,8 +1667,7 @@ void psmf_av_audio_submit(int ch, uint32_t buf, uint32_t bytes, uint32_t bytes_p
         PsmfAvEntry *e = &st->pend[i];
         if (!e->live || !(e->lo < hi && lo < e->hi)) continue;
         int64_t frames = ((int64_t)e->lo - (int64_t)lo) / (int64_t)bytes_per_frame;
-        int64_t play = now + lead_us + frames * 1000000 / (int64_t)rate_hz;
-        psmf_av_match(st, e, play, queued >= 0);
+        psmf_av_audio_play(st, e, now, lead_us, frames * 1000000 / (int64_t)rate_hz, queued >= 0);
     }
     st->boundary_hits++;
 }
@@ -1668,6 +1699,12 @@ void psmf_av_final(const char *reason) {
     psmf_av_fmt(first, sizeof(first), have, s_psmf_av.av_first);
     psmf_av_fmt(last, sizeof(last), have, s_psmf_av.av_last);
     psmf_av_fmt(drift, sizeof(drift), s_psmf_av.paired >= 2, s_psmf_av.av_last - s_psmf_av.av_first);
+    char aleadm[32], aleadx[32], avsubm[32];
+    const int lead_have = s_psmf_av.alead_n != 0;
+    psmf_av_fmt(aleadm, sizeof(aleadm), lead_have,
+                lead_have ? (int64_t)(s_psmf_av.alead_sum_us / s_psmf_av.alead_n) * 9 : 0);
+    psmf_av_fmt(aleadx, sizeof(aleadx), lead_have, s_psmf_av.alead_max_us * 9);
+    psmf_av_fmt(avsubm, sizeof(avsubm), have, have ? s_psmf_av.av_submit_sum / (int64_t)s_psmf_av.paired : 0);
     char line[2048];
     int n = snprintf(line, sizeof(line),
         "PSMF_AV_PRESENT_FINAL: reason=%s windows=%u paired=%u"
@@ -1676,7 +1713,8 @@ void psmf_av_final(const char *reason) {
         " adel=%llu amatch=%llu aunmeas=%llu asuper=%llu aevict=%llu anospan=%llu apend=%llu abnd=%llu ahit=%llu"
         " acontent=%llu"
         " vlat_mean_us=%s vlat_max_us=%s alat_mean_us=%s alat_max_us=%s"
-        " av_min_us=%s av_max_us=%s av_mean_us=%s av_first_us=%s av_last_us=%s drift_us=%s\n",
+        " av_min_us=%s av_max_us=%s av_mean_us=%s av_first_us=%s av_last_us=%s drift_us=%s"
+        " alead_mean_us=%s alead_max_us=%s av_submit_mean_us=%s\n",
         reason, s_psmf_av.windows, s_psmf_av.paired,
         (unsigned long long)v->delivered, (unsigned long long)v->matched, (unsigned long long)v->unmeasured,
         (unsigned long long)v->superseded, (unsigned long long)v->evicted, (unsigned long long)v->nospan,
@@ -1686,7 +1724,7 @@ void psmf_av_final(const char *reason) {
         (unsigned long long)a->superseded, (unsigned long long)a->evicted, (unsigned long long)a->nospan,
         (unsigned long long)pend[1], (unsigned long long)a->boundary_calls, (unsigned long long)a->boundary_hits,
         (unsigned long long)a->content_matched,
-        vlm, vlx, alm, alx, mn, mx, mean, first, last, drift);
+        vlm, vlx, alm, alx, mn, mx, mean, first, last, drift, aleadm, aleadx, avsubm);
     if (n > 0 && (size_t)n < sizeof(line)) {
         fputs(line, stderr);
 #ifdef SR_MPEG_MEDIA_SELFTEST
@@ -1811,9 +1849,9 @@ void psmf_av_audio_by_content(PsmfAvStream *st, int ch, uint32_t buf, uint32_t b
             psmf_av_window_tick(now);
             ticked = 1;
         }
-        int64_t play = now + lead_us + (int64_t)(off / bytes_per_frame) * 1000000 / (int64_t)rate_hz;
         st->content_matched++;
-        psmf_av_match(st, best, play, queued >= 0);
+        psmf_av_audio_play(st, best, now, lead_us,
+                           (int64_t)(off / bytes_per_frame) * 1000000 / (int64_t)rate_hz, queued >= 0);
     }
     if (ticked) st->boundary_hits++;
 }

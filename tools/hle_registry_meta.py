@@ -2467,7 +2467,7 @@ WAIVERS: tuple[FindingWaiver, ...] = ()
 #     whose handler is no longer `unreviewed` (graduating a handler retires its
 #     entries in the same change);
 #   - `tools/hle_manifest.py --imports <guest> --check-profile-zero-imports`, run
-#     by the hosted profile_zero_fixture job on the digest-checked build, fails
+#     by the hosted public_export job on the digest-checked build, fails
 #     on an imported unreviewed NID that is missing here and on an entry the
 #     guest no longer imports.
 # Never add an entry to make that gate pass: review the handler instead.

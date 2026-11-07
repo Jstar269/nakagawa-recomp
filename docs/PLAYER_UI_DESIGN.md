@@ -536,6 +536,28 @@ switch beside them. A library card where Enhanced or Ace is in effect carries an
 art's top right. In game, the pause menu's caption names the mode and its parts and its Settings page has a live
 SPEED READOUT row; the launch notice (ENHANCED or ACE, top right, 3 s, a cut with Reduce motion) and the readout
 (top left) are chips on the 16 px safe area.
+GRAPHICS PRESET is the GAME card's last row (#2150). It steps through LOW, MEDIUM, HIGH, ULTRA and HANDHELD.
+A preset is used only by Enhanced and Ace sessions, where its values take the place of the RESOLUTION, SCALING,
+VSYNC and GAME FULLSCREEN rows. Choosing one changes none of those rows, and an Authentic session always runs with
+them as the user set them, whatever the preset. The reason is that a render scale above 1x is not host-only: every
+present commits the frame to guest VRAM, so a game that copies its screen (a save picture) keeps the larger picture
+(`docs/ENHANCEMENT_CONTRACT.md` section 10.3, Pixels), and Authentic launch output must not change with a
+preset. Editing one of the rows a preset sets makes it CUSTOM, which means the rows apply in every session; GAME
+FULLSCREEN does so only under HANDHELD, the one preset that sets it. While a preset is chosen, the page's notice
+line says that it is used in Enhanced and Ace and that Authentic uses the rows. The settings file keeps the
+preset's name beside the rows, and a file without it, or with a name this build doesn't know, loads as CUSTOM. The
+values are starting points, to be tuned by measurement on real titles. They live in one table,
+`k_graphics_presets` in `src/player/player_state.c`:
+
+| Preset | Resolution | Scaling | VSync | Game fullscreen | Also |
+| --- | --- | --- | --- | --- | --- |
+| LOW | 1x (480x272) | Sharp | On | the row's | |
+| MEDIUM | 2x | Sharp | On | the row's | |
+| HIGH | 4x | Sharp | On | the row's | |
+| ULTRA | 4x | Sharp | On | the row's | the FSR 1 upscaler, which Settings can't set until #2122: the row reads ULTRA (NO UPSCALER) and the notice line says so |
+| HANDHELD | 2x | Sharp | On | On | |
+
+A preset never changes frame pacing, the play mode, an Enhanced part or the launch line.
 Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from
 SCALING. Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
 page) so every row fits 960 x 540. The tabbed layout below is the target for a later pass:
