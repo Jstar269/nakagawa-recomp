@@ -1002,6 +1002,42 @@ bool input_settings_toggle_axis_inversion(InputSettingsState *state, int axis_id
     return true;
 }
 
+bool input_settings_set_aim_mouse(InputSettingsState *state, bool enabled) {
+    if (!state) return false;
+    state->profile.aim.mouse = enabled;
+    state->dirty = true;
+    return true;
+}
+
+bool input_settings_adjust_aim_sensitivity(InputSettingsState *state, int32_t delta) {
+    if (!state) return false;
+    int32_t val = (int32_t)state->profile.aim.sensitivity + delta;
+    if (val < NK_AIM_SENSITIVITY_MIN) val = NK_AIM_SENSITIVITY_MIN;
+    if (val > NK_AIM_SENSITIVITY_MAX) val = NK_AIM_SENSITIVITY_MAX;
+    state->profile.aim.sensitivity = (int16_t)val;
+    state->dirty = true;
+    return true;
+}
+
+bool input_settings_toggle_aim_invert(InputSettingsState *state, int axis_idx) {
+    if (!state) return false;
+    if (axis_idx == NK_PSP_AXIS_ANALOG_X) state->profile.aim.invert_x = !state->profile.aim.invert_x;
+    else if (axis_idx == NK_PSP_AXIS_ANALOG_Y) state->profile.aim.invert_y = !state->profile.aim.invert_y;
+    else return false;
+    state->dirty = true;
+    return true;
+}
+
+bool input_settings_adjust_aim_smoothing(InputSettingsState *state, int32_t delta) {
+    if (!state) return false;
+    int32_t val = (int32_t)state->profile.aim.smoothing + delta;
+    if (val < 0) val = 0;
+    if (val > NK_AIM_SMOOTHING_MAX) val = NK_AIM_SMOOTHING_MAX;
+    state->profile.aim.smoothing = (uint8_t)val;
+    state->dirty = true;
+    return true;
+}
+
 bool input_settings_start_calibration(InputSettingsState *state) {
     if (!state) return false;
     memset(&state->calib, 0, sizeof(state->calib));

@@ -403,8 +403,8 @@ jobs:
     # The showcase demos ship in the candidate bundle under bin/demos, where the
     # player finds them. Their PSP programs need PSPDEV, a POSIX toolchain, so this
     # job builds the PRXs on Linux with the distribution pinned by
-    # assets/upstream/pspdev.lock.json, installed as ci.yml's profile_zero_fixture
-    # job installs it. The candidate job builds the packages from them and attests
+    # assets/upstream/pspdev.lock.json, installed as ci.yml's public_export
+    # job installs it for the profile-zero fixture. The candidate job builds the packages from them and attests
     # them with the rest of the bundle. Dispatch only from main, for the candidate.
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-26.04

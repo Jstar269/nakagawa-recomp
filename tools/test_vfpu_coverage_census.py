@@ -664,7 +664,7 @@ class VfpuRouteCensusTests(unittest.TestCase):
         """The committed public profile-zero route emits no Unsupported/OTHER word."""
         elf = ROOT / "fixtures" / "profile_zero" / "prebuilt" / "profile_zero_guest.prx"
         if not elf.is_file():
-            # Not committed (#1100): hosted CI stages it from the profile_zero_fixture job.
+            # Not committed (#1100): hosted CI stages it from the public_export job's profile-zero steps.
             self.skipTest(f"NOT_RUN: profile-zero fixture bytes are absent: {elf}")
         manifest = json.loads(
             (ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")

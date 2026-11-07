@@ -1592,8 +1592,10 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
 
         /* Safe-point poll (spec 3.5): before each instruction, never between
          * a branch and its delay slot (the slot below runs without polling).
-         * The Phase 1 poll never reports an interrupt; the call and its flow
-         * propagation stay so later phases cannot skip the site. */
+         * The poll takes a deliverable interrupt here (cpu_lle.c, issue #325:
+         * only with the LLE CPU on and an INTC configured), so this site is
+         * where host-side controller changes reach interpreted code; the flow
+         * it sets enters the interrupt vector. Do not remove or reorder it. */
         if (sr_cpu_poll(s, pc) < 0) {
             return map_flow_result(s, -1, fault, pc, 0u);
         }

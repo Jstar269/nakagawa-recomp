@@ -17,6 +17,12 @@ reset, and mfc0/mtc0 Cause never consult one, so those IntcLleTests fail
 there. The poll, no-default-controller and fixture-emission tests pin what the
 base already had and this change must keep: sr_cpu_poll stays side-effect free
 until PR 6, and nothing in the runtime installs a guessed controller.
+
+PR 6 (spec 3.6, issue #325) adds interrupt delivery. Failing-before (origin/main
+b55f6cd3): sr_cpu_poll reports no interrupt whatever Status and the controller
+say, and sr_cp0_mtc0/sr_cpu_eret never check for one, so the delivery tests
+below and the native ones (test_intc_poll_delivery, test_intc_safe_points,
+test_intc_delivery_aot_interp_parity) fail there.
 """
 
 import re
@@ -226,6 +232,53 @@ def _emit_intc_cause_parity_fixture():
             {INTC_CAUSE_ENTRY}, lle_cpu=True))
     finally:
         codegen.OPTIONS.lle_cpu = previous_lle_cpu
+
+
+# Interrupt delivery sequences (spec 3.6, PR 6, issue #325). Emitted as --lle-cpu generated
+# C and run through the production interpreter by tests/native/cpu_lle_selftest.c
+# (test_intc_delivery_aot_interp_parity), which mirrors these words.
+CP0_STATUS = 12
+INTC_DELIVERY_MTC0_ENTRY = 0x08810C00
+INTC_DELIVERY_DELAY_ENTRY = 0x08810C40
+INTC_DELIVERY_ERET_ENTRY = 0x08810C80
+INTC_DELIVERY_SEQUENCES = (
+    (INTC_DELIVERY_MTC0_ENTRY, (
+        mtc0(T0, CP0_STATUS),    # 0x00 mtc0 t0, Status   sets IE: the interrupt is taken here
+        _addiu(T1, 0, 1),        # 0x04 addiu t1, zero, 1  EPC; must not run first
+        JR_RA,                   # 0x08
+        NOP,                     # 0x0c
+    )),
+    (INTC_DELIVERY_DELAY_ENTRY, (
+        _beq(0, 0, 2),           # 0x00 beq zero, zero, 0x0c
+        mtc0(T0, CP0_STATUS),    # 0x04 mtc0 t0, Status in the delay slot: fails closed
+        _addiu(T1, 0, 1),        # 0x08 skipped by the branch
+        JR_RA,                   # 0x0c
+        NOP,                     # 0x10
+    )),
+    (INTC_DELIVERY_ERET_ENTRY, (
+        ERET,                    # 0x00 eret to EPC = 0x08, clearing EXL
+        _addiu(T2, 0, 2),        # 0x04 never runs (eret has no delay slot)
+        _addiu(T1, 0, 1),        # 0x08 the eret target: the interrupt is taken first
+        JR_RA,                   # 0x0c
+        NOP,                     # 0x10
+    )),
+)
+
+
+def _emit_intc_delivery_parity_fixture():
+    """Emit the interrupt delivery sequences in the --lle-cpu lane for the native parity test."""
+    previous_lle_cpu = codegen.OPTIONS.lle_cpu
+    generated = []
+    try:
+        codegen.OPTIONS.lle_cpu = True
+        for entry, words in INTC_DELIVERY_SEQUENCES:
+            image = {entry + 4 * i: word for i, word in enumerate(words)}
+            generated.extend(codegen.emit_function(
+                FakeElf(image), entry, [(entry, entry + 4 * len(words))], {entry},
+                lle_cpu=True))
+    finally:
+        codegen.OPTIONS.lle_cpu = previous_lle_cpu
+    return "\n".join(generated)
 
 
 class LlScLleCodegenTests(unittest.TestCase):
@@ -1149,13 +1202,55 @@ class IntcLleTests(unittest.TestCase):
                                 "void sr_cpu_lle_reset_config(void)")
         self.assertIn("sr_intc_reset();", body)
 
-    def test_poll_stays_free_of_side_effects_until_pr6(self):
+    def test_poll_delivers_only_behind_the_lle_and_controller_gates(self):
+        # Fail closed: no delivery unless the LLE CPU is on and a controller (which no runtime
+        # source installs, test above) is configured; then the MIPS32 IE/EXL/ERL/IM rule.
+        text = CPU_LLE_C.read_text(encoding="utf-8")
+        eligible = _c_function_body(text, "static int sr_cpu_interrupt_eligible(const CpuState *s)")
+        for needle in ("!s_lle_enabled", "!s_intc.configured", "SR_STATUS_IE",
+                       "SR_STATUS_EXL", "SR_STATUS_ERL", "SR_STATUS_IM_MASK",
+                       "sr_cpu_live_cause_ip(s)"):
+            self.assertIn(needle, eligible)
+        poll = _c_function_body(text, "int sr_cpu_poll(CpuState *s, uint32_t resume_pc)")
+        self.assertIn("sr_cpu_interrupt_eligible(s)", poll)
+        self.assertIn("sr_cpu_take_interrupt(s, resume_pc)", poll)
+        take = _c_function_body(text, "static int sr_cpu_take_interrupt(CpuState *s, uint32_t resume_pc)")
+        self.assertIn("SR_EXC_INT, resume_pc, resume_pc, 0u, 0u, 0u", take)
+        self.assertNotIn("sr_intc_clear", take)   # only the device side acknowledges
+
+    def test_status_cause_writes_and_eret_are_safe_points(self):
+        text = CPU_LLE_C.read_text(encoding="utf-8")
+        mtc0_body = _c_function_body(text, "int sr_cp0_mtc0(")
+        for case in ("case SR_CP0_STATUS:", "case SR_CP0_CAUSE:"):
+            with self.subTest(case=case):
+                body = mtc0_body.split(case, 1)[1].split("case SR_CP0_", 1)[0]
+                self.assertIn("return sr_cpu_mtc0_safe_point(s, instr_pc);", body)
+        eret = _c_function_body(text, "int sr_cpu_eret(CpuState *s, uint32_t instr_pc)")
+        tail = eret.split("s->flow_kind = SR_FLOW_ERET;", 1)[1]
+        self.assertIn("sr_cpu_interrupt_eligible(s)", tail)
+        self.assertIn("sr_cpu_take_interrupt(s, target)", tail)
+
+    def test_a_delay_slot_mtc0_that_enables_delivery_fails_closed(self):
         body = _c_function_body(CPU_LLE_C.read_text(encoding="utf-8"),
-                                "int sr_cpu_poll(CpuState *s, uint32_t resume_pc)")
-        code = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
-        self.assertIn("return 0;", code)
-        for forbidden in ("sr_intc_", "sr_cpu_raise_exception", "s->", "SR_FLOW_"):
-            self.assertNotIn(forbidden, code)
+                                "static int sr_cpu_mtc0_safe_point(CpuState *s, uint32_t instr_pc)")
+        delay = body.split("if (s->in_delay_slot != 0u) {", 1)[1].split("return -2;", 1)[0]
+        self.assertIn("SR_FLOW_FATAL", delay)
+        self.assertIn("issue #325", delay)
+        self.assertIn("sr_cpu_take_interrupt(s, instr_pc + 4u)", body)
+
+    def test_generated_delivery_fixture_uses_the_lle_helpers(self):
+        source = _emit_intc_delivery_parity_fixture()
+        for entry, _words in INTC_DELIVERY_SEQUENCES:
+            self.assertIn(f"void f_{entry:08x}(CpuState *s)", source)
+        self.assertNotIn("sr_unimplemented", source)
+        # Plain and delay-slot mtc0 Status both go through the helper and leave on its flow.
+        self.assertEqual(len(re.findall(r"sr_cp0_mtc0\(s, 8u, 12u, 0u,", source)), 2)
+        self.assertIn("s->in_delay_slot = 1u; s->next_pc = 0x08810c40u;", source)
+        self.assertIn("(void)sr_cpu_eret(s, 0x08810c80u);", source)
+
+    def test_the_fixture_generator_writes_the_delivery_sequences(self):
+        main = Path(__file__).read_text(encoding="utf-8").split('if __name__ == "__main__":', 1)[1]
+        self.assertIn("_emit_intc_delivery_parity_fixture()", main)
 
     def test_cause_accesses_resync_the_line_in_both_directions(self):
         text = CPU_LLE_C.read_text(encoding="utf-8")
@@ -1392,6 +1487,8 @@ if __name__ == "__main__":
             generated_file.write(_emit_llsc_parity_fixture())
             generated_file.write("\n")
             generated_file.write(_emit_intc_cause_parity_fixture())
+            generated_file.write("\n")
+            generated_file.write(_emit_intc_delivery_parity_fixture())
             generated_file.write("\n")
     elif len(sys.argv) == 1:
         unittest.main()

@@ -201,7 +201,7 @@ void nk_ui_waves_command(double now_s, float width_px, float height_px,
     }
     memset(out, 0, sizeof(*out));
     if (!isfinite(now_s)) {
-        now_s = 37.0;
+        now_s = NK_UI_STILL_TIME_S;
     }
     out->width_px = width_px > 0.0f ? width_px : 0.0f;
     out->height_px = height_px > 0.0f ? height_px : 0.0f;
