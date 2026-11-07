@@ -40,7 +40,7 @@ checks depend on the selected manifest.
 
 | Scope | Checks |
 | --- | --- |
-| `repo` | Required public-facing documents, root GPLv3 text, project-metadata transition warnings, core disclaimers, tracked-private-path hygiene when a local Git checkout is available, and linked-worktree/build-output accumulation |
+| `repo` | Required public-facing documents, root GPLv3 text, project-metadata transition warnings, core disclaimers, tracked-private-path hygiene when a local Git checkout is available, linked-worktree/build-output accumulation, and path-length advisory |
 | `inputs` | Decrypted MIPS ELF/PRXs, original `~PSP` header, ISO selection/format/disc-ID signal, populated XB extraction tree or configured `SR_DATAROOT`, and save/memstick storage (`SAVE_ROOT`) |
 | `build` | Windows 11/x64, PowerShell/Python, UCRT64 compiler and Make tools, SDL3/Vulkan link inputs, and private code-generation inputs |
 | `products` | Built `<game>.exe`, `<game>_image.bin`, and recorded build profile (`BUILD_PROFILE`) |
@@ -105,11 +105,12 @@ the runtime loader itself (`src/rt/vfpu_tables.c`, embedded SHA-256 manifest).
 
 ### Path length
 
-`check_long_paths` measures the repository root plus the longest path that will exist under it, and
-reports whichever is longer: the deepest expected build output
-(`build/synthetic/vfpu_oracle/nakagawa.stdout.txt`) and, when the checkout can enumerate it, the
-longest tracked file. The result names the exact path at risk, the root length, and which of the two
-produced it, so a short repository with one deep directory is diagnosed rather than missed.
+`check_long_paths` compares the longest tracked file, the deepest expected build output
+(`build/synthetic/vfpu_oracle/nakagawa.stdout.txt`), selected title input paths, configured build,
+save, and user-data roots, and the documented log, screenshot, oracle, compile-database, scratch, and
+agent-state roots. It runs in every scope. The result names the exact longest path and which root
+produced it, so a long external disc, asset, save, or user-data path is visible even when the checkout
+itself is short. The estimate uses path metadata only; it does not walk private input trees.
 
 Two limits are reported because they answer different questions. `MAX_PATH` is 260 including the
 terminating NUL, so that is the length at which a Win32 call fails. The advisory limit is 240: a build
@@ -183,18 +184,31 @@ Before implementing those commands, the project should complete the following in
 against an explicit allowlist of repository-owned output roots and never selects anything
 outside them:
 
-| Root | Category | Contents |
+| Root | Category | Contents and handling |
 | --- | --- | --- |
-| `build/`, `fixtures/psp_oracle/build/` | build outputs | generated objects, images, and runtime products |
-| `logs/build_out_recomp.log`, `logs/build_err_recomp.log`, `logs/recomp_err.log`, `logs/obj_err.log`, `logs/link_err.log`, `logs/stdout_run.log`, `logs/stderr_run.log`, `link_err.log` | logs | ephemeral build and run logs |
-| `tmp/`, `.tmp/`, `scratch/`, `.pytest_cache/`, `.ruff_cache/`, `.mypy_cache/`, `.cache/`, `htmlcov/`, `compile_commands.json`, `.coverage`, `.eslintcache` | tool scratch | disposable tool caches and indexes |
+| `build/`, `fixtures/psp_oracle/build/` | build and fixture outputs | generated objects, images, runtime products, and the PSP oracle fixture build. The cleaner allowlists these roots; it does not select other `fixtures/` content. |
+| `logs/build_out_recomp.log`, `logs/build_err_recomp.log`, `logs/recomp_err.log`, `logs/obj_err.log`, `logs/link_err.log`, `logs/stdout_run.log`, `logs/stderr_run.log`, `link_err.log` | logs | named ephemeral build and run logs. Other log files, including oracle logs, are preserved. |
+| `docs/ui-baseline/*.png`, `docs/ui-baseline/*.bmp`, `oracle/`, `*.trace`, `*.ppm` | screenshots and oracle evidence | local runtime screenshots and private oracle captures. Preserve them as evidence; the cleaner does not select them. |
+| `tmp/`, `.tmp/`, `scratch/`, `.pytest_cache/`, `.ruff_cache/`, `.mypy_cache/`, `.cache/`, `htmlcov/`, `.coverage`, `.eslintcache` | tool and test scratch | disposable caches and indexes. Many Python tests instead use OS temporary directories and clean up their own fixtures on success; these are outside the repository cleaner. |
+| `compile_commands.json` | compile database | refreshed by `nk_manager.ps1`. `python tools/compdb_relocate.py compile_commands.json --root <checkout>` rewrites checkout paths to root-relative form and sets the checkout-specific absolute `directory`; rerun it after moving the checkout. |
+| `.claude/`, `.codex/`, `.codex-remote-attachments/`, `.cursor/`, `.gemini/`, `.jules/`, `.kilo/`, `.kilocode/`, `.opencode/`, `.windsurf/`, `.freebuff/` | agent state | ignored local databases, settings, and attachments. Preserve them; the cleaner does not select them. Git's linked-worktree metadata is managed by Git outside the checkout and is only inventoried by Doctor. |
 
-Everything else — source, assets, docs, keys, `place_game_here/`, `memstick/`, `fs/`,
-`oracle/`, and any unlisted file such as `logs/oracle_run.log` — is never selected.
+`BUILD_ROOT`, `BUILD_DIR`, and `LOG_DIR` can redirect build and log outputs. Doctor includes those
+configured paths in the path-length advisory. External `SR_DATAROOT`, `SR_MEMSTICK`, and
+`--user-data-root` paths are also checked by name only; the cleaner does not manage those roots.
+
+Everything else — source, assets, docs, keys, `place_game_here/`, `memstick/`, `fs/`, and any
+unlisted file such as `logs/oracle_run.log` — is never selected.
 Git-tracked files are always skipped, and reparse points (symlinks and Windows junctions)
 are never followed or deleted, so a junction cannot smuggle a protected file into the
 deletion set. A scan or containment failure fails closed with a nonzero exit and no
 deletion.
+
+The cleaner does not select every ignored or temporary path. Fixture builds belong under `build/`
+or the specifically listed `fixtures/psp_oracle/build/`; other fixture source and outputs are not
+implicitly disposable. Agent state directories and Git's linked-worktree administration are outside
+the cleaner's deletion scope. Doctor reports worktree registrations and build accumulation without
+removing them.
 
 The default invocation is a dry run that only prints the grouped plan:
 
@@ -266,11 +280,15 @@ The governance work intentionally leaves these as separate, evidence-backed foll
 1. replace mixed cmd/sh Make recipes with a Windows-native wrapper that preserves the current
    dependency and fail-closed semantics;
 2. [DONE - #368] remove hardcoded machine paths from VS Code, `mem_debug`, and tool discovery:
-   resolved via an explicit `MSYS_PATH` override (never `MSYSTEM_PREFIX`, which Git Bash points at its own MinGW) with documented defaults in `nk.ps1`, `nk_manager.ps1`,
-   `tools/nk_doctor.py`, and `tools/nk_doctor_checks.py`; `tools/mem_debug.py` requires an explicit `--exe`
-   target and dynamically resolves `nm` rather than assuming HST or hardcoded directories, keeps the HST
-   build directory only as the named `HST_DEFAULT_BUILD_DIR` fallback for the simulation mock state and
-   the unattached artifact root, and fails with a clear error when a `--exe` target does not exist on disk;
+   toolchain lookup honors an explicit `MSYS_PATH` (never `MSYSTEM_PREFIX`, which Git Bash points at its
+   own MinGW), with documented defaults in `nk.ps1`, `nk_manager.ps1`, `tools/nk_doctor.py`, and
+   `tools/nk_doctor_checks.py`. `tools/nk_cli.py`, `tools/copy_build_assets.ps1`,
+   `tools/format_portability_check.py`, `tools/package_notices.py`, `tools/record_toolchain.py`, and
+   `tools/stage_runtime_dlls.py` use the same override where they discover UCRT. `tools/mem_debug.py`
+   requires an explicit `--exe` target and dynamically resolves `nm` rather than assuming HST or
+   hardcoded directories, keeps the HST build directory only as the named `HST_DEFAULT_BUILD_DIR`
+   fallback for the simulation mock state and the unattached artifact root, and fails with a clear
+   error when a `--exe` target does not exist on disk;
 3. [PARTIAL - #368] make worktree asset resolution explicit and independent of the invoking
    checkout: `nk_cli.py prepare` now names its per-user data root as the preparation engine's
    base folder, where it used to fall back to the shell's working directory, so a compressed disc
@@ -282,15 +300,15 @@ The governance work intentionally leaves these as separate, evidence-backed foll
 4. [DONE - #368] add a long-path diagnostic to the workspace doctor:
    implemented in `tools/nk_doctor_checks.py` (`check_long_paths`, `query_windows_long_paths_enabled`)
    under code `LONG_PATHS`, reporting Windows `LongPathsEnabled` registry policy and both the
-   MAX_PATH (260) limit and the 240-character advisory margin for the longer of the deepest expected
-   build path and the longest tracked path, as an advisory `WARN` naming the path at risk;
+   MAX_PATH (260) limit and the 240-character advisory margin for the longest tracked, expected
+   build, configured input, or configured output path, as an advisory `WARN` naming the path at risk;
 5. [DONE - #368] define bounded artifact accumulation and a safe, scoped `clean-all` workflow:
 6. [PARTIAL - #368] stop root-level artifact pollution and document the intended output roots: the
    `build` lifecycle tests no longer take their `BUILD_DIR` from the repository root, so they cannot
    make Make write `spaces/` litter into a checkout, and a whitespace-bearing `BUILD_DIR` is refused
-   outright; `clean-preview` still reports only the roots listed above, and linked-worktree build
-   output is now surfaced by `WORKTREES_BUILD_SIZE`, but a non-build route that writes outside the
-   listed roots is not yet surfaced by a single inventory;
+   outright; `clean-preview` still selects only its bounded allowlist (the disposable roots in the
+   table), and linked-worktree build output is now surfaced by `WORKTREES_BUILD_SIZE`, but a non-build
+   route that writes outside the listed roots is not yet surfaced by a single inventory;
 7. [DONE - #368] eliminate absolute paths from generated `compile_commands.json`:
    `python tools/compdb_relocate.py compile_commands.json` rewrites every path under the checkout
    to a root-relative form and keeps only `directory` absolute, so a moved or cloned workspace

@@ -155,6 +155,25 @@ ed25519-verify-selftest:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(call ED25519_VERIFY_SELFTEST_CMD)
 
+# The RetroAchievements bridge (src/core/nk_achievements.c, #1316) on the vendored rcheevos
+# rc_client, against an in-process fake server: login, game load, a softcore unlock on synthetic
+# guest memory, the PSP memory map's bounds and the retroachievements.org-only request gate.
+# No socket and no network. gnu99, not c99: rcheevos calls strdup and strcasecmp, which glibc
+# declares only outside strict ISO mode; its runtime needs libm (fmod).
+ACHIEVEMENTS_SELFTEST_SRCS := src/core/nk_achievements.c $(wildcard third_party/rcheevos/src/*.c) \
+	$(wildcard third_party/rcheevos/src/rapi/*.c) $(wildcard third_party/rcheevos/src/rcheevos/*.c) \
+	third_party/rcheevos/src/rhash/md5.c tests/native/test_nk_achievements.c
+define ACHIEVEMENTS_SELFTEST_CMD
+	$(CC) -std=gnu99 -Wall -Wextra -Isrc/core -Ithird_party/rcheevos/include $(ACHIEVEMENTS_SELFTEST_SRCS) \
+		-lm -o $(BUILD_ROOT)/test_nk_achievements$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_nk_achievements$(EXE_EXT)
+endef
+
+.PHONY: achievements-selftest
+achievements-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(call ACHIEVEMENTS_SELFTEST_CMD)
+
 .PHONY: nk-ui-core-selftest
 nk-ui-core-selftest:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
@@ -442,6 +461,7 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 		tests/native/test_input_profile.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_input_profile$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_input_profile$(EXE_EXT)
 	$(call ED25519_VERIFY_SELFTEST_CMD)
+	$(call ACHIEVEMENTS_SELFTEST_CMD)
 	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
 		tests/native/native_test_isolation.c tests/native/test_portable_mode.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_portable_mode$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_portable_mode$(EXE_EXT)

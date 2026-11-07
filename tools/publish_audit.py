@@ -1277,6 +1277,9 @@ SPDX_BYTE_EXACT_IMPORT_TREES = (
     # AMD FidelityFX SDK headers (MIT): the notice is in each header comment, without an SPDX
     # line upstream; imported byte-identical (third_party/fidelityfx_sdk/PROVENANCE.md).
     "third_party/fidelityfx_sdk/",
+    # rcheevos 12.5.0 (MIT; its MD5 is zlib): the notices are in LICENSE and each header comment,
+    # without SPDX lines upstream; imported byte-identical (third_party/rcheevos/PROVENANCE.md).
+    "third_party/rcheevos/",
 )
 
 SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({
