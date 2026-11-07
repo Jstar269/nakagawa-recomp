@@ -699,6 +699,9 @@ def compute_effective_timeout(
       - WAIT_MS=<duration_ms>: waits for explicit millisecond duration.
       - WAIT_VIEW=<view_mask>,<timeout_ms>: waits up to timeout_ms for view match.
       - WAIT_PACKAGE_STATUS=<status>,<timeout_ms>: waits for package validation.
+      - WAIT_UPDATE=<phase>,<timeout_ms>: waits until the update phase is <phase>, by its
+        "update=" name (available, downloaded, installed, failed, idle, ...); the run fails,
+        naming the phase it last saw, when timeout_ms passes first.
       - WAIT_REPORT=<phase>,<timeout_ms>: waits for the Problem report phase number.
 
     When explicit_timeout is None, sums all wait event bounds and adds
@@ -719,7 +722,7 @@ def compute_effective_timeout(
                 effective += int(ev.split(",", 1)[1]) / 1000.0
             except ValueError:
                 pass
-        elif ev.startswith("WAIT_PACKAGE_STATUS=") and "," in ev:
+        elif ev.startswith(("WAIT_PACKAGE_STATUS=", "WAIT_UPDATE=")) and "," in ev:
             try:
                 effective += int(ev.rsplit(",", 1)[1]) / 1000.0
             except ValueError:
@@ -903,6 +906,9 @@ class LegacyRendererSourceTests(unittest.TestCase):
 
 UPDATE_RELEASES_URL = "https://api.github.com/repos/Jstar269/nakagawa-recomp/releases?per_page=10"
 UPDATE_DOWNLOAD_PREFIX = "https://github.com/Jstar269/nakagawa-recomp/releases/download/"
+# The most one update step (check, download, install) may take in a WAIT_UPDATE step. A
+# ceiling, not a sleep: the script moves on as soon as the phase is reached.
+UPDATE_STEP_TIMEOUT_MS = 60000
 
 # A TEST-ONLY minisign signer for the synthetic releases: Ed25519 (RFC 8032) in plain
 # Python, so no package is needed. Its key pair is derived from a fixed label at run
@@ -2828,6 +2834,11 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[3]["focus"], "1")
         self.assertEqual(frames[4]["picker"], "1")
 
+    # CHECK FOR UPDATES, wait for the newer release, then Enter on its focused action
+    # (Download, or the release page when Download is not offered).
+    UPDATE_TO_DOWNLOAD = ("WAIT_MS=200", "KEY_RETURN",
+                          f"WAIT_UPDATE=available,{UPDATE_STEP_TIMEOUT_MS}", "KEY_RETURN")
+
     def update_run(self, view: str, events: tuple[str, ...], fixture: dict[str, bool] | None,
                    **kwargs: object) -> tuple[dict[str, object], list[dict[str, str]], list[str]]:
         """A next-UI run whose update answers come from a synthetic fixture (None:
@@ -2852,13 +2863,18 @@ class NativePlayerUiTests(unittest.TestCase):
         """Owner request 2026-10-28: CHECK FOR UPDATES asks GitHub once; Download and
         Install each need their own click; the checksum file's signature is checked,
         then the ZIP against that signed SHA-256, before Install is offered, and
-        Install unpacks into a new folder."""
+        Install unpacks into a new folder. Each step is waited for by its phase: a
+        fixed wait once ended before the install did on a busy runner (CI run
+        42312214991). The slow link (600 ms per download request, so the download
+        outlasts the 1.5 s the old script gave it) keeps the script honest."""
+        events = self.UPDATE_TO_DOWNLOAD
+        if sys.platform == "win32":
+            events += (f"WAIT_UPDATE=downloaded,{UPDATE_STEP_TIMEOUT_MS}", "KEY_RETURN",
+                       f"WAIT_UPDATE=installed,{UPDATE_STEP_TIMEOUT_MS}")
+        else:
+            events += ("WAIT_MS=500",)
         run, steps, requests = self.update_run(
-            "updates",
-            ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500",
-             "KEY_RETURN", "WAIT_MS=5000"),
-            {},
-        )
+            "updates", events, {}, env_extra={"NK_UI_TEST_UPDATE_REQUEST_DELAY_MS": "600"})
         names = [step["update"] for step in steps]
         self.assertEqual(steps[0]["newest"], "v0.0.3")
         self.assertIn("available", names)
@@ -2949,7 +2965,8 @@ class NativePlayerUiTests(unittest.TestCase):
 
     def test_update_check_offline_shows_one_plain_card_and_no_retries(self) -> None:
         run, steps, requests = self.update_run(
-            "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=1500"), None)
+            "updates",
+            ("WAIT_MS=200", "KEY_RETURN", f"WAIT_UPDATE=failed,{UPDATE_STEP_TIMEOUT_MS}"), None)
         self.assertEqual([step["update"] for step in steps], ["failed"], steps)
         self.assertEqual(steps[0]["error"], "UPDATE_OFFLINE")
         self.assertEqual(requests, [UPDATE_RELEASES_URL], "one request, no retry")
@@ -2961,7 +2978,7 @@ class NativePlayerUiTests(unittest.TestCase):
         if sys.platform != "win32":
             self.skipTest("the update download runs on Windows only")
         _, steps, _ = self.update_run(
-            "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500"),
+            "updates", self.UPDATE_TO_DOWNLOAD + (f"WAIT_UPDATE=failed,{UPDATE_STEP_TIMEOUT_MS}",),
             {"wrong_checksum": True})
         self.assertEqual(steps[-1]["update"], "failed", steps)
         self.assertEqual(steps[-1]["error"], "UPDATE_HASH_MISMATCH")
@@ -2973,7 +2990,7 @@ class NativePlayerUiTests(unittest.TestCase):
         if sys.platform != "win32":
             self.skipTest("the update download runs on Windows only")
         _, steps, requests = self.update_run(
-            "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500"),
+            "updates", self.UPDATE_TO_DOWNLOAD + (f"WAIT_UPDATE=failed,{UPDATE_STEP_TIMEOUT_MS}",),
             {"bad_signature": True})
         self.assertEqual(steps[-1]["update"], "failed", steps)
         self.assertEqual(steps[-1]["error"], "UPDATE_SIGNATURE_INVALID")
@@ -2991,8 +3008,7 @@ class NativePlayerUiTests(unittest.TestCase):
         for fixture in ({"player_key": False}, {"signed": False}):
             with self.subTest(fixture=fixture):
                 run, steps, requests = self.update_run(
-                    "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN",
-                                "WAIT_MS=500"), fixture)
+                    "updates", self.UPDATE_TO_DOWNLOAD + ("WAIT_MS=500",), fixture)
                 self.assertEqual([step["update"] for step in steps], ["available"], steps)
                 self.assertEqual(requests, [UPDATE_RELEASES_URL])
                 self.assertIn(
@@ -3004,8 +3020,8 @@ class NativePlayerUiTests(unittest.TestCase):
             self.skipTest("the update install runs on Windows only")
         _, steps, _ = self.update_run(
             "updates",
-            ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500",
-             "KEY_RETURN", "WAIT_MS=5000"),
+            self.UPDATE_TO_DOWNLOAD + (f"WAIT_UPDATE=downloaded,{UPDATE_STEP_TIMEOUT_MS}",
+                                       "KEY_RETURN", f"WAIT_UPDATE=failed,{UPDATE_STEP_TIMEOUT_MS}"),
             {"missing_file": True})
         self.assertEqual(steps[-1]["update"], "failed", steps)
         self.assertEqual(steps[-1]["error"], "UPDATE_INSTALL_INCOMPLETE")
@@ -3020,16 +3036,19 @@ class NativePlayerUiTests(unittest.TestCase):
             self.assertIs(settings.get("check_updates_at_start"), False)
         # Turned on: one request at start, and a newer version is one quiet button.
         run, steps, requests = self.update_run(
-            "library", ("WAIT_MS=800",), {}, env_extra={"NK_UI_TEST_CHECK_AT_START": "1"})
+            "library", (f"WAIT_UPDATE=available,{UPDATE_STEP_TIMEOUT_MS}",), {},
+            env_extra={"NK_UI_TEST_CHECK_AT_START": "1"})
         self.assertEqual(requests, [UPDATE_RELEASES_URL])
         self.assertEqual([(step["update"], step["notice"]) for step in steps],
                          [("available", "1")], steps)
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["view"], "library", "the check never takes the screen")
-        # Offline at start: one request, and nothing on screen.
+        # Offline at start: one request, and nothing on screen. The check starts before
+        # the first frame, so the phase is checking until the failed check returns it to idle.
         run, steps, requests = self.update_run(
-            "library", ("WAIT_MS=1500",), None, env_extra={"NK_UI_TEST_CHECK_AT_START": "1"})
+            "library", (f"WAIT_UPDATE=idle,{UPDATE_STEP_TIMEOUT_MS}",), None,
+            env_extra={"NK_UI_TEST_CHECK_AT_START": "1"})
         self.assertEqual(requests, [UPDATE_RELEASES_URL])
         self.assertEqual(steps, [], "a failed check at start stays in the developer log")
 
