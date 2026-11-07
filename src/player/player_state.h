@@ -232,6 +232,9 @@ typedef enum {
     PLAYER_PART_NOTICE,        /* the in-game badge at start: 0 or 1 */
     PLAYER_PART_SMOOTH,        /* smooth motion (#1272): 0 off, 1 x2 */
     PLAYER_PART_SAS,           /* band-limited SAS resampling (#2054, section 11.3.1): 0 off, 1 sinc */
+    PLAYER_PART_UPSCALE,       /* the presentation upscaler (#2122): 0 off, 1 FSR 1. It reaches the
+                                  runtime as SR_PRESENT_UPSCALE (NkRuntimeConfig.present_upscale),
+                                  not in the SR_ACE line */
     PLAYER_PART_COUNT
 } PlayerEnhancedPart;
 
@@ -276,6 +279,9 @@ typedef struct {
     bool fullscreen;
     bool launcher_fullscreen;
     bool vsync;
+    /* PLAYER_PRESET_*: the graphics preset chosen (#2150), for Enhanced and Ace sessions
+       only. Editing a row it sets makes it Custom. */
+    int graphics_preset;
     int fps_cap;          /* -1 = PSP scanout, 0 = uncapped host presentation */
     int master_volume;    /* 0..100 */
     /* Launcher accessibility (Settings > Accessibility). Reduce motion holds the
@@ -1482,6 +1488,60 @@ void player_app_set_present_scaling(PlayerApp *app, int scaling);
 void player_app_cycle_present_scaling(PlayerApp *app, int direction);
 /* "Sharp", "Integer" or "Bilinear" for a NK_PRESENT_SCALING_* value. */
 const char *player_present_scaling_label(int scaling);
+
+/* Graphics presets (#2150): a named set of values for display settings that already
+   exist, in one table (k_graphics_presets in player_state.c). A preset is an overlay, not
+   a writer: choosing one sets only PlayerSettings.graphics_preset, and an Enhanced or Ace
+   session takes the preset's values in place of the Resolution, Scaling, VSync and Game
+   fullscreen rows (player_session_apply_graphics_preset). An Authentic session always
+   uses the rows as the user set them, whatever the preset: a render scale above 1x is
+   guest-visible (every present commits to VRAM, docs/ENHANCEMENT_CONTRACT.md), so a
+   preset must not reach Authentic launch output. Editing one of the rows a preset sets
+   makes it Custom, which means the rows apply everywhere. The play mode, the Enhanced
+   parts and the launch line are not in the table. */
+typedef enum {
+    PLAYER_PRESET_CUSTOM = 0,
+    PLAYER_PRESET_LOW,
+    PLAYER_PRESET_MEDIUM,
+    PLAYER_PRESET_HIGH,
+    PLAYER_PRESET_ULTRA,
+    PLAYER_PRESET_HANDHELD,
+    PLAYER_PRESET_COUNT
+} PlayerGraphicsPreset;
+
+typedef struct {
+    const char *word;     /* settings.json "graphics_preset" */
+    const char *label;    /* the preset's name, as the Settings notice line says it */
+    const char *value;    /* the Settings row's value: the name, and anything not set */
+    int resolution_scale;
+    int present_scaling;  /* NK_PRESENT_SCALING_* */
+    bool vsync;
+    int fullscreen;       /* 1 on, 0 off, -1 left as the user set it */
+    bool upscaler;        /* asks for the FSR 1 upscaler, which Settings cannot set yet (#2122) */
+} PlayerGraphicsPresetRow;
+
+/* The preset's row; NULL for Custom or a value out of range. */
+const PlayerGraphicsPresetRow *player_graphics_preset_row(int preset);
+/* The chosen preset, or PLAYER_PRESET_CUSTOM (also for a value out of range). */
+int player_app_graphics_preset(const PlayerApp *app);
+/* The Settings row's value: "Low", ..., "Ultra (no upscaler)", "Handheld", or "Custom". */
+const char *player_app_graphics_preset_label(const PlayerApp *app);
+/* The main Settings page's notice line while a preset is chosen: where it applies, and a
+   value it asks for that Settings cannot set. Returns false, with out empty, for Custom.
+   *warns is set when the note names a value that is not set. Derived from the choice, so
+   it goes when the preset becomes Custom and comes back with a saved preset. */
+bool player_app_graphics_preset_note(const PlayerApp *app, char *out, size_t cap,
+                                     bool *warns);
+/* Chooses the preset. The rows keep their values: only Enhanced and Ace sessions use the
+   preset's. */
+void player_app_apply_graphics_preset(PlayerApp *app, int preset);
+/* The next (or, with a negative direction, previous) preset, Custom stepping to Low. */
+void player_app_cycle_graphics_preset(PlayerApp *app, int direction);
+/* The overlay: for an Enhanced or Ace session (`enhanced`, the SR_ACE line not "off"), the
+   chosen preset's values replace the rows player_app_apply_settings_to_session copied. An
+   Authentic session, or Custom, leaves `config` as it is. */
+void player_session_apply_graphics_preset(const PlayerSettings *settings, bool enhanced,
+                                          NkRuntimeConfig *config);
 void player_app_set_fps_cap(PlayerApp *app, int cap);
 void player_app_cycle_fps_cap(PlayerApp *app, int direction);
 void player_app_toggle_fullscreen(PlayerApp *app);
@@ -1618,6 +1678,17 @@ void player_play_apply_logic_60(PlayerPlayResolved *play, bool logic_60);
  * notice=on;wide=off;smooth=off;sas=off" (tier=ace for Ace; wide is always off, and smooth=match
  * is never written). Returns false when it does not fit. */
 bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t cap);
+/* The presentation upscaler a resolution asks for (NkRuntimeConfig.present_upscale, exported as
+ * SR_PRESENT_UPSCALE): NK_PRESENT_UPSCALE_FSR1 for Enhanced or Ace with the part on, else
+ * NK_PRESENT_UPSCALE_OFF. The launcher still exports off for an authentic session (#2122). */
+int player_play_present_upscale(const PlayerPlayResolved *play);
+/* A launch's play mode into its runtime configuration: the title's resolution (with Ace's 60 FPS
+ * logic when its package is the build, and off for the acceptance checkpoint), its SR_ACE line in
+ * ace_spec ("off" when it does not fit) and its present_upscale. *out, when not NULL, receives
+ * the resolution the launch runs with. */
+void player_play_config_session(const PlayerSettings *settings, const char *disc_id,
+                                bool logic_60_package, bool acceptance, NkRuntimeConfig *config,
+                                PlayerPlayResolved *out);
 /* <user_root>/ace/<disc ID>.json: the runtime's per-run report for that disc. */
 bool player_ace_report_path(const char *user_root, const char *disc_id, char *out, size_t cap);
 /* The title page's "Last session" line from that report ("Last session: 16x filtering,
@@ -1780,6 +1851,8 @@ void player_app_request_launch(PlayerApp *app, int game_index);
 
 /* Copy the launch-relevant player settings into a prepared session's runtime
  * configuration (resolution, frame cap, vsync, fullscreen, master volume).
+ * These are the user's own rows, what an Authentic session runs with; an Enhanced or Ace
+ * session then takes the graphics preset's values (player_session_apply_graphics_preset).
  * The accessibility settings and ui_sounds are launcher-UI state and deliberately not copied. Kept as a
  * named seam so tests can pin the settings -> session mapping without
  * spawning a child. */

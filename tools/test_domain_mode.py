@@ -156,9 +156,69 @@ class DomainSourcesTests(unittest.TestCase):
         self.assertIn("SR_IMPORT_FALLBACK_HLE", text)
         self.assertIn("s_fallback_count++", text)
 
-    def test_cosim_arm_records_without_dual_execution(self):
+    def test_cosim_arm_records_and_runs_both_lanes(self):
+        # PR 8 (#2148): the COSIM arm runs the guest export and the HLE
+        # handler from one input state and keeps the HLE lane's result.
         text = DOMAIN_C.read_text(encoding="utf-8")
         self.assertIn("s_cosim_count++", text)
+        self.assertIn("return sr_import_call_cosim(s, nid, stub_pc);", text)
+        body = text.split("static int sr_import_call_cosim(", 1)[1]
+        body = body.split("\nint sr_import_call(", 1)[0]
+        guest = body.index("rc = sr_import_call_guest(s, nid, stub_pc, 1);")
+        restore = body.index("*s = input;")
+        hle = body.index("ret = sr_syscall(s, nid);")
+        self.assertLess(guest, restore)
+        self.assertLess(restore, hle)
+        for marker in ("SR_COSIM_DIFF:", "SR_COSIM_NOT_COMPARED:", "SR_COSIM_MATCH:"):
+            self.assertIn(marker, text)
+
+    def test_cosim_guest_lane_refuses_nested_imports(self):
+        # An import reached from the guest lane would apply a host effect the
+        # HLE lane applies again; the seam refuses it before any mode lookup.
+        text = DOMAIN_C.read_text(encoding="utf-8")
+        seam = text.split("\nint sr_import_call(", 1)[1]
+        refuse = seam.index("if (s_cosim_guest_active)")
+        lookup = seam.index("domain = sr_domain_lookup_nid(nid);")
+        self.assertLess(refuse, lookup)
+        self.assertNotIn("sr_syscall", seam[refuse:lookup])
+
+    def test_header_declares_the_cosim_result_api(self):
+        text = DOMAIN_H.read_text(encoding="utf-8")
+        for proto in (r"sr_domain_cosim_match_count\s*\(",
+                      r"sr_domain_cosim_diff_count\s*\(",
+                      r"sr_domain_cosim_not_compared_count\s*\(",
+                      r"sr_domain_cosim_last_result\s*\(",
+                      r"sr_domain_cosim_set_dead_stack\s*\(",
+                      r"SR_COSIM_REASON_NESTED_IMPORT",
+                      r"SR_COSIM_REASON_UNPAIRED"):
+            self.assertRegex(text, proto)
+
+    def test_cosim_keeps_the_vram_contract(self):
+        # Review S2 on #2171: the snapshot reads back what the renderer holds,
+        # and a rolled-back VRAM page is bracketed by write prepare and commit.
+        text = DOMAIN_C.read_text(encoding="utf-8")
+        snap = text.split("static int sr_cosim_snapshot_take(", 1)[1].split("\n}\n", 1)[0]
+        self.assertLess(snap.index("sr_cosim_vram_current();"), snap.index("memcpy("))
+        self.assertIn("sr_guest_vram_read_prepare_bytes(SR_COSIM_VRAM_BASE, SR_COSIM_VRAM_SIZE)", text)
+        cap = text.split("static int sr_cosim_capture_guest_and_restore(", 1)[1].split("\n}\n", 1)[0]
+        prepare = cap.index("sr_guest_vram_write_prepare_bytes(phys, SR_COSIM_PAGE);")
+        copy = cap.index("memcpy(live, before, SR_COSIM_PAGE);")
+        commit = cap.index("sr_guest_vram_write_commit_bytes(phys, SR_COSIM_PAGE);")
+        self.assertLess(prepare, copy)
+        self.assertLess(copy, commit)
+
+    def test_cosim_does_not_compare_an_unfinished_hle_lane(self):
+        # Review N2 on #2171: a pending flow after the HLE lane is NOT_COMPARED.
+        text = DOMAIN_C.read_text(encoding="utf-8")
+        body = text.split("static int sr_import_call_cosim(", 1)[1].split("\nint sr_import_call(", 1)[0]
+        check = body.index("sr_cosim_not_compared(SR_COSIM_REASON_HLE_FLOW);")
+        self.assertLess(body.index("ret = sr_syscall(s, nid);"), check)
+        self.assertLess(check, body.index("sr_cosim_compare_memory("))
+        self.assertIn("SR_COSIM_REASON_HLE_FLOW", DOMAIN_H.read_text(encoding="utf-8"))
+
+    def test_selftest_covers_the_dual_run(self):
+        selftest = ROOT / "tests" / "native" / "domain_mode_selftest.c"
+        self.assertIn("test_cosim_dual_run();", selftest.read_text(encoding="utf-8"))
 
     def test_library_table_covers_the_preflight_mapping(self):
         text = DOMAIN_C.read_text(encoding="utf-8")

@@ -32046,6 +32046,150 @@ static void test_sas_state_contracts(void) {
            "a non-looping VAG voice ends despite loop markers");
 }
 
+/* #2135: a SAS volume is signed. __sceSasSetVolume accepts |volume| <= 0x1000 on each of its four sides,
+ * and a negative side plays phase-inverted (PPSSPP's sceSasSetVolume checks abs(volume) against 0x1000).
+ * Hot Shots Tennis gives three voices of each title-logo sound one negative side (for example 1886/-455).
+ * Refusing those left the voices at 0/0; KeyOn then raised them to full volume and the logo clipped. Over a
+ * 4 s title-logo window within the first 3,000 vblanks (about 49 s), against a PSP-3000 capture of the same
+ * moment: 11,491 full-scale samples against 126, RMS -9.2 against -13.3 dBFS, and the first voice group's
+ * power -7.7 against -16.8 dBFS. */
+static void test_sas_set_volume_accepts_negative(void) {
+    CpuState cpu;
+    const uint32_t core = 0x08030000u, out = 0x08010000u, vag = 0x08020000u;
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, core, 0);
+    sas_test_vag(vag, 4u, 0u);
+    cpu.r[4] = core; cpu.r[5] = 4; cpu.r[6] = vag; cpu.r[7] = 64; cpu.r[8] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOICE) == 0, "negative-volume fixture accepts the VAG voice");
+    /* __sceSasSetVolume(core, voice, left, right, effectLeft, effectRight): the last two arrive in t0/t1. */
+    cpu.r[4] = core; cpu.r[5] = 4; cpu.r[6] = 0x1000; cpu.r[7] = (uint32_t)-0x1000;
+    cpu.r[8] = (uint32_t)-0x1000; cpu.r[9] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0,
+           "__sceSasSetVolume accepts a negative side down to -0x1000 (#2135)");
+    cpu.r[4] = core; cpu.r[5] = 4; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (out - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = core; cpu.r[5] = out; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    int audible = 0, inverted = 1;
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN; i++) {
+        int16_t l = (int16_t)MEM_R16(out + i * 4u), r = (int16_t)MEM_R16(out + i * 4u + 2u);
+        if (l) audible = 1;
+        if (r != -l) inverted = 0;
+    }
+    expect(audible && inverted,
+           "a voice at 0x1000/-0x1000 plays the right channel as the phase-inverted left (#2135)");
+
+    /* The bound is the magnitude: one step past -0x1000 is still refused, and refused volumes change nothing. */
+    cpu.r[4] = core; cpu.r[5] = 4; cpu.r[6] = (uint32_t)-0x1001; cpu.r[7] = 0;
+    cpu.r[8] = 0; cpu.r[9] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0x80420018u,
+           "__sceSasSetVolume refuses -0x1001 with SAS_ERROR_VOLUME_VAL");
+    /* Every one of the eight edges: one step past +-0x1000 on any side is refused. */
+    for (uint32_t side = 0; side < 4u; side++)
+        for (int sign = -1; sign <= 1; sign += 2) {
+            cpu.r[4] = core; cpu.r[5] = 4; cpu.r[6] = cpu.r[7] = cpu.r[8] = cpu.r[9] = 0;
+            cpu.r[6 + side] = (uint32_t)(sign * 0x1001);
+            expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0x80420018u,
+                   "__sceSasSetVolume refuses +-0x1001 on each of its four sides (#2135)");
+        }
+    cpu.r[4] = core; cpu.r[5] = 4; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (out - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = core; cpu.r[5] = out; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    int still_inverted = 1, still_audible = 0;
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN; i++) {
+        int16_t l = (int16_t)MEM_R16(out + i * 4u), r = (int16_t)MEM_R16(out + i * 4u + 2u);
+        if (l) still_audible = 1;
+        if (r != -l) still_inverted = 0;
+    }
+    expect(still_audible && still_inverted, "a refused __sceSasSetVolume leaves the previous volume in place");
+}
+
+/* #2135: a voice starts at full dry and effect volume when __sceSasInit sets it up, and KeyOn
+ * never changes a volume. The runtime used to start voices at 0 and have KeyOn raise a 0/0 voice
+ * to full dry volume, so a game that set 0/0 on purpose heard the voice anyway, and a never-set
+ * voice sent nothing to the effect planes. Raw output mode (1) writes four planes per grain:
+ * dry L, dry R, send L, send R. */
+static void test_sas_voice_volume_defaults(void) {
+    CpuState cpu;
+    const uint32_t core = 0x08030000u, out = 0x08010000u, vag = 0x08020000u;
+    const uint32_t plane = SAS_TEST_GRAIN * 2u;
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, core, 1);
+    sas_test_vag(vag, 4u, 0u);
+    cpu.r[4] = core; cpu.r[5] = 3; cpu.r[6] = vag; cpu.r[7] = 64; cpu.r[8] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOICE) == 0, "volume-default fixture accepts the VAG voice");
+    cpu.r[4] = core; cpu.r[5] = 3; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (out - 0x08000000u), 0, plane * 4u);
+    cpu.r[4] = core; cpu.r[5] = out; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    int dry = 0, send = 0, equal = 1;
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN; i++) {
+        int16_t dl = (int16_t)MEM_R16(out + i * 2u), dr = (int16_t)MEM_R16(out + plane + i * 2u);
+        int16_t sl = (int16_t)MEM_R16(out + plane * 2u + i * 2u), sr = (int16_t)MEM_R16(out + plane * 3u + i * 2u);
+        if (dl) dry = 1;
+        if (sl) send = 1;
+        if (dl != dr || dl != sl || sl != sr) equal = 0;
+    }
+    expect(dry && send && equal,
+           "a voice whose volume was never set plays at full dry and full effect-send volume (#2135)");
+
+    /* An explicit 0/0 is silence: KeyOn must not raise it. */
+    cpu.r[4] = core; cpu.r[5] = 3; cpu.r[6] = 0; cpu.r[7] = 0; cpu.r[8] = 0; cpu.r[9] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0, "__sceSasSetVolume accepts 0/0/0/0");
+    cpu.r[4] = core; cpu.r[5] = 3; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (out - 0x08000000u), 0, plane * 4u);
+    cpu.r[4] = core; cpu.r[5] = out; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    int any = 0;
+    for (uint32_t i = 0; i < plane * 2u; i++) if (MEM_R16(out + i * 2u)) { any = 1; break; }
+    cpu.r[4] = core;
+    expect(!any && (sr_syscall(&cpu, NID_SAS_GET_END) & (1u << 3)) == 0,
+           "a voice keyed on after an explicit __sceSasSetVolume(0, 0, 0, 0) plays silently (#2135)");
+}
+
+/* #2135: __sceSasCoreWithMix's two volumes scale the caller's PCM already in the buffer, not the
+ * SAS voice mix, and no value is refused: out = clamp_s16(in * vol >> 12 + voices). This is the
+ * reference behaviour (PPSSPP, hrydgard/ppsspp 0b30638e6571: Core/HLE/sceSas.cpp
+ * _sceSasCoreWithMix checks no volume; Core/HW/SasAudio.cpp WriteMixedOutput scales inp by
+ * leftVol/rightVol). It is unmeasured on a PSP. */
+static void test_sas_core_with_mix_scales_caller_pcm(void) {
+    CpuState cpu;
+    const uint32_t core = 0x08030000u, out = 0x08010000u, vag = 0x08020000u;
+    int16_t bgm[SAS_TEST_GRAIN * 2], got[SAS_TEST_GRAIN * 2], voice_only[SAS_TEST_GRAIN * 2];
+    static const int32_t gains[][2] = {
+        { 0x800, 0x800 }, { 0, -0x1000 }, { 0x2000, 0x3000 }, { -0x1800, 0x1001 },
+    };
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, core, 0);
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN; i++) {
+        bgm[i * 2 + 0] = (int16_t)(1000 + (int)i * 500);
+        bgm[i * 2 + 1] = (int16_t)(-800 - (int)i * 500);
+    }
+    for (size_t g = 0; g < sizeof(gains) / sizeof(gains[0]); g++) {
+        sas_write_pcm(out, bgm, SAS_TEST_GRAIN);
+        cpu.r[4] = core; cpu.r[5] = out; cpu.r[6] = (uint32_t)gains[g][0]; cpu.r[7] = (uint32_t)gains[g][1];
+        uint32_t rc = sr_syscall(&cpu, NID_SAS_CORE_WITH_MIX);
+        sas_read_pcm(out, got, SAS_TEST_GRAIN);
+        int exact = 1;
+        for (uint32_t i = 0; i < SAS_TEST_GRAIN * 2u; i++)
+            if (got[i] != sas_clamp16((int32_t)(((int64_t)bgm[i] * gains[g][i & 1u]) >> 12))) exact = 0;
+        expect(rc == 0 && exact,
+               "__sceSasCoreWithMix accepts any volume and scales the caller PCM by vol >> 12 (#2135)");
+    }
+
+    /* The volumes leave the voices alone: at 0/0 the output is the voice mix and nothing else. */
+    sas_test_vag(vag, 4u, 0u);
+    cpu.r[4] = core; cpu.r[5] = 0; cpu.r[6] = vag; cpu.r[7] = 64; cpu.r[8] = 0;
+    (void)sr_syscall(&cpu, NID_SAS_SET_VOICE);
+    cpu.r[4] = core; cpu.r[5] = 0; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (out - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = core; cpu.r[5] = out; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    sas_read_pcm(out, voice_only, SAS_TEST_GRAIN);
+    cpu.r[4] = core; cpu.r[5] = 0; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    sas_write_pcm(out, bgm, SAS_TEST_GRAIN);
+    cpu.r[4] = core; cpu.r[5] = out; cpu.r[6] = 0; cpu.r[7] = 0;
+    expect(sr_syscall(&cpu, NID_SAS_CORE_WITH_MIX) == 0, "__sceSasCoreWithMix accepts 0/0");
+    sas_read_pcm(out, got, SAS_TEST_GRAIN);
+    int audible = 0;
+    for (uint32_t i = 0; i < SAS_TEST_GRAIN * 2u; i++) if (voice_only[i]) audible = 1;
+    expect(audible && memcmp(got, voice_only, sizeof(got)) == 0,
+           "__sceSasCoreWithMix at 0/0 drops the caller PCM and keeps the voices at their own volume (#2135)");
+}
+
 /* pspsascore.h: "On real hardware, the end flags are refreshed only AFTER __sceSasCore is
  * called", and __sceSasCore "updates end/pause flags".  A voice keyed on between cycles
  * therefore still reads as ended until the next cycle runs, and a drained voice reads as
@@ -48516,6 +48660,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
+    test_sas_set_volume_accepts_negative();
+    test_sas_voice_volume_defaults();
+    test_sas_core_with_mix_scales_caller_pcm();
     test_sas_band_limited_resampling();
     test_sas_end_flags_refresh_per_cycle();
     test_sas_reinit_is_a_fresh_init();
