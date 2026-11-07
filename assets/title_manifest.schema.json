@@ -180,8 +180,8 @@
             "properties": {
               "executable_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
               "status": {"enum": ["supported", "experimental", "known-bad"]},
-              "label": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[ -~]+$"},
-              "reason": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[ -~]+$"}
+              "label": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[!-~]([ -~]*[!-~])?$"},
+              "reason": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[!-~]([ -~]*[!-~])?$"}
             },
             "if": {"properties": {"status": {"const": "known-bad"}}},
             "then": {"required": ["reason"]}

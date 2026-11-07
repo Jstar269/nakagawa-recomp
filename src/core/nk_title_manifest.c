@@ -5084,7 +5084,7 @@ void nk_title_manifest_describe_build(const NkBuildIdentity *id, char *out, size
     case NK_BUILD_UNLISTED:
         snprintf(out, out_size,
                  "This copy's executable is not a build Nakagawa has recorded for this game, "
-                 "so it runs as experimental and the game's recorded addresses are not applied.%s%s",
+                 "so it runs as experimental and the game's recorded runtime bindings are not applied.%s%s",
                  id->supported[0] ? " Supported build: " : "", id->supported);
         break;
     default:

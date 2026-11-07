@@ -277,7 +277,7 @@ def unlisted_build_message(title_name: str, build: dict) -> str:
     )
     return (
         f"{found} Nakagawa has recorded for {title_name}. It is imported as experimental, "
-        f"and the title's recorded addresses are not applied to it.{known}"
+        f"and the title's recorded runtime bindings are not applied to it.{known}"
     )
 
 

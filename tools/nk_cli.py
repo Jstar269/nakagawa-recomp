@@ -1293,7 +1293,7 @@ def _apply_executable_build(iso_path: Path, executable_name: str, manifest: dict
     name = manifest.get("display_name", manifest.get("id", "this title"))
     if build["status"] == "known-bad":
         raise PackageBuildError(known_bad_build_message(name, build))
-    if build["status"] != "unlisted":
+    if build["bindings_applied"]:
         return manifest
     reporter.report("preflight", "WARN", unlisted_build_message(name, build))
     unbound = {
