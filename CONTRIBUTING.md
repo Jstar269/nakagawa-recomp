@@ -88,7 +88,9 @@ file's bytes change. Add `CONTRIB_REFRESH_CHECK=--check` to see what would chang
 anything.
 
 **After the ledger lost its hashes (#1673).** A branch made before that change may still carry the
-older ledger with a `sha256` per entry. When you merge `main` and Git reports a conflict in
+older ledger with a `sha256` per entry. A conflict confined to that file is not a reason to merge
+`main`: the integrator resolves it at landing ([AGENTS.md section 10](AGENTS.md#10-pr-and-integration-authorization)).
+If you merge `main` for another reason and Git reports a conflict in
 `assets/public_provenance_ledger.json`, take `main`'s copy (`git checkout --theirs -- <path>` during a
 merge), stage it, finish the merge, then run `make contrib-refresh` and commit what it stages.
 
@@ -302,8 +304,21 @@ python tools/publish_audit.py --tracked-only --worktree --public-scope --provena
 python -m pre_commit run --all-files
 ```
 
-These are the gates [AGENTS.md section 9](AGENTS.md#9-validation-and-gate-routing) lists, and its table gives
-the focused gate for each changed surface. The whole Python suite
+These are the gates [AGENTS.md section 9](AGENTS.md#9-validation-and-gate-routing) requires. Run the
+focused gate for each changed surface first:
+
+| Changed surface | Focused first gate |
+| --- | --- |
+| `tools/codegen.py`, analysis, or imports | relevant `tools/test_codegen_*.py` and `python tools/import_audit_gate.py` |
+| `guest_interp`, `recomp`, or dispatch | `tools/test_dispatch_c.py`, `tools/test_dispatch_call_boundary.py`, cosim tests, then native selftests |
+| scheduler/HLE lifecycle | `tools/test_sched_invariants.py` and `mingw32-make --no-print-directory sched-selftest` |
+| FPU/VFPU conversion | relevant `tools/test_*fpu*.py` plus `fp-convert-selftest`/`vfpu-interp-selftest` |
+| publication/provenance | `tools/policy_sync.py`, both publication-audit legs (the command above, with and without `--worktree`), and `tools/modified_file_notice_audit.py` |
+| docs and agent policy | `python -m unittest tools.test_lint_docs tools.test_dco_policy`, markdownlint (below), and `python tools/audit_public_issue_links.py` |
+| workflow/configuration | `tools/test_ci_paths.py`, pre-commit, and the full applicable hosted matrix |
+| LLE CPU / domain modes | `tools/test_cpu_lle.py`, `tools/test_domain_mode.py`, then `mingw32-make native-core-tests` |
+
+The whole Python suite
 (`python -m unittest discover -s tools -p "test_*.py"`) is not on this list: hosted CI runs it in shards on
 every Ready pull request and push, so run it locally only when hosted CI cannot
 ([what hosted CI does not run](docs/CI.md#what-hosted-ci-does-not-run)).
