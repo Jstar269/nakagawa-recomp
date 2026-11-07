@@ -1339,6 +1339,42 @@ static void test_ge_wide_capture(uint8_t *vram) {
     ge_wide_set_wing(0);
 }
 
+static uint32_t wide_word_identity(uint32_t word, int fmt) {
+    (void)fmt;
+    return word;
+}
+
+/* ge_wide_picture for WIDE_FB, given the frame in `vram` (stride 512, 8888): the left wing, the
+ * frame's 480 columns and the right wing, the wings the canvas's (want_wings) or 0. */
+static int wide_check_picture(int wing, const uint32_t *vram, int want_wings) {
+    const int cols = 480 + 2 * wing;
+    uint32_t *frame = (uint32_t *)malloc(480u * 272u * 4u);
+    uint32_t *pic = (uint32_t *)malloc((size_t)cols * 272u * 4u);
+    const uint32_t *cv = ge_wide_canvas(WIDE_FB, NULL);
+    int ok = frame && pic && (cv || !want_wings);
+    if (ok) {
+        for (uint32_t y = 0; y < 272u; y++)
+            for (uint32_t x = 0; x < 480u; x++) frame[y * 480u + x] = vram[y * 512u + x];
+        ok = ge_wide_picture(WIDE_FB, frame, pic, wide_word_identity) == cols;
+    }
+    for (int y = 0; ok && y < 272; y++)
+        for (int x = 0; x < cols; x++) {
+            uint32_t want;
+            if (x < wing) want = want_wings ? cv[y * 512 + x] : 0u;
+            else if (x < wing + 480) want = frame[y * 480 + x - wing];
+            else want = want_wings ? cv[y * 512 + x - 480] : 0u;
+            if (pic[(size_t)y * (size_t)cols + (size_t)x] != want) {
+                fprintf(stderr, "wide_fill: picture (%d,%d) = %08x, want %08x\n", x, y,
+                        (unsigned)pic[(size_t)y * (size_t)cols + (size_t)x], (unsigned)want);
+                ok = 0;
+                break;
+            }
+        }
+    free(frame);
+    free(pic);
+    return ok;
+}
+
 static void test_ge_wide_fill(void) {
     /* Window sizes at 16:9, 21:9 and 32:9 and the wing each gives. The PSP's 480x272 is 30:17,
      * which a 16:9 window widens by under 4 pixels, so 16:9 has no wings. */
@@ -1380,23 +1416,36 @@ static void test_ge_wide_fill(void) {
             expect(!wide_check_canvas(aspects[a].name, wing, flags, (const uint32_t *)off), "wide_fill",
                    "the wings hold the quad, the shapes where a wider screen puts them, and the clear");
             ge_wide_shown(WIDE_FB);
-            expect(!ge_wide_drawn(WIDE_FB), "wide_fill", "showing a frame resets its drawn flag");
+            ge_wide_note_display(WIDE_FB);
+            expect(ge_wide_drawn(WIDE_FB) &&
+                   !wide_check_canvas(aspects[a].name, wing, flags, (const uint32_t *)off), "wide_fill",
+                   "a frame presented again, with no draw in between, keeps its wings");
+            expect(wide_check_picture(wing, (const uint32_t *)on, 1), "wide_fill",
+                   "the software picture is the left wing, the frame and the right wing");
             if (!fade) {
-                /* The next frame draws its shapes with no clear: the first wing draw clears the
-                 * shown canvas, so it holds this frame's shapes on black, not the last frame's. */
+                /* The next frame draws its shapes with no clear: its first draw into the shown
+                 * buffer clears the canvas, so it holds this frame's shapes on black, not the
+                 * last frame's. */
                 memset(SR_HOST(WIDE_VRAM), 0, WIDE_VRAM_SIZE);
                 ge_wide_note_display(WIDE_FB);
                 build_wide_list(WF_NOCLEAR);
                 expect(ge_run_list(LIST_WIDE, 0) == 0, "wide_fill", "list did not reach END");
                 expect(ge_wide_drawn(WIDE_FB), "wide_fill", "the next frame's wing draws mark it drawn");
                 expect(!wide_check_canvas(aspects[a].name, wing, WF_NOCLEAR, (const uint32_t *)SR_HOST(WIDE_VRAM)),
-                       "wide_fill", "a shown canvas is cleared by the next frame's first wing draw");
+                       "wide_fill", "a shown canvas is cleared by the next frame's first draw");
                 ge_wide_shown(WIDE_FB);
                 memset(SR_HOST(WIDE_VRAM), 0, WIDE_VRAM_SIZE);
                 build_wide_list(WF_NARROW);
                 expect(ge_run_list(LIST_WIDE, 0) == 0, "wide_fill", "list did not reach END");
                 expect(!ge_wide_drawn(WIDE_FB), "wide_fill",
                        "a frame that draws no wing primitive leaves the canvas undrawn (shown black)");
+                const uint32_t *cv = ge_wide_canvas(WIDE_FB, NULL);
+                int black = cv != NULL;
+                for (size_t i = 0; black && i < (size_t)GE_WIDE_CANVAS_W * 272u; i++) black = cv[i] == 0u;
+                expect(black, "wide_fill",
+                       "a new frame's first draw, even one that reaches no wing, clears the shown canvas");
+                expect(wide_check_picture(wing, (const uint32_t *)SR_HOST(WIDE_VRAM), 0), "wide_fill",
+                       "a new frame that draws no wing shows black wings in the software picture");
             }
             ge_wide_set_wing(0);
         }

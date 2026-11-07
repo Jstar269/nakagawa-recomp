@@ -2,18 +2,21 @@ name: CI
 
 on:
   # Pull-request events that can carry a new head: opened (the first head),
-  # synchronize (new commits), reopened. Draft status does not suppress
-  # substantive gates (tools/ci_paths.py exports allow_substantive
-  # independently of draft), so a draft head is already fully validated and
-  # needs no transition to become so.
+  # synchronize (new commits), reopened. On a Draft pull request these run only
+  # the quick jobs (classify, hygiene, public_export, ci_required):
+  # tools/ci_paths.py sets allow_substantive false for a Draft, which skips
+  # python_tools, native_tools, linux_gcc16, windows_runtime and the
+  # profile-zero fixture build, and tools/ci_required.py never reports a
+  # Draft's run green (DRAFT_LIGHT_CI). docs/CI.md, "Draft pull requests".
   #
-  # The status transitions are deliberately NOT listed. ready_for_review and
-  # converted_to_draft never change the head, so they could only re-run the
-  # matrix over a tree that was already validated - and, because concurrency
-  # cancels in progress, a draft -> ready transition used to cancel the very
-  # run it then duplicated. A new head is still covered by synchronize.
+  # The status transitions are listed because they change what a run covers.
+  # ready_for_review starts the full matrix on the head the Draft run left
+  # light; converted_to_draft starts a light run, and the shared concurrency
+  # group cancels a full run still in progress, so a Draft holds no
+  # substantive runner. Every later push to a pull request that is not a
+  # Draft runs the full matrix through synchronize.
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   # Feature-branch commits are covered by pull_request.  A normal main push
   # keeps only the compact smoke gate; workflow changes are the exception and
   # request the full validation needed to prove the new CI itself.
@@ -42,7 +45,8 @@ on:
 concurrency:
   # A new commit supersedes an in-flight run for the same PR/ref.  This is also
   # intentionally shared by draft and ready events so stale work cannot consume
-  # a runner after the PR advances.
+  # a runner after the PR advances: marking a Draft Ready cancels its light run,
+  # and converting a pull request to a Draft cancels its full run.
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 

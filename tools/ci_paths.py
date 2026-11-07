@@ -1271,11 +1271,18 @@ def classify(
     run_installer = run_windows or any(_is_installer(path) for path in files)
     # A normal main push is already covered by its PR. Workflow changes are
     # exceptional: validate the new workflow itself on the default branch too.
-    # Draft pull requests are not a separate validation mode: they get the
-    # same path-applicable gates as ready pull requests, so progress does not
-    # require a manual ready-for-review transition or workflow dispatch.
+    # A Draft pull request runs only the quick jobs (classification, hygiene and
+    # security, the public export audit and CI required), whatever its paths: the
+    # substantive gates run when it is marked Ready (``ready_for_review``) and on
+    # every later push while it is not a Draft (docs/CI.md, "Draft pull requests").
+    # The run flags above still describe what the paths would route, and
+    # tools/ci_required.py never reports a Draft's run green (DRAFT_LIGHT_CI).
+    # Only a pull_request event can be a Draft, so no other event is narrowed.
+    draft_pull_request = event_name == "pull_request" and draft
     is_main_push = event_name == "push" and os.environ.get("GITHUB_REF") == "refs/heads/main"
-    allow_substantive = event_name in FULL_MATRIX_EVENTS or (not is_main_push or workflow_ci)
+    allow_substantive = not draft_pull_request and (
+        event_name in FULL_MATRIX_EVENTS or not is_main_push or workflow_ci
+    )
     run_main_smoke = is_main_push or event_name in FULL_MATRIX_EVENTS
     # #735: only a run of main's own code on main -- a push, the nightly schedule or
     # a manual dispatch of main -- may save the persisted Windows compiler cache.
@@ -1308,7 +1315,7 @@ def classify(
         "run_main_smoke": str(run_main_smoke).lower(),
         "save_compiler_cache": str(save_compiler_cache).lower(),
         "allow_substantive": str(allow_substantive).lower(),
-        "draft": str(draft).lower(),
+        "draft": str(draft_pull_request).lower(),
     }
 
 

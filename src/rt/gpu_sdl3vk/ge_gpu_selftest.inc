@@ -5974,6 +5974,74 @@ static int wide_frames(const WideBufs *B) {
     return ok_all;
 }
 
+/* The picture gegpu_present shows with Fill on (Vulkan only; the software presenter composes
+ * the same picture in gui.c): the left wing, the frame, then the right wing, (480 + 2D) x 272.
+ * `want_wings` 1: the wings are the canvas's; 0: they are black. RGB only: the canvas holds the
+ * GE's alpha, and the presenter shows no alpha. */
+static int wide_picture_check(const char *what, const uint32_t *pic, int cols, const uint32_t *frame,
+                              const uint32_t *canvas, int want_wings) {
+    const uint32_t d = (uint32_t)WIDE_D;
+    if (cols != (int)(480u + 2u * d)) {
+        fprintf(stderr, "gpu coherence selftest [wide-fill]: present %s: %d columns, want %u\n", what, cols,
+                480u + 2u * d);
+        return 0;
+    }
+    for (uint32_t y = 0; y < FB_H; y++)
+        for (uint32_t x = 0; x < (uint32_t)cols; x++) {
+            uint32_t want;
+            if (x < d) want = want_wings ? canvas[y * 512u + x] : 0u;
+            else if (x < d + 480u) want = frame[y * 512u + x - d];
+            else want = want_wings ? canvas[y * 512u + x - 480u] : 0u;
+            const uint32_t got = pic[(size_t)y * (uint32_t)cols + x];
+            if ((got & 0x00FFFFFFu) != (want & 0x00FFFFFFu)) {
+                fprintf(stderr, "gpu coherence selftest [wide-fill]: present %s: picture (%u,%u) = %08x, want "
+                                "%08x\n", what, x, y, (unsigned)got, (unsigned)want);
+                return 0;
+            }
+        }
+    return 1;
+}
+
+static int wide_present(const WideBufs *B) {
+    const size_t cap = (size_t)(480 + 2 * GE_WIDE_MAX_WING) * FB_H;
+    uint32_t *pic = (uint32_t *)malloc(cap * 4u);
+    if (!pic) return 0;
+    int ok = 1, cols = 0;
+    coherence_reset_targets();
+    ge_wide_set_wing(WIDE_D);
+    /* A frame whose wings are drawn: wings from its canvas, the frame between them. */
+    if (!wide_frame(1, 0, B->gpu_on, B->gpu_wing) || !ge_wide_drawn(WIDE_FB) ||
+        !gegpu_wide_present_read(WIDE_FB, 3, 512, pic, &cols) ||
+        !wide_picture_check("drawn", pic, cols, B->gpu_on, B->gpu_wing, 1))
+        ok = 0;
+    /* Shown, then presented again with no draw in between (a 30 Hz frame on a 60 Hz VBLANK): it
+     * keeps its wings. */
+    ge_wide_shown(WIDE_FB);
+    if (ok && (!gegpu_wide_present_read(WIDE_FB, 3, 512, pic, &cols) ||
+               !wide_picture_check("again", pic, cols, B->gpu_on, B->gpu_wing, 1))) {
+        fprintf(stderr, "gpu coherence selftest [wide-fill]: a frame presented twice lost its wings\n");
+        ok = 0;
+    }
+    /* The next frame draws, none of it in a wing: its wings are black, not the last frame's. */
+    ge_wide_shown(WIDE_FB);
+    if (ok && (!wide_frame(1, WF_NARROW, B->gpu_on, NULL) || ge_wide_drawn(WIDE_FB) ||
+               !gegpu_wide_present_read(WIDE_FB, 3, 512, pic, &cols) ||
+               !wide_picture_check("undrawn", pic, cols, B->gpu_on, B->gpu_wing, 0))) {
+        fprintf(stderr, "gpu coherence selftest [wide-fill]: a new frame with no wing draw showed old wings\n");
+        ok = 0;
+    }
+    /* Fill off: no picture is made, and the frame is presented alone, as before. */
+    ge_wide_set_wing(0);
+    if (ok && gegpu_wide_present_read(WIDE_FB, 3, 512, pic, &cols)) {
+        fprintf(stderr, "gpu coherence selftest [wide-fill]: Fill off still made a wide picture\n");
+        ok = 0;
+    }
+    free(pic);
+    if (ok) printf("gpu coherence selftest: PASS %-22s vulkan present scale=%d\n", "wide-fill", s_scale);
+    else fprintf(stderr, "gpu coherence selftest [wide-fill]: FAIL vulkan present\n");
+    return ok;
+}
+
 static int coherence_run_wide_fill(void) {
     const size_t px = (size_t)512 * FB_H, vw = WIDE_VRAM_SIZE / 4u;
     uint32_t *buf = (uint32_t *)malloc((vw * 4u + px * 2u) * 4u);
@@ -5985,6 +6053,7 @@ static int coherence_run_wide_fill(void) {
     ok &= wide_aspect("21:9", 2520, 1080, WIDE_D, &B);
     ok &= wide_aspect("32:9", 3840, 1080, 240, &B);
     ok &= wide_frames(&B);
+    ok &= wide_present(&B);
     coherence_reset_targets();
     free(buf);
     return ok;

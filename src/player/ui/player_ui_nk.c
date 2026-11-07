@@ -841,6 +841,7 @@ static void player_ui_fill_enhanced(PlayerUiNk *player, const PlayerApp *app,
     model->enhanced_mode_sentence =
         "The default for every game; each game's page can choose its own.";
     bool logic_60 = false;
+    bool smooth_on = settings->enhanced.part[PLAYER_PART_SMOOTH] != 0;
     if (title >= 0) {
         const GameRecord *game = &app->games[title];
         PlayerPlayMode chosen = player_app_title_play_mode(app, title);
@@ -850,6 +851,7 @@ static void player_ui_fill_enhanced(PlayerUiNk *player, const PlayerApp *app,
            motion is off. */
         player_play_apply_logic_60(&play, player_app_title_60hz_on(app, title));
         logic_60 = play.logic_60;
+        smooth_on = play.part[PLAYER_PART_SMOOTH] != 0;
         snprintf(player->enhanced_title, sizeof(player->enhanced_title), "%s",
                  game->title_name[0] ? game->title_name : game->disc_id);
         model->enhanced_title = player->enhanced_title;
@@ -894,6 +896,14 @@ static void player_ui_fill_enhanced(PlayerUiNk *player, const PlayerApp *app,
                          "when this game's 60 FPS game logic is off.", row->value);
                 row->value = "Off (this game runs at 60 FPS)";
                 row->sentence = player->enhanced_smooth_sentence;
+                row->on = false;
+            }
+        }
+        if (model->enhanced_on) {
+            const char *unavailable =
+                player_enhanced_part_unavailable_label(p, row->on, smooth_on);
+            if (unavailable) {
+                row->value = unavailable;
                 row->on = false;
             }
         }

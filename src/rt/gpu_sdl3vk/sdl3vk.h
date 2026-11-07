@@ -177,6 +177,18 @@ int  sdl3vk_poll(void);
  * window / pressed ESC, and -1 for a recoverable presentation failure. */
 int  sdl3vk_present_rgba(const uint32_t *px);
 
+/* The widest picture sdl3vk_present_rgba_ex uploads: 480 + 2 x 256 wing columns of a
+ * widescreen Fill picture (ge_shared.h GE_WIDE_MAX_WING). */
+#define SDL3VK_UPLOAD_MAX_W 992
+/* sdl3vk_present_rgba for a w x 272 picture, PSP_W <= w <= SDL3VK_UPLOAD_MAX_W, packed like
+ * it (a Fill picture: left wing, the frame, right wing). The window fits the picture's own
+ * aspect. Another size is a recoverable failure (-1). Same return semantics. */
+int  sdl3vk_present_rgba_ex(const uint32_t *px, int w, int h);
+
+/* The size in pixels the picture is fitted into: the swapchain's, or the window's before
+ * the first swapchain. Returns 0 (and 0 x 0) with no window. */
+int  sdl3vk_window_pixel_size(int *w, int *h);
+
 /* Present directly from a VkImage owned by the GPU rasterizer (ge_gpu.c). The image
  * must be RGBA8 in TRANSFER_SRC_OPTIMAL layout; the visible region (480x272, or its
  * render-scaled multiple via the _ex form) is blitted with the same letterboxing as

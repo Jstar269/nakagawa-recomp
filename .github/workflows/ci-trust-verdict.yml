@@ -41,7 +41,9 @@ name: Trusted CI verdict
 # reserves that name in every other workflow, so it is never listed here),
 # finishes after CI, the verdict stays pending, never success: dispatch this
 # workflow by hand (docs/CI.md, "Trusted CI verdict"). The draft/ready
-# transition is not a re-trigger: the verifier never reads the draft state.
+# transition is not a re-trigger here: CI runs on both (ci.yml), and the
+# completion of that run re-judges the head. The verifier reads the pull
+# request's draft state then and never judges a Draft green (DRAFT_LIGHT_CI).
 # Every label event re-judges, whatever the label: a newer run in this head's
 # concurrency group replaces a pending one, so a run that judged nothing could
 # leave an older verdict standing.

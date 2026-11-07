@@ -6193,6 +6193,157 @@ static int present_scale(const Target *t) {
     return t->tshow ? s_tscale : s_scale;
 }
 
+/* ---- widescreen Fill: the presented picture (#1881) -------------------------------------------
+ * With Fill on, gegpu_present shows one (480 + 2D) x 272 image at the shown image's scale: the
+ * left wing (canvas columns [0, D)), the frame's 480 columns, then the right wing (canvas columns
+ * [D, 2D)). The presenter, its upscaler and captures treat it as one picture, so the wings are
+ * scaled and filtered exactly as the frame is. Wings the shown frame did not draw
+ * (ge_wide_drawn) are black, never an earlier frame's. Host-only: guest VRAM, the target and the
+ * canvases are only read. Blits copy 1:1 with nearest filtering, so a twin in another colour
+ * format than the canvases' RGBA8 still converts exactly. */
+static VkImage        s_wide_img;
+static VkDeviceMemory s_wide_mem;
+static VkImageLayout  s_wide_layout;
+static uint32_t       s_wide_w, s_wide_h;
+static unsigned long  s_cnt_wide_present = 0, s_cnt_wide_black = 0;
+
+static void wide_image_free(int wait_presents) {
+    if (s_wide_img || s_wide_mem) (void)cmd_drain(GEGPU_BOUNDARY_LIFETIME);
+    if (s_wide_img && wait_presents) (void)sdl3vk_wait_image((void *)s_wide_img);
+    if (s_wide_img) vkDestroyImage(s_dev, s_wide_img, NULL);
+    if (s_wide_mem) vkFreeMemory(s_dev, s_wide_mem, NULL);
+    s_wide_img = VK_NULL_HANDLE;
+    s_wide_mem = VK_NULL_HANDLE;
+    s_wide_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    s_wide_w = s_wide_h = 0;
+}
+
+static void wide_blit(VkImage src, int32_t sx0, int32_t sx1, int32_t dx0, int32_t h) {
+    VkImageBlit b;
+    memset(&b, 0, sizeof b);
+    b.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.srcSubresource.layerCount = 1;
+    b.dstSubresource = b.srcSubresource;
+    b.srcOffsets[0].x = sx0;               b.srcOffsets[1].x = sx1;
+    b.srcOffsets[1].y = h;                 b.srcOffsets[1].z = 1;
+    b.dstOffsets[0].x = dx0;               b.dstOffsets[1].x = dx0 + (sx1 - sx0);
+    b.dstOffsets[1].y = h;                 b.dstOffsets[1].z = 1;
+    vkCmdBlitImage(s_cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_wide_img,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_NEAREST);
+}
+
+/* The Fill picture for target t shown as display framebuffer fbaddr, ready in
+ * TRANSFER_SRC_OPTIMAL on the GE chain (submitted ahead of the presenter's work), or NULL when
+ * Fill is off or the picture cannot be made: the frame is then presented alone. */
+static VkImage wide_compose(Target *t, uint32_t fbaddr, int *out_w, int *out_h) {
+    const int d = ge_wide_wing();
+    if (d <= 0) return VK_NULL_HANDLE;
+    const int sc = present_scale(t);
+    const uint32_t w = (uint32_t)(DRAW_W + 2 * d) * (uint32_t)sc, h = (uint32_t)FB_H * (uint32_t)sc;
+    if (!s_wide_img || s_wide_w != w || s_wide_h != h) {
+        wide_image_free(1);
+        if (!make_image(w, h, VK_FORMAT_R8G8B8A8_UNORM,
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                        VK_IMAGE_USAGE_SAMPLED_BIT,
+                        &s_wide_img, &s_wide_mem)) {
+            static int reported = 0;
+            if (!reported) {
+                reported = 1;
+                fprintf(stderr, "gegpu: no %ux%u Fill picture; the frame is presented without wings\n",
+                        w, h);
+            }
+            wide_image_free(0);
+            return VK_NULL_HANDLE;
+        }
+        s_wide_w = w;
+        s_wide_h = h;
+    }
+    /* The canvas of this frame: ge.c drew wings since its last clear, and this backend's canvas
+     * holds that clear's epoch. Canvases are at s_scale; a shown image at another scale gets
+     * black wings. */
+    const uint32_t fb = 0x04000000u | (fbaddr & 0x001FFFFFu);
+    WingEnt *wg = NULL;
+    if (ge_wide_drawn(fb) && sc == s_scale) {
+        const uint32_t epoch = ge_wide_epoch(fb);
+        for (int i = 0; i < MAX_WING; i++)
+            if (s_wings[i].used && s_wings[i].fb == fb && s_wings[i].epoch == epoch) wg = &s_wings[i];
+    }
+    if (wg && s_nwbatch && !submit_pending()) return VK_NULL_HANDLE;
+    if (!cmd_batch_begin(0)) return VK_NULL_HANDLE;
+    to_layout(s_cmd, s_wide_img, VK_IMAGE_ASPECT_COLOR_BIT, &s_wide_layout,
+              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    const int32_t dw = (int32_t)(d * sc), cw = (int32_t)(DRAW_W * sc);
+    if (wg) {
+        to_layout(s_cmd, wg->t.img, VK_IMAGE_ASPECT_COLOR_BIT, &wg->t.layout,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        wide_blit(wg->t.img, 0, dw, 0, (int32_t)h);
+        wide_blit(wg->t.img, dw, 2 * dw, dw + cw, (int32_t)h);
+    } else {
+        /* The centre is blitted after the clear: order the two writes. */
+        VkClearColorValue black = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        vkCmdClearColorImage(s_cmd, s_wide_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rng);
+        VkImageMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        mb.oldLayout = mb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        mb.image = s_wide_img;
+        mb.subresourceRange = rng;
+        vkCmdPipelineBarrier(s_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &mb);
+        s_cnt_wide_black++;
+    }
+    wide_blit(present_image(t), 0, cw, dw, (int32_t)h);
+    to_layout(s_cmd, s_wide_img, VK_IMAGE_ASPECT_COLOR_BIT, &s_wide_layout,
+              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    if (!cmd_batch_record(SR_PERF_GE_TARGET_READBACK_TRANSITION) || !cmd_batch_flush())
+        return VK_NULL_HANDLE;
+    s_cnt_wide_present++;
+    *out_w = (int)w;
+    *out_h = (int)h;
+    return s_wide_img;
+}
+
+#ifdef SR_GPU_COHERENCE_SELFTEST
+/* The Fill picture gegpu_present would show for fbaddr, at guest resolution (the top-left
+ * device pixel of each guest pixel), (480 + 2D) x 272 RGBA8 words; 0 when Fill is off or no
+ * picture was made. Read in two row halves so the staging buffer always holds them. */
+static int gegpu_wide_present_read(uint32_t fbaddr, int fmt, uint32_t stride, uint32_t *rgba, int *cols) {
+    if (!s_ready || !rgba || !is_vram(fbaddr)) return 0;
+    ge_wide_note_display(fbaddr);
+    Target *t = target_color_acquire(vram_off(fbaddr), stride ? stride : 512u, (uint32_t)fmt, 1);
+    if (!t || !t->gpu_valid || !target_prepare_present(t)) return 0;
+    int w = 0, h = 0;
+    if (!wide_compose(t, fbaddr, &w, &h)) return 0;
+    const int sc = present_scale(t);
+    const uint32_t gw = (uint32_t)(w / sc);
+    for (uint32_t y0 = 0; y0 < FB_H; y0 += FB_H / 2) {
+        if (!cmd_begin()) return 0;
+        VkBufferImageCopy c[FB_H / 2];
+        memset(c, 0, sizeof c);
+        for (uint32_t i = 0; i < FB_H / 2; i++) {
+            c[i].bufferOffset = (VkDeviceSize)i * (uint32_t)w * 4u;
+            c[i].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            c[i].imageSubresource.layerCount = 1;
+            c[i].imageOffset.y = (int32_t)((y0 + i) * (uint32_t)sc);
+            c[i].imageExtent.width = (uint32_t)w;
+            c[i].imageExtent.height = 1;
+            c[i].imageExtent.depth = 1;
+        }
+        vkCmdCopyImageToBuffer(s_cmd, s_wide_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_xfer,
+                               FB_H / 2, c);
+        if (!cmd_submit_wait(SR_PERF_GE_TARGET_READBACK_TRANSITION)) return 0;
+        const uint32_t *src = (const uint32_t *)s_xfer_map;
+        for (uint32_t i = 0; i < FB_H / 2; i++)
+            for (uint32_t x = 0; x < gw; x++)
+                rgba[(y0 + i) * gw + x] = src[i * (uint32_t)w + x * (uint32_t)sc];
+    }
+    *cols = (int)gw;
+    return 1;
+}
+#endif
+
 int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     {
         static int dbg = -1;
@@ -6202,6 +6353,8 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     }
     if (!s_ready) return GEGPU_PRESENT_NOT_RESIDENT;
     readback_poll();
+    /* Fill keeps a canvas for each of the last two display buffers (no effect while it is off). */
+    ge_wide_note_display(fbaddr);
     /* Display buffers in main RAM (movie frames, CPU-composed screens) are never
      * GPU-resident; folding them into the VRAM window could alias a real target. */
     if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return GEGPU_PRESENT_NOT_RESIDENT; }
@@ -6227,7 +6380,12 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         ace_hud_present((int)(t - s_tgts), shown, t->dep ? t->dep->img : VK_NULL_HANDLE,
                         t->dep ? t->dep->layout : VK_IMAGE_LAYOUT_UNDEFINED, (int)SCL_W, (int)SCL_H,
                         t->dep ? t->dep->hud_zgen : 0u);
-    int pr = sdl3vk_present_image_ex((void *)shown, DRAW_W * present_scale(t), FB_H * present_scale(t));
+    int show_w = DRAW_W * present_scale(t), show_h = FB_H * present_scale(t);
+    VkImage wide = wide_compose(t, fbaddr, &show_w, &show_h);
+    int pr = sdl3vk_present_image_ex((void *)(wide ? wide : shown), show_w, show_h);
+    /* The frame was shown: its next draw begins a new frame, which clears its canvas first.
+     * Presenting it again before then keeps its wings. */
+    if (pr == GEGPU_PRESENT_SHOWN) ge_wide_shown(fbaddr);
     /* Only SDL's -1 is remapped: it is a present that failed after the target was prepared, so
      * the target's newest pixels may exist only in its image. SDL's 0 (user close) and 1 (shown)
      * are GEGPU_PRESENT_WINDOW_CLOSED and GEGPU_PRESENT_SHOWN and pass through unchanged. */
@@ -6741,6 +6899,11 @@ void gegpu_shutdown(void) {
     s_ready = 0;
 
     for (int i = 0; i < MAX_WING; i++) wing_release(&s_wings[i]);
+    if (s_cnt_wide_present)
+        fprintf(stderr, "gegpu: Fill presented %lu pictures, %lu of them with black wings\n",
+                s_cnt_wide_present, s_cnt_wide_black);
+    s_cnt_wide_present = s_cnt_wide_black = 0;
+    wide_image_free(0);
     for (int i = 0; i < MAX_TGT; i++) target_destroy(&s_tgts[i]);
     for (int i = 0; i < MAX_DEP; i++) {
         DepthEnt *d = &s_deps[i];

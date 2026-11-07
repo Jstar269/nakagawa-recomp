@@ -125,8 +125,14 @@ void scr_input_guide_box(NkUi *ui, NkUiId base, const PlayerUiInputGuide *guide,
 /* Opens the shared frame and the dialog card; returns the card's inner width,
    or 0 when nothing was opened (then nothing must be closed). */
 float scr_flow_begin(NkUi *ui, float width, float height, float card_width) {
+    return scr_flow_begin_with_scroll(ui, width, height, card_width, false);
+}
+
+float scr_flow_begin_with_scroll(NkUi *ui, float width, float height, float card_width,
+                                 bool scroll_at_design_size) {
     NkUiLayout layout;
     float card;
+    bool scroll;
     (void)nk_ui_waves_element(ui, FLOW_ID_WAVES, (NkUiRect){0.0f, 0.0f, width, height}, 0u);
     layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_grow(), 0.0f);
     if (!nk_ui_begin_container(ui, FLOW_ID_ROOT, &layout, NULL)) {
@@ -146,12 +152,13 @@ float scr_flow_begin(NkUi *ui, float width, float height, float card_width) {
     card = width - 2.0f * NK_UI_GUTTER_NARROW;
     if (card > card_width) card = card_width;
     /* A card taller than the room between the bars scrolls there instead of
-       covering them (page_scrolls). */
-    if (!nk_ui_dialog_begin_scroll(ui, FLOW_ID_CARD, card,
-                                   page_scrolls(ui)
-                                       ? height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
-                                             2.0f * NK_UI_SPACE_4
-                                       : 0.0f)) {
+       covering them; Settings > Enhanced can request scrolling at the design size. */
+    scroll = page_scrolls(ui) || scroll_at_design_size;
+    if (!nk_ui_dialog_begin_scroll(
+            ui, FLOW_ID_CARD, card,
+            scroll ? height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
+                         2.0f * NK_UI_SPACE_4
+                   : 0.0f)) {
         nk_ui_end_container(ui);
         nk_ui_end_container(ui);
         return 0.0f;
