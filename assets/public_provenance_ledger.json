@@ -12161,6 +12161,17 @@
       }
     },
     {
+      "path": "tests/native/vram_view_identity_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "vram-view-identity-selftest-314",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tests/native/watchpoints_file_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
