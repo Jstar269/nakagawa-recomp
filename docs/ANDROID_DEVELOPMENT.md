@@ -66,6 +66,12 @@ device tests; a release build keeps that activity private.
    The APK is `android/app/build/outputs/apk/debug/app-debug.apk`. `-Pnk.abis=arm64-v8a` builds
    one ABI only. Without `nk.titles` the APK carries the launcher alone.
 
+Hosted CI's Android launcher build job builds that launcher-only APK for arm64-v8a from a
+clean checkout, with the versions listed under [Prerequisites](#prerequisites), on every change
+that runs the native gates ([`CI.md`](CI.md#android-launcher-build)). It builds and packages;
+it does not run the APK. It keeps the APK for 14 days as the artifact
+`nakagawa-android-arm64-debug`, for [testing on a phone](#test-on-a-phone).
+
 ## Run in the emulator
 
 Create an x86_64 Google APIs AVD (API 37.2 was used) and start it headless:
@@ -96,10 +102,85 @@ tags `nakagawa-title` and `nakagawa`.
 image runs through its ARM translation layer: a functional check of the arm64 build, not a
 measurement of a real device.
 
+## Test on a phone
+
+A physical arm64 phone (Android 10 or later) can run the debug APK. Two routes:
+
+| Route | Needs | Gives |
+| --- | --- | --- |
+| A. Install the CI build on the phone | A GitHub sign-in on the phone | The launcher only |
+| B. Install from the PC with `adb` | A USB cable, and the PC build above for the showcase demos | The launcher, the showcase demos, and a log to attach |
+
+The debug APK is signed with a throwaway key, a different one for every build. To install a
+newer APK from another build, uninstall the old one first. Uninstalling deletes the app's
+`Nakagawa/` folder, which holds nothing yet that you would miss.
+
+### Route A: install the CI build, no PC
+
+1. On the phone, open the repository's **Actions** tab, workflow **CI**, and the latest run on
+   `main` (or on the pull request you are testing). On the run's summary page, under
+   **Artifacts**, download `nakagawa-android-arm64-debug`. It downloads as a `.zip`.
+2. Open the `.zip` in the **Files** app and extract it. You get `app-debug.apk`.
+3. Tap `app-debug.apk`. The first time, Android asks you to allow installs from Files: follow
+   **Settings**, turn on **Allow from this source** (under **Apps** > **Special app access** >
+   **Install unknown apps**), then go back and install. If Play Protect warns about an unknown
+   developer, choose **More details** > **Install anyway**.
+4. Open **Nakagawa** from the app drawer.
+
+This build has no titles in it, and the launcher does not list bundled titles yet. It tests the
+launcher itself, and a log needs route B.
+
+### Route B: install from the PC with adb
+
+1. On the phone, turn on **Developer options**: **Settings** > **About phone**, tap **Build
+   number** seven times. Then, in **Settings** > **System** > **Developer options**, turn on
+   **USB debugging**.
+2. Connect the phone by USB and accept the debugging prompt on the phone. `adb devices` lists it
+   as `device`.
+3. Build the APK with the showcase demos bundled ([Build](#build), with `-Pnk.abis=arm64-v8a`),
+   or use the CI artifact from route A for the launcher alone. Install it:
+
+   ```bash
+   adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+   ```
+
+4. Start the launcher from the app drawer. Start a showcase demo with the `adb shell am start`
+   command under [Run in the emulator](#run-in-the-emulator). On a phone, `<app files>` is the
+   same `/data/user/0/io.github.jstar269.nakagawa/files`.
+
+### What to try
+
+- **Launcher start.** It opens, draws the library screen and responds to touch or a gamepad.
+- **A showcase demo** (route B). It starts in landscape and animates, with sound.
+- **Rotate** the phone while the demo runs.
+- **Fold and unfold** while the demo runs. The screen size changes, so the presenter has to
+  recreate its swapchain.
+- **Background and return.** Press Home while the demo runs, wait ten seconds, and switch back.
+  In the emulator the demo kept running unseen and did not draw again after returning (the
+  Lifecycle row below). Report what the phone does.
+- The same rotate, fold and background steps on the launcher.
+
+### What to report
+
+For each item: what you did, what you saw (a short screen recording helps), and whether it
+recovered. Add the phone model, its Android version (**Settings** > **About phone**), and which
+build you installed (the CI run's link, or the commit you built).
+
+With route B, capture the app's own log. Clear the log first, run the steps, then save it:
+
+```bash
+adb logcat -c
+adb logcat -d -v time -s nakagawa nakagawa-title SDL > nakagawa-android.log
+```
+
+The `-s` filter keeps only the launcher's, the title runtime's and SDL's lines, so other apps'
+lines and the rest of the system log stay out. Do not attach a full `adb logcat` or a bug report
+from Developer options: those carry other apps' data and account details.
+
 ## Storage
 
-The player's data, settings, caches, logs and saves are in `nakagawa/` in the app's private
-files folder (`NK_ANDROID_DATA_DIR`, set by the activities). The files the APK bundles (`assets/`
+The player's data, settings, caches, logs and saves are in `Nakagawa/` in the app's private
+files folder (`NK_ANDROID_DATA_DIR`, set by the activities), the folder name every host uses. The files the APK bundles (`assets/`
 with the UI fonts, `titles/` with the bundled titles) are unpacked into the files folder itself
 on the first start after an install or update, and it is the working directory: SDL resolves a
 relative path against that folder, so `SDL_GetBasePath()` (`./` on Android) finds them.

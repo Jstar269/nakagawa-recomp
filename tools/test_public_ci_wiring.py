@@ -345,7 +345,7 @@ class PublicCiWiringTests(unittest.TestCase):
 
         required_start = ci.index("  ci_required:\n")
         required_job = ci[required_start:]
-        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, windows_runtime]", required_job)
+        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]", required_job)
         self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required_job)
         self.assertIn("NATIVE_RESULT: ${{ needs.native_tools.result }}", required_job)
         self.assertIn("RUN_NATIVE: ${{ needs.classify.outputs.run_native }}", required_job)
@@ -1020,6 +1020,96 @@ class NativeToolsPartitionTests(unittest.TestCase):
         self.assertIn("NATIVE_RESULT: ${{ needs.native_tools.result }}", required)
 
 
+class AndroidBuildWiringTests(unittest.TestCase):
+    """#360: hosted CI builds the Android launcher APK with the toolchain the Gradle files pin."""
+
+    ci: str
+    job: str
+    gradle: str
+    wrapper: str
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        cls.job = "\n".join(_ci_job_blocks()["android_build"])
+        cls.gradle = (ROOT / "android" / "app" / "build.gradle.kts").read_text(encoding="utf-8")
+        cls.wrapper = (
+            ROOT / "android" / "gradle" / "wrapper" / "gradle-wrapper.properties"
+        ).read_text(encoding="utf-8")
+
+    def _pinned(self) -> dict[str, str]:
+        compile_sdk = re.search(r"release\((\d+)\)\s*\{\s*minorApiLevel\s*=\s*(\d+)\s*\}", self.gradle)
+        ndk = re.search(r'ndkVersion\s*=\s*"([^"]+)"', self.gradle)
+        build_tools = re.search(r'buildToolsVersion\s*=\s*"([^"]+)"', self.gradle)
+        cmake = re.search(r'cmake\s*\{\s*path\s*=\s*file\("CMakeLists.txt"\)\s*version\s*=\s*"([^"]+)"',
+                          self.gradle)
+        gradle = re.search(r"gradle-([0-9.]+)-bin\.zip", self.wrapper)
+        for name, match in (("compileSdk", compile_sdk), ("ndkVersion", ndk),
+                            ("buildToolsVersion", build_tools), ("cmake version", cmake),
+                            ("Gradle distribution", gradle)):
+            self.assertIsNotNone(match, f"android Gradle files no longer declare {name}")
+        return {
+            "platform": f"android-{_matched(compile_sdk).group(1)}.{_matched(compile_sdk).group(2)}",
+            "ndk": _matched(ndk).group(1),
+            "build_tools": _matched(build_tools).group(1),
+            "cmake": _matched(cmake).group(1),
+            "gradle": _matched(gradle).group(1),
+        }
+
+    def test_job_installs_exactly_the_pinned_toolchain(self) -> None:
+        pinned = self._pinned()
+        self.assertIn(f'"platforms;{pinned["platform"]}"', self.job)
+        self.assertIn(f'"build-tools;{pinned["build_tools"]}"', self.job)
+        self.assertIn(f'"ndk;{pinned["ndk"]}"', self.job)
+        self.assertIn(f'"cmake;{pinned["cmake"]}"', self.job)
+        self.assertIn(f'test -d "$ANDROID_HOME/ndk/{pinned["ndk"]}"', self.job)
+        # Gradle comes from the wrapper properties and is checked against their digest.
+        self.assertIn("distributionSha256Sum", self.wrapper)
+        self.assertIn("properties=android/gradle/wrapper/gradle-wrapper.properties", self.job)
+        self.assertIn("sha256sum --check --strict", self.job)
+
+    def test_docs_name_the_same_toolchain(self) -> None:
+        pinned = self._pinned()
+        docs = (ROOT / "docs" / "ANDROID_DEVELOPMENT.md").read_text(encoding="utf-8")
+        for text in (f"`{pinned['platform']}`", f"build-tools {pinned['build_tools']}",
+                     f"CMake {pinned['cmake']}", f"NDK {pinned['ndk']}",
+                     f"Gradle {pinned['gradle']}"):
+            self.assertIn(text, docs)
+        self.assertIn("Android launcher build", docs)
+
+    def test_job_builds_and_checks_the_arm64_launcher(self) -> None:
+        self.assertIn("gradle --no-daemon -p android assembleDebug -Pnk.abis=arm64-v8a", self.job)
+        for library in ("libmain.so", "libSDL3.so", "libSDL3_ttf.so"):
+            self.assertIn(library, self.job)
+        self.assertIn("lib/arm64-v8a/$library", self.job)
+        self.assertIn("persist-credentials: false", self.job)
+        self.assertIn("contents: read", self.job)
+        self.assertIn("needs.classify.outputs.run_native == 'true'", self.job)
+
+    def test_job_keeps_the_apk_for_a_phone(self) -> None:
+        """The debug APK is kept as an artifact, so it can be installed on a phone without a PC
+        build (docs/ANDROID_DEVELOPMENT.md, "Test on a phone")."""
+        step = _ci_step(_ci_job_blocks()["android_build"],
+                        "Keep the debug APK for installing on a phone")
+        self.assertIsNotNone(step, "android_build must upload the debug APK")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertRegex(text, r"uses: actions/upload-artifact@[0-9a-f]{40} # v\d")
+        self.assertIn("name: nakagawa-android-arm64-debug", text)
+        self.assertIn("path: android/app/build/outputs/apk/debug/app-debug.apk", text)
+        self.assertIn("if-no-files-found: error", text)
+        docs = (ROOT / "docs" / "ANDROID_DEVELOPMENT.md").read_text(encoding="utf-8")
+        self.assertIn("## Test on a phone", docs)
+        self.assertIn("`nakagawa-android-arm64-debug`", docs)
+
+    def test_ci_required_reads_the_android_build(self) -> None:
+        required_job = "\n".join(_ci_job_blocks()["ci_required"])
+        self.assertRegex(required_job, r"needs: \[[^\]]*\bandroid_build\b[^\]]*\]")
+        self.assertIn("ANDROID_RESULT: ${{ needs.android_build.result }}", required_job)
+        required = (ROOT / "tools" / "ci_required.py").read_text(encoding="utf-8")
+        self.assertIn('("android-build", "ANDROID_RESULT", "RUN_NATIVE")', required)
+
+
 class WindowsCompilerCacheTests(unittest.TestCase):
     """#735 item 2: Windows compiles go through a compiler cache that only main writes.
 
@@ -1357,7 +1447,7 @@ class VfpuFuzzShardTests(unittest.TestCase):
 
     def test_ci_required_aggregates_every_windows_part(self) -> None:
         required = "\n".join(_ci_job_blocks()["ci_required"])
-        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, windows_runtime]", required)
+        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]", required)
         self.assertIn("WINDOWS_RESULT: ${{ needs.windows_runtime.result }}", required)
         self.assertIn("RUN_WINDOWS: ${{ needs.classify.outputs.run_windows }}", required)
 
@@ -1711,7 +1801,7 @@ class PublicExportJobTests(unittest.TestCase):
 
     def test_ci_required_still_requires_hygiene_and_export(self) -> None:
         required = "\n".join(self.blocks["ci_required"])
-        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, windows_runtime]", required)
+        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]", required)
         self.assertIn("HYGIENE_RESULT: ${{ needs.hygiene.result }}", required)
         self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required)
 
