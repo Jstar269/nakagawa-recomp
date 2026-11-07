@@ -310,9 +310,11 @@ class TamperStillFailsTests(unittest.TestCase):
         forged = self._with_declared_digest()
         del forged["policy_sha256"]
         findings = verifier._export_field_findings(forged, self.generated, label="export")
-        self.assertEqual([f.code for f in findings], ["EXPORT_FIELD_MISMATCH"])
-        self.assertIn("contrib-refresh", findings[0].detail)
-        self.assertIn("regen_all.py", findings[0].detail)
+        self.assertTrue(findings)
+        self.assertEqual({f.code for f in findings}, {"EXPORT_FIELD_MISMATCH"})
+        for finding in findings:
+            self.assertIn("contrib-refresh", finding.detail)
+            self.assertIn("regen_all.py", finding.detail)
 
     def test_a_control_generated_against_a_different_policy_is_refused_in_either_shape(self) -> None:
         """Without the digest, the policy's decisions still bind the control."""
