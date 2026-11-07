@@ -146,16 +146,15 @@ approves the new bytes, or re-admits a file that has not landed yet.
 | Check | What it verifies | If it fails |
 | --- | --- | --- |
 | Classify change | Which areas your change touches, so only relevant jobs run | Rarely fails; ask a maintainer |
-| Hygiene and security | pre-commit hooks: Ruff, whitespace and encoding, publication safety, secret scanning | Run `python -m pre_commit run --files <your files>` locally |
-| Markdown validation | markdownlint on changed Markdown | Run `npx --yes markdownlint-cli2@0.24.0 <file>` |
-| Python tooling gates (0–5) | The `tools/` unit tests, split into six shards | Run the failing test module with `python -m unittest tools.<module>` |
+| Hygiene and security | pre-commit hooks: Ruff, whitespace and encoding, publication safety, secret scanning; then, as later steps of the same job, markdownlint when Markdown changed and, on pushes to `main`, manual runs and merge-queue groups, the main smoke | Run `python -m pre_commit run --files <your files>` locally; for the Markdown step, `npx --yes markdownlint-cli2@0.24.0 <file>` |
+| Python tooling gates (0–2) | The `tools/` unit tests, split into three shards | Run the failing test module with `python -m unittest tools.<module>` |
 | Native and translation gates | Strict C builds (`-std=c99`/`c11 -Werror`) and runtime selftests on Linux | Compile the changed C file with the flags shown in the log |
-| Windows runtime compile gate | The runtime builds with MSYS2 UCRT64 on Windows | Check Windows-only APIs and headers |
+| Windows runtime compile gate (smoke-routes, ladder-fuzz, selftests) | The runtime builds with MSYS2 UCRT64 on Windows; each of the three jobs runs its parts one after another | Check Windows-only APIs and headers; the failing step names the part |
 | Trusted provenance attestation | Your change against the private trusted ledger | Provenance mismatches are handled by a maintainer |
 | dependency-review, OSV, CodeQL | Dependency and static security scans | Read the finding; ask if unsure |
 | CodeQL (waiting) | CodeQL runs when a maintainer batches or dispatches the pull request | Nothing: a waiting CodeQL check is not a failure |
-| Public export candidate audit | The publication gates and the public-safe export candidate, which must fail closed without the trusted ledger and leave nothing at the requested path | Read the failing step in the job log. A provenance finding in the publication audit (a missing or unresolved claim) stops the job before the candidate audit, so the step then says it failed for a reason other than the named fail-closed candidate audit; fix that finding first |
-| Main integration smoke | The compact import and publication smoke (`tools/import_audit_gate.py`) and the provenance record gap check. It runs on pushes to `main`, manual runs and merge-queue groups, and is skipped on pull requests | Run `python tools/import_audit_gate.py` and `python tools/provenance_record_gap.py --check` |
+| Public export audit and profile-zero fixture | The publication gates and the public-safe export candidate, which must fail closed without the trusted ledger and leave nothing at the requested path; then, when the Python or Windows gates run, the profile-zero fixture build from source, checked against its digests | Read the failing step in the job log. A provenance finding in the publication audit (a missing or unresolved claim) stops the job before the candidate audit, so the step then says it failed for a reason other than the named fail-closed candidate audit; fix that finding first |
+| Main smoke steps of Hygiene and security | The compact import and publication smoke (`tools/import_audit_gate.py`) and the provenance record gap check. They run on pushes to `main`, manual runs and merge-queue groups, and are skipped on pull requests | Run `python tools/import_audit_gate.py` and `python tools/provenance_record_gap.py --check` |
 | CI required | The aggregate of the required jobs above | Fix the failing job it names |
 
 Kilo Code Review is an advisory AI review and never blocks a merge.

@@ -159,6 +159,7 @@ PUBLIC_TARGETS := \
 	gpu-texscale-selftest \
 	gpu-texscale-mutant \
 	ge-replay \
+	ge-first-bad-draw-selftest \
 	run \
 	run_elf \
 	vfpu_fuzz \
@@ -336,6 +337,7 @@ HELP_DESCRIPTION_tex-scale-gate-mutant := prove the texture scaling selftest kil
 HELP_DESCRIPTION_gpu-texscale-selftest := run texture scaling and the smart 2D filter on a real Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_gpu-texscale-mutant := prove the texture scaling selftest kills a cache that binds a stale scaled copy
 HELP_DESCRIPTION_ge-replay := run the graphics-engine replay selftest
+HELP_DESCRIPTION_ge-first-bad-draw-selftest := prove ge_replay --first-bad-draw finds the draw an executed Vulkan mutant changes (SKIPs without Vulkan)
 HELP_DESCRIPTION_run := build and launch the current title runtime
 HELP_DESCRIPTION_run_elf := build the reference interpreter runner
 HELP_DESCRIPTION_vfpu_fuzz := build and run the VFPU differential fuzzer
