@@ -289,6 +289,38 @@ Then sign that checksum file on the offline signing machine, as [`RELEASE_SIGNIN
 
 The source archive step writes `nakagawa-recomp-<version>-prerequisite-sources.zip` beside the ZIP, outside the stage. It downloads each pinned source file into the same cache, or reuses a cached copy, checks its exact size and SHA-256, stores it unchanged under one top-level folder with `SOURCES.txt`, and verifies the archive again, contents included. It prints `source_count`, `source_bytes`, `archive_bytes` and `archive_sha256`: record the archive size in the release notes next to the ZIP figures, and attach the archive and its `.sha256` to the same release as the ZIP. `python -m tools.nk_core.prereq_fetcher --manifest assets/prereq_manifest.json --verify-source-archive <archive>` repeats the check on a downloaded copy.
 
+### Build the Windows installer
+
+The installer is a per-user `Setup.exe` that carries the ZIP's exact files ([#2208](https://github.com/Jstar269/nakagawa-recomp/issues/2208)).
+It needs no administrator, installs to `%LOCALAPPDATA%\Programs\Nakagawa Recomp`, adds a Start-menu entry, and lists
+itself under Apps & features. It is built from the unpacked, verified package, not from the repository, so it holds
+what the attested ZIP holds. Build it after the ZIP above, with the Inno Setup version that
+[`assets/upstream/innosetup.lock.json`](../assets/upstream/innosetup.lock.json) pins (6.7.3). Install that version for
+your user only and the build finds it in `%LOCALAPPDATA%\Programs\Inno Setup 6` (or set `NK_INNO_SETUP_DIR`); the
+build refuses a compiler whose files do not match the lock's SHA-256 values.
+
+```powershell
+$SetupExe = Join-Path $ArtifactRoot "nakagawa-recomp-$Version-windows-x64-setup.exe"
+$Epoch = git show -s --format=%ct $CandidateSha
+python tools/build_installer.py --package-dir $Stage --version $Version --out-dir $ArtifactRoot --source-date-epoch $Epoch
+if ($LASTEXITCODE -ne 0) { throw 'Building the installer failed.' }
+python tools/verify_installer.py --installer $SetupExe --package-dir $Stage
+if ($LASTEXITCODE -ne 0) { throw 'The installer check failed.' }
+```
+
+The build writes `nakagawa-recomp-<version>-windows-x64-setup.exe.sha256` beside the installer. Two builds of the
+same package with the same `SOURCE_DATE_EPOCH` give the same bytes, from any folder. The check installs into a
+temporary folder, compares every file with `SHA256SUMS.txt`, reads the shortcut's taskbar identity and the
+HKCU-only uninstall entry back, then uninstalls and checks that your data was not touched. It refuses to run on a PC
+that already has the shortcut it tests, so run it on one without, or build a test copy with `/DShortcutName` (see
+`tools/verify_installer.py`).
+
+v0.0.2's installer is not Authenticode-signed, so Windows SmartScreen may warn on first run; say so in the release
+notes. Attach the installer and its `.sha256`; signing the `.sha256` is optional, because the player never
+downloads the installer. A copy that Setup installed updates by running the next release's Setup (the player's
+Settings shows the release page for it). Uninstalling removes the program and keeps your data unless you tick the
+box on the uninstall page.
+
 ### Check that the package is reproducible
 
 Two builds of one package must give the same bytes: the same commit, the same attested bundle, the same
@@ -403,7 +435,12 @@ name, and refuses a file whose checksum changed after it first recorded it. The 
 
 - **One player archive per OS and architecture**, with the platform in its name:
   `nakagawa-recomp-<version>-windows-x64.zip`. There is no second archive for the same platform (no
-  installer, no "portable" variant, no renamed copy). A new platform is a new archive such as
+  "portable" variant, no renamed copy). The one exception is the Windows installer below.
+- **The installer, optional, beside the ZIP and never alone**:
+  `nakagawa-recomp-<version>-windows-x64-setup.exe` with its `.sha256` (and optional `.minisig`). It is not a name
+  a filter drops, so the contract relies on how a launcher ranks files: Quiver Launcher ranks a ZIP ahead of an
+  `.exe` (its `FORMATS` list) and keeps only the best rank, so the ZIP stays the one candidate; the installer is for
+  people on the release page. An installer without the same version's ZIP fails the check. A new platform is a new archive such as
   `...-linux-x64.zip`, added to this list when it exists.
 - **Every other file carries a word a name filter drops**: `.sha256` (`...zip.sha256`), `.minisig`
   (`...zip.sha256.minisig`, a signature of the checksum file, optional), and `source`
@@ -416,12 +453,14 @@ name, and refuses a file whose checksum changed after it first recorded it. The 
 `--check-assets` takes either one folder that holds only the files to publish, or the files themselves. It
 checks the names and exits 1 with a named problem (`ASSET_PLATFORM_DUPLICATE`, `ASSET_SECOND_ARCHIVE`,
 `ASSET_PLAYER_MISSING`, `ASSET_SOURCE_MISSING`, `ASSET_SOURCE_DUPLICATE`, `ASSET_CHECKSUM_MISSING`,
-`ASSET_ORPHAN`, `ASSET_VERSION_MIXED`, `ASSET_FILTER_MISMATCH`, `ASSET_NAME_UNKNOWN`). The recipe's
+`ASSET_ORPHAN`, `ASSET_INSTALLER_WITHOUT_ZIP`, `ASSET_VERSION_MIXED`, `ASSET_FILTER_MISMATCH`, `ASSET_NAME_UNKNOWN`). The recipe's
 `$ArtifactRoot` also holds the staged folder, so name the files:
 
 ```powershell
 python tools/stage_install.py --check-assets $Zip "$Zip.sha256" $SourceZip "$SourceZip.sha256"
 ```
+
+With the installer, add `$SetupExe` and `"$SetupExe.sha256"` to that list.
 
 Run it before the signature exists, and again with `"$Zip.sha256.minisig"` added, before anything is
 attached to a release. `tools/test_stage_install.py` keeps the rule from drifting.

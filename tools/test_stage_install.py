@@ -560,6 +560,8 @@ _V = "0.0.2"
 _PLAYER = f"nakagawa-recomp-{_V}-windows-x64.zip"
 _SOURCES = f"nakagawa-recomp-{_V}-prerequisite-sources.zip"
 _GOOD_ASSETS = [_PLAYER, f"{_PLAYER}.sha256", f"{_PLAYER}.sha256.minisig", _SOURCES, f"{_SOURCES}.sha256"]
+_SETUP = f"nakagawa-recomp-{_V}-windows-x64-setup.exe"
+_SETUP_ASSETS = [_SETUP, f"{_SETUP}.sha256"]
 
 
 class ReleaseAssetContractTests(unittest.TestCase):
@@ -578,6 +580,29 @@ class ReleaseAssetContractTests(unittest.TestCase):
         for template in ("nakagawa-recomp-$Version-windows-x64.zip", "nakagawa-recomp-$Version-prerequisite-sources.zip"):
             self.assertIn(template, recipe)
         self.assertIn("--check-assets", recipe)
+        self.assertIn("nakagawa-recomp-$Version-windows-x64-setup.exe", recipe)
+
+    def test_the_installer_is_allowed_only_beside_the_zip(self):
+        # #2208: a launcher ranks a ZIP ahead of an .exe, so the ZIP stays the one candidate.
+        self.assertEqual(stage_install.check_release_assets(_GOOD_ASSETS + _SETUP_ASSETS), [])
+        self.assertEqual(stage_install.check_release_assets(_GOOD_ASSETS + _SETUP_ASSETS + [f"{_SETUP}.sha256.minisig"]),
+                         [])
+        self.assertEqual(self._codes(_GOOD_ASSETS + [_SETUP]), ["ASSET_CHECKSUM_MISSING"])
+        self.assertEqual(self._codes(_GOOD_ASSETS + [f"{_SETUP}.sha256"]), ["ASSET_ORPHAN"])
+        self.assertEqual(self._codes(_GOOD_ASSETS + _SETUP_ASSETS + [f"{_SETUP}.sha256.minisig"][:0]
+                                     + ["nakagawa-recomp-0.0.2-windows-x64-setup.exe.bak"]), ["ASSET_NAME_UNKNOWN"])
+        # Without the ZIP the installer would be the only download, which no launcher or update flow expects.
+        no_zip = [n for n in _GOOD_ASSETS if not n.startswith(_PLAYER)] + _SETUP_ASSETS
+        self.assertEqual(self._codes(no_zip), ["ASSET_INSTALLER_WITHOUT_ZIP", "ASSET_PLAYER_MISSING"])
+        # The installer carries the ZIP's version.
+        other = "nakagawa-recomp-0.0.1-windows-x64-setup.exe"
+        self.assertEqual(self._codes(_GOOD_ASSETS + [other, f"{other}.sha256"]),
+                         ["ASSET_INSTALLER_WITHOUT_ZIP", "ASSET_VERSION_MIXED"])
+        # Only the contract's installer name: a second installer, another platform's or an msi are not listed.
+        self.assertEqual(self._codes(_GOOD_ASSETS + _SETUP_ASSETS + ["nakagawa-recomp-0.0.2-windows-x64-setup.msi"]),
+                         ["ASSET_FILTER_MISMATCH", "ASSET_SECOND_ARCHIVE"])
+        self.assertEqual(self._codes(_GOOD_ASSETS + _SETUP_ASSETS + ["nakagawa-recomp-0.0.2-windows-arm64-setup.exe"]),
+                         ["ASSET_FILTER_MISMATCH", "ASSET_SECOND_ARCHIVE"])
 
     def test_two_archives_for_one_platform_fail(self):
         self.assertEqual(self._codes(_GOOD_ASSETS + ["nakagawa-recomp-0.0.2-windows-x64.zip.bak"]),

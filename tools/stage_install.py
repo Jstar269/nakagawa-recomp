@@ -619,6 +619,8 @@ def write_portable_zip(stage: Path, zip_path: Path, *, source_date_epoch: int,
 _VERSION = r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?"
 _PLAYER_ZIP = re.compile(rf"nakagawa-recomp-({_VERSION})-(windows-x64)\.zip")
 _SOURCE_ZIP = re.compile(rf"nakagawa-recomp-({_VERSION})-prerequisite-sources\.zip")
+# The Windows installer (#2208): a second file for the platform that sits beside the ZIP, never in place of it.
+_SETUP_EXE = re.compile(rf"nakagawa-recomp-({_VERSION})-(windows-x64)-setup\.exe")
 # What a catalogue launcher drops before it ranks archives: checksum, signature, source and
 # debug files. Every released file that is not the player archive carries one of these words.
 _AUXILIARY_TOKENS = ("sha256", "checksum", ".minisig", ".sig", ".asc", "source", "src", "debug", "symbols",
@@ -638,24 +640,34 @@ def check_release_assets(names) -> list[str]:
 
     Exactly one player archive per platform, ``nakagawa-recomp-<version>-<os>-<arch>.zip``, with its
     ``.sha256`` (and optionally that file's ``.minisig``); the prerequisite source archive with its
-    ``.sha256``; one version throughout; and nothing else a launcher's name filter would keep as a
-    second candidate.
+    ``.sha256``; optionally the platform's installer ``nakagawa-recomp-<version>-windows-x64-setup.exe``
+    with its ``.sha256`` (and optionally ``.minisig``), only beside that platform's ZIP; one version
+    throughout; and nothing else a launcher's name filter would keep as a second candidate.
+
+    The installer is not a name a filter drops. A launcher ranks the archive formats it can install and
+    puts a ZIP ahead of an ``.exe`` (Quiver Launcher's ``FORMATS``: ``.zip`` first, ``.exe`` near the
+    end), so the ZIP stays the one candidate and the installer is for people on the release page.
     """
     names = sorted(set(names))
     problems: list[str] = []
     players: dict[str, list[str]] = {}
+    setups: list[re.Match[str]] = []
     versions: set[str] = set()
     for name in names:
         player = _PLAYER_ZIP.fullmatch(name)
         source = _SOURCE_ZIP.fullmatch(name)
+        setup = _SETUP_EXE.fullmatch(name)
         if player:
             players.setdefault(player[2], []).append(name)
-        matched = player or source
+        if setup:
+            setups.append(setup)
+        matched = player or source or setup
         if matched:
             versions.add(matched[1])
             continue
-        checked = re.fullmatch(r"(nakagawa-recomp-.+\.zip)\.sha256(\.minisig)?", name)
-        if checked and (_PLAYER_ZIP.fullmatch(checked[1]) or _SOURCE_ZIP.fullmatch(checked[1])):
+        checked = re.fullmatch(r"(nakagawa-recomp-.+\.(?:zip|exe))\.sha256(\.minisig)?", name)
+        if checked and (_PLAYER_ZIP.fullmatch(checked[1]) or _SOURCE_ZIP.fullmatch(checked[1])
+                        or _SETUP_EXE.fullmatch(checked[1])):
             # A signature signs the checksum file, so it needs the checksum and the archive both.
             needed = [checked[1]] + ([f"{checked[1]}.sha256"] if checked[2] else [])
             problems += [f"ASSET_ORPHAN: {name} has no {other}" for other in needed if other not in names]
@@ -672,6 +684,14 @@ def check_release_assets(names) -> list[str]:
         for archive in found:
             if f"{archive}.sha256" not in names:
                 problems.append(f"ASSET_CHECKSUM_MISSING: {archive}.sha256")
+    for setup in setups:
+        installer = setup.group(0)
+        if not any(_PLAYER_ZIP.fullmatch(archive) and _PLAYER_ZIP.fullmatch(archive)[1] == setup[1]
+                   for archive in players.get(setup[2], [])):
+            problems.append(f"ASSET_INSTALLER_WITHOUT_ZIP: {installer} needs {setup[2]} ZIP of the same version "
+                            "beside it; the installer is never the only download")
+        if f"{installer}.sha256" not in names:
+            problems.append(f"ASSET_CHECKSUM_MISSING: {installer}.sha256")
     sources = [name for name in names if _SOURCE_ZIP.fullmatch(name)]
     if not sources:
         problems.append("ASSET_SOURCE_MISSING: no nakagawa-recomp-<version>-prerequisite-sources.zip; the ZIP "
@@ -681,7 +701,8 @@ def check_release_assets(names) -> list[str]:
     problems += [f"ASSET_CHECKSUM_MISSING: {name}.sha256" for name in sources if f"{name}.sha256" not in names]
     if len(versions) > 1:
         problems.append(f"ASSET_VERSION_MIXED: {', '.join(sorted(versions))}")
-    kept = [name for name in names if not is_auxiliary_asset(name) and name.lower().endswith(_ARCHIVE_SUFFIXES)]
+    kept = [name for name in names if not is_auxiliary_asset(name) and name.lower().endswith(_ARCHIVE_SUFFIXES)
+            and not _SETUP_EXE.fullmatch(name)]
     if sorted(kept) != sorted(n for found in players.values() for n in found):
         problems.append("ASSET_FILTER_MISMATCH: a name filter that drops checksum, signature, source and debug "
                         f"files would leave {kept}, not the player archives")
