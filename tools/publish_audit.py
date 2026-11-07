@@ -52,7 +52,7 @@ def default_policy_path() -> Path:
     return ROOT / "assets" / "public_source_profile.json"
 
 
-#: Generated evidence artifact that must carry the current policy digest.
+#: Generated evidence artifact that must describe the current policy.
 def default_export_path() -> Path:
     return ROOT / "PUBLIC_EXPORT.json"
 
@@ -2012,11 +2012,21 @@ def _default_provenance(
 def _export_staleness_findings(
     policy: Policy, export_path: Path | None, repo_root: Path, document: dict | None = None
 ) -> list[Finding]:
-    """The generated export must carry the *current* policy digest.
+    """The generated export must describe the *current* policy decision.
 
     ``PUBLIC_EXPORT.json`` is generated evidence, not policy. If the policy has
     changed since the export was produced, the export describes a decision nobody
     made and must not be trusted.
+
+    Two committed shapes are accepted.  A control that declares
+    ``policy_sha256`` is held to it exactly as before.  A control may instead
+    omit it: the digest is that of the policy blob itself, recomputed here as
+    ``policy.digest``, and committing it makes every two profile-changing pull
+    requests conflict.  Such a control still carries every field the policy
+    decides -- the profile, its version and both exclusion lists -- and each is
+    compared with the policy below, so a control that a policy change would
+    rewrite is still stale.  The policy bytes themselves are bound to the
+    externally trusted policy by ``POLICY_SOURCE_MISMATCH``.
     """
     resolved = export_path or (repo_root / "PUBLIC_EXPORT.json")
     if document is None:
@@ -2030,18 +2040,33 @@ def _export_staleness_findings(
 
     findings: list[Finding] = []
     recorded = document.get("policy_sha256") or document.get("profile_sha256")
-    if not recorded:
-        findings.append(Finding("POLICY_EXPORT_STALE", str(resolved),
-                                "generated export records no policy digest"))
-    elif recorded != policy.digest:
-        findings.append(Finding(
-            "POLICY_EXPORT_STALE", str(resolved),
-            f"generated export was produced against policy digest {recorded[:16]}... but the current "
-            f"policy digest is {policy.digest[:16]}...; regenerate the export and re-audit"))
-    if document.get("profile") not in (None, policy.name):
-        findings.append(Finding("POLICY_EXPORT_STALE", str(resolved),
-                                f"generated export names profile {document.get('profile')!r}, "
-                                f"policy is {policy.name!r}"))
+    if recorded:
+        if recorded != policy.digest:
+            findings.append(Finding(
+                "POLICY_EXPORT_STALE", str(resolved),
+                f"generated export was produced against policy digest {recorded[:16]}... but the current "
+                f"policy digest is {policy.digest[:16]}...; regenerate the export and re-audit"))
+        if document.get("profile") not in (None, policy.name):
+            findings.append(Finding("POLICY_EXPORT_STALE", str(resolved),
+                                    f"generated export names profile {document.get('profile')!r}, "
+                                    f"policy is {policy.name!r}"))
+        return findings
+    expected = {
+        "profile": policy.name,
+        "policy_version": policy.profile_version,
+        "excluded_globs": sorted(policy.exclude_globs),
+    }
+    for field, value in expected.items():
+        if field not in document:
+            findings.append(Finding(
+                "POLICY_EXPORT_STALE", str(resolved),
+                f"generated export records neither a policy digest nor the policy-decided field {field!r}; "
+                "regenerate the export and re-audit"))
+        elif (sorted(document[field]) if isinstance(document[field], list) else document[field]) != value:
+            findings.append(Finding(
+                "POLICY_EXPORT_STALE", str(resolved),
+                f"generated export field {field!r} differs from the current policy "
+                f"{policy.name!r} (digest {policy.digest[:16]}...); regenerate the export and re-audit"))
     return findings
 
 
@@ -3181,7 +3206,7 @@ def main(argv: list[str] | None = None) -> int:
         "--export",
         type=Path,
         default=None,
-        help="Path to the generated publication export whose policy digest must be current "
+        help="Path to the generated publication export that must describe the current policy "
              "(default: <audit root>/PUBLIC_EXPORT.json)",
     )
     parser.add_argument(
