@@ -21,6 +21,7 @@
 
 #include "nk_iso.h"
 #include "../rt/prx_loader.h"
+#include "nk_shared_helpers.h"
 #ifndef NK_ISO_NO_PLAYER_EXTRAS
 #include "nk_platform.h"
 #endif
@@ -83,25 +84,6 @@ static inline uint32_t read_be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
-static FILE *nk_iso_fopen(const char *path, const char *mode) {
-#if defined(_WIN32) || defined(_WIN64)
-    if (!path || !mode) return NULL;
-    WCHAR wpath[32768];
-    WCHAR wmode[32];
-    /* Strict conversion: invalid UTF-8 must fail rather than open a path in
-       which the bad bytes became U+FFFD. */
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
-                            wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1,
-                            wmode, (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0) {
-        return NULL;
-    }
-    return _wfopen(wpath, wmode);
-#else
-    return fopen(path, mode);
-#endif
-}
-
 static inline int nk_iso_fseek64(FILE *f, int64_t offset, int whence) {
 #if defined(_WIN32) || defined(_WIN64)
     return _fseeki64(f, offset, whence);
@@ -137,7 +119,7 @@ uint64_t nk_iso_reader_file_size(const NkIsoReader *reader) {
 NkIsoReader *nk_iso_reader_open(const char *iso_path) {
     if (!iso_path || !iso_path[0]) return NULL;
 
-    FILE *f = nk_iso_fopen(iso_path, "rb");
+    FILE *f = nk_fopen_utf8(iso_path, "rb");
     if (!f) return NULL;
 
     if (nk_iso_fseek64(f, 0, SEEK_END) != 0) {
@@ -1161,7 +1143,7 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
         return NK_ERROR_FILE_NOT_FOUND;
     }
 
-    FILE *f = nk_iso_fopen(iso_path, "rb");
+    FILE *f = nk_fopen_utf8(iso_path, "rb");
     if (!f) {
         snprintf(out_meta->error_message, sizeof(out_meta->error_message), "Could not open ISO file: %s", iso_path);
         return NK_ERROR_IO;
@@ -1863,7 +1845,7 @@ NkResult nk_iso_classify_executables(const char *iso_path,
 NkResult nk_iso_extract_file(const char *iso_path, const char *disc_rel_path, const char *host_dest_path) {
     if (!iso_path || !disc_rel_path || !host_dest_path) return NK_ERROR_GENERIC;
 
-    FILE *f_iso = nk_iso_fopen(iso_path, "rb");
+    FILE *f_iso = nk_fopen_utf8(iso_path, "rb");
     if (!f_iso) return NK_ERROR_FILE_NOT_FOUND;
 
     nk_fseek64(f_iso, 0, SEEK_END);
@@ -2009,7 +1991,7 @@ NkResult nk_iso_extract_file(const char *iso_path, const char *disc_rel_path, co
     }
 
     /* Extract to host_dest_path */
-    FILE *f_out = nk_iso_fopen(host_dest_path, "wb");
+    FILE *f_out = nk_fopen_utf8(host_dest_path, "wb");
     if (!f_out) {
         fclose(f_iso);
         return NK_ERROR_IO;
@@ -2697,7 +2679,7 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
                 return NK_ERROR_INVALID_ISO;
         }
     }
-    FILE *iso = nk_iso_fopen(iso_path, "rb");
+    FILE *iso = nk_fopen_utf8(iso_path, "rb");
     if (!iso) return NK_ERROR_FILE_NOT_FOUND;
     if (nk_fseek64(iso, 0, SEEK_END) != 0) {
         fclose(iso);

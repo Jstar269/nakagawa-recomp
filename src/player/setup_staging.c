@@ -8,6 +8,7 @@
 
 #include "nk_iso.h"
 #include "nk_platform.h"
+#include "nk_shared_helpers.h"
 #include "nk_xb.h"
 
 #include <stdarg.h>
@@ -206,11 +207,9 @@ static bool has_xb_suffix(const char *path) {
 static bool make_staged_path(const char *root, const char *relative,
                              char *out_path, size_t out_size) {
     if (!root || !root[0] || !relative || !relative[0] || !out_path || out_size == 0) return false;
-    size_t root_len = strlen(root);
-    while (root_len > 0 && (root[root_len - 1] == '/' || root[root_len - 1] == '\\')) root_len--;
-    int written = snprintf(out_path, out_size, "%.*s%c%s", (int)root_len, root,
-                           nk_platform_path_separator(), relative);
-    return written >= 0 && (size_t)written < out_size;
+    return nk_shared_path_join(out_path, out_size, root, relative,
+                               nk_platform_path_separator(), NK_SHARED_PATH_JOIN_ALWAYS,
+                               NK_SHARED_PATH_TRIM_LEFT_SEPARATORS);
 }
 
 static bool staging_root_name_is_safe(const char *staging_root) {
@@ -477,18 +476,6 @@ bool player_stage_discard(const char *staging_root) {
 #endif
 }
 
-static FILE *stage_fopen(const char *path, const char *mode) {
-#if defined(_WIN32) || defined(_WIN64)
-    WCHAR wpath[32768];
-    WCHAR wmode[32];
-    if (!stage_utf8_to_wide(path, wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) ||
-        !stage_utf8_to_wide(mode, wmode, (int)(sizeof(wmode) / sizeof(wmode[0])))) return NULL;
-    return _wfopen(wpath, wmode);
-#else
-    return fopen(path, mode);
-#endif
-}
-
 static bool make_prx_tree_path(const char *root, const char *layout,
                                const char *file_name, bool include_prx_directory,
                                char *out_path, size_t out_size) {
@@ -579,7 +566,7 @@ static bool copy_prx_file(PlayerStageContext *context, const char *source_path,
         return false;
     }
 
-    FILE *source = stage_fopen(source_path, "rb");
+    FILE *source = nk_fopen_utf8(source_path, "rb");
     FILE *destination = nk_platform_fopen_private(destination_path, "wb");
     if (!source || !destination) {
         if (source) fclose(source);
@@ -874,16 +861,12 @@ static bool stage_title_field_valid(const char *value, size_t max_length) {
 
 static bool stage_title_join(char *out, size_t out_size, const char *root,
                              const char *relative) {
-    if (!make_staged_path(root, relative, out, out_size)) return false;
-    size_t root_length = strlen(root);
-    while (root_length > 0 &&
-           (root[root_length - 1] == '/' || root[root_length - 1] == '\\')) {
-        root_length--;
-    }
-    for (char *p = out + root_length + 1u; *p; p++) {
-        if (*p == '/' || *p == '\\') *p = nk_platform_path_separator();
-    }
-    return true;
+    if (!root || !root[0] || !relative || !relative[0] || !out || out_size == 0u) return false;
+    return nk_shared_path_join(out, out_size, root, relative,
+                               nk_platform_path_separator(), NK_SHARED_PATH_JOIN_ALWAYS,
+                               NK_SHARED_PATH_TRIM_LEFT_SEPARATORS |
+                                   NK_SHARED_PATH_NORMALIZE_BOTH_SLASHES |
+                                   NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH);
 }
 
 static bool stage_title_paths(const char *user_data_root, const char *disc_id,
@@ -1112,7 +1095,7 @@ static bool stage_record_matches(const char *tree, const char *identity,
     char record_path[PLAYER_STAGE_PATH_MAX];
     if (!stage_title_join(record_path, sizeof(record_path), tree,
                           PLAYER_STAGE_RECORD_RELATIVE)) return false;
-    FILE *file = stage_fopen(record_path, "rb");
+    FILE *file = nk_fopen_utf8(record_path, "rb");
     if (!file) return false;
     char contents[PLAYER_STAGE_RECORD_MAX_BYTES + 1u];
     size_t length = fread(contents, 1, PLAYER_STAGE_RECORD_MAX_BYTES + 1u, file);

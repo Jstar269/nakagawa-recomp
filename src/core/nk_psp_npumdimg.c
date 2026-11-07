@@ -49,6 +49,7 @@
 #include "nk_psp_builtin_keys.h"
 #include "nk_psp_lzrc.h"
 #include "nk_psp_npumdimg.h"
+#include "nk_platform.h"
 
 #define PBP_HEADER_SIZE 0x28u
 #define SFO_MAX_SIZE (64u * 1024u)
@@ -606,29 +607,15 @@ int nk_npumdimg_check_iso(NkPspCtx *ctx, const NkPsarSource *iso,
 
 /* The package and image live under the caller's per-user data root, which
  * may hold non-ASCII characters the narrow CRT would re-read in the active
- * ANSI code page.  This translation unit is also built into nk_decrypt,
- * which has no platform layer (tools/nk_core/decrypt_tool.py), so the wide
- * conversion is local, as in nk_decrypt_main.c and nk_psp_keystore.c. */
+ * ANSI code page. This translation unit is also built into nk_decrypt, which
+ * has no platform layer (tools/nk_core/decrypt_tool.py). Opens use the shared
+ * nk_fopen_utf8 helper; the local conversion below remains for remove/replace. */
 #if defined(_WIN32) || defined(_WIN64)
 static int npumdimg_wide(const char *path, wchar_t *out, int cap)
 {
     return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, out, cap) > 0;
 }
 #endif
-
-static FILE *npumdimg_fopen(const char *path, const char *mode)
-{
-#if defined(_WIN32) || defined(_WIN64)
-    wchar_t wpath[32768];
-    wchar_t wmode[8];
-    if (path == NULL || mode == NULL) return NULL;
-    if (!npumdimg_wide(path, wpath, 32768) || !npumdimg_wide(mode, wmode, 8)) return NULL;
-    return _wfopen(wpath, wmode);
-#else
-    if (path == NULL || mode == NULL) return NULL;
-    return fopen(path, mode);
-#endif
-}
 
 static void npumdimg_remove(const char *path)
 {
@@ -686,7 +673,7 @@ static int file_read_at(void *user, uint64_t offset, void *buf, size_t len)
 
 static int open_source(NkPspCtx *ctx, const char *path, FILE **f, NkPsarSource *src)
 {
-    *f = npumdimg_fopen(path, "rb");
+    *f = nk_fopen_utf8(path, "rb");
     if (*f == NULL) {
         return nk_psp_fail(ctx, NK_PSP_ERR_INPUT, NULL, "the file could not be opened");
     }
@@ -768,7 +755,7 @@ int nk_npumdimg_convert_file(NkPspCtx *ctx, const char *pbp_path,
     }
     snprintf(temp, temp_len, "%s.converting", iso_path);
     npumdimg_remove(temp);
-    out = npumdimg_fopen(temp, "wb");
+    out = nk_fopen_utf8(temp, "wb");
     if (out == NULL) {
         rc = nk_psp_fail(ctx, NK_PSP_ERR_INPUT, NULL,
                          "the disc image could not be created");

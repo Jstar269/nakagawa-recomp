@@ -11,6 +11,7 @@
  * Extracted from hle.c on 2026-10-31 (#307). */
 
 #include "hle_internal.h"
+#include "../core/nk_shared_helpers.h"
 
 typedef struct HleDevctlRefusal {
     struct HleDevctlRefusal *next;
@@ -71,20 +72,8 @@ static void hle_note_devctl_refusal(const char *device, uint32_t command,
  * root resolution, the byte-path join and the directory-root resolution are
  * the same work on every host, so they are compiled once and shared. */
 char *sr_utf8_join_alloc(const char *left, const char *right, char separator) {
-    if (!left || !right) return NULL;
-    size_t a = strlen(left), b = strlen(right);
-    int need_separator = a > 0 && b > 0 && left[a - 1] != '/' && left[a - 1] != '\\';
-    size_t extra = b;
-    if (extra > SIZE_MAX - (size_t)need_separator - 1u) return NULL;
-    extra += (size_t)need_separator + 1u;
-    if (a > SIZE_MAX - extra) return NULL;
-    char *joined = (char *)malloc(a + extra);
-    if (!joined) return NULL;
-    memcpy(joined, left, a);
-    size_t at = a;
-    if (need_separator) joined[at++] = separator;
-    memcpy(joined + at, right, b + 1u);
-    return joined;
+    return nk_shared_path_join_alloc(left, right, separator,
+                                     NK_SHARED_PATH_JOIN_IF_BOTH_NONEMPTY, 0u);
 }
 
 static char *host_dir_path_alloc(const char *guest) {

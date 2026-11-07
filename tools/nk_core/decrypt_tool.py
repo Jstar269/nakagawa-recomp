@@ -22,6 +22,7 @@ import tempfile
 from typing import Callable, Optional, Union
 
 SOURCES = (
+    "src/core/nk_shared_helpers.c",
     "src/core/nk_json.c",
     "src/core/nk_psp_crypto.c",
     "src/core/nk_psp_keystore.c",

@@ -599,8 +599,10 @@ int main(int argc, char **argv) {{
             )
 
             compiled = subprocess.run(
-                [CC, "-std=c11", "-O2", f"-I{RT_DIR}", f"-I{tmpdir}", "-Wall", "-Wextra", "-Werror",
-                 str(src), str(RT_DIR / "title_config.c"), str(RT_DIR / "perf.c"),
+                [CC, "-std=c11", "-O2", f"-I{RT_DIR}", f"-I{ROOT / 'src' / 'core'}",
+                 f"-I{tmpdir}", "-Wall", "-Wextra", "-Werror",
+                 str(src), str(ROOT / "src" / "core" / "nk_shared_helpers.c"),
+                 str(RT_DIR / "title_config.c"), str(RT_DIR / "perf.c"),
                  str(RT_DIR / "ace.c"), str(RT_DIR / "videorec.c"), "-o", str(exe)],
                 capture_output=True, text=True,
             )

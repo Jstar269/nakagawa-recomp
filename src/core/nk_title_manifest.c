@@ -10,6 +10,7 @@
 #include "nk_iso.h"
 #include "nk_json.h"
 #include "nk_platform.h"
+#include "nk_shared_helpers.h"
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -166,20 +167,6 @@ static void overlay_slot_anchor(OverlayStorageSlot *dest) {
     }
     dest->entry.modules = dest->modules;
     dest->entry.module_count = dest->module_count;
-}
-
-static FILE *manifest_fopen(const char *path) {
-#if defined(_WIN32) || defined(_WIN64)
-    if (!path || !*path) return NULL;
-    int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
-    if (wlen <= 0 || wlen > 32768) return NULL;
-    WCHAR wpath[32768];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, wlen) <= 0) return NULL;
-    return _wfopen(wpath, L"rb");
-#else
-    if (!path || !*path) return NULL;
-    return fopen(path, "rb");
-#endif
 }
 
 /* -----------------------------------------------------------------------------
@@ -1959,7 +1946,7 @@ bool nk_title_manifest_load_overlay_ext(
         return false;
     }
 
-    FILE *f = manifest_fopen(manifest_path);
+    FILE *f = nk_fopen_utf8(manifest_path, "rb");
     if (!f) {
         if (error_buf) snprintf(error_buf, error_buf_len, "Could not open manifest file: %s", manifest_path);
         return false;
@@ -2088,7 +2075,7 @@ static size_t overlay_declared_disc_ids(
     size_t max_disc_ids
 ) {
     if (!path || !disc_ids || max_disc_ids == 0) return 0;
-    FILE *file = manifest_fopen(path);
+    FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) return 0;
     if (fseek(file, 0, SEEK_END) != 0) {
         fclose(file);
@@ -2821,7 +2808,7 @@ static bool package_read_json(const char *path, size_t max_bytes,
                               char *error, size_t error_size) {
     if (out_exceeds_limit) *out_exceeds_limit = false;
     if (!path || !out_text || !out_length) return false;
-    FILE *file = manifest_fopen(path);
+    FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) {
         if (error && error_size) snprintf(error, error_size, "Could not open %s", path);
         return false;
@@ -2868,12 +2855,11 @@ static bool package_read_json(const char *path, size_t max_bytes,
 static bool package_join_path(char *out, size_t out_size,
                               const char *root, const char *relative) {
     if (!out || out_size == 0 || !root || !*root || !relative || !*relative) return false;
-    size_t root_length = strlen(root);
     char sep = nk_platform_path_separator();
-    bool has_sep = root_length > 0 &&
-        (root[root_length - 1] == '/' || root[root_length - 1] == '\\');
-    int written = snprintf(out, out_size, "%s%s%s", root, has_sep ? "" : (sep == '/' ? "/" : "\\"), relative);
-    return written > 0 && (size_t)written < out_size;
+    return nk_shared_path_join(out, out_size, root, relative,
+                               sep == '/' ? '/' : '\\',
+                               NK_SHARED_PATH_JOIN_IF_LEFT_NEEDS_SEPARATOR,
+                               NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH);
 }
 
 static bool package_resolved_path(const char *path, char *out, size_t out_size) {
@@ -2954,7 +2940,7 @@ static bool package_direct_file(const char *package_root, const char *relative,
 }
 
 static bool package_hash_file(const char *path, char out_hex[65]) {
-    FILE *file = manifest_fopen(path);
+    FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) return false;
     NkSha256 ctx;
     nk_sha256_init(&ctx);
@@ -5552,14 +5538,7 @@ static char *package_source_copy(const char *text) {
 }
 
 static char *package_source_join(const char *parent, const char *name) {
-    size_t parent_length = strlen(parent);
-    size_t name_length = strlen(name);
-    char *joined = (char *)malloc(parent_length + 1u + name_length + 1u);
-    if (!joined) return NULL;
-    memcpy(joined, parent, parent_length);
-    joined[parent_length] = '/';
-    memcpy(joined + parent_length + 1u, name, name_length + 1u);
-    return joined;
+    return nk_shared_path_join_alloc(parent, name, '/', NK_SHARED_PATH_JOIN_ALWAYS, 0u);
 }
 
 /* Takes ownership of item, which may be NULL (an allocation that failed). */
@@ -5737,7 +5716,7 @@ static bool package_runtime_source_digest(const char *source_root, char out_hex[
     for (size_t i = 0; ok && i < list.count; i++) {
         FILE *file = NULL;
         if (!package_source_absolute(source_root, list.paths[i], absolute, sizeof(absolute)) ||
-            (file = manifest_fopen(absolute)) == NULL) {
+            (file = nk_fopen_utf8(absolute, "rb")) == NULL) {
             ok = false;
             break;
         }

@@ -27,6 +27,7 @@
 #include "vfs_contained.h"
 #include "recomp.h"
 #include "vfs_path.h"
+#include "../core/nk_shared_helpers.h"
 #include <dirent.h>
 #include <errno.h>
 #include <limits.h>
@@ -70,11 +71,12 @@ static int path_sanitize(const char *name) {
 
 static int path_join(char *out, size_t cap, const char *dir, const char *name) {
     if (!path_sanitize(name)) { errno = EINVAL; return 0; }
-    size_t dl = strlen(dir), nl = strlen(name);
-    if (dl + 1u + nl + 1u > cap) { errno = ENAMETOOLONG; return 0; }
-    memcpy(out, dir, dl);
-    out[dl] = '/';
-    memcpy(out + dl + 1u, name, nl + 1u);
+    if (!nk_shared_path_join(out, cap, dir, name, '/', NK_SHARED_PATH_JOIN_ALWAYS,
+                             NK_SHARED_PATH_REQUIRE_FIT |
+                                 NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH)) {
+        errno = ENAMETOOLONG;
+        return 0;
+    }
     return 1;
 }
 

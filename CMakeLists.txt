@@ -19,6 +19,7 @@ endif()
 # Core Recompilation & Platform Library
 # -----------------------------------------------------------------------------
 set(CORE_SOURCES
+    src/core/nk_shared_helpers.c
     src/core/nk_font.c
     src/core/nk_pgf_host.c
     src/rt/pgf_public.c
@@ -130,6 +131,18 @@ add_executable(test_core_catalog
 )
 target_link_libraries(test_core_catalog PRIVATE nakagawa_core)
 add_test(NAME core_catalog_test COMMAND test_core_catalog)
+
+add_executable(test_shared_helpers
+    src/core/nk_shared_helpers.c
+    tests/native/test_shared_helpers.c
+)
+target_include_directories(test_shared_helpers PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+)
+target_compile_definitions(test_shared_helpers PRIVATE
+    SR_SELFTEST_BUILD_ROOT="${CMAKE_CURRENT_BINARY_DIR}/build"
+)
+add_test(NAME shared_helpers_test COMMAND test_shared_helpers)
 
 add_executable(test_parsers_hostile
     tests/native/test_parsers_hostile.c
@@ -870,6 +883,7 @@ set(NK_RUNTIME_SOURCES
     src/core/nk_font.c
     src/core/nk_json.c
     src/core/nk_platform_posix.c
+    src/core/nk_shared_helpers.c
 )
 set(NK_RUNTIME_GE_SOURCE src/rt/ge.c)
 set(NK_RUNTIME_ATRAC3P_SOURCES

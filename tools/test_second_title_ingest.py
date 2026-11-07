@@ -33,6 +33,7 @@ class SecondTitleIngestTests(unittest.TestCase):
         self.exe_path = self.temp_dir / ("multi_title_harness.exe" if sys.platform == "win32" else "multi_title_harness")
 
         core_srcs = [
+            ROOT / "src" / "core" / "nk_shared_helpers.c",
             ROOT / "src" / "core" / "nk_iso.c",
             ROOT / "src" / "core" / "nk_library.c",
             ROOT / "src" / "core" / "nk_launch.c",

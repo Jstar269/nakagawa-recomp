@@ -20,6 +20,7 @@
 #include "nk_json.h"
 #include "nk_launch.h"
 #include "nk_platform.h"
+#include "nk_shared_helpers.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -331,14 +332,11 @@ static PackageBundleStatus bundle_invalid(char *error, size_t error_size,
 }
 
 static bool bundle_join(char *out, size_t out_size, const char *root, const char *relative) {
-    int n = snprintf(out, out_size, "%s%c%s", root, nk_platform_path_separator(), relative);
-    if (n < 0 || (size_t)n >= out_size) return false;
-    if (nk_platform_path_separator() != '/') {
-        for (char *p = out + strlen(root) + 1; *p; p++) {
-            if (*p == '/') *p = nk_platform_path_separator();
-        }
-    }
-    return true;
+    char separator = nk_platform_path_separator();
+    unsigned int flags = separator != '/' ?
+        NK_SHARED_PATH_NORMALIZE_FORWARD_SLASHES : 0u;
+    return nk_shared_path_join(out, out_size, root, relative, separator,
+                               NK_SHARED_PATH_JOIN_ALWAYS, flags);
 }
 
 /* An inventory path is relative, '/'-separated, inside python/, msys64/ or
@@ -1486,10 +1484,7 @@ void package_builder_request_prerequisite_cancel(
 }
 
 static inline void safe_str_copy(char *dest, size_t dest_size, const char *src) {
-    if (!dest || dest_size == 0) return;
-    if (!src) { dest[0] = '\0'; return; }
-    strncpy(dest, src, dest_size - 1);
-    dest[dest_size - 1] = '\0';
+    (void)nk_shared_text_copy(dest, dest_size, src, NK_SHARED_TEXT_COPY_TRUNCATE);
 }
 
 static const char *skip_whitespace(const char *s) {

@@ -33,6 +33,7 @@ class BuildSystemParityTests(unittest.TestCase):
     def test_core_sources_parity(self) -> None:
         """Verify identical core sources in Makefile and CMakeLists.txt."""
         expected_core = [
+            "src/core/nk_shared_helpers.c",
             "src/core/nk_iso.c",
             "src/core/nk_library.c",
             "src/core/nk_launch.c",

@@ -207,6 +207,7 @@ def build_traced_driver(elf, workdir, env, mutate=None):
             os.path.join(rt, "domain_mode.c"),
             os.path.join(rt, "stale_code.c"),
             os.path.join(rt, "vfpu_tables.c"), os.path.join(rt, "driver.c"),
+            os.path.join(ROOT, "src", "core", "nk_shared_helpers.c"),
             os.path.join(rt, "ace.c"),
             os.path.join(rt, "videorec.c"),
             os.path.join(rt, "title_config.c"),
