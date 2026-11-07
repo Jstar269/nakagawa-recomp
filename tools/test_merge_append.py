@@ -24,15 +24,10 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import merge_append  # noqa: E402
 
-DRIVER = "python tools/merge_append.py %O %A %B %L %P"
+DRIVER = "python tools/merge_append.py %O %A %B %L %P"  # a contributor's own clone
+DESK_DRIVER = "python -I C:/nk/tools-pinned/merge_append.py %O %A %B %L %P"  # the landing desk's reviewed copy
 # Files whose conflicts are independent items. Prose, code and generated files are not allowed.
-ALLOWED = {
-    "mk/selftests.mk",
-    "mk/public_targets.mk",
-    "mk/runtime_sources.mk",
-    "CMakeLists.txt",
-    "docs/DEBUGGING.md",
-}
+ALLOWED = set(merge_append.ALLOWED_PATHS)
 FORBIDDEN_SUFFIXES = {".c", ".h", ".inc", ".py", ".json", ".yml", ".yaml", ".sh", ".ps1", ".cpp", ".kts"}
 
 
@@ -50,7 +45,8 @@ class AttributeListTests(unittest.TestCase):
     def test_nk_append_files_are_the_reviewed_list(self) -> None:
         text = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         listed = set(re.findall(r"(?m)^(\S+)\s+merge=nk-append\s*$", text))
-        self.assertEqual(listed, ALLOWED)
+        self.assertEqual(listed, ALLOWED, "the attribute list and ALLOWED_PATHS in merge_append.py must agree")
+        self.assertEqual(ALLOWED, {"mk/selftests.mk", "mk/public_targets.mk", "mk/runtime_sources.mk", "CMakeLists.txt", "docs/DEBUGGING.md"})
         self.assertNotIn("merge=union", text, "plain union keeps both versions of an edited line silently")
         for path in listed:
             self.assertTrue((ROOT / path).is_file(), f"{path} is listed for the merge driver but does not exist")
@@ -59,6 +55,8 @@ class AttributeListTests(unittest.TestCase):
     def test_docs_give_the_driver_command_the_tests_run(self) -> None:
         text = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
         self.assertIn(f'git config merge.nk-append.driver "{DRIVER}"', text)
+        self.assertIn(DESK_DRIVER, text, "the desk must be told to run a reviewed copy outside every worktree")
+        self.assertIn("outside every worktree", text)
 
     def test_public_target_lists_stay_one_item_per_line(self) -> None:
         text = (ROOT / "mk" / "public_targets.mk").read_text(encoding="utf-8")
@@ -75,12 +73,12 @@ class AttributeListTests(unittest.TestCase):
 
 
 class DriverUnitTests(unittest.TestCase):
-    def _merge(self, base: str, ours: str, theirs: str) -> tuple[int, str]:
+    def _merge(self, base: str, ours: str, theirs: str, path: str = "mk/selftests.mk") -> tuple[int, str]:
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
             for name, body in (("base", base), ("cur", ours), ("other", theirs)):
                 (d / name).write_bytes(body.encode())
-            rc = merge_append.merge(d / "base", d / "cur", d / "other", 7)
+            rc = merge_append.merge(d / "base", d / "cur", d / "other", 7, path)
             return rc, (d / "cur").read_text()
 
     def test_both_sides_insert_at_one_spot_keeps_both(self) -> None:
@@ -100,13 +98,11 @@ class DriverUnitTests(unittest.TestCase):
         self.assertIn("theirs", out)
         self.assertNotIn("|||||||", out, "the ordinary conflict style, not diff3")
 
-    def test_edit_against_insert_stays_a_conflict(self) -> None:
+    def test_edit_against_insert_beside_it_is_decided_by_git(self) -> None:
+        # Git merges an edit and an insert on adjacent lines, or conflicts. Either way there is no union.
         rc, out = self._merge("a\nold\nb\n", "a\nnew\nb\n", "a\nold\nadded\nb\n")
-        # Git merges this itself or reports a conflict; it must never hold two contradictory versions of "old".
-        if rc == 0:
-            self.assertEqual(out.count("old"), 1 if "old" in out else 0)
-        else:
-            self.assertIn("<<<<<<<", out)
+        self.assertEqual(rc, 1)
+        self.assertIn("<<<<<<<", out)
 
     def test_one_conflict_with_an_edit_blocks_the_other_pure_insert(self) -> None:
         base = "a\nold\nb\nc\nd\n"
@@ -118,12 +114,53 @@ class DriverUnitTests(unittest.TestCase):
         rc, out = self._merge("a\nb\nc\n", "A\nb\nc\n", "a\nb\nC\n")
         self.assertEqual((rc, out), (0, "A\nb\nC\n"))
 
-    def test_deleted_line_against_insert_beside_it_is_not_a_union(self) -> None:
+    def test_deleted_line_against_insert_beside_it_is_a_conflict(self) -> None:
         rc, out = self._merge("a\nold\nb\n", "a\nb\n", "a\nold\nnew\nb\n")
-        if rc == 0:
-            self.assertNotIn("<<<<<<<", out)
-        else:
+        self.assertEqual(rc, 1)
+        self.assertIn("<<<<<<<", out)
+
+    def test_inserts_sharing_a_line_stay_a_conflict(self) -> None:
+        for name, ours, theirs in (
+            ("X against X,Y", "a\nX\nz\n", "a\nX\nY\nz\n"),
+            ("shared first line", "a\nSHARED\nA\nz\n", "a\nSHARED\nB\nz\n"),
+            ("shared last line", "a\nA\nSHARED\nz\n", "a\nB\nSHARED\nz\n"),
+            ("shared middle line", "a\nA\nSHARED\nA2\nz\n", "a\nB\nSHARED\nB2\nz\n"),
+        ):
+            rc, out = self._merge("a\nz\n", ours, theirs)
+            self.assertEqual(rc, 1, f"{name}: {out!r}")
+            self.assertIn("<<<<<<<", out, name)
+
+    def test_blank_lines_may_repeat(self) -> None:
+        rc, out = self._merge("a\nz\n", "a\n\nA\nz\n", "a\n\nB\nz\n")
+        self.assertEqual((rc, out), (0, "a\n\nA\n\nB\nz\n"))
+
+    def test_recipe_lines_inserted_in_a_recipe_stay_a_conflict(self) -> None:
+        base = "t:\n\tone\n\nnext:\n"
+        rc, out = self._merge(base, "t:\n\tone\n\ttwo\n\nnext:\n", "t:\n\tone\n\tthree\n\nnext:\n")
+        self.assertEqual(rc, 1)
+        self.assertIn("<<<<<<<", out)
+
+    def test_tab_indented_list_items_still_merge(self) -> None:
+        base = "LIST := \\\n\tone \\\n\ttwo\n"
+        ours = "LIST := \\\n\tone \\\n\tA \\\n\ttwo\n"
+        theirs = "LIST := \\\n\tone \\\n\tB \\\n\ttwo\n"
+        rc, out = self._merge(base, ours, theirs)
+        self.assertEqual((rc, out), (0, "LIST := \\\n\tone \\\n\tA \\\n\tB \\\n\ttwo\n"))
+
+    def test_new_targets_between_targets_merge(self) -> None:
+        base = "a:\n\tx\n\nz:\n\tw\n"
+        rc, out = self._merge(base, "a:\n\tx\n\nb:\n\ty\n\nz:\n\tw\n", "a:\n\tx\n\nc:\n\tq\n\nz:\n\tw\n")
+        self.assertEqual((rc, out), (0, "a:\n\tx\n\nb:\n\ty\n\nc:\n\tq\n\nz:\n\tw\n"))
+
+    def test_a_path_outside_the_allowlist_is_never_unioned(self) -> None:
+        for path in ("src/rt/ge.c", "tools/codegen.py", "docs/CI.md", "", "../mk/selftests.mk"):
+            rc, out = self._merge("a\nb\n", "a\nours\nb\n", "a\ntheirs\nb\n", path)
+            self.assertEqual(rc, 1, path)
             self.assertIn("<<<<<<<", out)
+
+    def test_windows_separators_in_the_path_are_accepted(self) -> None:
+        rc, _ = self._merge("a\nb\n", "a\nours\nb\n", "a\ntheirs\nb\n", "mk\\selftests.mk")
+        self.assertEqual(rc, 0)
 
 
 class RealMergeTests(unittest.TestCase):
@@ -202,6 +239,122 @@ class RealMergeTests(unittest.TestCase):
         self.assertIn("<<<<<<<", text)
         self.assertIn("alpha one", text)
         self.assertIn("alpha two", text)
+
+
+class RealGitEdgeCaseTests(unittest.TestCase):
+    """Byte-level cases through a real `git merge` with the driver configured."""
+
+    PATH = "mk/selftests.mk"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = Path(self._tmp.name) / "repo"
+        (self.repo / "tools").mkdir(parents=True)
+        (self.repo / "mk").mkdir()
+        _git(self.repo, "init", "-q", "-b", "main")
+        (self.repo / "tools" / "merge_append.py").write_bytes((ROOT / "tools" / "merge_append.py").read_bytes())
+        _git(self.repo, "config", "merge.nk-append.driver", DRIVER)
+        _git(self.repo, "config", "core.autocrlf", "false")
+        self.attributes = f"{self.PATH} merge=nk-append\n"
+
+    def _run(self, base: bytes, ours: bytes, theirs: bytes, attributes: str | None = None) -> tuple[int, bytes]:
+        path = self.repo / self.PATH
+        (self.repo / ".gitattributes").write_text(attributes or self.attributes, encoding="utf-8")
+        path.write_bytes(base)
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "--allow-empty", "-m", "base")
+        for name, body in (("pr-a", ours), ("pr-b", theirs)):
+            _git(self.repo, "checkout", "-q", "-b", name, "main")
+            path.write_bytes(body)
+            _git(self.repo, "commit", "-q", "-am", name)
+        _git(self.repo, "checkout", "-q", "pr-b")
+        proc = _git(self.repo, "merge", "--no-edit", "pr-a", check=False)
+        return proc.returncode, path.read_bytes()
+
+    def test_crlf_lines_union_and_keep_their_endings(self) -> None:
+        rc, out = self._run(b"a\r\nz\r\n", b"a\r\nA\r\nz\r\n", b"a\r\nB\r\nz\r\n")
+        self.assertEqual((rc, out), (0, b"a\r\nB\r\nA\r\nz\r\n"))  # ours is pr-b, so its line comes first
+
+    def test_a_missing_final_newline_never_joins_lines(self) -> None:
+        # pr-b is the branch merged into: "ours" lacks the newline in the second case, "theirs" in the first.
+        rc, out = self._run(b"a\nz\n", b"a\nz\nA", b"a\nz\nB\n")
+        self.assertEqual((rc, out), (0, b"a\nz\nB\nA\n"))
+        self._reset()
+        rc, out = self._run(b"a\nz\n", b"a\nz\nA\n", b"a\nz\nB")
+        self.assertEqual((rc, out), (0, b"a\nz\nB\nA\n"))
+
+    def test_non_utf8_bytes_survive_a_union(self) -> None:
+        rc, out = self._run(b"a\nz\n", b"a\n\xff\xfeOURS\nz\n", b"a\n\xe9THEIRS\nz\n")
+        self.assertEqual((rc, out), (0, b"a\n\xe9THEIRS\n\xff\xfeOURS\nz\n"))
+
+    def test_a_conflict_marker_size_other_than_7(self) -> None:
+        attributes = f"{self.PATH} merge=nk-append conflict-marker-size=9\n"
+        rc, out = self._run(b"a\nold\nz\n", b"a\nours\nz\n", b"a\ntheirs\nz\n", attributes)
+        self.assertNotEqual(rc, 0)
+        self.assertIn(b"<" * 9 + b" ", out)
+        self.assertNotIn(b"<" * 10, out)
+        rc, out = self._run_second_union(attributes)
+        self.assertEqual(rc, 0)
+        self.assertNotIn(b"<<<<<<<<<", out)
+
+    def _run_second_union(self, attributes: str) -> tuple[int, bytes]:
+        _git(self.repo, "merge", "--abort")
+        path = self.repo / self.PATH
+        _git(self.repo, "checkout", "-q", "main")
+        for name, body in (("pr-c", b"a\nold\nz\nC\n"), ("pr-d", b"a\nold\nz\nD\n")):
+            _git(self.repo, "checkout", "-q", "-b", name, "main")
+            path.write_bytes(body)
+            _git(self.repo, "commit", "-q", "-am", name)
+        _git(self.repo, "checkout", "-q", "pr-d")
+        proc = _git(self.repo, "merge", "--no-edit", "pr-c", check=False)
+        return proc.returncode, path.read_bytes()
+
+    def test_a_binary_file_is_left_alone_and_conflicts(self) -> None:
+        base = b"a\n\x00\x01z\n"
+        rc, out = self._run(base, b"a\n\x00\x01A\nz\n", b"a\n\x00\x01B\nz\n")
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn(b"A\nB", out)
+
+    def test_a_conflict_exits_nonzero_and_leaves_markers_in_the_file(self) -> None:
+        rc, out = self._run(b"a\nold\nz\n", b"a\nours\nz\n", b"a\ntheirs\nz\n")
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(_git(self.repo, "diff", "--name-only", "--diff-filter=U").stdout.split(), [self.PATH])
+        self.assertIn(b"<<<<<<<", out)
+        self.assertIn(b">>>>>>>", out)
+
+    def test_shared_first_last_and_middle_lines_conflict_through_git(self) -> None:
+        for ours, theirs in (
+            (b"a\nSHARED\nA\nz\n", b"a\nSHARED\nB\nz\n"),
+            (b"a\nA\nSHARED\nz\n", b"a\nB\nSHARED\nz\n"),
+            (b"a\nA\nSHARED\nA2\nz\n", b"a\nB\nSHARED\nB2\nz\n"),
+        ):
+            with self.subTest(ours=ours):
+                rc, out = self._run(b"a\nz\n", ours, theirs)
+                self.assertNotEqual(rc, 0)
+                self.assertIn(b"<<<<<<<", out)
+                self._reset()
+
+    def test_a_file_outside_the_allowlist_is_not_unioned_even_with_the_attribute(self) -> None:
+        (self.repo / "src").mkdir()
+        (self.repo / ".gitattributes").write_text("src/x.c merge=nk-append\n", encoding="utf-8")
+        path = self.repo / "src" / "x.c"
+        path.write_bytes(b"a\nz\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "base")
+        for name, body in (("pr-a", b"a\nA\nz\n"), ("pr-b", b"a\nB\nz\n")):
+            _git(self.repo, "checkout", "-q", "-b", name, "main")
+            path.write_bytes(body)
+            _git(self.repo, "commit", "-q", "-am", name)
+        proc = _git(self.repo, "merge", "--no-edit", "pr-a", check=False)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(b"<<<<<<<", path.read_bytes())
+
+    def _reset(self) -> None:
+        _git(self.repo, "merge", "--abort", check=False)
+        _git(self.repo, "checkout", "-q", "main")
+        _git(self.repo, "branch", "-D", "pr-a", "pr-b")
+        _git(self.repo, "reset", "-q", "--hard", "main")
 
 
 if __name__ == "__main__":

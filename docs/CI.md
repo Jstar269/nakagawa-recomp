@@ -1213,17 +1213,42 @@ target in `mk/public_targets.mk`, a source in `mk/runtime_sources.mk` or `CMakeL
 `docs/DEBUGGING.md` table. Two pull requests that add at the same place conflict in Git although
 neither touches the other's lines. `.gitattributes` marks those five files `merge=nk-append`, and
 `tools/merge_append.py` is the merge driver behind that name. It runs the ordinary three-way merge and
-reads each conflict. If the common ancestor has nothing there, both sides only inserted, and the driver
-keeps ours and then theirs. If the ancestor has lines there, one side changed or removed them, and the
-driver leaves the ordinary conflict markers. Git's own `merge=union` is not used because it keeps both
-versions of a line that both sides edited and leaves no marker.
+reads each conflict. It keeps ours and then theirs only when all of these hold:
 
-Turn it on once per clone (worktrees of a clone share the setting):
+- The common ancestor has nothing there: both sides only inserted lines. If one side changed or
+  removed a line, the ordinary conflict markers stay.
+- The two insertions share no non-blank line. Git's diff3 output does not factor out lines both sides
+  inserted, so a union would repeat them (ours `X` against theirs `X`, `Y` would give `X X Y`).
+- The insertion is not made of tab-indented make recipe lines inside a recipe. The order of recipe lines
+  matters (`rm -f x` before `gen x`), and the union order would depend on which side is "ours", so a
+  person decides. Inserts between targets, new target blocks and tab-indented items of a variable such as
+  `PUBLIC_TARGETS` still merge by themselves.
+
+Git's own `merge=union` is not used because it keeps both versions of a line that both sides edited and
+leaves no marker.
+
+The driver only acts on the five paths named in `ALLOWED_PATHS` inside `tools/merge_append.py` itself.
+`.gitattributes` is read from the tree being merged, so a pull request that edits it could otherwise attach
+the driver to a code file. For any other path the driver exits 1 and leaves the ordinary conflict.
+
+Turn it on once per clone (worktrees of a clone share the setting). In a contributor's own clone:
 
 ```bash
 git config merge.nk-append.name "append-only list merge"
 git config merge.nk-append.driver "python tools/merge_append.py %O %A %B %L %P"
 ```
+
+**The landing desk must not use that relative form.** `tools/merge_append.py` would then be the file in the
+tree being merged, and an earlier pull request in the batch that edits it would run its own code on the
+desk's machine. The desk sets the driver in its own clone's config to an absolute path to a reviewed copy
+outside every worktree, and runs it with `-I` so the current directory and the user site are ignored:
+
+```bash
+git config merge.nk-append.driver "python -I C:/nk/tools-pinned/merge_append.py %O %A %B %L %P"
+```
+
+That copy is refreshed only from a reviewed `origin/main` commit (never from a worktree during a batch), and
+the desk compares it with `origin/main:tools/merge_append.py` at the start of each batch.
 
 Without the setting, Git ignores the attribute and merges as usual. The driver runs wherever Git
 merges on that machine (`git merge`, `git merge --squash`, `git cherry-pick`, `git rebase`). GitHub's
@@ -1238,8 +1263,8 @@ purpose, and `tools/test_merge_append.py` keeps the list honest:
   C or Python file are code. Two insertions at one spot there can need an order or a shared brace.
 - The root `Makefile` only includes the `mk/` files, so it is no longer an append point.
 
-Add a file to the list only when every conflict it can have is two independent items. In a recipe,
-that means separate commands, never a line and its continuation.
+Add a file to the list only when every conflict it can have is two independent items, and add it to
+`ALLOWED_PATHS`, `.gitattributes` and the test together.
 
 ## Trusted CI verdict
 

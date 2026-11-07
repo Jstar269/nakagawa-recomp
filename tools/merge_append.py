@@ -14,9 +14,13 @@ This driver is the guarded form. It runs the ordinary three-way merge and looks 
 
 * if the common ancestor has nothing there (both sides only inserted), it keeps ours, then theirs;
 * if the ancestor has lines there (someone changed or removed them), it leaves the ordinary conflict
-  markers for a person, exactly as ``git merge`` does without a driver.
+  markers for a person, exactly as ``git merge`` does without a driver;
+* it also leaves them when the two insertions share a non-blank line, and when an insertion starts with a
+  tab inside a make recipe, where the order of lines matters. Inserts between targets and in lists merge.
 
-Setup, once per clone (worktrees share it), is in ``docs/CI.md``::
+Only the paths in ``ALLOWED_PATHS`` are ever unioned, so editing ``.gitattributes`` cannot attach the
+driver to code. Setup, once per clone (worktrees share it), is in ``docs/CI.md``; the landing desk runs a
+reviewed copy outside every worktree, never the file in the tree being merged::
 
     git config merge.nk-append.name "append-only list merge"
     git config merge.nk-append.driver "python tools/merge_append.py %O %A %B %L %P"
@@ -31,8 +35,21 @@ Arguments are Git's: ``%O`` ancestor, ``%A`` ours (the result is written here), 
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess
 import sys
+
+# The driver acts only on these files, whatever .gitattributes of the tree being merged says: a pull request
+# that edits .gitattributes cannot attach it to code. tools/test_merge_append.py keeps this equal to the
+# attribute list.
+ALLOWED_PATHS = frozenset({
+    "mk/selftests.mk",
+    "mk/public_targets.mk",
+    "mk/runtime_sources.mk",
+    "CMakeLists.txt",
+    "docs/DEBUGGING.md",
+})
+_ASSIGNMENT = re.compile(rb"^[A-Za-z_][A-Za-z0-9_.\-]*\s*(?:[:+?]|::|:::)?=")
 
 OURS = b"ours"
 BASE = b"base"
@@ -48,6 +65,20 @@ def _merge_file(current: Path, base: Path, other: Path, marker: int, *flags: str
         capture_output=True, check=False,
     )
     return proc.returncode, proc.stdout
+
+
+def _blank(line: bytes) -> bool:
+    return not line.strip()
+
+
+def _in_recipe(out: list[bytes]) -> bool:
+    """True when the next line would continue a make recipe: the last line above that is neither tab-indented
+    nor blank is a rule, not a variable assignment (a tab-indented list item continues an assignment)."""
+    for line in reversed(out):
+        if line.startswith(b"\t") or _blank(line):
+            continue
+        return _ASSIGNMENT.match(line) is None
+    return True
 
 
 def union_pure_inserts(diff3_text: bytes, marker: int) -> bytes | None:
@@ -88,6 +119,14 @@ def union_pure_inserts(diff3_text: bytes, marker: int) -> bytes | None:
                     return None
                 if ours and not ours[-1].endswith(b"\n"):
                     return None
+                # Both sides repeating a line means the inserts overlap. diff3 does not factor that out, so a
+                # union would duplicate it. Blank lines may repeat.
+                shared = {l.rstrip(b"\r\n") for l in ours if not _blank(l)}
+                if shared & {l.rstrip(b"\r\n") for l in theirs if not _blank(l)}:
+                    return None
+                # Recipe line order matters: a tab-indented insert inside a recipe is a person's call.
+                if any(side and side[0].startswith(b"\t") for side in (ours, theirs)) and _in_recipe(out):
+                    return None
                 out.extend(ours)
                 out.extend(theirs)
                 state = "text"
@@ -98,15 +137,19 @@ def union_pure_inserts(diff3_text: bytes, marker: int) -> bytes | None:
     return b"".join(out)
 
 
-def merge(base: Path, current: Path, other: Path, marker: int) -> int:
+def merge(base: Path, current: Path, other: Path, marker: int, path: str = "") -> int:
+    """Merge ``other`` into ``current``; ``path`` must be in ALLOWED_PATHS for inserts to be unioned."""
+    allowed = path.replace("\\", "/") in ALLOWED_PATHS
     status, merged = _merge_file(current, base, other, marker)
     if status == 0:
         current.write_bytes(merged)
         return 0
     if status < 0 or status > 127:
         return 1  # git merge-file failed outright (for example a binary file): leave ours as it is
-    _, diff3 = _merge_file(current, base, other, marker, "--diff3")
-    unioned = union_pure_inserts(diff3, marker)
+    unioned = None
+    if allowed:
+        _, diff3 = _merge_file(current, base, other, marker, "--diff3")
+        unioned = union_pure_inserts(diff3, marker)
     if unioned is None:
         current.write_bytes(merged)  # the ordinary conflict markers
         return 1
@@ -119,7 +162,7 @@ def main(argv: list[str]) -> int:
         print("usage: merge_append.py BASE CURRENT OTHER [MARKER_SIZE [PATH]]", file=sys.stderr)
         return 2
     marker = int(argv[4]) if len(argv) > 4 and argv[4].isdigit() else 7
-    return merge(Path(argv[1]), Path(argv[2]), Path(argv[3]), marker)
+    return merge(Path(argv[1]), Path(argv[2]), Path(argv[3]), marker, argv[5] if len(argv) > 5 else "")
 
 
 if __name__ == "__main__":
