@@ -23,7 +23,8 @@ on:
   # controlled by NK_TEST_TIER in python_tools; the rest of CI remains unchanged.
   schedule:
     - cron: "17 3 * * *"
-  # Manual and scheduled runs execute the complete matrix, including main_smoke:
+  # Manual and scheduled runs execute the complete matrix, including the main smoke
+  # steps of the hygiene job:
   # tools/ci_paths.py forces full validation for both event types regardless of
   # changed paths, and ci_required treats every emitted gate as required. There
   # is deliberately no input to narrow a manual run.
@@ -96,13 +97,18 @@ jobs:
         run: python tools/ci_paths.py --github-output "$GITHUB_OUTPUT"
 
   hygiene:
+    # The required check keeps this exact name (tools/ci_trust_verdict.py PRODUCERS).
     name: Hygiene and security
     # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
     # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
     runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
     needs: classify
     if: ${{ always() && needs.classify.result == 'success' }}
-    timeout-minutes: 15
+    # The job also carries the steps of the former markdown and main_smoke jobs, after
+    # its own (docs/CI.md, "Jobs per run"), so a run needs two runners fewer. Their
+    # conditions moved from the job to the steps unchanged. The limit is the sum of
+    # the three former jobs' limits (15 + 10 + 10).
+    timeout-minutes: 35
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -206,26 +212,32 @@ jobs:
         shell: bash
         run: python tools/betterleaks_canary.py --betterleaks "$BETTERLEAKS_BIN"
 
-  markdown:
-    name: Markdown validation
-    # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
-    # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
-    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
-    needs: classify
-    if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.run_markdown == 'true' }}
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+      # The former main_smoke job: pushes to main and the full-matrix events
+      # (tools/ci_paths.py run_main_smoke), never pull requests. It waited for hygiene
+      # to pass; as later steps of the same job it still runs only after every hygiene
+      # step above succeeded.
+      - name: Run compact import/publication smoke
+        # Publication audit is part of the always-present hygiene checks above; this
+        # smoke adds a fresh main-branch import gate without repeating it.
+        if: ${{ needs.classify.outputs.run_main_smoke == 'true' }}
+        run: python tools/import_audit_gate.py
 
+      - name: Run provenance record and disposition gap check
+        # #355: ratchets disposition gaps for upstream-derived production paths.
+        if: ${{ needs.classify.outputs.run_main_smoke == 'true' }}
+        run: python tools/provenance_record_gap.py --check
+
+      # The former markdown job. It never depended on hygiene, so `!cancelled()` keeps
+      # it running and reporting its own result when an earlier step failed. Node.js is
+      # set up last, after pre-commit, so the hooks' environments are the ones they had.
       - name: Set up Node.js
+        if: ${{ !cancelled() && needs.classify.outputs.run_markdown == 'true' }}
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "26.13.0"
 
       - name: Lint repository Markdown
+        if: ${{ !cancelled() && needs.classify.outputs.run_markdown == 'true' }}
         run: npx --yes markdownlint-cli2@0.24.0
 
   # Public-export candidate audit (#293/#294), in its own job so it overlaps the all-files
@@ -233,14 +245,26 @@ jobs:
   # result: ci_required fails unless it succeeds, and every gate that waited for hygiene
   # also waits for it. The job runs on every event and gates no path, because publication
   # integrity must never be path-dependent (tools/test_ci_paths.py).
+  #
+  # The job also builds the profile-zero fixture, the steps of the former
+  # profile_zero_fixture job (docs/CI.md, "Jobs per run"). They run after the export
+  # step, so the export still sees the clean checkout, and only under that job's old
+  # condition, which BUILD_PROFILE_ZERO carries unchanged. The steps never gate the
+  # export: the job-level condition and the export step name no path output.
   public_export:
-    name: Public export candidate audit
+    name: Public export audit and profile-zero fixture
     # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
     # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
     runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
     needs: classify
     if: ${{ always() && needs.classify.result == 'success' }}
-    timeout-minutes: 15
+    # The sum of the two former jobs' limits (15 + 15).
+    timeout-minutes: 30
+    env:
+      BUILD_PROFILE_ZERO: >-
+        ${{ needs.classify.outputs.allow_substantive == 'true' &&
+            (needs.classify.outputs.run_python == 'true' ||
+             needs.classify.outputs.run_windows == 'true') }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -285,30 +309,15 @@ jobs:
             exit 1
           fi
 
-  profile_zero_fixture:
-    name: Profile-zero fixture build
-    # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
-    # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
-    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
-    # The profile-zero guest (fixtures/profile_zero/main.c) is built here from source with
-    # the PSPDEV distribution pinned by assets/upstream/pspdev.lock.json and checked
-    # byte-for-byte against the committed fixtures/profile_zero/prebuilt/SHA256SUMS, so the
-    # repository stores no generated executable (#1100, OpenSSF OSPS-QA-05.01). The Python
-    # and Windows route jobs download the verified bytes as an artifact.
-    needs: [classify]
-    if: >-
-      ${{ always() && needs.classify.result == 'success' &&
-          needs.classify.outputs.allow_substantive == 'true' &&
-          (needs.classify.outputs.run_python == 'true' ||
-           needs.classify.outputs.run_windows == 'true') }}
-    timeout-minutes: 15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
+      # The former profile_zero_fixture job. The profile-zero guest
+      # (fixtures/profile_zero/main.c) is built here from source with the PSPDEV
+      # distribution pinned by assets/upstream/pspdev.lock.json and checked byte-for-byte
+      # against the committed fixtures/profile_zero/prebuilt/SHA256SUMS, so the repository
+      # stores no generated executable (#1100, OpenSSF OSPS-QA-05.01). The Python and
+      # Windows route jobs download the verified bytes as an artifact. `python3` in these
+      # steps is the CPython 3.15.2 set up above; the separate job ran the image's own.
       - name: Install PSPDEV from the checked-in lock
+        if: ${{ env.BUILD_PROFILE_ZERO == 'true' }}
         run: |
           read -r PSPDEV_URL PSPDEV_SHA256 < <(python3 - <<'PY'
           import json
@@ -348,6 +357,7 @@ jobs:
           echo "PSPDEV=/usr/local/pspdev" >> "$GITHUB_ENV"
 
       - name: Build the profile-zero fixture and check its pinned digests
+        if: ${{ env.BUILD_PROFILE_ZERO == 'true' }}
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/profile-zero"
@@ -357,6 +367,7 @@ jobs:
           (cd fixtures/profile_zero/prebuilt && sha256sum --check --strict SHA256SUMS)
 
       - name: Upload the verified fixture
+        if: ${{ env.BUILD_PROFILE_ZERO == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: profile-zero-fixture
@@ -367,6 +378,7 @@ jobs:
           retention-days: 7
 
       - name: Gate profile-zero imports on HLE review status
+        if: ${{ env.BUILD_PROFILE_ZERO == 'true' }}
         # #341: every NID the verified guest imports that routes to a dedicated `unreviewed`
         # handler must be listed in PROFILE_ZERO_UNREVIEWED_IMPORTS (tools/hle_registry_meta.py),
         # and every entry there must still be imported and unreviewed, so the list only shrinks.
@@ -377,6 +389,7 @@ jobs:
           --check-profile-zero-imports
 
       - name: Build Nakagawa Font Copy
+        if: ${{ env.BUILD_PROFILE_ZERO == 'true' }}
         # The PSP app that copies the console's own fonts for the player's font import
         # (src/psp_companion, docs/SETUP.md "System fonts") is built from source with the same
         # locked PSPDEV. Its Makefile runs the user-mode import gate, which pins the app's file
@@ -397,36 +410,39 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # Waits for classify and the public-export audit, not hygiene: hygiene runs beside it
-    # and ci_required still requires its result (docs/CI.md, "Hygiene beside the substantive gates").
-    needs: [classify, public_export, profile_zero_fixture]
-    # The suite is ~27 minutes serially on a hosted runner under coverage (run
-    # 41105240488). Six runners split the test files with
+    # Waits for classify and the public-export job (which also builds the profile-zero
+    # fixture), not hygiene: hygiene runs beside it and ci_required still requires its
+    # result (docs/CI.md, "Hygiene beside the substantive gates").
+    needs: [classify, public_export]
+    # The suite is ~48 minutes serially on a hosted runner under coverage (run
+    # 42270920833). Three runners split the test files with
     # tools/ci_test_shards.py: a deterministic longest-first bin packing over the
     # measured per-module durations in tools/ci_test_weights.json (#693). Every
     # file runs exactly once across the shards, shards never share a working
     # tree, and modules that mutate tracked state never share a shard.
     # needs.python_tools.result is the aggregate of all shards, so ci_required is
-    # unchanged. The shard list comes from the classifier: six shards over every
+    # unchanged. The shard list comes from the classifier: three shards over every
     # module, or -- when a recipe-only Makefile edit is the only reason to run
-    # Python (#702) -- four shards over the modules that can observe that edit.
+    # Python (#702) -- three shards over the modules that can observe that edit.
+    # Three, not six, keeps a full run near 14 jobs, inside the free plan's 20
+    # concurrent jobs (docs/CI.md, "Jobs per run"). test_production_smoke alone takes
+    # about 12.5 minutes, so six shards were never shorter than that either.
     strategy:
       fail-fast: false
       matrix:
         # The fallback only keeps the expression parseable when classify produced no
         # outputs; the job's own condition skips it in that case.
-        shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3, 4, 5]') }}
+        shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2]') }}
     if: >-
       ${{ always() && needs.classify.result == 'success' &&
           needs.public_export.result == 'success' &&
-          needs.profile_zero_fixture.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_python == 'true' }}
-    # A shard is planned at about 7 minutes of hosted-runner time, but on the busy
-    # nk-wsl pool it measured 17-20 minutes (2026-11-01), and shard 0 was cancelled
-    # at the old 20-minute limit on main and on several pull requests. 30 minutes
+    # A shard was planned at about 7 minutes of hosted-runner time and measured 17-20
+    # minutes on the busy nk-wsl pool (2026-11-01) under a 30-minute limit. A shard now
+    # carries two of those (about 16 hosted minutes), so the limit doubles to 60, which
     # still stops a hung test well before the default six hours.
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1044,6 +1060,26 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 \
             make CC=gcc gpu-coherence-selftest
 
+      # Ace Mode's texture scaling and smart 2D filter on the same production path
+      # (src/rt/gpu_sdl3vk/tex_scale_gpu_selftest.inc), and the mutant that binds a scaled
+      # copy without its content check, which must fail for that reason.
+      - name: Run GPU texture scaling selftest on lavapipe
+        if: matrix.part == 'translation'
+        run: |
+          set -euo pipefail
+          lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$lvp_icd" || {
+            echo "mesa-vulkan-drivers did not install a lavapipe ICD" >&2
+            exit 1
+          }
+          export VK_ICD_FILENAMES="$lvp_icd"
+          xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 \
+            make CC=gcc gpu-texscale-selftest gpu-texscale-mutant 2>&1 | tee "$RUNNER_TEMP/texscale.log"
+          if grep -q '^SKIP gpu-texscale' "$RUNNER_TEMP/texscale.log"; then
+            echo "the texture scaling selftest skipped on lavapipe" >&2
+            exit 1
+          fi
+
       - name: Configure, build, and test CMake Linux player
         if: matrix.part == 'player'
         run: |
@@ -1078,6 +1114,18 @@ jobs:
             ${{ runner.temp }}/showcase-demo/packages/*/snap_f*.ppm
           if-no-files-found: warn
           retention-days: 14
+
+      # The profile-zero route (#306): manifest -> ProgramImage -> AOT package -> production
+      # runtime on Linux, the same route the Windows routes part runs. PSPDEV is installed in
+      # this part, so the test rebuilds the guest from source and checks it against the pinned
+      # digests first; then it runs the package twice, the second time on the deterministic
+      # guest clock, whose output digests are pinned in the test and so must equal Windows'.
+      # NK_PROFILE_ZERO_REQUIRED turns a missing dependency into a failure, not a SKIP.
+      - name: Build and run the profile-zero production route on Linux
+        if: matrix.part == 'player'
+        env:
+          NK_PROFILE_ZERO_REQUIRED: "1"
+        run: make --no-print-directory CC=gcc profile-zero-e2e
 
       - name: Smoke the CMake Linux player headlessly
         if: matrix.part == 'player'
@@ -1387,38 +1435,59 @@ jobs:
         run: make -j2 CC=gcc display-smoke-run
 
   windows_runtime:
-    name: Windows runtime compile gate
+    name: Windows runtime compile gate (${{ matrix.group }})
     runs-on: windows-2025
     # Runs alongside the Linux gates rather than after them: it is the longest job
     # (~6.5 min), and waiting for python_tools/native_tools put ~2.5 min on every
     # PR's critical path. A Linux failure still fails ci_required; the Windows run
     # is then merely redundant, which costs nothing on a public repository.
-    # Not gated on hygiene (docs/CI.md, "Hygiene beside the substantive gates").
-    needs: [classify, public_export, profile_zero_fixture]
+    # Not gated on hygiene (docs/CI.md, "Hygiene beside the substantive gates"). The
+    # public_export job also builds the profile-zero fixture the routes part downloads.
+    needs: [classify, public_export]
     if: >-
       ${{ always() && needs.classify.result == 'success' &&
           needs.public_export.result == 'success' &&
-          needs.profile_zero_fixture.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_windows == 'true' }}
-    # The gates are split into parallel matrix parts of comparable length (#694),
-    # measured on hosted runners: the serial job took ~16 minutes, of which ~1.5
-    # is shared setup. Every part repeats the cheap setup and the runtime-object
-    # compile gate; each other step runs in exactly one part, and steps that
-    # depend on one another (the staged smoke on the production smoke) share it.
-    # tools/test_public_ci_wiring.py pins that every gate the serial job ran still
-    # runs in exactly one part. needs.windows_runtime.result aggregates all parts.
+    # The gates are split into parts (#694), measured on hosted runners: the serial
+    # job took ~16 minutes, of which ~1.5 is shared setup. Each other step runs in
+    # exactly one part, and steps that depend on one another (the staged smoke on the
+    # production smoke) share it. tools/test_public_ci_wiring.py pins that every gate
+    # the serial job ran still runs in exactly one part.
     #   smoke:     production pipeline, AOT-gap, staged smoke, player, UI, display
     #   ladder:    full platform ladder
     #   routes:    profile-zero production routes, native core tests
     #   selftests: cosimulation + mutants, scheduler, dispatch, FP, strbuf, HLE thread,
     #              Media Foundation H.264 media
     #   fuzz-0/1:  synthetic VFPU fuzzer, its cases split between two shards (FUZZ_CASE_SHARD)
+    # The six parts run on three runners (docs/CI.md, "Jobs per run"): each matrix
+    # group runs its parts one after another, in this file's step order, after one
+    # copy of the shared setup and the runtime-object compile gate. The groups are
+    # balanced on the step times of runs 42270920833 and 42258417250 (about 10-13
+    # minutes each). Parts in one group share the checkout and its build tree. The
+    # ladder builds under build/platform-ladder; the two fuzz shards, which used to
+    # run on separate runners, now share build/windows-runtime, which is harmless
+    # because each regenerates its cases header and vfpu_fuzz_build always relinks
+    # and reruns the fuzzer. In smoke-routes, native-core-tests (routes) and the
+    # player targets (smoke) share build/ through selftest targets that have no
+    # output file, so their recipes compile and run every time.
+    # needs.windows_runtime.result aggregates all groups, and a failing step fails
+    # its group's job.
+    # A group's timeout is the sum of its parts' former 25-minute limits.
     strategy:
       fail-fast: false
       matrix:
-        part: [smoke, ladder, routes, selftests, fuzz-0, fuzz-1]
-    timeout-minutes: 25
+        include:
+          - group: smoke-routes
+            parts: [smoke, routes]
+            timeout: 50
+          - group: ladder-fuzz
+            parts: [ladder, fuzz-0, fuzz-1]
+            timeout: 75
+          - group: selftests
+            parts: [selftests]
+            timeout: 25
+    timeout-minutes: ${{ matrix.timeout }}
     # This job's MSYS2 shell has no git on PATH, so the Makefile cannot resolve a
     # revision here; it used to log a raw `process_begin: CreateProcess(NULL, git
     # rev-parse HEAD, ...) failed` and then build every binary of this job with an
@@ -1505,12 +1574,12 @@ jobs:
           grep -Fx 'CC_ORIGIN=command line' <<<"$override_info"
 
       # The compiler cache persists between runs (#735, owner decisions of
-      # 2026-10-27 and 2026-10-30). Its Actions cache key names this part, the
+      # 2026-10-27 and 2026-10-30). Its Actions cache key names this group, the
       # toolchain (the exact installed package versions and the compiler's own
       # version), the build's flags (the Makefile and its fragments) and the exact
       # hashes of every file a compile can read or be generated from. A run
-      # restores its part's exact key, or else the newest entry main saved for the
-      # same part and toolchain, preferring one with the same flags. ccache itself
+      # restores its group's exact key, or else the newest entry main saved for the
+      # same group and toolchain, preferring one with the same flags. ccache itself
       # keys each object on the compiler's contents, the full command line and the
       # contents of every header, so a restored entry is used only for an
       # identical compile, and Make still decides what to build. Only a run on
@@ -1539,14 +1608,14 @@ jobs:
         with:
           path: ${{ runner.temp }}\ccache\objects
           key: >-
-            windows-ccache-v1-${{ matrix.part }}-${{ steps.compiler-cache-key.outputs.toolchain }}-${{
+            windows-ccache-v1-${{ matrix.group }}-${{ steps.compiler-cache-key.outputs.toolchain }}-${{
             hashFiles('Makefile', 'mk/**') }}-${{
             hashFiles('src/**', 'third_party/**', 'tests/native/**', 'fixtures/**', 'tools/**', 'assets/**') }}
           restore-keys: |
-            windows-ccache-v1-${{ matrix.part }}-${{ steps.compiler-cache-key.outputs.toolchain }}-${{ hashFiles('Makefile', 'mk/**') }}-
-            windows-ccache-v1-${{ matrix.part }}-${{ steps.compiler-cache-key.outputs.toolchain }}-
+            windows-ccache-v1-${{ matrix.group }}-${{ steps.compiler-cache-key.outputs.toolchain }}-${{ hashFiles('Makefile', 'mk/**') }}-
+            windows-ccache-v1-${{ matrix.group }}-${{ steps.compiler-cache-key.outputs.toolchain }}-
 
-      # Each part compiles the same runtime sources into several build trees: the
+      # Each group compiles the same runtime sources into several build trees: the
       # platform ladder once per rung, the smoke part once per smoke. The compiler
       # cache serves those repeats and, restored as above, the compiles an earlier
       # main run already made (#735 item 2). compiler_check=content keys entries on
@@ -1598,7 +1667,7 @@ jobs:
       # links every production runtime object with the real driver, and reaches
       # a real HLE NID through the scheduler before checking the guest sentinel.
       - name: Build and run full production pipeline smoke
-        if: matrix.part == 'smoke'
+        if: contains(matrix.parts, 'smoke')
         shell: msys2 {0}
         # The ordinary compile target invokes the repository's PowerShell
         # asset-copy script after linking. Keep the broader Windows PATH scoped
@@ -1617,7 +1686,7 @@ jobs:
       # ownership gates interpretation, and the run must hand off to registered
       # AOT region B before the final production-driver assertion can pass.
       - name: Build and run AOT-gap dispatch-seam smoke
-        if: matrix.part == 'smoke'
+        if: contains(matrix.parts, 'smoke')
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -1627,7 +1696,7 @@ jobs:
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke-gap
 
       - name: Run native core test suite on Windows
-        if: matrix.part == 'routes'
+        if: contains(matrix.parts, 'routes')
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -1636,7 +1705,7 @@ jobs:
       # Hosted build/link gate for the public player/launcher (#294). Link-only
       # proof: the player's GUI smoke remains a developer/display gate.
       - name: Build and link the native player
-        if: matrix.part == 'smoke'
+        if: contains(matrix.parts, 'smoke')
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -1647,7 +1716,7 @@ jobs:
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-tests
 
       - name: Run native player UI regressions headlessly on Windows
-        if: matrix.part == 'smoke'
+        if: contains(matrix.parts, 'smoke')
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -1664,7 +1733,7 @@ jobs:
       # identity, the manifest and the executable's bytes, not the guest's code. Every
       # user-data root is redirected under the runner temp directory, never a profile.
       - name: Smoke the Windows player staging headlessly
-        if: matrix.part == 'smoke'
+        if: contains(matrix.parts, 'smoke')
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -1683,7 +1752,7 @@ jobs:
       # build-tree spelling. Depends on the production-smoke step above; the
       # rebuild underneath is incremental, so this re-runs only generate/verify/run.
       - name: Stage and run production smoke outside its build directory
-        if: matrix.part == 'smoke'
+        if: contains(matrix.parts, 'smoke')
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -1696,7 +1765,7 @@ jobs:
       # ladder-fs-only step: zero/reloc/gap/sched/fpu/fs/fs-negative/title2/
       # title2-negative.
       - name: Build and run the full platform ladder
-        if: matrix.part == 'ladder'
+        if: contains(matrix.parts, 'ladder')
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -1706,7 +1775,7 @@ jobs:
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 platform-ladder
 
       - name: Fetch the profile-zero fixture built from source
-        if: matrix.part == 'routes'
+        if: contains(matrix.parts, 'routes')
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: profile-zero-fixture
@@ -1714,15 +1783,17 @@ jobs:
 
       # The two #309 manifests use this manifest-driven guest -> ProgramImage ->
       # AOT package -> production runtime route (#557). The Windows runner has no
-      # PSPDEV/PSPSDK, so the route runs on the fixture the profile_zero_fixture job
+      # PSPDEV/PSPSDK, so the route runs on the fixture the public_export job
       # built from source and verified against the pinned digests; on hosts with
-      # PSPDEV the test rebuilds it itself. Its only remaining SKIP is a missing
-      # host multimedia dependency (Vulkan SDK / SDL3), printed with the reason.
+      # PSPDEV the test rebuilds it itself. A missing host multimedia dependency
+      # (Vulkan SDK / SDL3) fails the step (NK_PROFILE_ZERO_REQUIRED) instead of
+      # skipping it, and the make target runs the route case at the full test tier.
       - name: Build and run profile-zero production routes
-        if: matrix.part == 'routes'
+        if: contains(matrix.parts, 'routes')
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
+          NK_PROFILE_ZERO_REQUIRED: "1"
         run: |
           set -euo pipefail
           command -v pwsh
@@ -1737,7 +1808,7 @@ jobs:
       # SR_VIDEO=offscreen: the assertions are the guest-visible framebuffer
       # word and accepted offscreen-present ordering, so no display is required.
       - name: Build and run display presentation smoke
-        if: matrix.part == 'smoke'
+        if: contains(matrix.parts, 'smoke')
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -1753,7 +1824,7 @@ jobs:
       # Without this in CI, the only thing standing between a codegen semantic
       # regression and a title run is a developer remembering to run it.
       - name: Build and run AOT/interpreter cosimulation gate
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -1763,7 +1834,7 @@ jobs:
       # compared with the reference interpreter in src/ref; the selftest also builds and
       # runs a generated-C mutant that must report the expected MISMATCH.
       - name: Build and run snapshot execution selftest
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -1774,7 +1845,7 @@ jobs:
       # per-function report, and a generated-C mutant must be reported as a MISMATCH whose
       # capture the snapshot runner replays to the same verdict.
       - name: Build and run verify selftest
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -1785,14 +1856,14 @@ jobs:
       # the gate must fail for every one, and a mutant that only breaks the build
       # is rejected as INVALID rather than counted as a kill.
       - name: Prove the cosimulation comparator is load-bearing
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: |
           set -euo pipefail
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 cosim-mutants
 
       - name: Build and run scheduler selftest
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
@@ -1804,21 +1875,21 @@ jobs:
       # rather than the scheduler. Without it in CI, the isolation claim rests
       # on a gate that only ever ran on a developer's machine.
       - name: Build and run dispatch isolation selftest matrix
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 dispatch-isolation-selftest
 
       - name: Build and run portable FPU/VFPU conversion selftest
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest
 
       - name: Build and run strbuf checked-append formatting selftest
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
@@ -1830,7 +1901,7 @@ jobs:
       # #315 added the ATRAC3+ bridge; that failure then hid #326 breaking the
       # same target again. Building it in CI is what stops the third recurrence.
       - name: Build and run HLE thread selftest
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
@@ -1840,7 +1911,7 @@ jobs:
       # PGFs) is driven by tools/test_flash0_font.py, which skips wherever mingw32-make is
       # absent; before this step no hosted job ran it at all.
       - name: Build and run flash0 font device selftest
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: |
           py="$(cygpath -u "$PYTHON")"
@@ -1852,7 +1923,7 @@ jobs:
       # created, the selftest prints SKIP for its decode checks and still exits 0, so any SKIP
       # line fails the step. The CSC no-write mutant must then die on the same backend.
       - name: Build and run the Media Foundation H.264 media selftest
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -1872,7 +1943,7 @@ jobs:
         # H264_FFMPEG=1 builds the subset with the Windows headers into its own build directory,
         # and the selftest then selects the FFmpeg backend explicitly and decodes the fixture
         # through it (Media Foundation stays the default Windows decoder).
-        if: matrix.part == 'selftests'
+        if: contains(matrix.parts, 'selftests')
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -1889,7 +1960,7 @@ jobs:
       # which the "Prove the fuzz shards" step checks from the binary. A shard fails unless
       # every case it admits is tested, so no case is dropped from the gate.
       - name: Build and run synthetic VFPU fuzzer (shard 0 of 2)
-        if: matrix.part == 'fuzz-0'
+        if: contains(matrix.parts, 'fuzz-0')
         shell: msys2 {0}
         env:
           FUZZ_CASE_SHARD: "0/2"
@@ -1903,7 +1974,7 @@ jobs:
             VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build
 
       - name: Build and run synthetic VFPU fuzzer (shard 1 of 2)
-        if: matrix.part == 'fuzz-1'
+        if: contains(matrix.parts, 'fuzz-1')
         shell: msys2 {0}
         env:
           FUZZ_CASE_SHARD: "1/2"
@@ -1920,7 +1991,7 @@ jobs:
       # not depend on the trial count): the default run, then 0/2 and 1/2. It requires the
       # shards to be disjoint and to union to the default's full case list.
       - name: Prove the fuzz shards cover every case exactly once
-        if: matrix.part == 'fuzz-0'
+        if: contains(matrix.parts, 'fuzz-0')
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -1928,7 +1999,7 @@ jobs:
           PYTHONPATH=tools NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests
 
       # A trusted run on main (a push, the nightly schedule or a manual dispatch;
-      # tools/ci_paths.py decides) saves this part's cache under the exact key
+      # tools/ci_paths.py decides) saves this group's cache under the exact key
       # computed above, unless that key was the one restored. Entries this job
       # neither read nor wrote are evicted first (ccache records each use in the
       # entry's modification time), so the saved cache holds exactly this run's
@@ -1953,8 +2024,8 @@ jobs:
           path: ${{ runner.temp }}\ccache\objects
           key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
-      # What the compiler cache served in this part. Every part compiles the
-      # runtime objects through it, so a part that recorded no compile at all
+      # What the compiler cache served in this group. Every group compiles the
+      # runtime objects through it, so a group that recorded no compile at all
       # bypassed the cache, and that fails here rather than passing unnoticed.
       # Hits include the entries restored from main's saved cache.
       - name: Report the compiler cache statistics
@@ -1967,59 +2038,30 @@ jobs:
           echo "compiles through the compiler cache: $compiles"
           test "$compiles" -gt 0
 
-  main_smoke:
-    name: Main integration smoke
-    # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
-    # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
-    runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
-    needs: [classify, hygiene, public_export]
-    if: >-
-      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
-          needs.public_export.result == 'success' &&
-          needs.classify.outputs.run_main_smoke == 'true' }}
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.15.2"
-
-      - name: Run compact import/publication smoke
-        # Publication audit is part of the always-present hygiene job; this
-        # smoke adds a fresh main-branch import gate without repeating it.
-        run: python tools/import_audit_gate.py
-
-      - name: Run provenance record and disposition gap check
-        # #355: ratchets disposition gaps for upstream-derived production paths.
-        run: python tools/provenance_record_gap.py --check
-
   ci_required:
     name: CI required
     # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
     # ubuntu-26.04, or the nk-wsl pool for a trusted run while the pool is up.
     runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
-    needs: [classify, hygiene, public_export, markdown, python_tools, native_tools, windows_runtime, main_smoke]
+    # The Markdown lint and the main smoke are steps of hygiene, and the profile-zero
+    # fixture build is a step of public_export, so those jobs' results carry them.
+    needs: [classify, hygiene, public_export, python_tools, native_tools, windows_runtime]
     if: ${{ always() }}
     timeout-minutes: 5
     env:
       CLASSIFY_RESULT: ${{ needs.classify.result }}
       HYGIENE_RESULT: ${{ needs.hygiene.result }}
       PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}
-      MARKDOWN_RESULT: ${{ needs.markdown.result }}
       PYTHON_RESULT: ${{ needs.python_tools.result }}
       NATIVE_RESULT: ${{ needs.native_tools.result }}
       WINDOWS_RESULT: ${{ needs.windows_runtime.result }}
-      MAIN_SMOKE_RESULT: ${{ needs.main_smoke.result }}
+      # The folded Markdown and main-smoke steps report through HYGIENE_RESULT; their
+      # run flags are still checked to be explicit booleans (tools/ci_required.py).
       RUN_MARKDOWN: ${{ needs.classify.outputs.run_markdown }}
+      RUN_MAIN_SMOKE: ${{ needs.classify.outputs.run_main_smoke }}
       RUN_PYTHON: ${{ needs.classify.outputs.run_python }}
       RUN_NATIVE: ${{ needs.classify.outputs.run_native }}
       RUN_WINDOWS: ${{ needs.classify.outputs.run_windows }}
-      RUN_MAIN_SMOKE: ${{ needs.classify.outputs.run_main_smoke }}
       ALLOW_SUBSTANTIVE: ${{ needs.classify.outputs.allow_substantive }}
       DRAFT: ${{ needs.classify.outputs.draft }}
     steps:

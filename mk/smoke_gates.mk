@@ -81,12 +81,19 @@ display-smoke:
 
 # display-smoke-run is the aggregate source-owned gate: it runs the guest-only
 # scheduler route and the --sched --gui route through the explicit no-window
-# presenter, then records and compares GE/present events from the same guest.
+# presenter, then records and compares GE/present events from the same guest, and records a
+# video of it (videorec, #1273) to prove a recording leaves the guest unchanged. The recording
+# goes through the videorec selftest acting as FFmpeg, which stalls every frame write, and runs
+# on the deterministic clock, which recording requires.
 display-smoke-run: display-smoke
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR)
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui --offscreen
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) vramdump --build-dir $(DISPLAY_SMOKE_DIR)
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) flight --build-dir $(DISPLAY_SMOKE_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -DSR_VIDEOREC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		-o $(DISPLAY_SMOKE_DIR)/videorec_fake_ffmpeg.exe tests/native/videorec_selftest.c src/rt/videorec.c
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) videorec --build-dir $(DISPLAY_SMOKE_DIR) \
+		--fake-ffmpeg $(DISPLAY_SMOKE_DIR)/videorec_fake_ffmpeg.exe
 
 # display-smoke-picture-gate runs the picture gate (#1845) headless: no reference gives SKIP, a run
 # accepted as the reference then matches at 0.00%, and a one-pixel change to it is reported.
@@ -333,6 +340,11 @@ platform-ladder-overlay:
 platform-ladder-clean:
 	$(MAKE) BUILD_DIR=$(PLATFORM_LADDER_DIR) clean
 
+# This target is the explicit request to run the profile-zero package and runtime route, so it
+# runs the route case that the Python discover suite defers to its nightly tier (docs/CI.md,
+# "Python test tiers"). Without NK_TEST_TIER=full here, the hosted Windows routes step and every
+# local `make profile-zero-e2e` skipped the route itself (#306).
+profile-zero-e2e: export NK_TEST_TIER := full
 profile-zero-e2e:
 	"$(PYTHON)" -m unittest tools.test_profile_zero_e2e -v
 

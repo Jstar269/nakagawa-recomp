@@ -27,8 +27,14 @@ static void coherence_fill_raw(uint8_t *dst, uint32_t pixels, uint32_t bpp, uint
     for (uint32_t i = 0; i < pixels; i++) memcpy(dst + i * bpp, &raw, bpp);
 }
 
+static void twin_identity_check(const char *when);
+
+static const char *s_twin_case = "";      /* the running cell, for twin identity messages */
+
 static void coherence_reset_targets(void) {
     if (s_nbatch) (void)submit_pending();
+    twin_identity_check("before a case frees its targets");   /* the host twin (#2050) */
+    s_twin_case = "";
     s_cur = NULL;
     for (int i = 0; i < MAX_TGT; i++)
         if (s_tgts[i].used) target_destroy(&s_tgts[i]);
@@ -1644,6 +1650,480 @@ static int coherence_run_psp_sample_points(void) {
     free(gpu);
     coherence_reset_targets();
     if (ok) printf("gpu coherence selftest: PASS %-22s 4 cells (PSP-GE-SAMPLE-001)\n", "psp-sample-points");
+    return ok;
+}
+
+/* Textured sprites at render scale 1 to 4, over a 16x16 gradient texture (clamped).
+ * - A nearest-filtered sprite at one texel per pixel, either direction, shows the PSP's texel
+ *   for each guest pixel (PSP-GE-SAMPLE-001: floor of the coordinate at the pixel centre) in
+ *   every device pixel of that pixel, whatever its origin: on a texel edge, half a texel off
+ *   (+0.5, PSP-GE-SAMPLE-001's "+0.5-texel" mapping) or a quarter off. Guest VRAM gets that
+ *   texel at every scale.
+ * - Every other sprite samples at each device pixel's own centre, as a triangle does, except
+ *   that a sample in an edge pixel's outer half takes that pixel's centre (uv-edge-clamp): a
+ *   minified nearest one, and linear ones (exact within 2 of the filtered value). Guest VRAM
+ *   gets the top-left device sample.
+ * Before this case hook_sprite shifted every sprite's coordinate by 0.5 - 0.5 / scale of a
+ * texel for every device sample. That put a texel boundary inside each block of a 1:1 sprite
+ * (HST's button text at 4x), and without it a half-texel nearest origin read one texel low.
+ * At scale 1 every cell is the PSP's own sampling. gpu-coherence-selftest also runs this case
+ * alone at render scales 2, 3 and 4. */
+static int coherence_read_device(VkImage img, VkImageAspectFlags aspect, VkImageLayout *layout,
+                                 VkImageLayout after, uint32_t bpp, void *out);
+
+typedef struct { float a0, w; } SprAxis;      /* coordinate at the first pixel edge, per pixel */
+
+/* The 0-255 channel a device sample at device index d of a sprite axis of n pixels shows. Above
+ * 1x a sample in an edge pixel's outer half takes that pixel's centre coordinate (the edge clamp,
+ * uv-edge-clamp); at 1x every sample is a centre. */
+static float coherence_spr_expect(SprAxis ax, int nearest, uint32_t d, uint32_t s, uint32_t n) {
+    float at = ((float)d + 0.5f) / (float)s;
+    if (s > 1u) at = fminf(fmaxf(at, 0.5f), (float)n - 0.5f);
+    const float pos = ax.a0 + at * ax.w;
+    if (!nearest) return 16.0f * (pos - 0.5f);
+    if (fabsf(fabsf(ax.w) - 1.0f) < 1e-6f) {                   /* 1:1: the PSP's texel */
+        const uint32_t g = d / s;
+        return 16.0f * floorf(ax.a0 + ((float)g + 0.5f) * ax.w);
+    }
+    return 16.0f * floorf(pos);
+}
+
+static int coherence_run_sprite_scaled(void) {
+    const uint32_t fba = 0x00160000u, base = 0x04000000u | fba, stride = 512u;
+    const size_t bytes = (size_t)stride * FB_H * 4u;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    uint32_t *tex = (uint32_t *)SR_HOST(COH_SAMPLE_TEX);
+    for (unsigned v = 0; v < 16u; v++)
+        for (unsigned u = 0; u < 16u; u++) tex[v * 16u + u] = 0xFF000000u | ((16u * v) << 8) | (16u * u);
+    sr_gpu_vram_dirty(COH_SAMPLE_TEX, 16u * 16u * 4u);
+
+    /* Every sample stays inside texels 0..15, so clamping never decides a value. */
+    static const struct { int x, n; uint32_t tflt; float u0, u1, v0, v1; const char *name; } cells[] = {
+        { 100, 12, 0x000u, 2.0f, 14.0f, 2.0f, 14.0f, "nearest-1to1" },
+        { 120, 12, 0x000u, 2.5f, 14.5f, 2.5f, 14.5f, "nearest-half-origin" },
+        { 140, 12, 0x000u, 2.25f, 14.25f, 2.75f, 14.75f, "nearest-quarter-origin" },
+        { 160, 12, 0x000u, 2.0f, 14.0f, 14.5f, 2.5f, "nearest-flipped-v" },
+        { 180, 6, 0x000u, 2.25f, 14.25f, 2.25f, 14.25f, "nearest-minified" },
+        { 200, 12, 0x101u, 2.0f, 14.0f, 2.0f, 14.0f, "linear-1to1" },
+        { 220, 12, 0x101u, 2.5f, 14.5f, 2.5f, 14.5f, "linear-half-origin" },
+        { 240, 12, 0x101u, 2.0f, 14.0f, 14.5f, 2.5f, "linear-flipped-v" },
+    };
+    const int ncells = (int)(sizeof(cells) / sizeof(cells[0])), y0 = 10;
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(COH_SAMPLE_VERTS);
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_SAMPLE_LIST);
+    int p = 0, nv = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x9C, fba);
+    DL_EMIT(0x9D, stride | (0x04000000u >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x4C, 0);
+    DL_EMIT(0x4D, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0x15, 0);
+    DL_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, COH_SAMPLE_TEX & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 16u | ((COH_SAMPLE_TEX & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (4u << 8) | 4u);
+    DL_EMIT(0xC2, 0);
+    DL_EMIT(0xC8, 0);
+    DL_EMIT(0xC0, 0);
+    DL_EMIT(0xC3, 3);
+    DL_EMIT(0xC7, (1u << 8) | 1u);                         /* clamp u and v */
+    DL_EMIT(0xC9, 3u | (1u << 8));                         /* replace, RGBA */
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3u << 0) | (3u << 7) | (1u << 23));     /* float UV and position, through */
+    for (int c = 0; c < ncells; c++) {
+        uint32_t first = COH_SAMPLE_VERTS + (uint32_t)nv * (uint32_t)sizeof(RawSpriteVtx);
+        DL_EMIT(0xC6, cells[c].tflt);
+        DL_EMIT(0xCB, 0);                                  /* TEXFLUSH */
+        vtx[nv++] = (RawSpriteVtx){ cells[c].u0, cells[c].v0, (float)cells[c].x, (float)y0, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ cells[c].u1, cells[c].v1, (float)(cells[c].x + cells[c].n),
+                                    (float)(y0 + cells[c].n), 0.0f };
+        DL_EMIT(0x01, first & 0x00FFFFFFu);
+        DL_EMIT(0x04, (6u << 16) | 2u);
+    }
+    DL_EMIT(0xC6, 0);
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+
+    const uint32_t s = (uint32_t)s_scale;
+    uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
+    if (!dev) return 0;
+    coherence_reset_targets();
+    memset(fb, 0, bytes);
+    sr_gpu_vram_dirty(base, (uint32_t)bytes);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(COH_SAMPLE_LIST, 0);
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                               .width = 480, .height = 272 };
+    int ok = gegpu_sync_guest_fb(&desc);
+    Target *t = ok ? target_find_by_fba(fba) : NULL;
+    ok = t != NULL && coherence_read_device(t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+                                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 4u, dev);
+    if (!ok) fprintf(stderr, "gpu coherence selftest [sprite-scaled]: draw or device read failed\n");
+    int bad = 0;
+    for (int c = 0; ok && c < ncells; c++) {
+        const int nearest = cells[c].tflt == 0u;
+        const float n = (float)cells[c].n;
+        const SprAxis ax = { cells[c].u0, (cells[c].u1 - cells[c].u0) / n };
+        const SprAxis ay = { cells[c].v0, (cells[c].v1 - cells[c].v0) / n };
+        const int exact_readback = nearest && fabsf(fabsf(ax.w) - 1.0f) < 1e-6f &&
+                                   fabsf(fabsf(ay.w) - 1.0f) < 1e-6f;
+        /* Linear: the filter's weight and rounding are within 2 of the exact value; the old
+         * shift moved it by 16 * (0.5 - 0.5 / scale), 4 at scale 2 and 6 at 4. */
+        const float tol = nearest ? 0.0f : 2.0f;
+        for (uint32_t dy = 0; dy < (uint32_t)cells[c].n * s; dy++) {
+            for (uint32_t dx = 0; dx < (uint32_t)cells[c].n * s; dx++) {
+                const float wr = coherence_spr_expect(ax, nearest, dx, s, (uint32_t)cells[c].n);
+                const float wg = coherence_spr_expect(ay, nearest, dy, s, (uint32_t)cells[c].n);
+                const uint32_t X = (uint32_t)cells[c].x * s + dx, Y = (uint32_t)y0 * s + dy;
+                const uint32_t got = dev[(size_t)Y * SCL_W + X];
+                const float er = fabsf((float)(got & 0xFFu) - wr);
+                const float eg = fabsf((float)((got >> 8) & 0xFFu) - wg);
+                if ((er > tol || eg > tol) && bad++ < 8)
+                    fprintf(stderr, "gpu coherence selftest [sprite-scaled/%s]: scale=%u device pixel "
+                            "(%u,%u) r=%u g=%u, want %.2f %.2f\n", cells[c].name, s, dx, dy,
+                            got & 0xFFu, (got >> 8) & 0xFFu, wr, wg);
+            }
+        }
+        /* Guest VRAM: the PSP's texel where the device image holds it in every device pixel,
+         * otherwise the top-left device sample of each pixel. At scale 1 both are the PSP's. */
+        for (uint32_t gy = 0; gy < (uint32_t)cells[c].n; gy++) {
+            for (uint32_t gx = 0; gx < (uint32_t)cells[c].n; gx++) {
+                const uint32_t got = fb[(size_t)(y0 + gy) * stride + (size_t)cells[c].x + gx] & 0x00FFFFFFu;
+                uint32_t want;
+                if (exact_readback) {
+                    const uint32_t r = (uint32_t)floorf(ax.a0 + ((float)gx + 0.5f) * ax.w);
+                    const uint32_t g = (uint32_t)floorf(ay.a0 + ((float)gy + 0.5f) * ay.w);
+                    want = ((16u * g) << 8) | (16u * r);
+                } else {
+                    const uint32_t X = ((uint32_t)cells[c].x + gx) * s, Y = ((uint32_t)y0 + gy) * s;
+                    want = dev[(size_t)Y * SCL_W + X] & 0x00FFFFFFu;
+                }
+                if (got != want && bad++ < 16)
+                    fprintf(stderr, "gpu coherence selftest [sprite-scaled/%s/guest]: scale=%u pixel "
+                            "(%u,%u) = %06x, want %06x\n", cells[c].name, s, gx, gy, got, want);
+            }
+        }
+    }
+    if (bad) {
+        fprintf(stderr, "gpu coherence selftest [sprite-scaled]: %d pixel(s) differ at scale %u\n", bad, s);
+        ok = 0;
+    }
+    free(dev);
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS %-22s %d cells scale=%u\n", "sprite-scaled", ncells, s);
+    return ok;
+}
+
+/* uv-edge-clamp: through-mode rectangles whose texture coordinate reaches the texture's edge at
+ * the rectangle's edge, at 16 texels over 12 pixels, as LittleBigPlanet's loading screen draws its
+ * planet (a 128x64 texture over 220x52 pixels, flipped, linear, repeat). The texture's red channel
+ * follows its row and green its column: 0 in texel 0, 255 in texel 15, 128 between. At 1x each edge
+ * pixel's centre samples inside the edge texel (the PSP's own picture). Above 1x the outer device
+ * samples of an edge pixel lie past that centre, and with linear filtering and repeat wrapping they
+ * blended in the texture's opposite edge, a line along the rectangle's edge. Every device sample of
+ * every cell must show the model below: the coordinate at that device sample's position, clamped
+ * above 1x to the coordinates the 1x pixel centres sample, filtered the way psp.frag filters (weights
+ * in 1/16), within 2.
+ * - strips (two triangles each) and a sprite, flipped and not, linear with repeat and clamp
+ *   wrapping, and nearest with repeat;
+ * - a strip whose u also changes with y (as a rotated rectangle's does) keeps every device sample
+ *   where it falls: it gets no clamp;
+ * - strips with fractional edges (n + 0.5, a pixel centre on the edge, and n + 0.25 and n + 0.75),
+ *   flipped in v or u, linear and nearest: the range follows the PSP's top-left rule, which covers
+ *   a centre on the left or top edge and not one on the right or bottom edge, so a rule that
+ *   breaks the tie the other way moves the range by a pixel and fails. These are checked over a
+ *   ring one guest pixel wide around them too: device pixels the strip does not cover at this
+ *   scale must keep the cleared target.
+ * At 1x no primitive carries a clamp range at all (checked on the vertices hook_sprite writes), so
+ * the 1x picture is exactly the one before the clamp existed. */
+typedef struct { int sprite; uint32_t tflt, wrap; float ul, ur, vt, vb, shear; const char *name; } EdgeCell;
+
+static float coh_edge_texel(int i, int clampwrap) {
+    if (clampwrap) i = i < 0 ? 0 : i > 15 ? 15 : i;
+    else i &= 15;
+    return i == 0 ? 0.0f : i == 15 ? 255.0f : (float)(16 * i);   /* a ramp between the dark and bright edges */
+}
+
+/* One channel at coordinate c (texels), as psp.frag samples it: rounded to 1/4096, then nearest
+ * takes texel floor(c) and linear blends floor(c - 0.5) and the next texel by a weight truncated
+ * to 1/16. */
+static float coh_edge_sample(double c, int nearest, int clampwrap) {
+    c = floor(c * 4096.0 + 0.5) / 4096.0;
+    if (nearest) return coh_edge_texel((int)floor(c), clampwrap);
+    const double f = c - 0.5, i0 = floor(f), w = floor((f - i0) * 16.0) / 16.0;
+    return (float)((1.0 - w) * coh_edge_texel((int)i0, clampwrap) + w * coh_edge_texel((int)i0 + 1, clampwrap));
+}
+
+/* The coordinate along one axis of n pixels from c0 at its first edge to c1 at its last, at
+ * device index d of render scale s; above 1x clamped to the first and last pixel centres'. */
+static double coh_edge_coord(double c0, double c1, uint32_t n, uint32_t d, uint32_t s, int clamp_it) {
+    const double per = (c1 - c0) / (double)n;
+    const double at = ((double)d + 0.5) / (double)s;
+    double c = c0 + at * per;
+    if (clamp_it && s > 1u) {
+        const double a = (double)(float)(c0 + 0.5 * per), b = (double)(float)(c1 - 0.5 * per);
+        const double lo = a < b ? a : b, hi = a < b ? b : a;
+        c = c < lo ? lo : c > hi ? hi : c;
+    }
+    return c;
+}
+
+typedef struct { float x0, x1, y0, y1; uint32_t tflt; float ul, ur, vt, vb; const char *name; } FracCell;
+
+/* The coordinate at guest position q on an axis from e0 (coordinate c0) to e1 (c1), above 1x
+ * clamped to the coordinates of the first and last pixel centres k + 0.5 the PSP covers there:
+ * e0 <= k + 0.5 < e1, a centre on the first edge covered and one on the last not. The centres
+ * are counted one by one here, independently of the renderer's closed form. */
+static double coh_frac_coord(double e0, double e1, double c0, double c1, double q, uint32_t s) {
+    const double slope = (c1 - c0) / (e1 - e0);
+    double c = c0 + (q - e0) * slope;
+    if (s > 1u) {
+        double first = 0.0, last = -1.0;
+        int any = 0;
+        for (int k = (int)floor(e0) - 1; k <= (int)ceil(e1) + 1; k++) {
+            const double ck = (double)k + 0.5;
+            if (ck >= e0 && ck < e1) {
+                if (!any) first = ck;
+                last = ck;
+                any = 1;
+            }
+        }
+        if (any) {
+            const double a = (double)(float)(c0 + (first - e0) * slope);
+            const double b = (double)(float)(c0 + (last - e0) * slope);
+            const double lo = a < b ? a : b, hi = a < b ? b : a;
+            c = c < lo ? lo : c > hi ? hi : c;
+        }
+    }
+    return c;
+}
+
+static int coherence_run_uv_edge_clamp(void) {
+    const char *name = "uv-edge-clamp";
+    const uint32_t fba = 0x00160000u, base = 0x04000000u | fba, stride = 512u;
+    const size_t bytes = (size_t)stride * FB_H * 4u;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    uint32_t *tex = (uint32_t *)SR_HOST(COH_SAMPLE_TEX);
+    for (unsigned v = 0; v < 16u; v++)
+        for (unsigned u = 0; u < 16u; u++)
+            tex[v * 16u + u] = 0xFF000000u | ((uint32_t)coh_edge_texel((int)u, 0) << 8) |
+                               (uint32_t)coh_edge_texel((int)v, 0);
+    sr_gpu_vram_dirty(COH_SAMPLE_TEX, 16u * 16u * 4u);
+
+    static const EdgeCell cells[] = {
+        { 0, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "strip-linear-repeat-flipped-v" },
+        { 0, 0x101u, 0x000u, 16.0f, 0.0f, 0.0f, 16.0f, 0.0f, "strip-linear-repeat-flipped-u" },
+        { 0, 0x101u, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "strip-linear-clamp" },
+        { 0, 0x000u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "strip-nearest-repeat" },
+        { 1, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f, "sprite-linear-repeat" },
+        { 0, 0x101u, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, 3.0f, "strip-sheared-u-free" },
+        /* Linear minification and nearest magnification, so the filter shows the footprint. 64
+         * texels over 12 pixels in u stay minified at every scale up to 4; 32 over 12 is minified
+         * at 1x and 2x (2.67 and 1.33 texels per device pixel) and magnified at 3x and 4x. The
+         * clamped bands must filter as the rest of the primitive does: at 2x a half-clamped quad
+         * whose footprint came from the clamped coordinate would drop to 0.67 and magnify. */
+        { 0, 0x001u, 0x000u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f, "strip-minified-u" },
+        { 0, 0x001u, 0x000u, 0.0f, 32.0f, 16.0f, 0.0f, 0.0f, "strip-minified-u-to-2x" },
+    };
+    const int ncells = (int)(sizeof(cells) / sizeof(cells[0]));
+    /* Strips with fractional edges, 16 texels over 12 pixels, linear unless named nearest. An edge
+     * on n + 0.5 puts a pixel centre exactly on it (the top-left rule's tie); n + 0.25 and n + 0.75
+     * put the first and last covered centres a quarter and three quarters of a pixel inside. */
+    static const FracCell fcells[] = {
+        { 20.5f, 32.5f, 70.5f, 82.5f, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-ties-flipped-v" },
+        { 40.25f, 52.25f, 70.75f, 82.75f, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-quarter-edges" },
+        { 60.75f, 72.75f, 70.25f, 82.25f, 0x101u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-three-quarter-edges" },
+        { 80.5f, 92.5f, 70.5f, 82.5f, 0x000u, 0.0f, 16.0f, 16.0f, 0.0f, "strip-ties-nearest" },
+        { 100.5f, 112.5f, 70.5f, 82.5f, 0x101u, 16.0f, 0.0f, 0.0f, 16.0f, "strip-ties-flipped-u" },
+    };
+    const int nfrac = (int)(sizeof(fcells) / sizeof(fcells[0]));
+    const int y0 = 40, n = 12;
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(COH_SAMPLE_VERTS);
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_SAMPLE_LIST);
+    int p = 0, nv = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x9C, fba);
+    DL_EMIT(0x9D, stride | (0x04000000u >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x4C, 0);
+    DL_EMIT(0x4D, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0x15, 0);
+    DL_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, COH_SAMPLE_TEX & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 16u | ((COH_SAMPLE_TEX & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (4u << 8) | 4u);
+    DL_EMIT(0xC2, 0);
+    DL_EMIT(0xC8, 0);
+    DL_EMIT(0xC0, 0);
+    DL_EMIT(0xC3, 3);
+    DL_EMIT(0xC9, 3u | (1u << 8));                         /* replace, RGBA */
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3u << 0) | (3u << 7) | (1u << 23));     /* float UV and position, through */
+    for (int c = 0; c < ncells; c++) {
+        const EdgeCell *e = &cells[c];
+        const float x0 = (float)(20 + 20 * c), x1 = x0 + (float)n, ya = (float)y0, yb = ya + (float)n;
+        uint32_t first = COH_SAMPLE_VERTS + (uint32_t)nv * (uint32_t)sizeof(RawSpriteVtx);
+        DL_EMIT(0xC6, e->tflt);
+        DL_EMIT(0xC7, e->wrap);
+        DL_EMIT(0xCB, 0);                                  /* TEXFLUSH */
+        if (e->sprite) {
+            vtx[nv++] = (RawSpriteVtx){ e->ul, e->vt, x0, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ur, e->vb, x1, yb, 0.0f };
+            DL_EMIT(0x01, first & 0x00FFFFFFu);
+            DL_EMIT(0x04, (6u << 16) | 2u);
+        } else {   /* bottom-left, bottom-right, top-left, top-right, as LittleBigPlanet orders them */
+            vtx[nv++] = (RawSpriteVtx){ e->ul + e->shear, e->vb, x0, yb, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ur + e->shear, e->vb, x1, yb, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ul, e->vt, x0, ya, 0.0f };
+            vtx[nv++] = (RawSpriteVtx){ e->ur, e->vt, x1, ya, 0.0f };
+            DL_EMIT(0x01, first & 0x00FFFFFFu);
+            DL_EMIT(0x04, (4u << 16) | 4u);
+        }
+    }
+    DL_EMIT(0xC7, 0);   /* the fractional cells: repeat wrapping */
+    for (int c = 0; c < nfrac; c++) {
+        const FracCell *f = &fcells[c];
+        uint32_t first = COH_SAMPLE_VERTS + (uint32_t)nv * (uint32_t)sizeof(RawSpriteVtx);
+        DL_EMIT(0xC6, f->tflt);
+        DL_EMIT(0xCB, 0);
+        vtx[nv++] = (RawSpriteVtx){ f->ul, f->vb, f->x0, f->y1, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ f->ur, f->vb, f->x1, f->y1, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ f->ul, f->vt, f->x0, f->y0, 0.0f };
+        vtx[nv++] = (RawSpriteVtx){ f->ur, f->vt, f->x1, f->y0, 0.0f };
+        DL_EMIT(0x01, first & 0x00FFFFFFu);
+        DL_EMIT(0x04, (4u << 16) | 4u);
+    }
+    DL_EMIT(0xC6, 0);
+    DL_EMIT(0xC7, 0);
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+
+    const uint32_t s = (uint32_t)s_scale;
+    uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
+    if (!dev) return 0;
+    coherence_reset_targets();
+    memset(fb, 0, bytes);
+    sr_gpu_vram_dirty(base, (uint32_t)bytes);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(COH_SAMPLE_LIST, 0);
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                               .width = 480, .height = 272 };
+    int ok = gegpu_sync_guest_fb(&desc);
+    Target *t = ok ? target_find_by_fba(fba) : NULL;
+    ok = t != NULL && coherence_read_device(t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+                                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 4u, dev);
+    if (!ok) fprintf(stderr, "gpu coherence selftest [%s]: draw or device read failed\n", name);
+    int bad = 0;
+    for (int c = 0; ok && c < ncells; c++) {
+        const EdgeCell *e = &cells[c];
+        /* The filter the sampler picks from the primitive's footprint: texels per device pixel on
+         * its steeper axis, minification above 1 (TEXFILTER bits 0-2), magnification otherwise
+         * (bits 8-10). Every other cell uses one filter for both. */
+        const double rho = fmax(fabs((double)e->ur - e->ul), fabs((double)e->vb - e->vt)) / ((double)n * s);
+        const uint32_t filt = rho > 1.0 ? (e->tflt & 7u) : ((e->tflt >> 8) & 7u);
+        const int nearest = filt == 0u, clampwrap = e->wrap != 0u, separable = e->shear == 0.0f;
+        int cell_bad = 0;
+        for (uint32_t dy = 0; dy < (uint32_t)n * s; dy++) {
+            for (uint32_t dx = 0; dx < (uint32_t)n * s; dx++) {
+                double u = coh_edge_coord(e->ul, e->ur, (uint32_t)n, dx, s, separable);
+                const double v = coh_edge_coord(e->vt, e->vb, (uint32_t)n, dy, s, separable);
+                if (!separable) u += (((double)dy + 0.5) / (double)s) * (double)e->shear / (double)n;
+                const float wr = coh_edge_sample(v, nearest, clampwrap);   /* red: the row */
+                const float wg = coh_edge_sample(u, nearest, clampwrap);   /* green: the column */
+                const uint32_t X = (uint32_t)(20 + 20 * c) * s + dx, Y = (uint32_t)y0 * s + dy;
+                const uint32_t got = dev[(size_t)Y * SCL_W + X];
+                const float er = fabsf((float)(got & 0xFFu) - wr);
+                const float eg = fabsf((float)((got >> 8) & 0xFFu) - wg);
+                if (er > 2.0f || eg > 2.0f) {
+                    if (cell_bad++ < 4)
+                        fprintf(stderr, "gpu coherence selftest [%s/%s]: scale=%u device pixel (%u,%u) "
+                                "r=%u g=%u, want %.2f %.2f (u=%.4f v=%.4f)\n", name, e->name, s, dx, dy,
+                                got & 0xFFu, (got >> 8) & 0xFFu, wr, wg, u, v);
+                }
+            }
+        }
+        bad += cell_bad;
+    }
+    /* The fractional cells, over their box and one guest pixel around it: a device pixel the strip
+     * covers at this scale shows the model, any other the cleared target. A device pixel centre
+     * exactly on an edge at this scale is skipped: which side covers it is the device rasteriser's
+     * own tie rule, not the PSP's. */
+    for (int c = 0; ok && c < nfrac; c++) {
+        const FracCell *f = &fcells[c];
+        const int nearest = f->tflt == 0u;
+        int cell_bad = 0;
+        const int gx0 = (int)floor(f->x0) - 1, gx1 = (int)ceil(f->x1) + 1;
+        const int gy0 = (int)floor(f->y0) - 1, gy1 = (int)ceil(f->y1) + 1;
+        for (uint32_t Y = (uint32_t)gy0 * s; Y < (uint32_t)gy1 * s; Y++) {
+            const double py = ((double)Y + 0.5) / (double)s;
+            if (py == f->y0 || py == f->y1) continue;
+            for (uint32_t X = (uint32_t)gx0 * s; X < (uint32_t)gx1 * s; X++) {
+                const double qx = ((double)X + 0.5) / (double)s;
+                if (qx == f->x0 || qx == f->x1) continue;
+                const uint32_t got = dev[(size_t)Y * SCL_W + X];
+                const int covered = qx >= f->x0 && qx < f->x1 && py >= f->y0 && py < f->y1;
+                float wr = 0.0f, wg = 0.0f;
+                int fail;
+                if (covered) {
+                    const double u = coh_frac_coord(f->x0, f->x1, f->ul, f->ur, qx, s);
+                    const double v = coh_frac_coord(f->y0, f->y1, f->vt, f->vb, py, s);
+                    wr = coh_edge_sample(v, nearest, 0);
+                    wg = coh_edge_sample(u, nearest, 0);
+                    fail = fabsf((float)(got & 0xFFu) - wr) > 2.0f ||
+                           fabsf((float)((got >> 8) & 0xFFu) - wg) > 2.0f;
+                } else {
+                    fail = got != 0u;
+                }
+                if (fail && cell_bad++ < 4)
+                    fprintf(stderr, "gpu coherence selftest [%s/%s]: scale=%u device pixel (%u,%u) "
+                            "(guest %.3f,%.3f) %s r=%u g=%u, want %s %.2f %.2f\n", name, f->name, s, X, Y,
+                            qx, py, covered ? "covered" : "outside", got & 0xFFu, (got >> 8) & 0xFFu,
+                            covered ? "" : "the cleared target, not", wr, wg);
+            }
+        }
+        bad += cell_bad;
+    }
+    /* At 1x a primitive carries no clamp range; above 1x a through-mode textured sprite does. */
+    if (ok) {
+        s_ge->tex_enable = 1;
+        GeVtx p0 = { 300.0f, 40.0f, 0.0f, 1.0f, 0.0f, 16.0f, 1.0f, 0xff, 0xff, 0xff, 0xff };
+        GeVtx p1 = p0;
+        p1.x = 312.0f; p1.y = 52.0f; p1.u = 16.0f; p1.v = 0.0f;
+        ok = hook_sprite(&p0, &p1, 0) && s_nverts > 0u;
+        const float *box = ok ? s_vcpu[s_nverts - 1u].box : NULL;
+        const int free_box = box && box[0] > box[2] && box[1] > box[3];
+        if (ok && (s == 1u) != free_box) {
+            fprintf(stderr, "gpu coherence selftest [%s]: scale=%u the sprite's clamp range is "
+                    "(%.4f,%.4f)-(%.4f,%.4f): want %s\n", name, s, box[0], box[1], box[2], box[3],
+                    s == 1u ? "none at 1x" : "a range above 1x");
+            ok = 0;
+        }
+        if (ok) ok = submit_pending();
+    }
+    if (bad) {
+        fprintf(stderr, "gpu coherence selftest [%s]: %d device pixel(s) differ at scale %u\n", name, bad, s);
+        ok = 0;
+    }
+    free(dev);
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS %-22s %d cells scale=%u\n", name, ncells + nfrac, s);
     return ok;
 }
 
@@ -3546,7 +4026,8 @@ static int ts_case_run(const char *name, TsCaseRun *out) {
         }
     }
     Target *t = target_find_by_fba(SB_FBA_A);
-    if (!t || !sdl3vk_wait_image((void *)t->img)) {
+    /* Wait on the image the presents showed: the target's own, or its host twin (#2050). */
+    if (!t || !sdl3vk_wait_image((void *)present_image(t))) {
         fprintf(stderr, "gpu coherence selftest [%s]: could not wait for the presents\n", name);
         coherence_reset_targets();
         return 0;
@@ -4703,6 +5184,7 @@ typedef struct { uint32_t *color; uint16_t *depth; } TnlpOut;
 static int tnlp_run(const TnlCell *c, int mode, TnlpOut *out, unsigned long long *taken) {
     const uint32_t fb = 0x04000000u | TNLP_FBA, zb = 0x04000000u | TNLP_ZBA;
     coherence_reset_targets();
+    s_twin_case = c->name;   /* the targets this run makes are checked under its name */
     memset(SR_HOST(fb), 0, TNLP_STRIDE * FB_H * 4u);
     memset(SR_HOST(zb), 0, TNLP_STRIDE * FB_H * 2u);
     sr_gpu_vram_dirty(fb, TNLP_STRIDE * FB_H * 4u);
@@ -4989,6 +5471,18 @@ static int coherence_write_device(VkImage img, VkImageAspectFlags aspect, VkImag
     return cmd_submit_wait(SR_PERF_GE_TARGET_READBACK_TRANSITION);
 }
 
+/* A white-box write of a whole authentic image (coherence_write_device) is a write the host
+ * twin (#2050) does not mirror: count it and seed the twin from the image, as an upload from
+ * VRAM does, so the twin stays in step. Nothing to do with the twin off. */
+static int coherence_wrote_device(Target *t, DepthEnt *d) {
+    if (t) t->wgen++;
+    if (d) d->wgen++;
+    if (!s_twin || !cmd_begin()) return !s_twin;
+    if (t) (void)twin_seed_target(t, 1);
+    if (d) (void)twin_seed_depth(d, 1);
+    return cmd_submit_wait(SR_PERF_GE_TARGET_READBACK_TRANSITION);
+}
+
 /* The staging bytes past the rows a readback keeps still hold `poison`. */
 static int coherence_xfer_tail_is(uint8_t poison, uint32_t bpp) {
     const uint8_t *map = (const uint8_t *)s_xfer_map;
@@ -5043,7 +5537,8 @@ static int coherence_run_readback_rows(void) {
             for (uint32_t i = 0; i < SCL_W * SCL_H; i++)
                 dev[i] = ((i + 1u + pass) * 0x9e3779b1u) | 0xff000000u;
             ok = coherence_write_device(t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
-                                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 4u, dev);
+                                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 4u, dev) &&
+                 coherence_wrote_device(t, NULL);
             if (!ok) break;
             t->gpu_valid = 1;
             t->render_gen++;
@@ -5076,7 +5571,8 @@ static int coherence_run_readback_rows(void) {
         ok = d != NULL;
         for (uint32_t i = 0; ok && i < SCL_W * SCL_H; i++) dev16[i] = (uint16_t)((i + 7u) * 40503u);
         ok = ok && coherence_write_device(d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
-                                          VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 2u, dev16);
+                                          VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 2u, dev16) &&
+             coherence_wrote_device(NULL, d);
         if (ok) {
             memset(s_xfer_map, poison, (size_t)SCL_W * SCL_H * 2u);
             d->guest_dirty = 1;
@@ -5504,6 +6000,7 @@ static void coherence_reset_depths(void) {
         if (d->view) vkDestroyImageView(s_dev, d->view, NULL);
         if (d->img) vkDestroyImage(s_dev, d->img, NULL);
         if (d->mem) vkFreeMemory(s_dev, d->mem, NULL);
+        twin_depth_free(d);
         memset(d, 0, sizeof(*d));
     }
 }
@@ -5832,7 +6329,662 @@ static int coherence_run_depth_evict_overlap(void) {
     return ok;
 }
 
-int gegpu_coherence_selftest(void) {
+/* ---- the host twin: Enhanced 32-bit colour (#2050) -------------------------------------------
+ *
+ * The twin is decided at init (`--twin 1|native`, which also turns Ace Mode on: the twin is an
+ * Ace feature), and the authentic chain and the twin both run at the requested scale. The twin
+ * cases compare runs: a twin-off run writes a reference file (`--twin-ref`) and a twin-on run at
+ * the same scale checks against it.
+ *
+ * twin-scene, one scene through ge.c's list interpreter and the production hooks: a dithered
+ * horizontal gradient on a 5551 target (T1), a gradient under a shader-blended translucent
+ * overlay (16-bit blends run in the shader, so this reads the destination snapshot), an 8888
+ * target (T2) that samples T1 as a texture (a direct render-target bind), and a third 5551
+ * target (T3) that takes a GPU block transfer of T1's gradient.
+ *   - Twin off: the shown image is the authentic one, and T1's gradient is dithered on the 5551
+ *     lattice. The run writes its scale and the hashes of guest VRAM and the shown images.
+ *   - Twin on, any colour: guest VRAM equals the twin-off run at the same scale (the twin is not
+ *     guest-visible), no twin was ever behind its image (no re-seed), and twin passes ran.
+ *   - Twin on, native colour: the shown images equal the twin-off run's at the same scale too.
+ *   - Twin on, full colour: the shown gradients are smooth (every row rises and takes far more
+ *     than the lattice's 32 levels), T2's twin holds T1's twin (the twin's pass samples twins),
+ *     and T3's twin holds T1's twin rows (the transfer reached the twins).
+ * Built with -DSR_TWIN_SELFTEST_NATIVE_MUTANT, the full-colour twin keeps the 16-bit colour snap
+ * (twin_pc): the full-colour checks must then fail.
+ *
+ * Identity after every case (`--twin native` at scale 1, where the twin's scale equals the
+ * authentic one): coherence_reset_targets first compares every in-step twin with its authentic
+ * image, colour and depth. A twin found behind, or any re-seed in the suite, fails it. Built with
+ * one -DSR_TWIN_SELFTEST_SKIP_SITE_<site> (the write happens, its mirror and count do not), the
+ * suite must fail for that site.
+ *
+ * twin-sync (`--twin native`, scale 1): a write the twin does not take (wgen bumped by hand) makes
+ * the next present show the authentic image and re-seed the twin once; the present after it
+ * shows the twin again, equal to the image. */
+
+#define TWIN_T1 0x00100000u                /* 5551, 512 x 272 x 2 bytes */
+#define TWIN_T2 0x00150000u                /* 8888 */
+#define TWIN_T3 0x00060000u                /* 5551, the block transfer's destination */
+#define TWIN_VTX 0x00102000u               /* the vertices, after the list */
+#define TWIN_LIST 0x00101000u              /* the display list */
+
+typedef struct { uint32_t rgba; float x, y, z; } TwinCVtx;          /* colour, position */
+typedef struct { float u, v; uint32_t rgba; float x, y, z; } TwinTVtx;   /* uv, colour, position */
+
+static uint32_t twin_list(void) {
+    uint32_t *dl = (uint32_t *)SR_HOST(TWIN_LIST);
+    TwinCVtx *cv = (TwinCVtx *)SR_HOST(TWIN_VTX);
+    int p = 0;
+    #define TWIN_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    /* rows 0..135: the gradient; rows 136..271: the gradient, then a white overlay at alpha 64 */
+    const uint32_t lo = 0xFF302010u, hi = 0xFFC0D0E0u, white = 0x40FFFFFFu;
+    const float y_mid = 136.0f, y_end = (float)FB_H;
+    int n = 0;
+    #define TWIN_RECT(c0, c1, y0, y1) do { \
+        cv[n++] = (TwinCVtx){ c0, 0.0f, y0, 0.0f }; cv[n++] = (TwinCVtx){ c1, 480.0f, y0, 0.0f }; \
+        cv[n++] = (TwinCVtx){ c1, 480.0f, y1, 0.0f }; cv[n++] = (TwinCVtx){ c0, 0.0f, y0, 0.0f }; \
+        cv[n++] = (TwinCVtx){ c1, 480.0f, y1, 0.0f }; cv[n++] = (TwinCVtx){ c0, 0.0f, y1, 0.0f }; } while (0)
+    TWIN_RECT(lo, hi, 0.0f, y_mid);
+    TWIN_RECT(lo, hi, y_mid, y_end);
+    TWIN_RECT(white, white, y_mid, y_end);
+    #undef TWIN_RECT
+    TwinTVtx *tv = (TwinTVtx *)(cv + n);
+    tv[0] = (TwinTVtx){ 0.0f, 0.0f, 0xFFFFFFFFu, 0.0f, 0.0f, 0.0f };
+    tv[1] = (TwinTVtx){ 480.0f, (float)FB_H, 0xFFFFFFFFu, 480.0f, (float)FB_H, 0.0f };
+    const uint32_t tv_addr = TWIN_VTX + (uint32_t)n * (uint32_t)sizeof(TwinCVtx);
+    /* T3's first draw: a sprite over rows 200..271 (the transfer then fills rows 0..135) */
+    TwinCVtx *sv = (TwinCVtx *)(tv + 2);
+    sv[0] = (TwinCVtx){ 0xFF808080u, 0.0f, 200.0f, 0.0f };
+    sv[1] = (TwinCVtx){ 0xFF808080u, 480.0f, (float)FB_H, 0.0f };
+    const uint32_t sv_addr = tv_addr + 2u * (uint32_t)sizeof(TwinTVtx);
+
+    TWIN_EMIT(0x10, 0);                                    /* BASE */
+    TWIN_EMIT(0x9C, TWIN_T1);                              /* FBP */
+    TWIN_EMIT(0x9D, 512u | (0x04u << 16));
+    TWIN_EMIT(0xD2, 1);                                    /* 5551 */
+    TWIN_EMIT(0x9E, 0x000000u);                            /* ZBP: VRAM 0, below the targets */
+    TWIN_EMIT(0x9F, 512u | (0x04u << 16));
+    TWIN_EMIT(0xD3, 0);                                    /* clear mode off */
+    TWIN_EMIT(0x1D, 0); TWIN_EMIT(0x1E, 0); TWIN_EMIT(0x1F, 0);
+    TWIN_EMIT(0x22, 0); TWIN_EMIT(0x23, 0); TWIN_EMIT(0x24, 0);   /* no alpha, depth, stencil test */
+    TWIN_EMIT(0x25, 0); TWIN_EMIT(0x27, 0); TWIN_EMIT(0x28, 0);   /* no AA, colour test, logic op */
+    TWIN_EMIT(0xE7, 1); TWIN_EMIT(0xE8, 0); TWIN_EMIT(0xE9, 0);   /* no depth write, no masks */
+    TWIN_EMIT(0x4C, 0); TWIN_EMIT(0x4D, 0); TWIN_EMIT(0xD6, 0); TWIN_EMIT(0xD7, 0xFFFFu);
+    TWIN_EMIT(0x15, 0); TWIN_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    TWIN_EMIT(0xD4, 0); TWIN_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    TWIN_EMIT(0x50, 1);                                    /* gouraud */
+    /* the PSP's usual 4x4 matrix: -4 0 -3 1 / 2 -2 3 -1 / -3 1 -4 0 / 3 -1 2 -2 (4-bit fields) */
+    TWIN_EMIT(0xE2, 0x1D0Cu); TWIN_EMIT(0xE3, 0xF3E2u); TWIN_EMIT(0xE4, 0x0C1Du); TWIN_EMIT(0xE5, 0xE2F3u);
+    TWIN_EMIT(0x20, 1);                                    /* dither on */
+    TWIN_EMIT(0x21, 0);                                    /* blend off */
+    TWIN_EMIT(0x12, (7u << 2) | (3u << 7) | (1u << 23));   /* 8888 colour, float pos, through */
+    TWIN_EMIT(0x01, TWIN_VTX);
+    TWIN_EMIT(0x04, (3u << 16) | 12u);                     /* both gradients */
+    TWIN_EMIT(0x21, 1);
+    TWIN_EMIT(0xDF, 2u | (3u << 4));                       /* SRC_ALPHA, ONE_MINUS_SRC_ALPHA, add */
+    TWIN_EMIT(0x04, (3u << 16) | 6u);                      /* the overlay (the vertex pointer advanced) */
+    /* the second target samples the first through a sprite, 1:1, nearest */
+    TWIN_EMIT(0x9C, TWIN_T2);
+    TWIN_EMIT(0x9D, 512u | (0x04u << 16));
+    TWIN_EMIT(0xD2, 3);
+    TWIN_EMIT(0x20, 0); TWIN_EMIT(0x21, 0);
+    TWIN_EMIT(0x1E, 1);                                    /* texture on */
+    TWIN_EMIT(0xA0, TWIN_T1);
+    TWIN_EMIT(0xA8, 512u | (0x04u << 16));
+    TWIN_EMIT(0xB8, 9u | (9u << 8));                       /* 512 x 512 */
+    TWIN_EMIT(0xC0, 0); TWIN_EMIT(0xC8, 0);                /* UV mapping, level 0 */
+    TWIN_EMIT(0xC2, 0); TWIN_EMIT(0xC3, 1);                /* linear, one level, 5551 */
+    TWIN_EMIT(0xC6, 0); TWIN_EMIT(0xC7, 0x101u);           /* nearest, clamp */
+    TWIN_EMIT(0xC9, 3u | 0x100u);                          /* replace, RGBA */
+    TWIN_EMIT(0xCB, 0);
+    TWIN_EMIT(0x12, 3u | (7u << 2) | (3u << 7) | (1u << 23));
+    TWIN_EMIT(0x01, tv_addr);
+    TWIN_EMIT(0x04, (6u << 16) | 2u);
+    /* the third target: one untextured sprite, then a GPU block transfer of T1's rows 0..135 */
+    TWIN_EMIT(0x9C, TWIN_T3);
+    TWIN_EMIT(0x9D, 512u | (0x04u << 16));
+    TWIN_EMIT(0xD2, 1);
+    TWIN_EMIT(0x1E, 0);                                    /* texture off */
+    TWIN_EMIT(0x12, (7u << 2) | (3u << 7) | (1u << 23));
+    TWIN_EMIT(0x01, sv_addr);
+    TWIN_EMIT(0x04, (6u << 16) | 2u);
+    TWIN_EMIT(0xB2, TWIN_T1);                              /* source: T1, stride 512 */
+    TWIN_EMIT(0xB3, 512u | (0x04u << 16));
+    TWIN_EMIT(0xB4, TWIN_T3);                              /* destination: T3, stride 512 */
+    TWIN_EMIT(0xB5, 512u | (0x04u << 16));
+    TWIN_EMIT(0xEB, 0); TWIN_EMIT(0xEC, 0);
+    TWIN_EMIT(0xEE, 479u | (135u << 10));                  /* 480 x 136 */
+    TWIN_EMIT(0xEA, 0);                                    /* 16-bit */
+    TWIN_EMIT(0x0F, 0);
+    TWIN_EMIT(0x0C, 0);
+    #undef TWIN_EMIT
+    return TWIN_LIST;
+}
+
+/* Read `img` (w x h device pixels of `bpp` bytes) into `out`, through a buffer of its own: the
+ * twin is larger than s_xfer when the authentic chain runs at 1x. */
+static int twin_read_image(VkImage img, VkImageAspectFlags aspect, VkImageLayout *layout,
+                           VkImageLayout after, uint32_t bpp, uint32_t w, uint32_t h, void *out) {
+    VkBuffer buf; VkDeviceMemory mem; void *map;
+    const VkDeviceSize bytes = (VkDeviceSize)w * h * bpp;
+    if (!make_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &buf, &mem, &map)) return 0;
+    int ok = 0;
+    if ((!s_nbatch || submit_pending()) && cmd_begin()) {
+        to_layout(s_cmd, img, aspect, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        VkBufferImageCopy c = {0};
+        c.imageSubresource.aspectMask = aspect;
+        c.imageSubresource.layerCount = 1;
+        c.imageExtent.width = w; c.imageExtent.height = h; c.imageExtent.depth = 1;
+        vkCmdCopyImageToBuffer(s_cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
+        to_layout(s_cmd, img, aspect, layout, after);
+        if (cmd_submit_wait(SR_PERF_GE_TARGET_READBACK_TRANSITION)) {
+            memcpy(out, map, (size_t)bytes);
+            ok = 1;
+        }
+    }
+    vkDestroyBuffer(s_dev, buf, NULL);
+    vkFreeMemory(s_dev, mem, NULL);
+    return ok;
+}
+
+static uint64_t twin_hash(const void *p, size_t n, uint64_t h) {
+    const uint8_t *b = (const uint8_t *)p;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
+    return h;
+}
+
+/* The hash of the visible part (DRAW_W guest columns) of a w-wide device image. */
+static uint64_t twin_hash_visible(const uint32_t *img, int scale) {
+    const uint32_t w = (uint32_t)FB_W * (uint32_t)scale, h = (uint32_t)FB_H * (uint32_t)scale;
+    uint64_t x = 0xcbf29ce484222325ull;
+    for (uint32_t y = 0; y < h; y++) x = twin_hash(img + (size_t)y * w, (size_t)DRAW_W * scale * 4u, x);
+    return x;
+}
+
+/* Identity of every in-step twin with its authentic image (colour and depth), when the two
+ * chains have the same scale; a twin behind its image counts as a failure. Run before the
+ * targets of a case are freed (coherence_reset_targets) and at the end of the suite. */
+static unsigned s_twin_identity_failures = 0;
+static int s_twin_identity_checking = 0;
+
+static void twin_identity_check(const char *when) {
+    if (!s_twin || s_twin_identity_checking) return;
+    const int compare = s_tscale == s_scale && !s_twin_color;   /* else only the in-step check */
+    s_twin_identity_checking = 1;
+    const size_t px = (size_t)SCL_W * SCL_H;
+    uint32_t *a = (uint32_t *)malloc(px * 4u), *b = (uint32_t *)malloc(px * 4u);
+    if (!a || !b) { free(a); free(b); s_twin_identity_failures++; s_twin_identity_checking = 0; return; }
+    for (int i = 0; i < MAX_TGT; i++) {
+        Target *t = &s_tgts[i];
+        if (!t->used || !t->gpu_valid || !t->timg) continue;
+        if (t->tgen != t->wgen) {
+            if (s_twin_identity_failures++ < 8) {
+                fflush(stdout);
+                fprintf(stderr, "gpu coherence selftest [twin identity]: %s (%s): twin of target 0x%06x is "
+                        "behind (wgen %llu tgen %llu; last lag: %s)\n", when, s_twin_case, t->fba,
+                        (unsigned long long)t->wgen, (unsigned long long)t->tgen,
+                        s_twin_lag_cause ? s_twin_lag_cause : "none");
+            }
+            continue;
+        }
+        if (!compare) continue;
+        if (!coherence_read_device(t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 4u, a) ||
+            !twin_read_image(t->timg, VK_IMAGE_ASPECT_COLOR_BIT, &t->tlayout,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 4u, TSCL_W, TSCL_H, b)) {
+            s_twin_identity_failures++;
+            continue;
+        }
+        if (memcmp(a, b, px * 4u) != 0) {
+            size_t k = 0, nd = 0;
+            while (k < px && a[k] == b[k]) k++;
+            for (size_t j = k; j < px; j++) nd += a[j] != b[j];
+            if (s_twin_identity_failures++ < 8) {
+                fflush(stdout);
+                fprintf(stderr, "gpu coherence selftest [twin identity]: %s (%s): twin of target 0x%06x "
+                        "differs in %zu pixels, first (%u,%u): image 0x%08x, twin 0x%08x (wgen %llu, tfb %d, "
+                        "depth twin %d)\n", when, s_twin_case, t->fba, nd,
+                        (unsigned)(k % SCL_W), (unsigned)(k / SCL_W), a[k], b[k],
+                        (unsigned long long)t->wgen, t->tfb != VK_NULL_HANDLE,
+                        t->dep && t->dep->timg != VK_NULL_HANDLE);
+            }
+        }
+    }
+    for (int i = 0; i < MAX_DEP; i++) {
+        DepthEnt *d = &s_deps[i];
+        if (!d->used || !d->timg || d->cpu_dirty) continue;
+        if (d->tgen != d->wgen) {
+            if (s_twin_identity_failures++ < 8)
+                fprintf(stderr, "gpu coherence selftest [twin identity]: %s: twin of depth 0x%06x is "
+                        "behind (last lag: %s)\n", when, d->zba,
+                        s_twin_lag_cause ? s_twin_lag_cause : "none");
+            continue;
+        }
+        if (!compare) continue;
+        uint16_t *da = (uint16_t *)a, *db = (uint16_t *)b;
+        if (!coherence_read_device(d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
+                                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 2u, da) ||
+            !twin_read_image(d->timg, VK_IMAGE_ASPECT_DEPTH_BIT, &d->tlayout,
+                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 2u, TSCL_W, TSCL_H, db)) {
+            s_twin_identity_failures++;
+            continue;
+        }
+        if (memcmp(da, db, px * 2u) != 0 && s_twin_identity_failures++ < 8)
+            fprintf(stderr, "gpu coherence selftest [twin identity]: %s (%s): twin of depth 0x%06x differs\n",
+                    when, s_twin_case, d->zba);
+    }
+    free(a); free(b);
+    s_twin_identity_checking = 0;
+}
+
+typedef struct {
+    int scale;                             /* the run's shown scale */
+    uint64_t vram[3], shown[3];
+} TwinRef;
+
+typedef struct {
+    uint8_t *vram[3];                      /* guest VRAM of T1, T2, T3 after the scene */
+    uint32_t *shown[3];                    /* what the presenter would show for each */
+    int shown_scale[3];
+    TwinRef ref;
+} TwinRun;
+
+static const uint32_t k_twin_fba[3] = { TWIN_T1, TWIN_T2, TWIN_T3 };
+static const uint32_t k_twin_fmt[3] = { 1u, 3u, 1u };
+
+static void twin_run_free(TwinRun *r) {
+    for (int i = 0; i < 3; i++) { free(r->vram[i]); free(r->shown[i]); }
+    memset(r, 0, sizeof(*r));
+}
+
+static int twin_run_scene(TwinRun *r) {
+    coherence_reset_targets();
+    coherence_reset_depths();
+    for (int i = 0; i < 3; i++) {
+        const uint32_t bytes = 512u * FB_H * (k_twin_fmt[i] == 3u ? 4u : 2u);
+        memset(SR_HOST(0x04000000u | k_twin_fba[i]), 0, bytes);
+        sr_gpu_vram_dirty(0x04000000u | k_twin_fba[i], bytes);
+    }
+    ge_set_gpu_hooks(&k_hooks);
+    if (ge_run_list(twin_list(), 0) != 0) return 0;
+    if (s_nbatch && !submit_pending()) return 0;
+    for (int i = 0; i < 3; i++) {
+        Target *t = target_find_by_fba(k_twin_fba[i]);
+        if (!t || !t->gpu_valid) {
+            fprintf(stderr, "gpu coherence selftest [twin-scene]: target %d is not on the GPU\n", i + 1);
+            return 0;
+        }
+        const uint32_t bytes = 512u * FB_H * (k_twin_fmt[i] == 3u ? 4u : 2u);
+        GeGpuFbDescriptor d = { .addr = 0x04000000u | k_twin_fba[i], .format = k_twin_fmt[i],
+                                .stride = 512, .width = 480, .height = FB_H };
+        if (gegpu_sync_guest_fb(&d) != GEGPU_SYNC_OK) return 0;
+        r->vram[i] = (uint8_t *)malloc(bytes);
+        if (!r->vram[i]) return 0;
+        memcpy(r->vram[i], SR_HOST(0x04000000u | k_twin_fba[i]), bytes);
+        r->ref.vram[i] = twin_hash(r->vram[i], bytes, 0xcbf29ce484222325ull);
+        /* what gegpu_present hands the presenter (target_prepare_present's choice) */
+        t->tshow = s_twin && t->timg && !s_twin_authentic_shown && t->tgen == t->wgen;
+        const int sc = present_scale(t);
+        const uint32_t w = (uint32_t)FB_W * (uint32_t)sc, h = (uint32_t)FB_H * (uint32_t)sc;
+        r->shown[i] = (uint32_t *)malloc((size_t)w * h * 4u);
+        r->shown_scale[i] = sc;
+        if (!r->shown[i]) return 0;
+        VkImageLayout *l = t->tshow ? &t->tlayout : &t->layout;
+        if (!twin_read_image(present_image(t), VK_IMAGE_ASPECT_COLOR_BIT, l,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 4u, w, h, r->shown[i]))
+            return 0;
+        t->tshow = 0;
+        r->ref.shown[i] = twin_hash_visible(r->shown[i], sc);
+        const char *dump = getenv("SR_GPU_TWIN_DUMP");
+        if (dump && dump[0]) {
+            char path[512];
+            snprintf(path, sizeof(path), "%s_t%d_s%d.raw", dump, i + 1, sc);
+            FILE *f = fopen(path, "wb");
+            if (f) { fwrite(r->shown[i], 4u, (size_t)w * h, f); fclose(f); }
+        }
+    }
+    r->ref.scale = r->shown_scale[0];
+    return 1;
+}
+
+/* Over device rows [y0, y1) and the visible columns: are all rows non-decreasing in every colour
+ * channel, does every channel sit on the 5551 lattice, and how many red values are there? */
+static void twin_gradient_stats(const uint32_t *img, int scale, uint32_t y0, uint32_t y1, int *monotonic,
+                                int *distinct_red, int *on_5551) {
+    uint8_t seen[256] = {0};
+    *monotonic = 1; *on_5551 = 1; *distinct_red = 0;
+    const uint32_t w = DRAW_W * (uint32_t)scale, stride = FB_W * (uint32_t)scale;
+    for (uint32_t y = y0 * (uint32_t)scale; y < y1 * (uint32_t)scale; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            uint32_t c = img[y * stride + x];
+            for (int ch = 0; ch < 3; ch++) {
+                uint32_t v = (c >> (8 * ch)) & 0xFFu;
+                if (x && v < ((img[y * stride + x - 1] >> (8 * ch)) & 0xFFu)) *monotonic = 0;
+                if (((v >> 3) << 3 | (v >> 5)) != v) *on_5551 = 0;
+            }
+            seen[c & 0xFFu] = 1;
+        }
+    }
+    for (int i = 0; i < 256; i++) *distinct_red += seen[i];
+}
+
+/* Device rows [y0, y1) of two images of the same scale, visible columns. */
+static int twin_rows_equal(const uint32_t *a, const uint32_t *b, int scale, uint32_t y0, uint32_t y1) {
+    const uint32_t w = DRAW_W * (uint32_t)scale, stride = FB_W * (uint32_t)scale;
+    for (uint32_t y = y0 * (uint32_t)scale; y < y1 * (uint32_t)scale; y++)
+        if (memcmp(a + (size_t)y * stride, b + (size_t)y * stride, w * 4u) != 0) return 0;
+    return 1;
+}
+
+/* T2's sprite samples T1 with nearest filtering, 1:1 in guest texels: the PSP samples at the
+ * pixel centre, and nearest takes the centre of guest texel floor(u), which is device texel
+ * s*floor(X/s) + s/2 of a twin at scale s. So T2's twin equals T1's twin read at those texels. */
+static int twin_sampled_equal(const uint32_t *t2, const uint32_t *t1, int scale) {
+    const uint32_t s = (uint32_t)scale, w = DRAW_W * s, stride = FB_W * s, h = FB_H * s;
+    for (uint32_t y = 0; y < h; y++) {
+        const uint32_t sy = s * (y / s) + s / 2u;
+        for (uint32_t x = 0; x < w; x++) {
+            const uint32_t sx = s * (x / s) + s / 2u;
+            if (t2[(size_t)y * stride + x] != t1[(size_t)sy * stride + sx]) {
+                fprintf(stderr, "gpu coherence selftest [twin-scene]: T2 (%u,%u) = 0x%08x, T1 (%u,%u) = 0x%08x\n",
+                        x, y, t2[(size_t)y * stride + x], sx, sy, t1[(size_t)sy * stride + sx]);
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static int twin_ref_write(const char *path, const TwinRef *r) {
+    FILE *f = fopen(path, "w");
+    if (!f) return 0;
+    fprintf(f, "%d", r->scale);
+    for (int i = 0; i < 3; i++) fprintf(f, " %016llx %016llx", (unsigned long long)r->vram[i],
+                                        (unsigned long long)r->shown[i]);
+    fprintf(f, "\n");
+    return fclose(f) == 0;
+}
+
+static int twin_ref_read(const char *path, TwinRef *r) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    unsigned long long v[6];
+    int n = fscanf(f, "%d %llx %llx %llx %llx %llx %llx", &r->scale, &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]);
+    fclose(f);
+    if (n != 7) return 0;
+    for (int i = 0; i < 3; i++) { r->vram[i] = v[2 * i]; r->shown[i] = v[2 * i + 1]; }
+    return 1;
+}
+
+static int coherence_run_twin_scene(void) {
+    const char *name = "twin-scene";
+    const char *ref_path = getenv("SR_GPU_TWIN_REF");
+    /* A device that refuses the twin (gegpu_init says why) runs twin-off: report that as a SKIP,
+     * and never let such a run write or check a reference meant for the twin. */
+    if (s_twin_unavailable) {
+        printf("gpu coherence selftest: SKIP %s: the host twin was requested (SR_GPU_TWIN_COLOR=%s) but this "
+               "device refused it\n", name, getenv("SR_GPU_TWIN_COLOR"));
+        return 1;
+    }
+    const unsigned long ops0 = s_cnt_twin_ops, reseed0 = s_cnt_twin_reseed;
+    TwinRun run = {0};
+    int ok = twin_run_scene(&run);
+    if (!ok) fprintf(stderr, "gpu coherence selftest [%s]: the scene did not run\n", name);
+    if (ok && !s_twin) {
+        int mono, distinct, lattice;
+        twin_gradient_stats(run.shown[0], run.shown_scale[0], 0, 136, &mono, &distinct, &lattice);
+        if (mono || !lattice || distinct > 32) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL the authentic gradient is not dithered "
+                    "5551 (monotonic=%d lattice=%d red levels=%d)\n", name, mono, lattice, distinct);
+            ok = 0;
+        }
+        if (ok && ref_path && !twin_ref_write(ref_path, &run.ref)) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL cannot write %s\n", name, ref_path);
+            ok = 0;
+        }
+        if (ok)
+            printf("gpu coherence selftest: PASS %s twin off scale=%d (reference %s)\n", name, s_scale,
+                   ref_path ? ref_path : "not written");
+    } else if (ok) {
+        if (s_cnt_twin_ops == ops0 || s_cnt_twin_reseed != reseed0) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL twin ops=%lu re-seeds=%lu (want ops, no "
+                    "re-seed)\n", name, s_cnt_twin_ops - ops0, s_cnt_twin_reseed - reseed0);
+            ok = 0;
+        }
+        for (int i = 0; i < 3; i++) if (run.shown_scale[i] != s_tscale) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL target %d shows its authentic image\n", name, i + 1);
+            ok = 0;
+        }
+        TwinRef ref;
+        int have_ref = ref_path && twin_ref_read(ref_path, &ref);
+        if (ref_path && !have_ref) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL no reference in %s\n", name, ref_path);
+            ok = 0;
+        }
+        const char *checked = "no reference";
+        if (have_ref && ref.scale != s_scale) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL the reference was made at scale %d, this run "
+                    "is at %d: the twin-on run is checked against the twin-off run at its own scale\n",
+                    name, ref.scale, s_scale);
+            ok = 0;
+        } else if (have_ref) {
+            checked = "guest VRAM equals the twin-off run at this scale";
+            for (int i = 0; i < 3; i++) if (run.ref.vram[i] != ref.vram[i]) {
+                fprintf(stderr, "gpu coherence selftest [%s]: FAIL guest VRAM of target %d differs from "
+                        "the twin-off run at scale %d\n", name, i + 1, s_scale);
+                ok = 0;
+            }
+            if (!s_twin_color) {
+                checked = "guest VRAM and the shown images equal the twin-off run at this scale";
+                for (int i = 0; i < 3; i++) if (run.ref.shown[i] != ref.shown[i]) {
+                    fprintf(stderr, "gpu coherence selftest [%s]: FAIL the native twin of target %d differs "
+                            "from the twin-off image at scale %d\n", name, i + 1, s_scale);
+                    ok = 0;
+                }
+            }
+        }
+        /* T2's twin samples T1's twin (the direct bind), nearest, at each guest texel's centre.
+         * Exact at scale 1 only: above it, main's hook_sprite shifts sprite UVs by 0.5 - 0.5 /
+         * scale of a texel (centre_shift), in both passes, so a device pixel can take the next
+         * texel. #2104 removes that shift; whichever of the two lands second runs this at every
+         * scale. Above 1x the full-colour check below shows that the pass sampled the twin. */
+        if (s_scale == 1 && !twin_sampled_equal(run.shown[1], run.shown[0], run.shown_scale[0])) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL T2's twin is not T1's twin sampled at its "
+                    "texel centres (the twin's pass did not sample the twin)\n", name);
+            ok = 0;
+        }
+        int mono = 0, distinct = 0, lattice = 0, omono = 0, odistinct = 0, olattice = 0;
+        if (s_twin_color) {
+            const int sc = run.shown_scale[0];
+            twin_gradient_stats(run.shown[0], sc, 0, 136, &mono, &distinct, &lattice);
+            if (!mono || lattice || distinct < 160) {
+                fprintf(stderr, "gpu coherence selftest [%s]: FAIL the shown gradient is not full colour "
+                        "(monotonic=%d lattice=%d red levels=%d)\n", name, mono, lattice, distinct);
+                ok = 0;
+            }
+            twin_gradient_stats(run.shown[0], sc, 136, FB_H, &omono, &odistinct, &olattice);
+            if (!omono || olattice || odistinct < 120) {
+                fprintf(stderr, "gpu coherence selftest [%s]: FAIL the blended gradient is not full colour "
+                        "(monotonic=%d lattice=%d red levels=%d)\n", name, omono, olattice, odistinct);
+                ok = 0;
+            }
+            if (!twin_rows_equal(run.shown[2], run.shown[0], sc, 0, 136)) {
+                fprintf(stderr, "gpu coherence selftest [%s]: FAIL T3's twin rows are not T1's twin rows (the "
+                        "block transfer did not reach the twins)\n", name);
+                ok = 0;
+            }
+            /* T2's twin took T1's full-colour twin, not T1's dithered 5551 image. */
+            int smono = 0, sdistinct = 0, slattice = 0;
+            twin_gradient_stats(run.shown[1], sc, 0, 136, &smono, &sdistinct, &slattice);
+            if (slattice || sdistinct <= 32) {
+                fprintf(stderr, "gpu coherence selftest [%s]: FAIL T2's twin is on the 5551 lattice (red levels=%d): "
+                        "the twin's pass sampled the authentic T1\n", name, sdistinct);
+                ok = 0;
+            }
+        }
+        if (ok)
+            printf("gpu coherence selftest: PASS %s twin %dx colour %s: %s; twin ops=%lu, no re-seed%s\n",
+                   name, s_tscale, s_twin_color ? "full" : "native", checked, s_cnt_twin_ops - ops0,
+                   s_twin_color ? "; shown gradients smooth" : "");
+        if (ok && s_twin_color)
+            printf("gpu coherence selftest: twin-scene levels: shown gradient %d red levels, blended %d\n",
+                   distinct, odistinct);
+    }
+    twin_run_free(&run);
+    coherence_reset_targets();
+    coherence_reset_depths();
+    return ok;
+}
+
+/* twin-gate: the switch's values and the Ace gate (ENHANCEMENT_CONTRACT.md 10.11). Only "1" and
+ * "native" ask for the twin; unset, empty, "0" and "off" are off; anything else is refused and off,
+ * never more permissive. With Ace Mode off (`--authentic`) the twin stays off whatever the value.
+ * The run's own value must have decided s_twin exactly so, unless the device refused the twin. */
+static int coherence_run_twin_gate(void) {
+    const char *name = "twin-gate";
+    static const struct { const char *v; int want; } k_vals[] = {
+        { NULL, 0 }, { "", 0 }, { "0", 0 }, { "off", 0 }, { "1", 1 }, { "native", 2 },
+        { "on", -1 }, { "yes", -1 }, { "true", -1 }, { "2", -1 }, { "Native", -1 }, { "1 ", -1 },
+        { "OFF", -1 }, { "full", -1 },
+    };
+    int ok = 1;
+    for (size_t i = 0; i < sizeof(k_vals) / sizeof(k_vals[0]); i++) {
+        const int got = twin_mode_parse(k_vals[i].v);
+        if (got != k_vals[i].want) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL SR_GPU_TWIN_COLOR=%s%s%s reads as %d, want %d\n",
+                    name, k_vals[i].v ? "\"" : "", k_vals[i].v ? k_vals[i].v : "(unset)",
+                    k_vals[i].v ? "\"" : "", got, k_vals[i].want);
+            ok = 0;
+        }
+    }
+    const char *v = getenv("SR_GPU_TWIN_COLOR");
+    const int mode = twin_mode_parse(v);
+    const int want_on = g_ace_on && mode > 0;
+    if (s_twin_unavailable) {
+        printf("gpu coherence selftest: SKIP %s run check: this device refused the twin\n", name);
+    } else if (s_twin != want_on || (want_on && s_twin_color != (mode == 1))) {
+        fprintf(stderr, "gpu coherence selftest [%s]: FAIL SR_GPU_TWIN_COLOR=%s with Ace Mode %s: twin %s, "
+                "want %s\n", name, v ? v : "(unset)", g_ace_on ? "on" : "off", s_twin ? "on" : "off",
+                want_on ? "on" : "off");
+        ok = 0;
+    }
+    if (ok)
+        printf("gpu coherence selftest: PASS %s value=%s ace=%s twin=%s\n", name, v ? v : "(unset)",
+               g_ace_on ? "on" : "off", s_twin ? "on" : "off");
+    return ok;
+}
+
+/* twin-alloc-fail (`--twin 1|native`, a twin-off reference at the same scale): the Nth twin
+ * allocation of the scene fails (N = 1: T1's twin; 2: its depth twin; 3: their framebuffer; 4 and
+ * 5: T2's twin and framebuffer, after T1's twin has drawn). Each time the twin must go off for the
+ * run, once, and the scene must then equal the twin-off run exactly: guest VRAM and the shown
+ * images, at the user's scale, never a lower one. The twin is made again between steps. */
+static int coherence_run_twin_alloc_fail(void) {
+    const char *name = "twin-alloc-fail";
+    if (s_twin_unavailable) {
+        printf("gpu coherence selftest: SKIP %s: this device refused the twin\n", name);
+        return 1;
+    }
+    TwinRef ref;
+    const char *ref_path = getenv("SR_GPU_TWIN_REF");
+    if (!s_twin || !ref_path || !twin_ref_read(ref_path, &ref) || ref.scale != s_scale) {
+        fprintf(stderr, "gpu coherence selftest [%s]: needs --twin 1|native and a twin-off reference at "
+                "scale %d\n", name, s_scale);
+        return 0;
+    }
+    const int color = s_twin_color;
+    int ok = 1;
+    for (int n = 1; ok && n <= 5; n++) {
+        coherence_reset_targets();
+        coherence_reset_depths();
+        if (!s_twin && !twin_init(color)) {
+            fprintf(stderr, "gpu coherence selftest [%s]: the twin could not be made again\n", name);
+            return 0;
+        }
+        const unsigned long fail0 = s_cnt_twin_alloc_fail;
+        s_twin_inject_fail = n;
+        TwinRun run = {0};
+        int ran = twin_run_scene(&run);
+        const int reached = s_twin_inject_fail == 0;
+        s_twin_inject_fail = 0;
+        if (!ran || !reached) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL step %d: %s\n", name, n,
+                    !ran ? "the scene did not run" : "the scene never made that many twin allocations");
+            ok = 0;
+        } else if (s_twin || s_cnt_twin_alloc_fail != fail0 + 1) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL step %d: twin %s, failures counted %lu (want "
+                    "off, 1)\n", name, n, s_twin ? "still on" : "off", s_cnt_twin_alloc_fail - fail0);
+            ok = 0;
+        } else {
+            for (int i = 0; i < 3; i++) {
+                if (run.shown_scale[i] != s_scale || run.ref.vram[i] != ref.vram[i] ||
+                    run.ref.shown[i] != ref.shown[i]) {
+                    fprintf(stderr, "gpu coherence selftest [%s]: FAIL step %d: target %d (shown at %dx) differs "
+                            "from the twin-off run at %dx (%s)\n", name, n, i + 1, run.shown_scale[i], s_scale,
+                            run.ref.vram[i] != ref.vram[i] ? "guest VRAM" : "the shown image");
+                    ok = 0;
+                }
+            }
+        }
+        twin_run_free(&run);
+    }
+    coherence_reset_targets();
+    coherence_reset_depths();
+    if (ok)
+        printf("gpu coherence selftest: PASS %s 5 steps colour %s scale=%d: the twin went off once each time and "
+               "the scene equals the twin-off run\n", name, color ? "full" : "native", s_scale);
+    return ok;
+}
+
+/* Fail-closed sync: see the section comment. */
+static int coherence_run_twin_sync(void) {
+    const char *name = "twin-sync";
+    if (!s_twin || s_tscale != s_scale) {
+        fprintf(stderr, "gpu coherence selftest [%s]: needs --twin native at scale 1\n", name);
+        return 0;
+    }
+    TwinRun run = {0};
+    int ok = twin_run_scene(&run);
+    twin_run_free(&run);
+    Target *t = ok ? target_find_by_fba(TWIN_T1) : NULL;
+    if (!t || !t->timg) { fprintf(stderr, "gpu coherence selftest [%s]: no twin\n", name); ok = 0; }
+    const unsigned long reseed0 = s_cnt_twin_reseed, auth0 = s_cnt_twin_present_auth;
+    if (ok) {
+        t->wgen++;                              /* a write the twin did not take */
+        s_twin_lag_cause = "twin-sync's simulated write";
+        ok = target_prepare_present(t);
+        if (ok && (t->tshow || s_cnt_twin_present_auth != auth0 + 1 || s_cnt_twin_reseed != reseed0 + 1)) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL a twin behind its image: showed twin=%d, "
+                    "authentic presents +%lu, re-seeds +%lu (want 0, 1, 1)\n", name, t->tshow,
+                    s_cnt_twin_present_auth - auth0, s_cnt_twin_reseed - reseed0);
+            ok = 0;
+        }
+        if (ok) ok = target_prepare_present(t);
+        if (ok && (!t->tshow || s_cnt_twin_reseed != reseed0 + 1)) {
+            fprintf(stderr, "gpu coherence selftest [%s]: FAIL the present after the re-seed did not show "
+                    "the twin\n", name);
+            ok = 0;
+        }
+        t->tshow = 0;
+        const unsigned failures0 = s_twin_identity_failures;
+        twin_identity_check(name);
+        if (s_twin_identity_failures != failures0) ok = 0;
+    }
+    if (s_nbatch) (void)submit_pending();
+    (void)cmd_drain(GEGPU_BOUNDARY_LIFETIME);
+    readback_poll();
+    for (int i = 0; i < READBACK_FRAMES; i++)
+        if (s_readback[i].pending) (void)readback_finish(&s_readback[i], 1, 0);
+    /* this case's re-seed is expected: take it out of the suite's no-re-seed count */
+    s_cnt_twin_reseed = reseed0;
+    if (ok) printf("gpu coherence selftest: PASS %s a twin behind its image showed the authentic image, "
+                   "was re-seeded once, then shown again\n", name);
+    coherence_reset_targets();
+    coherence_reset_depths();
+    return ok;
+}
+
+static int coherence_selftest_cases(void) {
     /* SR_GPU_COHERENCE_CASE=scaled-upload (the harness's --case) runs that case alone, as the
      * recipe does at render scales 2 and 4: the other fixtures expect 1x pixels (a filtered sample
      * lands on other device pixels at a higher scale). Any other value fails. */
@@ -5841,6 +6993,8 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "scaled-upload") == 0) return coherence_run_scaled_upload();
         if (strcmp(only, "mip-lod") == 0) return coherence_run_mip_lod();
         if (strcmp(only, "readback-rows") == 0) return coherence_run_readback_rows();
+        if (strcmp(only, "sprite-scaled") == 0) return coherence_run_sprite_scaled();
+        if (strcmp(only, "uv-edge-clamp") == 0) return coherence_run_uv_edge_clamp();
         if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
         if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
         if (strcmp(only, "wide-fill") == 0) return coherence_run_wide_fill();
@@ -5851,6 +7005,10 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "depth-zbp-switch") == 0) return coherence_run_depth_zbp_switch();
         if (strcmp(only, "depth-zbw-switch") == 0) return coherence_run_depth_zbw_switch();
         if (strcmp(only, "depth-evict-overlap") == 0) return coherence_run_depth_evict_overlap();
+        if (strcmp(only, "twin-scene") == 0) return coherence_run_twin_scene();
+        if (strcmp(only, "twin-sync") == 0) return coherence_run_twin_sync();
+        if (strcmp(only, "twin-gate") == 0) return coherence_run_twin_gate();
+        if (strcmp(only, "twin-alloc-fail") == 0) return coherence_run_twin_alloc_fail();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }
@@ -5905,6 +7063,8 @@ int gegpu_coherence_selftest(void) {
      * ones before them leave. */
     if (!coherence_run_mip_levels()) ok = 0;
     if (!coherence_run_psp_sample_points()) ok = 0;
+    if (!coherence_run_sprite_scaled()) ok = 0;
+    if (!coherence_run_uv_edge_clamp()) ok = 0;
     /* After the mip fixtures: it rewrites the depth buffer they start from. */
     if (!coherence_run_stencil_parity()) ok = 0;
     if (!coherence_run_stencil_constant()) ok = 0;
@@ -5914,11 +7074,14 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_readback_rows()) ok = 0;
     if (!coherence_run_stacked_targets()) ok = 0;
     if (!coherence_run_wide_fill()) ok = 0;
-    /* Last: they free every depth surface the cases above share. */
+    /* Last: they free every depth surface the cases above share (the twin cases too). */
     if (!coherence_run_depth_evict_newer()) ok = 0;
     if (!coherence_run_depth_zbp_switch()) ok = 0;
     if (!coherence_run_depth_zbw_switch()) ok = 0;
     if (!coherence_run_depth_evict_overlap()) ok = 0;
+    if (!coherence_run_twin_gate()) ok = 0;
+    if (!coherence_run_twin_scene()) ok = 0;
+    if (s_twin && s_tscale == s_scale && !coherence_run_twin_sync()) ok = 0;
     coherence_reset_targets();
     return ok;
 }
@@ -5973,6 +7136,241 @@ int gegpu_ace_af_selftest(void) {
     }
     if (ok) printf("gpu ace selftest: PASS af=%d through-mode exact, transformed linear filtered, "
                    "nearest kept\n", s_ace_af);
+    return ok;
+}
+
+/* Ace smooth motion's HUD mask and depth (ace_hud.h), through ge_gpu.c's own hooks and a real
+ * present: which draws ge_gpu.c notes as HUD (through mode, not clear mode, not sampling a
+ * render target), that a box is in guest pixels (the mask covers exactly the pixels the draw
+ * changed), that depth is handed on only after a draw wrote it (also when two display buffers
+ * share one depth buffer), and that a published mask reaches only the image it was published
+ * for. The show pass below stands in for gui.c's and takes what was published for each image. */
+static struct {
+    int calls, got;
+    VkImage src;
+    int have_bits;
+    VkImage depth;
+    uint32_t bits[ACE_SMOOTH_HUD_WORDS];
+} s_ahc;
+
+static void *ace_hud_cell_show(void *cmd, void *src, int *w, int *h) {
+    (void)cmd; (void)w; (void)h;
+    const AceSmoothAux *aux = ace_hud_take((VkImage)src);
+    s_ahc.calls++;
+    s_ahc.src = (VkImage)src;
+    s_ahc.got = aux != NULL;
+    s_ahc.have_bits = aux && aux->hud_bits;
+    s_ahc.depth = aux ? aux->depth : VK_NULL_HANDLE;
+    if (aux && aux->hud_bits) memcpy(s_ahc.bits, aux->hud_bits, sizeof(s_ahc.bits));
+    else memset(s_ahc.bits, 0, sizeof(s_ahc.bits));
+    return NULL;
+}
+
+static int ahc_bit(int x, int y) {
+    uint32_t k = (uint32_t)(y * ACE_SMOOTH_HUD_W + x);
+    return (int)((s_ahc.bits[k >> 5] >> (k & 31u)) & 1u);
+}
+
+static void ahc_state(uint32_t base, uint32_t zbp, int through) {
+    memset(s_ge, 0, sizeof(*s_ge));
+    s_ge->fbp = base;
+    s_ge->fbw = 512u;
+    s_ge->fbfmt = 3u;
+    s_ge->zbp = zbp;
+    s_ge->zbw = 512u;
+    s_ge->scis_x2 = (int)FB_W - 1;
+    s_ge->scis_y2 = (int)FB_H - 1;
+    s_ge->maxz = 65535u;
+    if (through) s_ge->vtype = 1u << 23;
+}
+
+static int ahc_sprite(float x0, float y0, float x1, float y1, uint32_t c) {
+    GeVtx p0, p1;
+    ge_state_note_external_write();   /* the cell writes GE state directly, as a command would */
+    wrap_vtx(&p0, x0, y0, c);
+    wrap_vtx(&p1, x1, y1, c);
+    p0.u = x0; p0.v = y0; p1.u = x1; p1.v = y1;
+    return hook_sprite(&p0, &p1, 0);
+}
+
+/* Presents `base` and returns 1 when the show pass saw the image the present showed: the target's own,
+ * or its host twin (#2050). gegpu_present keys the HUD mask by that image. */
+static int ahc_present(uint32_t base, const char *step) {
+    Target *t = target_find_by_fba(base & 0x00FFFFFFu);
+    memset(&s_ahc, 0, sizeof(s_ahc));
+    int pr = gegpu_present(base, 3, 512u);
+    if (pr != GEGPU_PRESENT_SHOWN || !t || s_ahc.calls != 1 || s_ahc.src != present_image(t)) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: %s: present %d, show pass calls %d, "
+                        "image %s\n", step, pr, s_ahc.calls, t && s_ahc.src == present_image(t) ? "right" : "wrong");
+        return 0;
+    }
+    return 1;
+}
+
+static int coherence_run_ace_hud(void) {
+    const uint32_t base_a = 0x04000000u, zbp = 0x04088000u, base_b = 0x040CC000u, base_c = 0x04154000u;
+    const uint32_t hud = 0xFF332211u;
+    int ok = 1;
+    coherence_reset_targets();
+    memset(SR_HOST(base_a), 0, 0x165000u);
+    sr_gpu_vram_dirty(base_a, 0x165000u);
+    ace_hud_enable(1);
+    sdl3vk_set_show_pass(ace_hud_cell_show);
+    if (!g_ace_hud_on) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: the HUD mask is not on\n");
+        ok = 0;
+    }
+
+    /* A small render target the HUD frame will sample. */
+    ok = ok && coherence_queue_g1_batch(base_c, 64u, 3u) && submit_pending();
+
+    /* Frame 1 on A: a clear that fills depth, a through-mode sprite and triangle (HUD), a
+     * transform-mode sprite (scene), and a through-mode sprite that samples target C. */
+    ahc_state(base_a, zbp, 1);
+    s_ge->clear = 1;
+    s_ge->clear_mode = 0x501u;                  /* colour and depth */
+    ok = ok && ahc_sprite(0.0f, 0.0f, 480.0f, 272.0f, 0x00000000u);
+    s_ge->clear = 0;
+    s_ge->clear_mode = 0;
+    ok = ok && ahc_sprite(100.0f, 100.0f, 110.0f, 104.0f, hud);
+    GeVtx ta, tb, tc;
+    wrap_vtx(&ta, 40.0f, 40.0f, hud);
+    wrap_vtx(&tb, 50.0f, 40.0f, hud);
+    wrap_vtx(&tc, 40.0f, 50.0f, hud);
+    ge_state_note_external_write();
+    ok = ok && hook_tri(&ta, &tb, &tc, 0);
+    s_ge->vtype = 0;
+    ok = ok && ahc_sprite(200.0f, 50.0f, 210.0f, 60.0f, hud);
+    s_ge->vtype = 1u << 23;
+    s_ge->tex_enable = 1;
+    s_ge->tex_addr = base_c;
+    s_ge->tex_bufw = 64u;
+    s_ge->tex_fmt = 3;
+    s_ge->tex_w = 64;
+    s_ge->tex_h = 64;
+    s_ge->tex_func = 3;
+    {
+        /* The sprite binds target C's image directly (no readback): a post effect. */
+        uint64_t rtt = s_cnt_rtt;
+        ok = ok && ahc_sprite(300.0f, 200.0f, 320.0f, 210.0f, 0xFFFFFFFFu);
+        if (ok && s_cnt_rtt != rtt + 1u) {
+            fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: the sprite did not sample target C\n");
+            ok = 0;
+        }
+    }
+    s_ge->tex_enable = 0;
+    ok = ok && submit_pending();
+    Target *a = target_find_by_fba(base_a & 0x00FFFFFFu);
+    DepthEnt *z = a ? a->dep : NULL;
+    ok = ok && a && z && ahc_present(base_a, "frame 1");
+    if (ok) {
+        int wrong = 0;
+        for (int y = 0; y < ACE_SMOOTH_HUD_H; y++)
+            for (int x = 0; x < ACE_SMOOTH_HUD_W; x++) {
+                int want = (x >= 100 && x < 110 && y >= 100 && y < 104) ||
+                           (x >= 40 && x < 50 && y >= 40 && y < 50);
+                wrong += ahc_bit(x, y) != want;
+            }
+        if (!s_ahc.have_bits || wrong || s_ahc.depth != z->img) {
+            fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 1: mask %d, %d bits wrong "
+                            "(scene %d, post effect %d, clear %d), depth %s\n",
+                    s_ahc.have_bits, wrong, ahc_bit(205, 55), ahc_bit(310, 205), ahc_bit(0, 0),
+                    s_ahc.depth == z->img ? "handed on" : "missing");
+            ok = 0;
+        }
+    }
+    /* The box is in guest pixels: around the sprite, the mask is set exactly where it drew. */
+    if (ok && target_readback(a)) {
+        const uint32_t *px = (const uint32_t *)SR_HOST(base_a);
+        int wrong = 0;
+        for (int y = 90; y < 115; y++)
+            for (int x = 90; x < 125; x++)
+                wrong += ((px[y * 512 + x] & 0x00FFFFFFu) == (hud & 0x00FFFFFFu)) != ahc_bit(x, y);
+        if (wrong) {
+            fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: %d pixels around the HUD sprite differ "
+                            "between what it drew and its mask\n", wrong);
+            ok = 0;
+        }
+    } else if (ok) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: readback failed\n");
+        ok = 0;
+    }
+
+    /* Frame 2 on B, which shares A's depth buffer, writes no depth: the depth image still
+     * holds frame 1, so it is not handed on. */
+    ahc_state(base_b, zbp, 1);
+    ok = ok && ahc_sprite(10.0f, 10.0f, 20.0f, 20.0f, hud) && submit_pending();
+    Target *b = target_find_by_fba(base_b & 0x00FFFFFFu);
+    ok = ok && b && b->dep == z && ahc_present(base_b, "frame 2");
+    if (ok && (!s_ahc.have_bits || !ahc_bit(15, 15) || ahc_bit(105, 102) || s_ahc.depth != VK_NULL_HANDLE)) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 2: mask %d box %d stale box %d, "
+                        "depth %s\n", s_ahc.have_bits, ahc_bit(15, 15), ahc_bit(105, 102),
+                s_ahc.depth ? "handed on though no draw wrote it" : "withheld");
+        ok = 0;
+    }
+
+    /* Frame 3 on A: a transform-mode draw with depth writes; depth is handed on again. */
+    ahc_state(base_a, zbp, 0);
+    s_ge->ztest_enable = 1;
+    s_ge->ztest = 1;                            /* ALWAYS */
+    ok = ok && ahc_sprite(60.0f, 60.0f, 90.0f, 90.0f, hud) && submit_pending();
+    ok = ok && ahc_present(base_a, "frame 3");
+    if (ok && (s_ahc.depth != z->img || ahc_bit(70, 70))) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 3: depth %s, scene in mask %d\n",
+                s_ahc.depth == z->img ? "handed on" : "missing after a depth write", ahc_bit(70, 70));
+        ok = 0;
+    }
+
+    /* Frame 4 on A: its only depth write is a clear that clears depth. That is a write, so
+     * depth is handed on, and the clear is not a HUD box. */
+    ahc_state(base_a, zbp, 1);
+    s_ge->clear = 1;
+    s_ge->clear_mode = 0x401u;                  /* depth only */
+    ok = ok && ahc_sprite(0.0f, 0.0f, 480.0f, 272.0f, 0x00000000u) && submit_pending();
+    s_ge->clear = 0;
+    s_ge->clear_mode = 0;
+    ok = ok && ahc_present(base_a, "frame 4");
+    if (ok && (s_ahc.depth != z->img || !s_ahc.have_bits || ahc_bit(240, 136))) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: frame 4: depth %s after a depth clear, mask %d, "
+                        "clear in mask %d\n", s_ahc.depth == z->img ? "handed on" : "missing",
+                s_ahc.have_bits, ahc_bit(240, 136));
+        ok = 0;
+    }
+
+    /* A frame published while no show pass took it, then a CPU frame: the CPU frame gets
+     * nothing, and the stale mask is counted, not carried over. */
+    ahc_state(base_a, zbp, 1);
+    ok = ok && ahc_sprite(100.0f, 100.0f, 110.0f, 104.0f, hud) && submit_pending();
+    sdl3vk_set_show_pass(NULL);
+    ok = ok && gegpu_present(base_a, 3, 512u) == GEGPU_PRESENT_SHOWN;
+    sdl3vk_set_show_pass(ace_hud_cell_show);
+    static uint32_t cpu_px[480 * 272];
+    memset(&s_ahc, 0, sizeof(s_ahc));
+    ok = ok && sdl3vk_present_rgba(cpu_px) == 1;
+    if (ok && (s_ahc.calls != 1 || s_ahc.got)) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: a CPU frame took a GPU frame's mask "
+                        "(calls %d, got %d)\n", s_ahc.calls, s_ahc.got);
+        ok = 0;
+    }
+
+    AceSmoothAuxStats st;
+    memset(&st, 0, sizeof(st));
+    ace_hud_stats(&st);
+    if (ok && (st.boxes_kept != 4u || st.boxes_target != 1u || st.boxes_large != 0u || st.boxes_full != 0u ||
+               st.frames_mask != 5u || st.frames_depth != 3u || st.frames_depth_unwritten != 2u ||
+               st.published_unshown != 1u)) {
+        fprintf(stderr, "gpu snapshot sync selftest [ace-hud]: counts kept=%llu target=%llu large=%llu "
+                        "full=%llu frames mask=%llu depth=%llu unwritten=%llu unshown=%llu\n",
+                (unsigned long long)st.boxes_kept, (unsigned long long)st.boxes_target,
+                (unsigned long long)st.boxes_large, (unsigned long long)st.boxes_full,
+                (unsigned long long)st.frames_mask, (unsigned long long)st.frames_depth,
+                (unsigned long long)st.frames_depth_unwritten, (unsigned long long)st.published_unshown);
+        ok = 0;
+    }
+    sdl3vk_set_show_pass(NULL);
+    ace_hud_enable(0);
+    coherence_reset_targets();
+    if (ok) printf("gpu snapshot sync selftest: ace_hud_mask_and_depth_from_the_ge\n");
     return ok;
 }
 
@@ -6156,5 +7554,23 @@ int gegpu_snapshot_sync_selftest(void) {
     }
     printf("gpu snapshot sync selftest: present_shown_stays_1\n");
     coherence_reset_targets();
-    return 1;
+    return coherence_run_ace_hud();
+}
+
+/* With the host twin on (#2050), every case above also checks it: no twin may have been found
+ * behind its image (a write that did not reach it), and, at equal scales, each twin left at the
+ * end equals its image. */
+int gegpu_coherence_selftest(void) {
+    int ok = coherence_selftest_cases();
+    if (!s_twin) return ok;
+    twin_identity_check("at the end");
+    if (s_twin_identity_failures || s_cnt_twin_reseed) {
+        fprintf(stderr, "gpu coherence selftest [twin]: FAIL %u identity failure(s), %lu re-seed(s) "
+                "(last lag: %s)\n", s_twin_identity_failures, s_cnt_twin_reseed,
+                s_twin_lag_cause ? s_twin_lag_cause : "none");
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS twin %dx (authentic %dx): no twin fell behind%s\n", s_tscale,
+           s_scale, s_tscale == s_scale ? ", every twin equals its image" : "");
+    return ok;
 }

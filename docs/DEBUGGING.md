@@ -612,6 +612,10 @@ coverage classes, such as `unverified` and `synthetic`, are defined in [`HLE_COV
 | `SR_NO2DZ=1` | Disable 2D Z-buffer |
 | `SR_GPU_STATS=1` | Emit bounded Vulkan submission/batch/texture/snapshot counters without per-submit logging |
 | `SR_GPU_TIMESTAMPS=1` | Measure GPU time with Vulkan timestamp queries: each GE command buffer split by op kind (render batch, snapshot copy, upload, readback, other), printed as a `GEGPU_TS` line every 60 presents and a `GEGPU_TS_TOTAL` line at exit, and the presentation blit; with `SR_PERF_FRAMES` the times also fill the `gpu_*` columns. Ops overlap on the GPU, so the split is an attribution and the sum is the whole execution span. It changes no rendering, guest memory or wait |
+| `SR_GPU_TWIN_COLOR=1\|native` | Host twin (#2050), Ace Mode only: `1` presents full 32-bit colour without dither, `native` keeps the authentic colour (for identity checks). Any other value except `0` and `off` is refused. Guest VRAM is unchanged ([ENHANCEMENT_CONTRACT.md 10.11](ENHANCEMENT_CONTRACT.md#1011-full-32-bit-colour-the-host-twin)). Prints `TWIN:` lines at start and exit |
+| `SR_GPU_TWIN_CAPTURE=authentic` | With the twin on, present and capture the authentic image instead of the twin |
+| `SR_GPU_TWIN_DUMP=PREFIX` | `gpu-coherence-selftest` twin-scene: write each shown image as `PREFIX_t<n>_s<scale>.raw` (RGBA) |
+| `SR_GPU_TWIN_REF=PATH` | `gpu-coherence-selftest` twin cases: a twin-off run writes this reference, a twin-on run at the same scale checks against it (the harness's `--twin-ref`) |
 | `SR_GEDUMP=1` | Per-primitive `GE PRIM` lines (through and transform), bounded to the first ~40 |
 | `SR_GE_ENQUEUE_TRACE=1` | Trace GE enqueue/stall-update provenance without enabling the broader GE dump |
 | `SR_GE_ENQUEUE_TRACE_WINDOWS=a-b[,c-d]` | Restrict enqueue trace output to up to eight inclusive vblank ranges; malformed ranges fail closed |
@@ -1471,6 +1475,11 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | `SR_FBDUMP=N` | At vcount=N publish the presented frame as `present_source.ppm` and exit; status 0 only if a capture was truly published, else 1 |
 | `SR_VRAMDUMP=V[,V...]` | Capture the raw 2 MiB guest VRAM image and GE metadata at up to eight unique presented vblanks; pair with `SR_VRAMDUMP_DIR` |
 | `SR_VRAMDUMP_DIR=PATH` | Existing directory for `vram_<vblank>.bin` and `.json` capture files |
+| `SR_VIDEOREC_DIR=PATH` | Record the run: one video frame per VBLANK at the presenter's output size plus the game's mixed audio, on one guest timeline. Needs `SR_DETERMINISTIC_CLOCK=1`; without it the recording is refused ([Recording a video of a run](#recording-a-video-of-a-run)) |
+| `SR_VIDEOREC_CODEC=ffv1\|x264rgb\|nvenc\|raw` | Encoder for a recording (default `ffv1`, lossless); `raw` writes unencoded frames and needs no FFmpeg. An encoder that cannot run refuses the recording; it never falls back to `raw` |
+| `SR_VIDEOREC_SIZE=WxH` | Output size of a recording, independent of the window (even numbers); default: the window's size at the first recorded present |
+| `SR_VIDEOREC_START=V` | Start the recording at VBLANK V (its first presented picture from there on); earlier pictures and sound are not recorded |
+| `SR_VIDEOREC_FFMPEG=PATH` | Absolute path of the FFmpeg a recording uses; default: the first absolute `PATH` entry that holds it |
 | `SR_DEVELOPER_MODE=0\|1` | Developer mode (the launcher exports its setting): `F3`'s profile HUD and the pause menu's VRAM viewer and Profile page |
 | `SR_REDUCE_MOTION=on\|off\|system` | The launcher's Reduce motion choice (it always exports one): `on` makes the pause overlay's transitions cuts, `off` lets them ease, and `system` (the launcher's Automatic), unset or anything else follows Windows' Animation effects as the overlay draws |
 | `SR_NOVBPACE=0\|1` | Vblank pacing mode: unset, empty, or "0" = paced (default); "1" = turbo. Any other value fails closed at startup |
@@ -1490,7 +1499,7 @@ committed.
 | ---------- | ------------- |
 | `SR_FONTLOG=1` | Log font operations: each slot's source, and the guest's reads of the generated `/DATA/FONT` registry subtree (the keys it asks for, the categories it opens, and each font index served) |
 | `SR_MPEGLOG=1` | Log mpeg operations. The PSMF media producer also logs one bounded counter line per reporting interval: bytes read, packs, PES packets, per-track PES and access-unit counts, access units that carried no presentation time, resync bytes, both compressed-queue depths, EOF state and failure offset, the disposition census of both tracks (submitted, decoded, delivered, warm-up-held, eos-drained, rejected — plus audio format rejects `arejf` and mono upmixes `aupm`), decoder-error counts, the pipeline presentation clocks (`vpts`/`apts`), the guest-facing presentation points at the getters (`vts`/`ats`), the A/V separation between those comparable points (`avgap`, `vts-ats`), submitted-minus-delivered (`vlead`, the pipeline distance inside the output ring), displaced ring times (`vlost`), the last `displaypts`, and the drain flags — enough to classify every decoded picture and locate the first boundary that stops a movie without attaching a debugger |
-| `SR_MPEGAV=1` | Measure the A/V offset where a viewer perceives it, not at the getters (issue #279); `SR_MPEGLOG` also turns it on. Diagnostics only: nothing in the guest changes. Each decoded picture the guest receives (`scePsmfPlayerGetVideoData`, or `sceMpegAvcCsc` writing a `sceMpegAvcDecodeYCbCr` picture) and each audio block (`scePsmfPlayerGetAudioData`) is remembered in a 32-entry ring per stream with its guest byte range, 90 kHz pts and delivery time. The first later `sceDisplaySetFrameBuf` flip (immediate, or applied at VBLANK) whose frame overlaps a picture's range is its presentation, at that guest time; the first `sceAudioOutput*` submit overlapping a block is its play time, taken as the guest time of the submit plus the host queue lead ahead of it (`sr_audio_queued` before the push, 44.1 kHz frames), and `-1` (no host queue) is reported as not measured, never as a lead of zero. A stream's offset is play time minus pts in microseconds; the A/V offset is the video offset minus the audio offset, averaged per 5 s window of guest time. A `PSMF_AV_PRESENT:` line is printed per window (`win`, `end_us`, sample counts `vn`/`an`, `voff_us`, `aoff_us`, `av_us`; `na` where a stream had no measured sample), and `PSMF_AV_PRESENT_FINAL:` at `scePsmfPlayerDelete` and at process exit with the totals: `vdel`/`adel` delivered, `vmatch`/`amatch` matched, `vunmeas`/`aunmeas` matched without a measurable time, `vsuper`/`asuper` overwritten before they were presented or played, `vevict`/`aevict` pushed out of the ring, `vnospan`/`anospan` with no usable byte range, `vpend`/`apend` still waiting at the report (delivered = the sum of those six), `vbnd`/`abnd` presents or submits seen and `vhit`/`ahit` those that matched something, delivery-to-present latency (`vlat_mean_us`, `vlat_max_us`, and `alat_*`), and `av_min_us`, `av_max_us`, `av_mean_us` over the windows with both streams, `av_first_us`, `av_last_us` and `drift_us` (last window minus first, needs two). Reading a run: a flat `av_us` across windows is no drift; a falling or rising `av_us` is one stream running slow against the other. `vmatch=0` with many `vsuper` means the title copies or composites the movie before presenting it, so the picture cannot be matched by address and the video side is not measured, not in sync. `sceMpegAtracDecode` writes no PCM, so no audio is delivered through it |
+| `SR_MPEGAV=1` | Measure the A/V offset where a viewer perceives it, not at the getters (issue #279); `SR_MPEGLOG` also turns it on. Diagnostics only: nothing in the guest changes. Each decoded picture the guest receives (`scePsmfPlayerGetVideoData`, or `sceMpegAvcCsc` writing a `sceMpegAvcDecodeYCbCr` picture) and each audio block (`scePsmfPlayerGetAudioData`) is remembered in a 32-entry ring per stream with its guest byte range, 90 kHz pts and delivery time. The first later `sceDisplaySetFrameBuf` flip (immediate, or applied at VBLANK) whose frame overlaps a picture's range is its presentation, at that guest time; the first `sceAudioOutput*` submit overlapping a block is its play time, taken as the guest time of the submit plus the host queue lead ahead of it (`sr_audio_queued` before the push, 44.1 kHz frames), and `-1` (no host queue) is reported as not measured, never as a lead of zero. A stream's offset is play time minus pts in microseconds; the A/V offset is the video offset minus the audio offset, averaged per 5 s window of guest time. A `PSMF_AV_PRESENT:` line is printed per window (`win`, `end_us`, sample counts `vn`/`an`, `voff_us`, `aoff_us`, `av_us`; `na` where a stream had no measured sample), and `PSMF_AV_PRESENT_FINAL:` at `scePsmfPlayerDelete` and at process exit with the totals: `vdel`/`adel` delivered, `vmatch`/`amatch` matched, `vunmeas`/`aunmeas` matched without a measurable time, `vsuper`/`asuper` overwritten before they were presented or played, `vevict`/`aevict` pushed out of the ring, `vnospan`/`anospan` with no usable byte range, `vpend`/`apend` still waiting at the report (delivered = the sum of those six), `vbnd`/`abnd` presents or submits seen and `vhit`/`ahit` those that matched something, delivery-to-present latency (`vlat_mean_us`, `vlat_max_us`, and `alat_*`), and `av_min_us`, `av_max_us`, `av_mean_us` over the windows with both streams, `av_first_us`, `av_last_us` and `drift_us` (last window minus first, needs two). Each window line also gives `alead_us`, the mean host queue lead its matched audio blocks met, and `av_submit_us`, the A/V offset with that lead left out: video at the flip against audio at the guest's `sceAudioOutput*` submit, two boundaries a PSP has too. The summary gives `alead_mean_us`, `alead_max_us` and `av_submit_mean_us`. `av_us` is `av_submit_us` minus the lead, so an `av_us` that is all lead comes from our output stage, not from the guest's timing. Reading a run: a flat `av_us` across windows is no drift; a falling or rising `av_us` is one stream running slow against the other. `vmatch=0` with many `vsuper` means the title copies or composites the movie before presenting it, so the picture cannot be matched by address and the video side is not measured, not in sync. `sceMpegAtracDecode` writes no PCM, so no audio is delivered through it |
 | `SR_DLGLOG=1` | Log dialog operations |
 | `SR_CBLOG=1` | Log callback operations |
 | `SR_SYSLOG=1` | Log system calls |
@@ -2191,9 +2200,132 @@ player and game behave as they do for everyone ([#314](https://github.com/Jstar2
 - **Run one native self-test the way CI does.** `mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime CC=gcc
   hle-thread-selftest` (likewise `psmf-media-selftest`). Each prints a `<name>: N checks, M failures` summary; there is
   no per-test filter, so run the whole target.
+- **Record a video.** `SR_VIDEOREC_DIR=<private folder>` plus `SR_DETERMINISTIC_CLOCK=1`,
+  `SR_VIDEOREC_SIZE=3840x2160`, a route
+  (`SR_PADSCRIPT`) and `SR_EXIT_AT_VBLANK`; `record.json` says `PASS` and `recording.mkv` holds picture
+  and sound ([Recording a video of a run](#recording-a-video-of-a-run)).
+- **Find the first GE draw where Vulkan departs from the software GE.** Build with
+  `mingw32-make ge-replay`, then run `build/ge_replay.exe <capture.ngef> --first-bad-draw` on a GE
+  capture. It replays draw prefixes through both renderers in one process and compares every colour
+  target, depth buffer and block-transfer destination the prefix used. It prints
+  `GE_FIRST_BAD_DRAW result=NO_DIFFERENCE`, or `result=FIRST_BAD_DRAW index=N` followed by a
+  `GE_FBD_DRAW` line with that draw's command-list address and GE state, one `GE_FBD_REGION` line
+  per buffer that differs, with the pixel count, the largest difference and the bounding box, and
+  three crops (`<capture>.first-bad-draw.software.ppm`, `.vulkan.ppm` and `.diff.ppm`; `--report
+  PREFIX` moves them). `--mode linear` checks every prefix. `--mode bisect` halves the prefix and
+  assumes a difference persists to the end of the frame. The default, `auto`, runs linear up to
+  256 draws. A difference `src/rt/gpu_sdl3vk/README.md` allows (fixed-function blends within 2 LSB)
+  is counted under its rule name (`rule=blend-2lsb`), and a frame with only those reports
+  `result=RULE_ONLY`. Each buffer is compared over everything a draw can write there (the scissor,
+  or a transfer's rectangle). When a buffer cannot be compared in full (more than 32 buffers, a
+  stride past 1024, a scissor past the 480x272 that ge.c rasterizes, depth past ge.c's 272 rows),
+  the tool prints `result=INCOMPLETE` with a
+  `GE_FBD_UNCOMPARED` line per buffer and exits 5, and a capture with no draw is `result=NO_DRAWS`
+  (exit 6): neither is ever `NO_DIFFERENCE`. A capture of a title is private, and so are its report
+  and crops.
+  `mingw32-make ge-first-bad-draw-selftest` checks the tool on generated captures against two
+  executed Vulkan mutants and the known overlapping-blend difference (#2109).
+  `ge_replay --write-synthetic <path> [basic|overlap|wide|empty|many|deep]` writes those captures.
 - **Capture frames unattended.** Set `SR_NOINPUT=1` so the automatic START pulse does not reach the game, bound the run
   with `SR_EXIT_AT_VBLANK` ([where it stops](#where-sr_exit_at_vblank-actually-stops)), and capture with
   `SR_FBSNAP_WINDOWS` ([both ends of a transition](#capturing-both-ends-of-a-transition--snapwindows)).
+
+### Recording a video of a run
+
+`SR_VIDEOREC_DIR=<folder>` records a run for a video (#1273): every serviced VBLANK writes one frame,
+the newest picture the presenter showed at its output size, or the previous one again when the guest
+did not flip, so the video has a constant 60000/1001 frames per second. Every `sceAudioOutput*`
+hand-off is mixed into one 44100 Hz stereo track at the guest time it was made, each channel
+continuing where its last buffer ended, as the PSP plays it. Frame *k* and audio sample
+`k * 44100 * 1001 / 60000` are the same guest instant, so picture and sound cannot drift apart. The
+recorder writes no guest memory.
+
+A recording needs `SR_DETERMINISTIC_CLOCK=1`. Reading the picture back, copying it and writing it to
+the encoder take host time on the thread that runs the guest. On the default paced clock that time
+would make the guest skip VBLANKs that a run without the recording keeps, so the recorder refuses to
+start there and says why. On the deterministic clock guest time charges the guest's own work, not
+the host's, so the guest timeline is the same with and without the recording; a slow encoder makes
+the run take longer in host time instead. `display-smoke-run` proves this: it records the display
+fixture through an encoder that stalls every frame write and compares the guest's flight events,
+including the VBLANK count at each `sceDisplaySetFrameBuf`, with an unrecorded run.
+
+The deterministic clock changes the run itself, not only the recording:
+
+- It is unpaced. The guest runs as fast as the host and the encoder allow, faster or slower than
+  real time, so a run being recorded is not one to play live: input from a person, and sound
+  through the speakers, no longer line up with the picture. Drive a recorded run with
+  `SR_PADSCRIPT`.
+- Its guest time follows the guest's own work, and its RTC starts at 2012-01-01 00:00:00 UTC
+  ([Clocks](ARCHITECTURE.md#clocks)). A pad-script route qualified on the
+  default paced clock may not replay the same way on it: a press can land on a different frame,
+  and a game that reads the date sees another one. Re-qualify a route under
+  `SR_DETERMINISTIC_CLOCK=1`, without recording, before recording it.
+
+On the Vulkan presenter the recorded picture is the one the window shows (Ace Mode's smooth motion
+included), scaled with the window's own scaling mode (`SR_PRESENT_SCALING`) into a fixed-size
+target. The presentation upscaler is not applied to it: with `SR_PRESENT_UPSCALE=fsr1` the window
+shows FSR 1's output, but the recording still uses `SR_PRESENT_SCALING`'s filter
+([#2138](https://github.com/Jstar269/nakagawa-recomp/issues/2138)). It is a clean capture:
+no host overlay reaches it, neither the HUD and its frame-rate readout nor the player's notices nor
+the pause overlay. `SR_VIDEOREC_SIZE=3840x2160` records 4K whatever the window's size. The CPU
+presenters (GDI, offscreen) record their 480x272 frame.
+
+The game's own frame rate is kept beside the picture instead, so footage of a 60 Hz presentation
+still says how many frames the game drew: `frames.csv` gives each video frame's count of guest flips
+(`sceDisplaySetFrameBuf` changes; Ace Mode's in-between pictures are not flips), `logic.srt` gives
+one subtitle per 60 frames (`game 29.9 fps (30 frames)`), and `record.json` gives the total.
+
+The folder receives `video.mkv` (FFV1, piped to FFmpeg's standard input), `audio.wav`, `frames.csv`
+(one row per frame: VBLANK, guest time, whether it is a `new` picture, a `repeat` or a `gap`, and its
+guest flips), `logic.srt`, `record.json` (the summary, `PASS` or `FAIL` with the reason) and
+`recording.mkv`: picture, sound and the frame-rate subtitles (a track that is off by default) muxed
+without re-encoding. With `SR_VIDEOREC_CODEC=raw` the frames go to `video.bgr0` instead (raw BGRX,
+size and rate in `record.json`, no mux, `"muxed": null`).
+
+`record.json` is written when the recording starts, as `INCOMPLETE`, and replaced only when the
+recording is finished: on a normal exit, at `SR_EXIT_AT_VBLANK`, and on the fatal stops (the watchdog,
+the `SR_FBDUMP` exit, an unregistered NID or unsupported import, a route check, a guest fault and the
+others), with `run_end` naming the one that ended the run. A crash leaves `INCOMPLETE`, never `PASS`.
+`PASS` and `FAIL` describe the recording, not the run: `exit_status` is the process exit status of
+the end that finished the recording. Every named end records its own: `SR_EXIT_AT_VBLANK` (the end
+of a scripted showcase recording), `the run returned to the driver` and the game's `sceKernelExitGame`
+record 0, and each fatal stop records the code it exits with (1 for the watchdog, 7 for an
+unregistered NID, and so on). An `exit()` that no route named, such as one of the runtime's fatal
+`exit(1)` paths, reaches only the recorder's `atexit` fallback: its `run_end` says no route named the
+end and its `exit_status` is `null`, so it never reads as a clean exit.
+
+A recording that cannot start is `REFUSED` with the reason: no deterministic clock (or, in a tool
+that links the presenter but runs no scheduler, such as the GPU selftests, no guest clock), a codec it does
+not know, an FFmpeg that is not an absolute path to an executable file, no FFmpeg on `PATH` for an
+encoded codec, or less than 4 GiB free in the folder, counting the previous run's files there as
+free, since the start removes them. A refusal names the setting at fault, never the user's FFmpeg
+path. Every check runs before the folder is touched, so a refused start replaces only `record.json`
+(with `REFUSED`, so no earlier `PASS` stands) and leaves the previous run's recording where it was.
+A start that does record first removes the recorder's files a previous run left in the folder, all or
+nothing: it moves each aside, and if one cannot be moved (open in another program, or a folder with
+that name) it puts the others back and refuses, naming that file, so the previous recording stays
+whole. When `record.json` itself is the file that cannot be replaced, only stderr can say so, and
+the previous record stays. The recording's own files are then created as new files, never reused:
+if another program creates one of those names after the clear, the start is refused (or, for
+`video.bgr0`, made at the first picture, the recording is `FAIL`), naming the file, and that
+program's file is left as it was. FFmpeg runs with `-n` for the same reason. An encoded recording is `PASS` only when the encoder and the mux both exited 0, so
+`PASS` always comes with `"muxed": true`. Under 1 GiB free during the run the recorder stops writing
+video and the recording is `FAIL`; so is any write that fails.
+
+FFmpeg is the user's own local tool: Nakagawa never ships, downloads or bundles it. The recorder
+starts the FFmpeg it finds in an absolute `PATH` entry, or the one `SR_VIDEOREC_FFMPEG` names, without
+a shell, and only when `SR_VIDEOREC_DIR` is set.
+
+At 3840x2160 none of the three encoders keeps up with 60 frames a second on its own: on one desktop
+(RTX 3080), offline, FFV1 encoded 49.6, `nvenc` 48.2 and `x264rgb` 43.3 frames a second. On the
+deterministic clock that only makes a 4K recording run slower than real time; `encoder_write_ms` in
+`record.json` is the host time spent waiting on the encoder. `nvenc` takes its load off the CPU; all
+three are RGB-lossless (`nvenc` encodes 4:4:4 RGB, `-pix_fmt gbrp`). A VBLANK the recorder was not
+called for is written as a `gap` frame in its place and counted in `record.json`. Pair a recording
+with `SR_PADSCRIPT` to record the same route in Authentic and Enhanced or Ace Mode, once the route is
+qualified on the deterministic clock (above), with `SR_VIDEOREC_START` to skip the boot, and with
+`SR_EXIT_AT_VBLANK` to end it. A recording of a
+retail title is private: keep it out of the repository and every upload.
 
 ## Troubleshooting
 

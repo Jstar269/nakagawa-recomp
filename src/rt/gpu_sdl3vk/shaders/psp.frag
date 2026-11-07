@@ -21,11 +21,15 @@ layout(location = 0) noperspective in vec2  v_uv;
 layout(location = 1) noperspective in float v_rw;
 layout(location = 2) noperspective in float v_fog;
 layout(location = 3) noperspective in vec4  v_color;
+layout(location = 4) flat in vec4 v_uvbox;   /* edge clamp range (ge_gpu.c uv_edge_axis) */
 
 layout(location = 0) out vec4 o_color;
 
 layout(set = 0, binding = 0) uniform sampler2D u_tex;
-layout(set = 0, binding = 1) uniform sampler2D u_dst;   /* destination snapshot (shader blend) */
+/* The destination snapshot (shader blend) has a set of its own, bound once per render op, so the
+ * host twin (ge_gpu.c, Enhanced 32-bit colour) binds its own snapshot without a second copy of
+ * every texture's set. */
+layout(set = 2, binding = 0) uniform sampler2D u_dst;
 
 /* flags bits (pc.cfg.x >> 8): 1 textured, 2 texfunc-RGBA, 4 color-double, 8 fog,
  * 16 persp (apply minz/maxz), 32 clear mode, 64 nearest filter (both TEXFILTER fields),
@@ -45,7 +49,13 @@ layout(set = 0, binding = 1) uniform sampler2D u_dst;   /* destination snapshot 
  * slope mode | mipmap-linear << 1 | highest level << 2, texenv.a = TEXLODSLOPE,
  * fogcol.a = the TEXLEVEL bias in 1/16 (the sampler spans every level).
  * 32768 constant stencil (ge_gpu.c stencil_fixed_alpha): an 8888 stencil state that reads
- * no destination stores bl.z (0-255) as its alpha; u_dst is not read. */
+ * no destination stores bl.z (0-255) as its alpha; u_dst is not read.
+ * 65536 full colour (the host twin with Enhanced 32-bit colour, #2050; never set for the
+ * authentic image): a 16-bit framebuffer keeps its colour at 8 bits per channel instead of
+ * snapping it to the 5650/5551/4444 lattice. Its alpha, which holds the stencil, is still
+ * snapped, so stencil tests and destination-alpha blending see the authentic values. ge_gpu.c
+ * clears bit 512 for the same draws: no dither.
+ * Bits 17-19 = factor - 1 of a scaled texture copy (ge_gpu.c, tex_scale.h); 0 otherwise. */
 layout(push_constant) uniform PC {
     ivec4 cfg;      /* x = texfunc | flags<<8, y = alpha test (func|ref<<8|mask<<16),
                        z = minz, w = maxz */
@@ -165,9 +175,22 @@ void main() {
              * within 1/8192 of that lattice, far below the 1/16 weight step. */
             float rw = max(abs(v_rw), 1e-20);
             vec2 uv = v_uv / rw;
+            /* Above 1x a screen-aligned through-mode primitive carries the coordinates its 1x
+             * pixel centres sample (ge_gpu.c, edge clamp): a device sample in an edge pixel's
+             * outer half takes the edge pixel's own coordinate instead of reaching past it. */
+            if (v_uvbox.x <= v_uvbox.z) uv.x = clamp(uv.x, v_uvbox.x, v_uvbox.z);
+            if (v_uvbox.y <= v_uvbox.w) uv.y = clamp(uv.y, v_uvbox.y, v_uvbox.w);
             uv = floor(uv * 4096.0 + vec2(0.5)) / 4096.0;
+            /* Flags bits 17-19: the bound texture is a scaled copy of the guest's (texture
+             * scaling, an Ace run only), factor = bits + 1. Both rules then run on the copy's
+             * own texel lattice, so nearest keeps the copy's detail and linear steps in
+             * sixteenths of a copy texel; the coordinate still addresses guest texels. With
+             * the bits clear, as for every guest texture and render target, nothing changes. */
+            int tscale = ((flags >> 17) & 7) + 1;
+            if (tscale > 1) uv *= float(tscale);
             if ((flags & 64) != 0) uv = floor(uv) + vec2(0.5);
             else uv = floor((uv - vec2(0.5)) * 16.0) / 16.0 + vec2(0.5);
+            if (tscale > 1) uv /= float(tscale);
             uv += pc.texsize.zw;
             vec4 t;
             if ((flags & 16384) != 0) {
@@ -198,6 +221,12 @@ void main() {
                     if (lod == 0.0) lod = 0.25;
                 }
                 t = textureLod(u_tex, uv / pc.texsize.xy, lod) * 255.0;
+            } else if (v_uvbox.x <= v_uvbox.z || v_uvbox.y <= v_uvbox.w) {
+                /* A clamped primitive (through mode, so rw is 1) takes its footprint from the
+                 * unclamped coordinate: a clamped band has the same minification or
+                 * magnification as the rest of the primitive instead of a zero footprint. */
+                vec2 gdx = duv_dx / (lod_scale * pc.texsize.xy), gdy = duv_dy / (lod_scale * pc.texsize.xy);
+                t = textureGrad(u_tex, uv / pc.texsize.xy, gdx, gdy) * 255.0;
             } else {
                 t = texture(u_tex, uv / pc.texsize.xy) * 255.0;
             }
@@ -326,8 +355,13 @@ void main() {
     /* Native 16-bit store quantization (framebuffer psm 0/1/2). Emulates the precision
      * limit of the real 5650/5551/4444 framebuffer: pack by truncation, expand by bit
      * replication — identical to ge.c pack_fb + unpack_color, so the RGBA8 image and
-     * guest VRAM stay bit-identical across arbitrarily many frames. */
-    if (fbfmt == 0) {
+     * guest VRAM stay bit-identical across arbitrarily many frames. The host twin's full
+     * colour (65536) keeps the colour and snaps only the alpha, which holds the stencil. */
+    if ((flags & 65536) != 0) {
+        if (fbfmt == 0) col.a = 255.0;
+        else if (fbfmt == 1) col.a = col.a >= 128.0 ? 255.0 : 0.0;
+        else if (fbfmt == 2) col.a = quant_chan(col.a, 4);
+    } else if (fbfmt == 0) {
         col = vec4(quant_chan(col.r, 5), quant_chan(col.g, 6), quant_chan(col.b, 5), 255.0);
     } else if (fbfmt == 1) {
         col = vec4(quant_chan(col.r, 5), quant_chan(col.g, 5), quant_chan(col.b, 5),

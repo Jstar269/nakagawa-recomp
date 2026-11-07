@@ -1265,6 +1265,38 @@ One console is one data point; see §11. Nothing here closes issue #70
     tell whether an uncovered second pixel is still the reference, or whether the span grid follows the
     screen or the triangle: the quad never moves.
 
+- **PSP-3000 single-case run of the `ge-overlap` probe on commit `fd9a23b5` (2026-11-06)**: system
+  software 6.61, ARK-5.1.0 (owner); `pspver` 6.6.1 (`0x06060110`), the firmware declared to the runner. PSPLink
+  3.2.1, operator-declared model PSP-3000, boot 130, game context (standalone PSPLink after one soft reset from
+  the XMB). One launch of case 153 in `fixtures/psp_oracle/probe_ge_sample.c` (`ge-overlap`) after the
+  `transport-write` preflight (PSP-TRANSPORT-001 is not re-cited). Both envelopes are acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence of 150 records and the done record (out0 150), all PASS; every one of the 30 lists reached GE
+  idle. The raw envelopes and host0 logs stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-06, `fd9a23b5`) |
+  | --- | --- | --- | --- |
+  | `PSP-GE-OVERLAP-001` | `a-*`, `b-*`, `ab-1p-*`, `ab-np-*`, `ba-1p-*`, `aa-1p-*`, `abc-1p-*`, `abc-np-*`, `tab-1p-*`, `tab-np-*`, `ge-overlap-done` | the blend's rounding as a formula, other blend modes and factors, tests or depth between layers, the wait timings | MEASURED (`ge-overlap`) |
+
+  `ge-overlap` (#2109): each cell is one display list of project-written command words (no game data) that draws
+  through-mode, untextured, flat-coloured layers with blending (source alpha, one minus source alpha, add) into
+  the 16x4 window x 16..31, y 8..11 of a 64x32 buffer holding a generated destination pattern: A over x 16..25
+  (ABGR `0xa0f808f8`), B over x 22..31 (`0x601010f0`) and C over x 19..28 (`0x8080f010`), each over all four rows.
+  `-1p` cells draw every layer with one PRIM command, `-np` cells with one PRIM per layer. Every cell runs in
+  8888, in 5650 with the PSP SDK's default dither matrix (`-565d`) and in 5650 without dithering (`-565`). What
+  the cells establish, for these exact states only:
+  - *A blended primitive reads what an earlier primitive of the same PRIM command wrote.* In all three formats A
+    then B in one PRIM gives the same 64 pixels as A and B in two PRIM commands (`ab-1p-*`, `ab-np-*`), and A, B
+    and C in one PRIM the same as in three (`abc-1p-*`, `abc-np-*`). None of the 16 overlap pixels of `ab-1p-*`
+    (x 22..25), in any format, equals B blended over the original destination (`b-*`), which is what a primitive
+    reading the destination as it was before the PRIM would store.
+  - *Draw order is kept.* B then A in one PRIM (`ba-1p-*`) differs from A then B in all 16 overlap pixels in
+    every format, and A drawn twice in one PRIM (`aa-1p-*`) differs from A once (`a-*`) in all 40 pixels A
+    covers.
+  - *Triangle pairs.* A two-triangle quad at integer through-mode coordinates stores the same pixels as the
+    sprite over the same rectangle, in one PRIM and in two (`tab-1p-*` against `ab-1p-*`, `tab-np-*` against
+    `ab-np-*`), so the shared diagonal is drawn once.
+
 - **PSP-3000 single-case run of the `insn-trace` probe on commit `84568280` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000, case 119 in `fixtures/psp_oracle/probe_insn_trace.c` with
   `insn_trace_tramp.S` and `insn_trace_fixtures.h`. One launch on its own boot after the `transport-write`
@@ -1358,7 +1390,11 @@ One console is one data point; see §11. Nothing here closes issue #70
   masked window, VCOUNT frozen while masked). For the LLE CPU, `SR_INTC_PSP_CPU_IP_BIT` in
   `src/rt/cpu_lle.h` records IP2 as the controller's line, and
   `test_hw_psp_intr_cause_ip2_while_suspended` in `tests/native/cpu_lle_selftest.c` reproduces the measured
-  Cause words with Status.IE clear. Interrupt delivery at safe points (`sr_cpu_poll`) stays unimplemented.
+  Cause words with Status.IE clear. Interrupt delivery at safe points (`sr_cpu_poll`, #325) follows the generic
+  MIPS32 rule behind the opt-in LLE CPU and a controller only the selftests configure; `test_intc_poll_delivery`
+  checks that the measured suspended Status word 0x00088600 holds a pending source back and the resumed word
+  0x00088601 takes it. The other delivery rules (IM map, software interrupts, delay-slot and mtc0 timing) are
+  not measured.
 
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
   - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.

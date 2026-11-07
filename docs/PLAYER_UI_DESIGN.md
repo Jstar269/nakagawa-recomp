@@ -521,15 +521,43 @@ sentence saying what it does and what Windows asks for now: INTERFACE SIZE (Auto
 CONTRAST and REDUCE MOTION (Automatic, On or Off; Automatic follows Windows' contrast themes and Animation effects,
 read every frame, so a change there applies at once). The four buttons share one column; at a larger text size it
 is as wide as the widest label, and the sentences go under the buttons when beside them one would be cut.
-ACE MODE (src/rt/ace.h) closes the GAME card: its ON / OFF button switches it for the library (off by default),
-and ACE MODE OPTIONS opens a dialog card in the same pattern: ACE MODE, TEXTURE FILTERING (16x, 8x, 4x, 2x, Off),
-CRISP SYSTEM TEXT, SPEED READOUT and GAME BADGE, each beside a sentence that says what it does and what it costs.
-While ACE MODE is off the feature rows are disabled (`dim`, not focusable) and keep their values. The title page's
-ENHANCEMENTS card shows ACE MODE for every game (LIBRARY DEFAULT, ON, AUTHENTIC; `PRIMARY` while in effect, never
-the default focus), one or two lines of what it turns on and the last session, and the 60 FPS switch beside it,
-which AUTHENTIC turns off. A library card where Ace is in effect carries an `ACE` badge at the art's top right. In
-game, the pause menu's caption names Ace's features and its Settings page has a live SPEED READOUT row; the launch
-notice (top right, 3 s, a cut with Reduce motion) and the readout (top left) are chips on the 16 px safe area.
+PLAY MODE closes the GAME card (the play modes, docs/ENHANCEMENT_CONTRACT.md section 10): its value is the library's
+default (AUTHENTIC: OPTIONS or ENHANCED: OPTIONS; Authentic for a new library), and it opens Settings > Enhanced, a
+dialog card in the same pattern: PLAY MODE, then one row per Enhanced part from the player's part table (TEXTURE
+FILTERING 16x, 8x, 4x, 2x, Off; CRISP SYSTEM TEXT; SPEED READOUT; GAME BADGE; SMOOTH MOTION; CLEAN PITCHED SOUND,
+off by default), each beside a sentence
+that says what it does and what it costs. A new part is a new row with no change to the page. While the mode is
+Authentic the part rows are disabled (`dim`, not focusable) and keep their values. The title page's ENHANCEMENTS
+card shows PLAY MODE for every game (LIBRARY DEFAULT, AUTHENTIC, ENHANCED, and ACE only for a game with a usable
+package; `PRIMARY` while Enhanced or Ace is in effect, never the default focus), ENHANCED OPTIONS, which opens the
+same page for that game alone (its play mode, and each part on LIBRARY (16X) or its own value; Done returns
+to the title page), one or two lines of what is on and the last session, and, while Ace is in effect, Ace's 60 FPS
+switch beside them. A library card where Enhanced or Ace is in effect carries an `ENHANCED` or `ACE` badge at the
+art's top right. In game, the pause menu's caption names the mode and its parts and its Settings page has a live
+SPEED READOUT row; the launch notice (ENHANCED or ACE, top right, 3 s, a cut with Reduce motion) and the readout
+(top left) are chips on the 16 px safe area.
+GRAPHICS PRESET is the GAME card's last row (#2150). It steps through LOW, MEDIUM, HIGH, ULTRA and HANDHELD.
+A preset is used only by Enhanced and Ace sessions, where its values take the place of the RESOLUTION, SCALING,
+VSYNC and GAME FULLSCREEN rows. Choosing one changes none of those rows, and an Authentic session always runs with
+them as the user set them, whatever the preset. The reason is that a render scale above 1x is not host-only: every
+present commits the frame to guest VRAM, so a game that copies its screen (a save picture) keeps the larger picture
+(`docs/ENHANCEMENT_CONTRACT.md` section 10.3, Pixels), and Authentic launch output must not change with a
+preset. Editing one of the rows a preset sets makes it CUSTOM, which means the rows apply in every session; GAME
+FULLSCREEN does so only under HANDHELD, the one preset that sets it. While a preset is chosen, the page's notice
+line says that it is used in Enhanced and Ace and that Authentic uses the rows. The settings file keeps the
+preset's name beside the rows, and a file without it, or with a name this build doesn't know, loads as CUSTOM. The
+values are starting points, to be tuned by measurement on real titles. They live in one table,
+`k_graphics_presets` in `src/player/player_state.c`:
+
+| Preset | Resolution | Scaling | VSync | Game fullscreen | Also |
+| --- | --- | --- | --- | --- | --- |
+| LOW | 1x (480x272) | Sharp | On | the row's | |
+| MEDIUM | 2x | Sharp | On | the row's | |
+| HIGH | 4x | Sharp | On | the row's | |
+| ULTRA | 4x | Sharp | On | the row's | the FSR 1 upscaler, which Settings can't set until #2122: the row reads ULTRA (NO UPSCALER) and the notice line says so |
+| HANDHELD | 2x | Sharp | On | On | |
+
+A preset never changes frame pacing, the play mode, an Enhanced part or the launch line.
 Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from
 SCALING. Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
 page) so every row fits 960 x 540. The tabbed layout below is the target for a later pass:

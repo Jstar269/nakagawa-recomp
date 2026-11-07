@@ -49,6 +49,7 @@
 #include "mp3_bridge.h"     /* minimp3 frame decoder behind sceMp3 */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
 #include "fbcap.h"           /* presenter-neutral frame capture service (issue #57) */
+#include "videorec.h"        /* video recording of a run on the guest timeline (#1273) */
 #include "audio_resample.h"  /* deterministic SRC-to-host-rate conversion */
 #include "gpu_sdl3vk/ge_gpu.h" /* explicit guest-VRAM snapshot boundary */
 #include "title_config.h"  /* title-qualified compatibility addresses (issue #98) */

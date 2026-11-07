@@ -87,6 +87,8 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
 
 struct PlayerUiNk {
     SDL_Window *window;     /* the launcher window: Settings reads its display's refresh rate */
+    bool clock_held;        /* frames are drawn at held_clock_s, not the time of day (#2124) */
+    double held_clock_s;
     NkUi *ui;
     NkUiSdlr *backend;
     NkUiTtf *ttf;
@@ -133,14 +135,21 @@ struct PlayerUiNk {
     char input_summary[128];
     char title_input_summary[128];
     char settings_controller[160];
+    /* The graphics preset's note on the main Settings page (#2150). */
+    char settings_preset_note[192];
     char settings_interface_size[16];
     char settings_saves[NK_MAX_PATH];
-    /* Ace Mode on the open title's page: what it turns on, and its last session, read at
-       most every two seconds (the runtime writes the report when a game ends). */
-    char ace_line[200];
+    /* The play mode on the open title's page: what it turns on, and its last session, read
+       at most every two seconds (the runtime writes the report when a game ends). */
+    char ace_line[256];
+    char enhanced_smooth_sentence[160];  /* the Smooth motion row's words under 60 FPS logic */
     char ace_last_session[200];
     char ace_last_disc[NK_MAX_DISC_ID_LEN];
     double ace_last_read_s;
+    /* Settings > Enhanced: the title's name and the rows' "Library (16x)" words. */
+    char enhanced_title[160];
+    char enhanced_mode[48];
+    char enhanced_values[PLAYER_UI_ENHANCED_ROWS][48];
     char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
     /* The factory reset check's folders, looked up when the check opens. */
     char reset_folders[PLAYER_UI_RESET_FOLDERS][NK_MAX_PATH];
@@ -227,6 +236,10 @@ struct PlayerUiNk {
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     bool icon_reported[PLAYER_UI_TITLE_CAP];
     char status_reported[PLAYER_UI_TITLE_CAP][32]; /* the status word last printed */
+    char play_reported[PLAYER_UI_TITLE_CAP][16];   /* the play mode badge last printed */
+    char enhanced_reported[512];                    /* Settings > Enhanced as last printed */
+    char ace_line_reported[256];                    /* the open title's play line last printed */
+    char preset_note_reported[200];                 /* the main Settings page's preset note */
     int disc_reported_view;  /* the game-found card whose rows were printed, or -1 */
 #endif
     bool ready;
@@ -490,8 +503,20 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
            player_ui_nk_draws_view(app->active_view);
 }
 
+void player_ui_nk_hold_clock(PlayerUiNk *player, double now_s) {
+    if (player == NULL || !isfinite(now_s)) return;
+    player->clock_held = true;
+    player->held_clock_s = now_s;
+}
+
+/* The clock the launcher draws with: the time since SDL started, or the held time. */
+static double player_ui_nk_now_s(const PlayerUiNk *player) {
+    if (player != NULL && player->clock_held) return player->held_clock_s;
+    return (double)SDL_GetTicksNS() / 1000000000.0;
+}
+
 uint32_t player_ui_nk_wait_ms(const PlayerUiNk *player, uint32_t idle_ms) {
-    double now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    double now_s = player_ui_nk_now_s(player);
     double wait_s;
     if (player == NULL) {
         return idle_ms;
@@ -796,6 +821,103 @@ static double player_ui_display_refresh_hz(SDL_Window *window) {
     return mode != NULL && mode->refresh_rate > 0.0f ? (double)mode->refresh_rate : 0.0;
 }
 
+typedef char player_ui_enhanced_rows_fit[PLAYER_PART_COUNT <= PLAYER_UI_ENHANCED_ROWS ? 1 : -1];
+
+/* Why a title offers no Ace: it has no usable package of its own (#2055). */
+#define PLAYER_UI_ACE_NEEDS_PACKAGE "Ace needs a package made for this game."
+
+/* Settings > Enhanced (#2055): the library's page, or one title's
+   (player_app_open_title_enhanced). One row per part from player_enhanced_part(), so a new
+   part needs no change here. */
+static void player_ui_fill_enhanced(PlayerUiNk *player, const PlayerApp *app,
+                                    PlayerUiSettingsModel *model) {
+    const PlayerSettings *settings = &app->settings;
+    int title = player_app_enhanced_page_title(app);
+    bool library_on = settings->enhanced.library == PLAYER_PLAY_ENHANCED;
+    model->enhanced_library_on = library_on;
+    model->enhanced_title = NULL;
+    model->enhanced_on = library_on;
+    model->enhanced_mode = library_on ? "Enhanced" : "Authentic";
+    model->enhanced_mode_sentence =
+        "The default for every game; each game's page can choose its own.";
+    bool logic_60 = false;
+    if (title >= 0) {
+        const GameRecord *game = &app->games[title];
+        PlayerPlayMode chosen = player_app_title_play_mode(app, title);
+        PlayerPlayResolved play;
+        player_play_resolve(settings, game->disc_id, &play);
+        /* What its launch runs (player_launch_work_run): with its 60 FPS game logic, smooth
+           motion is off. */
+        player_play_apply_logic_60(&play, player_app_title_60hz_on(app, title));
+        logic_60 = play.logic_60;
+        snprintf(player->enhanced_title, sizeof(player->enhanced_title), "%s",
+                 game->title_name[0] ? game->title_name : game->disc_id);
+        model->enhanced_title = player->enhanced_title;
+        model->enhanced_on = play.on;
+        if (chosen == PLAYER_PLAY_LIBRARY) {
+            snprintf(player->enhanced_mode, sizeof(player->enhanced_mode),
+                     "Library (%s)", library_on ? "Enhanced" : "Authentic");
+            model->enhanced_mode = player->enhanced_mode;
+        } else {
+            model->enhanced_mode = player_play_mode_name(chosen);
+        }
+        model->enhanced_mode_sentence = app->title_enhancements[title].available
+            ? "Ace is Enhanced plus this game's own 60 FPS game logic."
+            : "Enhanced adds the parts below. " PLAYER_UI_ACE_NEEDS_PACKAGE;
+    }
+    model->enhanced_row_count = 0;
+    for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+        const PlayerEnhancedPartInfo *info = player_enhanced_part(p);
+        PlayerUiEnhancedRow *row = &model->enhanced_rows[model->enhanced_row_count++];
+        int library = settings->enhanced.part[p];
+        row->name = info->name;
+        row->sentence = info->sentence;
+        row->value = player_enhanced_part_label(p, library);
+        row->on = library != 0;
+        if (title >= 0) {
+            int own = player_app_title_part(app, title, p);
+            if (own < 0) {
+                snprintf(player->enhanced_values[p], sizeof(player->enhanced_values[p]),
+                         "Library (%s)", player_enhanced_part_label(p, library));
+                row->value = player->enhanced_values[p];
+            } else {
+                row->value = player_enhanced_part_label(p, own);
+                row->on = own != 0;
+            }
+            /* The launch line carries smooth=off while the game runs its 60 FPS game logic:
+               this build interpolates only a 30 Hz source (docs/ENHANCEMENT_CONTRACT.md 10.5).
+               The row says so, and keeps the choice it holds for when that logic is off. */
+            if (p == PLAYER_PART_SMOOTH && logic_60) {
+                snprintf(player->enhanced_smooth_sentence,
+                         sizeof(player->enhanced_smooth_sentence),
+                         "This build smooths only 30 FPS games. The choice here (%s) applies "
+                         "when this game's 60 FPS game logic is off.", row->value);
+                row->value = "Off (this game runs at 60 FPS)";
+                row->sentence = player->enhanced_smooth_sentence;
+                row->on = false;
+            }
+        }
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    {
+        /* Whose page it is, its play mode and each row's value, as drawn; printed on change. */
+        char line[sizeof(player->enhanced_reported)];
+        int used = snprintf(line, sizeof(line), "title=%s|mode=%s|sentence=%s",
+                            title >= 0 ? app->games[title].disc_id : "library",
+                            model->enhanced_mode, model->enhanced_mode_sentence);
+        for (int p = 0; p < (int)model->enhanced_row_count && used > 0 &&
+                        (size_t)used < sizeof(line); p++) {
+            used += snprintf(line + used, sizeof(line) - (size_t)used, "|%s=%s",
+                             player_enhanced_part(p)->key, model->enhanced_rows[p].value);
+        }
+        if (strcmp(line, player->enhanced_reported) != 0) {
+            snprintf(player->enhanced_reported, sizeof(player->enhanced_reported), "%s", line);
+            printf("[PLAYER_UI_TEST] next_ui_enhanced_page %s\n", line);
+        }
+    }
+#endif
+}
+
 /* The Settings pages' model, from the settings the existing renderer shows. */
 static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *app,
                                                 NkUiScale scale) {
@@ -845,18 +967,14 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.resolution = player_ui_resolution_word(app->settings.resolution_scale);
     model.pacing = app->settings.fps_cap < 0 ? "PSP timing" : "No extra cap";
     model.scaling = player_present_scaling_label(app->settings.present_scaling);
+    model.preset = player_app_graphics_preset_label(app);
     model.vsync = app->settings.vsync;
     model.display_refresh_hz = player_ui_display_refresh_hz(player->window);
     model.fullscreen = app->settings.fullscreen;
     model.volume = app->settings.master_volume;
     model.ui_sounds = app->settings.ui_sounds;
     model.launcher_fullscreen = app->settings.launcher_fullscreen;
-    model.ace_enabled = app->settings.ace.enabled;
-    model.ace_filtering = player_ace_filtering_label(app->settings.ace.af);
-    model.ace_text = app->settings.ace.text;
-    model.ace_readout = app->settings.ace.readout;
-    model.ace_notice = app->settings.ace.notice;
-    model.ace_smooth = app->settings.ace.smooth == 1;
+    player_ui_fill_enhanced(player, app, &model);
     if (app->settings.interface_size_pct > 0) {
         snprintf(player->settings_interface_size, sizeof(player->settings_interface_size), "%d%%",
                  app->settings.interface_size_pct);
@@ -902,6 +1020,29 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     if (app->settings_newer_schema && app->settings_notice[0] != '\0') {
         model.notice = app->settings_notice;
     }
+    /* The graphics preset (#2150) says on the main page, where its row is, that it is used
+       in Enhanced and Ace only and what it could not set. It is derived from the choice, so
+       it goes with Custom and is back after a restart. */
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_MAIN &&
+        player_app_graphics_preset_note(app, player->settings_preset_note,
+                                        sizeof(player->settings_preset_note),
+                                        &model.preset_notice_warns)) {
+        model.preset_notice = player->settings_preset_note;
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_MAIN) {
+        /* The preset row and note the main page draws; printed on change. */
+        char line[sizeof(player->preset_note_reported)];
+        snprintf(line, sizeof(line), "value=%s|warns=%d|note=%s", model.preset,
+                 model.preset_notice_warns ? 1 : 0,
+                 model.preset_notice != NULL ? model.preset_notice : "");
+        if (strcmp(line, player->preset_note_reported) != 0) {
+            snprintf(player->preset_note_reported, sizeof(player->preset_note_reported), "%s",
+                     line);
+            printf("[PLAYER_UI_TEST] next_ui_settings_preset %s\n", line);
+        }
+    }
+#endif
     for (size_t i = 0u; i < app->prerequisites.items.count &&
                         model.tool_count < PLAYER_UI_SETTINGS_TOOLS; ++i) {
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
@@ -1860,7 +2001,7 @@ bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
     size_t count;
     double now_s;
     if (player == NULL || !player->ready || event == NULL) return false;
-    now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    now_s = player_ui_nk_now_s(player);
     if (player_ui_nk_find_open(player)) {
         /* The box takes what is typed: SDL's text input brings the characters,
            Backspace deletes one, and a printable key is not also a shortcut
@@ -2068,82 +2209,106 @@ static const char *player_ui_library_status_marker(const GameRecord *game,
     return "▲";
 }
 
-/* Ace Mode on a title (src/rt/ace.h): the library card's badge, and for the open title the
-   ENHANCEMENTS card's button, its line and the last session's line. */
+/* The play mode on a title (#2055; src/rt/ace.h): the library card's badge, and for the open
+   title the ENHANCEMENTS card's buttons, its line and the last session's line. */
 static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int index,
                                 PlayerUiTitle *out) {
     const GameRecord *game = &app->games[index];
-    PlayerAceResolved ace;
-    player_ace_resolve(&app->settings, game->disc_id, &ace);
+    PlayerPlayResolved play;
+    player_play_resolve(&app->settings, game->disc_id, &play);
+    bool smooth_wanted = play.on && play.part[PLAYER_PART_SMOOTH] != 0;
+    player_play_apply_logic_60(&play, out->enhancement_on);
     out->ace_shown = !out->is_demo;
-    out->ace_in_effect = ace.on;
-    out->ace_badge = ace.on && !out->is_demo;
-    out->ace_label = ace.mode == PLAYER_ACE_TITLE_ON ? "Ace Mode: On"
-                   : ace.mode == PLAYER_ACE_TITLE_AUTHENTIC ? "Ace Mode: Authentic"
-                   : ace.on ? "Ace Mode: On (library default)" : "Ace Mode: Off (library default)";
+    out->ace_in_effect = play.on;
+    out->play_badge = out->is_demo ? NULL
+                    : play.mode == PLAYER_PLAY_ACE ? "Ace"
+                    : play.mode == PLAYER_PLAY_ENHANCED ? "Enhanced" : NULL;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (index >= 0 && index < PLAYER_UI_TITLE_CAP) {
+        /* The library card's badge and the title's own choice, printed when either changes. */
+        char reported[sizeof(player->play_reported[0])];
+        const char *badge = out->play_badge != NULL ? out->play_badge : "none";
+        snprintf(reported, sizeof(reported), "%s|%d", badge, (int)play.chosen);
+        if (strcmp(player->play_reported[index], reported) != 0) {
+            snprintf(player->play_reported[index], sizeof(player->play_reported[index]), "%s",
+                     reported);
+            printf("[PLAYER_UI_TEST] next_ui_play_badge index=%d disc=%s badge=%s chosen=%s\n",
+                   index, game->disc_id, badge, player_play_mode_name(play.chosen));
+        }
+    }
+#endif
+    switch (play.chosen) {
+        case PLAYER_PLAY_AUTHENTIC: out->ace_label = "Play mode: Authentic"; break;
+        case PLAYER_PLAY_ENHANCED: out->ace_label = "Play mode: Enhanced"; break;
+        case PLAYER_PLAY_ACE: out->ace_label = "Play mode: Ace"; break;
+        default:
+            out->ace_label = play.on ? "Play mode: Enhanced (library default)"
+                                     : "Play mode: Authentic (library default)";
+            break;
+    }
     out->ace_enabled = out->ace_shown && !app->launch_pending && !app->is_game_running &&
         !(app->build_session.is_building &&
           strcmp(app->build_session.disc_id, game->disc_id) == 0);
+    out->options_shown = out->ace_shown;
+    out->options_enabled = out->ace_enabled;
     out->ace_line = "";
     out->ace_last_session = "";
-    if (ace.mode == PLAYER_ACE_TITLE_AUTHENTIC) {
-        /* #1272's one Authentic switch: the 60 FPS game logic is off while it is chosen. */
+    /* The 60 FPS switch is Ace's own part: it shows while Ace is in effect (the session flag
+       makes a title on Enhanced with a usable package run as Ace). Authentic is the game as
+       released, with no 60 FPS game logic. */
+    if (play.mode == PLAYER_PLAY_AUTHENTIC) {
+        out->enhancement_shown = false;
         out->enhancement_enabled = false;
         out->enhancement_on = false;
-    }
-    /* Smooth motion (#1272) is a feature of Ace being on for the title. While the title's 60 FPS
-       game logic is on (out->enhancement_on, Authentic already off), this build has no
-       interpolator for a 60 Hz source (contract section 10.5): the button is disabled and says so. */
-    out->smooth_shown = out->ace_shown && ace.on;
-    out->smooth_on = false;
-    out->smooth_enabled = false;
-    out->smooth_label = "Smooth motion";
-    if (out->smooth_shown) {
-        int own = player_app_title_ace_smooth(app, index);
-        if (out->enhancement_on) {
-            out->smooth_label = "Smooth motion: Off (this game runs at 60 FPS)";
-        } else {
-            out->smooth_on = ace.smooth == 1;
-            out->smooth_enabled = out->ace_enabled;
-            out->smooth_label = own < 0
-                ? (ace.smooth == 1 ? "Smooth motion: On (library default)"
-                                   : "Smooth motion: Off (library default)")
-                : (own == 1 ? "Smooth motion: On" : "Smooth motion: Off");
-        }
+    } else if (play.mode != PLAYER_PLAY_ACE && !out->enhancement_session) {
+        out->enhancement_shown = false;
     }
     if (index != app->selected_game_index || !out->ace_shown) return;
-    if (ace.mode == PLAYER_ACE_TITLE_AUTHENTIC) {
-        out->ace_line = out->enhancement_shown
-            ? "Plays exactly as released, with no enhancements. 60 FPS game logic is off while "
-              "Authentic is chosen."
-            : "Plays exactly as released, with no enhancements.";
-    } else if (!ace.on) {
-        out->ace_line = "Off: Ace Mode is off for the library. On turns it on for this game alone.";
+    if (play.mode == PLAYER_PLAY_AUTHENTIC) {
+        out->ace_line = "Authentic: plays exactly as released, with nothing added.";
     } else {
         char words[160] = "";
         size_t used = 0;
-        const char *parts[5];
         size_t count = 0;
-        char filtering[24];
-        if (ace.af > 0) {
-            snprintf(filtering, sizeof(filtering), "%dx texture filtering", ace.af);
-            parts[count++] = filtering;
-        }
-        if (ace.text) parts[count++] = "crisp keyboard";
-        if (ace.readout) parts[count++] = "speed readout";
-        if (ace.notice) parts[count++] = "game badge";
-        if (ace.smooth == 1 && !out->enhancement_on) parts[count++] = "smooth motion";
-        for (size_t i = 0; i < count; i++) {
-            int n = snprintf(words + used, sizeof(words) - used, "%s%s", i ? ", " : "", parts[i]);
+        for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+            const PlayerEnhancedPartInfo *info = player_enhanced_part(p);
+            char part[64];
+            if (info == NULL || play.part[p] == 0) continue;
+            /* "16x texture filtering" for a part with levels, else "crisp system text". */
+            if (info->value_count > 2) {
+                snprintf(part, sizeof(part), "%s %s", player_enhanced_part_label(p, play.part[p]),
+                         info->name);
+            } else {
+                snprintf(part, sizeof(part), "%s", info->name);
+            }
+            for (char *c = part; *c; c++) *c = (char)tolower((unsigned char)*c);
+            int n = snprintf(words + used, sizeof(words) - used, "%s%s", count ? ", " : "", part);
             if (n < 0 || used + (size_t)n >= sizeof(words)) break;
             used += (size_t)n;
+            count++;
         }
-        snprintf(player->ace_line, sizeof(player->ace_line), "On for this game: %s.",
-                 count ? words : "no features are chosen");
+        bool ace = play.mode == PLAYER_PLAY_ACE;
+        /* Smooth motion turned on, but off for this launch: the line says why (contract
+           10.5), as the launch line carries smooth=off. */
+        bool smooth_held = smooth_wanted && play.logic_60;
+        snprintf(player->ace_line, sizeof(player->ace_line), "%s for this game: %s%s%s.%s",
+                 ace ? "Ace" : "Enhanced", ace && out->enhancement_on ? "60 FPS game logic" : "",
+                 ace && out->enhancement_on && count ? ", " : "",
+                 count ? words : (ace && out->enhancement_on ? "" : "every part is off"),
+                 smooth_held ? " Smooth motion is off while it runs at 60 FPS: this build "
+                               "smooths only 30 FPS games." : "");
         out->ace_line = player->ace_line;
     }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (strcmp(player->ace_line_reported, out->ace_line) != 0) {
+        snprintf(player->ace_line_reported, sizeof(player->ace_line_reported), "%s",
+                 out->ace_line);
+        printf("[PLAYER_UI_TEST] next_ui_title_play_line disc=%s line=%s\n", game->disc_id,
+               out->ace_line);
+    }
+#endif
     {
-        double now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+        double now_s = player_ui_nk_now_s(player);
         if (strcmp(player->ace_last_disc, game->disc_id) != 0 || now_s - player->ace_last_read_s >= 2.0) {
             snprintf(player->ace_last_disc, sizeof(player->ace_last_disc), "%s", game->disc_id);
             player->ace_last_read_s = now_s;
@@ -2678,7 +2843,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     nk_ui_set_layout_debug(player->ui,
                            app->settings.developer_mode && app->dev_log.inspect_layout);
     nk_ui_sdlr_set_scale(player->backend, scale.density);
-    now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+    now_s = player_ui_nk_now_s(player);
     repeat_count = nk_ui_input_poll(&player->input.input, now_s, repeats,
                                     sizeof(repeats) / sizeof(repeats[0]));
     for (size_t i = 0u; i < repeat_count; ++i) {
@@ -3037,11 +3202,14 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                                               !player->titles[index].enhancement_on);
                 }
                 action.kind = PLAYER_UI_ACTION_NONE;
-            } else if (action.kind == PLAYER_UI_ACTION_CYCLE_ACE) {
-                if (player->titles[index].ace_enabled) player_app_cycle_title_ace_mode(app, index);
+            } else if (action.kind == PLAYER_UI_ACTION_CYCLE_PLAY_MODE) {
+                if (player->titles[index].ace_enabled) player_app_cycle_title_play_mode(app, index);
                 action.kind = PLAYER_UI_ACTION_NONE;
-            } else if (action.kind == PLAYER_UI_ACTION_CYCLE_SMOOTH) {
-                if (player->titles[index].smooth_enabled) player_app_cycle_title_ace_smooth(app, index);
+            } else if (action.kind == PLAYER_UI_ACTION_OPEN_PLAY_OPTIONS) {
+                if (player->titles[index].options_enabled) {
+                    nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
+                    player_app_open_title_enhanced(app, index);
+                }
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_OPEN_SAVES) {
                 if (player->titles[index].save_folder_enabled) {

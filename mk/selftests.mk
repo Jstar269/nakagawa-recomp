@@ -135,6 +135,17 @@ fbcap-selftest:
 		tests/native/fbcap_selftest.c src/rt/fbcap.c src/rt/fbcap_policy.c
 	$(BUILD_DIR)/fbcap_selftest.exe $(BUILD_DIR)/fbcap_selftest
 
+# videorec-selftest - the run recorder (src/rt/videorec.c, #1273) driven with synthetic pictures,
+# VBLANKs and audio hand-offs: one frame per VBLANK (new, repeat and gap frames), audio exactly as
+# long as the video, impulses landing on the samples their guest time names, channel volume,
+# summing and clipping, RGBX order, refused sizes, and the guest's buffers left alone. With FFmpeg
+# on PATH it also encodes FFV1 and muxes; without it that part reports SKIP. No GPU or game input.
+native-core-tests: videorec-selftest
+videorec-selftest:
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -DSR_VIDEOREC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		-o $(BUILD_DIR)/videorec_selftest.exe tests/native/videorec_selftest.c src/rt/videorec.c
+	$(BUILD_DIR)/videorec_selftest.exe $(BUILD_DIR)/videorec_selftest
+
 # osk-text-entry-selftest - the on-screen keyboard's text entry (src/rt/osk_text_entry.c)
 # with a fake native input box: a poll never waits for the person, the box runs off the
 # polling thread, answers are handed over once, an abandoned box is closed whether or not it
@@ -156,6 +167,16 @@ ace-selftest:
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
 		-o $(BUILD_DIR)/ace_selftest$(EXE_EXT) tests/native/ace_selftest.c src/rt/ace.c
 	$(BUILD_DIR)/ace_selftest$(EXE_EXT) $(BUILD_DIR)
+
+# motion-match-selftest - the draw matcher of render-state motion (src/rt/motion_match.c, #2081):
+# anchors, reorder, spawn and despawn, rebuilds at a new address, ties, teleports and each
+# frame cut, on synthetic PRIM lists. Built from motion_match.c and its test alone (pure C).
+native-core-tests: motion-match-selftest
+motion-match-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/motion_match_selftest$(EXE_EXT) tests/native/motion_match_selftest.c \
+		src/rt/motion_match.c -lm
+	$(BUILD_DIR)/motion_match_selftest$(EXE_EXT)
 
 # osk-overlay-selftest - the in-window on-screen keyboard's state machine (src/rt/osk_overlay.c):
 # navigation, typing, the guest's length bound with UTF-16 pairs, backspace, confirm and cancel,
@@ -423,7 +444,10 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 # all twenty-seven: hle_mpeg.c and the presentation boundary its A/V measurement drives
 # (display, audio, audio_codec, route, input), plus tests/native/hle_focus_media_stubs.c for the
 # calls into the rest of HLE. tools/hle_focus_check.py then reads the executable's symbol table
-# and fails if any excluded HLE file was linked. $(HLE_OBJS) are only the symbol reference.
+# and fails if any excluded HLE file was linked. The three --videorec-audio runs record ten VBLANKs while the
+# production sceAudioOutputBlocking, sceAudioOutput2OutputBlocking (44.1 kHz) and 48000 Hz
+# sceAudioSRCOutputBlocking handlers play a block: each fails if its recorder hook in
+# hle_audio.c is gone or skips its channel (#1273). $(HLE_OBJS) are only the symbol reference.
 # The runtime's src/core objects (nk_font, nk_json, nk_xb, nk_input_profile and the platform file)
 # come from native-core-objects-core, which native-core-tests builds for the product core tests
 # already: the same sources, no runtime-only define, so the focused link does not compile them a
@@ -449,6 +473,9 @@ psmf-media-focused-selftest: native-core-objects-core $(PSMF_MEDIA_FOCUSED_RT_OB
 	$(PYTHON) tools/hle_focus_check.py --exe $(BUILD_DIR)/psmf_media_focused_selftest.exe --objdir $(BUILD_DIR) \
 		--include $(HLE_MEDIA_FOCUS_SRCS) --stub $(BUILD_DIR)/hle_focus_media_stubs.o --require hle_register_psmf_player_handlers sr_hle_test_psmf_av_reset
 	$(BUILD_DIR)/psmf_media_focused_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
+	$(BUILD_DIR)/psmf_media_focused_selftest.exe --videorec-audio $(BUILD_DIR)/videorec_audio_channel channel
+	$(BUILD_DIR)/psmf_media_focused_selftest.exe --videorec-audio $(BUILD_DIR)/videorec_audio_output2 output2
+	$(BUILD_DIR)/psmf_media_focused_selftest.exe --videorec-audio $(BUILD_DIR)/videorec_audio_src src
 
 # The hosted gate for the focused link (#307): native-core-tests runs on every pull request.
 native-core-tests: psmf-media-focused-selftest
@@ -474,7 +501,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(H264_SUB_OBJS) $(GENERIC_TITLE_CONFIG_HE
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		$(HLE_THREAD_SELFTEST_SOURCE) $(HLE_SRCS) src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		$(HLE_THREAD_SELFTEST_SOURCE) $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -513,7 +540,7 @@ hle-title-selftest-one: $(RT_GE_O) $(H264_SUB_OBJS) $(TITLE_CONFIG_TOOL) tools/t
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o $(HLE_TITLE_SELFTEST_EXE) \
-		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -553,7 +580,7 @@ $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(H264_SUB_OBJS) $(PSP_ORACLE
 		-Wno-infinite-recursion -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses -Wno-pointer-sign \
 		-I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/videorec.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
@@ -701,16 +728,22 @@ asset-index-selftest:
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
 # The scaled-upload case (#1296), the per-fragment mip level case (#1373), the readback-rows
-# case (#323, also on its SR_GPU_READBACK_FULL reference path) and the widescreen Fill case
-# (#1881) run again alone at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
-# cmd.exe does not take one.
+# case (#323, also on its SR_GPU_READBACK_FULL reference path), the undrawn-rows case and the
+# widescreen Fill case (#1881) run again alone at render scales 2 and 4; the sprite-scaled and
+# uv-edge-clamp cases (#2110) run alone at scales 2, 3 and 4. Each is selected by arguments: a
+# VAR=value prefix needs a POSIX shell, and cmd.exe does not take one. The host twin (#2050) runs
+# after them: twin-off runs of twin-scene write reference files that the twin-on runs at the
+# same scale check (guest VRAM always, the shown images for the native twin), `--twin native`
+# runs the whole suite with every twin checked against its image after each case, twin-gate
+# checks the switch's values and its Ace gate (`--authentic`), and twin-alloc-fail injects a
+# failed twin allocation, and gpu-timestamps runs once more with the twin shown.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_COHERENCE_BIN) \
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
 
 gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN)
@@ -731,7 +764,31 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	@rc=0; $(GPU_COHERENCE_BIN) --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; \
 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest gpu-timestamps (exit 77; the reason is printed above)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest gpu-timestamps (exit $$rc)"; exit $$rc; fi
+	$(GPU_COHERENCE_BIN) --scale 2 --case sprite-scaled
+	$(GPU_COHERENCE_BIN) --scale 3 --case sprite-scaled
+	$(GPU_COHERENCE_BIN) --scale 4 --case sprite-scaled
+	$(GPU_COHERENCE_BIN) --scale 2 --case uv-edge-clamp
+	$(GPU_COHERENCE_BIN) --scale 3 --case uv-edge-clamp
+	$(GPU_COHERENCE_BIN) --scale 4 --case uv-edge-clamp
+	$(GPU_COHERENCE_BIN) --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s1.txt
+	$(GPU_COHERENCE_BIN) --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
+	$(GPU_COHERENCE_BIN) --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
+	$(GPU_COHERENCE_BIN) --twin native
+	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
+	$(GPU_COHERENCE_BIN) --twin native --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
+	$(GPU_COHERENCE_BIN) --twin 1 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s1.txt
+	$(GPU_COHERENCE_BIN) --twin 1 --scale 2 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
+	$(GPU_COHERENCE_BIN) --twin 1 --scale 4 --case twin-scene --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
+	$(GPU_COHERENCE_BIN) --twin 1 --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin native --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin 1 --authentic --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin off --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin yes --case twin-gate
+	$(GPU_COHERENCE_BIN) --twin 1 --scale 4 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
+	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
+	@rc=0; $(GPU_COHERENCE_BIN) --twin 1 --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest twin gpu-timestamps (exit 77; the reason is printed above)"; 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest twin gpu-timestamps (exit $$rc)"; exit $$rc; fi
 	@$(MAKE) --no-print-directory gpu-coherence-selftest-snapbar-mutants
+	@$(MAKE) --no-print-directory ge-first-bad-draw-selftest GE_FBD_SKIP_STATUS=0
 
 # gpu-coherence-selftest-snapbar-mutants — the submit-batch case must kill each
 # SR_GPU_SNAPBAR_MUTANT in ge_gpu.c: 1 records one barrier command per image (the stream before
@@ -749,7 +806,7 @@ gpu-coherence-selftest-snapbar-mutants: shader-verify $(RT_GE_O)
 		$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPBAR_MUTANT=$$m -ffunction-sections -fdata-sections \
 			-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(LDFLAGS) -Wl,--gc-sections -o $$bin \
 			tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-			$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS) || exit 1; \
+			$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS) || exit 1; \
 		$$bin --case submit-batch > $$bin.log 2>&1; result=$$?; \
 		if test $$result -eq 77; then echo "snapbar mutant $$m: SKIP (no Vulkan device)"; exit 77; fi; \
 		if test $$result -eq 0; then cat $$bin.log; echo "snapbar mutant $$m unexpectedly passed" >&2; exit 1; fi; \
@@ -759,7 +816,9 @@ gpu-coherence-selftest-snapbar-mutants: shader-verify $(RT_GE_O)
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
-# target-scoped synchronization closes the generation gap and rejects unsafe geometry.
+# target-scoped synchronization closes the generation gap and rejects unsafe geometry. It runs
+# again with the host twin (#2050) shown, at scales 1 and 2, so the Ace HUD mask stays keyed by
+# the image the present showed.
 # gpu-ace-selftest - Ace Mode's texture filtering (src/rt/ace.h) on a real device: SR_ACE asks for
 # 16x before the device is made; through-mode draws keep the measured PSP sample points and get
 # no anisotropic sampler, a transformed linear draw gets one, a nearest one does not. Exit 77
@@ -769,18 +828,86 @@ gpu-ace-selftest: shader-verify $(RT_GE_O)
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_ace_selftest.exe \
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
 	@rc=0; $(BUILD_DIR)/gpu_ace_selftest.exe || rc=$$?; \
 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-ace-selftest (exit 77; the reason is printed above)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-ace-selftest (exit $$rc)"; exit $$rc; fi
+
+# tex-scale-selftest - texture scaling's CPU side (src/rt/gpu_sdl3vk/tex_scale.h): the C port of
+# xBRZ 1.9 (third_party/xbrz) against goldens from the pinned upstream C++ (xbrz_golden.cpp), the
+# wrap and clamp borders, the job queue, the settings and the smart 2D classifier. No GPU; the
+# worker threads need SDL3, so without it the recipe reports SKIP.
+TEX_SCALE_SDL_READY := $(and $(filter-out none,$(SDL3_PROVIDER)),$(if $(strip $(SDL3_ERROR)),,yes))
+tex-scale-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	@if [ -z "$(TEX_SCALE_SDL_READY)" ]; then echo "SKIP tex-scale-selftest (SDL3 not found by build discovery)"; exit 0; fi; \
+	$(CC) $(CFLAGS) -O2 -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+		-o $(BUILD_DIR)/tex_scale_selftest$(EXE_EXT) \
+		src/rt/gpu_sdl3vk/tex_scale_selftest.c src/rt/gpu_sdl3vk/tex_scale.c third_party/xbrz/xbrz.c \
+		$(LIBS) -lm && $(BUILD_DIR)/tex_scale_selftest$(EXE_EXT)
+
+native-core-tests: tex-scale-selftest
+
+# tex-scale-gate-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_NO_ACE_GATE, which lets
+# an authentic start read SR_TEX_SCALE and SR_SMART_2D. It passes only when the settings cell fails
+# for that reason, so the Ace gate is under test (contract section 11.2, item 1).
+tex-scale-gate-mutant:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	@if [ -z "$(TEX_SCALE_SDL_READY)" ]; then echo "SKIP tex-scale-gate-mutant (SDL3 not found by build discovery)"; exit 0; fi; \
+	$(CC) $(CFLAGS) -O2 -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections -DNK_TEX_SCALE_MUTANT_NO_ACE_GATE \
+		-o $(BUILD_DIR)/tex_scale_gate_mutant$(EXE_EXT) \
+		src/rt/gpu_sdl3vk/tex_scale_selftest.c src/rt/gpu_sdl3vk/tex_scale.c third_party/xbrz/xbrz.c \
+		$(LIBS) -lm || exit 1; \
+	rc=0; $(BUILD_DIR)/tex_scale_gate_mutant$(EXE_EXT) > $(BUILD_DIR)/tex_scale_gate_mutant.log 2>&1 || rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "FAIL tex-scale-gate-mutant (the mutant passed: the Ace gate is untested)"; exit 1; \
+	elif ! grep -q "FAIL settings: SR_TEX_SCALE=4 SR_SMART_2D=on with Ace Mode off" $(BUILD_DIR)/tex_scale_gate_mutant.log; then \
+		cat $(BUILD_DIR)/tex_scale_gate_mutant.log; echo "FAIL tex-scale-gate-mutant (exit $$rc, but not from the gate check)"; exit 1; \
+	else grep "FAIL settings" $(BUILD_DIR)/tex_scale_gate_mutant.log; echo "PASS tex-scale-gate-mutant (killed by the gate check, exit $$rc)"; fi
+
+# gpu-texscale-selftest - texture scaling and the smart 2D filter on the Vulkan GE renderer's
+# production path (src/rt/gpu_sdl3vk/tex_scale_gpu_selftest.inc), at render scales 1 and 4: the
+# xBRZ copy is drawn on its own lattice, an unfinished scale draws unscaled, a rewritten or
+# re-paletted texture is rescaled and its old copy never drawn, render targets are never scaled,
+# guest VRAM is untouched, and a 1:1 sprite samples nearest. It runs again with the host twin (#2050):
+# `--twin native` checks every twin against its image pixel for pixel, so the copies, their factor and
+# the 1:1 swap reach the twin pass, and `--twin 1` checks that every twin keeps in step. Exit 77 (SKIP)
+# without Vulkan.
+GPU_TEXSCALE_BUILD = $(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_TEXSCALE_SELFTEST \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
+gpu-texscale-selftest: shader-verify $(RT_GE_O)
+	$(GPU_TEXSCALE_BUILD) -o $(BUILD_DIR)/gpu_texscale_selftest.exe
+	@for args in "--scale 1" "--scale 4" "--scale 2 --tex-scale 4" "--twin native --scale 1" "--twin native --scale 4" \
+		"--twin native --scale 2 --tex-scale 4" "--twin 1 --scale 4"; do \
+		rc=0; $(BUILD_DIR)/gpu_texscale_selftest.exe $$args || rc=$$?; \
+		if [ $$rc -eq 77 ]; then echo "SKIP gpu-texscale-selftest $$args (exit 77; the reason is printed above)"; \
+		elif [ $$rc -ne 0 ]; then echo "FAIL gpu-texscale-selftest $$args (exit $$rc)"; exit $$rc; fi; \
+	done
+
+# gpu-texscale-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_SKIP_CONTENT_CHECK, which
+# binds a scaled copy without its state, serial and hash checks, so without checking that it was
+# made from the texture's current content. The rewrite cell must fail, and for that reason: the
+# build passes only when the run fails and prints that the stale copy was drawn.
+gpu-texscale-mutant: shader-verify $(RT_GE_O)
+	$(GPU_TEXSCALE_BUILD) -DNK_TEX_SCALE_MUTANT_SKIP_CONTENT_CHECK -o $(BUILD_DIR)/gpu_texscale_mutant.exe
+	@rc=0; $(BUILD_DIR)/gpu_texscale_mutant.exe > $(BUILD_DIR)/gpu_texscale_mutant.log 2>&1 || rc=$$?; \
+	cat $(BUILD_DIR)/gpu_texscale_mutant.log; \
+	if [ $$rc -eq 77 ]; then echo "SKIP gpu-texscale-mutant (exit 77; the reason is printed above)"; \
+	elif [ $$rc -eq 0 ]; then echo "FAIL gpu-texscale-mutant (the mutant passed: the hash check is untested)"; exit 1; \
+	elif ! grep -q "FAIL rewrite: stale scaled copy" $(BUILD_DIR)/gpu_texscale_mutant.log; then \
+		echo "FAIL gpu-texscale-mutant (exit $$rc, but not from the stale-copy check)"; exit 1; \
+	else echo "PASS gpu-texscale-mutant (killed by the stale-copy check, exit $$rc)"; fi
 
 gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
 		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
 	$(BUILD_DIR)/gpu_snapsync_selftest.exe
+	$(BUILD_DIR)/gpu_snapsync_selftest.exe --twin 1
+	$(BUILD_DIR)/gpu_snapsync_selftest.exe --twin 1 --scale 2
 
 # gpu-capture-selftest — deterministic present-source capture regression (issue #57): the
 # production present path is armed and driven with synthetic pixels; the published P6 PPMs
@@ -836,7 +963,79 @@ ge-replay: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/ge_replay.exe \
 		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
-		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
+
+# ge-first-bad-draw-selftest — ge_replay --first-bad-draw (#2141) on a generated capture (no game
+# data): the comparison rules without a GPU, NO_DIFFERENCE from the unchanged backend, then each
+# executed SR_GE_FBD_MUTANT (1: a blend draw 3 does not have, 2: draw 3's depth writes off) builds
+# its own binary and must be named as draw 3 in linear and bisect mode, mutant 2 in depth alone.
+# Last, a known difference no mutant made: the "overlap" capture's one PRIM of two overlapping
+# 50% blends on 5650 (#2109; shader-blend batches read one pre-batch copy of the target) must be
+# found as draw 1, its 100x100 overlap and nothing else. The #2109 fix flips this expectation.
+# Then fail-closed cells: a 512-wide scissor (ge.c rasterizes inside 480x272 only), 33 targets
+# (one past the limit) and a stride past 1024 are INCOMPLETE (exit 5), and a capture with no
+# draw is NO_DRAWS (exit 6); none is ever NO_DIFFERENCE.
+# Exit 77 (no Vulkan device) is a SKIP, as for gpu-coherence-selftest (GE_FBD_SKIP_STATUS).
+GE_FBD_DIR = $(BUILD_DIR)/ge_first_bad_draw
+# The exit status of a skip: 77 run alone; gpu-coherence-selftest passes 0, so a host with no
+# Vulkan device gets SKIP lines there, as for its other skipped cases, not a make error.
+GE_FBD_SKIP_STATUS ?= 77
+ge-first-bad-draw-selftest: ge-replay
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(GE_FBD_DIR)').mkdir(parents=True, exist_ok=True)"
+	@$(BUILD_DIR)/ge_replay.exe --fbd-self-check
+	@$(BUILD_DIR)/ge_replay.exe --write-synthetic $(GE_FBD_DIR)/synthetic.ngef
+	@for mode in linear bisect; do \
+		log=$(GE_FBD_DIR)/clean-$$mode.log; result=0; \
+		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/synthetic.ngef --first-bad-draw --mode $$mode \
+			--report $(GE_FBD_DIR)/clean-$$mode > $$log 2>&1 || result=$$?; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest (exit 77; no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
+		if test $$result -ne 0 || ! grep -Fq "result=NO_DIFFERENCE draws=6 " $$log; then \
+			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the unchanged backend did not report NO_DIFFERENCE ($$mode)" >&2; exit 1; fi; \
+		echo "ge-first-bad-draw-selftest: unchanged backend NO_DIFFERENCE ($$mode)"; \
+	done
+	@for m in 1 2; do \
+		bin=$(BUILD_DIR)/ge_replay_fbd_mutant$$m.exe; \
+		$(CC) $(CFLAGS) -DSR_GE_FBD_MUTANT=$$m -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+			-o $$bin src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+			$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS) || exit 1; \
+		for mode in linear bisect; do \
+			log=$(GE_FBD_DIR)/mutant$$m-$$mode.log; result=0; \
+			$$bin $(GE_FBD_DIR)/synthetic.ngef --first-bad-draw --mode $$mode \
+				--report $(GE_FBD_DIR)/mutant$$m-$$mode > $$log 2>&1 || result=$$?; \
+			if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest mutant $$m (no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
+			if test $$result -ne 1 || ! grep -Fq "result=FIRST_BAD_DRAW index=3 " $$log || \
+			   ! grep -Fq "GE_FBD_DRAW index=3 command=PRIM" $$log || \
+			   ! grep -Fq "GE_FBD_CROP image=diff" $$log; then \
+				cat $$log; echo "FAIL ge-first-bad-draw-selftest: mutant $$m was not named as draw 3 ($$mode)" >&2; exit 1; fi; \
+			if test $$m -eq 1 && ! grep -Fq "GE_FBD_REGION kind=color" $$log; then \
+				cat $$log; echo "FAIL ge-first-bad-draw-selftest: mutant 1 left colour equal ($$mode)" >&2; exit 1; fi; \
+			if test $$m -eq 2 && { ! grep -Fq "GE_FBD_REGION kind=depth" $$log || grep -Fq "GE_FBD_REGION kind=color" $$log; }; then \
+				cat $$log; echo "FAIL ge-first-bad-draw-selftest: mutant 2 was not a depth-only difference ($$mode)" >&2; exit 1; fi; \
+			echo "ge-first-bad-draw-selftest: mutant $$m named as draw 3 ($$mode)"; \
+		done; \
+	done
+	@$(BUILD_DIR)/ge_replay.exe --write-synthetic $(GE_FBD_DIR)/overlap.ngef overlap
+	@for mode in linear bisect; do \
+		log=$(GE_FBD_DIR)/overlap-$$mode.log; result=0; \
+		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/overlap.ngef --first-bad-draw --mode $$mode \
+			--report $(GE_FBD_DIR)/overlap-$$mode > $$log 2>&1 || result=$$?; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest overlap (no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
+		if test $$result -ne 1 || ! grep -Fq "result=FIRST_BAD_DRAW index=1 draws=2 " $$log || \
+		   ! grep -Fq "pixels=10000 max_diff=" $$log || ! grep -Fq "bbox=140,100,239,199" $$log; then \
+			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the #2109 overlap was not found as draw 1, exactly the overlap ($$mode)" >&2; exit 1; fi; \
+		echo "ge-first-bad-draw-selftest: known difference #2109 found at draw 1, the 100x100 overlap only ($$mode)"; \
+	done
+	@for v in wide empty many deep; do \
+		$(BUILD_DIR)/ge_replay.exe --write-synthetic $(GE_FBD_DIR)/$$v.ngef $$v || exit 1; \
+	done
+	@for cell in "wide 5 reason=raster-bound" "empty 6 result=NO_DRAWS" "many 5 reason=region-limit" "deep 5 reason=stride"; do \
+		set -- $$cell; log=$(GE_FBD_DIR)/$$1.log; result=0; \
+		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/$$1.ngef --first-bad-draw --report $(GE_FBD_DIR)/$$1 > $$log 2>&1 || result=$$?; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest $$1 (no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
+		if test $$result -ne $$2 || ! grep -Fq "$$3" $$log || grep -Fq "result=NO_DIFFERENCE" $$log; then \
+			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the $$1 capture was not refused with exit $$2 ($$3)" >&2; exit 1; fi; \
+		echo "ge-first-bad-draw-selftest: the $$1 capture is refused with exit $$2 ($$3)"; \
+	done
 
 # selftest — compile and run the C++ reference interpreter unit tests.
 # Requires g++ with C++17. Exit code 0 = all tests passed.

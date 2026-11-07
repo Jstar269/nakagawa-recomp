@@ -792,6 +792,7 @@ set(NK_RUNTIME_SOURCES
     src/rt/perf.c
     src/rt/fbcap_policy.c
     src/rt/fbcap.c
+    src/rt/videorec.c
     src/rt/ge_capture.c
     src/rt/vfpu_interp.c
     src/rt/hle.c
@@ -846,8 +847,11 @@ set(NK_RUNTIME_SOURCES
     src/rt/driver.c
     src/rt/gpu_sdl3vk/sdl3vk.c
     src/rt/gpu_sdl3vk/ge_gpu.c
+    src/rt/gpu_sdl3vk/tex_scale.c
+    third_party/xbrz/xbrz.c
     src/rt/gpu_sdl3vk/ace_ui.c
     src/rt/gpu_sdl3vk/ace_smooth.c
+    src/rt/gpu_sdl3vk/ace_hud.c
     src/rt/gpu_sdl3vk/fsr1_pass.c
     src/core/nk_input_profile.c
     src/core/nk_font.c

@@ -269,10 +269,10 @@ NkOverlayAction nk_overlay_page_settings(NkUi *ui, NkOverlayState *state,
                        "Frame rate and frame time in a corner of the game. F3 shows or "
                        "hides it too.", inner - 180.0f, compact, model->hud_on,
                        NK_OVERLAY_ACT_SET_HUD, &result);
-            /* Ace Mode's speed readout (src/rt/ace.h), in an Ace run that can draw it. */
+            /* The Enhanced speed readout (src/rt/ace.h), in an Enhanced or Ace run that can draw it. */
             if (model->ace_readout > 0) {
                 toggle_row(ui, NK_OVERLAY_ID_READOUT, 2u, "Speed readout",
-                           "The game's speed and frame rate in a corner, from Ace Mode. "
+                           "The game's speed and frame rate in a corner, from Enhanced. "
                            "Hidden while the HUD shows.", inner - 180.0f, compact,
                            model->ace_readout == 2, NK_OVERLAY_ACT_SET_READOUT, &result);
             }

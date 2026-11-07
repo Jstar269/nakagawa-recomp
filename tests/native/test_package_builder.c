@@ -106,7 +106,7 @@ static void test_compile_part_count(void) {
     PackageBuildSession session;
     package_builder_init_session(&session, "TEST00001", "Part Count");
 
-    const char *start = "{\"stage\": \"compile\", \"status\": \"START\", \"message\": \"Compiling package with AOT codegen...\"}";
+    const char *start = "{\"stage\": \"compile\", \"status\": \"START\", \"message\": \"Compiling the translated code\"}";
     assert(package_builder_parse_progress_line(start, strlen(start), &ev));
     assert(ev.parts_total == 0);
     package_builder_apply_event(&session, &ev);
@@ -146,7 +146,7 @@ static void test_compile_part_count(void) {
     assert(ev.parts_total == 0);
 
     /* Leaving the compile stage returns the bar to its own state. */
-    const char *package = "{\"stage\": \"package\", \"status\": \"START\", \"message\": \"Staging runtime assets\"}";
+    const char *package = "{\"stage\": \"package\", \"status\": \"START\", \"message\": \"Putting the package together and checking it\"}";
     assert(package_builder_parse_progress_line(package, strlen(package), &ev));
     package_builder_apply_event(&session, &ev);
     assert(package_builder_compile_fraction(&session) < 0.0f);

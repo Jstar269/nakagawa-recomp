@@ -5435,7 +5435,7 @@ static bool package_runtime_source_digest(const char *source_root, char out_hex[
     static const char * const source_dirs[] = {"src/rt", "src/core", "src/ui", "third_party/clay",
                                                "third_party/fidelityfx_sdk",
                                                "third_party/portable-snippets",
-                                               "third_party/stb", NULL};
+                                               "third_party/stb", "third_party/xbrz", NULL};
     static const uint8_t nul = 0;
     PackageSourceList list;
     char absolute[NK_MAX_PATH * 2];

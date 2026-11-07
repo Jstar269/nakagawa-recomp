@@ -25,13 +25,17 @@
     X("FUZZ_CONSTRAINT", "string", "unset (finite floats only)", "vfpu_fuzz.c", "The value allow_nan_inf makes the VFPU fuzzer also generate NaN and infinity operands.") \
     X("FUZZ_SEED", "number", "unset (seed from argv or built-in value)", "vfpu_fuzz.c", "Seeds the random generator of the VFPU fuzz test tool; parsed with strtoul base 0 and overrides the argument.") \
     X("FUZZ_TRIALS", "number", "200 (or first command-line argument)", "vfpu_fuzz.c", "Sets the number of random trials run by the VFPU fuzz test program.") \
+    X("NK_VIDEOREC_FAKE_FFMPEG", "string", "unset (the self-test sets it per case)", "videorec_selftest.c", "How the videorec self-test, run as a fake FFmpeg, ends: enc= and mux= each ok, slow:MS, fail, dead or crash.") \
+    X("PATH", "system", "set by the host", "videorec.c", "Searched, absolute entries only, for the FFmpeg executable a recording encodes with.") \
     X("PSP_ISO", "path", "unset: no ISO path from the environment", "iso_public.c", "Path of the disc image the public ISO reader opens when no image is given another way.") \
     X("PSP_VFPU_TABLES", "path", "assets/vfpu", "vfpu_tables.c", "Directory the runtime loads the VFPU lookup tables from instead of the default one.") \
     X("SCHED_DUMP", "flag-presence", "off", "sched.c", "Diagnostic switch read in sched.c that enables scheduler state dumping in the idle loop.") \
     X("SDL_VIDEODRIVER", "system", "unset (SDL picks the driver)", "gui.c", "Read with SDL_VIDEO_DRIVER to detect the offscreen driver for the headless presented-frames acceptance mode.") \
     X("SDL_VIDEO_DRIVER", "system", "unset", "gui.c", "Alias of SDL_VIDEODRIVER; a value of offscreen makes headless acceptance fail because a real presenter is required.") \
     X("SR_ACE", "string", "off", "ace.c", "Spec string that turns on the optional enhancements (filtering, text, readout, notice, wide, smooth, band-limited SAS resampling).") \
-    X("SR_ACE_REPORT", "path", "unset (no report written)", "ace.c", "Output path for the per-run Ace Mode JSON report.") \
+    X("SR_ACE_REPORT", "path", "unset (no report written)", "ace.c", "Output path for the per-run Enhanced or Ace JSON report.") \
+    X("SR_ACE_SMOOTH_DEPTH", "string", "on", "gpu_sdl3vk/ace_hud.c", "Exactly 0 stops Ace Smooth reading the GE's depth for its in-betweens.") \
+    X("SR_ACE_SMOOTH_HUD", "string", "on", "gpu_sdl3vk/ace_hud.c", "Exactly 0 stops Ace Smooth reading the HUD mask of through-mode draws for its in-betweens.") \
     X("SR_ALLOC_GUARD", "flag-nonzero", "on (guard enabled when unset)", "hle.c", "Allocator guard stays on unless set with a value starting with 0, which disables it.") \
     X("SR_ALLOC_MAX", "number", "0xFFFFFFFF (no extra cap)", "hle.c", "Hexadecimal optional stricter cap on the size of a user-partition allocation request.") \
     X("SR_ALLOC_TRACE", "flag-presence", "off", "hle.c,recomp.c", "When set, prints a trace line for guest memory allocations and partition frees to stderr.") \
@@ -123,6 +127,10 @@
     X("SR_GPU_TEX_SHADOW_DISABLE", "flag-nonzero", "off (texture shadow enabled)", "gpu_sdl3vk/ge_gpu.c", "Disables the GPU texture shadow when set to a non-empty value other than 0.") \
     X("SR_GPU_TIMESTAMPS", "flag-nonzero", "off", "gpu_sdl3vk/ge_gpu.c,gpu_sdl3vk/sdl3vk.c", "Times GE command buffers by op kind and the presentation blit with GPU timestamp queries (GEGPU_TS lines, SR_PERF_FRAMES gpu_* columns).") \
     X("SR_GPU_TNL", "string", "off", "ge.c", "Set to exactly 1 to hand eligible transform-mode triangles to the GPU backend for vertex transform.") \
+    X("SR_GPU_TWIN_CAPTURE", "string", "unset (captures follow the shown image)", "gpu_sdl3vk/ge_gpu.c", "Set to authentic to make the presenter show, and so capture, the authentic image while the host twin is on.") \
+    X("SR_GPU_TWIN_COLOR", "string", "off", "gpu_sdl3vk/ge_gpu.c", "Host twin (#2050), Ace Mode only: 1 presents full 32-bit colour without dither, native keeps authentic colour; other values but 0 and off are refused.") \
+    X("SR_GPU_TWIN_DUMP", "path", "unset (no dump)", "gpu_sdl3vk/ge_gpu_selftest.inc", "File prefix where the coherence self-test's twin-scene case writes each shown frame as raw RGBA.") \
+    X("SR_GPU_TWIN_REF", "path", "unset (no reference check)", "gpu_sdl3vk/ge_gpu_selftest.inc", "Reference file for the coherence self-test's twin cases: a twin-off run writes it, a twin-on run at the same scale checks it.") \
     X("SR_GPU_XFER_RING_KB", "number", "built-in default ring size", "gpu_sdl3vk/ge_gpu.c", "Transfer ring size in KiB (0 disables, above 65536 ignored).") \
     X("SR_HEADLESS", "flag-nonzero", "off", "audio_sdl3.c,gui.c,sched.c", "Marks the run headless: silent audio, headless presenter and no pause UI (audio check wants exactly 1).") \
     X("SR_HEADLESS_ACCEPT_PRESENTED_FRAMES", "string", "unset (off)", "gui.c,sched.c", "Requests the headless presented-frames acceptance checkpoint; any non-empty value enables it.") \
@@ -194,6 +202,7 @@
     X("SR_SAMPLE_SPEC", "path", "unset (no state sampling)", "hle_route.c", "Path of a spec file listing guest state samples to take.") \
     X("SR_SASLOG", "flag-presence", "off", "hle_audio.c", "Enables SAS audio diagnostic logging.") \
     X("SR_SAVEDATA_LIST_SELECT", "string", "unset: the user picks from the list", "savedata.c", "Save name to choose automatically in the savedata list dialog; CANCEL cancels it.") \
+    X("SR_SMART_2D", "string", "off", "gpu_sdl3vk/tex_scale.c", "on samples nearest for a textured draw that maps one texel to one pixel (HUD, text) at a render scale above 1x; Ace Mode only.") \
     X("SR_STALE_DETECT", "flag-nonzero", "off", "stale_code.c", "When nonzero, enables stale translated-code detection.") \
     X("SR_STATLOG", "flag-presence", "off", "debug.h,hle_io.c", "Logs memory stick Getstat results to stderr.") \
     X("SR_STORE_CONTEXT_LIMIT", "number", "1", "debug.c", "Number of store-context entries kept, accepted from 1 to 1024.") \
@@ -208,6 +217,8 @@
     X("SR_TEST_GUEST_MODULE_LOAD", "string", "unset: the test returns immediately", "hle_thread_selftest.c", "Selects the mode of the guest-module-load binding self-test.") \
     X("SR_TEXDUMP", "flag-presence", "off", "ge.c", "When set, enables texture dumping.") \
     X("SR_TEXDUMP_AFTER", "number", "0", "ge.c", "First GE frame from which textures are dumped when SR_TEXDUMP is set.") \
+    X("SR_TEX_SCALE", "string", "off", "gpu_sdl3vk/tex_scale.c", "off or 2-6: the xBRZ factor host copies of guest textures are scaled by in the Vulkan GE texture cache; Ace Mode only.") \
+    X("SR_TEX_SCALE_BUDGET_MB", "number", "512", "gpu_sdl3vk/tex_scale.c", "GPU memory, in MiB, the scaled texture copies may use; past it a texture is drawn unscaled.") \
     X("SR_THLOG", "flag-presence", "off", "debug.h,sched.c", "Enables scheduler and thread logging, including the sched debug class.") \
     X("SR_TRACE", "path", "logs/trace_window.txt", "flight_recorder.c", "Output file for the PC trace window; used only when SR_TRACE_PC is set.") \
     X("SR_TRACE_F", "list", "unset", "flight_recorder.c", "Comma list of frame indices (each below 128) that open the trace window.") \
@@ -230,6 +241,11 @@
     X("SR_VERIFY_REPORT", "path", "unset (no report written)", "verify.c", "Verify build only: path of the per-function calls and checks report.") \
     X("SR_VERIFY_STEPS", "number", "1000000", "verify.c", "Verify build only: reference-interpreter step limit for one checked call.") \
     X("SR_VIDEO", "string", "unset: the Vulkan presenter is used", "gui.c,osk_text_entry.c,sched.c", "Selects the presenter: gdi for the Win32 window, offscreen for headless, otherwise Vulkan.") \
+    X("SR_VIDEOREC_CODEC", "string", "ffv1", "videorec.c", "Encoder for a recording: ffv1, x264rgb, nvenc (all lossless) or raw (unencoded, no FFmpeg). Another value or an encoder that cannot run refuses the recording.") \
+    X("SR_VIDEOREC_DIR", "path", "unset (no recording)", "videorec.c", "Records each VBLANK's presented picture and the mixed audio, on one guest timeline, into this folder. Needs SR_DETERMINISTIC_CLOCK=1; refused without it.") \
+    X("SR_VIDEOREC_FFMPEG", "path", "unset (first absolute PATH entry holding ffmpeg)", "videorec.c", "Absolute path of the FFmpeg a recording encodes and muxes with; a path that is not absolute or not an executable file refuses the recording.") \
+    X("SR_VIDEOREC_SIZE", "string", "unset (the window's size at the first recorded present)", "videorec.c", "Output size of a recording as WxH (even numbers), independent of the window; the picture is scaled as the window scales it.") \
+    X("SR_VIDEOREC_START", "number", "0 (from the first presented picture)", "videorec.c", "VBLANK number a recording starts at; earlier pictures and sound are not recorded.") \
     X("SR_VRAMDUMP", "string", "unset (off)", "hle_display.c", "Selection of VRAM dumps to write; requires SR_VRAMDUMP_DIR to name an output directory.") \
     X("SR_VRAMDUMP_DIR", "path", "unset (VRAM dump refused)", "hle_display.c", "Existing output directory required when SR_VRAMDUMP selects VRAM dumps.") \
     X("SR_VSYNC", "number", "1 (vsync on)", "gpu_sdl3vk/sdl3vk.c", "Set to 0 to request presenting without vsync; unset or non-zero keeps vsync.") \
