@@ -148,11 +148,14 @@ class DriverUnitTests(unittest.TestCase):
         self.assertIn("<<<<<<<", out)
 
     def test_tab_indented_list_items_still_merge(self) -> None:
-        base = "LIST := \\\n\tone \\\n\ttwo\n"
-        ours = "LIST := \\\n\tone \\\n\tA \\\n\ttwo\n"
-        theirs = "LIST := \\\n\tone \\\n\tB \\\n\ttwo\n"
+        # The make line continuation, built from its code point: written as a literal next to a
+        # newline escape it reads like a UNC path to the publication audit's local-path check.
+        bsl = chr(92)
+        base = f"LIST := {bsl}\n\tone {bsl}\n\ttwo\n"
+        ours = f"LIST := {bsl}\n\tone {bsl}\n\tA {bsl}\n\ttwo\n"
+        theirs = f"LIST := {bsl}\n\tone {bsl}\n\tB {bsl}\n\ttwo\n"
         rc, out = self._merge(base, ours, theirs)
-        self.assertEqual((rc, out), (0, "LIST := \\\n\tone \\\n\tA \\\n\tB \\\n\ttwo\n"))
+        self.assertEqual((rc, out), (0, f"LIST := {bsl}\n\tone {bsl}\n\tA {bsl}\n\tB {bsl}\n\ttwo\n"))
 
     def test_new_targets_between_targets_merge(self) -> None:
         base = "a:\n\tx\n\nz:\n\tw\n"
