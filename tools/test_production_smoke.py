@@ -491,6 +491,28 @@ class TestProductionSmoke(unittest.TestCase):
             finally:
                 os.chdir(cwd)
 
+    def test_verify_accepts_lld_link_map_input_sections(self):
+        with tempfile.TemporaryDirectory(prefix="nk_prod_smoke_lld_") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            relative_dir = "sub_build"
+            build_dir = self._fabricated_aot_tree(temp_root, relative_dir)
+            map_path = build_dir / "production_smoke.map"
+            paths = map_path.read_text(encoding="utf-8").splitlines()
+            map_path.write_text(
+                "Address  Size     Align Out     In      Symbol\n"
+                + "\n".join(
+                    f"00001000 00000020 16 {path}:(.text)" for path in paths
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cwd = os.getcwd()
+            try:
+                os.chdir(temp_root)
+                generator.verify(Path(relative_dir), mode="aot")
+            finally:
+                os.chdir(cwd)
+
     def _assert_title_link_uses_response_file(self, makefile):
         """The title link reads its objects from a response file, never the command line.
 

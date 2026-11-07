@@ -60,13 +60,14 @@ def _status_from_returncode(returncode: int) -> str:
 
 def _run_one(make: str, python: str, name: str, targets: tuple[str, ...],
              output_root: Path, enabled: bool, build_prefix: str,
-             build_root: str | None = None) -> dict[str, Any]:
+             build_root: str | None = None,
+             make_assignments: tuple[str, ...] = ()) -> dict[str, Any]:
     output_dir = output_root / name
     output_dir.mkdir(parents=True, exist_ok=True)
     _clear_outputs(output_dir)
     env = _perf_environment(output_dir, enabled)
     env["PYTHON"] = python
-    command = [make, f"BUILD_DIR={build_prefix}/{name}"]
+    command = [make, *make_assignments, f"BUILD_DIR={build_prefix}/{name}"]
     if build_root is not None:
         # Targets such as production-smoke-gap place their output under BUILD_ROOT,
         # not BUILD_DIR. Without this the overhead runs look for a build the make
@@ -167,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-prefix", default="build/perf-benchmark",
                         help="make-relative BUILD_DIR root; give each compiler its own so a "
                              "candidate never reuses another compiler's objects")
+    parser.add_argument("--make-arg", action="append", default=[], metavar="NAME=VALUE",
+                        help="pass a Make variable assignment to every workload build")
     parser.add_argument("--overhead", action="store_true")
     parser.add_argument("--samples", type=int, default=3)
     args = parser.parse_args(argv)
@@ -181,7 +184,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--build-prefix must name a directory")
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
-    runs = [_run_one(make, args.python, name, targets, args.output, True, args.build_prefix)
+    runs = [_run_one(make, args.python, name, targets, args.output, True, args.build_prefix,
+                     make_assignments=tuple(args.make_arg))
             for name, targets in WORKLOADS]
     result: dict[str, Any] = {
         "schema": "nakagawa-perf-benchmark-v1",

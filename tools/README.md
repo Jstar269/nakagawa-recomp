@@ -304,7 +304,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | Module | Purpose |
 | --- | --- |
 | `run_perf_benchmarks.py` | Run the public source-owned performance benchmark matrix. |
-| `compiler_compare.py` | Compare GCC against Clang on the public corpus, with the semantic veto ahead of every timing. |
+| `compiler_compare.py` | Compare compiler and linker choices on the synthetic corpus; the semantic veto runs before any timing. |
 | `generate_benchmarks.py` | Generate the public benchmark matrix. |
 | `capture_native_screenshots.py` | Capture showcase screenshots from a built native player. |
 | `make_showcase_animation.py` | Turn source-owned showcase framebuffer captures into deterministic animated GIFs. |
@@ -317,30 +317,46 @@ set, so a new subpackage cannot ship undiscoverable either:
 
 #### Comparing host compilers (issue #317)
 
-`compiler_compare.py` answers "is Clang faster here?" only after it has shown that Clang is
-still correct here. Each requested compiler that resolves on `PATH` builds the same public
-source-owned corpus into its own build root, then runs a fixed veto chain — the cosimulation,
-the cosimulation negative corpus, the stale-code detector and the LLE COP0/exception
-selftest. The first failing gate stops the chain, and the compiler is reported `VETOED`
-naming that gate, with no build time, no binary size and no workload timing recorded for it.
-A compiler missing from `PATH` is reported `NOT_AVAILABLE`, never a pass. The per-compiler
-`run_perf_benchmarks.py` workload matrix runs only after the whole chain passes, into a build
-prefix of its own so no candidate reuses another candidate's objects.
+`compiler_compare.py` compares GCC and Clang on the public synthetic
+`production-smoke`, `production-smoke-gap`, `display-smoke` and
+`cosim-selftest` fixtures. Before any measurement, it runs production smoke,
+display smoke, cosimulation and its negative corpus, `native-core-tests`,
+`vfpu-interp-selftest`, `fp-convert-selftest`, `cpu-lle-selftest` and
+`stale-code-selftest`. The first failure is reported as `FAILED_VETO` with its
+output; that compiler/linker row has no timing or size. A compiler or linker missing from
+`PATH` is `NOT_AVAILABLE`.
+
+Each passing compiler/linker combination builds every measurement target into a fresh,
+isolated directory at least three times. The report records generated-C compile wall time,
+sampled peak compiler-process-tree working set, link wall time, object and executable sizes,
+and SHA-256 hashes of normalized fixture-run output. After those repeats, it also runs the
+existing #282 runtime workload matrix once for that compiler/linker pair, using explicit Make
+assignments and a separate build prefix. The report retains each workload's status, elapsed
+time, output and SR_PERF summary path. A failed or skipped runtime matrix is
+`WORKLOAD_FAILED`, not `MEASURED`. GCC/Clang and the default/lld linker are separate report
+rows; the lld row adds `-fuse-ld=lld` to that run's `LDFLAGS`.
+The common runtime and generated-code flags explicitly disable fast-math and reassociation.
+The comparison omits Makefile's existing GCC-only `-ftrack-macro-expansion=0`
+so that its compile-time and memory results are not biased by that tracking flag; normal builds
+keep their current default.
+The harness does not acquire the machine RAM lock, change the default compiler, or apply a
+compiler-specific guest-semantics workaround. Callers running builds must wrap it in the
+machine's RAM lock.
 
 ```powershell
-python tools/compiler_compare.py                        # gcc then clang
-python tools/compiler_compare.py --compilers gcc        # one candidate
+python tools/compiler_compare.py --compilers gcc,clang --linkers default,lld --repeats 3
+python tools/compiler_compare.py --compilers clang --linkers default --repeats 3
 python tools/compiler_compare.py --output build/compiler-compare
 ```
 
-The report is `build/compiler-compare/compiler_compare.json`, and its shape is fixed by
-`validate_report()`, which refuses to accept a report that carries a timing under a vetoed or
-unavailable compiler. Exit status is `0` only when at least one compiler is `MEASURED` and
-none is `VETOED` or `WORKLOAD_FAILED`; a missing `make` is exit `2`. Each compiler's corpus build
-and report stay inside the `--output` root, but five workloads (`production-smoke-gap`, `cosim`
-and the three `platform-ladder-*` targets) build into their fixed repository trees under `build/`,
-which each compiler rewrites in turn. No title/ISO/ELF/PRX input is read, and running the
-harness changes no compiler default. Findings belong in issue #317.
+The harness writes `compiler_compare.json` and `compiler_compare.md` beneath
+`--output`. It stores every effective Make flag and the observed compiler argument
+vectors. The repeated-run hash summary identifies unstable output rather than collapsing it
+into a pass. Exit status is `0` when at least one row is measured and none is
+`FAILED_VETO`, `FAILED_MEASUREMENT` or `WORKLOAD_FAILED`; a missing Make executable or invalid
+configuration is exit `2`. No game title, ISO, ELF or PRX input is read. Findings belong
+in issue #317. The measured result snapshot is in
+[`../docs/COMPILER_COMPARISON.md`](../docs/COMPILER_COMPARISON.md).
 
 ### Regression tests: code generation and the guest interpreter
 
@@ -594,7 +610,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_ci_required.py` | Required-CI status evaluation tests. |
 | `test_ci_test_shards.py` | CI test-shard planner: exactly-once coverage, separation and workflow wiring. |
 | `test_ci_trust_verdict.py` | Trusted CI verdict canaries: same-name jobs, deleted jobs, duplicate contexts, `exit 0` swaps, stale heads, forks and unapproved CI-tool edits. |
-| `test_compiler_compare.py` | The compiler comparison must not publish a timing its semantic veto did not earn. |
+| `test_compiler_compare.py` | Parse fake toolchain output, enforce the veto-before-measurement rule, and validate the JSON and Markdown reports. |
 | `test_contrib_check.py` | The contribution gate must route, and must never turn a skip into a pass. |
 | `test_contrib_refresh.py` | The contributor refresh equals the maintainer generator byte for byte on a synthetic repository, and every refusal fails closed. |
 | `test_discovery_contract.py` | Parallel test execution and discovery contract verification. |

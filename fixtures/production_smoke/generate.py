@@ -676,13 +676,18 @@ def _read_manifest(fixture_dir: Path) -> dict[str, object]:
 
 
 def _normalized_map_targets(map_text: str) -> set[str]:
-    """Normalize link-map path spellings so relative and absolute --build-dir
-    values validate the same map. Comparison only; contamination scanning stays
-    raw-text based."""
+    """Normalize GNU ld and lld input paths for relative or absolute build roots.
+
+    GNU ld lists an input path as a token; lld appends ``:(section)`` to each
+    input-section path. Comparison only; contamination scanning stays raw-text
+    based.
+    """
 
     tokens = set()
     for token in map_text.replace("\\", "/").split():
-        tokens.add(os.path.normpath(os.path.abspath(token)))
+        path = token.partition(":(")[0]
+        if path:
+            tokens.add(os.path.normpath(os.path.abspath(path)))
     return tokens
 
 
