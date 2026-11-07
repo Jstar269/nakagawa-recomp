@@ -1071,7 +1071,10 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
             model.update_notes = newest->notes;
             model.update_page_url = newest->page_url;
             model.update_has_zip = newest->has_zip;
-            if (nk_update_install_supported()) {
+            /* A copy the Windows installer put in place updates through the next
+               release's Setup.exe: the release page, never a ZIP unpacked beside it. */
+            model.update_installed_by_setup = nk_update_installed_by_setup(app->install_root);
+            if (nk_update_install_supported() && !model.update_installed_by_setup) {
                 /* Download is offered only when the ZIP can be checked: a key in this
                    build and a signature in the release (update_check.h). */
                 model.update_unverifiable = !update->can_verify;
@@ -1569,6 +1572,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 switch (app->update.phase) {
                     case PLAYER_UPDATE_AVAILABLE:
                         focus = nk_update_install_supported() &&
+                                !nk_update_installed_by_setup(app->install_root) &&
                                 app->update.check.newest.has_zip &&
                                 app->update.check.newest.has_signature &&
                                 app->update.can_verify

@@ -165,6 +165,19 @@ bool nk_update_install_folder(const char *exe_dir, const char *downloads_dir,
    output. Windows only (Windows' own tar.exe unpacks). */
 bool nk_update_install(const char *zip_path, const char *target_dir, const char *log_path,
                        NkUpdateError *error);
+/* Whether the running player was put in place by the Windows installer (Setup.exe):
+   exe_dir is <install>/bin and Inno's uninstaller "unins000.exe" sits in <install>.
+   Such a copy updates by running the new release's Setup.exe, which upgrades it in
+   place and keeps the person's data, so the Settings page offers the release page
+   and never unpacks a ZIP beside it. False for a ZIP or portable copy, a NULL or
+   empty exe_dir, and any folder not named bin. */
+bool nk_update_installed_by_setup(const char *exe_dir);
+/* Defence in depth for the player's download and install steps: when exe_dir is a copy the
+   installer put in place (nk_update_installed_by_setup), fills error with UPDATE_INSTALLED_BY_SETUP
+   and returns true, and the step must not start. The Settings page already offers only the release
+   page for such a copy, so this is reached only if something starts a step anyway. Returns false and
+   clears error otherwise. */
+bool nk_update_refuse_for_setup_copy(const char *exe_dir, NkUpdateError *error);
 /* Whether nk_update_install can work on this host: Windows only. Elsewhere the
    Settings page offers the release page, not a download. */
 bool nk_update_install_supported(void);

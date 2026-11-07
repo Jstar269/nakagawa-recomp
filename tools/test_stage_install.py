@@ -106,6 +106,39 @@ class InstallTests(unittest.TestCase):
                                         stage_dlls=_fake_stager)
         self.assertEqual((dest / "keep.txt").read_text(encoding="utf-8"), "keep")
 
+    def test_refuses_a_folder_the_windows_installer_set_up(self):
+        """#2208: Setup.exe leaves unins000.exe beside the program and has its own uninstall; the stager
+        must never share the folder, even though it holds no stager marker."""
+        for name in ("unins000.exe", "unins000.dat"):  # Inno Setup's uninstaller and its data
+            with self.subTest(name=name):
+                dest = self.root / f"installed-{name}"
+                dest.mkdir()
+                (dest / name).write_bytes(b"inno")
+                (dest / "bin").mkdir()
+                with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_DESTINATION_INSTALLER_OWNED"):
+                    stage_install.stage_install(dest, self.player, repo=self.repo, stage_dlls=_fake_stager)
+                self.assertEqual(sorted(path.name for path in dest.iterdir()), sorted([name, "bin"]))
+        # Also when the folder carries a stager marker as well (a mixed folder is never safe to share).
+        dest = self.root / "mixed"
+        stage_install.stage_install(dest, self.player, repo=self.repo, stage_dlls=_fake_stager)
+        (dest / "unins000.exe").write_bytes(b"inno")
+        with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_DESTINATION_INSTALLER_OWNED"):
+            stage_install.stage_install(dest, self.player, repo=self.repo, stage_dlls=_fake_stager)
+
+    def test_uninstall_refuses_a_folder_the_windows_installer_set_up(self):
+        """A mixed folder (stager marker plus Setup's files) must not be uninstalled from here: that would leave
+        Setup's uninstaller and its Apps & features entry pointing at nothing."""
+        dest = self.root / "mixed-uninstall"
+        stage_install.stage_install(dest, self.player, repo=self.repo, stage_dlls=_fake_stager)
+        (dest / "unins000.exe").write_bytes(b"inno")
+        for call in (lambda: stage_install.plan_uninstall(dest),
+                     lambda: stage_install.uninstall(dest),
+                     lambda: stage_install.uninstall(dest, dry_run=True)):
+            with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_DESTINATION_INSTALLER_OWNED"):
+                call()
+        self.assertTrue((dest / "bin" / "nakagawa_player.exe").is_file())
+        self.assertTrue((dest / stage_install.MARKER).is_file())
+
     def test_missing_player_is_named(self):
         with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_PLAYER_MISSING"):
             stage_install.stage_install(self.root / "x", self.root / "absent.exe",
@@ -160,6 +193,79 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(stage_install.read_shortcut_app_id(link), "Nakagawa.Recomp")
 
 
+    @unittest.skipUnless(os.name == "nt", "Windows shortcuts")
+    def test_a_shortcut_that_starts_another_copy_is_not_replaced(self):
+        """#2208: the installer writes the same shortcut name; replacing it would break that copy's shortcut."""
+        first, second = self.root / "first", self.root / "second"
+        for dest in (first, second):
+            (dest / "bin").mkdir(parents=True)
+            (dest / "bin" / "nakagawa_player.exe").write_bytes(b"MZ")
+            (dest / "nakagawa.ico").write_bytes(b"ico")
+        link = self.root / "Nakagawa Recomp.lnk"
+        stage_install.write_shortcut(link, first)
+        before = link.read_bytes()
+        with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_SHORTCUT_OTHER_COPY"):
+            stage_install.write_shortcut(link, second)
+        self.assertEqual(link.read_bytes(), before)
+        # The same copy re-stages over its own shortcut.
+        stage_install.write_shortcut(link, first)
+        # A stale shortcut (the other copy's program is gone) is replaced.
+        (first / "bin" / "nakagawa_player.exe").unlink()
+        stage_install.write_shortcut(link, second)
+        self.assertEqual(Path(stage_install.read_shortcut_target(link)),
+                         (second / "bin" / "nakagawa_player.exe").resolve())
+
+
+class ShortcutRefusalThroughMainTests(unittest.TestCase):
+    """main() checks every requested shortcut before it stages or writes anything (#2208)."""
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name)
+        self.player = self.root / "player.exe"
+        self.player.write_bytes(b"MZ")
+
+    def _run(self, *arguments):
+        err = io.StringIO()
+        with mock.patch.object(stage_install, "IS_WINDOWS", True), \
+                mock.patch.object(stage_install, "desktop_folder", return_value=self.root / "Desktop"), \
+                mock.patch.object(stage_install, "start_menu_folder", return_value=self.root / "Start"), \
+                mock.patch.object(stage_install, "stage_install") as staging, \
+                mock.patch.object(stage_install, "read_shortcut_target", side_effect=self._target), \
+                mock.patch.object(stage_install, "write_shortcut") as writer, \
+                mock.patch.object(stage_install, "record_integration") as recorder, \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            status = stage_install.main(["--dest", str(self.root / "install"), "--player", str(self.player),
+                                         *arguments])
+        return status, err.getvalue(), staging, writer, recorder
+
+    def _target(self, shortcut):
+        return str(self.root / "other" / "bin" / "nakagawa_player.exe")
+
+    def test_a_refused_second_shortcut_leaves_nothing_staged_or_written(self):
+        other = self.root / "other" / "bin"
+        other.mkdir(parents=True)
+        (other / "nakagawa_player.exe").write_bytes(b"MZ")
+        (self.root / "Start").mkdir()
+        (self.root / "Start" / stage_install.SHORTCUT_NAME).write_bytes(b"lnk")  # owned by the other copy
+        status, err, staging, writer, recorder = self._run("--desktop-shortcut", "--start-menu-shortcut")
+        self.assertEqual(status, 1)
+        self.assertIn("INSTALL_SHORTCUT_OTHER_COPY", err)
+        staging.assert_not_called()
+        writer.assert_not_called()
+        recorder.assert_not_called()
+        self.assertFalse((self.root / "install").exists())
+
+    def test_each_shortcut_is_recorded_as_it_is_written(self):
+        status, _, staging, writer, recorder = self._run("--desktop-shortcut", "--start-menu-shortcut")
+        self.assertEqual(status, 0)
+        self.assertEqual(writer.call_count, 2)
+        self.assertEqual([call.args[1] for call in recorder.call_args_list],
+                         [[self.root / "Desktop" / stage_install.SHORTCUT_NAME],
+                          [self.root / "Start" / stage_install.SHORTCUT_NAME]])
+
+
 class ShortcutFlagTests(unittest.TestCase):
     """--desktop-shortcut and --start-menu-shortcut through main(), with the install and the
     shortcut writer stubbed, so the routing is checked on any host."""
@@ -201,12 +307,14 @@ class ShortcutFlagTests(unittest.TestCase):
         self.assertEqual(self.written, [self.programs / "Nakagawa Recomp.lnk"])
         self.assertEqual(self.recorded, [[self.programs / "Nakagawa Recomp.lnk"]])
 
-    def test_both_shortcuts_are_written_and_recorded_together(self):
+    def test_both_shortcuts_are_written_and_each_recorded_as_written(self):
         with mock.patch.object(stage_install, "IS_WINDOWS", True):
             self.assertEqual(self._main("--desktop-shortcut", "--start-menu-shortcut"), 0)
         both = [self.desktop / "Nakagawa Recomp.lnk", self.programs / "Nakagawa Recomp.lnk"]
         self.assertEqual(self.written, both)
-        self.assertEqual(self.recorded, [both], "one marker update lists both shortcuts")
+        # Recorded as each is written (record_integration keeps what was recorded before), so a later failure
+        # still leaves the earlier shortcuts in the marker for --uninstall.
+        self.assertEqual(self.recorded, [[path] for path in both])
 
     def test_no_flag_writes_no_shortcut(self):
         with mock.patch.object(stage_install, "IS_WINDOWS", True):
@@ -560,6 +668,8 @@ _V = "0.0.2"
 _PLAYER = f"nakagawa-recomp-{_V}-windows-x64.zip"
 _SOURCES = f"nakagawa-recomp-{_V}-prerequisite-sources.zip"
 _GOOD_ASSETS = [_PLAYER, f"{_PLAYER}.sha256", f"{_PLAYER}.sha256.minisig", _SOURCES, f"{_SOURCES}.sha256"]
+_SETUP = f"nakagawa-recomp-{_V}-windows-x64-setup.exe"
+_SETUP_ASSETS = [_SETUP, f"{_SETUP}.sha256"]
 
 
 class UninstallTests(unittest.TestCase):
@@ -815,6 +925,29 @@ class ReleaseAssetContractTests(unittest.TestCase):
         for template in ("nakagawa-recomp-$Version-windows-x64.zip", "nakagawa-recomp-$Version-prerequisite-sources.zip"):
             self.assertIn(template, recipe)
         self.assertIn("--check-assets", recipe)
+        self.assertIn("nakagawa-recomp-$Version-windows-x64-setup.exe", recipe)
+
+    def test_the_installer_is_allowed_only_beside_the_zip(self):
+        # #2208: a launcher ranks a ZIP ahead of an .exe, so the ZIP stays the one candidate.
+        self.assertEqual(stage_install.check_release_assets(_GOOD_ASSETS + _SETUP_ASSETS), [])
+        self.assertEqual(stage_install.check_release_assets(_GOOD_ASSETS + _SETUP_ASSETS + [f"{_SETUP}.sha256.minisig"]),
+                         [])
+        self.assertEqual(self._codes(_GOOD_ASSETS + [_SETUP]), ["ASSET_CHECKSUM_MISSING"])
+        self.assertEqual(self._codes(_GOOD_ASSETS + [f"{_SETUP}.sha256"]), ["ASSET_ORPHAN"])
+        self.assertEqual(self._codes(_GOOD_ASSETS + _SETUP_ASSETS + [f"{_SETUP}.sha256.minisig"][:0]
+                                     + ["nakagawa-recomp-0.0.2-windows-x64-setup.exe.bak"]), ["ASSET_NAME_UNKNOWN"])
+        # Without the ZIP the installer would be the only download, which no launcher or update flow expects.
+        no_zip = [n for n in _GOOD_ASSETS if not n.startswith(_PLAYER)] + _SETUP_ASSETS
+        self.assertEqual(self._codes(no_zip), ["ASSET_INSTALLER_WITHOUT_ZIP", "ASSET_PLAYER_MISSING"])
+        # The installer carries the ZIP's version.
+        other = "nakagawa-recomp-0.0.1-windows-x64-setup.exe"
+        self.assertEqual(self._codes(_GOOD_ASSETS + [other, f"{other}.sha256"]),
+                         ["ASSET_INSTALLER_WITHOUT_ZIP", "ASSET_VERSION_MIXED"])
+        # Only the contract's installer name: a second installer, another platform's or an msi are not listed.
+        self.assertEqual(self._codes(_GOOD_ASSETS + _SETUP_ASSETS + ["nakagawa-recomp-0.0.2-windows-x64-setup.msi"]),
+                         ["ASSET_FILTER_MISMATCH", "ASSET_SECOND_ARCHIVE"])
+        self.assertEqual(self._codes(_GOOD_ASSETS + _SETUP_ASSETS + ["nakagawa-recomp-0.0.2-windows-arm64-setup.exe"]),
+                         ["ASSET_FILTER_MISMATCH", "ASSET_SECOND_ARCHIVE"])
 
     def test_two_archives_for_one_platform_fail(self):
         self.assertEqual(self._codes(_GOOD_ASSETS + ["nakagawa-recomp-0.0.2-windows-x64.zip.bak"]),

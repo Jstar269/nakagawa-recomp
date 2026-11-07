@@ -61,6 +61,7 @@ Nakagawa has since substantially extended and modified that codebase. This repos
   decoder in [`third_party/stb/`](third_party/stb/), for the player's prompt glyphs and the disc art read from your own disc.
 - **Kenney "Input Prompts" and "Interface Sounds" — Kenney Vleugels ([kenney.nl](https://kenney.nl))** — CC0-1.0. The
   next UI's button prompt glyphs and its optional launcher sounds, in [`third_party/kenney/`](third_party/kenney/).
+- **Inno Setup 6.7.3 — Jordan Russell and Martijn Laan** — the Inno Setup License (a permissive, no-copyleft licence; text pinned by hash in [`assets/upstream/innosetup.lock.json`](assets/upstream/innosetup.lock.json)). A build tool for the Windows installer, not vendored: `tools/build_installer.py` runs the user's own pinned copy. The installer's `Setup.exe` embeds Inno's unmodified loader, whose copyright notice and web addresses stay intact.
 - **Font fixtures** — Gudea (Agustina Mingote), Gowun Dodum (The Gowun Dodum Project Authors), M+ 1p (The M+ Project Authors) and Liberation Sans and Liberation Serif 2.1.5 (Google Corporation and Red Hat, Inc.; Reserved Font Names Arimo, Tinos, Cousine and Liberation), all SIL Open Font License 1.1 ([`fixtures/fonts/`](fixtures/fonts/)). The build converts Liberation (Latin), Gowun Dodum (Korean) and Noto Sans JP with M+ 1p (Japanese) into the project's stand-in PSP fonts; Gudea is used only by tests.
 
 The authoritative, component-by-component provenance records are [`NOTICE.md`](NOTICE.md) and the

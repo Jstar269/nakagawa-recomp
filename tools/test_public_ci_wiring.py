@@ -168,6 +168,118 @@ class PublicCiWiringTests(unittest.TestCase):
         assert shared is not None
         self.assertIn("SKIP: mypy-tools", "\n".join(shared))
 
+    def test_windows_installer_is_a_read_only_heavy_required_gate(self) -> None:
+        jobs = _ci_job_blocks()
+        installer = "\n".join(jobs["windows_installer"])
+        self.assertIn("runs-on: windows-2025", installer)
+        self.assertIn("permissions:", installer)
+        self.assertIn("contents: read", installer)
+        self.assertIn("needs: [classify, windows_runtime]", installer)
+        self.assertIn("needs.classify.outputs.allow_substantive == 'true'", installer)
+        self.assertIn("needs.classify.outputs.run_installer == 'true'", installer)
+        self.assertIn("needs.windows_runtime.result == 'success'", installer)
+
+        runtime = "\n".join(jobs["windows_runtime"])
+        self.assertIn("needs.classify.outputs.run_installer == 'true'", runtime)
+        required = "\n".join(jobs["ci_required"])
+        self.assertIn(
+            "needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime, windows_installer]",
+            required,
+        )
+        self.assertIn("INSTALLER_RESULT: ${{ needs.windows_installer.result }}", required)
+        self.assertIn("RUN_INSTALLER: ${{ needs.classify.outputs.run_installer }}", required)
+        aggregate = (ROOT / "tools" / "ci_required.py").read_text(encoding="utf-8")
+        self.assertIn('("windows-installer", "INSTALLER_RESULT", "RUN_INSTALLER")', aggregate)
+
+        expression = _job_if(jobs["windows_installer"])
+        for allow_substantive, expected in (("false", False), ("true", True)):
+            with self.subTest(allow_substantive=allow_substantive):
+                context = {
+                    "needs": {
+                        "classify": {
+                            "result": "success",
+                            "outputs": {"allow_substantive": allow_substantive, "run_installer": "true"},
+                        },
+                        "windows_runtime": {"result": "success"},
+                    }
+                }
+                self.assertEqual(_actions_eval(expression, context), expected)
+
+    def test_windows_runtime_uploads_its_player_package_for_the_installer_gate(self) -> None:
+        jobs = _ci_job_blocks()
+        runtime_step = _ci_step(
+            jobs["windows_runtime"], "Stage Windows installer package from the existing player build"
+        )
+        self.assertIsNotNone(runtime_step)
+        assert runtime_step is not None
+        package_step = "\n".join(runtime_step)
+        self.assertIn("build/nakagawa_player.exe", package_step)
+        self.assertIn("stage_runtime_dlls.py", package_step)
+        self.assertIn("write_sha256sums", package_step)
+        upload = _ci_step(jobs["windows_runtime"], "Upload Windows installer package")
+        self.assertIsNotNone(upload)
+        assert upload is not None
+        self.assertIn("actions/upload-artifact@", "\n".join(upload))
+        self.assertIn("windows-installer-package", "\n".join(upload))
+
+        installer = "\n".join(jobs["windows_installer"])
+        self.assertIn("windows-installer-package", installer)
+        self.assertIn("actions/download-artifact@", installer)
+        self.assertNotIn("mingw32-make", installer, "the installer job must reuse the built player artifact")
+
+    def test_no_job_level_env_reads_the_runner_context(self) -> None:
+        # GitHub allows the runner context only in step-level keys; a job-level env that reads it
+        # makes the whole workflow file invalid, so no job in ci.yml runs at all.
+        for name, block in _ci_job_blocks().items():
+            in_job_env = False
+            for line in block[1:]:
+                if re.match(r"^ {4}steps:\s*$", line):
+                    break
+                if re.match(r"^ {4}env:\s*$", line):
+                    in_job_env = True
+                    continue
+                if in_job_env and not re.match(r"^ {6}", line):
+                    in_job_env = False
+                if in_job_env:
+                    with self.subTest(job=name, line=line.strip()):
+                        self.assertNotIn("runner.", line)
+
+    def test_windows_installer_steps_name_their_own_inno_folder(self) -> None:
+        job = _ci_job_blocks()["windows_installer"]
+        for step_name in ("Download and install hash-pinned Inno Setup",
+                          "Build, verify, and compare the installer"):
+            step = _ci_step(job, step_name)
+            assert step is not None
+            with self.subTest(step=step_name):
+                self.assertIn(r"NK_INNO_SETUP_DIR: ${{ runner.temp }}\inno-setup", "\n".join(step))
+
+    def test_windows_installer_hashes_inno_before_installing_then_verifies_and_compares_two_builds(self) -> None:
+        job = _ci_job_blocks()["windows_installer"]
+        install_step = _ci_step(job, "Download and install hash-pinned Inno Setup")
+        self.assertIsNotNone(install_step)
+        assert install_step is not None
+        install_text = "\n".join(install_step)
+        self.assertIn("innosetup.lock.json", install_text)
+        self.assertIn("Invoke-WebRequest", install_text)
+        self.assertIn("Get-FileHash", install_text)
+        self.assertIn("Start-Process", install_text)
+        self.assertLess(install_text.index("Get-FileHash"), install_text.index("Start-Process"))
+        for option in ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/DIR="):
+            with self.subTest(option=option):
+                self.assertIn(option, install_text)
+        self.assertNotIn("GITHUB_PATH", install_text)
+
+        verify_step = _ci_step(job, "Build, verify, and compare the installer")
+        self.assertIsNotNone(verify_step)
+        assert verify_step is not None
+        verify_text = "\n".join(verify_step)
+        self.assertEqual(verify_text.count("tools/build_installer.py"), 2)
+        self.assertIn("--version 0.0.0-ci", verify_text)
+        self.assertIn("tools/verify_installer.py", verify_text)
+        self.assertIn("Get-FileHash", verify_text)
+        self.assertIn("SOURCE_DATE_EPOCH", verify_text)
+        self.assertNotIn("LOCALAPPDATA:", verify_text)
+
     def test_showcase_guest_build_uses_pspdev_compiler(self) -> None:
         demo = {"id": "synthetic-test", "folder": "ge_scene", "target": "fixture_app"}
         with tempfile.TemporaryDirectory(prefix="showcase_cc_") as tmp:
@@ -440,7 +552,7 @@ class PublicCiWiringTests(unittest.TestCase):
 
         required_start = ci.index("  ci_required:\n")
         required_job = ci[required_start:]
-        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]", required_job)
+        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime, windows_installer]", required_job)
         self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required_job)
         self.assertIn("NATIVE_RESULT: ${{ needs.native_tools.result }}", required_job)
         self.assertIn("RUN_NATIVE: ${{ needs.classify.outputs.run_native }}", required_job)
@@ -574,6 +686,7 @@ class PublicCiWiringTests(unittest.TestCase):
             (f"{name}:", block)
             for name, block in _ci_job_blocks().items()
             if any("runs-on: windows" in line for line in block)
+            and any("mingw32-make" in line for line in block)
         ]
         self.assertTrue(windows_jobs, "no Windows job found in ci.yml")
         for name, block in windows_jobs:
@@ -666,6 +779,10 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run synthetic VFPU fuzzer (shard 0 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Build and run synthetic VFPU fuzzer (shard 1 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Prove the fuzz shards cover every case exactly once": 'NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests',
+}
+_WINDOWS_INSTALLER_STEPS = {
+    "Stage Windows installer package from the existing player build": "tools/stage_runtime_dlls.py --target",
+    "Upload Windows installer package": "actions/upload-artifact@",
 }
 # Steps every matrix group runs once: the toolchain setup, the compiler cache and the
 # runtime-object compile gate.
@@ -887,12 +1004,29 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
                 elif name in _WINDOWS_MAIN_SAVE:
                     step = " ".join(line.strip() for line in cast(list[str], self.steps[name]))
                     self.assertIn(_WINDOWS_MAIN_SAVE_CONDITION, step, f"{name} runs only on main")
+                elif name in _WINDOWS_INSTALLER_STEPS:
+                    step = " ".join(line.strip() for line in cast(list[str], self.steps[name]))
+                    self.assertIn(_WINDOWS_INSTALLER_STEPS[name], step)
+                    self.assertIn("needs.classify.outputs.run_installer == 'true'", step)
                 else:
                     self.assertIn(name, _WINDOWS_SERIAL_GATES, f"unclassified Windows step {name!r}")
         compile_step = " ".join(cast(
             list[str], self.steps["Compile Windows runtime objects through the default compiler path"]
         ))
         self.assertIn("runtime-objects", compile_step)
+
+    def test_installer_package_steps_are_scoped_to_the_smoke_group(self) -> None:
+        for name in _WINDOWS_INSTALLER_STEPS:
+            with self.subTest(step=name):
+                step = "\n".join(cast(list[str], self.steps[name]))
+                self.assertIn(
+                    "if: contains(matrix.parts, 'smoke') && needs.classify.outputs.run_installer == 'true'",
+                    step,
+                )
+        self.assertLess(
+            _ci_step_index(self.block, "Build and link the native player"),
+            _ci_step_index(self.block, "Stage Windows installer package from the existing player build"),
+        )
 
     def test_every_part_runs_a_gate_and_dependent_steps_share_a_part(self) -> None:
         used = {self.part_of(name) for name in _WINDOWS_SERIAL_GATES}
@@ -1547,7 +1681,7 @@ class VfpuFuzzShardTests(unittest.TestCase):
 
     def test_ci_required_aggregates_every_windows_part(self) -> None:
         required = "\n".join(_ci_job_blocks()["ci_required"])
-        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]", required)
+        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime, windows_installer]", required)
         self.assertIn("WINDOWS_RESULT: ${{ needs.windows_runtime.result }}", required)
         self.assertIn("RUN_WINDOWS: ${{ needs.classify.outputs.run_windows }}", required)
 
@@ -1901,7 +2035,7 @@ class PublicExportJobTests(unittest.TestCase):
 
     def test_ci_required_still_requires_hygiene_and_export(self) -> None:
         required = "\n".join(self.blocks["ci_required"])
-        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]", required)
+        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime, windows_installer]", required)
         self.assertIn("HYGIENE_RESULT: ${{ needs.hygiene.result }}", required)
         self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required)
 
@@ -2880,11 +3014,12 @@ class DraftLightCiWiringTests(unittest.TestCase):
     #: Paths that route every substantive gate, so only the Draft rule can skip one.
     PATHS = ["src/rt/driver.c", "tools/codegen.py", "docs/CI.md"]
     QUICK = frozenset({"hygiene", "public_export", "ci_required"})
-    HEAVY = frozenset({"python_tools", "native_tools", "linux_gcc16", "android_build", "windows_runtime"})
+    HEAVY = frozenset({"python_tools", "native_tools", "linux_gcc16", "android_build", "windows_runtime",
+                       "windows_installer"})
     RESULT_KEYS = {
         "hygiene": "HYGIENE_RESULT", "public_export": "PUBLIC_EXPORT_RESULT",
         "python_tools": "PYTHON_RESULT", "native_tools": "NATIVE_RESULT", "android_build": "ANDROID_RESULT",
-        "windows_runtime": "WINDOWS_RESULT",
+        "windows_runtime": "WINDOWS_RESULT", "windows_installer": "INSTALLER_RESULT",
     }
 
     def _classify(self, event_name: str, event: Mapping[str, object], ref: str) -> dict[str, str]:
@@ -2908,6 +3043,15 @@ class DraftLightCiWiringTests(unittest.TestCase):
                                     "public_export": {"result": "success"}}
         context = {"github": {"event_name": event_name, "event": event}, "needs": needs}
         ran = {job for job in self.QUICK | self.HEAVY if _actions_eval(_job_if(blocks[job]), context)}
+        # A job that reads another job's result (the installer reads windows_runtime's) is
+        # settled once the results it needs are known.
+        while True:
+            needs.update({job: {"result": "success" if job in ran else "skipped"}
+                          for job in self.QUICK | self.HEAVY})
+            settled = {job for job in self.QUICK | self.HEAVY if _actions_eval(_job_if(blocks[job]), context)}
+            if settled == ran:
+                break
+            ran = settled
         environment = {key: ("success" if job in ran else "skipped") for job, key in self.RESULT_KEYS.items()}
         environment["CLASSIFY_RESULT"] = "success"
         for line in blocks["ci_required"]:

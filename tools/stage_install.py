@@ -20,7 +20,11 @@ The install uses the release layout the player already searches
                                      console icon)
 
 Only a folder this tool created (it holds ``.nakagawa-install.json``) is ever
-replaced, so pointing ``--dest`` at an unrelated folder fails closed. A
+replaced, so pointing ``--dest`` at an unrelated folder fails closed. A folder the
+Windows installer set up (it holds ``unins000.exe``) is refused for staging and for
+``--uninstall`` (``INSTALL_DESTINATION_INSTALLER_OWNED``), and a shortcut that starts a
+different existing copy is never replaced (``INSTALL_SHORTCUT_OTHER_COPY``, checked for
+every requested shortcut before anything is staged). A
 shortcut is a Windows ``.lnk`` written through ``WScript.Shell``; it starts the
 player with ``--ui=next`` by default, the way Explorer would start it, and
 carries the player's AppUserModelID (``APP_USER_MODEL_ID``, #2006), so a pinned
@@ -153,9 +157,24 @@ def export_source(repo: Path, destination: Path, revision: str = "HEAD") -> str:
     return returned
 
 
+#: Inno Setup's uninstaller and its data, written beside the program by the Windows installer (#2208).
+INSTALLER_UNINSTALL_FILES = ("unins000.exe", "unins000.dat")
+
+
+def _check_not_installer_owned(dest: Path) -> None:
+    """Refuse a folder the Windows installer set up. Staging into it or uninstalling it from here would leave
+    Setup's uninstaller and its Apps & features entry pointing at a different program, or at nothing."""
+    if any((dest / name).exists() for name in INSTALLER_UNINSTALL_FILES):
+        raise InstallError(
+            f"INSTALL_DESTINATION_INSTALLER_OWNED: {dest} was set up by the Windows installer (Setup.exe), "
+            "which has its own uninstall in Apps & features; two uninstallers must never share a folder. "
+            "Choose another folder")
+
+
 def _check_destination(dest: Path) -> None:
     if dest.exists() and not dest.is_dir():
         raise InstallError(f"INSTALL_DESTINATION_INVALID: {dest} is not a folder")
+    _check_not_installer_owned(dest)
     if dest.is_dir() and any(dest.iterdir()) and not (dest / MARKER).is_file():
         raise InstallError(
             f"INSTALL_DESTINATION_NOT_OWNED: {dest} already holds files this tool did not "
@@ -433,12 +452,50 @@ def read_shortcut_app_id(shortcut: Path) -> str:
     return result.stdout.strip()
 
 
+_READ_TARGET_SCRIPT = (
+    "$ErrorActionPreference = 'Stop'; "
+    "(New-Object -ComObject WScript.Shell).CreateShortcut($env:NK_LNK).TargetPath"
+)
+
+
+def read_shortcut_target(shortcut: Path) -> str:
+    """The program a .lnk starts, or "" when it cannot be read (Windows only)."""
+    if os.name != "nt":
+        raise InstallError("INSTALL_SHORTCUT_UNSUPPORTED: shortcuts are read on Windows only")
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", _READ_TARGET_SCRIPT],
+        capture_output=True, text=True, env={**os.environ, "NK_LNK": _shell_path(shortcut)}, check=False)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _check_shortcut_not_another_copys(shortcut: Path, dest: Path) -> None:
+    """Refuse to replace the shortcut of a different, existing copy (the Windows installer writes the same
+    name with the same taskbar identity, so replacing it would break that copy's shortcut, and removing either
+    copy would remove the other's). The same copy, a stale shortcut whose program is gone, and one that cannot
+    be read are replaced."""
+    if not shortcut.is_file():
+        return
+    target = read_shortcut_target(shortcut)
+    if not target:
+        print(f"stage_install: note: could not read where {shortcut} points, so it is replaced", file=sys.stderr)
+        return
+    ours = dest / "bin" / "nakagawa_player.exe"
+    existing = Path(target)
+    if existing.is_file() and os.path.normcase(os.path.realpath(existing)) != os.path.normcase(
+            os.path.realpath(ours)):
+        raise InstallError(
+            f"INSTALL_SHORTCUT_OTHER_COPY: {shortcut} already starts another copy of Nakagawa ({existing}); "
+            "writing it here would replace that copy's shortcut. Uninstall or delete that copy and its "
+            "shortcut first, or choose another shortcut with --shortcut")
+
+
 def write_shortcut(shortcut: Path, dest: Path, arguments: str = DEFAULT_ARGUMENTS) -> None:
     """Write a .lnk that starts bin/nakagawa_player.exe the way Explorer does, with the
-    player's AppUserModelID."""
+    player's AppUserModelID. Refuses to replace another copy's shortcut."""
     if os.name != "nt":
         raise InstallError("INSTALL_SHORTCUT_UNSUPPORTED: shortcuts are written on Windows only")
     dest = dest.resolve()
+    _check_shortcut_not_another_copys(shortcut, dest)
     environment = os.environ.copy()
     environment.update({
         "NK_LNK": _shell_path(shortcut),
@@ -629,6 +686,8 @@ def write_portable_zip(stage: Path, zip_path: Path, *, source_date_epoch: int,
 _VERSION = r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?"
 _PLAYER_ZIP = re.compile(rf"nakagawa-recomp-({_VERSION})-(windows-x64)\.zip")
 _SOURCE_ZIP = re.compile(rf"nakagawa-recomp-({_VERSION})-prerequisite-sources\.zip")
+# The Windows installer (#2208): a second file for the platform that sits beside the ZIP, never in place of it.
+_SETUP_EXE = re.compile(rf"nakagawa-recomp-({_VERSION})-(windows-x64)-setup\.exe")
 # What a catalogue launcher drops before it ranks archives: checksum, signature, source and
 # debug files. Every released file that is not the player archive carries one of these words.
 _AUXILIARY_TOKENS = ("sha256", "checksum", ".minisig", ".sig", ".asc", "source", "src", "debug", "symbols",
@@ -648,24 +707,34 @@ def check_release_assets(names) -> list[str]:
 
     Exactly one player archive per platform, ``nakagawa-recomp-<version>-<os>-<arch>.zip``, with its
     ``.sha256`` (and optionally that file's ``.minisig``); the prerequisite source archive with its
-    ``.sha256``; one version throughout; and nothing else a launcher's name filter would keep as a
-    second candidate.
+    ``.sha256``; optionally the platform's installer ``nakagawa-recomp-<version>-windows-x64-setup.exe``
+    with its ``.sha256`` (and optionally ``.minisig``), only beside that platform's ZIP; one version
+    throughout; and nothing else a launcher's name filter would keep as a second candidate.
+
+    The installer is not a name a filter drops. A launcher ranks the archive formats it can install and
+    puts a ZIP ahead of an ``.exe`` (Quiver Launcher's ``FORMATS``: ``.zip`` first, ``.exe`` near the
+    end), so the ZIP stays the one candidate and the installer is for people on the release page.
     """
     names = sorted(set(names))
     problems: list[str] = []
     players: dict[str, list[str]] = {}
+    setups: list[re.Match[str]] = []
     versions: set[str] = set()
     for name in names:
         player = _PLAYER_ZIP.fullmatch(name)
         source = _SOURCE_ZIP.fullmatch(name)
+        setup = _SETUP_EXE.fullmatch(name)
         if player:
             players.setdefault(player[2], []).append(name)
-        matched = player or source
+        if setup:
+            setups.append(setup)
+        matched = player or source or setup
         if matched:
             versions.add(matched[1])
             continue
-        checked = re.fullmatch(r"(nakagawa-recomp-.+\.zip)\.sha256(\.minisig)?", name)
-        if checked and (_PLAYER_ZIP.fullmatch(checked[1]) or _SOURCE_ZIP.fullmatch(checked[1])):
+        checked = re.fullmatch(r"(nakagawa-recomp-.+\.(?:zip|exe))\.sha256(\.minisig)?", name)
+        if checked and (_PLAYER_ZIP.fullmatch(checked[1]) or _SOURCE_ZIP.fullmatch(checked[1])
+                        or _SETUP_EXE.fullmatch(checked[1])):
             # A signature signs the checksum file, so it needs the checksum and the archive both.
             needed = [checked[1]] + ([f"{checked[1]}.sha256"] if checked[2] else [])
             problems += [f"ASSET_ORPHAN: {name} has no {other}" for other in needed if other not in names]
@@ -682,6 +751,14 @@ def check_release_assets(names) -> list[str]:
         for archive in found:
             if f"{archive}.sha256" not in names:
                 problems.append(f"ASSET_CHECKSUM_MISSING: {archive}.sha256")
+    for setup in setups:
+        installer = setup.group(0)
+        zips = [_PLAYER_ZIP.fullmatch(archive) for archive in players.get(setup[2], [])]
+        if not any(found and found[1] == setup[1] for found in zips):
+            problems.append(f"ASSET_INSTALLER_WITHOUT_ZIP: {installer} needs {setup[2]} ZIP of the same version "
+                            "beside it; the installer is never the only download")
+        if f"{installer}.sha256" not in names:
+            problems.append(f"ASSET_CHECKSUM_MISSING: {installer}.sha256")
     sources = [name for name in names if _SOURCE_ZIP.fullmatch(name)]
     if not sources:
         problems.append("ASSET_SOURCE_MISSING: no nakagawa-recomp-<version>-prerequisite-sources.zip; the ZIP "
@@ -691,7 +768,8 @@ def check_release_assets(names) -> list[str]:
     problems += [f"ASSET_CHECKSUM_MISSING: {name}.sha256" for name in sources if f"{name}.sha256" not in names]
     if len(versions) > 1:
         problems.append(f"ASSET_VERSION_MIXED: {', '.join(sorted(versions))}")
-    kept = [name for name in names if not is_auxiliary_asset(name) and name.lower().endswith(_ARCHIVE_SUFFIXES)]
+    kept = [name for name in names if not is_auxiliary_asset(name) and name.lower().endswith(_ARCHIVE_SUFFIXES)
+            and not _SETUP_EXE.fullmatch(name)]
     if sorted(kept) != sorted(n for found in players.values() for n in found):
         problems.append("ASSET_FILTER_MISMATCH: a name filter that drops checksum, signature, source and debug "
                         f"files would leave {kept}, not the player archives")
@@ -794,6 +872,7 @@ def plan_uninstall(dest: Path) -> dict:
     ``INSTALL_MARKER_INVALID`` for one whose marker is not what ``stage_install`` writes."""
     dest = dest.resolve()
     _check_uninstall_destination(dest)
+    _check_not_installer_owned(dest)
     if not (dest / MARKER).is_file():
         raise InstallError(
             f"INSTALL_DESTINATION_NOT_OWNED: {dest} has no {MARKER}, so this tool did not "
@@ -943,6 +1022,19 @@ def main(argv=None) -> int:
         if args.shortcut is not None and not IS_WINDOWS:
             raise InstallError("INSTALL_SHORTCUT_UNSUPPORTED: --shortcut writes a Windows .lnk; "
                                "on Linux use --desktop-shortcut")
+        shortcuts: list[Path] = []
+        if IS_WINDOWS:
+            if args.shortcut is not None:
+                shortcuts.append(args.shortcut)
+            else:
+                if args.desktop_shortcut:
+                    shortcuts.append(desktop_folder() / SHORTCUT_NAME)
+                if args.start_menu_shortcut:
+                    shortcuts.append(start_menu_folder() / SHORTCUT_NAME)
+            # Every requested shortcut is checked before anything is staged or written, so a refusal leaves
+            # nothing half done.
+            for shortcut in shortcuts:
+                _check_shortcut_not_another_copys(shortcut, args.dest.resolve())
         record = stage_install(args.dest, args.player, revision=args.revision)
         print(f"stage_install: staged {record['player']} and source {record['source_commit'][:12]} "
               f"into {args.dest.resolve()}")
@@ -952,19 +1044,11 @@ def main(argv=None) -> int:
                 record_integration(args.dest, [entry, icon])
                 print(f"stage_install: desktop entry {entry}")
         else:
-            shortcuts = []
-            if args.shortcut is not None:
-                shortcuts.append(args.shortcut)
-            else:
-                if args.desktop_shortcut:
-                    shortcuts.append(desktop_folder() / SHORTCUT_NAME)
-                if args.start_menu_shortcut:
-                    shortcuts.append(start_menu_folder() / SHORTCUT_NAME)
             for shortcut in shortcuts:
                 write_shortcut(shortcut, args.dest, args.arguments)
+                # Recorded as each is written, so --uninstall removes it even if a later one fails.
+                record_integration(args.dest, [shortcut])
                 print(f"stage_install: shortcut {shortcut}")
-            if shortcuts:
-                record_integration(args.dest, shortcuts)
     except InstallError as exc:
         print(f"stage_install: FAIL: {exc}", file=sys.stderr)
         return 1

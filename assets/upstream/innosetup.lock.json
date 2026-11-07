@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "name": "Inno Setup",
+  "role": "Build tool for the Windows installer (tools/build_installer.py). Nothing of it is vendored or committed; a generated Setup.exe embeds its loader.",
+  "version": "6.7.3",
+  "installer": {
+    "file": "innosetup-6.7.3.exe",
+    "url": "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe",
+    "sha256": "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732",
+    "size_bytes": 10592232,
+    "verified_against": "winget manifest JRSoftware.InnoSetup 6.7.3 and the file downloaded on 2026-11-06 (same SHA-256)",
+    "silent_per_user_install": "innosetup-6.7.3.exe /VERYSILENT /SUPPRESSMSGBOXES /CURRENTUSER /NORESTART /SP- /DIR=\"%LOCALAPPDATA%\\Programs\\Inno Setup 6\""
+  },
+  "license": {
+    "name": "Inno Setup License",
+    "url": "https://jrsoftware.org/files/is/license.txt",
+    "text_sha256": "2e5346868c2a18434489824e11d65c3031620f792fefc415d05f19cd441abf5c",
+    "copyright": "Copyright (C) 1997-2026 Jordan Russell; portions Copyright (C) 2000-2026 Martijn Laan"
+  },
+  "files": {
+    "Default.isl": "42a5f6f7dbbddf26cc278f67db5d894235ce1d126a6856702e31bd02023a1316",
+    "ISCC.exe": "0a8757031b33777e4c9cbffee40f11a5062b36d25cbe144c1db73b6102b80ad7",
+    "ISCmplr.dll": "85a1e3090d3a5b85319f001b7c8f9ecfad45f37eff030a67bbe29ef58b7aa2c3",
+    "ISPP.dll": "bde04be7f4a55ca56afb6b06600d7cbe8326fac468ac3f2885b80eefb3ed2a7a",
+    "ISPPBuiltins.iss": "bc765e1121a95dc602ca1248b484418cecc6db9d4b6f4dae58e9a2c35262527c",
+    "Setup.e32": "a80d75ba8d8c336050c37f7707de8bb017cc93597329e0ea18d474156b3e0da5",
+    "SetupCustomStyle.e32": "9675a2a5c78c66b691cc80270031da42bebad5725fbf60853cb4e5f90251bd5e",
+    "SetupLdr.e32": "5475964893adbb33ccc420ad4d88bbdff27dfaaca7580cd6058ea2798893490d",
+    "SetupLdr.e64": "e38f2140e6bfd86c6ddc69c98f46475080c75fd5ee4be701ceff9c842c6c5019",
+    "islzma.dll": "8af307ce3738ab1d37cc7e76b2f76615e2045597d4367c3e40d52b5f2fbd353d",
+    "islzma32.exe": "fd977c3ac44c56997d2b4fd6647e97e2457c43991a6ae26a4b2252c0eabdfebb",
+    "islzma64.exe": "87a50495aff580b78cad57906a765d3cf28ca508cfa95c24c1247c286ddf71b2",
+    "iszlib.dll": "14c0d4a2a41572384f8309cdf03de5c6e7ed46bef64cce70d989b2665eff1a47"
+  }
+}

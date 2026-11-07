@@ -307,6 +307,7 @@ The **Where** column of each table names the places a code can appear:
 | `UPDATE_DOWNLOAD_REMOVED` | player | The checked download is no longer in its folder. |
 | `UPDATE_HASH_MISMATCH` | player | The download did not match the release's SHA-256. |
 | `UPDATE_INCOMPLETE_DOWNLOAD` | player | The download is not the size the release lists. |
+| `UPDATE_INSTALLED_BY_SETUP` | player | This copy was installed with Setup, so it updates by running the new release's Setup. |
 | `UPDATE_INSTALL_EXISTS` | player | The new version is already unpacked. |
 | `UPDATE_INSTALL_INCOMPLETE` | player | Unpacking the new version did not finish. |
 | `UPDATE_INSTALL_LEFTOVER` | player | A previous install attempt left files in the way. |

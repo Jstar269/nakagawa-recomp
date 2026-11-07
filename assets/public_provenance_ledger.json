@@ -1058,6 +1058,17 @@
       }
     },
     {
+      "path": "assets/installer/nakagawa.iss",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "windows-installer-2208",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "assets/issue_routing.json",
       "classification": "project_authored_attested",
       "evidence": {
@@ -1217,6 +1228,14 @@
       "evidence": {
         "source": "title-manifest schema and public PSP metadata review",
         "statement": "manifest contains user-supplied title metadata, not retail content"
+      }
+    },
+    {
+      "path": "assets/upstream/innosetup.lock.json",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       }
     },
     {
@@ -15857,6 +15876,17 @@
       }
     },
     {
+      "path": "tools/build_installer.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "windows-installer-2208",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/build_profile.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -18950,6 +18980,17 @@
       }
     },
     {
+      "path": "tools/test_installer.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "windows-installer-2208",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/test_intr_waits_matrix.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -20761,6 +20802,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "build-and-ci-gate-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/verify_installer.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "windows-installer-2208",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null

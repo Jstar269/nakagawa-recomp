@@ -878,6 +878,37 @@ static void test_install_folder(void) {
     assert(!nk_update_install_folder(bin, downloads, "../x.zip", out, sizeof(out)));
     assert(!nk_update_install_folder(bin, downloads, ".zip", out, sizeof(out)));
 
+    /* A copy the Windows installer put in place has Inno's uninstaller beside bin: it
+       updates through the next Setup.exe, not a ZIP. A ZIP copy never does. */
+    {
+        char uninstaller[NATIVE_TEST_PATH_MAX + 72];
+        char other[NATIVE_TEST_PATH_MAX + 80];
+        snprintf(uninstaller, sizeof(uninstaller), "%s%cunins000.exe", install, sep);
+        assert(!nk_update_installed_by_setup(bin));
+        write_file(uninstaller);
+        assert(nk_update_installed_by_setup(bin));            /* without a trailing separator */
+        snprintf(other, sizeof(other), "%s%c", bin, sep);
+        assert(nk_update_installed_by_setup(other));
+        assert(!nk_update_installed_by_setup(install));       /* not the bin folder */
+        assert(!nk_update_installed_by_setup(NULL));
+        assert(!nk_update_installed_by_setup(""));
+        assert(!nk_update_installed_by_setup("bin"));
+        snprintf(other, sizeof(other), "%s%cnotbin", install, sep);
+        assert(!nk_update_installed_by_setup(other));
+        /* The player's download and install steps refuse such a copy with a named error, and a
+           check (which writes nothing) is not asked. */
+        {
+            NkUpdateError refused;
+            memset(&refused, 'x', sizeof(refused));
+            assert(nk_update_refuse_for_setup_copy(bin, &refused));
+            assert(strcmp(refused.code, "UPDATE_INSTALLED_BY_SETUP") == 0);
+            assert(strstr(refused.message, "Setup") != NULL);
+            assert(!nk_update_refuse_for_setup_copy(install, &refused));  /* not the bin folder */
+            assert(refused.code[0] == '\0');
+            assert(!nk_update_refuse_for_setup_copy(NULL, &refused));
+        }
+    }
+
     {
         NkUpdateError error;
         char log_path[NATIVE_TEST_PATH_MAX + 16];

@@ -1387,6 +1387,12 @@
         "player"
       ]
     },
+    "UPDATE_INSTALLED_BY_SETUP": {
+      "stage": "host",
+      "in": [
+        "player"
+      ]
+    },
     "UPDATE_INSTALL_EXISTS": {
       "stage": "host",
       "in": [
