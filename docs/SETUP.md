@@ -84,9 +84,9 @@ Measured on a Windows 11 x64 PC building and running Hot Shots Tennis with the p
 
 ## Install, update and uninstall (Windows)
 
-Nakagawa is a portable ZIP today ([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)); there is no
-installer yet. The unpacked folder is the program and holds nothing you create, so installing and removing it
-never touches your games or saves.
+Nakagawa is a portable ZIP ([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)), and a release can also
+carry a per-user installer, [`Setup.exe`](#windows-installer-setupexe). The unpacked folder, or the installed
+program, holds nothing you create, so installing and removing it never touches your games or saves.
 
 **Install.** Unpack `nakagawa-recomp-<version>-windows-x64.zip` into a folder of your choice (a read-only folder
 works) and start `bin\nakagawa_player.exe`. For a Start-menu or Desktop entry, right-click the executable and
@@ -108,7 +108,7 @@ this file when it exits, so while Steam runs nothing is written: close Steam fir
 portable mode the entry points at the executable's current folder, so moving the folder breaks the shortcut.
 Other platforms are unsupported for now and say so.
 
-**Update.** Check for updates unpacks the new version into a new folder next to the running one and leaves the old
+**Update.** A copy `Setup.exe` installed updates by running the next release's Setup (see [below](#windows-installer-setupexe)). For a ZIP copy, Check for updates unpacks the new version into a new folder next to the running one and leaves the old
 one. Your data is in the per-user folders below, so the new version finds it. Delete the old folder when you
 are done with it.
 
@@ -559,8 +559,11 @@ an entry under Apps & features. It makes no network call.
   player first: the uninstaller does not close it, and stops without changing anything while it runs.
 - **One copy per shortcut name:** the installer and `tools/stage_install.py` write the same Start-menu shortcut, so
   Setup refuses to install while a shortcut of that name starts another copy (for example one made by
-  `stage_install.py`). Uninstall or delete that copy and its shortcut first. Setup also refuses a folder that
-  `stage_install.py` set up.
+  `stage_install.py`), and `stage_install.py --shortcut`, `--start-menu-shortcut` and `--desktop-shortcut` refuse to
+  replace a shortcut that starts another existing copy (a shortcut whose program is gone is replaced). Uninstall or
+  delete that copy and its shortcut first. The two also never share a folder: Setup refuses a folder
+  `stage_install.py` set up, and `stage_install.py` refuses a folder with Setup's `unins000.exe`
+  (`INSTALL_DESTINATION_INSTALLER_OWNED`).
 
 ### Portable mode (`portable.txt`)
 

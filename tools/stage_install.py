@@ -153,9 +153,18 @@ def export_source(repo: Path, destination: Path, revision: str = "HEAD") -> str:
     return returned
 
 
+#: Inno Setup's uninstaller and its data, written beside the program by the Windows installer (#2208).
+INSTALLER_UNINSTALL_FILES = ("unins000.exe", "unins000.dat")
+
+
 def _check_destination(dest: Path) -> None:
     if dest.exists() and not dest.is_dir():
         raise InstallError(f"INSTALL_DESTINATION_INVALID: {dest} is not a folder")
+    if any((dest / name).exists() for name in INSTALLER_UNINSTALL_FILES):
+        raise InstallError(
+            f"INSTALL_DESTINATION_INSTALLER_OWNED: {dest} was set up by the Windows installer (Setup.exe), "
+            "which has its own uninstall in Apps & features; two uninstallers must never share a folder. "
+            "Choose another folder")
     if dest.is_dir() and any(dest.iterdir()) and not (dest / MARKER).is_file():
         raise InstallError(
             f"INSTALL_DESTINATION_NOT_OWNED: {dest} already holds files this tool did not "
@@ -433,12 +442,49 @@ def read_shortcut_app_id(shortcut: Path) -> str:
     return result.stdout.strip()
 
 
+_READ_TARGET_SCRIPT = (
+    "$ErrorActionPreference = 'Stop'; "
+    "(New-Object -ComObject WScript.Shell).CreateShortcut($env:NK_LNK).TargetPath"
+)
+
+
+def read_shortcut_target(shortcut: Path) -> str:
+    """The program a .lnk starts, or "" when it cannot be read (Windows only)."""
+    if os.name != "nt":
+        raise InstallError("INSTALL_SHORTCUT_UNSUPPORTED: shortcuts are read on Windows only")
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", _READ_TARGET_SCRIPT],
+        capture_output=True, text=True, env={**os.environ, "NK_LNK": _shell_path(shortcut)}, check=False)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _check_shortcut_not_another_copys(shortcut: Path, dest: Path) -> None:
+    """Refuse to replace the shortcut of a different, existing copy (the Windows installer writes the same
+    name with the same taskbar identity, so replacing it would break that copy's shortcut, and removing either
+    copy would remove the other's). The same copy, a stale shortcut whose program is gone, and one that cannot
+    be read are replaced."""
+    if not shortcut.is_file():
+        return
+    target = read_shortcut_target(shortcut)
+    if not target:
+        return
+    ours = dest / "bin" / "nakagawa_player.exe"
+    existing = Path(target)
+    if existing.is_file() and os.path.normcase(os.path.realpath(existing)) != os.path.normcase(
+            os.path.realpath(ours)):
+        raise InstallError(
+            f"INSTALL_SHORTCUT_OTHER_COPY: {shortcut} already starts another copy of Nakagawa ({existing}); "
+            "writing it here would replace that copy's shortcut. Uninstall or delete that copy and its "
+            "shortcut first, or choose another shortcut with --shortcut")
+
+
 def write_shortcut(shortcut: Path, dest: Path, arguments: str = DEFAULT_ARGUMENTS) -> None:
     """Write a .lnk that starts bin/nakagawa_player.exe the way Explorer does, with the
-    player's AppUserModelID."""
+    player's AppUserModelID. Refuses to replace another copy's shortcut."""
     if os.name != "nt":
         raise InstallError("INSTALL_SHORTCUT_UNSUPPORTED: shortcuts are written on Windows only")
     dest = dest.resolve()
+    _check_shortcut_not_another_copys(shortcut, dest)
     environment = os.environ.copy()
     environment.update({
         "NK_LNK": _shell_path(shortcut),

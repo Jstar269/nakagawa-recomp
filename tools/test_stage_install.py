@@ -106,6 +106,25 @@ class InstallTests(unittest.TestCase):
                                         stage_dlls=_fake_stager)
         self.assertEqual((dest / "keep.txt").read_text(encoding="utf-8"), "keep")
 
+    def test_refuses_a_folder_the_windows_installer_set_up(self):
+        """#2208: Setup.exe leaves unins000.exe beside the program and has its own uninstall; the stager
+        must never share the folder, even though it holds no stager marker."""
+        for name in stage_install.INSTALLER_UNINSTALL_FILES:
+            with self.subTest(name=name):
+                dest = self.root / f"installed-{name}"
+                dest.mkdir()
+                (dest / name).write_bytes(b"inno")
+                (dest / "bin").mkdir()
+                with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_DESTINATION_INSTALLER_OWNED"):
+                    stage_install.stage_install(dest, self.player, repo=self.repo, stage_dlls=_fake_stager)
+                self.assertEqual(sorted(path.name for path in dest.iterdir()), sorted([name, "bin"]))
+        # Also when the folder carries a stager marker as well (a mixed folder is never safe to share).
+        dest = self.root / "mixed"
+        stage_install.stage_install(dest, self.player, repo=self.repo, stage_dlls=_fake_stager)
+        (dest / "unins000.exe").write_bytes(b"inno")
+        with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_DESTINATION_INSTALLER_OWNED"):
+            stage_install.stage_install(dest, self.player, repo=self.repo, stage_dlls=_fake_stager)
+
     def test_missing_player_is_named(self):
         with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_PLAYER_MISSING"):
             stage_install.stage_install(self.root / "x", self.root / "absent.exe",
@@ -158,6 +177,29 @@ class InstallTests(unittest.TestCase):
         link = self.root / "Nakagawa Recomp.lnk"
         stage_install.write_shortcut(link, dest)
         self.assertEqual(stage_install.read_shortcut_app_id(link), "Nakagawa.Recomp")
+
+
+    @unittest.skipUnless(os.name == "nt", "Windows shortcuts")
+    def test_a_shortcut_that_starts_another_copy_is_not_replaced(self):
+        """#2208: the installer writes the same shortcut name; replacing it would break that copy's shortcut."""
+        first, second = self.root / "first", self.root / "second"
+        for dest in (first, second):
+            (dest / "bin").mkdir(parents=True)
+            (dest / "bin" / "nakagawa_player.exe").write_bytes(b"MZ")
+            (dest / "nakagawa.ico").write_bytes(b"ico")
+        link = self.root / "Nakagawa Recomp.lnk"
+        stage_install.write_shortcut(link, first)
+        before = link.read_bytes()
+        with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_SHORTCUT_OTHER_COPY"):
+            stage_install.write_shortcut(link, second)
+        self.assertEqual(link.read_bytes(), before)
+        # The same copy re-stages over its own shortcut.
+        stage_install.write_shortcut(link, first)
+        # A stale shortcut (the other copy's program is gone) is replaced.
+        (first / "bin" / "nakagawa_player.exe").unlink()
+        stage_install.write_shortcut(link, second)
+        self.assertEqual(Path(stage_install.read_shortcut_target(link)),
+                         (second / "bin" / "nakagawa_player.exe").resolve())
 
 
 class ShortcutFlagTests(unittest.TestCase):
