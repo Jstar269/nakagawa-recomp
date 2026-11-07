@@ -25,7 +25,7 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, Windows installer, CI required | none of the substantive public gates |
 | Ready pull request, recipe-only edit of phony targets in `Makefile` | classification, hygiene/security, Python tooling on the Makefile-coupled modules over three shards, native/translation, Windows, Windows installer, CI required | the Python modules that cannot observe a Makefile recipe |
 | Ready pull request, ordinary tools Python file | classification, hygiene/security, Python tooling, CI required | native/translation, Windows |
-| Ready pull request, installer inputs (`assets/installer/**`, the Inno lock, installer/stager tools and tests) | classification, hygiene/security, Windows runtime package build, Windows installer, CI required; Python tooling when a Python tool changes | native/translation unless another changed path routes it |
+| Ready pull request, installer inputs (`assets/installer/**`, the Inno lock, installer/stager tools and tests) | classification, hygiene/security, Windows (all three groups; the smoke group also stages the package), Windows installer, CI required; Python tooling when a Python tool changes | native/translation unless another changed path routes it |
 | Ready pull request, only `tools/test_*.py` modules that no native or Windows gate runs | classification, hygiene/security, Python tooling, CI required | native/translation, Windows (see [Tests-only changes](#tests-only-changes)) |
 | Status-only transition (draft <-> ready) | no run: `.github/workflows/ci.yml` does not list `ready_for_review` or `converted_to_draft` | every gate, because the head did not change |
 | Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, Windows installer, CI required | none of the substantive public gates |
@@ -110,7 +110,9 @@ The jobs:
   output file, so their recipes compile and run every time. The compiler cache is keyed on
   the group, so the first runs after this change restore no entry until a run on `main` has
   saved one per group. When `run_installer` applies, the smoke group stages the already-built
-  player and its runtime closure into a package artifact. The separate `windows_installer`
+  player and its runtime closure into a package artifact; an installer-only change therefore
+  runs all three Windows groups, and a failed staging or upload step fails `windows_runtime`.
+  The separate `windows_installer`
   job downloads that artifact, checks the locked Inno Setup SHA-256 before a silent
   `/CURRENTUSER` install under the runner temp folder, builds and verifies `Setup.exe`, then
   repeats the build and compares both SHA-256 values. The job requires

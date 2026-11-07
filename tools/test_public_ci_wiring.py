@@ -182,6 +182,32 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("actions/download-artifact@", installer)
         self.assertNotIn("mingw32-make", installer, "the installer job must reuse the built player artifact")
 
+    def test_no_job_level_env_reads_the_runner_context(self) -> None:
+        # GitHub allows the runner context only in step-level keys; a job-level env that reads it
+        # makes the whole workflow file invalid, so no job in ci.yml runs at all.
+        for name, block in _ci_job_blocks().items():
+            in_job_env = False
+            for line in block[1:]:
+                if re.match(r"^ {4}steps:\s*$", line):
+                    break
+                if re.match(r"^ {4}env:\s*$", line):
+                    in_job_env = True
+                    continue
+                if in_job_env and not re.match(r"^ {6}", line):
+                    in_job_env = False
+                if in_job_env:
+                    with self.subTest(job=name, line=line.strip()):
+                        self.assertNotIn("runner.", line)
+
+    def test_windows_installer_steps_name_their_own_inno_folder(self) -> None:
+        job = _ci_job_blocks()["windows_installer"]
+        for step_name in ("Download and install hash-pinned Inno Setup",
+                          "Build, verify, and compare the installer"):
+            step = _ci_step(job, step_name)
+            assert step is not None
+            with self.subTest(step=step_name):
+                self.assertIn(r"NK_INNO_SETUP_DIR: ${{ runner.temp }}\inno-setup", "\n".join(step))
+
     def test_windows_installer_hashes_inno_before_installing_then_verifies_and_compares_two_builds(self) -> None:
         job = _ci_job_blocks()["windows_installer"]
         install_step = _ci_step(job, "Download and install hash-pinned Inno Setup")

@@ -2209,8 +2209,7 @@ jobs:
           needs.classify.outputs.run_installer == 'true' &&
           needs.windows_runtime.result == 'success' }}
     timeout-minutes: 25
-    env:
-      NK_INNO_SETUP_DIR: ${{ runner.temp }}\inno-setup
+    # NK_INNO_SETUP_DIR is set per step: the runner context is not available in a job-level env.
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2231,6 +2230,8 @@ jobs:
 
       - name: Download and install hash-pinned Inno Setup
         shell: pwsh
+        env:
+          NK_INNO_SETUP_DIR: ${{ runner.temp }}\inno-setup
         run: |
           $lock = Get-Content -LiteralPath 'assets/upstream/innosetup.lock.json' -Raw | ConvertFrom-Json
           $download = Join-Path $env:RUNNER_TEMP $lock.installer.file
@@ -2256,6 +2257,8 @@ jobs:
 
       - name: Build, verify, and compare the installer
         shell: pwsh
+        env:
+          NK_INNO_SETUP_DIR: ${{ runner.temp }}\inno-setup
         run: |
           $packageDir = Join-Path $env:RUNNER_TEMP 'windows-installer-package'
           $firstOut = Join-Path $env:RUNNER_TEMP 'windows-installer-first'
