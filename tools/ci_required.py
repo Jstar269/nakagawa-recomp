@@ -32,6 +32,19 @@ _SUBSTANTIVE_GATES = frozenset(
     {"python-tools", "native-tools", "android-build", "windows-runtime"}
 )
 
+#: The reason a Draft pull request's run is never green. A Draft runs only the quick
+#: jobs (tools/ci_paths.py sets ``allow_substantive`` false for it); the full checks run
+#: when it is marked Ready. tools/ci_trust_verdict.py reports the same code from the pull
+#: request's own draft state (docs/CI.md, "Draft pull requests").
+DRAFT_LIGHT_CI = "DRAFT_LIGHT_CI"
+
+#: The jobs a Draft's run still executes, as named in this aggregate's results.
+_QUICK_JOBS = (
+    ("classify", "CLASSIFY_RESULT"),
+    ("hygiene", "HYGIENE_RESULT"),
+    ("public-export", "PUBLIC_EXPORT_RESULT"),
+)
+
 
 def _parse_boolean(value: str | None) -> bool | None:
     """Parse the exact boolean contract emitted through GitHub job outputs."""
@@ -58,9 +71,13 @@ def required_gate_passes(
     ``skipped`` is accepted only for a gate that is not applicable. A failed,
     cancelled, or otherwise incomplete applicable gate fails the aggregate, and
     classifier, hygiene, or public-export failures can never be hidden by path
-    gating. The public-export job always runs, so it must report success. Callers
-    that explicitly suppress substantive gates remain fail-closed when a draft
-    requests one; the workflow normally runs those gates for drafts now.
+    gating. The public-export job always runs, so it must report success.
+
+    A Draft pull request's run never passes (``DRAFT_LIGHT_CI``), whatever its
+    jobs did: it ran only the quick jobs, so it cannot stand for the head. The
+    full checks run when the pull request is marked Ready. ``allow_substantive``
+    false without ``draft`` is the normal main-push policy, which skips the
+    substantive jobs after the merged pull request has already run them.
     """
 
     if (
@@ -70,13 +87,7 @@ def required_gate_passes(
     ):
         return False
 
-    # Preserve fail-closed behavior for defensive callers that explicitly
-    # suppress substantive gates. The normal workflow no longer suppresses
-    # them merely because a pull request is a draft. ``draft=False`` is
-    # intentional for the normal main-push policy, which can skip substantive
-    # jobs after their PR gates have already run.
-    draft_suppressed = draft and not allow_substantive
-    if draft_suppressed and any(applicable.get(name, False) for name in _SUBSTANTIVE_GATES):
+    if draft:
         return False
 
     for name, _result_key, _run_key in _GATES:
@@ -118,10 +129,29 @@ def evaluate_environment(environment: Mapping[str, str]) -> bool:
     )
 
 
+def draft_light_run(environment: Mapping[str, str]) -> bool:
+    """Whether the run belongs to a Draft pull request (the classifier's ``draft`` output)."""
+
+    return _parse_boolean(environment.get("DRAFT")) is True
+
+
 def main() -> int:
     if evaluate_environment(os.environ):
         print("All applicable CI gates passed; skipped jobs were intentionally irrelevant or policy-suppressed.")
         return 0
+    if draft_light_run(os.environ):
+        quick = ", ".join(f"{name} {os.environ.get(key) or 'missing'}" for name, key in _QUICK_JOBS)
+        print(
+            f"::error title={DRAFT_LIGHT_CI}::Draft pull request: only the quick checks ran. "
+            "Mark it Ready for review to run the full checks."
+        )
+        print(
+            f"{DRAFT_LIGHT_CI}: this head belongs to a Draft pull request, so CI ran only the quick checks "
+            f"({quick}) and skipped the Python, native and Windows gates. A Draft's run is never green. "
+            "Mark the pull request Ready for review to run the full checks (docs/CI.md, \"Draft pull requests\").",
+            file=sys.stderr,
+        )
+        return 1
     print(
         "An applicable CI gate failed, was cancelled, was suppressed by policy, or the classifier, hygiene, or public-export gate did not pass.",
         file=sys.stderr,
