@@ -418,8 +418,8 @@ handler, run one native self-test, capture frames unattended):
 - When the task includes a pull request, push early: open a Draft PR after the first valid commit,
   and mark it Ready as soon as the change is finished (tests and checks run, template filled), or open
   it ready for review when it is finished at the first push. A ready PR is never left as a Draft.
-  Hosted CI runs only the quick checks on a Draft; the full checks run when it is marked Ready, so
-  mark it Ready when you want the full run ([Draft pull requests](docs/CI.md#draft-pull-requests)).
+  Hosted CI runs only the quick checks on a Draft; the full checks run once it is marked Ready
+  ([Draft pull requests](docs/CI.md#draft-pull-requests)).
   Group related work: one PR may carry several related fixes in the same area or a whole feature
   slice, and fewer, larger PRs are better than one PR per finding. Include exact base/head SHAs,
   scope, new-path provenance, failing-before evidence, tests, uncertainty, private/hardware status,
@@ -428,7 +428,7 @@ handler, run one native self-test, capture frames unattended):
   auto-merge, close other PRs, or bypass required checks unless Section 2's autonomous-integration
   conditions hold; local success never means a PR is hosted-CI green. A contributor's agent leaves
   the switch to Ready to its person. A substantive correction after Ready returns the PR to Draft
-  and requires fresh exact-head validation.
+  and requires fresh exact-head validation, which runs only when the PR is marked Ready again.
 - Before readiness, fetch `origin/main` and merge it when needed; never rebase or
   force-push a pushed branch. Preserve newer-main behavior, regenerate only required
   canonical metadata, rerun affected gates, and freeze the exact validated head.
