@@ -1957,6 +1957,17 @@ class TextHygieneTests(unittest.TestCase):
         self.assertNotIn("TEXT_FINAL_NEWLINE", self._codes(data, path=path))
         self.assertIn("TEXT_FINAL_NEWLINE", self._codes(data + b" ", path=path))
 
+    def test_exact_fidelityfx_upstream_license_keeps_its_byte_identity(self):
+        # AMD's docs/license.md at the pinned SDK commit has no final newline.
+        path = "third_party/fidelityfx_sdk/LICENSE-AMD.md"
+        data = (publish_audit.ROOT / path).read_bytes()
+        self.assertEqual(
+            hashlib.sha256(data).hexdigest(),
+            "410f9c138e766e846acf2dc93db768198def0293a017d7e3296815b451688dbe",
+        )
+        self.assertNotIn("TEXT_FINAL_NEWLINE", self._codes(data, path=path))
+        self.assertIn("TEXT_FINAL_NEWLINE", self._codes(data + b" ", path=path))
+
     def test_binary_content_is_never_reported(self):
         # NUL-bearing data is binary; CRLF inside it is not a line-ending defect.
         self.assertEqual(self._codes(NUL + b"payload" + CRLF), [])
@@ -2412,6 +2423,17 @@ class GeneratedEmbeddingSpdxTests(unittest.TestCase):
         for source in contract.values():
             head = (Path(publish_audit.ROOT) / source).read_text(encoding="utf-8").splitlines()[:8]
             self.assertTrue(any("SPDX-License-Identifier:" in line for line in head), source)
+
+    def test_dxc_embeddings_match_the_fsr3_shader_table_and_their_sources_are_byte_exact_imports(self) -> None:
+        import shader_embed
+        contract = {embedded.as_posix(): source.as_posix()
+                    for _stage, source, embedded in shader_embed.FSR3_SHADERS + shader_embed.FSR3FG_SHADERS}
+        self.assertEqual(publish_audit.SPDX_DXC_EMBEDDING_SOURCES, contract)
+        for embedded, source in contract.items():
+            self.assertNotIn(embedded, publish_audit.SPDX_GENERATED_EMBEDDING_SOURCES)
+            self.assertTrue(source.startswith(publish_audit.SPDX_BYTE_EXACT_IMPORT_TREES), source)
+            head = (Path(publish_audit.ROOT) / source).read_text(encoding="utf-8").splitlines()[:8]
+            self.assertTrue(any("Advanced Micro Devices" in line for line in head), source)
 
 
 class RetailDiscIdTests(unittest.TestCase):

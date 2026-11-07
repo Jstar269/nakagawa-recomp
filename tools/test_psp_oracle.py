@@ -2488,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 131)
+        self.assertEqual(len(routes), 139)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2497,7 +2497,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
                          | {128, 129, 130, 132, 133, 134, 135, 136, 137, 138, 139, 140}
-                         | {150, 151, 152, 153},
+                         | {150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -2516,6 +2516,37 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(routes.get("at3-delay-sweep"), "150")
         self.assertEqual(routes.get("mpeg-ycbcr"), "151")
         self.assertEqual(routes.get("sas-adsr"), "152")
+        self.assertEqual(routes.get("sas-mix"), "155")
+        self.assertEqual(routes.get("vcodec-words"), "160")
+
+    def test_mpeg_ycbcr_modes_2_and_3_cells_follow_the_mode_1_cells(self) -> None:
+        # #302: each mode starts from a fresh ringbuffer, MPEG context and registered stream after
+        # mode 1 is stopped and torn down; refused calls still keep their records.
+        probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        start = probe.index("static void run_mpeg_ycbcr(int emulated)")
+        run = probe[start:probe.index("#endif\n", start)]
+        order = [run.index(marker) for marker in (
+            '"sub-h-odd"', '"decode-mode-f%d"', '"avc-decode%d"', 'mpy_rc(emulated, "decode-stop"',
+            "free_es:", "unregist:", "delete_mpeg:", "ring_destruct:",
+            "mpy_ycbcr_mode_fresh(emulated",
+            "sceMpegFinish();", '"unload-avcodec"')]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("ycbcr_mode = 2; ycbcr_mode <= 3", run)
+        helper = probe[probe.index("static void mpy_ycbcr_mode("):start]
+        for call in ("sceMpegAvcQueryYCbCrSize(", "sceMpegAvcInitYCbCr(", "sceMpegAvcDecodeYCbCr(",
+                     "mpy_csc_buf(", "sceMpegAvcDecodeStopYCbCr(", '"m%d-qsize"', '"m%d-init"',
+                     '"m%d-decode-end"', '"ycbcr-m%d-picture"', '"m%d-full"', '"m%d-decode-stop"'):
+            self.assertIn(call, helper)
+        fresh = helper[helper.index("static void mpy_ycbcr_mode_fresh("):]
+        for call in ("sceMpegRingbufferConstruct(", "sceMpegCreate(", "sceMpegQueryStreamOffset(",
+                     "sceMpegRegistStream(", "sceMpegMallocAvcEsBuf(", "sceMpegInitAu(",
+                     "sceMpegAvcDecodeMode(", "mpy_ycbcr_mode(emulated"):
+            self.assertIn(call, fresh)
+        self.assertLess(fresh.index('"m%d-stream-info"'), fresh.index("sceMpegQueryStreamOffset("))
+        self.assertLess(fresh.index("s_mpy_cursor = (uint32_t)offset"), fresh.index("sceMpegRegistStream("))
+        self.assertIn('"m%d-stream-ring-construct"', fresh)
+        # A refusal never drops a record: every skipped call is still written with the return value.
+        self.assertGreaterEqual(helper.count("mpy_not_called("), 5)
 
     def test_sas_adsr_case_links_sascore_and_covers_the_adsr_calls(self) -> None:
         # The case's own LIBS block links the SAS and utility stubs; without them the PRX
@@ -2535,8 +2566,201 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                      "__sceSasSetSimpleADSR(", "sas_adsr_init_grain(", "{0xfu, 5u, 5u, 5u, 5u}",
                      "SAS_ADSR_TOP | 2u", '"g64-p1", 64u', '"expatk", 256u'):
             self.assertIn(call, section)
-        self.assertIn('"sas-adsr-done", sascore_ok ? "RC" : "SKIP"', section)
-        self.assertNotIn('"PASS"', section)
+        self.assertIn('"sas-adsr-done", sascore_ok ? "PASS" : "SKIP"', section)
+        self.assertNotIn('"RC"', section)
+        # The registered stream follows the source tables: 9 pairs of 1024 grains, 32 mode rows
+        # and the explicit runs in order, 695 records before the done record, held to a strict
+        # golden sequence.
+        spec, counts = CAMPAIGN_PROBE_CASES["sas-adsr"]
+        self.assertEqual(spec.test_id, "PSP-SAS-002")
+        self.assertEqual(len(spec.semantic_cases), 695)
+        self.assertEqual(spec.terminal_case, "sas-adsr-done")
+        self.assertEqual(_campaign_completeness_contract("sas-adsr"), "strict-golden-sequence")
+        pairs_body = section[section.index("k_sas_adsr_pairs[][2] = {"):]
+        pairs = re.findall(r"\{0x[0-9a-f]+u, 0x[0-9a-f]+u\}", pairs_body[:pairs_body.index("};")])
+        self.assertEqual(len(pairs), 9)
+        self.assertIn("#define SAS_ADSR_ON_GRAINS 640u", section)
+        self.assertIn("#define SAS_ADSR_OFF_GRAINS 384u", section)
+        rows_body = section[section.index("k_sas_adsr_mode_rows[] = {"):]
+        rows = re.findall(r"\{0x[0-9a-f]+u, [^{}]+\}", rows_body[:rows_body.index("};")])
+        self.assertEqual(len(rows), 32)
+        runs_body = section[section.index("k_sas_adsr_runs[] = {"):]
+        runs = re.findall(r'\{"([a-z0-9-]+)",[^}]*?(\d+)u, (\d+)u\}', runs_body[:runs_body.index("};")])
+        registered = [case[len("sas-adsr-"):-len("-calls")] for case in spec.semantic_cases
+                      if case.endswith("-calls") and not re.fullmatch(r"sas-adsr-[pm]\d+-calls", case)]
+        self.assertEqual([name for name, _on, _off in runs], registered)
+        for name, on, off in runs:
+            last = (int(on) + int(off)) // 16 - 1
+            self.assertEqual(counts[f"sas-adsr-{name}-h{last:02x}"], 16)
+            self.assertNotIn(f"sas-adsr-{name}-h{last + 1:02x}", counts)
+        self.assertEqual(counts["sas-adsr-p0-calls"], 11)
+        self.assertEqual(counts["sas-adsr-m00-calls"], 16)
+        self.assertEqual(counts["sas-adsr-load"], 4)
+
+    def test_sas_mix_case_links_sascore_and_records_every_cell(self) -> None:
+        # The case's own LIBS block links the SAS and utility stubs (#2135, #2054).
+        block = re.search(r"(?ms)^ifeq \(\$\(CASE\),sas-mix\)\n(.*?)^endif$", self.makefile)
+        if block is None:
+            self.fail("fixtures/psp_oracle/Makefile has no sas-mix LIBS block")
+        self.assertIn("-lpspsascore", block.group(1))
+        self.assertIn("-lpsputility", block.group(1))
+        probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        self.assertIn("#define PSP_ORACLE_CASE_SAS_MIX 155", probe)
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/sas_mix_log.txt"', probe)
+        start = probe.index("#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_MIX\n#include <pspsascore.h>")
+        section = probe[start:probe.index("#endif\n", probe.index("static void run_sas_mix", start))]
+        for call in ("__sceSasSetVolume(", "__sceSasCoreWithMix(", "__sceSasSetPitch(",
+                     "__sceSasSetVoicePCM(", "PSP_SAS_OUTPUTMODE_MULTICHANNEL",
+                     '"e-sr-m1001", 1u, 2u', '"reinit", 0u, 3u', '"extreme", 0u, 0u, 0x7fffffff',
+                     '"vag-1800", 0u, 0x1800, 4u', '"pcm-2000", 1u, 0x2000, 2u'):
+            self.assertIn(call, section)
+        # Every loop is bounded by a constant or a table size; nothing waits on device state.
+        self.assertNotIn("while (", section)
+        for banned in ("for (;;)", "goto ", "sceKernelDelayThread", "sceIoWrite"):
+            self.assertNotIn(banned, section)
+        # Twelve edge SetVolume cells: each of the four sides at -0x1000, 0x1001 and -0x1001.
+        edges = re.findall(r'\{"e-(l|r|sl|sr)-(m1000|1001|m1001)", [01]u, 2u,', section)
+        self.assertEqual(len(edges), 12)
+        self.assertEqual(len(set(edges)), 12)
+        self.assertIn('"sas-mix-done", sascore_ok ? "PASS" : "SKIP"', section)
+        self.assertNotIn('"RC"', section)
+        # The registered stream follows the source tables: their names in order, 204 records
+        # before the done record, which the runner holds to a strict golden sequence.
+        spec, counts = CAMPAIGN_PROBE_CASES["sas-mix"]
+        self.assertEqual(spec.test_id, "PSP-SAS-003")
+        self.assertEqual(len(spec.semantic_cases), 204)
+        self.assertEqual(spec.terminal_case, "sas-mix-done")
+        self.assertEqual(_campaign_completeness_contract("sas-mix"), "strict-golden-sequence")
+        for table, kind in (("k_sas_mix_volume", "v"), ("k_sas_mix_withmix", "w"),
+                            ("k_sas_mix_pitch", "p")):
+            body = section[section.index(f"{table}[] = {{"):]
+            names = re.findall(r'\{"([a-z0-9-]+)",', body[:body.index("};")])
+            registered = [case[len(f"sas-mix-{kind}-"):-len("-calls")]
+                          for case in spec.semantic_cases
+                          if case.startswith(f"sas-mix-{kind}-") and case.endswith("-calls")]
+            self.assertEqual(names, registered, table)
+        pitch = re.findall(r'\{"([a-z0-9-]+)", [01]u, 0x[0-9a-f]+, (\d)u\}', section)
+        self.assertEqual(len(pitch), 5)
+        for cell, grains in pitch:
+            self.assertEqual(counts[f"sas-mix-p-{cell}-g{8 * int(grains) - 1:02x}"], 16)
+            self.assertNotIn(f"sas-mix-p-{cell}-g{8 * int(grains):02x}", counts)
+        # Raw mode writes four planar grains; the buffer holds twice that, filled with the sentinel.
+        self.assertIn("#define SAS_MIX_OUT_SHORTS (SAS_MIX_GRAIN * 8)", section)
+
+    def test_vcodec_words_case_imports_exactly_its_calls_and_records_a_fixed_stream(self) -> None:
+        # #286 (W-LLE-1): the Media Engine boundary probe carries its own three import blocks in
+        # probe.c, pinned at link time to exactly the calls it makes.
+        block = re.search(r"(?ms)^ifeq \(\$\(CASE\),vcodec-words\)\n(.*?)^endif$", self.makefile)
+        if block is None:
+            self.fail("fixtures/psp_oracle/Makefile has no vcodec-words block")
+        self.assertIn("-lpsputility", block.group(1))
+        probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        self.assertIn("#define PSP_ORACLE_CASE_VCODEC_WORDS 160", probe)
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/vcodec_words_log.txt"', probe)
+        start = probe.index("#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VCODEC_WORDS\n#include")
+        section = probe[start:probe.index("#endif\n", probe.index("static void run_vcodec_words", start))]
+        blocks = re.findall(r"VCW_LIB\((\w+), (0x[0-9A-Fa-f]+)\)", section)
+        self.assertEqual(blocks, [("sceVideocodec", "0x40090000"), ("sceMpegbase", "0x00090000"),
+                                  ("sceAudiocodec", "0x40090000")])
+        funcs = re.findall(r"VCW_FUNC\((\w+), (0x[0-9A-F]{8}), (\w+)\)", section)
+        self.assertEqual(len(funcs), 12)
+        names: dict[str, set[int]] = {library: set() for library, _ in blocks}
+        for library, nid, name in funcs:
+            names[library].add(int(nid, 16))
+            # Every NID is the first four bytes, little-endian, of SHA-1 of the export name, except
+            # the one sceMpegbase export that has no public name.
+            if name != "sceMpegbase_0530BE4E":
+                self.assertEqual(int(nid, 16), self._vcodec_nid(name), name)
+        nid_names = (self.root / "src" / "rt" / "nid_names.h").read_text(encoding="utf-8")
+        for name in ("sceMpegBaseCscInit", "sceMpegBaseCscAvc", "sceMpegbase_0530BE4E",
+                     "sceAudiocodecCheckNeedMem"):
+            nid = next(int(nid, 16) for _, nid, called in funcs if called == name)
+            self.assertIn("{0x%08xu, \"%s\"}" % (nid, name), nid_names)
+        # The Makefile pins each library to the same sets, and no kernel-only library is named.
+        pins = {}
+        for library, nids in re.findall(r"--exact-library (\w+)=(\S+)", block.group(1)):
+            pins[library] = {int(nid, 16) for nid in nids.split(",")}
+        self.assertEqual(pins, names)
+        self.assertEqual(len(names["sceVideocodec"]), 8)
+        self.assertEqual(names["sceAudiocodec"], {0x9D3F790C})
+        # Every firmware call goes through the one bounded helper: a step marker before it, a
+        # bounded wait, no write outside the host0 log (the log is probe_emit_durable's).
+        for banned in ("ms0:", "sceIoOpen", "sceIoWrite", "sceMpegBasePESpacketCopy", "sceKernelDelayThread"):
+            self.assertNotIn(banned, section)
+        run = section[section.index("static int vcw_run("):section.index("/* The teardown of one context")]
+        self.assertLess(run.index("probe_step("), run.index("sceKernelCreateThread("))
+        self.assertIn("sceKernelWaitSema(s_vcw_sema, 1, &wait_us)", run)
+        self.assertIn("sceKernelWaitThreadEnd(thid, &end_us)", run)
+        for call in ("sceVideocodecOpen(", "sceVideocodecGetEDRAM(", "sceVideocodecInit(",
+                     "sceVideocodecSetMemory(", "sceVideocodecDecode(", "sceVideocodecStop(",
+                     "sceVideocodecReleaseEDRAM(", "sceVideocodecDelete(", "sceMpegBaseCscInit(",
+                     "sceMpegBaseCscAvc(", "sceMpegbase_0530BE4E(", "sceAudiocodecCheckNeedMem("):
+            self.assertEqual(len(re.findall(r"return " + re.escape(call), section)), 1, call)
+        # The modules load and unload around everything; the stream ends in the done record.
+        self.assertIn("sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC)", section)
+        self.assertIn("sceUtilityLoadAvModule(PSP_AV_MODULE_MPEGBASE)", section)
+        self.assertIn("sceUtilityUnloadAvModule(PSP_AV_MODULE_MPEGBASE)", section)
+        self.assertIn("sceUtilityUnloadAvModule(PSP_AV_MODULE_AVCODEC)", section)
+        self.assertIn('vcw_record(emulated, "vcodec-words-done", 1, 0, done, 1u);', section)
+        # The registered stream: strict, 976 records before the done record.
+        spec, counts = CAMPAIGN_PROBE_CASES["vcodec-words"]
+        self.assertEqual(spec.test_id, "PSP-VCODEC-001")
+        self.assertEqual(spec.terminal_case, "vcodec-words-done")
+        self.assertEqual(_campaign_completeness_contract("vcodec-words"), "strict-golden-sequence")
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "vcodec-words").name,
+                         "vcodec_words_log.txt")
+        self.assertEqual(len(spec.semantic_cases), 976)
+        self.assertEqual(len(set(spec.semantic_cases)), 976)
+        self.assertEqual(spec.semantic_cases[0], "vc-load")
+        self.assertEqual(spec.semantic_cases[-1], "vc-unload")
+        # The step records are 34 words, the band chunks 120, the converted rows 128; the three
+        # sizes below are the constants probe.c uses.
+        self.assertIn("#define VCW_BAND_CHUNK_WORDS 120u", section)
+        self.assertIn("#define VCW_RGB_CHUNK_WORDS 128u", section)
+        self.assertIn("#define VCW_Y_BAND_BYTES 32640u", section)
+        self.assertIn("#define VCW_C_BAND_BYTES 16320u", section)
+        self.assertEqual(counts["vc-t0-open-c2"], 34)
+        self.assertEqual(counts["vc-t1-delete"], 34)
+        self.assertEqual(counts["vc-d480-a0-yuv"], 48)
+        self.assertEqual(counts["vc-d480-a0-b3-c67"], 120)
+        self.assertNotIn("vc-d480-a0-b3-c68", counts)
+        self.assertEqual(counts["vc-d464-a0-b7-c33"], 120)
+        self.assertNotIn("vc-d464-a0-b7-c34", counts)
+        self.assertEqual(counts["vc-csc-m3-d15"], 128)
+        self.assertEqual(counts["vc-csc-struct"], 15)
+        self.assertNotIn("vc-csc-m0", [case for case in spec.semantic_cases if "d464" in case])
+        self.assertEqual(counts["vc-ac-1000-p5c28"], 67)
+        self.assertEqual(sum(1 for case in spec.semantic_cases if case.startswith("vc-csc-")), 71)
+        self.assertEqual(counts["vcodec-words-done"], 1)
+        csc = section[section.index("static void vcw_csc_cells("):section.index("static void vcw_decode_cells(")]
+        self.assertIn("w_mbs > 0u && w_mbs <= VCW_RGB_STRIDE / 16u", csc)
+        self.assertIn("h_mbs > 0u && h_mbs <= VCW_H_MBS", csc)
+        self.assertIn('vcw_record_status(emulated, "vc-csc-struct", "FAIL", 0, 0u, out, 15u)', csc)
+        self.assertIn("if (!geometry_ok)", csc)
+        self.assertIn("out[13] = reported_w;", csc)
+        self.assertIn("out[14] = reported_h;", csc)
+        self.assertLess(csc.index("geometry_ok"), csc.index("VCW_OP_CSCAVC"))
+
+    def test_vcodec_csc_geometry_fail_record_keeps_raw_dimensions_without_a_return_value(self) -> None:
+        meta = META.format(source="psp", model="synthetic", firmware="test",
+                           binary="0" * 64, commit="0" * 40)
+        outputs = " ".join(
+            f"out{index}=0x{0x00001100 if index == 14 else 0x000001e0 if index == 13 else 0:08x}"
+            for index in range(15)
+        )
+        record = ("NAKAGAWA_PSP_TEST schema=1 test_id=PSP-VCODEC-001 case_id=vc-csc-struct "
+                  f"status=FAIL {outputs}\n")
+        parsed = parse_campaign_probe_output(meta + record, "vcodec-words", require_complete=False)
+        geometry = parsed.results["vc-csc-struct"]
+        values = dict(geometry.values)
+        self.assertEqual(geometry.status, "FAIL")
+        self.assertEqual(values["out13"], "0x000001e0")
+        self.assertEqual(values["out14"], "0x00001100")
+        self.assertNotIn("result", values)
+
+    @staticmethod
+    def _vcodec_nid(name: str) -> int:
+        return int.from_bytes(hashlib.sha1(name.encode("ascii"), usedforsecurity=False).digest()[:4], "little")
 
     def test_thread_k0_block_route_has_its_own_case_id(self) -> None:
         routes = dict(re.findall(
@@ -3217,6 +3441,16 @@ class PspDmacProbeTests(unittest.TestCase):
                 # 66940d76.
                 "PSP-GE-MIP-001", "PSP-GE-SYNC-001",
                 "PSP-GE-OVERLAP-001",
+                # The 2026-11-06 acceptance-eligible ge-light (#1732, boot 133) and ge-clut-mip
+                # (#2031, boot 134) runs.
+                "PSP-GE-LIGHT-001", "PSP-GE-MIP-002",
+                # The 2026-11-06 acceptance-eligible hle-std-handles (#341, boot 135) and ge-weight
+                # (#343, boot 136) runs.
+                "PSP-HLE-STDIO-001", "PSP-GE-WEIGHT-001",
+                # The 2026-11-06 acceptance-eligible ge-rtt (#343, boot 137) run.
+                "PSP-GE-RTT-001",
+                # The 2026-11-06 acceptance-eligible hle-audio-rest (#279, boot 138) run.
+                "PSP-HLE-AUDIO-REST-001",
             },
         )
         self.assertEqual(
@@ -5103,8 +5337,19 @@ class HleMeasureProbeTests(unittest.TestCase):
     TABLE_FAMILIES = (
         ("hle-utility-none", 140, "hle_utility_none", "hle_utility_imports.S",
          "HLE_CASE_UTILITY_NONE", "PSP-HLE-UTILITY-NONE-001"),
+        # #279: 102 records named in a literal table, k_hle_arest_names.
+        ("hle-audio-rest", 159, "hle_audio_rest", None,
+         "HLE_CASE_AUDIO_REST", "PSP-HLE-AUDIO-REST-001"),
     )
-    ALL_FAMILIES = FAMILIES + SINGLE_LAUNCH_FAMILIES + TABLE_FAMILIES
+    # Families added after the 2026-10-15 single-launch set, with literal record calls; the
+    # single-launch class pins only cases 97-104.
+    LATER_FAMILIES = (
+        ("hle-std-handles", 156, "hle_std_handles", None,
+         "HLE_CASE_STD_HANDLES", "PSP-HLE-STDIO-001"),
+        ("hle-utility-dialogs", 161, "hle_utility_dialogs", "hle_utility_imports.S",
+         "HLE_CASE_UTILITY_DIALOGS", "PSP-HLE-UTILITY-DIALOG-001"),
+    )
+    ALL_FAMILIES = FAMILIES + SINGLE_LAUNCH_FAMILIES + TABLE_FAMILIES + LATER_FAMILIES
     # Every family block: file -> (library, version word, {function: NID}). The
     # version word 0x40010000 is the one the PSPSDK import stubs carry.
     PINNED_BLOCKS = {
@@ -5166,6 +5411,30 @@ class HleMeasureProbeTests(unittest.TestCase):
             "nkUtilGameSharingUpdate": 0x7853182D,
             "nkUtilGameSharingShutdownStart": 0xEFC6F80F,
         },
+        # hle-utility-dialogs: the four calls of savedata, netconf, game sharing and the gamedata
+        # install dialog, the message dialog's InitStart (only ever given a size-0 block), and
+        # the net module load/unload pair.
+        ("hle_utility_imports.S", 161): {
+            "nkUtilSavedataInitStart": 0x50C4CD57,
+            "nkUtilSavedataGetStatus": 0x8874DBE0,
+            "nkUtilSavedataUpdate": 0xD4B95FFB,
+            "nkUtilSavedataShutdownStart": 0x9790B33C,
+            "nkUtilMsgDialogInitStart": 0x2AD8E239,
+            "nkUtilNetconfInitStart": 0x4DB1E739,
+            "nkUtilNetconfGetStatus": 0x6332AA39,
+            "nkUtilNetconfUpdate": 0x91E70E35,
+            "nkUtilNetconfShutdownStart": 0xF88155F6,
+            "nkUtilGamedataInstallInitStart": 0x24AC31EB,
+            "nkUtilGamedataInstallGetStatus": 0xB57E95D9,
+            "nkUtilGamedataInstallUpdate": 0x4AECD179,
+            "nkUtilGamedataInstallShutdownStart": 0x32E32DCB,
+            "nkUtilGameSharingInitStart": 0xC492F751,
+            "nkUtilGameSharingGetStatus": 0x946963F3,
+            "nkUtilGameSharingUpdate": 0x7853182D,
+            "nkUtilGameSharingShutdownStart": 0xEFC6F80F,
+            "sceUtilityLoadNetModule": 0x1579A159,
+            "sceUtilityUnloadNetModule": 0x64D50C56,
+        },
     }
     # Calls supplied by the SDK's default IO/audio libraries, not by the hand-written
     # ThreadMan import block. Libc and CRT helpers are not sce-prefixed.
@@ -5174,16 +5443,28 @@ class HleMeasureProbeTests(unittest.TestCase):
         "sceAudioSRCChReserve", "sceAudioSRCChRelease", "sceAudioSRCOutputBlocking",
         "sceAudioOutput2Reserve", "sceAudioOutput2Release", "sceDisplayWaitVblankStart",
         "sceKernelVolatileMemTryLock", "sceKernelVolatileMemUnlock",
+        "sceKernelStdin", "sceKernelStdout", "sceKernelStderr",
+        "sceAudioChReserve", "sceAudioChRelease", "sceAudioOutputBlocking",
+        "sceAudioGetChannelRestLen", "sceAudioGetChannelRestLength",
+        # hle-utility-dialogs: the vblank counter, the UMD presence check, the directory calls
+        # of its gamedata precheck and cleanup, and the net libraries' Init/Term pairs.
+        "sceDisplayGetVcount", "sceUmdCheckMedium",
+        "sceIoDopen", "sceIoDread", "sceIoDclose", "sceIoRmdir",
+        "sceNetInit", "sceNetTerm", "sceNetInetInit", "sceNetInetTerm",
+        "sceNetApctlInit", "sceNetApctlTerm", "sceNetAdhocInit", "sceNetAdhocTerm",
+        "sceNetAdhocctlInit", "sceNetAdhocctlTerm",
     })
     MEASURED_CALL_RE = re.compile(
         r"\b(sceKernel(?:ReferSystemStatus|ReferFplStatus|CreateFpl|TryAllocateFpl|FreeFpl|"
         r"DeleteFpl|CreateVTimer|ReferVTimerStatus|GetVTimerTime|StartVTimer|StopVTimer|"
         r"DeleteVTimer|DelayThread|GetVTimerBase|GetSystemTimeWide|CreateVpl|TryAllocateVpl|"
         r"FreeVpl|DeleteVpl|SetAlarm|CancelAlarm|SetVTimerHandler)|"
-        r"sceAudio(?:SRC(?:ChReserve|ChRelease|OutputBlocking)|Output2(?:Reserve|Release))|"
+        r"sceAudio(?:SRC(?:ChReserve|ChRelease|OutputBlocking)|Output2(?:Reserve|Release)|"
+        r"Ch(?:Reserve|Release)|OutputBlocking|GetChannelRestLen(?:gth)?)|"
         r"scePowerGet\w+|sceHprmIs\w+|sceCtrl\w*Latch|"
         r"sceUtilityGetSystemParam\w+|sceUtilitySavedataInitStart|sceIoGetstat|"
-        r"sceGeEdram\w+)\s*\("
+        r"sceGeEdram\w+|sceKernelStd(?:in|out|err)|sceUmdCheckMedium|"
+        r"sceIo(?:Dopen|Dread|Dclose|Rmdir)|sceNet\w+|sceUtility(?:Load|Unload)NetModule)\s*\("
     )
     # A line that is nothing but a whole `int|float|void sce...(...);` declaration.
     # Only such a line is skipped as "not a call"; a declaration that shares its line
@@ -5381,13 +5662,13 @@ class HleMeasureProbeTests(unittest.TestCase):
         hle-sysparam can import no savedata call."""
         block = "hle_utility_imports.S"
         self.assertEqual(re.findall(r"^#if PSP_ORACLE_CASE == (\d+)$", self._block_text(block),
-                                    re.MULTILINE), ["104", "140"])
+                                    re.MULTILINE), ["104", "140", "161"])
         self.assertIn("#define HLE_CASE_SAVEDATA_GETSIZE 104\n", self.probe)
         self.assertIn("else ifeq ($(CASE),hle-savedata-getsize)\nCASE_ID = 104\n", self.makefile)
         users = [(case, case_id) for case, case_id, _stem, linked, _macro, _test
                  in self.ALL_FAMILIES if linked == block]
         self.assertEqual(users, [("hle-sysparam", 95), ("hle-savedata-getsize", 104),
-                                 ("hle-utility-none", 140)])
+                                 ("hle-utility-none", 140), ("hle-utility-dialogs", 161)])
         for case, case_id in users:
             with self.subTest(case=case):
                 gate = self.makefile.split(f"\nifeq ($(CASE),{case})\n", 1)[1].split("endif", 1)[0]
@@ -5477,6 +5758,20 @@ class HleMeasureProbeTests(unittest.TestCase):
         callback_start = self.probe.index("static void hle_timer_order_capture(")
         callback_end = self.probe.index("\n}\n", callback_start)
         callback_clock_line = "const uint64_t now = (uint64_t)sceKernelGetSystemTimeWide();"
+        # hle-audio-rest (#279) times back-to-back blocking outputs: a host0 write between two
+        # of them can take longer than a block and would starve the channel. One step names the
+        # whole run, written before the reserve, and nothing reaches host0 until the release.
+        arest_start = self.probe.index("static void hle_arest_size(")
+        arest_end = self.probe.index("\n}\n", arest_start)
+        arest = self.probe[arest_start:arest_end]
+        reserve = arest.index("sceAudioChReserve(")
+        release = arest.index("sceAudioChRelease(")
+        self.assertIn("hle_step(step);", arest[:reserve])
+        self.assertEqual(arest[:reserve].count("hle_step("), 1)
+        for writer in ("hle_step(", "hle_write(", "hle_record(", "hle_skip("):
+            self.assertNotIn(writer, arest[reserve:release])
+        arest_lines = (self.probe.count("\n", 0, arest_start + reserve),
+                       self.probe.count("\n", 0, arest_start + release))
         checked = 0
         for index, line in enumerate(lines):
             if not self.MEASURED_CALL_RE.search(line):
@@ -5485,6 +5780,8 @@ class HleMeasureProbeTests(unittest.TestCase):
                 continue  # a whole-line prototype, not a call
             if callback_start <= self.probe.find(line) < callback_end and callback_clock_line in line:
                 continue  # the callback samples time; host logging is unsafe there
+            if arest_lines[0] <= index <= arest_lines[1]:
+                continue  # covered by the run's one step (above)
             checked += 1
             window = lines[max(0, index - 3):index]
             self.assertTrue(any("hle_step(" in previous for previous in window),
@@ -5576,9 +5873,10 @@ class HleMeasureProbeTests(unittest.TestCase):
         self.assertEqual(private.count("sceIoClose(fd)"), 2)
         # The read-back holds one byte more than was written, so a longer file is caught.
         self.assertIn("static uint8_t observed[sizeof(written) + 1u];", private)
-        # Removal is this file's alone: no other host0 file and no other family removes.
+        # Removal is this file's alone on host0; the only other removal is hle-utility-dialogs'
+        # cleanup of its own gamedata directory on ms0: (HleUtilityDialogsProbeTests).
         self.assertEqual(re.findall(r"\bsceIoRemove\s*\(([^)]*)\)", self.probe),
-                         ["HLE_PRIVATE_STRINGS_PATH"])
+                         ["HLE_PRIVATE_STRINGS_PATH", "s_ud_path"])
         issues = (self.fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
         self.assertNotRegex(issues, r"\bsceIoRemove\s*\(")
 
@@ -5666,9 +5964,32 @@ class HleMeasureProbeTests(unittest.TestCase):
         """Each cell's out-word count, read from the record call that emits it, equals the
         parser registry's count, and the cells come in registry order, for every family whose
         cells are literal record calls (not TABLE_FAMILIES)."""
-        for case, _cid, _stem, _block, macro, _test in self.FAMILIES + self.SINGLE_LAUNCH_FAMILIES:
+        for case, _cid, _stem, _block, macro, _test in (self.FAMILIES + self.SINGLE_LAUNCH_FAMILIES
+                                                        + self.LATER_FAMILIES):
             with self.subTest(case=case):
                 self.assertEqual(_out_count_mismatches(self.probe, case, macro), [])
+
+    def test_audio_rest_table_follows_the_registry(self) -> None:
+        """hle-audio-rest names its records in k_hle_arest_names: the table is the registry's
+        order, and the reserve, block and drain records carry 3, 5 and 4 out words."""
+        section = self._section("HLE_CASE_AUDIO_REST")
+        table = section[section.index("k_hle_arest_names[3][HLE_AREST_BLOCKS + 2u] = {"):]
+        names = re.findall(r'"(audio-rest-[a-z0-9-]+)"', table[:table.index("};")])
+        spec, counts = CAMPAIGN_PROBE_CASES["hle-audio-rest"]
+        self.assertEqual(names, list(spec.semantic_cases))
+        self.assertEqual(len(names), 102)
+        self.assertIn("#define HLE_AREST_BLOCKS 32u", section)
+        for call, words in (('hle_record(names[0], ch < 0 ? "FAIL" : "PASS", (uint32_t)ch, reserve, 3);', 3),
+                            ('hle_record(names[1u + b], "PASS", s_hle_arest_rc[b], out, 5);', 5),
+                            ('hle_skip(names[1u + b], 5);', 5),
+                            ('hle_record(names[1u + HLE_AREST_BLOCKS], "PASS", (uint32_t)release_rc, drain, 4);', 4),
+                            ('hle_skip(names[1u + HLE_AREST_BLOCKS], 4);', 4)):
+            with self.subTest(call=call):
+                self.assertIn(call, section)
+                self.assertTrue(call.endswith(f", {words});"), call)
+        for name in names:
+            expected = 3 if name.endswith("-reserve") else 4 if name.endswith("-drain") else 5
+            self.assertEqual(counts[name], expected, name)
 
     def test_a_count_mutant_is_refused_by_the_same_comparison(self) -> None:
         """Mutant: the no-slot create record declares one out word where it writes two."""
@@ -9416,6 +9737,179 @@ class HleUtilityNoneProbeTests(unittest.TestCase):
         self.assertNotIn("InitStart(", section)
 
 
+class HleUtilityDialogsProbeTests(unittest.TestCase):
+    """CASE=hle-utility-dialogs (161, PSP-HLE-UTILITY-DIALOG-001) in probe_hle_measure.c: #1386's
+    dialog status timing and wrong-state answers in game context. These pin the safety design:
+    the dialog order, no network join, scan or setting write, no button, bounded waits, and a
+    gamedata install only into a probe-owned directory that the probe removes again."""
+
+    probe: ClassVar[str]
+    section: ClassVar[str]
+    makefile: ClassVar[str]
+    imports: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_hle_measure.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        cls.imports = (fixture / "hle_utility_imports.S").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == HLE_CASE_UTILITY_DIALOGS\n\n")
+        cls.section = cls.probe[start:cls.probe.index("#endif /* HLE_CASE_UTILITY_DIALOGS */")]
+
+    def _body(self, signature: str) -> str:
+        start = self.section.index(signature)
+        return self.section[start:self.section.index("\n}\n", start)]
+
+    def test_route_and_registry(self) -> None:
+        self.assertIn("else ifeq ($(CASE),hle-utility-dialogs)\nCASE_ID = 161\n", self.makefile)
+        self.assertIn("#define HLE_CASE_UTILITY_DIALOGS 161\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "hle-utility-dialogs"\n'
+                      '#define HLE_TEST_ID "PSP-HLE-UTILITY-DIALOG-001"\n'
+                      '#define HLE_LOG "host0:/hle_utility_dialogs_log.txt"', self.probe)
+        spec, counts = CAMPAIGN_PROBE_CASES["hle-utility-dialogs"]
+        rows = tuple(row for row, _ in parse_golden.HLE_UTILITY_DIALOGS_ROWS)
+        self.assertEqual(spec.ordered_cases[:-1], rows)
+        self.assertEqual(len(rows), 24)
+        self.assertEqual(sum(counts[row] for row in rows), 3 * 24 + 3 * (24 + 4 * 21) + 5 + 23
+                         + 4 * 5)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "hle-utility-dialogs").name,
+                         "hle_utility_dialogs_log.txt")
+
+    def test_dialog_order_puts_the_radio_dialogs_last(self) -> None:
+        run = self._body("static int hle_run(void)")
+        calls = re.findall(r"\b(hle_ud_\w+)\(", run)
+        self.assertEqual(calls, ["hle_ud_timing", "hle_ud_timing", "hle_ud_timing",
+                                 "hle_ud_gamedata", "hle_ud_netconf", "hle_ud_sharing"])
+        self.assertEqual(re.findall(r'"(savedata-timing-r\d)"', run),
+                         ["savedata-timing-r1", "savedata-timing-r2", "savedata-timing-r3"])
+
+    def test_no_network_join_scan_or_setting_call_is_made_or_linked(self) -> None:
+        code = _c_code(self.section)
+        net_calls = set(re.findall(r"\b(sceNet\w+)\s*\(", code))
+        self.assertEqual(net_calls, {
+            "sceNetInit", "sceNetTerm", "sceNetInetInit", "sceNetInetTerm", "sceNetApctlInit",
+            "sceNetApctlTerm", "sceNetAdhocInit", "sceNetAdhocTerm", "sceNetAdhocctlInit",
+            "sceNetAdhocctlTerm"})
+        self.assertNotRegex(code, r"\bsce\w*(?:Connect|Create|Join|Scan|Set|Reg|Abort)\w*\s*\(")
+        self.assertNotRegex(code, r"\bnkUtil\w*Abort")
+        gate = self.makefile[self.makefile.index(
+            "ifeq ($(CASE),hle-utility-dialogs)\nLIBS"):]
+        gate = gate[:gate.index("\nendif\n")]
+        # Only the ad hoc libraries are named; the SDK's own link order supplies the others.
+        self.assertIn("\nLIBS += -lpspumd -lpspnet_adhocctl -lpspnet_adhoc\n", gate)
+        for library, nids in (("sceNet", "0x39AF39A6,0x281928A9"),
+                              # Init/Term, then the libc glue's Close, Recv, Send, GetErrno.
+                              ("sceNetInet", "0x17943399,0xA9ED66B9,0x8D7284EA,0xCDA85C99,"
+                                             "0x7AA671BC,0xFBABE411"),
+                              ("sceNetApctl", "0xE2F91F9B,0xB3EDD0EC"),
+                              ("sceNetAdhoc", "0xE1D621D7,0xA62C6F57"),
+                              ("sceNetAdhocctl", "0xE26F226E,0x9D689E13"),
+                              ("sceUmdUser", "0x46EBB729")):
+            with self.subTest(library=library):
+                self.assertIn(f"--exact-library {library}={nids}\n", gate + "\n")
+        for library in ("sceNetAdhocMatching", "sceNetResolver", "sceHttp", "sceSsl", "sceReg"):
+            self.assertIn(f"--forbid-library {library}", gate)
+
+    def test_netconf_connects_to_nothing_and_no_dialog_is_answered(self) -> None:
+        fill = self._body("static void hle_ud_fill_netconf(uint8_t *block)")
+        self.assertIn("hle_ud_put32(block, 0x30u, (uint32_t)PSP_NETCONF_ACTION_CONNECTAP);", fill)
+        self.assertIn("hle_ud_put32(block, 0x38u, 0u);", fill)
+        self.assertIn("hle_ud_put32(block, 0x40u, 0u);", fill)
+        # Every dialog call goes through the type's GetStatus, Update(1) and ShutdownStart, or
+        # an InitStart; Update is never given anything but 1.
+        code = _c_code(self.section)
+        self.assertEqual(set(re.findall(r"->update\(([^)]*)\)", code)), {"1"})
+        self.assertEqual(re.findall(r"\bnkUtilMsgDialog\w+\(([^)]*)\)", code),
+                         ["void *param", "s_ud_msg"])
+        state = self._body("static void hle_ud_state(")
+        self.assertIn("memset(s_ud_msg, 0, sizeof(s_ud_msg));", state)
+        block = self.imports[self.imports.index("#if PSP_ORACLE_CASE == 161\n"):]
+        block = block[:block.index("#endif")]
+        names = re.findall(r"IMPORT_FUNC\s+\"sceUtility\", 0x[0-9A-F]{8}, (\w+)", block)
+        self.assertEqual([n for n in names if "MsgDialog" in n], ["nkUtilMsgDialogInitStart"])
+        self.assertFalse([n for n in names if "Abort" in n or "Set" in n])
+
+    def test_waits_are_vblank_bounds_and_a_running_dialog_is_cancelled(self) -> None:
+        self.assertRegex(self.section, r"#define HLE_UD_POLL_LIMIT 600u\n")
+        self.assertRegex(self.section, r"#define HLE_UD_REACH_POLLS 300u\n")
+        self.assertRegex(self.section, r"#define HLE_UD_CANCEL_POLLS 60u\n")
+        drive = self._body("static void hle_ud_drive(HleUdRun *r)")
+        self.assertIn("for (uint32_t i = 0; i < HLE_UD_POLL_LIMIT; i++) {", drive)
+        self.assertIn("running >= HLE_UD_CANCEL_POLLS * (r->sd_calls + 1u)", drive)
+        self.assertIn("(void)sceDisplayWaitVblankStart();", drive)
+        reach = self._body("static int hle_ud_reach(HleUdRun *r, int want)")
+        self.assertIn("for (uint32_t i = 0; i < HLE_UD_REACH_POLLS; i++) {", reach)
+        # Nothing is written to host0 between the polls of a loop except the marker before a
+        # ShutdownStart, whose vblank is read after the marker.
+        poll = self._body("static int hle_ud_poll(HleUdRun *r)")
+        self.assertNotIn("hle_step", poll)
+        self.assertNotIn("hle_record", drive + reach + poll)
+        shutdown = " ".join(self._body("static void hle_ud_shutdown(").split())
+        self.assertLess(shutdown.index('hle_ud_step(r->t, "shutdown");'),
+                        shutdown.index("sceDisplayGetVcount()"))
+        self.assertLess(shutdown.index("sceDisplayGetVcount()"),
+                        shutdown.index("r->t->shutdown()"))
+
+    def test_gamedata_runs_only_without_a_disc_into_an_absent_probe_directory(self) -> None:
+        self.assertIn('#define HLE_UD_GD_DIR "ms0:/PSP/SAVEDATA/" HLE_UD_GD_GAME_NAME '
+                      'HLE_UD_GD_DATA_NAME\n', self.section)
+        self.assertIn('#define HLE_UD_GD_GAME_NAME "NKORACLE0"\n', self.section)
+        self.assertIn('#define HLE_UD_GD_DATA_NAME "GDI1"\n', self.section)
+        precheck = self._body("static uint32_t hle_ud_gamedata_precheck(void)")
+        for condition, reason in (("umd < 0", "HLE_UD_SKIP_UMD_UNKNOWN"),
+                                  ("umd != 0", "HLE_UD_SKIP_UMD_PRESENT"),
+                                  ("dfd >= 0", "HLE_UD_SKIP_DIR_EXISTS"),
+                                  ("(uint32_t)stat != HLE_UD_PATH_ABSENT",
+                                   "HLE_UD_SKIP_DIR_UNCLEAR")):
+            with self.subTest(condition=condition):
+                self.assertIn(f"}} else if ({condition}) {{\n        reason = {reason};", precheck)
+        gamedata = self._body("static void hle_ud_gamedata(void)")
+        self.assertEqual(gamedata.count("reason);"), 3)
+        # Every path the probe touches on ms0: is the probe directory or a file inside it.
+        code = _c_code(self.section)
+        self.assertEqual(sorted(set(re.findall(r"\bsceIo(?:Dopen|Rmdir|Getstat)\(([^,)]*)", code))),
+                         ["HLE_UD_GD_DIR"])
+        self.assertEqual(re.findall(r"\bsceIoRemove\(([^)]*)\)", code), ["s_ud_path"])
+        self.assertIn("hle_ud_file_path(s_ud_names[f]);", code)
+        path = self._body("static void hle_ud_file_path(const char *name)")
+        self.assertIn("memcpy(s_ud_path, HLE_UD_GD_DIR, dir);", path)
+        self.assertIn("len + 1u < HLE_UD_NAME_BYTES", path)
+        self.assertIn("static char s_ud_path[sizeof(HLE_UD_GD_DIR) + 1u + HLE_UD_NAME_BYTES];",
+                      self.section)
+        cleanup = self._body("static void hle_ud_gamedata_cleanup(uint32_t reason)")
+        self.assertIn('strcmp(name, ".") == 0 || strcmp(name, "..") == 0', cleanup)
+        self.assertIn("FIO_S_ISREG(s_ud_dirent.d_stat.st_mode)", cleanup)
+        self.assertIn('again < 0 ? "PASS" : "FAIL"', cleanup)
+
+    def test_each_net_setup_is_torn_down_in_reverse(self) -> None:
+        for kind, pairs in (
+                ("netconf", (("sceNetApctlTerm()", "sceNetApctlInit("),
+                             ("sceNetInetTerm()", "sceNetInetInit()"),
+                             ("sceNetTerm()", "sceNetInit("),
+                             ("sceUtilityUnloadNetModule(PSP_NET_MODULE_INET)",
+                              "sceUtilityLoadNetModule(PSP_NET_MODULE_INET)"),
+                             ("sceUtilityUnloadNetModule(PSP_NET_MODULE_COMMON)",
+                              "sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON)"))),
+                ("sharing", (("sceNetAdhocctlTerm()", "sceNetAdhocctlInit("),
+                             ("sceNetAdhocTerm()", "sceNetAdhocInit()"),
+                             ("sceNetTerm()", "sceNetInit("),
+                             ("sceUtilityUnloadNetModule(PSP_NET_MODULE_ADHOC)",
+                              "sceUtilityLoadNetModule(PSP_NET_MODULE_ADHOC)"),
+                             ("sceUtilityUnloadNetModule(PSP_NET_MODULE_COMMON)",
+                              "sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON)")))):
+            with self.subTest(kind=kind):
+                setup = self._body(f"static uint32_t hle_ud_{kind}_setup(uint32_t *stage)")
+                teardown = self._body(f"static void hle_ud_{kind}_teardown(")
+                starts = [setup.index(init) for _term, init in pairs]
+                stops = [teardown.index(term) for term, _init in pairs]
+                self.assertEqual(starts, sorted(starts, reverse=True))
+                self.assertEqual(stops, sorted(stops))
+                group = self._body(f"static void hle_ud_{kind}(void)")
+                self.assertIn(f"hle_ud_{kind}_teardown(stage, reason == HLE_UD_SKIP_STUCK ? "
+                              "reason : 0u);", group)
+
+
 class GeMipProbeTests(unittest.TestCase):
     """CASE=ge-mip (126, PSP-GE-MIP-001) in probe_ge_sample.c: the #1373 level-of-detail and
     mip cells. The cell table and list builder are one block shared byte for byte with
@@ -9744,6 +10238,420 @@ class GeOverlapProbeTests(unittest.TestCase):
                     self.assertGreaterEqual(steps(in_order, other), 3.0, (name, i))
                 checked += 1
         self.assertGreater(checked, 0)
+
+
+class GeWeightProbeTests(unittest.TestCase):
+    """CASE=ge-weight (157, PSP-GE-WEIGHT-001) in probe_ge_sample.c: the #343 weighted-vertex
+    cells. Slot 0 carries each quad through bone 0 at weight 1.0 and the target slot moves it by
+    16 w pixels, so the row a sample lands on reads the weight the GE used; the stream matches the
+    registry and the list uploads the eight bones and the vertex type the cells claim."""
+
+    probe: ClassVar[str]
+    makefile: ClassVar[str]
+    section: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_WEIGHT\n\n")
+        end = cls.probe.index("#endif /* GE_CASE_WEIGHT */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),ge-weight)\nCASE_ID = 157\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),ge-weight)\nTARGET = $(BUILD_DIR)/ge_weight\n"
+                      "OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define GE_CASE_WEIGHT 157\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "ge-weight"\n#define HLE_TEST_ID "PSP-GE-WEIGHT-001"\n'
+                      '#define HLE_LOG "host0:/ge_weight_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "ge-weight").name,
+                         "ge_weight_log.txt")
+        self.assertEqual(_campaign_completeness_contract("ge-weight"), "strict-golden-sequence")
+        self.assertNotIn("ge-weight", CAMPAIGN_QUEUE_CASES)
+
+    def test_section_calls_only_the_ge_and_cache_imports_and_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
+            "sceGeEdramGetAddr", "sceGeListEnQueue", "sceGeListSync", "sceGeDrawSync",
+            "sceGeBreak", "sceKernelDcacheWritebackAll", "sceKernelDelayThread",
+            "sceKernelGetSystemTimeLow"})
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceGu", "sceDisplay", "sceIo"):
+            self.assertNotIn(banned, self.section)
+        self.assertEqual(self.section.count("i < GW_WAIT_POLLS; i++"), 2)
+        body = _c_function_bodies(self.section)["gw_draw"]
+        self.assertLess(body.index("hle_step(c->name);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceGeListEnQueue("), body.index("hle_record("))
+        # The list fits its buffer: 200 words for every cell (the counts in gw_list).
+        self.assertIn("#define GW_LIST_WORDS 224u", self.section)
+        self.assertIn("#define GW_MAX_VTX_BYTES 48u", self.section)
+
+    def test_list_uploads_eight_bones_and_the_cells_vertex_type(self) -> None:
+        body = _c_function_bodies(self.section)["gw_list"]
+        for word in ("GW_W(0x2a, 0);", "GW_W(0x2b, gw_fbits(m[i]) >> 8);",
+                     "GW_W(0x2c, gw_fbits(1.0f) >> 8);", "GW_W(0x12, vtype);",
+                     "GW_W(0x04, (3u << 16) | GW_VTX_COUNT);", "GW_W(0xe7, 1);", "GW_W(0xde, 1);",
+                     "m[10] = (float)c->t0 / 16.0f;", "m[10] = 1.0f;"):
+            self.assertIn(word, body)
+        self.assertIn("for (uint32_t b = 0; b < GW_BONES; b++) {", body)
+        self.assertIn("#define GW_BONES 8u", self.section)
+        # The bones come before the world matrix, all of it before the draw.
+        self.assertLess(body.index("GW_W(0x2a, 0);"), body.index("GW_W(0x3a, 0);"))
+        self.assertLess(body.index("GW_W(0x3a, 0);"), body.index("GW_W(0x04,"))
+        draw = _c_function_bodies(self.section)["gw_draw"]
+        self.assertIn("(7u << 2) | (3u << 7) | ((uint32_t)c->fmt << 9) |", draw)
+        self.assertIn("((uint32_t)(c->count - 1u) << 14);", draw)
+        units = re.search(r"off_units\[12\] = \{([^}]*)\}", self.section)
+        assert units is not None
+        cleared = {int(word.strip().rstrip("u"), 16) for word in units.group(1).split(",")}
+        self.assertIn(0x17, cleared)   # lighting off
+
+    def _cells(self) -> list[tuple[str, str, int, int, int, int, int]]:
+        rows = re.findall(r'\{"([a-z0-9-]+)", (GW_U8|GW_U16|GW_F32), (\d)u, (\d)u, '
+                          r'(-?(?:0x[0-9a-f]+|\d+)), (-?(?:0x[0-9a-f]+|\d+)), (-?\d+)\},',
+                          self.section)
+        return [(name, fmt, int(count), int(target), int(base, 0), int(step, 0), int(t0))
+                for name, fmt, count, target, base, step, t0 in rows]
+
+    def test_cells_match_the_registry_and_land_on_the_documented_rows(self) -> None:
+        cells = self._cells()
+        self.assertEqual(len(cells), 16)
+        self.assertIn("#define GW_CELL_COUNT 16u", self.section)
+        spec, counts = CAMPAIGN_PROBE_CASES["ge-weight"]
+        self.assertEqual(spec.test_id, "PSP-GE-WEIGHT-001")
+        self.assertEqual([case[:-len("-draw")] for case in spec.semantic_cases
+                          if case.endswith("-draw")], [name for name, *_ in cells])
+        self.assertEqual(len(spec.semantic_cases), 16 * 18)
+        for case in spec.semantic_cases:
+            self.assertEqual(counts[case], 10 if case.endswith("-draw") else 16)
+        one = {"GW_U8": 0x80, "GW_U16": 0x8000, "GW_F32": 16}
+        for name, fmt, count, target, base, step, t0 in cells:
+            with self.subTest(cell=name):
+                self.assertTrue(1 <= count <= 8)
+                self.assertTrue(target < count)
+                self.assertEqual(target == 0, count == 1)
+                limit = {"GW_U8": 0xff, "GW_U16": 0xffff, "GW_F32": 1 << 20}[fmt]
+                for s in range(16):
+                    raw = base + step * s
+                    if fmt != "GW_F32":
+                        self.assertTrue(0 <= raw <= limit)
+                    # The documented model: row = 8 + t0 + 16 w, w = raw / one.
+                    row = 8 + t0 + (16 * raw) // one[fmt]
+                    expected = 8 if name == "f32-c1" else 24 - s if name == "f32-neg" else 8 + s
+                    self.assertEqual(row, expected)
+                    self.assertTrue(8 <= row <= 24)
+
+    def test_vertex_layout_pads_small_weights_to_the_colour(self) -> None:
+        bodies = _c_function_bodies(self.section)
+        self.assertIn("return (gw_weight_bytes(c) + 3u) & ~3u;", bodies["gw_colour_offset"])
+        self.assertIn("return gw_colour_offset(c) + 4u + 12u;", bodies["gw_vertex_size"])
+        size = {"GW_U8": 1, "GW_U16": 2, "GW_F32": 4}
+        for name, fmt, count, *_ in self._cells():
+            with self.subTest(cell=name):
+                self.assertLessEqual(((count * size[fmt] + 3) & ~3) + 16, 48)
+
+
+class GeRttProbeTests(unittest.TestCase):
+    """CASE=ge-rtt (158, PSP-GE-RTT-001) in probe_ge_sample.c: the #343 render-to-texture
+    cells. T is rendered into and sampled as a texture, with TEXFLUSH and TEXSYNC placed
+    differently per cell; the stream matches the registry and the list words, the pattern the
+    CPU writes and the operation order are the ones the cells claim."""
+
+    probe: ClassVar[str]
+    makefile: ClassVar[str]
+    section: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_RTT\n\n")
+        end = cls.probe.index("#endif /* GE_CASE_RTT */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),ge-rtt)\nCASE_ID = 158\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),ge-rtt)\nTARGET = $(BUILD_DIR)/ge_rtt\n"
+                      "OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define GE_CASE_RTT 158\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "ge-rtt"\n#define HLE_TEST_ID "PSP-GE-RTT-001"\n'
+                      '#define HLE_LOG "host0:/ge_rtt_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "ge-rtt").name,
+                         "ge_rtt_log.txt")
+        self.assertEqual(_campaign_completeness_contract("ge-rtt"), "strict-golden-sequence")
+        self.assertNotIn("ge-rtt", CAMPAIGN_QUEUE_CASES)
+
+    def test_section_calls_only_the_ge_and_cache_imports_and_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
+            "sceGeEdramGetAddr", "sceGeListEnQueue", "sceGeListSync", "sceGeDrawSync",
+            "sceGeBreak", "sceKernelDcacheWritebackAll", "sceKernelDelayThread",
+            "sceKernelGetSystemTimeLow"})
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceGu", "sceDisplay", "sceIo"):
+            self.assertNotIn(banned, self.section)
+        self.assertEqual(self.section.count("i < GRT_WAIT_POLLS; i++"), 2)
+        body = _c_function_bodies(self.section)["grt_draw"]
+        self.assertLess(body.index("hle_step(c->name);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("grt_prepare(c);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceKernelDcacheWritebackAll();"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceGeListEnQueue("), body.index("hle_record("))
+        self.assertIn("#define GRT_LIST_WORDS 128u", self.section)
+        self.assertIn("#define GRT_OPS 6u", self.section)
+        self.assertIn("static uint32_t s_grt_list[GRT_LIST_WORDS] __attribute__((aligned(64)));",
+                      self.section)
+        self.assertIn("static uint32_t s_grt_vtx[GRT_VTX_WORDS] __attribute__((aligned(64)));",
+                      self.section)
+
+    def _list_blocks(self) -> tuple[int, int, int]:
+        """Words of the shared prefix (with the opening TEXFLUSH and the 12-unit loop expanded),
+        of one RENDER and of one SAMPLE, counted from grt_list's source."""
+        body = _c_function_bodies(self.section)["grt_list"]
+        loop = body.index("for (uint32_t i = 0; i < GRT_OPS && c->ops[i] != GRT_END; i++) {")
+        render = body.index("if (op == GRT_RENDER) {")
+        sample = body.index("} else if (op == GRT_SAMPLE8 || op == GRT_SAMPLE16) {")
+        flush = body.index("} else if (op == GRT_TEXFLUSH) {")
+
+        def words(text: str) -> int:
+            return len(re.findall(r"^\s*GRT_W\(", text, re.MULTILINE))
+
+        self.assertIn("GRT_W(off_units[i], 0);", body[:loop])
+        self.assertIn("for (uint32_t i = 0; i < 12u; i++) {", body[:loop])
+        return words(body[:loop]) + 11, words(body[render:sample]), words(body[sample:flush])
+
+    def test_list_words_are_the_ones_the_comment_counts(self) -> None:
+        shared, render, sample = self._list_blocks()
+        self.assertEqual((shared, render, sample), (62, 18, 4))
+        # The opening TEXFLUSH is the last shared word; FINISH and END close the list.
+        body = _c_function_bodies(self.section)["grt_list"]
+        self.assertLess(body.index("GRT_W(0xcb, 0);"),
+                        body.index("for (uint32_t i = 0; i < GRT_OPS && c->ops[i] != GRT_END; i++) {"))
+        self.assertTrue(body.rstrip().endswith("return n;\n}"))
+        self.assertIn("    GRT_W(0x0f, 0);\n    GRT_W(0x0c, 0);\n#undef GRT_W\n", body)
+        longest = 0
+        for _, _, ops in self._cells():
+            total = shared + 2 + sum({1: render, 2: sample, 3: sample, 4: 1, 5: 1}[op]
+                                     for op in ops)
+            longest = max(longest, total)
+            self.assertLessEqual(total, 128)
+        self.assertEqual(longest, 92)
+        self.assertIn("the longest cell (warm-both) is 92 words.", self.probe)
+
+    def test_list_words_render_to_t_and_sample_it_back(self) -> None:
+        body = _c_function_bodies(self.section)["grt_list"]
+        for word in ("GRT_W(0x9c, GRT_T_OFFSET);", "GRT_W(0x9c, GRT_B_OFFSET);",
+                     "GRT_W(0xd2, c->t565 ? 0u : 3u);", "GRT_W(0xd2, 3u);",
+                     "GRT_W(0xc3, c->t565 ? 0u : 3u);", "GRT_W(0xa0, tex);",
+                     "GRT_W(0xa8, GRT_STRIDE | ((tex >> 24) << 16));",
+                     "GRT_W(0xb8, (4u << 8) | 6u);", "GRT_W(0xc2, 0);", "GRT_W(0xc8, 1u);",
+                     "GRT_W(0xc9, 0x103u);", "GRT_W(0xc6, 0x004u);", "GRT_W(0xc7, 0x101u);",
+                     "GRT_W(0x1e, 1);", "GRT_W(0x1e, 0);", "GRT_W(0xcb, 0);", "GRT_W(0xcc, 0);",
+                     "GRT_W(0x12, 0x0080019cu);", "GRT_W(0x12, 0x00800183u);",
+                     "GRT_W(0x04, (6u << 16) | 2u);", "GRT_W(0xe7, 1);", "GRT_W(0xde, 1);",
+                     "GRT_W(0x16, full_t);", "GRT_W(0xd5, full_t);"):
+            self.assertIn(word, body)
+        self.assertIn("#define GRT_C1 0xff2080e0u", self.section)
+        self.assertIn("#define GRT_B_OFFSET 0x00100000u", self.section)
+        self.assertIn("#define GRT_T_OFFSET 0x00120000u", self.section)
+        self.assertIn("(GRT_STRIDE - 1u) | ((GRT_T_ROWS - 1u) << 10)", body)
+        self.assertIn("#define GRT_T_ROWS 16u", self.section)
+        units = re.search(r"off_units\[12\] = \{([^}]*)\}", self.section)
+        assert units is not None
+        cleared = {int(word.strip().rstrip("u"), 16) for word in units.group(1).split(",")}
+        self.assertEqual(cleared, {0x17, 0x1c, 0x1d, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+                                   0x27, 0x28})
+        # The texture address is the VRAM base plus the target's offset.
+        phys = _c_function_bodies(self.section)["grt_tex_phys"]
+        self.assertIn("sceGeEdramGetAddr() & 0x0fffffffu) + GRT_T_OFFSET;", phys)
+        # RENDER draws into T, then restores B; SAMPLE reads texture T into B.
+        render = body[body.index("if (op == GRT_RENDER) {"):
+                      body.index("} else if (op == GRT_SAMPLE8")]
+        self.assertLess(render.index("GRT_W(0x9c, GRT_T_OFFSET);"), render.index("GRT_W(0x04,"))
+        self.assertLess(render.index("GRT_W(0x04,"), render.index("GRT_W(0x9c, GRT_B_OFFSET);"))
+
+    def test_cpu_writes_pattern_p0_and_clears_b_before_the_writeback(self) -> None:
+        prepare = _c_function_bodies(self.section)["grt_prepare"]
+        self.assertIn("(uint16_t)((x << 11) | (y << 5) | 0x1fu)", prepare)
+        self.assertIn("0xff000000u | (0x11u << 16) | ((16u * y) << 8) | (4u * x)", prepare)
+        self.assertIn("y < 4u", prepare)
+        self.assertIn("x < 16u", prepare)
+        self.assertIn('__asm__ volatile("sync" ::: "memory");', prepare)
+        mirror = _c_function_bodies(self.section)["grt_mirror"]
+        self.assertIn("(vram | 0x40000000u) + offset", mirror)
+        draw = _c_function_bodies(self.section)["grt_draw"]
+        self.assertIn("s_grt_t0[i] = c->t565 ? (uint32_t)t16[i] : t32[i];", draw)
+        self.assertIn("b[(GRT_WY + i / GRT_WW) * GRT_STRIDE + GRT_WX + i % GRT_WW]", draw)
+        self.assertIn("#define GRT_WH 12u", self.section)
+        self.assertIn("#define GRT_WX 16u", self.section)
+        self.assertIn("#define GRT_WY 8u", self.section)
+
+    def _cells(self) -> list[tuple[str, int, list[int]]]:
+        kinds = {"GRT_RENDER": 1, "GRT_SAMPLE8": 2, "GRT_SAMPLE16": 3, "GRT_TEXFLUSH": 4,
+                 "GRT_TEXSYNC": 5}
+        rows = re.findall(r'\{"([a-z0-9-]+)", (\d)u, \{([^}]*)\}\},', self.section)
+        return [(name, int(t565), [kinds[op.strip()] for op in ops.split(",")])
+                for name, t565, ops in rows]
+
+    def test_cells_match_the_registry_and_the_designed_operations(self) -> None:
+        cells = self._cells()
+        self.assertEqual(len(cells), 9)
+        self.assertIn("#define GRT_CELL_COUNT 9u", self.section)
+        render, s8, s16, flush, sync = 1, 2, 3, 4, 5
+        self.assertEqual(cells, [
+            ("cpu", 0, [s8]),
+            ("flush", 0, [render, flush, s8]),
+            ("noflush", 0, [render, s8]),
+            ("warm-noflush", 0, [s8, render, s16]),
+            ("warm-flush", 0, [s8, render, flush, s16]),
+            ("warm-texsync", 0, [s8, render, sync, s16]),
+            ("warm-both", 0, [s8, render, sync, flush, s16]),
+            ("565-flush", 1, [render, flush, s8]),
+            ("565-warm-noflush", 1, [s8, render, s16]),
+        ])
+        spec, counts = CAMPAIGN_PROBE_CASES["ge-rtt"]
+        self.assertEqual(spec.test_id, "PSP-GE-RTT-001")
+        self.assertEqual([case[:-len("-draw")] for case in spec.semantic_cases
+                          if case.endswith("-draw")], [name for name, *_ in cells])
+        self.assertEqual(len(spec.semantic_cases), 9 * 14)
+        for name, *_ in cells:
+            self.assertEqual(
+                [case for case in spec.semantic_cases if case.startswith(f"{name}-")
+                 and case[len(name) + 1:] in ("draw", "t0") + tuple(f"r{y}" for y in range(12))],
+                [f"{name}-draw", f"{name}-t0", *(f"{name}-r{y}" for y in range(12))])
+        for case in spec.semantic_cases:
+            self.assertEqual(counts[case], 10 if case.endswith("-draw") else 16)
+        self.assertEqual(counts["ge-rtt-done"], 1)
+        # The operation mask in the draw record names every kind the cell uses.
+        draw = _c_function_bodies(self.section)["grt_draw"]
+        self.assertIn("mask |= 1u << c->ops[i];", draw)
+        self.assertIn("(uint32_t)c->t565, samples, mask};", draw)
+        # Row 8 is the first sample, row 16 the second (rows 0..3 and 8..11 of the window).
+        sample = _c_function_bodies(self.section)["grt_list"]
+        self.assertIn("grt_vertices_sample(i, op == GRT_SAMPLE8 ? 8u : 16u);", sample)
+
+
+class GeClutMipProbeTests(unittest.TestCase):
+    """CASE=ge-clut-mip (154, PSP-GE-MIP-002) in probe_ge_sample.c: the #2031 multi-CLUT mip
+    cells. Each level's texels name the level and each CLUT entry names its index and table, so
+    a pixel decides which entry a level read; the stream matches the registry and the list
+    sets TEXMODE bit 8, the CLUT loads and the constant level the cells claim."""
+
+    probe: ClassVar[str]
+    makefile: ClassVar[str]
+    section: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_CLUT_MIP\n\n")
+        end = cls.probe.index("#endif /* GE_CASE_CLUT_MIP */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),ge-clut-mip)\nCASE_ID = 154\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),ge-clut-mip)\nTARGET = $(BUILD_DIR)/ge_clut_mip\n"
+                      "OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define GE_CASE_CLUT_MIP 154\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "ge-clut-mip"\n#define HLE_TEST_ID "PSP-GE-MIP-002"\n'
+                      '#define HLE_LOG "host0:/ge_clut_mip_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "ge-clut-mip").name,
+                         "ge_clut_mip_log.txt")
+        self.assertEqual(_campaign_completeness_contract("ge-clut-mip"), "strict-golden-sequence")
+        self.assertNotIn("ge-clut-mip", CAMPAIGN_QUEUE_CASES)
+
+    def test_section_calls_only_the_ge_and_cache_imports_and_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
+            "sceGeEdramGetAddr", "sceGeListEnQueue", "sceGeListSync", "sceGeDrawSync",
+            "sceGeBreak", "sceKernelDcacheWritebackAll", "sceKernelDelayThread",
+            "sceKernelGetSystemTimeLow"})
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceGu", "sceDisplay", "sceIo"):
+            self.assertNotIn(banned, self.section)
+        self.assertEqual(self.section.count("i < GC_WAIT_POLLS; i++"), 2)
+        self.assertIn("#define GC_FB_OFFSET 0x00100000u", self.probe)
+        body = _c_function_bodies(self.section)["gc_draw"]
+        self.assertLess(body.index("hle_step(c->name);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceGeListEnQueue("), body.index("hle_record("))
+
+    def test_list_sets_the_bit_the_loads_and_the_constant_level(self) -> None:
+        body = _c_function_bodies(self.section)["gc_list"]
+        for word in ("GC_W(0xc2, (3u << 16) | ((uint32_t)c->multi << 8));",
+                     "GC_W(0xc3, c->tex_format);",
+                     "GC_W(0xc5, ((uint32_t)c->csa << 16) | ((uint32_t)c->mask << 8) | c->clut_format);",
+                     "GC_W(0xc8, ((uint32_t)c->level << 20) | 1u);",
+                     "GC_W(0xc6, 0x004u);", "GC_W(0xc9, 0x103u);", "GC_W(0xc7, 0x101u);",
+                     "GC_W(0x12, 0x00800183u);", "GC_W(0xe7, 1);", "GC_W(0xde, 1);"):
+            self.assertIn(word, body)
+        # The background load comes first, then the main load, both before the draw.
+        bg = body.index("GC_W(0xc4, c->bg_blocks);")
+        main = body.index("GC_W(0xc4, c->main_blocks);")
+        self.assertLess(bg, main)
+        self.assertLess(main, body.index("GC_W(0x04, (6u << 16) | 2u);"))
+        # Blending, dithering, fog and the tests are among the units the off loop clears.
+        units = re.search(r"off_units\[12\] = \{([^}]*)\}", self.section)
+        assert units is not None
+        cleared = {int(word.strip().rstrip("u"), 16) for word in units.group(1).split(",")}
+        self.assertEqual(cleared, {0x17, 0x1c, 0x1d, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+                                   0x27, 0x28})
+
+    def _cells(self) -> list[tuple[str, ...]]:
+        families = re.findall(r'GC_FAMILY\("([a-z0-9-]+)", (GC_T\d+), (GC_C\d+), (\d)u, '
+                              r'(0x[0-9a-f]+)u, (0x[0-9a-f]+)u, (\d+)u, (0x[0-9a-f]+)u\),', self.section)
+        singles = re.findall(r'\{"([a-z0-9-]+)", (GC_T\d+), (GC_C\d+), (\d)u, (\d)u, '
+                             r'(0x[0-9a-f]+)u, (0x[0-9a-f]+)u, (\d+)u, (0x[0-9a-f]+)u\},', self.section)
+        cells = [(f"{name}-l{level}", tf, cf, multi, str(level), bg, main, csa, mask)
+                 for name, tf, cf, multi, bg, main, csa, mask in families for level in range(4)]
+        return cells + [tuple(row) for row in singles]
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["ge-clut-mip"]
+        self.assertEqual(spec.test_id, "PSP-GE-MIP-002")
+        self.assertEqual(spec.terminal_case, "ge-clut-mip-done")
+        cells = self._cells()
+        self.assertEqual(tuple(cell[0] for cell in cells), parse_golden.GE_CLUT_MIP_CELLS)
+        self.assertIn(f"#define GC_CELL_COUNT {len(cells)}u", self.probe)
+        self.assertEqual(spec.ordered_cases[:3], ("t8-off-l0-draw", "t8-off-l0-r0", "t8-off-l1-draw"))
+        self.assertEqual(spec.ordered_cases[-2:], ("cap16-csa16-b20-r0", "ge-clut-mip-done"))
+        self.assertEqual(counts["t4-on-l3-draw"], 9)
+        self.assertEqual(counts["t4-on-l3-r0"], 16)
+        # Each family runs levels 0..3, and every on-cell family has its index format's off
+        # control or shares T8/T4's.
+        self.assertEqual({cell[4] for cell in cells if not cell[0].startswith("cap")}, {"0", "1", "2", "3"})
+
+    def test_levels_and_entries_are_decisive(self) -> None:
+        """A pixel names its level with the bit clear, and an entry names its index and table."""
+        bases = {"GC_T4": 0x00, "GC_T8": 0x10, "GC_T16": 0x20}
+        self.assertIn("return tex_format == GC_T4 ? 0u : tex_format == GC_T8 ? 0x10u : 0x20u;", self.section)
+        self.assertIn("const uint32_t index = gc_base(tex_format) + 4u * l + (x & 3u);", self.section)
+        for fmt, base in bases.items():
+            indices = {level: {base + 4 * level + x for x in range(4)} for level in range(4)}
+            for a in range(4):
+                for b in range(a + 1, 4):
+                    self.assertFalse(indices[a] & indices[b], (fmt, a, b))
+            # T4 indices fit in four bits.
+            if fmt == "GC_T4":
+                self.assertLessEqual(max(max(v) for v in indices.values()), 0xF)
+        self.assertIn("s_gc_main32[k] = 0xff800000u | ((k >> 8) << 8) | (k & 0xffu);", self.section)
+        self.assertIn("s_gc_bg32[k] = 0xff400000u | ((k >> 8) << 8) | (k & 0xffu);", self.section)
+        self.assertIn("s_gc_main16[k] = (uint16_t)(0xf000u | (k & 0x3ffu));", self.section)
+        self.assertIn("s_gc_bg16[k] = (uint16_t)(0xf800u | (k & 0x3ffu));", self.section)
+        # Every table is longer than the largest load (0x40 blocks of 32 bytes).
+        self.assertIn("#define GC_TABLE_ENTRIES 1024u", self.probe)
+        largest = max(int(cell[5], 16) for cell in self._cells()) * 32
+        self.assertLessEqual(largest, 1024 * 4)
+        self.assertLessEqual(largest, 2 * 1024 * 2)
+        # The T16 texture block fits GC_TEX_BYTES with each level at a 64-byte boundary.
+        total = sum((max(64 >> level, 8) * (64 >> level) * 2 + 63) & ~63 for level in range(4))
+        self.assertLessEqual(total, 12288)
 
 
 class ModuleStartProbeTests(unittest.TestCase):
@@ -11910,6 +12818,29 @@ class Record20261015Tests(unittest.TestCase):
                 row = by_case[case]
                 self.assertEqual(row[1], evidence_id)
                 self.assertTrue(all(term in row[2] for term in ("MEASURED", "2026-10-15", commit)))
+
+    def test_wave_case_indexes_keep_measured_and_not_run_cells_distinct(self) -> None:
+        expected = (
+            ("ge-clut-mip", "PSP-GE-MIP-002", "MEASURED"),
+            ("ge-weight", "PSP-GE-WEIGHT-001", "MEASURED"),
+            ("ge-rtt", "PSP-GE-RTT-001", "MEASURED"),
+            ("hle-std-handles", "PSP-HLE-STDIO-001", "MEASURED"),
+            ("hle-audio-rest", "PSP-HLE-AUDIO-REST-001", "MEASURED"),
+            ("sas-adsr", "PSP-SAS-002", "NOT_RUN"),
+            ("sas-mix", "PSP-SAS-003", "NOT_RUN"),
+            ("vcodec-words", "PSP-VCODEC-001", "NOT_RUN"),
+            ("hle-utility-dialogs", "PSP-HLE-UTILITY-DIALOG-001", "NOT_RUN"),
+            ("mpeg-ycbcr", "PSP-MPEG-YCBCR-001", "NOT_RUN"),
+        )
+        docs = {row[0]: row for row in self._table_rows(self.doc) if len(row) == 4}
+        readme = {row[0]: row for row in self._table_rows(self.readme) if len(row) == 3}
+        for case, test_id, status in expected:
+            with self.subTest(case=case):
+                self.assertEqual(docs[case][1], test_id)
+                self.assertIn(status, docs[case][2])
+                self.assertEqual(readme[case][1], test_id)
+                self.assertIn(status, readme[case][2])
+                self.assertEqual(self.rows[test_id]["hardware_evidence"], status)
 
     def test_the_audio_src_and_timer_comparisons_are_recorded_and_pinned(self) -> None:
         for name in ("test_audio_src_matches_the_measured_contract",

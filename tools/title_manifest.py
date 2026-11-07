@@ -345,10 +345,63 @@ def load_manifest(path: Path, *, max_bytes: int = PUBLIC_MANIFEST_MAX_BYTES) -> 
         raise TitleManifestError(f"{path}: unable to read UTF-8 manifest: {exc}") from exc
 
 
+BUILD_STATUSES = ("supported", "experimental", "known-bad")
+BUILD_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+MAX_DISC_BUILDS = 16
+MAX_BUILD_LABEL = 64
+MAX_BUILD_REASON = 200
+
+
+def _build_text(value: Any, path: str, maximum: int) -> str:
+    """Printable ASCII only, so the Python and C parsers cannot disagree on length or encoding."""
+    result = text(value, path, maximum)
+    if any(ord(char) > 0x7E for char in result):
+        fail(path, "must be printable ASCII")
+    return result
+
+
+def validate_disc_builds(value: Any, path: str) -> list[dict[str, str]]:
+    """The executable builds a title records: a digest, a status and a label (#2140).
+
+    ``executable_sha256`` is the SHA-256 of the executable file as the disc image holds it.
+    Like a redump checksum it names a build and is not game data. ``known-bad`` needs a
+    ``reason`` so a refusal can say why.
+    """
+    builds = array(value, path, MAX_DISC_BUILDS)
+    if not builds:
+        fail(path, "must not be empty when present")
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(builds):
+        item_path = f"{path}[{index}]"
+        item = obj(item, item_path, {"executable_sha256", "status", "label", "reason"})
+        require(item, item_path, "executable_sha256", "status", "label")
+        digest = text(item["executable_sha256"], f"{item_path}.executable_sha256", 64, 64)
+        if not BUILD_SHA256_RE.fullmatch(digest):
+            fail(f"{item_path}.executable_sha256", "must be 64 lowercase hexadecimal digits")
+        if digest in seen:
+            fail(f"{item_path}.executable_sha256", "duplicate build digest")
+        seen.add(digest)
+        status = text(item["status"], f"{item_path}.status", 16)
+        if status not in BUILD_STATUSES:
+            fail(f"{item_path}.status", "unsupported build status")
+        entry = {
+            "executable_sha256": digest,
+            "status": status,
+            "label": _build_text(item["label"], f"{item_path}.label", MAX_BUILD_LABEL),
+        }
+        if "reason" in item:
+            entry["reason"] = _build_text(item["reason"], f"{item_path}.reason", MAX_BUILD_REASON)
+        if status == "known-bad" and "reason" not in entry:
+            fail(f"{item_path}.reason", "is required for a known-bad build")
+        result.append(entry)
+    return result
+
+
 def validate_disc(value: Any, path: str) -> dict[str, Any]:
     value = obj(value, path, {
         "id", "region", "revision_policy", "compatible_revisions",
-        "require_local_compatibility_record",
+        "require_local_compatibility_record", "builds",
     })
     require(value, path, "id", "region", "revision_policy")
     disc_id = text(value["id"], f"{path}.id", 9)
@@ -364,6 +417,8 @@ def validate_disc(value: Any, path: str) -> dict[str, Any]:
     local_record = value.get("require_local_compatibility_record", False)
     if boolean(local_record, f"{path}.require_local_compatibility_record"):
         result["require_local_compatibility_record"] = True
+    if "builds" in value:
+        result["builds"] = validate_disc_builds(value["builds"], f"{path}.builds")
     revisions = value.get("compatible_revisions")
     if policy == "exact-disc-id":
         if revisions is not None:

@@ -3917,8 +3917,8 @@ def _emit_jal(ctx, out, addr, w, ds, dsw):
         _call_stmt = "    " + emit_checked_dispatch_call(
             G(target), G((addr + 8) & 0xFFFFFFFF))
     if _jal_rw is not None:
-        # A gate on a call (gate_30hz or gate_30hz_hold; no other rewrite plans a
-        # call site): the delay slot above always runs; the call is gated while the
+        # A gate on a call (gate_30hz, gate_30hz_hold or gate_30hz_alt; no other rewrite
+        # plans a call site): the delay slot above always runs; the call is gated while the
         # toggle is on. A gate_30hz_hold call returns its float argument unchanged
         # when skipped. A site with ``requires`` makes the call every update, as
         # stock, until each required site has applied (section 9.6).
@@ -3928,11 +3928,51 @@ def _emit_jal(ctx, out, addr, w, ds, dsw):
         _ready = ""
         if "requires" in _jal_rw:
             _ready = f" || !nk_enh_ready({_jal_rw['site_index']}u)"
-        out.append(
-            f"    if (!nk_enhancement_on(){_ready} || nk_enhancement_gate_30hz()) {{\n"
-            f"{_call_stmt}\n"
-            f"    }}{_held}"
-        )
+        if "alternates" in _jal_rw:
+            # gate_30hz_alt (contract sections 9.2 and 9.5): the site keeps its own phase on
+            # the update count. It makes its alternates only in the update right after one in
+            # which it made the stock call, and a second visit in one update repeats that
+            # update's choice. On an alternate update each alternate is called in list order
+            # with $a0 as it was after the delay slot and $ra = site + 8.
+            _resume = (addr + 8) & 0xFFFFFFFF
+            _lines = [
+                "    { static uint32_t _nk_alt_last; static unsigned char _nk_alt_seen, _nk_alt_stock;",
+                "      uint32_t _nk_u = nk_enhancement_updates; int _nk_st;",
+                "      if (_nk_alt_seen && _nk_alt_last == _nk_u) _nk_st = _nk_alt_stock;",
+                "      else _nk_st = !(_nk_alt_seen && _nk_alt_last + 1u == _nk_u && _nk_alt_stock);",
+                f"      if (!nk_enhancement_on(){_ready}) _nk_st = 1;",
+                "      _nk_alt_seen = 1u; _nk_alt_last = _nk_u; _nk_alt_stock = (unsigned char)_nk_st;",
+                "      if (_nk_st) {",
+                _call_stmt,
+                "      } else { uint32_t _nk_a0 = s->r[4];",
+            ]
+            for _alt in _jal_rw["alternates"]:
+                _lines.append(f"    s->r[4] = _nk_a0; s->r[31] = {G(_resume)};")
+                if _alt in known or _alt in resume_owners:
+                    _lines += [
+                        "#ifdef SR_VERIFY",
+                        "    sr_verify_suppress_direct = 1;",
+                        "#endif",
+                        f"    {{ int _nk_b = sr_aot_return_boundary_begin(s, {G(_resume)}, {G(addr)}, 1u);",
+                        "#ifdef SR_VERIFY",
+                        "      sr_verify_suppress_direct = 0;",
+                        f"      if (!_nk_b) sr_verify_begin(s, {G(_alt)}, {G(addr)}, {G(_resume)});",
+                        "#endif",
+                        f"      if (_nk_b) return; {emit_body_call(ADDRESS_SPACE.symbol(_alt, resume_owners))} "
+                        "if (sr_aot_return_boundary_end(s)) return; }",
+                    ]
+                else:
+                    _lines.append("    " + emit_checked_dispatch_call(G(_alt), G(_resume)))
+                if lle_cpu:
+                    _lines.append(f"    {_flow_return(resumable)}")
+            _lines.append("    } }")
+            out.extend(_lines)
+        else:
+            out.append(
+                f"    if (!nk_enhancement_on(){_ready} || nk_enhancement_gate_30hz()) {{\n"
+                f"{_call_stmt}\n"
+                f"    }}{_held}"
+            )
     else:
         out.extend(_call_stmt.split("\n"))
     _emit_slot_exit(ctx, out, addr)
@@ -4284,61 +4324,65 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                        sp_kept, foreign_loads if sp_kept else frozenset())
     _BODY_SP_CHECKS.clear()
     _BODY_SP_CHECKS.update(ctx.sp_checks)
-    consumed = set()
-    promo = RegisterPromotion() if OPTIONS.promote_registers else None
-    for addr in sorted(insns):
-        if addr in consumed:
-            continue
-        if addr in labels:
-            if promo is not None:
-                out.extend(promo.flush())
-            out.append(f"  L_{addr:08x}: ;")
-        w = ADDRESS_SPACE.instruction_word(addr, read32(elf, addr))
-        if w is None:
-            continue
-        if promo is not None:
-            promoted = None
-            if (not is_control(w) and not _is_cop0_move(w) and addr not in sv_points
-                    and addr not in continuations and addr not in ctx.sp_checks
-                    and _enhancement_rewrite(addr) is None
-                    and not (hst_profile and addr in _HST_INLINE_SITES)):
-                promoted = promo.try_line(addr, w, lle_cpu=lle_cpu)
-            if promoted is not None:
-                out.extend(promoted)
+    # Cleared however the body ends: an Unsupported raised mid-body must not leave its
+    # checks for delay_slot_lines' callers outside emit_function (form_sweep, tests).
+    try:
+        consumed = set()
+        promo = RegisterPromotion() if OPTIONS.promote_registers else None
+        for addr in sorted(insns):
+            if addr in consumed:
                 continue
+            if addr in labels:
+                if promo is not None:
+                    out.extend(promo.flush())
+                out.append(f"  L_{addr:08x}: ;")
+            w = ADDRESS_SPACE.instruction_word(addr, read32(elf, addr))
+            if w is None:
+                continue
+            if promo is not None:
+                promoted = None
+                if (not is_control(w) and not _is_cop0_move(w) and addr not in sv_points
+                        and addr not in continuations and addr not in ctx.sp_checks
+                        and _enhancement_rewrite(addr) is None
+                        and not (hst_profile and addr in _HST_INLINE_SITES)):
+                    promoted = promo.try_line(addr, w, lle_cpu=lle_cpu)
+                if promoted is not None:
+                    out.extend(promoted)
+                    continue
+                out.extend(promo.flush())
+
+            if hst_profile and _emit_hst_patch_site(hst_profile, addr, w, out, consumed):
+                continue
+
+            if not is_control(w):
+                _emit_non_control_word(ctx, out, addr, w, sv_points)
+                continue
+            if is_eret(w):
+                _emit_eret(out, addr, w)
+                continue
+            _emit_control_transfer(ctx, out, consumed, addr, w)
+        if continuations:
+            _emit_continuation_blocks(ctx, out)
+        if promo is not None:
             out.extend(promo.flush())
-
-        if hst_profile and _emit_hst_patch_site(hst_profile, addr, w, out, consumed):
-            continue
-
-        if not is_control(w):
-            _emit_non_control_word(ctx, out, addr, w, sv_points)
-            continue
-        if is_eret(w):
-            _emit_eret(out, addr, w)
-            continue
-        _emit_control_transfer(ctx, out, consumed, addr, w)
-    if continuations:
-        _emit_continuation_blocks(ctx, out)
-    if promo is not None:
-        out.extend(promo.flush())
-        declaration = promo.declaration()
-        if declaration is not None:
-            out.insert(1, declaration)
-        PROMOTION_STATS["functions"] += 1
-    falls_as_guest = any(addr not in insns for addr in guest_exits)
-    out.append(f"    {emit_host_fallthrough(resumable or falls_as_guest, stack_census=stack_census)}")
-    out.append("}")
-    out.append("")
-    if any(BODY_CALL_DRAIN in line for line in out):
-        # A direct CALL nests a native frame without entering the dispatcher, so the body
-        # applies the dispatcher's host-stack bound itself, before anything else (the
-        # dispatcher preflights before its own SR_YIELD). Every native recursion of
-        # generated code passes through a direct CALL or the dispatcher, so leaves and
-        # dispatch-only bodies stay unchecked. Keyed on the CALL's own drain, so every
-        # call form that uses emit_body_call is covered. See SR_HOST_STACK_CHECK in recomp.h.
-        out.insert(1, emit_host_stack_check(G(start)))
-    _BODY_SP_CHECKS.clear()
+            declaration = promo.declaration()
+            if declaration is not None:
+                out.insert(1, declaration)
+            PROMOTION_STATS["functions"] += 1
+        falls_as_guest = any(addr not in insns for addr in guest_exits)
+        out.append(f"    {emit_host_fallthrough(resumable or falls_as_guest, stack_census=stack_census)}")
+        out.append("}")
+        out.append("")
+        if any(BODY_CALL_DRAIN in line for line in out):
+            # A direct CALL nests a native frame without entering the dispatcher, so the body
+            # applies the dispatcher's host-stack bound itself, before anything else (the
+            # dispatcher preflights before its own SR_YIELD). Every native recursion of
+            # generated code passes through a direct CALL or the dispatcher, so leaves and
+            # dispatch-only bodies stay unchecked. Keyed on the CALL's own drain, so every
+            # call form that uses emit_body_call is covered. See SR_HOST_STACK_CHECK in recomp.h.
+            out.insert(1, emit_host_stack_check(G(start)))
+    finally:
+        _BODY_SP_CHECKS.clear()
     return out
 
 #: ``--extra-elf=<module>@runtime``: the module is placed by the runtime's guest

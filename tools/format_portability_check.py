@@ -29,6 +29,7 @@ rather than passing vacuously.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import re
 import shutil
@@ -310,7 +311,8 @@ def resolve_compiler(compiler: str) -> str:
     if resolved:
         return resolved
     if sys.platform == "win32" and compiler == "gcc":
-        ucrt_gcc = Path(r"C:\msys64\ucrt64\bin\gcc.exe")
+        ucrt_bin = Path(os.environ.get("MSYS_PATH") or r"C:\msys64\ucrt64\bin")
+        ucrt_gcc = ucrt_bin / "gcc.exe"
         if ucrt_gcc.exists():
             return str(ucrt_gcc)
     return compiler

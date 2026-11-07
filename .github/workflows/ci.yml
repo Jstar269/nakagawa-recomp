@@ -1084,6 +1084,55 @@ jobs:
             exit 1
           fi
 
+      # FSR 3's eight passes (src/rt/gpu_sdl3vk/fsr3_pass.c) on lavapipe under the validation layer,
+      # synchronisation validation of shader accesses included. Headless: no window or SDL. An exit
+      # 77 skip, including one for synchronisation validation that is not active, fails the step.
+      - name: Run the FSR 3 pass selftest on lavapipe
+        if: matrix.part == 'translation'
+        run: |
+          set -euo pipefail
+          lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$lvp_icd" || {
+            echo "mesa-vulkan-drivers did not install a lavapipe ICD" >&2
+            exit 1
+          }
+          export VK_ICD_FILENAMES="$lvp_icd"
+          NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-pass-selftest
+
+      # FSR 3 frame generation's device refusal (G-R in src/rt/gpu_sdl3vk/fsr3_fg_pass_selftest.c) on
+      # lavapipe: the refusal table, then lavapipe itself, which optical flow's 32-lane subgroups rule
+      # out, refused with one reason and no Vulkan call. The frame cells need a device the pass
+      # accepts, so they run on a GPU (make fsr3-fg-pass-selftest). An exit 77 skip fails the step.
+      - name: Run the FSR 3 frame generation refusal on lavapipe
+        if: matrix.part == 'translation'
+        run: |
+          set -euo pipefail
+          lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$lvp_icd" || {
+            echo "mesa-vulkan-drivers did not install a lavapipe ICD" >&2
+            exit 1
+          }
+          export VK_ICD_FILENAMES="$lvp_icd"
+          NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-fg-pass-selftest FSR3FG_PASS_ARGS="--cell G-R"
+
+      # The embedded FSR 3 SPIR-V must be what the pinned DirectXShaderCompiler release makes of AMD's
+      # HLSL (tools/shader_embed.py, DXC_RELEASE). The Linux archive is checked against its pinned
+      # SHA-256 before it runs, and the tool is run directly, so a SKIP (exit 77) fails the step.
+      - name: Reproduce the FSR 3 shaders with the pinned DXC
+        if: matrix.part == 'translation'
+        run: |
+          set -euo pipefail
+          dxc_dir="$RUNNER_TEMP/dxc-v1.9.2609"
+          mkdir -p "$dxc_dir"
+          archive="$dxc_dir/linux_dxc_2026_09_28.x86_x64.tar.gz"
+          curl --fail --location --retry 3 --output "$archive" \
+            https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/linux_dxc_2026_09_28.x86_x64.tar.gz
+          printf '%s  %s\n' 96faadc7f5c282d2ffda49804beb4c3ee38127bc252b723234e3c5cdf7aa39a1 "$archive" \
+            | sha256sum --check --strict
+          tar -xzf "$archive" -C "$dxc_dir"
+          python tools/shader_embed.py verify --shader-set fsr3 --recompile --dxc "$dxc_dir/bin/dxc"
+          python tools/shader_embed.py verify --shader-set fsr3fg --recompile --dxc "$dxc_dir/bin/dxc"
+
       - name: Configure, build, and test CMake Linux player
         if: matrix.part == 'player'
         run: |
@@ -1437,6 +1486,90 @@ jobs:
 
       - name: Run the headless display smoke with GCC 16.2
         run: make -j2 CC=gcc display-smoke-run
+
+  android_build:
+    name: Android launcher build
+    # #360: the Android app (android/, docs/ANDROID_DEVELOPMENT.md) had no hosted build, so a
+    # change to the shared player, runtime or platform code could break it unseen. This job
+    # builds the launcher-only debug APK for arm64-v8a from a clean checkout with exactly the
+    # toolchain the Gradle files pin: the SDK platform, build-tools, NDK and CMake versions in
+    # android/app/build.gradle.kts and Gradle from the wrapper properties, checked against its
+    # distributionSha256Sum. tools/test_public_ci_wiring.py keeps the two in step. It then checks
+    # that the APK carries the launcher's native libraries for that ABI. No title is bundled:
+    # the showcase demos need PSPDEV, and running anything needs a device or an emulator.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    # Not gated on hygiene (docs/CI.md, "Hygiene beside the substantive gates").
+    needs: [classify, public_export]
+    if: >-
+      ${{ always() && needs.classify.result == 'success' &&
+          needs.public_export.result == 'success' &&
+          needs.classify.outputs.allow_substantive == 'true' &&
+          needs.classify.outputs.run_native == 'true' }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Android SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          # yes is stopped by SIGPIPE once sdkmanager has read its answers; under pipefail
+          # that status would fail the step, so only sdkmanager's own status counts.
+          { yes || true; } | "$sdkmanager" --licenses > /dev/null
+          "$sdkmanager" --install "platforms;android-37.2" "build-tools;37.0.0" \
+            "ndk;30.0.16248370" "cmake;4.1.2" > /dev/null
+          test -d "$ANDROID_HOME/ndk/30.0.16248370"
+          test -x "$ANDROID_HOME/cmake/4.1.2/bin/cmake"
+
+      - name: Install the pinned Gradle distribution
+        run: |
+          set -euo pipefail
+          properties=android/gradle/wrapper/gradle-wrapper.properties
+          url=$(sed -n 's/^distributionUrl=//p' "$properties" | sed 's/\\:/:/g')
+          sha256=$(sed -n 's/^distributionSha256Sum=//p' "$properties")
+          test -n "$url" && test -n "$sha256"
+          curl --fail --location --retry 3 "$url" --output "$RUNNER_TEMP/gradle.zip"
+          printf '%s  %s\n' "$sha256" "$RUNNER_TEMP/gradle.zip" | sha256sum --check --strict
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP/gradle"
+          gradle_bin=$(find "$RUNNER_TEMP/gradle" -maxdepth 2 -type d -name bin -print -quit)
+          test -x "$gradle_bin/gradle"
+          echo "$gradle_bin" >> "$GITHUB_PATH"
+
+      - name: Build the Android launcher APK for arm64-v8a
+        run: |
+          set -euo pipefail
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          gradle --no-daemon -p android assembleDebug -Pnk.abis=arm64-v8a \
+            "-Pnk.depsDir=$RUNNER_TEMP/android-deps"
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          listing=$(unzip -l "$apk")
+          for library in libmain.so libSDL3.so libSDL3_ttf.so; do
+            if ! grep -Fq "lib/arm64-v8a/$library" <<<"$listing"; then
+              echo "the APK has no lib/arm64-v8a/$library" >&2
+              exit 1
+            fi
+          done
+          if grep -Fq "lib/x86_64/" <<<"$listing"; then
+            echo "nk.abis=arm64-v8a still packaged x86_64 libraries" >&2
+            exit 1
+          fi
+
+      - name: Keep the debug APK for installing on a phone
+        # docs/ANDROID_DEVELOPMENT.md, "Test on a phone": the APK is installed on a physical
+        # arm64 device from this artifact. It is the launcher only, with the open UI fonts and no
+        # title or game data. It is signed with this runner's throwaway debug key, so an APK from
+        # a later run installs over it only after the earlier one is uninstalled.
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nakagawa-android-arm64-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
 
   windows_runtime:
     name: Windows runtime compile gate (${{ matrix.group }})
@@ -2049,7 +2182,7 @@ jobs:
     runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
     # The Markdown lint and the main smoke are steps of hygiene, and the profile-zero
     # fixture build is a step of public_export, so those jobs' results carry them.
-    needs: [classify, hygiene, public_export, python_tools, native_tools, windows_runtime]
+    needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]
     if: ${{ always() }}
     timeout-minutes: 5
     env:
@@ -2058,6 +2191,7 @@ jobs:
       PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}
       PYTHON_RESULT: ${{ needs.python_tools.result }}
       NATIVE_RESULT: ${{ needs.native_tools.result }}
+      ANDROID_RESULT: ${{ needs.android_build.result }}
       WINDOWS_RESULT: ${{ needs.windows_runtime.result }}
       # The folded Markdown and main-smoke steps report through HYGIENE_RESULT; their
       # run flags are still checked to be explicit booleans (tools/ci_required.py).

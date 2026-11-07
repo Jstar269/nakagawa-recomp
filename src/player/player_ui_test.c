@@ -98,6 +98,32 @@ static bool player_ui_test_parse_package_status(
     return true;
 }
 
+/* The name each update phase has in the "update=" lines and WAIT_UPDATE steps. */
+static const char *player_update_phase_name(PlayerUpdatePhase phase) {
+    switch (phase) {
+        case PLAYER_UPDATE_CHECKING: return "checking";
+        case PLAYER_UPDATE_CURRENT: return "current";
+        case PLAYER_UPDATE_AVAILABLE: return "available";
+        case PLAYER_UPDATE_DOWNLOADING: return "downloading";
+        case PLAYER_UPDATE_DOWNLOADED: return "downloaded";
+        case PLAYER_UPDATE_INSTALLING: return "installing";
+        case PLAYER_UPDATE_INSTALLED: return "installed";
+        case PLAYER_UPDATE_FAILED: return "failed";
+        case PLAYER_UPDATE_IDLE:
+        default: return "idle";
+    }
+}
+
+static bool player_ui_test_parse_update_phase(const char *text, PlayerUpdatePhase *out_phase) {
+    for (int phase = PLAYER_UPDATE_IDLE; phase <= PLAYER_UPDATE_FAILED; ++phase) {
+        if (strcmp(text, player_update_phase_name((PlayerUpdatePhase)phase)) == 0) {
+            *out_phase = (PlayerUpdatePhase)phase;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool player_ui_test_parse_fail_attempts(const char *text) {
     if (!text || !text[0]) return false;
     char copy[128];
@@ -232,6 +258,23 @@ int player_ui_test_next_event(const char *script, size_t *cursor,
             timeout > UINT32_MAX) return -1;
         event->type = SDL_EVENT_USER;
         event->user.code = PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_STATUS;
+        event->user.windowID = (Uint32)target;
+        event->user.timestamp = timeout;
+        return 1;
+    }
+    if (strncmp(token, "WAIT_UPDATE=", 12) == 0) {
+        /* "installed,30000": the update phase by its "update=" name, and the
+           most the background step may take before the run fails. */
+        char *comma = strchr(token + 12, ',');
+        PlayerUpdatePhase target = PLAYER_UPDATE_IDLE;
+        uint64_t timeout = 0;
+        if (!comma) return -1;
+        *comma = '\0';
+        if (!player_ui_test_parse_update_phase(token + 12, &target) ||
+            !player_ui_test_parse_positive_u64(comma + 1, &timeout) ||
+            timeout > UINT32_MAX) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_UPDATE;
         event->user.windowID = (Uint32)target;
         event->user.timestamp = timeout;
         return 1;
@@ -1130,21 +1173,6 @@ void player_ui_test_end_first_frame(PlayerUiTest *t, const PlayerApp *app,
     }
 }
 
-static const char *player_update_phase_name(PlayerUpdatePhase phase) {
-    switch (phase) {
-        case PLAYER_UPDATE_CHECKING: return "checking";
-        case PLAYER_UPDATE_CURRENT: return "current";
-        case PLAYER_UPDATE_AVAILABLE: return "available";
-        case PLAYER_UPDATE_DOWNLOADING: return "downloading";
-        case PLAYER_UPDATE_DOWNLOADED: return "downloaded";
-        case PLAYER_UPDATE_INSTALLING: return "installing";
-        case PLAYER_UPDATE_INSTALLED: return "installed";
-        case PLAYER_UPDATE_FAILED: return "failed";
-        case PLAYER_UPDATE_IDLE:
-        default: return "idle";
-    }
-}
-
 const char *player_ui_test_report_data_root(void) {
     const char *root = getenv("NK_UI_TEST_REPORT_DATA_ROOT");
     return root != NULL && root[0] != '\0' ? root : NULL;
@@ -1222,6 +1250,22 @@ void player_ui_test_step_script(PlayerUiTest *t, PlayerApp *app, SDL_Renderer *r
             fprintf(stderr,
                     "[PLAYER_UI_TEST] wait_package_status result=FAIL target=%d\n",
                     (int)t->wait_package_status_target);
+            t->failed = true;
+            t->quit_queued = true;
+            *running = false;
+        } else {
+            ui_test_block_script = true;
+        }
+    }
+    if (t->waiting_for_update) {
+        if (app->update.phase == t->wait_update_target) {
+            printf("[PLAYER_UI_TEST] wait_update target=%s result=PASS\n",
+                   player_update_phase_name(t->wait_update_target));
+            t->waiting_for_update = false;
+        } else if (ui_test_now >= t->wait_deadline) {
+            fprintf(stderr, "[PLAYER_UI_TEST] wait_update result=FAIL target=%s actual=%s\n",
+                    player_update_phase_name(t->wait_update_target),
+                    player_update_phase_name(app->update.phase));
             t->failed = true;
             t->quit_queued = true;
             *running = false;
@@ -1386,6 +1430,13 @@ void player_ui_test_step_script(PlayerUiTest *t, PlayerApp *app, SDL_Renderer *r
             t->waiting_for_package_status = true;
             printf("[PLAYER_UI_TEST] wait_package_status target=%u started\n",
                    scripted_event.user.windowID);
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_UPDATE) {
+            t->wait_update_target = (PlayerUpdatePhase)scripted_event.user.windowID;
+            t->wait_deadline = ui_test_now + scripted_event.user.timestamp;
+            t->waiting_for_update = true;
+            printf("[PLAYER_UI_TEST] wait_update target=%s started\n",
+                   player_update_phase_name(t->wait_update_target));
         } else if (scripted_event.type == SDL_EVENT_USER &&
                    scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_REPORT) {
             t->wait_report_mask = scripted_event.user.windowID;
@@ -1823,6 +1874,20 @@ static bool player_update_test_open(void *context, const char *url, const char *
     (void)context;
     (void)allowed_hosts;
     if (!dir || !name) return false;
+    /* A busy machine: each download request (not the release list) answers only
+       after NK_UI_TEST_UPDATE_REQUEST_DELAY_MS, so a script that waits a fixed
+       time instead of for the update phase presses on before the step ends. */
+    if (strcmp(url, NK_UPDATE_RELEASES_URL) != 0) {
+        const char *delay_text = getenv("NK_UI_TEST_UPDATE_REQUEST_DELAY_MS");
+        uint64_t delay_ms = 0;
+        if (delay_text && player_ui_test_parse_positive_u64(delay_text, &delay_ms) &&
+            delay_ms <= 60000u) {
+            SDL_Delay((Uint32)delay_ms);
+        } else if (delay_text && delay_text[0]) {
+            fprintf(stderr, "[PLAYER_UI_TEST] Ignoring NK_UI_TEST_UPDATE_REQUEST_DELAY_MS=%s: "
+                            "expected 1 to 60000.\n", delay_text);
+        }
+    }
     name = strcmp(url, NK_UPDATE_RELEASES_URL) == 0 ? "releases.json" : name + 1;
     if (snprintf(path, sizeof(path), "%s%c%s", dir, nk_platform_path_separator(), name) >=
         (int)sizeof(path)) {

@@ -43,6 +43,7 @@ set(CORE_SOURCES
     src/core/nk_psp_amctrl.c
     src/core/nk_psp_lzrc.c
     src/core/nk_psp_npumdimg.c
+    src/core/nk_pbp_homebrew.c
     src/core/nk_disc_expand.c
     src/core/nk_disc_verify.c
     src/core/nk_zip.c
@@ -801,6 +802,7 @@ set(NK_RUNTIME_SOURCES
     src/rt/fbcap_policy.c
     src/rt/fbcap.c
     src/rt/videorec.c
+    src/rt/replay_checkpoint.c
     src/rt/ge_capture.c
     src/rt/vfpu_interp.c
     src/rt/hle.c

@@ -497,6 +497,52 @@ int main(void) {{
             self.assertNotIn(f"goto L_{target:08x}", body,
                              "a known function entry must not be treated as an intra-function label")
 
+    def test_an_unsupported_body_leaves_no_sp_load_checks_behind(self):
+        """An Unsupported raised mid-body clears the body's run-time $sp checks (#1935).
+
+        F loads $sp from its frame below where it was, a load the frame walk does not own, so
+        its emission checks the load (_sp_load_check). delay_slot_lines reads that set from
+        callers outside emit_function too (form_sweep, the codegen unit tests); a set left
+        over from a failed body would wrap their slot in a check naming `_sp_entry` and
+        `_sp_kept`, which only emit_function declares.
+        """
+        owner, target = 0x00001000, 0x00001020
+        load = (0x23 << 26) | (29 << 21) | (29 << 16) | 0x10           # lw sp,0x10(sp)
+
+        def words(refused: bool) -> dict[int, int]:
+            return {
+                owner: 0x27BDFFE0,                                      # addiu sp,sp,-0x20
+                owner + 4: 0x27B8FFC0,                                  # addiu t8,sp,-0x40
+                owner + 8: 0xAFB80010,                                  # sw t8,0x10(sp)
+                # srl with a nonzero rs field, which codegen refuses (or a plain nop)
+                owner + 12: 0x00401082 if refused else 0x00000000,
+                owner + 16: (0x02 << 26) | ((target >> 2) & 0x03FFFFFF),  # j target
+                owner + 20: load,
+                owner + 24: 0x00000000,
+                owner + 28: 0x00000000,
+                target: 0x03E00008,                                     # jr ra
+                target + 4: 0x00000000,
+                target + 8: (0x03 << 26) | ((target >> 2) & 0x03FFFFFF),  # jal target
+                target + 12: 0x00000000,
+            }
+
+        for refused in (False, True):
+            with self.subTest(refused=refused), \
+                    scratch_dir.TemporaryDirectory(prefix="sp_checks_") as tmp:
+                path = Path(tmp) / "sp_checks.elf"
+                path.write_bytes(_synthetic_elf(words(refused), owner))
+                elf = analyze.Elf(os.fspath(path))
+                starts, ranges = analyze.analyze(elf)
+                if not refused:
+                    body = "\n".join(codegen.emit_function(elf, owner, ranges, starts))
+                    self.assertIn("_sp_kept = 0u;", body, "the control: F checks its load")
+                else:
+                    with self.assertRaises(codegen.Unsupported):
+                        codegen.emit_function(elf, owner, ranges, starts)
+                self.assertEqual(codegen._BODY_SP_CHECKS, set())
+                slot = "\n".join(codegen.delay_slot_lines(owner + 20, load, owner + 16))
+                self.assertNotIn("_sp_kept", slot)
+
     def test_variadic_argument_save_stub_is_an_ordinary_analyzed_function(self):
         owner = 0x00001000
         words = {owner: 0x27BDFFE0}  # addiu sp,sp,-32
