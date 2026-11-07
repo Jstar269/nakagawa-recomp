@@ -757,8 +757,20 @@ landings need no further re-key:
 python tools/admit_paths.py --batch-resume <file.json> --base <new-base> --private-repo <authority checkout>
 ```
 
-The landing desk lands at most one profile-changing pull request per batch: a batch that folds two of them changes
-the profile by the union of both, and no single delta records that union.
+A landing batch that folds several profile-changing pull requests changes the profile by the union of their
+changes, and the attestation looks up the one V4 delta named after that union. The desk writes it from the pull
+requests' admitted V4 deltas:
+
+```text
+python tools/admit_paths.py --compose-v4 <batch worktree> --base <main> --components <key> <key> [...] \
+    --private-repo <authority checkout> --push
+```
+
+Like `--rekey`, it records no new decision: the private commit names only the component deltas. It refuses
+(`COMPOSE_V4_*`) when two components name the same added, removed or excluded path, when more than one carries rule
+changes, when a component's claim, or a byte-bound path's bytes, no longer matches, when the batch's profile change
+has a path no component covers or lacks one a component names, and when the union differs from the delta derived
+from the two profiles. The desk then lands those pull requests in separate batches.
 
 ### V4 policy deltas
 

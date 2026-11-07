@@ -20,6 +20,9 @@ or misordered step failed with its own code (``CANDIDATE_TREE_STALE``,
     python tools/admit_paths.py --policy-delta <pr-worktree> \\
         --approval-basis "Owner decision of <date>: ..." --private-repo <authority checkout>
 
+    python tools/admit_paths.py --compose-v4 <batch-worktree> --base <main> \\
+        --components <key> <key> [<key> ...] --private-repo <authority checkout>
+
 ``--policy-delta`` issues only the policy delta for a profile change that adds
 no path: removed paths, exclude-list changes, and rule changes (bound to each
 changed field's exact before and after values).
@@ -30,6 +33,15 @@ removed paths, the exclude-list changes and the rule changes -- under
 ``docs/provenance/policy-deltas-v4/<sha256 of its selector>.json``. It is not
 bound to the base profile's bytes (#1673), so it stays valid when another
 path-adding pull request lands first, and any landing order works.
+
+``--compose-v4`` is for a landing batch that carries several pull requests with
+profile changes. The attestation looks up one V4 delta, named after the
+batch's whole change from ``--base`` to the worktree's ``HEAD``; this writes
+the union of the pull requests' admitted V4 deltas under that name. Like
+``--rekey`` it records no new decision, only the component names, and it
+refuses unless the components are disjoint, cover the batch's change exactly,
+still carry each added path's current trusted claim, and their union equals the
+delta derived from the two profiles byte for byte.
 
 An added path's origin claim is what the trusted record says about it: the
 public class, the record id, and the record's classification, upstream,
@@ -1136,6 +1148,190 @@ def issue_policy_delta(
     }
 
 
+#: The path lists of a V4 authority, in the order its document carries them.
+_V4_PATH_LISTS = ("include_added", "include_removed", "exclude_added", "exclude_removed")
+
+
+def _v4_selector_of(document: dict) -> dict:
+    """The selector a stored V4 document is named after: its added entries reduced to their paths."""
+    return {**document, "include_added": [item["path"] for item in document["include_added"]]}
+
+
+def _load_v4_component(authority_root: Path, key: str) -> dict:
+    """Read one committed V4 delta strictly and check that it is filed under its own selector."""
+    if not re.fullmatch(r"[0-9a-f]{64}", key):
+        raise AdmitError("COMPOSE_V4_COMPONENTS_INVALID", f"component {key!r} is not a 64-hex V4 delta name")
+    path = authority_root / POLICY_DELTAS_V4 / f"{key}.json"
+    if not path.is_file():
+        raise AdmitError("COMPOSE_V4_COMPONENT_MISSING", f"no V4 delta {key} in the authority checkout")
+    raw = path.read_bytes()
+    try:
+        document = provenance_ledger._read_policy_delta_v4_document(raw)
+    except RefreshError as error:
+        raise AdmitError("COMPOSE_V4_COMPONENT_INVALID", f"V4 delta {key[:12]}: {error}") from error
+    if raw != provenance_ledger.policy_delta_v3_bytes(document):
+        raise AdmitError("COMPOSE_V4_COMPONENT_INVALID", f"V4 delta {key[:12]} is not in canonical form")
+    if hashlib.sha256(provenance_ledger.policy_delta_v3_bytes(_v4_selector_of(document))).hexdigest() != key:
+        raise AdmitError("COMPOSE_V4_COMPONENT_KEY_MISMATCH", f"V4 delta {key[:12]} is not named after its selector")
+    return document
+
+
+def compose_policy_delta_v4(
+    *,
+    worktree: Path,
+    base: str,
+    components: list[str],
+    private_repo: Path,
+    assisted_by: str | None = None,
+    push: bool = False,
+) -> dict:
+    """Write the V4 delta of a landing batch that carries several admitted profile changes.
+
+    The attestation looks up one V4 delta, named after the batch's whole profile change from
+    ``base`` to the worktree's ``HEAD``. Each pull request in the batch already has its own
+    admitted V4 delta (``components``); this writes their union under the batch's name. It
+    makes no new decision, like ``--rekey``: it refuses unless the components are disjoint
+    (no added, removed or excluded path in two of them, rule changes in at most one), cover
+    the batch's profile change exactly, and still carry each added path's current trusted
+    claim, and unless their union equals ``derive_policy_delta_v4`` of the two profiles byte
+    for byte. The private commit records the component names.
+    """
+    keys = list(components)
+    if len(keys) < 2 or len(keys) != len(set(keys)):
+        raise AdmitError("COMPOSE_V4_COMPONENTS_INVALID", "name two or more distinct component V4 deltas")
+    authority_root, _ledger, records = _authority_inputs(private_repo)
+    repo = Path(_text(worktree, "rev-parse", "--show-toplevel"))
+    head = _text(repo, "rev-parse", "--verify", "HEAD^{commit}")
+    resolved_base = _text(repo, "rev-parse", "--verify", f"{base}^{{commit}}")
+    try:
+        _git(repo, "merge-base", "--is-ancestor", resolved_base, head)
+    except AdmitError:
+        raise AdmitError("TRUSTED_BASE_NOT_ANCESTOR", f"base {resolved_base[:12]} is not an ancestor of HEAD") from None
+    baseline_policy = _git(repo, "cat-file", "blob", f"{resolved_base}:{POLICY}")
+    candidate_policy = _git(repo, "cat-file", "blob", f"{head}:{POLICY}")
+    try:
+        baseline_document = json.loads(baseline_policy.decode("utf-8"))
+        candidate_document = json.loads(candidate_policy.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AdmitError("POLICY_PROFILE_INVALID", f"cannot read the profiles: {error}") from error
+    if _canonical_profile_bytes(candidate_document) != candidate_policy:
+        raise AdmitError("POLICY_PROFILE_NOT_CANONICAL", f"{POLICY} at HEAD is not in canonical form")
+
+    documents = {key: _load_v4_component(authority_root, key) for key in keys}
+    owner: dict[str, tuple[str, str]] = {}
+    with_rules = []
+    for key, document in documents.items():
+        for field in _V4_PATH_LISTS:
+            names = _v4_selector_of(document)[field]
+            for path in names:
+                # Within one component a path may sit in two lists as a move; across components never.
+                if path in owner and owner[path][0] != key:
+                    other_key, other_field = owner[path]
+                    both_exclude = field.startswith("exclude_") and other_field.startswith("exclude_")
+                    raise AdmitError(
+                        "COMPOSE_V4_EXCLUDE_OVERLAP" if both_exclude else "COMPOSE_V4_PATH_OVERLAP",
+                        f"{path} is in {other_field} of {other_key[:12]} and {field} of {key[:12]}; "
+                        "overlapping changes need one admission of the combined change",
+                    )
+                owner.setdefault(path, (key, field))
+        if document["rule_changes"]:
+            with_rules.append(key)
+    if len(with_rules) > 1:
+        raise AdmitError(
+            "COMPOSE_V4_RULE_CHANGES_SHARED",
+            f"rule changes in more than one component ({', '.join(key[:12] for key in with_rules)}); "
+            "land them in separate batches",
+        )
+
+    actual = provenance_ledger._classify_policy_delta(baseline_document, candidate_document)
+    for field in (*_V4_PATH_LISTS, "rule_changes"):
+        approved: set[str] = set()
+        for document in documents.values():
+            approved |= {item["key"] for item in document["rule_changes"]} if field == "rule_changes" \
+                else set(_v4_selector_of(document)[field])
+        uncovered = sorted(set(actual[field]) - approved)
+        if uncovered:
+            raise AdmitError("COMPOSE_V4_PATH_UNCOVERED",
+                             f"the batch's {field} {', '.join(uncovered)} is in no component; admit it first")
+        absent = sorted(approved - set(actual[field]))
+        if absent:
+            raise AdmitError("COMPOSE_V4_COMPONENT_NOT_IN_CANDIDATE",
+                             f"a component's {field} {', '.join(absent)} is not in the batch's profile change")
+
+    entries = {item["path"]: item for document in documents.values() for item in document["include_added"]}
+    digests: dict[str, str] = {}
+    for path, item in sorted(entries.items()):
+        try:
+            current = provenance_ledger.admission_claim(path, records.get(path))
+        except RefreshError as error:
+            raise AdmitError("COMPOSE_V4_CLAIM_MISMATCH", f"{path}: {error}") from error
+        if current != item["claim"]:
+            raise AdmitError(
+                "COMPOSE_V4_CLAIM_MISMATCH",
+                f"{path}: its component records claim {item['claim']}, the trusted ledger now gives {current}; "
+                "a changed claim needs a new admission",
+            )
+        try:
+            digests[path] = hashlib.sha256(_git(repo, "cat-file", "blob", f"{head}:{path}")).hexdigest()
+        except AdmitError:
+            raise AdmitError("POLICY_DELTA_ADDED_PATH_MISSING", f"HEAD does not carry {path}") from None
+        if item["binding"] == "bytes" and item["sha256"] != digests[path]:
+            raise AdmitError(
+                "COMPOSE_V4_BYTES_MISMATCH",
+                f"{path} is bound to sha256 {item['sha256']} and HEAD carries {digests[path]}",
+            )
+
+    union = {
+        "kind": provenance_ledger.POLICY_DELTA_KIND,
+        "schema_version": provenance_ledger.POLICY_DELTA_V4_SCHEMA_VERSION,
+        "include_added": [entries[path] for path in sorted(entries)],
+        **{field: sorted(path for document in documents.values() for path in document[field])
+           for field in _V4_PATH_LISTS[1:]},
+        "rule_changes": sorted((item for document in documents.values() for item in document["rule_changes"]),
+                               key=lambda item: item["key"]),
+    }
+    try:
+        derived = provenance_ledger.derive_policy_delta_v4(
+            baseline_document, candidate_document,
+            digest_of=digests.get,
+            claim_of=lambda path: provenance_ledger.admission_claim(path, records.get(path)),
+            binding_of=lambda path: entries[path]["binding"],
+        )
+        key = provenance_ledger.policy_delta_v4_key(baseline_document, candidate_document)
+    except RefreshError as error:
+        raise AdmitError(error.code, str(error)) from error
+    authority = provenance_ledger.policy_delta_v3_bytes(derived)
+    if provenance_ledger.policy_delta_v3_bytes(union) != authority:
+        raise AdmitError(
+            "COMPOSE_V4_UNION_MISMATCH",
+            "the components' union differs from the delta derived from the two profiles (a rule changed on the "
+            "base since its admission?)",
+        )
+    record = f"{POLICY_DELTAS_V4}/{key}.json"
+    record_paths, private_commit, pushed = _write_authority_commit(
+        authority_root=authority_root,
+        records={record: authority},
+        message=(
+            f"provenance: compose V4 policy delta {key[:8]} from {len(keys)} admitted deltas\n\n"
+            "The union of these admitted V4 deltas, for one landing batch; no new decision:\n"
+            + "".join(f"- {component}\n" for component in keys)
+            + f"\nBase {resolved_base}, candidate profile {hashlib.sha256(candidate_policy).hexdigest()}."
+        ),
+        assisted_by=assisted_by, push=push,
+    )
+    return {
+        "base": resolved_base,
+        "head": head,
+        "key": key,
+        "components": keys,
+        "records": record_paths,
+        "private_commit": private_commit,
+        "pushed": pushed,
+        "authority_root": authority_root,
+        "delta": provenance_ledger._normalized_derived_delta(derived),
+    }
+
+
 def merge_profile(worktree: Path) -> dict:
     """Write the three-way merge of both sides' include and exclude path lists.
 
@@ -1258,6 +1454,10 @@ def main(argv: list[str] | None = None) -> int:
     modes.add_argument("--policy-delta", type=Path, metavar="WORKTREE",
                        help="issue the policy delta for a profile change that adds no path "
                             "(removed paths, exclude changes, rule changes)")
+    modes.add_argument("--compose-v4", type=Path, metavar="WORKTREE",
+                       help="write the union of admitted V4 deltas (--components) for the batch at WORKTREE's HEAD")
+    parser.add_argument("--components", nargs="+", metavar="KEY",
+                        help="--compose-v4: the admitted V4 delta names (64 hex) of the batch's pull requests")
     parser.add_argument("--approval-basis", help="the human decision, recorded verbatim (not with --rekey)")
     parser.add_argument(
         "--rekey", action="store_true",
@@ -1293,6 +1493,36 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  profile sha256 {result['profile_sha256']}")
             print("  git add assets/public_source_profile.json")
             return 0
+
+        if args.compose_v4 is not None:
+            if args.pr_worktree is not None or args.paths or args.approval_basis or args.rekey or args.slug \
+                    or args.origin_kind or args.origin or args.license or args.origin_json is not None \
+                    or args.binding is not None:
+                raise AdmitError("ADMIT_ARGUMENT_INVALID", "--compose-v4 records no decision; pass only "
+                                 "--base, --components, --private-repo, --assisted-by and --push")
+            if not args.base or not args.components:
+                raise AdmitError("ADMIT_ARGUMENT_INVALID", "--compose-v4 needs --base and --components")
+            if args.private_repo is None:
+                raise AdmitError("AUTHORITY_REQUIRED", "pass --private-repo or set NK_PRIVATE_AUTHORITY")
+            result = compose_policy_delta_v4(
+                worktree=args.compose_v4, base=args.base, components=args.components,
+                private_repo=args.private_repo, assisted_by=args.assisted_by, push=args.push,
+            )
+            print(f"admit paths: composed V4 policy delta {result['key']} from {len(result['components'])} "
+                  f"components on base {result['base']}")
+            for key, values in result["delta"].items():
+                if values:
+                    print(f"  {key}: {', '.join(values)}")
+            print(f"  private records ({'pushed' if result['pushed'] else 'committed locally'} at "
+                  f"{result['private_commit'][:12]}):")
+            for record in result["records"]:
+                print(f"    {record}")
+            if not result["pushed"]:
+                print(f'\nLeft to do: git -C "{result["authority_root"]}" push origin main')
+            return 0
+
+        if args.components:
+            raise AdmitError("ADMIT_ARGUMENT_INVALID", "--components is only for --compose-v4")
 
         if args.policy_delta is not None:
             if args.pr_worktree is not None or args.paths or args.rekey or args.slug or args.origin_kind \

@@ -1256,6 +1256,303 @@ class ClaimBindingAdmissionTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "REKEY_ADMISSION_AMBIGUOUS")
 
 
+class ComposeV4Test(unittest.TestCase):
+    """``--compose-v4``: one landing batch carries several admitted profile changes under one V4 name."""
+
+    RECORD = ClaimBindingAdmissionTest.RECORD
+    THIRD_PARTY = ClaimBindingAdmissionTest.THIRD_PARTY
+
+    def setUp(self) -> None:
+        self._worktrees = 0
+
+    @staticmethod
+    def _baseline(fixture: _Fixture) -> bytes:
+        return git_bytes(fixture.pr, "show", f"{fixture.base}:{admit_paths.POLICY}")
+
+    def _component(self, fixture: _Fixture, change, added: dict[str, tuple[str, str]] | None = None,
+                   *, baseline: bytes | None = None) -> str:
+        """Commit the V4 delta of ``change`` on the base profile, as an admission writes it; return its name.
+
+        ``added`` maps each added path to ``(content, binding)``.
+        """
+        baseline = baseline or self._baseline(fixture)
+        document = json.loads(baseline.decode("utf-8"))
+        change(document)
+        candidate = admit_paths._canonical_profile_bytes(document)
+        claims = authority_claims(fixture)
+        record, authority, _delta = admit_paths.policy_delta_authority(baseline, candidate, {
+            path: {"sha256": hashlib.sha256(content.encode()).hexdigest(), "binding": binding, "claim": claims(path)}
+            for path, (content, binding) in (added or {}).items()
+        })
+        target = fixture.authority / record
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(authority)
+        git(fixture.authority, "add", record)
+        git(fixture.authority, "commit", "-qm", f"component {Path(record).stem[:8]}")
+        return Path(record).stem
+
+    def _candidate(self, fixture: _Fixture, changes: list, files: dict[str, str]) -> tuple[Path, bytes]:
+        """A batch worktree on the base whose HEAD carries ``files`` and every profile change."""
+        self._worktrees += 1
+        worktree = fixture.worktree(f"compose-batch-{self._worktrees}")
+        for path, content in files.items():
+            write(worktree, path, content)
+        document = json.loads(self._baseline(fixture).decode("utf-8"))
+        for change in changes:
+            change(document)
+        profile = admit_paths._canonical_profile_bytes(document)
+        (worktree / admit_paths.POLICY).write_bytes(profile)
+        git(worktree, "add", "-A")
+        git(worktree, "commit", "-qm", "synthetic landing batch")
+        return worktree, profile
+
+    @staticmethod
+    def _adds(*paths: str):
+        def change(document: dict) -> None:
+            document["include_paths"] = sorted(set(document["include_paths"]) | set(paths))
+        return change
+
+    def _compose(self, fixture: _Fixture, worktree: Path, keys: list[str], **kwargs) -> dict:
+        returned: dict[str, Any] = admit_paths.compose_policy_delta_v4(
+            worktree=worktree, base=fixture.base, components=keys, private_repo=fixture.authority, **kwargs)
+        return returned
+
+    def _assert_derived(self, fixture: _Fixture, result: dict, *, candidate: bytes, files: dict[str, bytes],
+                        bindings: dict[str, str]) -> None:
+        """The composed delta is the derivation, byte for byte, under the batch's name, and the verifier passes it."""
+        baseline = self._baseline(fixture)
+        baseline_document = json.loads(baseline.decode("utf-8"))
+        candidate_document = json.loads(candidate.decode("utf-8"))
+        record = f"{admit_paths.POLICY_DELTAS_V4}/{result['key']}.json"
+        self.assertEqual(result["records"], [record])
+        self.assertEqual(result["key"], provenance_ledger.policy_delta_v4_key(baseline_document, candidate_document))
+        derived = provenance_ledger.derive_policy_delta_v4(
+            baseline_document, candidate_document,
+            digest_of=lambda path: hashlib.sha256(files[path]).hexdigest() if path in files else None,
+            claim_of=authority_claims(fixture), binding_of=bindings.__getitem__,
+        )
+        self.assertEqual((fixture.authority / record).read_bytes(), provenance_ledger.policy_delta_v3_bytes(derived))
+        verified = assert_policy_delta(self, fixture, record, baseline=baseline, candidate=candidate, files=files)
+        self.assertEqual(verified, provenance_ledger._classify_policy_delta(baseline_document, candidate_document))
+        # One private commit holding only the composed delta, naming every component; nothing pushed.
+        self.assertEqual(git(fixture.authority, "show", "--name-only", "--format=", "HEAD").splitlines(), [record])
+        message = git(fixture.authority, "log", "-1", "--format=%B")
+        for key in result["components"]:
+            self.assertIn(key, message)
+        self.assertIn("no new decision", message)
+        self.assertEqual(git(fixture.authority, "status", "--porcelain"), "")
+        self.assertFalse(result["pushed"])
+
+    def test_two_admitted_pull_requests_compose_into_the_batch_delta(self) -> None:
+        fixture = _Fixture(self)
+        paths = ["docs/compose-a.md", "docs/compose-b.md"]
+        entries = []
+        for path in paths:
+            slug = Path(path).stem
+            pr = fixture.worktree(slug)
+            fixture.add_pr_path(pr, path, f"# {slug}\n")
+            entries.append({"pr_worktree": str(pr), "paths": [path], "slug": slug,
+                            "approval_basis": f"Owner decision: {slug}."})
+        batch = admit_paths.admit_batch(batch=entries, private_repo=fixture.authority, base=fixture.base,
+                                        date="2026-10-22", scratch_root=fixture.tmp)
+        keys = [Path(delta["record"]).stem for delta in batch["deltas"]]
+        admissions = {path: (fixture.authority / path).read_bytes() for path in batch["records"]}
+        remote_before = fixture.remote_main()
+
+        files = {path: f"# {Path(path).stem}\n" for path in paths}
+        worktree, candidate = self._candidate(fixture, [self._adds(*paths)], files)
+        # Without the union, the batch's name selects no delta: the gap this mode fills.
+        self.assertNotIn(provenance_ledger.policy_delta_v4_key(
+            json.loads(self._baseline(fixture)), json.loads(candidate)), keys)
+        result = self._compose(fixture, worktree, keys)
+
+        self._assert_derived(fixture, result, candidate=candidate,
+                             files={path: content.encode() for path, content in files.items()},
+                             bindings=dict.fromkeys(paths, "claim"))
+        self.assertEqual(result["delta"]["include_added"], paths)
+        self.assertEqual(fixture.remote_main(), remote_before)
+        for path, raw in admissions.items():
+            self.assertEqual((fixture.authority / path).read_bytes(), raw, "the components are left as recorded")
+
+        # Composing again records nothing new; --push publishes private main.
+        again = self._compose(fixture, worktree, keys, push=True)
+        self.assertEqual(again["private_commit"], result["private_commit"])
+        self.assertEqual(fixture.remote_main(), result["private_commit"])
+
+    def test_three_components_with_removals_exclusions_rules_and_a_byte_bound_import(self) -> None:
+        fixture = _Fixture(self, records=[self.RECORD])
+
+        def removes_guide(document: dict) -> None:
+            document["include_paths"].remove("docs/guide.md")
+
+        def rule_and_exclusion(document: dict) -> None:
+            document["build_mode"] = "PUBLIC_SAFE=2"
+            document["exclude_paths"].remove("docs/private-notes.md")
+
+        added = {"src/lib/up.h": ("int up(void);\n", "bytes"), "docs/notice.md": ("# Notice\n", "claim")}
+        keys = [
+            self._component(fixture, self._adds(*added), added),
+            self._component(fixture, removes_guide),
+            self._component(fixture, rule_and_exclusion),
+        ]
+        worktree, candidate = self._candidate(
+            fixture, [self._adds(*added), removes_guide, rule_and_exclusion],
+            {path: content for path, (content, _binding) in added.items()})
+        result = self._compose(fixture, worktree, keys, assisted_by="Test Tool (test-model)")
+
+        self._assert_derived(fixture, result, candidate=candidate,
+                             files={path: content.encode() for path, (content, _binding) in added.items()},
+                             bindings={path: binding for path, (_content, binding) in added.items()})
+        self.assertEqual(result["delta"], {
+            "include_added": ["docs/notice.md", "src/lib/up.h"], "include_removed": ["docs/guide.md"],
+            "exclude_added": [], "exclude_removed": ["docs/private-notes.md"], "rule_changes": ["build_mode"],
+        })
+        self.assertIn("Assisted-by: Test Tool (test-model)", git(fixture.authority, "log", "-1", "--format=%B"))
+
+    def _assert_refused(self, fixture: _Fixture, code: str, worktree: Path, keys: list[str]) -> None:
+        before = git(fixture.authority, "rev-parse", "HEAD")
+        with self.assertRaises(AdmitError) as caught:
+            self._compose(fixture, worktree, keys)
+        self.assertEqual(caught.exception.code, code, str(caught.exception))
+        self.assertEqual(git(fixture.authority, "rev-parse", "HEAD"), before)
+        self.assertEqual(git(fixture.authority, "status", "--porcelain"), "")
+
+    def test_refusals(self) -> None:
+        fixture = _Fixture(self, records=[self.RECORD])
+        doc = {path: (f"# {Path(path).stem}\n", "claim") for path in
+               ("docs/a.md", "docs/b.md", "docs/c.md", "docs/shared.md")}
+
+        def pick(*paths: str) -> dict:
+            return {path: doc[path] for path in paths}
+
+        a = self._component(fixture, self._adds("docs/a.md"), pick("docs/a.md"))
+        b = self._component(fixture, self._adds("docs/b.md"), pick("docs/b.md"))
+        both, _ = self._candidate(fixture, [self._adds("docs/a.md", "docs/b.md")],
+                                  {"docs/a.md": doc["docs/a.md"][0], "docs/b.md": doc["docs/b.md"][0]})
+
+        with self.subTest("one component"):
+            self._assert_refused(fixture, "COMPOSE_V4_COMPONENTS_INVALID", both, [a])
+        with self.subTest("a component twice"):
+            self._assert_refused(fixture, "COMPOSE_V4_COMPONENTS_INVALID", both, [a, a])
+        with self.subTest("unknown component"):
+            self._assert_refused(fixture, "COMPOSE_V4_COMPONENT_MISSING", both, [a, "0" * 64])
+        with self.subTest("a component filed under another name"):
+            alias = hashlib.sha256(b"alias").hexdigest()
+            target = fixture.authority / admit_paths.POLICY_DELTAS_V4 / f"{alias}.json"
+            target.write_bytes((fixture.authority / admit_paths.POLICY_DELTAS_V4 / f"{b}.json").read_bytes())
+            git(fixture.authority, "add", "-A")
+            git(fixture.authority, "commit", "-qm", "misfiled delta")
+            self._assert_refused(fixture, "COMPOSE_V4_COMPONENT_KEY_MISMATCH", both, [a, alias])
+
+        with self.subTest("overlapping include_added"):
+            shared_a = self._component(fixture, self._adds("docs/a.md", "docs/shared.md"),
+                                       pick("docs/a.md", "docs/shared.md"))
+            shared_b = self._component(fixture, self._adds("docs/b.md", "docs/shared.md"),
+                                       pick("docs/b.md", "docs/shared.md"))
+            worktree, _ = self._candidate(
+                fixture, [self._adds("docs/a.md", "docs/b.md", "docs/shared.md")],
+                {path: doc[path][0] for path in ("docs/a.md", "docs/b.md", "docs/shared.md")})
+            self._assert_refused(fixture, "COMPOSE_V4_PATH_OVERLAP", worktree, [shared_a, shared_b])
+
+        def removes(*paths: str):
+            def change(document: dict) -> None:
+                document["include_paths"] = sorted(set(document["include_paths"]) - set(paths))
+            return change
+
+        with self.subTest("overlapping include_removed"):
+            first = self._component(fixture, removes("docs/guide.md"))
+            second = self._component(fixture, removes("docs/guide.md", "README.md"))
+            worktree, _ = self._candidate(fixture, [removes("docs/guide.md", "README.md")], {})
+            self._assert_refused(fixture, "COMPOSE_V4_PATH_OVERLAP", worktree, [first, second])
+
+        def unexcludes(document: dict) -> None:
+            document["exclude_paths"].remove("docs/private-notes.md")
+
+        def excludes(path: str):
+            def change(document: dict) -> None:
+                document["exclude_paths"] = sorted(set(document["exclude_paths"]) | {path})
+            return change
+
+        with self.subTest("overlapping exclude entries"):
+            first = self._component(fixture, unexcludes)
+            second = self._component(fixture, lambda document: (unexcludes(document), excludes("docs/x.md")(document)))
+            worktree, _ = self._candidate(fixture, [unexcludes, excludes("docs/x.md")], {})
+            self._assert_refused(fixture, "COMPOSE_V4_EXCLUDE_OVERLAP", worktree, [first, second])
+
+        def build_mode(document: dict) -> None:
+            document["build_mode"] = "PUBLIC_SAFE=2"
+
+        def description(document: dict) -> None:
+            document["description"] = "synthetic"
+
+        with self.subTest("rule changes in two components"):
+            first = self._component(fixture, build_mode)
+            second = self._component(fixture, description)
+            worktree, _ = self._candidate(fixture, [build_mode, description], {})
+            self._assert_refused(fixture, "COMPOSE_V4_RULE_CHANGES_SHARED", worktree, [first, second])
+
+        with self.subTest("a rule admitted against another base value"):
+            other_base = json.loads(self._baseline(fixture))
+            other_base["build_mode"] = "PUBLIC_SAFE=0"
+            stale = self._component(fixture, build_mode,
+                                    baseline=admit_paths._canonical_profile_bytes(other_base))
+            worktree, _ = self._candidate(fixture, [self._adds("docs/a.md"), build_mode],
+                                          {"docs/a.md": doc["docs/a.md"][0]})
+            self._assert_refused(fixture, "COMPOSE_V4_UNION_MISMATCH", worktree, [a, stale])
+
+        with self.subTest("a path no component covers"):
+            worktree, _ = self._candidate(fixture, [self._adds("docs/a.md", "docs/b.md", "docs/c.md")],
+                                          {path: doc[path][0] for path in ("docs/a.md", "docs/b.md", "docs/c.md")})
+            self._assert_refused(fixture, "COMPOSE_V4_PATH_UNCOVERED", worktree, [a, b])
+
+        with self.subTest("a component change the batch does not make"):
+            worktree, _ = self._candidate(fixture, [self._adds("docs/a.md")], {"docs/a.md": doc["docs/a.md"][0]})
+            self._assert_refused(fixture, "COMPOSE_V4_COMPONENT_NOT_IN_CANDIDATE", worktree, [a, b])
+
+        upstream = {"src/lib/up.h": ("int up(void);\n", "bytes")}
+        up = self._component(fixture, self._adds("src/lib/up.h"), upstream)
+        with self.subTest("an edited byte-bound import"):
+            worktree, _ = self._candidate(fixture, [self._adds("src/lib/up.h", "docs/a.md")],
+                                          {"src/lib/up.h": "int up(void);\n\n", "docs/a.md": doc["docs/a.md"][0]})
+            self._assert_refused(fixture, "COMPOSE_V4_BYTES_MISMATCH", worktree, [up, a])
+
+        with self.subTest("a trusted claim changed since its admission"):
+            worktree, _ = self._candidate(fixture, [self._adds("src/lib/up.h", "docs/a.md")],
+                                          {"src/lib/up.h": upstream["src/lib/up.h"][0],
+                                           "docs/a.md": doc["docs/a.md"][0]})
+            ledger_path = fixture.authority / admit_paths.TRUSTED_LEDGER
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+            for record in ledger["records"]:
+                if record["id"] == self.RECORD["id"]:
+                    record["upstream_revision"] = "commit " + "f" * 40
+            write(fixture.authority, admit_paths.TRUSTED_LEDGER, json.dumps(ledger, indent=2) + "\n")
+            git(fixture.authority, "commit", "-qam", "the upstream record now names another revision")
+            self._assert_refused(fixture, "COMPOSE_V4_CLAIM_MISMATCH", worktree, [up, a])
+
+    def test_cli_mode(self) -> None:
+        fixture = _Fixture(self)
+        files = {"docs/a.md": "# a\n", "docs/b.md": "# b\n"}
+        keys = [self._component(fixture, self._adds(path), {path: (content, "claim")})
+                for path, content in files.items()]
+        worktree, _ = self._candidate(fixture, [self._adds(*files)], files)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            refused = admit_paths.main(["--compose-v4", str(worktree), "--components", *keys,
+                                        "--private-repo", str(fixture.authority)])
+            self.assertEqual(refused, 1)
+            self.assertIn("--compose-v4 needs --base and --components", err.getvalue())
+            refused = admit_paths.main(["--compose-v4", str(worktree), "--base", fixture.base, "--components",
+                                        *keys, "--approval-basis", "a new decision",
+                                        "--private-repo", str(fixture.authority)])
+            self.assertEqual(refused, 1)
+            code = admit_paths.main(["--compose-v4", str(worktree), "--base", fixture.base, "--components", *keys,
+                                     "--private-repo", str(fixture.authority)])
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIn("composed V4 policy delta", out.getvalue())
+        self.assertIn("include_added: docs/a.md, docs/b.md", out.getvalue())
+        self.assertIn("Left to do:", out.getvalue())
+
+
 class HookCheckTest(unittest.TestCase):
     """Before reading or pinning a byte, admit_paths applies the byte-rewriting hooks' rules.
 
