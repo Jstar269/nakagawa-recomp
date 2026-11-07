@@ -43,7 +43,7 @@ class DefaultStubsUnchangedTests(unittest.TestCase):
         )
 
     def test_seam_is_off_by_default(self):
-        self.assertFalse(codegen.OPTIONS.lle_import_seam)
+        self.assertFalse(codegen.CodegenOptions().lle_import_seam)
 
     def test_default_stub_has_no_seam_call(self):
         text = codegen.import_stub_text(0x1000, "ThreadManForUser", 0x27A6B7CD)
@@ -82,31 +82,23 @@ class ImportSeamCodegenTests(unittest.TestCase):
         self.assertTrue(text.rstrip().endswith("sr_end(s, 0u, 0);\n}"))
 
     def test_module_flag_drives_the_helper_default(self):
-        previous = codegen.OPTIONS.lle_import_seam
-        try:
-            codegen.OPTIONS.lle_import_seam = True
-            text = codegen.import_stub_text(0x1000, "ThreadManForUser", 0x27A6B7CD)
-            self.assertIn("sr_import_call(s, 0x27a6b7cdu, 0x00001000u);", text)
-        finally:
-            codegen.OPTIONS.lle_import_seam = previous
+        options = codegen.CodegenOptions(lle_import_seam=True)
+        text = codegen.import_stub_text(
+            0x1000, "ThreadManForUser", 0x27A6B7CD, options=options)
+        self.assertIn("sr_import_call(s, 0x27a6b7cdu, 0x00001000u);", text)
 
     def test_seam_cli_flag_exists(self):
         source = (ROOT / "tools" / "codegen.py").read_text(encoding="utf-8")
         self.assertIn('"--lle-import-seam"', source)
-        self.assertIn("enable_lle_import_seam()", source)
+        self.assertIn("enable_lle_import_seam(options)", source)
 
     def test_seam_flag_also_enables_caller_flow_propagation(self):
         # A fail-closed seam stub returns with flow_kind set; only --lle-cpu
         # output checks flow_kind after direct calls, so the seam implies it.
-        previous = (codegen.OPTIONS.lle_import_seam, codegen.OPTIONS.lle_cpu)
-        try:
-            codegen.OPTIONS.lle_import_seam = False
-            codegen.OPTIONS.lle_cpu = False
-            codegen.enable_lle_import_seam()
-            self.assertTrue(codegen.OPTIONS.lle_import_seam)
-            self.assertTrue(codegen.OPTIONS.lle_cpu)
-        finally:
-            codegen.OPTIONS.lle_import_seam, codegen.OPTIONS.lle_cpu = previous
+        options = codegen.CodegenOptions()
+        codegen.enable_lle_import_seam(options)
+        self.assertTrue(options.lle_import_seam)
+        self.assertTrue(options.lle_cpu)
 
 
 class DomainSourcesTests(unittest.TestCase):

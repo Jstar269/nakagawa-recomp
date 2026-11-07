@@ -98,10 +98,11 @@ def production_vfpu_opcodes() -> tuple[tuple[int, ...], tuple[int, ...]]:
     for op in range(64):
         called = False
 
-        def traced(addr, word, lle_cpu=False, delay_branch_pc=None):
+        def traced(addr, word, lle_cpu=None, delay_branch_pc=None, *, options=None):
             nonlocal called
             called = True
-            return original(addr, word, lle_cpu=lle_cpu, delay_branch_pc=delay_branch_pc)
+            return original(addr, word, lle_cpu=lle_cpu, delay_branch_pc=delay_branch_pc,
+                            options=options)
 
         codegen.vfpu_effect = traced
         try:

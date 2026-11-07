@@ -80,13 +80,9 @@ def beql(rs, rt, pc, target):
 
 @contextmanager
 def region_split_threshold(value):
-    """Run with codegen.OPTIONS.region_split_threshold set, restoring it afterwards."""
-    saved = codegen.OPTIONS.region_split_threshold
-    codegen.OPTIONS.region_split_threshold = value
-    try:
-        yield
-    finally:
-        codegen.OPTIONS.region_split_threshold = saved
+    """Yield an isolated option object with the selected region-split threshold."""
+    with codegen.options_scope(region_split_threshold=value) as options:
+        yield options
 
 
 def regimm(selector, rs, pc, target):
@@ -521,10 +517,10 @@ class ContinuationFlowTests(unittest.TestCase):
             }
         )
         known = {0x1000, 0x1008, 0x1020}
-        for threshold in (None, codegen.OPTIONS.region_split_threshold):
-            with self.subTest(threshold=threshold), region_split_threshold(threshold):
+        for threshold in (None, codegen.CodegenOptions().region_split_threshold):
+            with self.subTest(threshold=threshold), region_split_threshold(threshold) as options:
                 insns, labels, continuations = codegen.function_flow(
-                    elf, 0x1000, [(0x1000, 0x102C)], known)
+                    elf, 0x1000, [(0x1000, 0x102C)], known, options=options)
                 self.assertIn(0x1020, labels)
                 self.assertIn(0x1008, insns)
                 self.assertEqual(continuations, {})
@@ -587,12 +583,14 @@ class EntrySplitTests(unittest.TestCase):
         })
 
     def flow(self, elf, start, threshold=0, **kwargs):
-        with region_split_threshold(threshold):
-            return codegen.function_flow(elf, start, self.RANGES, self.KNOWN, **kwargs)
+        with region_split_threshold(threshold) as options:
+            return codegen.function_flow(elf, start, self.RANGES, self.KNOWN,
+                                        options=options, **kwargs)
 
     def emit(self, elf, start, threshold=0, **kwargs):
-        with region_split_threshold(threshold):
-            return "\n".join(codegen.emit_function(elf, start, self.RANGES, self.KNOWN, **kwargs))
+        with region_split_threshold(threshold) as options:
+            return "\n".join(codegen.emit_function(
+                elf, start, self.RANGES, self.KNOWN, options=options, **kwargs))
 
     def test_split_body_owns_no_other_entry(self):
         insns, labels, continuations = self.flow(self.elf(), 0x1000)
@@ -642,19 +640,21 @@ class EntrySplitTests(unittest.TestCase):
         # through r_00001020; its owner still reaches it natively.
         owners = {0x1020: 0x1010}
         known = self.KNOWN - {0x1020}
-        with region_split_threshold(0):
+        with region_split_threshold(0) as options:
             text = "\n".join(codegen.emit_function(
-                self.elf(), 0x1000, self.RANGES, known, resume_owners=owners))
+                self.elf(), 0x1000, self.RANGES, known, resume_owners=owners,
+                options=options))
             owner_flow = codegen.function_flow(
-                self.elf(), 0x1010, self.RANGES, known, resume_owners=owners)
+                self.elf(), 0x1010, self.RANGES, known, resume_owners=owners,
+                options=options)
         self.assertIn("sr_tail_record(s, 0x00001020u, r_00001020, _sp_entry, 1u); return;", text)
         self.assertIn(0x1020, owner_flow[0])
 
     def test_dispatch_boundary_target_is_dispatched_by_address(self):
-        with region_split_threshold(0):
+        with region_split_threshold(0) as options:
             text = "\n".join(codegen.emit_function(
                 self.elf(), 0x1000, self.RANGES, self.KNOWN - {0x1020},
-                dispatch_boundaries={0x1020}))
+                dispatch_boundaries={0x1020}, options=options))
         self.assertIn("s->pc = 0x00001020u; sr_tail_record(s, s->pc, NULL,", text)
 
     def test_threshold_splits_only_bodies_whose_walk_exceeds_it(self):
@@ -666,22 +666,22 @@ class EntrySplitTests(unittest.TestCase):
         self.assertNotEqual(self.emit(elf, 0x1000), unsplit)
 
     def test_every_ownership_reader_sees_the_split_body(self):
-        with region_split_threshold(0):
+        with region_split_threshold(0) as options:
             insns, _labels, _continuations = codegen.function_flow(
-                self.elf(), 0x1000, self.RANGES, self.KNOWN)
+                self.elf(), 0x1000, self.RANGES, self.KNOWN, options=options)
             record = codegen.stale_block_for_function(
-                self.elf(), 0x1000, self.RANGES, self.KNOWN)
+                self.elf(), 0x1000, self.RANGES, self.KNOWN, options=options)
         self.assertEqual(record[1], len(insns))
 
     def test_threshold_option_is_parsed_and_checked(self):
-        saved = codegen.OPTIONS.region_split_threshold
-        try:
-            self.assertEqual(codegen.main(["codegen.py", "missing.elf", "out.c",
-                                           "--region-split-threshold=-1"]), 2)
-            self.assertEqual(codegen.main(["codegen.py", "missing.elf", "out.c",
-                                           "--region-split-threshold=many"]), 2)
-        finally:
-            codegen.OPTIONS.region_split_threshold = saved
+        options = codegen.CodegenOptions()
+        cli = codegen._command_line_parser().parse_args(["--region-split-threshold=19"])
+        codegen._apply_options(cli, codegen._validated_options(cli), options)
+        self.assertEqual(options.region_split_threshold, 19)
+        self.assertEqual(codegen.main(["codegen.py", "missing.elf", "out.c",
+                                       "--region-split-threshold=-1"]), 2)
+        self.assertEqual(codegen.main(["codegen.py", "missing.elf", "out.c",
+                                       "--region-split-threshold=many"]), 2)
 
 
 def addiu(rt, rs, imm):
@@ -737,13 +737,15 @@ class StraightLineEndTests(unittest.TestCase):
 
     def flow(self, words, start=0x1000, known=None):
         span = (min(words), max(words) + 4)
-        with region_split_threshold(None):
-            return codegen.function_flow(FakeElf(words), start, [span], known or {start})
+        with region_split_threshold(None) as options:
+            return codegen.function_flow(FakeElf(words), start, [span], known or {start},
+                                        options=options)
 
     def emit(self, words, start=0x1000, known=None):
         span = (min(words), max(words) + 4)
-        with region_split_threshold(None):
-            return "\n".join(codegen.emit_function(FakeElf(words), start, [span], known or {start}))
+        with region_split_threshold(None) as options:
+            return "\n".join(codegen.emit_function(
+                FakeElf(words), start, [span], known or {start}, options=options))
 
     def test_b_has_no_not_taken_successor(self):
         words = {0x1000: addiu(2, 0, 1), 0x1004: b(0x1004, 0x1014), 0x1008: addiu(2, 2, 2),

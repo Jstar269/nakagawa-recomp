@@ -71,15 +71,11 @@ def jal(target):
 
 
 class RegisterPromotionTests(unittest.TestCase):
-    def setUp(self):
-        self._saved = codegen.OPTIONS.promote_registers
-        self.addCleanup(setattr, codegen.OPTIONS, "promote_registers", self._saved)
-
     def _emit(self, words, promote, start=0x1000, end=0x1100, known=None):
-        codegen.OPTIONS.promote_registers = promote
         elf = FakeElf(words)
         known = known if known is not None else {start}
-        return codegen.emit_function(elf, start, [(start, end)], known)
+        options = codegen.CodegenOptions(promote_registers=promote)
+        return codegen.emit_function(elf, start, [(start, end)], known, options=options)
 
     def _body(self, promote):
         return {
@@ -197,12 +193,9 @@ class RegisterPromotionTests(unittest.TestCase):
 
     def test_lle_guarded_accesses_are_not_promoted(self):
         words = {0x1000: lw(8, 4, 0), 0x1004: JR_RA, 0x1008: NOP}
-        codegen.OPTIONS.promote_registers = True
-        try:
-            text = "\n".join(codegen.emit_function(FakeElf(words), 0x1000, [(0x1000, 0x1100)],
-                                                   {0x1000}, lle_cpu=True))
-        finally:
-            codegen.OPTIONS.promote_registers = self._saved
+        options = codegen.CodegenOptions(promote_registers=True, lle_cpu=True)
+        text = "\n".join(codegen.emit_function(
+            FakeElf(words), 0x1000, [(0x1000, 0x1100)], {0x1000}, options=options))
         self.assertIn("sr_cpu_guard_access", text)
         self.assertNotIn("_gpr8", text)
 

@@ -87,13 +87,13 @@ def program(*words, start=0x1000):
 
 class LoweringTests(unittest.TestCase):
     def setUp(self):
-        self.enterContext(codegen.options_scope())
         address_space = codegen.ADDRESS_SPACE
         self.addCleanup(setattr, codegen, "ADDRESS_SPACE", address_space)
 
-    def lower(self, words, start=0x1000, end=0x1100, known=None):
+    def lower(self, words, start=0x1000, end=0x1100, known=None, options=None):
         return codegen_llvm.lower(codegen, FakeElf(words), start, [(start, end)],
-                                  known or {start}, c_text="void f(CpuState *s) { }")
+                                  known or {start}, c_text="void f(CpuState *s) { }",
+                                  options=options)
 
     def ir(self, words, **kwargs):
         body = self.lower(words, **kwargs)
@@ -202,10 +202,8 @@ class LoweringTests(unittest.TestCase):
     def test_unsupported_forms_fall_back_with_a_reason(self):
         with self.assertRaisesRegex(codegen_llvm.LLVMUnsupported, "FPU at 0x00001000"):
             self.lower(program(mul_s(0, 1, 2), JR_RA, NOP))
-        codegen.OPTIONS.lle_cpu = True
         with self.assertRaisesRegex(codegen_llvm.LLVMUnsupported, "--lle-cpu"):
-            self.lower(program(JR_RA, NOP))
-        codegen.OPTIONS.lle_cpu = False
+            self.lower(program(JR_RA, NOP), options=codegen.CodegenOptions(lle_cpu=True))
         codegen.ADDRESS_SPACE = codegen.AddressSpace("sr_m0_base", "m0")
         with self.assertRaisesRegex(codegen_llvm.LLVMUnsupported, "runtime-placed"):
             self.lower(program(JR_RA, NOP))
