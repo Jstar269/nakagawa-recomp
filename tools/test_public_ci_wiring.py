@@ -2696,7 +2696,7 @@ class DraftLightCiWiringTests(unittest.TestCase):
         "python_tools": "PYTHON_RESULT", "native_tools": "NATIVE_RESULT", "windows_runtime": "WINDOWS_RESULT",
     }
 
-    def _classify(self, event_name: str, event: dict[str, object], ref: str) -> dict[str, str]:
+    def _classify(self, event_name: str, event: Mapping[str, object], ref: str) -> dict[str, str]:
         with tempfile.TemporaryDirectory() as scratch:
             event_path = Path(scratch) / "event.json"
             event_path.write_text(json.dumps(event), encoding="utf-8")
@@ -2708,7 +2708,7 @@ class DraftLightCiWiringTests(unittest.TestCase):
                 ]), 0)
             return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
 
-    def _run(self, event_name: str, event: dict[str, object], ref: str = "refs/pull/7/merge"
+    def _run(self, event_name: str, event: Mapping[str, object], ref: str = "refs/pull/7/merge"
              ) -> tuple[set[str], dict[str, str], bool]:
         outputs = self._classify(event_name, event, ref)
         blocks = _workflow_job_blocks("ci.yml")
