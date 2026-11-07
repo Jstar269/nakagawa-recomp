@@ -564,6 +564,243 @@ _SETUP = f"nakagawa-recomp-{_V}-windows-x64-setup.exe"
 _SETUP_ASSETS = [_SETUP, f"{_SETUP}.sha256"]
 
 
+class UninstallTests(unittest.TestCase):
+    """--uninstall removes what the install wrote and never the user's data (#2003, #324)."""
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name)
+        self.repo = _fixture_repo(self.root)
+        self.player = self.root / "nakagawa_player.exe"
+        self.player.write_bytes(b"player")
+        self.dest = self.root / "Nakagawa Recomp"
+        stage_install.stage_install(self.dest, self.player, repo=self.repo,
+                                    stage_dlls=_fake_stager)
+        # The per-user folders sit beside the install, as %LOCALAPPDATA%\Nakagawa does.
+        self.user = self.root / "LocalAppData" / "Nakagawa"
+        for leaf, name in (("data", "library.json"), ("saves", "UCUS00000.sav"),
+                           ("config", "settings.json"), ("logs", "game.txt")):
+            (self.user / leaf).mkdir(parents=True)
+            (self.user / leaf / name).write_text(leaf, encoding="utf-8")
+        self.shortcuts = self.root / "Programs"
+        self.shortcuts.mkdir()
+        self.lnk = self.shortcuts / stage_install.SHORTCUT_NAME
+        self.lnk.write_bytes(b"lnk")
+        stage_install.record_integration(self.dest, [self.lnk])
+
+    def _user_files(self):
+        return sorted(str(path.relative_to(self.user)) for path in self.user.rglob("*")
+                      if path.is_file())
+
+    def test_removes_the_install_its_marker_and_its_shortcuts(self):
+        summary = stage_install.uninstall(self.dest)
+        self.assertFalse(self.dest.exists(), "an emptied install folder goes too")
+        self.assertFalse(self.lnk.exists())
+        self.assertEqual(summary["removed_integration"], [str(self.lnk)])
+        self.assertEqual(summary["left_in_folder"], [])
+
+    def test_never_touches_the_per_user_folders(self):
+        before = self._user_files()
+        self.assertEqual(len(before), 4)
+        stage_install.uninstall(self.dest)
+        self.assertEqual(self._user_files(), before)
+
+    def test_a_file_the_user_added_beside_the_install_survives(self):
+        (self.dest / "notes.txt").write_text("mine", encoding="utf-8")
+        summary = stage_install.uninstall(self.dest)
+        self.assertEqual((self.dest / "notes.txt").read_text(encoding="utf-8"), "mine")
+        self.assertFalse((self.dest / "bin").exists())
+        self.assertFalse((self.dest / stage_install.MARKER).exists())
+        self.assertEqual(summary["left_in_folder"], ["notes.txt"])
+
+    def test_dry_run_lists_and_removes_nothing(self):
+        summary = stage_install.uninstall(self.dest, dry_run=True)
+        self.assertTrue(summary["dry_run"])
+        self.assertIn(str(self.dest / "bin"), summary["removed"])
+        self.assertIn(str(self.dest / "source"), summary["removed"])
+        self.assertTrue((self.dest / "bin" / "SDL3.dll").is_file())
+        self.assertTrue(self.lnk.is_file())
+        self.assertTrue((self.dest / stage_install.MARKER).is_file())
+
+    def test_a_folder_without_the_marker_is_refused_untouched(self):
+        other = self.root / "someone-elses"
+        (other / "bin").mkdir(parents=True)
+        (other / "bin" / "keep.dll").write_bytes(b"keep")
+        with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_DESTINATION_NOT_OWNED"):
+            stage_install.uninstall(other)
+        self.assertTrue((other / "bin" / "keep.dll").is_file())
+
+    def test_an_edited_marker_cannot_delete_another_file(self):
+        precious = self.root / "Documents" / "thesis.docx"
+        precious.parent.mkdir()
+        precious.write_bytes(b"thesis")
+        folder = self.root / "somefolder"
+        folder.mkdir()
+        marker = self.dest / stage_install.MARKER
+        record = json.loads(marker.read_text(encoding="utf-8"))
+        record["integration"] += [str(precious), str(folder), "relative/Nakagawa Recomp.lnk"]
+        marker.write_text(json.dumps(record), encoding="utf-8")
+        summary = stage_install.uninstall(self.dest)
+        self.assertTrue(precious.is_file())
+        self.assertTrue(folder.is_dir())
+        self.assertEqual(summary["skipped_integration"],
+                         [str(precious), str(folder), "relative/Nakagawa Recomp.lnk"])
+        self.assertFalse(self.lnk.exists(), "the entry this tool wrote still goes")
+
+    def test_a_shortcut_already_deleted_by_hand_is_not_an_error(self):
+        self.lnk.unlink()
+        summary = stage_install.uninstall(self.dest)
+        self.assertEqual(summary["removed_integration"], [])
+        self.assertFalse(self.dest.exists())
+
+    def test_half_finished_staging_and_old_copies_go(self):
+        (self.dest / ".staging-1234").mkdir()
+        (self.dest / ".staging-1234" / "x").write_bytes(b"x")
+        (self.dest / "bin.old").mkdir()
+        stage_install.uninstall(self.dest)
+        self.assertFalse(self.dest.exists())
+
+    def test_portable_data_and_markers_stay(self):
+        (self.dest / "bin" / "portable.txt").write_text("", encoding="utf-8")
+        (self.dest / "bin" / "data" / "saves").mkdir(parents=True)
+        save = self.dest / "bin" / "data" / "saves" / "UCUS00000.sav"
+        save.write_bytes(b"save")
+        summary = stage_install.uninstall(self.dest)
+        self.assertEqual(save.read_bytes(), b"save")
+        self.assertTrue((self.dest / "bin" / "portable.txt").is_file())
+        self.assertFalse((self.dest / "bin" / "SDL3.dll").exists())
+        self.assertFalse((self.dest / "bin" / "nakagawa_player.exe").exists())
+        self.assertFalse((self.dest / "source").exists())
+        self.assertTrue((self.dest / stage_install.MARKER).is_file())
+        self.assertEqual(sorted(Path(kept).name for kept in summary["kept"]),
+                         ["data", "portable.txt"])
+
+    def test_a_second_uninstall_of_a_finished_one_is_refused(self):
+        stage_install.uninstall(self.dest)
+        with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_DESTINATION_NOT_OWNED"):
+            stage_install.uninstall(self.dest)
+
+    def test_a_link_inside_the_install_is_unlinked_not_followed(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep", encoding="utf-8")
+        try:
+            os.symlink(outside, self.dest / "source" / "escape", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("this host cannot create symbolic links")
+        stage_install.uninstall(self.dest)
+        self.assertEqual((outside / "keep.txt").read_text(encoding="utf-8"), "keep")
+
+    @unittest.skipUnless(os.name == "nt", "directory junctions are a Windows feature")
+    def test_a_junction_inside_the_install_is_removed_not_followed(self):
+        # A junction needs no privilege on Windows, so this runs where the symlink test is skipped.
+        outside = self.root / "junction-target"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep", encoding="utf-8")
+        junction = self.dest / "source" / "escape"
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+                              capture_output=True, text=True, check=False)
+        self.assertEqual(made.returncode, 0, made.stdout + made.stderr)
+        stage_install.uninstall(self.dest)
+        self.assertEqual((outside / "keep.txt").read_text(encoding="utf-8"), "keep")
+        self.assertFalse(junction.exists())
+
+    def _rewrite_marker(self, change):
+        marker = self.dest / stage_install.MARKER
+        record = json.loads(marker.read_text(encoding="utf-8"))
+        change(record)
+        marker.write_text(json.dumps(record), encoding="utf-8")
+
+    def _refused_untouched(self, dest):
+        before = sorted(str(path) for path in dest.rglob("*"))
+        with self.assertRaisesRegex(stage_install.InstallError, "INSTALL_MARKER_INVALID"):
+            stage_install.uninstall(dest)
+        self.assertEqual(sorted(str(path) for path in dest.rglob("*")), before)
+        self.assertTrue(self.lnk.is_file())
+
+    def test_a_marker_that_is_not_json_is_refused_untouched(self):
+        (self.dest / stage_install.MARKER).write_text("not json {", encoding="utf-8")
+        self._refused_untouched(self.dest)
+
+    def test_a_marker_that_is_not_an_object_is_refused_untouched(self):
+        (self.dest / stage_install.MARKER).write_text("[]", encoding="utf-8")
+        self._refused_untouched(self.dest)
+
+    def test_a_marker_without_the_keys_the_installer_writes_is_refused_untouched(self):
+        (self.dest / stage_install.MARKER).write_text("{}", encoding="utf-8")
+        self._refused_untouched(self.dest)
+
+    def test_a_marker_listing_a_path_outside_the_install_is_refused_untouched(self):
+        for change in (
+            lambda r: r.update(player="bin/../../elsewhere.exe"),
+            lambda r: r.update(player="/abs/nakagawa_player.exe"),
+            lambda r: r.update(runtime_files=["..\\..\\evil.dll"]),
+            lambda r: r.update(runtime_files=["sub/evil.dll"]),
+            lambda r: r.update(schema_version="2"),
+            lambda r: r.update(schema_version=stage_install.SCHEMA_VERSION + 1),
+            lambda r: r.update(integration="not-a-list"),
+        ):
+            with self.subTest(change=change):
+                (self.dest / stage_install.MARKER).unlink()
+                stage_install._write_marker(self.dest, {
+                    "schema_version": stage_install.SCHEMA_VERSION, "source_commit": "x",
+                    "platform": "windows", "player": "bin/nakagawa_player.exe",
+                    "runtime_files": [], "integration": [str(self.lnk)]})
+                self._rewrite_marker(change)
+                self._refused_untouched(self.dest)
+
+    def test_a_drive_root_or_the_home_folder_is_refused(self):
+        root = Path(self.root.anchor)
+        for folder in (root, Path.home(), Path.home().parent):
+            with self.subTest(folder=str(folder)), \
+                    self.assertRaisesRegex(stage_install.InstallError, "UNINSTALL_DESTINATION_REFUSED"):
+                stage_install.plan_uninstall(folder)
+
+    def test_portable_data_in_a_leftover_old_bin_stays(self):
+        old = self.dest / "bin.old"
+        (old / "data" / "saves").mkdir(parents=True)
+        (old / "data" / "saves" / "UCUS00000.sav").write_bytes(b"save")
+        (old / "portable.txt").write_text("", encoding="utf-8")
+        (old / "SDL3.dll").write_bytes(b"old")
+        summary = stage_install.uninstall(self.dest)
+        self.assertEqual((old / "data" / "saves" / "UCUS00000.sav").read_bytes(), b"save")
+        self.assertTrue((old / "portable.txt").is_file())
+        self.assertFalse((old / "SDL3.dll").exists())
+        self.assertTrue((self.dest / stage_install.MARKER).is_file())
+        self.assertEqual(sorted(Path(kept).name for kept in summary["kept"]),
+                         ["data", "portable.txt"])
+
+    def test_the_install_goes_before_its_shortcuts(self):
+        order = []
+        real = stage_install._remove_path
+
+        def spy(path):
+            order.append(Path(path))
+            real(path)
+
+        with mock.patch.object(stage_install, "_remove_path", spy):
+            stage_install.uninstall(self.dest)
+        self.assertEqual(order[-1], self.lnk)
+        self.assertEqual(order[0], self.dest / "bin")
+
+    def test_the_command_line_reports_json_and_flags_misuse(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = stage_install.main(["--uninstall", "--dest", str(self.dest), "--dry-run"])
+        self.assertEqual(code, 0)
+        event = json.loads(out.getvalue())
+        self.assertEqual(event["event"], "uninstall")
+        self.assertTrue(event["dry_run"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = stage_install.main(["--uninstall", "--dest", str(self.root / "nothing")])
+        self.assertEqual(code, 1)
+        self.assertIn("INSTALL_DESTINATION_NOT_OWNED", err.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            stage_install.main(["--dry-run", "--dest", str(self.dest)])
+
+
 class ReleaseAssetContractTests(unittest.TestCase):
     """One player ZIP per platform, with every other file droppable by name (#1876)."""
 
