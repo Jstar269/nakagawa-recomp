@@ -11,7 +11,6 @@
 #include "nk_json.h"
 #include "nk_platform.h"
 #include "nk_shared_helpers.h"
-#include "nk_shared_helpers.h"
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>

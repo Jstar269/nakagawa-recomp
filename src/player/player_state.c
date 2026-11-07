@@ -8337,6 +8337,20 @@ static bool player_homebrew_iso_ready(const char *iso_path, const char *key) {
     return ready;
 }
 
+static bool player_psn_disc_iso_path(char *out, size_t out_size, const char *data_root,
+                                     const char *disc_id) {
+    char relative[64];
+    char separator = nk_platform_path_separator();
+    int written;
+    if (!out || out_size == 0u || !data_root || !disc_id) return false;
+    written = snprintf(relative, sizeof(relative), "discs%c%s%c%s.iso", separator,
+                       disc_id, separator, disc_id);
+    if (written < 0 || (size_t)written >= sizeof(relative)) return false;
+    return nk_shared_path_join(out, out_size, data_root, relative, separator,
+                               NK_SHARED_PATH_JOIN_ALWAYS,
+                               NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH);
+}
+
 static bool player_homebrew_package_inspect(const char *pbp_path, const NkPbpInfo *info,
                                             PlayerPsnPackage *package,
                                             char *code, size_t code_size,
@@ -8345,9 +8359,7 @@ static bool player_homebrew_package_inspect(const char *pbp_path, const NkPbpInf
     NkPbpHomebrew program;
     char label[160];
     char data_root[NK_MAX_PATH];
-    char sep = nk_platform_path_separator();
     int rc;
-    int written;
     snprintf(label, sizeof(label), "%.120s", info->title[0] ? info->title : "This package");
     nk_psp_ctx_init(&ctx, NULL);
     rc = nk_pbp_homebrew_inspect_file(&ctx, pbp_path, info, &program);
@@ -8383,9 +8395,8 @@ static bool player_homebrew_package_inspect(const char *pbp_path, const NkPbpInf
                           "Nakagawa's data folder could not be found.");
         return false;
     }
-    written = snprintf(package->iso_path, sizeof(package->iso_path), "%s%cdiscs%c%s%c%s.iso",
-                       data_root, sep, sep, program.key, sep, program.key);
-    if (written < 0 || (size_t)written >= sizeof(package->iso_path) ||
+    if (!player_psn_disc_iso_path(package->iso_path, sizeof(package->iso_path), data_root,
+                                  program.key) ||
         strlen(pbp_path) >= sizeof(package->pbp_path)) {
         player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
                           "The path to Nakagawa's data folder is too long.");
@@ -8407,9 +8418,7 @@ bool player_psn_package_inspect(const char *pbp_path, PlayerPsnPackage *package,
     NkPbpInfo info;
     char label[160];
     char data_root[NK_MAX_PATH];
-    char sep = nk_platform_path_separator();
     int rc;
-    int written;
     if (code != NULL && code_size > 0) code[0] = '\0';
     if (message != NULL && message_size > 0) message[0] = '\0';
     if (package == NULL || pbp_path == NULL) return false;
@@ -8463,9 +8472,8 @@ bool player_psn_package_inspect(const char *pbp_path, PlayerPsnPackage *package,
                           "Nakagawa's data folder could not be found.");
         return false;
     }
-    written = snprintf(package->iso_path, sizeof(package->iso_path), "%s%cdiscs%c%s%c%s.iso",
-                       data_root, sep, sep, info.disc_id, sep, info.disc_id);
-    if (written < 0 || (size_t)written >= sizeof(package->iso_path) ||
+    if (!player_psn_disc_iso_path(package->iso_path, sizeof(package->iso_path), data_root,
+                                  info.disc_id) ||
         strlen(pbp_path) >= sizeof(package->pbp_path)) {
         player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
                           "The path to Nakagawa's data folder is too long.");

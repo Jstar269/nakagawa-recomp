@@ -142,6 +142,65 @@ static void test_path_joins(void) {
     free(allocated);
 }
 
+/* Pin the distinct legacy contracts of the callers routed through these join modes. */
+static void test_legacy_path_contracts(void) {
+    char out[64];
+    char *allocated;
+
+    CHECK(nk_shared_path_join(out, sizeof(out), "", "leaf", '\\',
+                              NK_SHARED_PATH_JOIN_IF_LEFT_NEEDS_SEPARATOR,
+                              NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH),
+          "UI join accepts an empty root when the relative path is nonempty");
+    CHECK(strcmp(out, "leaf") == 0, "UI join adds no leading separator for an empty root");
+    memset(out, 'x', sizeof(out));
+    CHECK(!nk_shared_path_join(out, sizeof(out), "", "", '\\',
+                               NK_SHARED_PATH_JOIN_IF_LEFT_NEEDS_SEPARATOR,
+                               NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH),
+          "UI join rejects an empty result");
+    CHECK(out[0] == '\0', "empty UI join retains snprintf's empty output");
+    CHECK(nk_shared_path_join(out, sizeof(out), "root/", "", '\\',
+                              NK_SHARED_PATH_JOIN_IF_LEFT_NEEDS_SEPARATOR,
+                              NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH) &&
+              strcmp(out, "root/") == 0,
+          "UI join permits an empty relative path when root makes the result nonempty");
+
+    CHECK(nk_shared_path_join(out, sizeof(out), "C:\\root///", "folder/name", '\\',
+                              NK_SHARED_PATH_JOIN_ALWAYS,
+                              NK_SHARED_PATH_TRIM_LEFT_SEPARATORS),
+          "staging path trims root separators without normalizing the suffix");
+    CHECK(strcmp(out, "C:\\root\\folder/name") == 0,
+          "staging path preserves relative forward slashes");
+
+    allocated = nk_shared_path_join_alloc("left\\", "right", '/',
+                                           NK_SHARED_PATH_JOIN_IF_BOTH_NONEMPTY, 0u);
+    CHECK(allocated != NULL && strcmp(allocated, "left\\right") == 0,
+          "runtime join preserves either trailing separator form");
+    free(allocated);
+    allocated = nk_shared_path_join_alloc("left", "", '/',
+                                           NK_SHARED_PATH_JOIN_IF_BOTH_NONEMPTY, 0u);
+    CHECK(allocated != NULL && strcmp(allocated, "left") == 0,
+          "runtime join adds a separator only when both parts are nonempty");
+    free(allocated);
+    allocated = nk_shared_path_join_alloc("folder/", "", '/', NK_SHARED_PATH_JOIN_ALWAYS, 0u);
+    CHECK(allocated != NULL && strcmp(allocated, "folder//") == 0,
+          "package source join always adds a separator, including for an empty right side");
+    free(allocated);
+
+    memset(out, 'q', sizeof(out));
+    CHECK(!nk_shared_path_join(out, sizeof(out), "root", "/absolute", '/',
+                               NK_SHARED_PATH_JOIN_ALWAYS,
+                               NK_SHARED_PATH_REJECT_ABSOLUTE_RIGHT) && out[0] == 'q',
+          "launch join rejects slash-rooted paths without writing output");
+    CHECK(!nk_shared_path_join(out, sizeof(out), "root", "\\absolute", '/',
+                               NK_SHARED_PATH_JOIN_ALWAYS,
+                               NK_SHARED_PATH_REJECT_ABSOLUTE_RIGHT) && out[0] == 'q',
+          "launch join rejects backslash-rooted paths without writing output");
+    CHECK(!nk_shared_path_join(out, sizeof(out), "root", "C:relative", '/',
+                               NK_SHARED_PATH_JOIN_ALWAYS,
+                               NK_SHARED_PATH_REJECT_ABSOLUTE_RIGHT) && out[0] == 'q',
+          "launch join rejects drive-prefixed paths without writing output");
+}
+
 static void test_text_copy(void) {
     char truncated[4] = { 'x', 'x', 'x', 'x' };
     CHECK(nk_shared_text_copy(truncated, sizeof(truncated), "long text",
@@ -193,6 +252,8 @@ static void test_utf8_open(void) {
     CHECK(remove_test_file(path) == 0, "UTF-8 path cleanup succeeds");
     CHECK(nk_fopen_utf8(NULL, "rb") == NULL && nk_fopen_utf8(path, NULL) == NULL,
           "UTF-8 open rejects NULL arguments");
+    CHECK(nk_fopen_utf8("", "rb") == NULL,
+          "UTF-8 open preserves empty-path failure");
 
     char overlong[32770];
     memset(overlong, 'x', sizeof(overlong) - 1u);
@@ -235,6 +296,17 @@ static void test_boot_events(void) {
     memset(long_message, 'L', sizeof(long_message) - 1u);
     long_message[sizeof(long_message) - 1u] = '\0';
     emit_boot_event(console, 0u, "%s", long_message);
+    rewind(console);
+    char console_contents[2300];
+    size_t console_count = fread(console_contents, 1u, sizeof(console_contents) - 1u, console);
+    console_contents[console_count] = '\0';
+    CHECK(strstr(console_contents,
+                 "event=stderr-only\nevent=ready t_ns=17\nevent=untimed\n") != NULL,
+          "boot event writer preserves stderr records and timestamps");
+    CHECK(strlen(console_contents) ==
+              strlen("event=stderr-only\nevent=ready t_ns=17\nevent=untimed\n") +
+                  strlen(long_message) + 1u,
+          "boot event writer does not truncate stderr records");
     fclose(console);
 
     char contents[2300];
@@ -262,10 +334,14 @@ static void test_boot_events(void) {
     CHECK(nk_shared_boot_event_format_path(short_path, sizeof(short_path), "long cache", '/',
                                            42ul, 7u) == 0 && short_path[0] == '\0',
           "boot path formatter clears an overlong output");
+    CHECK(nk_shared_boot_event_format_path(short_path, sizeof(short_path), NULL, '/',
+                                           42ul, 7u) == 0 && short_path[0] == '\0',
+          "boot path formatter clears output when the cache directory is unavailable");
 }
 
 int main(void) {
     test_path_joins();
+    test_legacy_path_contracts();
     test_text_copy();
     test_utf8_open();
     test_size_format();
