@@ -20,7 +20,7 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 | Event/change | Jobs that run | Jobs intentionally skipped |
 | --- | --- | --- |
-| Draft pull request (opened, a push, reopened, or converted to Draft) | the quick jobs: classification, hygiene/security with its Markdown step, the public export audit, and CI required, which fails with `DRAFT_LIGHT_CI` (see [Draft pull requests](#draft-pull-requests)) | Python tooling, native/translation, the GCC 16 canary, Windows and the profile-zero fixture build, whatever the changed paths |
+| Draft pull request (opened, a push, reopened, or converted to Draft) | the quick jobs: classification, hygiene/security with its Markdown step, the public export audit, and CI required, which fails with `DRAFT_LIGHT_CI` (see [Draft pull requests](#draft-pull-requests)) | Python tooling, native/translation, the GCC 16 canary, the Android launcher build, Windows and the profile-zero fixture build, whatever the changed paths |
 | Ready pull request, docs-only | classification, hygiene/security with its Markdown step, CI required | Python/native, Windows |
 | Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
 | Ready pull request, recipe-only edit of phony targets in `Makefile` | classification, hygiene/security, Python tooling on the Makefile-coupled modules over three shards, native/translation, Windows, CI required | the Python modules that cannot observe a Makefile recipe |
@@ -259,8 +259,8 @@ A Draft pull request runs only the quick checks: `Classify change`, `Hygiene and
 (with its Markdown step), the public export audit and `CI required`. For a `pull_request`
 event whose payload says `draft: true`, `tools/ci_paths.py` exports `allow_substantive=false`
 and `draft=true`. Every substantive job gates on `allow_substantive`, so Python tooling,
-native/translation, the GCC 16 canary, the Windows runtime gate and the profile-zero fixture
-build are skipped, whatever the changed paths. The path flags (`run_python`, `run_native`,
+native/translation, the GCC 16 canary, the Android launcher build, the Windows runtime gate and
+the profile-zero fixture build are skipped, whatever the changed paths. The path flags (`run_python`, `run_native`,
 `run_windows`, `run_markdown`) are unchanged, so the Ready run routes exactly the gates a
 ready pull request gets. OSV-Scanner, Dependency Review and the provenance attestation run on
 a Draft as before. This keeps the hosted runners free for landing runs, which otherwise queue

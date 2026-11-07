@@ -259,12 +259,14 @@ class DraftLightRunTests(unittest.TestCase):
 
     def test_a_draft_is_not_green_even_if_every_substantive_job_passed(self) -> None:
         env = _draft_env(
-            PYTHON_RESULT="success", NATIVE_RESULT="success", WINDOWS_RESULT="success",
-            RUN_PYTHON="true", RUN_NATIVE="true", RUN_WINDOWS="true", ALLOW_SUBSTANTIVE="true",
+            PYTHON_RESULT="success", NATIVE_RESULT="success", ANDROID_RESULT="success",
+            WINDOWS_RESULT="success", RUN_PYTHON="true", RUN_NATIVE="true", RUN_WINDOWS="true",
+            ALLOW_SUBSTANTIVE="true",
         )
         self.assertFalse(evaluate_environment(env))
-        results = _results(**{"python-tools": "success", "native-tools": "success", "windows-runtime": "success"})
-        applicable = {"python-tools": True, "native-tools": True, "windows-runtime": True}
+        results = _results(**{"python-tools": "success", "native-tools": "success", "android-build": "success",
+                              "windows-runtime": "success"})
+        applicable = {"python-tools": True, "native-tools": True, "android-build": True, "windows-runtime": True}
         self.assertFalse(required_gate_passes(results, applicable, allow_substantive=True, draft=True))
         # The same results for a pull request that is not a Draft pass, exactly as before.
         self.assertTrue(required_gate_passes(results, applicable, allow_substantive=True, draft=False))

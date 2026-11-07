@@ -2878,12 +2878,13 @@ class DraftLightCiWiringTests(unittest.TestCase):
     """
 
     #: Paths that route every substantive gate, so only the Draft rule can skip one.
-    PATHS = ["src/rt/hle.c", "tools/codegen.py", "docs/CI.md"]
+    PATHS = ["src/rt/driver.c", "tools/codegen.py", "docs/CI.md"]
     QUICK = frozenset({"hygiene", "public_export", "ci_required"})
-    HEAVY = frozenset({"python_tools", "native_tools", "linux_gcc16", "windows_runtime"})
+    HEAVY = frozenset({"python_tools", "native_tools", "linux_gcc16", "android_build", "windows_runtime"})
     RESULT_KEYS = {
         "hygiene": "HYGIENE_RESULT", "public_export": "PUBLIC_EXPORT_RESULT",
-        "python_tools": "PYTHON_RESULT", "native_tools": "NATIVE_RESULT", "windows_runtime": "WINDOWS_RESULT",
+        "python_tools": "PYTHON_RESULT", "native_tools": "NATIVE_RESULT", "android_build": "ANDROID_RESULT",
+        "windows_runtime": "WINDOWS_RESULT",
     }
 
     def _classify(self, event_name: str, event: Mapping[str, object], ref: str) -> dict[str, str]:
