@@ -315,6 +315,20 @@ HKCU-only uninstall entry back, then uninstalls and checks that your data was no
 that already has the shortcut it tests, so run it on one without, or build a test copy with `/DShortcutName` (see
 `tools/verify_installer.py`).
 
+Before publishing a release that carries the installer, the owner does these checks on a Windows PC with the
+release candidate's `Setup.exe` (they need the uninstall page, which a silent run never shows; the full list is in
+the installer design note):
+
+1. Start-menu shortcut: the icon shows, and the running player groups with it on the taskbar.
+2. Apps & features lists Nakagawa Recomp at the release version.
+3. Uninstall page: the box is unchecked by default, Cancel changes nothing, and OK without the box keeps
+   `%LOCALAPPDATA%\Nakagawa`.
+4. Link safety: make a junction inside `%LOCALAPPDATA%\Nakagawa\saves` to a throwaway folder that holds a file
+   (`mklink /J`), run the uninstall with the box ticked and the second prompt answered Yes, and confirm the five data
+   folders are gone and the throwaway folder and its file are still there.
+5. Uninstall while the player runs: Retry/Cancel appears and nothing is removed until the player is closed.
+6. The SmartScreen text on first run matches the release notes.
+
 v0.0.2's installer is not Authenticode-signed, so Windows SmartScreen may warn on first run; say so in the release
 notes. Attach the installer and its `.sha256`; signing the `.sha256` is optional, because the player never
 downloads the installer. A copy that Setup installed updates by running the next release's Setup (the player's

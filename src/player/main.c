@@ -1324,6 +1324,7 @@ static void player_update_start(PlayerApp *app, PlayerUpdateJobKind kind) {
         /* A copy the Windows installer put in place updates through the next Setup, never a ZIP. */
         NkUpdateError refused;
         if (nk_update_refuse_for_setup_copy(app->install_root, &refused)) {
+            player_dev_log_add(app, "update", "%s: %s", refused.code, refused.message);
             player_update_fail(app, step, refused.code, refused.title, refused.message);
             return;
         }
