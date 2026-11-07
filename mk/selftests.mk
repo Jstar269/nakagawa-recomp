@@ -808,6 +808,7 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
 	@rc=0; $(GPU_COHERENCE_BIN) --twin 1 --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest twin gpu-timestamps (exit 77; the reason is printed above)"; 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest twin gpu-timestamps (exit $$rc)"; exit $$rc; fi
 	@$(MAKE) --no-print-directory gpu-coherence-selftest-snapbar-mutants
+	@$(MAKE) --no-print-directory ge-first-bad-draw-selftest GE_FBD_SKIP_STATUS=0
 
 # gpu-coherence-selftest-snapbar-mutants — the submit-batch case must kill each
 # SR_GPU_SNAPBAR_MUTANT in ge_gpu.c: 1 records one barrier command per image (the stream before
@@ -832,6 +833,40 @@ gpu-coherence-selftest-snapbar-mutants: shader-verify $(RT_GE_O)
 		if ! grep -Fq "$$kill" $$bin.log; then cat $$bin.log; echo "snapbar mutant $$m failed for another reason" >&2; exit 1; fi; \
 		echo "gpu-coherence-selftest-snapbar-mutants: mutant $$m killed ($$kill)"; \
 	done
+
+# vram-view-identity-selftest — the GE decoders the pause menu's VRAM viewer calls leave later
+# frames, guest memory and the GE state unchanged (#314; the gui.c layer and timing are not covered). ge.c's lists run on ge_gpu.c's real targets: each frame draws a target, stores into it
+# from the CPU, draws it as a texture into the shown target and presents that with a capture
+# armed. A run without the viewer writes the digest (every presented frame, the lists' return
+# codes, then guest VRAM and RAM as a guest read sees them and the GE state); runs with the
+# viewer's decodes at one frame's VBLANK must match it, and the decodes must show the scene and
+# move bytes into guest VRAM, so the match is not trivial. Again at render scale 2. Last, a
+# mutant whose viewer stores one byte into guest VRAM must fail on the next presented frame.
+# Exit 77 (no Vulkan device) fails the recipe, as gpu-coherence-selftest's does on hosted CI.
+VRAM_VIEW_BIN := $(BUILD_DIR)/vram_view_identity_selftest.exe
+
+$(VRAM_VIEW_BIN): shader-verify $(RT_GE_O)
+	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections -o $(VRAM_VIEW_BIN) \
+		tests/native/vram_view_identity_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
+
+vram-view-identity-selftest: $(VRAM_VIEW_BIN)
+	$(VRAM_VIEW_BIN) --write $(BUILD_DIR)/vram_view_ref_s1.txt
+	$(VRAM_VIEW_BIN) --check $(BUILD_DIR)/vram_view_ref_s1.txt
+	$(VRAM_VIEW_BIN) --check $(BUILD_DIR)/vram_view_ref_s1.txt --view-at 1
+	$(VRAM_VIEW_BIN) --check $(BUILD_DIR)/vram_view_ref_s1.txt --view-at 4
+	$(VRAM_VIEW_BIN) --scale 2 --write $(BUILD_DIR)/vram_view_ref_s2.txt
+	$(VRAM_VIEW_BIN) --scale 2 --check $(BUILD_DIR)/vram_view_ref_s2.txt --view-at 2
+	$(CC) $(CFLAGS) -DNK_VRAM_VIEW_MUTANT -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+		-o $(BUILD_DIR)/vram_view_identity_mutant.exe \
+		tests/native/vram_view_identity_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
+	@log=$(BUILD_DIR)/vram_view_identity_mutant.log; \
+	if $(BUILD_DIR)/vram_view_identity_mutant.exe --check $(BUILD_DIR)/vram_view_ref_s1.txt --view-at 1 > $$log 2>&1; then \
+		cat $$log; echo "vram-view-identity-selftest: the writing-viewer mutant passed" >&2; exit 1; fi; \
+	if ! grep -Fq 'FAIL want "present 2 ' $$log; then \
+		cat $$log; echo "vram-view-identity-selftest: the mutant failed for another reason" >&2; exit 1; fi; \
+	echo "vram-view-identity-selftest: the writing-viewer mutant is caught at the next presented frame"
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
@@ -867,6 +902,33 @@ tex-scale-selftest:
 
 native-core-tests: tex-scale-selftest
 
+# texrepl-selftest - texture replacement packs (src/rt/texrepl.h, #1880): PPSSPP's texture hashes
+# against reference values, the pack's ini and file-name rules, the wildcard lookup order, the
+# palette identity, malformed packs refused whole, and the decoded-image budget. A synthetic pack
+# written by the test; no GPU, no SDL, no game data.
+texrepl-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/core -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		tests/native/texrepl_selftest.c src/rt/texrepl.c $(PLAYER_PLATFORM_SRC) $(PLAYER_PLATFORM_LIBS) \
+		-o $(BUILD_DIR)/texrepl_selftest$(EXE_EXT) && $(BUILD_DIR)/texrepl_selftest$(EXE_EXT)
+
+native-core-tests: texrepl-selftest
+
+# texrepl-mutant - the selftest above built with NK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR, which leaves
+# the CLUTFORMAT word out of a palette texture's identity. The palette identity cell must fail, and
+# for that reason: its expected values were worked out from PPSSPP's formula, not from this code.
+texrepl-mutant:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	@$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/core -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		-DNK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR tests/native/texrepl_selftest.c src/rt/texrepl.c $(PLAYER_PLATFORM_SRC) \
+		$(PLAYER_PLATFORM_LIBS) -o $(BUILD_DIR)/texrepl_mutant$(EXE_EXT)
+	@rc=0; $(BUILD_DIR)/texrepl_mutant$(EXE_EXT) > $(BUILD_DIR)/texrepl_mutant.log 2>&1 || rc=$$?; \
+	cat $(BUILD_DIR)/texrepl_mutant.log; \
+	if [ $$rc -eq 0 ]; then echo "FAIL texrepl-mutant (the mutant passed: the palette identity is untested)"; exit 1; \
+	elif ! grep -q "palette identity" $(BUILD_DIR)/texrepl_mutant.log; then \
+		echo "FAIL texrepl-mutant (exit $$rc, but not from the palette identity check)"; exit 1; \
+	else echo "PASS texrepl-mutant (killed by the palette identity check, exit $$rc)"; fi
+
 # tex-scale-gate-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_NO_ACE_GATE, which lets
 # an authentic start read SR_TEX_SCALE and SR_SMART_2D. It passes only when the settings cell fails
 # for that reason, so the Ace gate is under test (contract section 11.2, item 1).
@@ -898,10 +960,30 @@ GPU_TEXSCALE_BUILD = $(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_TEXSCA
 gpu-texscale-selftest: shader-verify $(RT_GE_O)
 	$(GPU_TEXSCALE_BUILD) -o $(BUILD_DIR)/gpu_texscale_selftest.exe
 	@for args in "--scale 1" "--scale 4" "--scale 2 --tex-scale 4" "--twin native --scale 1" "--twin native --scale 4" \
-		"--twin native --scale 2 --tex-scale 4" "--twin 1 --scale 4"; do \
+		"--twin native --scale 2 --tex-scale 4" "--twin 1 --scale 4" "--repl-only --scale 1"; do \
 		rc=0; $(BUILD_DIR)/gpu_texscale_selftest.exe $$args || rc=$$?; \
 		if [ $$rc -eq 77 ]; then echo "SKIP gpu-texscale-selftest $$args (exit 77; the reason is printed above)"; \
 		elif [ $$rc -ne 0 ]; then echo "FAIL gpu-texscale-selftest $$args (exit $$rc)"; exit $$rc; fi; \
+	done
+
+# gpu-texrepl-mutant - the selftest above built twice, each time with a change that must fail the
+# replace cells for the intended reason: NK_TEXREPL_MUTANT_NO_LOOKUP, a stub whose texture lookup
+# never finds the pack (the listed texture is then drawn as the game made it), and
+# NK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR, a palette identity without the CLUTFORMAT word (the CLUT8
+# texture a PPSSPP-named file lists is then never found).
+gpu-texrepl-mutant: shader-verify $(RT_GE_O)
+	$(GPU_TEXSCALE_BUILD) -DNK_TEXREPL_MUTANT_NO_LOOKUP -o $(BUILD_DIR)/gpu_texrepl_mutant_lookup.exe
+	$(GPU_TEXSCALE_BUILD) -DNK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR -o $(BUILD_DIR)/gpu_texrepl_mutant_xor.exe
+	@for m in lookup:"FAIL replace: the first draw of a listed texture is not its replacement" \
+		xor:"FAIL replace-palette: a CLUT8 texture a PPSSPP-named file lists is not drawn from the pack"; do \
+		name=$${m%%:*}; want=$${m#*:}; rc=0; \
+		$(BUILD_DIR)/gpu_texrepl_mutant_$$name.exe > $(BUILD_DIR)/gpu_texrepl_mutant_$$name.log 2>&1 || rc=$$?; \
+		cat $(BUILD_DIR)/gpu_texrepl_mutant_$$name.log; \
+		if [ $$rc -eq 77 ]; then echo "SKIP gpu-texscale gpu-texrepl-mutant $$name (exit 77; the reason is printed above)"; \
+		elif [ $$rc -eq 0 ]; then echo "FAIL gpu-texrepl-mutant $$name (the mutant passed: the replace cells are untested)"; exit 1; \
+		elif ! grep -q "$$want" $(BUILD_DIR)/gpu_texrepl_mutant_$$name.log; then \
+			echo "FAIL gpu-texrepl-mutant $$name (exit $$rc, but not from the intended check)"; exit 1; \
+		else echo "PASS gpu-texrepl-mutant $$name (killed by the intended check, exit $$rc)"; fi; \
 	done
 
 # gpu-texscale-mutant - the selftest above built with NK_TEX_SCALE_MUTANT_SKIP_CONTENT_CHECK, which
@@ -917,6 +999,7 @@ gpu-texscale-mutant: shader-verify $(RT_GE_O)
 	elif ! grep -q "FAIL rewrite: stale scaled copy" $(BUILD_DIR)/gpu_texscale_mutant.log; then \
 		echo "FAIL gpu-texscale-mutant (exit $$rc, but not from the stale-copy check)"; exit 1; \
 	else echo "PASS gpu-texscale-mutant (killed by the stale-copy check, exit $$rc)"; fi
+	@$(MAKE) --no-print-directory texrepl-mutant gpu-texrepl-mutant
 
 gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
@@ -931,11 +1014,13 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 # gpu-capture-selftest — deterministic present-source capture regression (issue #57): the
 # production present path is armed and driven with synthetic pixels; the published P6 PPMs
 # are byte-checked (header, channel order, row pitch, no trailing bytes). Exit 77 = SKIP
-# when Vulkan or the validation layer is unavailable.
+# when Vulkan or the validation layer is unavailable. SR_VIDEOREC_SELFTEST opens the recorder's
+# test seams for the cell that records through the FSR 1 upscaler (#2138).
 GPU_CAPTURE_BIN := $(BUILD_DIR)/gpu_capture_selftest.exe
 
 $(GPU_CAPTURE_BIN): shader-verify
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		-DSR_VIDEOREC_SELFTEST \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_CAPTURE_BIN) \
 		tests/native/gpu_capture_selftest.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(LIBS)
@@ -983,6 +1068,78 @@ ge-replay: shader-verify $(RT_GE_O)
 		-o $(BUILD_DIR)/ge_replay.exe \
 		src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
+
+# ge-first-bad-draw-selftest — ge_replay --first-bad-draw (#2141) on a generated capture (no game
+# data): the comparison rules without a GPU, NO_DIFFERENCE from the unchanged backend, then each
+# executed SR_GE_FBD_MUTANT (1: a blend draw 3 does not have, 2: draw 3's depth writes off) builds
+# its own binary and must be named as draw 3 in linear and bisect mode, mutant 2 in depth alone.
+# Last, a known difference no mutant made: the "overlap" capture's one PRIM of two overlapping
+# 50% blends on 5650 (#2109; shader-blend batches read one pre-batch copy of the target) must be
+# found as draw 1, its 100x100 overlap and nothing else. The #2109 fix flips this expectation.
+# Then fail-closed cells: a 512-wide scissor (ge.c rasterizes inside 480x272 only), 33 targets
+# (one past the limit) and a stride past 1024 are INCOMPLETE (exit 5), and a capture with no
+# draw is NO_DRAWS (exit 6); none is ever NO_DIFFERENCE.
+# Exit 77 (no Vulkan device) is a SKIP, as for gpu-coherence-selftest (GE_FBD_SKIP_STATUS).
+GE_FBD_DIR = $(BUILD_DIR)/ge_first_bad_draw
+# The exit status of a skip: 77 run alone; gpu-coherence-selftest passes 0, so a host with no
+# Vulkan device gets SKIP lines there, as for its other skipped cases, not a make error.
+GE_FBD_SKIP_STATUS ?= 77
+ge-first-bad-draw-selftest: ge-replay
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(GE_FBD_DIR)').mkdir(parents=True, exist_ok=True)"
+	@$(BUILD_DIR)/ge_replay.exe --fbd-self-check
+	@$(BUILD_DIR)/ge_replay.exe --write-synthetic $(GE_FBD_DIR)/synthetic.ngef
+	@for mode in linear bisect; do \
+		log=$(GE_FBD_DIR)/clean-$$mode.log; result=0; \
+		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/synthetic.ngef --first-bad-draw --mode $$mode \
+			--report $(GE_FBD_DIR)/clean-$$mode > $$log 2>&1 || result=$$?; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest (exit 77; no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
+		if test $$result -ne 0 || ! grep -Fq "result=NO_DIFFERENCE draws=6 " $$log; then \
+			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the unchanged backend did not report NO_DIFFERENCE ($$mode)" >&2; exit 1; fi; \
+		echo "ge-first-bad-draw-selftest: unchanged backend NO_DIFFERENCE ($$mode)"; \
+	done
+	@for m in 1 2; do \
+		bin=$(BUILD_DIR)/ge_replay_fbd_mutant$$m.exe; \
+		$(CC) $(CFLAGS) -DSR_GE_FBD_MUTANT=$$m -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+			-o $$bin src/rt/ge_replay.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+			$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS) || exit 1; \
+		for mode in linear bisect; do \
+			log=$(GE_FBD_DIR)/mutant$$m-$$mode.log; result=0; \
+			$$bin $(GE_FBD_DIR)/synthetic.ngef --first-bad-draw --mode $$mode \
+				--report $(GE_FBD_DIR)/mutant$$m-$$mode > $$log 2>&1 || result=$$?; \
+			if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest mutant $$m (no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
+			if test $$result -ne 1 || ! grep -Fq "result=FIRST_BAD_DRAW index=3 " $$log || \
+			   ! grep -Fq "GE_FBD_DRAW index=3 command=PRIM" $$log || \
+			   ! grep -Fq "GE_FBD_CROP image=diff" $$log; then \
+				cat $$log; echo "FAIL ge-first-bad-draw-selftest: mutant $$m was not named as draw 3 ($$mode)" >&2; exit 1; fi; \
+			if test $$m -eq 1 && ! grep -Fq "GE_FBD_REGION kind=color" $$log; then \
+				cat $$log; echo "FAIL ge-first-bad-draw-selftest: mutant 1 left colour equal ($$mode)" >&2; exit 1; fi; \
+			if test $$m -eq 2 && { ! grep -Fq "GE_FBD_REGION kind=depth" $$log || grep -Fq "GE_FBD_REGION kind=color" $$log; }; then \
+				cat $$log; echo "FAIL ge-first-bad-draw-selftest: mutant 2 was not a depth-only difference ($$mode)" >&2; exit 1; fi; \
+			echo "ge-first-bad-draw-selftest: mutant $$m named as draw 3 ($$mode)"; \
+		done; \
+	done
+	@$(BUILD_DIR)/ge_replay.exe --write-synthetic $(GE_FBD_DIR)/overlap.ngef overlap
+	@for mode in linear bisect; do \
+		log=$(GE_FBD_DIR)/overlap-$$mode.log; result=0; \
+		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/overlap.ngef --first-bad-draw --mode $$mode \
+			--report $(GE_FBD_DIR)/overlap-$$mode > $$log 2>&1 || result=$$?; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest overlap (no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
+		if test $$result -ne 1 || ! grep -Fq "result=FIRST_BAD_DRAW index=1 draws=2 " $$log || \
+		   ! grep -Fq "pixels=10000 max_diff=" $$log || ! grep -Fq "bbox=140,100,239,199" $$log; then \
+			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the #2109 overlap was not found as draw 1, exactly the overlap ($$mode)" >&2; exit 1; fi; \
+		echo "ge-first-bad-draw-selftest: known difference #2109 found at draw 1, the 100x100 overlap only ($$mode)"; \
+	done
+	@for v in wide empty many deep; do \
+		$(BUILD_DIR)/ge_replay.exe --write-synthetic $(GE_FBD_DIR)/$$v.ngef $$v || exit 1; \
+	done
+	@for cell in "wide 5 reason=raster-bound" "empty 6 result=NO_DRAWS" "many 5 reason=region-limit" "deep 5 reason=stride"; do \
+		set -- $$cell; log=$(GE_FBD_DIR)/$$1.log; result=0; \
+		$(BUILD_DIR)/ge_replay.exe $(GE_FBD_DIR)/$$1.ngef --first-bad-draw --report $(GE_FBD_DIR)/$$1 > $$log 2>&1 || result=$$?; \
+		if test $$result -eq 77; then cat $$log; echo "SKIP ge-first-bad-draw-selftest $$1 (no Vulkan device)"; exit $(GE_FBD_SKIP_STATUS); fi; \
+		if test $$result -ne $$2 || ! grep -Fq "$$3" $$log || grep -Fq "result=NO_DIFFERENCE" $$log; then \
+			cat $$log; echo "FAIL ge-first-bad-draw-selftest: the $$1 capture was not refused with exit $$2 ($$3)" >&2; exit 1; fi; \
+		echo "ge-first-bad-draw-selftest: the $$1 capture is refused with exit $$2 ($$3)"; \
+	done
 
 # selftest — compile and run the C++ reference interpreter unit tests.
 # Requires g++ with C++17. Exit code 0 = all tests passed.

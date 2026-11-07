@@ -727,6 +727,8 @@ static bool files_identical(const char *left, const char *right) {
 
 typedef struct {
     char memstick[1024];
+    char display[256];  /* "SR_RESOLUTION_SCALE=1;SR_PRESENT_SCALING=sharp;..." (#2150) */
+    char ace[256];      /* SR_ACE */
     bool marker_present;
     bool valid;
 } RepeatLaunchReport;
@@ -744,6 +746,10 @@ static RepeatLaunchReport read_repeat_launch_report(const char *path) {
         }
         if (strncmp(line, "SR_MEMSTICK=", 12) == 0) {
             snprintf(report.memstick, sizeof(report.memstick), "%s", line + 12);
+        } else if (strncmp(line, "DISPLAY=", 8) == 0) {
+            snprintf(report.display, sizeof(report.display), "%s", line + 8);
+        } else if (strncmp(line, "ACE=", 4) == 0) {
+            snprintf(report.ace, sizeof(report.ace), "%s", line + 4);
         } else if (strcmp(line, "MARKER_PRESENT=1") == 0) {
             report.marker_present = true;
             report.valid = true;
@@ -1780,6 +1786,20 @@ static int repeat_launch_child_mode(void) {
     int ok = fprintf(report, "SR_MEMSTICK=%s\nMARKER_PRESENT=%d\n",
                      (memstick && *memstick) ? memstick : "<unset>",
                      marker_present ? 1 : 0) >= 0;
+    /* The display lines and the play line the launch exported (#2150). */
+    {
+        static const char *const display_keys[] = {"SR_RESOLUTION_SCALE", "SR_PRESENT_SCALING",
+                                                   "SR_VSYNC", "SR_FULLSCREEN",
+                                                   "SR_PRESENT_UPSCALE"};
+        ok = ok && fputs("DISPLAY=", report) >= 0;
+        for (size_t i = 0; i < sizeof(display_keys) / sizeof(display_keys[0]); i++) {
+            const char *value = getenv(display_keys[i]);
+            ok = ok && fprintf(report, "%s%s=%s", i ? ";" : "", display_keys[i],
+                               value ? value : "<unset>") >= 0;
+        }
+        const char *ace = getenv("SR_ACE");
+        ok = ok && fprintf(report, "\nACE=%s\n", ace ? ace : "<unset>") >= 0;
+    }
     if (fclose(report) != 0) ok = 0;
     if (!ok) return 4;
     /* Runtime output: the launch sends stdout and stderr to the boot-event
@@ -6822,7 +6842,7 @@ static void test_play_mode_settings(void) {
         assert(saved && strstr(saved, "\"enhanced\": {\"default\": \"enhanced\", \"af\": \"16\", "
                                       "\"text\": \"off\", \"readout\": \"off\", "
                                       "\"notice\": \"on\", \"smooth\": \"off\", "
-                                      "\"sas\": \"off\"},") != NULL);
+                                      "\"sas\": \"off\", \"upscale\": \"off\"},") != NULL);
         assert(strstr(saved, "\"TEST90001\": {\"mode\": \"library\", \"af\": \"8\", "
                              "\"notice\": \"off\"}") != NULL);
         assert(strstr(saved, "\"TEST90002\": {\"mode\": \"library\", \"logic_60\": \"off\"}")
@@ -7015,7 +7035,8 @@ static void test_play_mode_sas_settings(void) {
     assert(player_app_save_settings(app, path) == NK_OK);
     {
         char *saved = read_text_file(path);
-        assert(saved && strstr(saved, "\"smooth\": \"off\", \"sas\": \"sinc\"}") != NULL);
+        assert(saved && strstr(saved, "\"smooth\": \"off\", \"sas\": \"sinc\", "
+                                      "\"upscale\": \"off\"}") != NULL);
         assert(strstr(saved, "\"TEST92001\": {\"mode\": \"library\", \"sas\": \"off\"}") != NULL);
         free(saved);
     }
@@ -7040,7 +7061,8 @@ static void test_play_mode_sas_settings(void) {
     assert(player_app_save_settings(app, path) == NK_OK);
     {
         char *saved = read_text_file(path);
-        assert(saved && strstr(saved, "\"smooth\": \"off\", \"sas\": \"off\"}") != NULL);
+        assert(saved && strstr(saved, "\"smooth\": \"off\", \"sas\": \"off\", "
+                                      "\"upscale\": \"off\"}") != NULL);
         assert(strstr(saved, "\"TEST92001\": {\"mode\": \"library\", \"sas\": \"sinc\"}") != NULL);
         free(saved);
     }
@@ -7067,6 +7089,230 @@ static void test_play_mode_sas_settings(void) {
     free(back);
     free(app);
     printf("PASS: clean pitched sound is read, resolved and saved at both levels\n");
+}
+
+/* Graphics presets (#2150), an overlay: choosing one changes no row, an Enhanced or Ace
+ * session takes the preset's values, an Authentic session keeps the user's rows under every
+ * preset, editing a row it sets makes it Custom, and the choice is saved and loaded. */
+static void graphics_preset_session(const PlayerSettings *settings, NkRuntimeConfig *config,
+                                    PlayerPlayResolved *r, char *line, size_t cap) {
+    /* The launch path's order (player_launch_work_run): the rows, the play mode, then the
+       preset for an Enhanced or Ace session. */
+    memset(config, 0, sizeof(*config));
+    player_app_apply_settings_to_session(settings, config);
+    player_play_resolve(settings, "TEST92150", r);
+    assert(player_play_launch_line(r, line, cap));
+    player_session_apply_graphics_preset(settings, r->on, config);
+}
+
+static void test_graphics_presets(void) {
+    char sep = nk_platform_path_separator();
+    char cache_root[512], root[700], path[800];
+    char line[192], custom_line[192];
+    char note[192];
+    bool warns = true;
+    PlayerPlayResolved r, custom_r;
+    NkRuntimeConfig config, custom_config;
+    PlayerSettings custom;
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(root, sizeof(root), "%s%cgraphics_preset_probe", cache_root, sep);
+    assert(nk_platform_mkdir_p(root));
+    snprintf(path, sizeof(path), "%s%csettings.json", root, sep);
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    PlayerApp *back = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app && back);
+
+    player_app_settings_init_default(&app->settings);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    assert(strcmp(player_app_graphics_preset_label(app), "Custom") == 0);
+    assert(!player_app_graphics_preset_note(app, note, sizeof(note), &warns));
+    assert(note[0] == '\0' && !warns);
+    assert(player_graphics_preset_row(PLAYER_PRESET_CUSTOM) == NULL);
+    assert(player_graphics_preset_row(PLAYER_PRESET_COUNT) == NULL);
+    app->settings.graphics_preset = PLAYER_PRESET_COUNT;
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+
+    for (int p = PLAYER_PRESET_LOW; p < PLAYER_PRESET_COUNT; p++) {
+        const PlayerGraphicsPresetRow *row = player_graphics_preset_row(p);
+        assert(row && row->word && row->label && row->value);
+        for (int fs = 0; fs < 2; fs++) {
+            PlayerSettings expected;
+            player_app_settings_init_default(&app->settings);
+            app->settings.fullscreen = fs != 0;
+            app->settings.resolution_scale = row->resolution_scale == 1 ? 2 : 1;
+            app->settings.present_scaling = NK_PRESENT_SCALING_BILINEAR;
+            app->settings.vsync = false;
+            app->settings.fps_cap = 0;
+            app->settings.master_volume = 37;
+            app->settings.launcher_fullscreen = true;
+            app->settings.enhanced.library = PLAYER_PLAY_AUTHENTIC;
+            custom = app->settings;
+            /* Choosing a preset changes no row: only the choice. */
+            expected = app->settings;
+            expected.graphics_preset = p;
+            player_app_apply_graphics_preset(app, p);
+            assert(memcmp(&expected, &app->settings, sizeof(expected)) == 0);
+            assert(player_app_graphics_preset(app) == p);
+            assert(strcmp(player_app_graphics_preset_label(app), row->value) == 0);
+            assert(app->settings_notice[0] == '\0');
+            /* The note says where the preset applies, and names a value it cannot set. */
+            assert(player_app_graphics_preset_note(app, note, sizeof(note), &warns));
+            assert(strstr(note, row->label) != NULL &&
+                   strstr(note, " is used in Enhanced and Ace") != NULL &&
+                   strstr(note, "Authentic uses your own display settings.") != NULL);
+            assert(warns == row->upscaler);
+            assert((strstr(note, "FSR 1") != NULL) == row->upscaler);
+            if (row->upscaler) {
+                assert(strcmp(player_app_graphics_preset_label(app), "Ultra (no upscaler)") == 0);
+            }
+
+            /* Authentic: the session's config and launch line equal Custom's with the same
+               rows, under every preset. */
+            graphics_preset_session(&app->settings, &config, &r, line, sizeof(line));
+            graphics_preset_session(&custom, &custom_config, &custom_r, custom_line,
+                                    sizeof(custom_line));
+            assert(!r.on && !custom_r.on);
+            assert(strcmp(line, "off") == 0 && strcmp(custom_line, "off") == 0);
+            assert(memcmp(&config, &custom_config, sizeof(config)) == 0);
+            assert(config.resolution_scale == custom.resolution_scale &&
+                   config.present_scaling == NK_PRESENT_SCALING_BILINEAR && !config.vsync &&
+                   config.fullscreen == (fs != 0));
+            assert(config.present_upscale == NK_PRESENT_UPSCALE_OFF && config.ace_spec[0] == '\0');
+
+            /* Enhanced: the session takes the preset's values; the rest is the rows'. */
+            app->settings.enhanced.library = PLAYER_PLAY_ENHANCED;
+            custom.enhanced.library = PLAYER_PLAY_ENHANCED;
+            graphics_preset_session(&app->settings, &config, &r, line, sizeof(line));
+            graphics_preset_session(&custom, &custom_config, &custom_r, custom_line,
+                                    sizeof(custom_line));
+            assert(r.on && custom_r.on && strcmp(line, custom_line) == 0);
+            assert(config.resolution_scale == row->resolution_scale);
+            assert(config.present_scaling == row->present_scaling);
+            assert(config.vsync == row->vsync);
+            assert(config.fullscreen == (row->fullscreen >= 0 ? row->fullscreen != 0 : fs != 0));
+            assert(config.fps_cap == custom_config.fps_cap &&
+                   config.master_volume == custom_config.master_volume &&
+                   config.present_upscale == custom_config.present_upscale);
+            assert(custom_config.resolution_scale == custom.resolution_scale &&
+                   custom_config.present_scaling == NK_PRESENT_SCALING_BILINEAR &&
+                   !custom_config.vsync);
+        }
+    }
+
+    /* Editing a row the preset sets makes it Custom, even to the same value, and the note
+       goes with it. */
+    player_app_settings_init_default(&app->settings);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_ULTRA);
+    assert(player_app_graphics_preset_note(app, note, sizeof(note), &warns) && warns);
+    player_app_cycle_resolution_scale(app, 1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    assert(strcmp(player_app_graphics_preset_label(app), "Custom") == 0);
+    assert(!player_app_graphics_preset_note(app, note, sizeof(note), &warns));
+    assert(note[0] == '\0' && !warns);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_MEDIUM);
+    player_app_set_resolution_scale(app, app->settings.resolution_scale);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_MEDIUM);
+    player_app_toggle_vsync(app);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_MEDIUM);
+    player_app_cycle_present_scaling(app, 1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_MEDIUM);
+    player_app_set_present_scaling(app, NK_PRESENT_SCALING_INTEGER);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_HANDHELD);
+    player_app_toggle_fullscreen(app);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_CUSTOM);
+    /* Fullscreen is the user's own row under every other preset, in every session, so
+       changing it keeps the preset. */
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_LOW);
+    player_app_toggle_fullscreen(app);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_LOW);
+    /* Nor does a setting no preset sets. */
+    player_app_set_fps_cap(app, app->settings.fps_cap < 0 ? 0 : -1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_LOW);
+
+    /* No preset choice writes or clears another notice. */
+    snprintf(app->settings_notice, sizeof(app->settings_notice), "Settings could not be read.");
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_ULTRA);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_LOW);
+    assert(strcmp(app->settings_notice, "Settings could not be read.") == 0);
+    app->settings_notice[0] = '\0';
+
+    /* Stepping: Custom goes to Low, Handheld wraps to Low, back from Low is Handheld. */
+    player_app_settings_init_default(&app->settings);
+    player_app_cycle_graphics_preset(app, 1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_LOW);
+    for (int p = PLAYER_PRESET_MEDIUM; p < PLAYER_PRESET_COUNT; p++) {
+        player_app_cycle_graphics_preset(app, 1);
+        assert(player_app_graphics_preset(app) == p);
+    }
+    player_app_cycle_graphics_preset(app, 1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_LOW);
+    player_app_cycle_graphics_preset(app, -1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_HANDHELD);
+    player_app_settings_init_default(&app->settings);
+    player_app_cycle_graphics_preset(app, -1);
+    assert(player_app_graphics_preset(app) == PLAYER_PRESET_HANDHELD);
+
+    /* Saved beside the rows, which keep the user's values, and loaded back with its note. */
+    player_app_settings_init_default(&app->settings);
+    player_app_apply_graphics_preset(app, PLAYER_PRESET_ULTRA);
+    assert(player_app_save_settings(app, path) == NK_OK);
+    {
+        char *saved = read_text_file(path);
+        assert(saved && strstr(saved, "\"graphics_preset\": \"ultra\",") != NULL);
+        assert(strstr(saved, "\"resolution_scale\": 1,") != NULL);
+        free(saved);
+    }
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(player_app_graphics_preset(back) == PLAYER_PRESET_ULTRA);
+    assert(back->settings.resolution_scale == 1);
+    assert(strcmp(player_app_graphics_preset_label(back), "Ultra (no upscaler)") == 0);
+    assert(player_app_graphics_preset_note(back, note, sizeof(note), &warns) && warns &&
+           strstr(note, "FSR 1") != NULL);
+
+    /* The rows a file holds are kept as they are beside its preset. */
+    write_text_file(path,
+        "{\"schema_version\": 2, \"graphics_preset\": \"high\", \"resolution_scale\": 2}");
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.resolution_scale == 2);
+    assert(player_app_graphics_preset(back) == PLAYER_PRESET_HIGH);
+    /* A file without the key is Custom, whatever was chosen before it was read. */
+    write_text_file(path, "{\"schema_version\": 2, \"resolution_scale\": 2}");
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(player_app_graphics_preset(back) == PLAYER_PRESET_CUSTOM);
+    assert(player_app_save_settings(back, path) == NK_OK);
+    {
+        char *saved = read_text_file(path);
+        assert(saved && strstr(saved, "\"graphics_preset\": \"custom\",") != NULL);
+        free(saved);
+    }
+    /* A word this build does not know is Custom. */
+    write_text_file(path, "{\"schema_version\": 2, \"graphics_preset\": \"cinematic\"}");
+    back->settings.graphics_preset = PLAYER_PRESET_HIGH;
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(player_app_graphics_preset(back) == PLAYER_PRESET_CUSTOM);
+
+    /* v0.0.1's settings file, from before presets, loads as it did, as Custom. */
+    versioned_copy_fixture("fixtures/user_data/v0.0.1/settings.json", path);
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings_notice[0] == '\0');
+    assert(back->settings.resolution_scale == 2);
+    assert(back->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    assert(back->settings.vsync == false);
+    assert(player_app_graphics_preset(back) == PLAYER_PRESET_CUSTOM);
+
+    assert(remove(path) == 0);
+    (void)test_rmdir(root);
+    free(back);
+    free(app);
+    printf("PASS: graphics presets change no row, reach only Enhanced and Ace sessions, turn "
+           "Custom on an edit, save and load\n");
 }
 
 /* Smooth motion (#1272) as an Enhanced part: off by default, x2 on the launch line and never
@@ -7181,6 +7427,118 @@ static void test_play_mode_line_parses_in_runtime(void) {
         expect_line_parses_in_runtime(&r);
     }
     printf("[PLAYER_STATE_TEST] play mode lines parse in the runtime PASSED\n");
+}
+
+/* Sharper enlarging (#2122): the FSR 1 presentation upscaler as an Enhanced part. Off in a fresh
+ * settings file; read, resolved and saved at both levels; it sets NkRuntimeConfig.present_upscale
+ * (exported as SR_PRESENT_UPSCALE, test_launch_resolution) for Enhanced and Ace only, and never
+ * enters the SR_ACE line, which the runtime would refuse with an unknown key. */
+static void test_play_mode_upscale_settings(void) {
+    char sep = nk_platform_path_separator();
+    char cache_root[512], root[700], path[800];
+    char line[192];
+    PlayerPlayResolved r;
+    const PlayerEnhancedPartInfo *info = player_enhanced_part(PLAYER_PART_UPSCALE);
+    assert(info && strcmp(info->key, "upscale") == 0 && info->fresh == 0 && info->value_count == 2);
+    assert(strcmp(player_enhanced_part_label(PLAYER_PART_UPSCALE, 1), "FSR 1") == 0 &&
+           strcmp(player_enhanced_part_label(PLAYER_PART_UPSCALE, 0), "Off") == 0);
+    /* The row says it is presentation only and when it applies (#2122). */
+    assert(strstr(info->sentence, "larger than the game") != NULL &&
+           strstr(info->sentence, "Only what you see changes") != NULL &&
+           strstr(info->sentence, "in recordings") != NULL &&
+           strstr(info->sentence, "screenshots stay the same") != NULL);
+
+    PlayerSettings fresh;
+    player_app_settings_init_default(&fresh);
+    assert(fresh.enhanced.part[PLAYER_PART_UPSCALE] == 0);
+
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(root, sizeof(root), "%s%cplay_mode_upscale_probe", cache_root, sep);
+    assert(nk_platform_mkdir_p(root));
+    snprintf(path, sizeof(path), "%s%csettings.json", root, sep);
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    PlayerApp *back = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app && back);
+
+    /* The library on with FSR 1; one title turns it off, one plays Authentic, one says fsr2. */
+    write_text_file(path,
+        "{\"schema_version\": 2,"
+        " \"enhanced\": {\"default\": \"enhanced\", \"upscale\": \"fsr1\"},"
+        " \"title_play\": {\"TEST94001\": {\"mode\": \"library\", \"upscale\": \"off\"},"
+        " \"TEST94002\": {\"mode\": \"authentic\"},"
+        " \"TEST94004\": {\"mode\": \"ace\", \"upscale\": \"fsr2\"}}}");
+    assert(player_app_load_settings(app, path) == NK_OK);
+    assert(app->settings.enhanced.part[PLAYER_PART_UPSCALE] == 1);
+    player_play_resolve(&app->settings, "TEST94003", &r);        /* follows the library */
+    assert(r.on && r.part[PLAYER_PART_UPSCALE] == 1);
+    assert(player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_FSR1);
+    assert(player_play_launch_line(&r, line, sizeof(line)) && strstr(line, "upscale") == NULL);
+    expect_line_parses_in_runtime(&r);
+    player_play_resolve(&app->settings, "TEST94001", &r);
+    assert(r.on && r.part[PLAYER_PART_UPSCALE] == 0);
+    assert(player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_OFF);
+    player_play_resolve(&app->settings, "TEST94002", &r);        /* Authentic: off whatever */
+    assert(!r.on && player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_OFF);
+    player_play_resolve(&app->settings, "TEST94004", &r);        /* a word it does not know */
+    assert(r.on && r.part[PLAYER_PART_UPSCALE] == 0 &&
+           player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_OFF);
+    /* The acceptance checkpoint turns the resolution off; the upscaler goes with it. */
+    player_play_resolve(&app->settings, "TEST94003", &r);
+    r.on = false;
+    assert(player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_OFF);
+    assert(player_play_present_upscale(NULL) == NK_PRESENT_UPSCALE_OFF);
+    /* The launch's configuration (player_launch_work_run): what nk_launch exports. */
+    {
+        NkRuntimeConfig config;
+        memset(&config, 0, sizeof(config));
+        player_play_config_session(&app->settings, "TEST94003", false, false, &config, &r);
+        assert(config.present_upscale == NK_PRESENT_UPSCALE_FSR1 && r.on);
+        assert(strncmp(config.ace_spec, "v1;tier=enhanced;", 17) == 0 &&
+               strstr(config.ace_spec, "upscale") == NULL);
+        player_play_config_session(&app->settings, "TEST94003", false, true, &config, NULL);
+        assert(config.present_upscale == NK_PRESENT_UPSCALE_OFF &&
+               strcmp(config.ace_spec, "off") == 0);              /* the acceptance checkpoint */
+        player_play_config_session(&app->settings, "TEST94001", false, false, &config, NULL);
+        assert(config.present_upscale == NK_PRESENT_UPSCALE_OFF);
+        player_play_config_session(&app->settings, "TEST94002", false, false, &config, NULL);
+        assert(config.present_upscale == NK_PRESENT_UPSCALE_OFF &&
+               strcmp(config.ace_spec, "off") == 0);              /* Authentic */
+    }
+    /* Ace with its 60 FPS logic keeps the upscaler: only smooth motion steps aside. */
+    {
+        PlayerTitlePlay *own = NULL;
+        for (int i = 0; i < app->settings.title_play_count; i++)
+            if (strcmp(app->settings.title_play[i].key, "TEST94004") == 0)
+                own = &app->settings.title_play[i];
+        assert(own && own == player_settings_title_play(&app->settings, "TEST94004"));
+        own->part[PLAYER_PART_UPSCALE] = 1;
+        player_play_resolve(&app->settings, "TEST94004", &r);
+        player_play_apply_logic_60(&r, true);
+        assert(r.mode == PLAYER_PLAY_ACE && player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_FSR1);
+        expect_line_parses_in_runtime(&r);
+        own->part[PLAYER_PART_UPSCALE] = 0;
+    }
+
+    assert(player_app_save_settings(app, path) == NK_OK);
+    {
+        char *saved = read_text_file(path);
+        assert(saved && strstr(saved, "\"sas\": \"off\", \"upscale\": \"fsr1\"}") != NULL);
+        assert(strstr(saved, "\"TEST94001\": {\"mode\": \"library\", \"upscale\": \"off\"}") != NULL);
+        free(saved);
+    }
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.enhanced.part[PLAYER_PART_UPSCALE] == 1);
+    player_play_resolve(&back->settings, "TEST94001", &r);
+    assert(r.on && r.part[PLAYER_PART_UPSCALE] == 0);
+    player_play_resolve(&back->settings, "TEST94003", &r);
+    assert(player_play_present_upscale(&r) == NK_PRESENT_UPSCALE_FSR1);
+
+    remove(path);
+    (void)test_rmdir(root);
+    free(back);
+    free(app);
+    printf("[PLAYER_STATE_TEST] sharper enlarging is read, resolved, saved and exported PASSED\n");
 }
 
 /* Settings > Enhanced opened from a title (#2055): the page's rows act on that title, Back
@@ -7552,7 +7910,9 @@ int main(int argc, char **argv) {
     test_play_mode_settings_mapping();
     test_play_mode_smooth_motion();
     test_play_mode_sas_settings();
+    test_graphics_presets();
     test_play_mode_line_parses_in_runtime();
+    test_play_mode_upscale_settings();
     test_play_mode_title_page();
     /* Saves a library file under the cache root, so it runs only once that
      * root is the temporary one. */
@@ -11945,6 +12305,60 @@ int main(int argc, char **argv) {
         /* Recovery: restore the executable and launch again. */
         copy_executable_file(self_path, package_exe);
         repeat_launch_and_settle(rep, 0, 3000, 3500, memstick1);
+
+        /* #2150: a graphics preset reaches the launch environment of an Enhanced session
+           only. An Authentic launch exports the user's own display rows under every preset,
+           exactly as with Custom; an Enhanced launch exports the preset's values. */
+        {
+            PlayerSettings kept = rep->settings;
+            char custom_display[256];
+            rep->settings.resolution_scale = 2;
+            rep->settings.present_scaling = NK_PRESENT_SCALING_INTEGER;
+            rep->settings.vsync = false;
+            rep->settings.fullscreen = false;
+            for (int enhanced = 0; enhanced < 2; enhanced++) {
+                rep->settings.enhanced.library =
+                    enhanced ? PLAYER_PLAY_ENHANCED : PLAYER_PLAY_AUTHENTIC;
+                rep->settings.graphics_preset = PLAYER_PRESET_CUSTOM;
+                repeat_launch_and_settle(rep, 0, 3000, 3500, memstick1);
+                RepeatLaunchReport report = read_repeat_launch_report(report_path);
+                assert(report.valid);
+                assert(strcmp(report.display,
+                              "SR_RESOLUTION_SCALE=2;SR_PRESENT_SCALING=integer;SR_VSYNC=0;"
+                              "SR_FULLSCREEN=0;SR_PRESENT_UPSCALE=off") == 0);
+                assert((strcmp(report.ace, "off") == 0) == !enhanced);
+                snprintf(custom_display, sizeof(custom_display), "%s", report.display);
+                for (int p = PLAYER_PRESET_LOW; p < PLAYER_PRESET_COUNT; p++) {
+                    const PlayerGraphicsPresetRow *row = player_graphics_preset_row(p);
+                    char expected[256];
+                    rep->settings.graphics_preset = p;
+                    repeat_launch_and_settle(rep, 0, 3000, 3500, memstick1);
+                    report = read_repeat_launch_report(report_path);
+                    assert(report.valid);
+                    assert((strcmp(report.ace, "off") == 0) == !enhanced);
+                    if (!enhanced) {
+                        snprintf(expected, sizeof(expected), "%s", custom_display);
+                    } else {
+                        snprintf(expected, sizeof(expected),
+                                 "SR_RESOLUTION_SCALE=%d;SR_PRESENT_SCALING=%s;SR_VSYNC=%d;"
+                                 "SR_FULLSCREEN=%d;SR_PRESENT_UPSCALE=off",
+                                 row->resolution_scale,
+                                 row->present_scaling == NK_PRESENT_SCALING_SHARP ? "sharp"
+                                     : row->present_scaling == NK_PRESENT_SCALING_INTEGER
+                                         ? "integer" : "bilinear",
+                                 row->vsync ? 1 : 0, row->fullscreen > 0 ? 1 : 0);
+                    }
+                    if (strcmp(report.display, expected) != 0) {
+                        fprintf(stderr, "preset %s, %s: launched %s, expected %s\n", row->word,
+                                enhanced ? "Enhanced" : "Authentic", report.display, expected);
+                    }
+                    assert(strcmp(report.display, expected) == 0);
+                }
+            }
+            rep->settings = kept;
+            printf("PASS: graphics presets reach Enhanced launches only; Authentic exports the "
+                   "user's rows under every preset\n");
+        }
 
         /* The player must fail closed when it cannot prepare the structured
            launch-details file that carries named child stop reasons. */
