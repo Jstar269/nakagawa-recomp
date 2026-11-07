@@ -101,6 +101,18 @@ class TitleManifestTests(unittest.TestCase):
             set(title_manifest.DECLARABLE_BINDING_FAMILIES),
         )
 
+    def test_build_label_schema_rejects_leading_and_trailing_spaces(self) -> None:
+        schema = json.loads((ROOT / "assets" / "title_manifest.schema.json").read_text(encoding="utf-8"))
+        builds = schema["$defs"]["disc"]["properties"]["builds"]["items"]["properties"]
+        expected = r"^[!-~]([ -~]*[!-~])?$"
+        for field in ("label", "reason"):
+            with self.subTest(field=field):
+                pattern = builds[field]["pattern"]
+                self.assertEqual(pattern, expected)
+                self.assertIsNotNone(re.fullmatch(pattern, "Recorded build"))
+                self.assertIsNone(re.fullmatch(pattern, " leading"))
+                self.assertIsNone(re.fullmatch(pattern, "trailing "))
+
     def test_schema_enums_equal_the_python_vocabularies(self) -> None:
         schema = json.loads((ROOT / "assets" / "title_manifest.schema.json").read_text(encoding="utf-8"))
         contract = schema["$defs"]["runtimeContract"]["properties"]

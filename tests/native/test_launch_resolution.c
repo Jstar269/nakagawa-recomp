@@ -22,6 +22,7 @@
 #endif
 
 #include "nk_font.h"
+#include "nk_iso.h"
 #include "nk_launch.h"
 #include "nk_psp_keystore.h"
 #include "nk_platform.h"
@@ -866,6 +867,205 @@ static void make_game(NkGameEntry *game, const char *iso_path) {
     snprintf(game->title_id, sizeof(game->title_id), "synthetic-allegrex-v1");
     snprintf(game->title_name, sizeof(game->title_name), "Launch Resolution Fixture");
     snprintf(game->iso_path, sizeof(game->iso_path), "%s", iso_path);
+}
+
+static void test_write_iso_both_endian32(uint8_t *out, uint32_t value) {
+    out[0] = (uint8_t)value;
+    out[1] = (uint8_t)(value >> 8);
+    out[2] = (uint8_t)(value >> 16);
+    out[3] = (uint8_t)(value >> 24);
+    out[4] = (uint8_t)(value >> 24);
+    out[5] = (uint8_t)(value >> 16);
+    out[6] = (uint8_t)(value >> 8);
+    out[7] = (uint8_t)value;
+}
+
+static size_t test_write_iso_directory_record(uint8_t *out, const uint8_t *name,
+                                              size_t name_size, uint32_t lba,
+                                              uint32_t size, bool is_directory) {
+    size_t record_size = 33u + name_size;
+    if (record_size & 1u) record_size++;
+    assert(record_size <= UINT8_MAX);
+    memset(out, 0, record_size);
+    out[0] = (uint8_t)record_size;
+    test_write_iso_both_endian32(out + 2, lba);
+    test_write_iso_both_endian32(out + 10, size);
+    out[25] = is_directory ? 0x02u : 0u;
+    out[28] = 1u; /* volume sequence number, little-endian */
+    out[31] = 1u; /* volume sequence number, big-endian */
+    out[32] = (uint8_t)name_size;
+    memcpy(out + 33, name, name_size);
+    return record_size;
+}
+
+static size_t test_write_iso_directory(uint8_t *out, uint32_t lba,
+                                       uint32_t parent_lba,
+                                       const uint8_t *child_name,
+                                       size_t child_name_size,
+                                       uint32_t child_lba,
+                                       uint32_t child_size,
+                                       bool child_is_directory) {
+    static const uint8_t current_name = 0;
+    static const uint8_t parent_name = 1;
+    size_t used = 0;
+    used += test_write_iso_directory_record(out + used, &current_name, 1u,
+                                            lba, 2048u, true);
+    used += test_write_iso_directory_record(out + used, &parent_name, 1u,
+                                            parent_lba, 2048u, true);
+    used += test_write_iso_directory_record(out + used, child_name,
+                                            child_name_size, child_lba,
+                                            child_size, child_is_directory);
+    assert(used <= 2048u);
+    return used;
+}
+
+static void test_write_build_identity_iso(const char *path,
+                                          const uint8_t *executable,
+                                          size_t executable_size) {
+    enum { SECTOR_SIZE = 2048, PVD_LBA = 16, ROOT_LBA = 17,
+           GAME_LBA = 18, SYSDIR_LBA = 19, EBOOT_LBA = 20,
+           ISO_SECTORS = 21 };
+    static const uint8_t game_name[] = "PSP_GAME";
+    static const uint8_t sysdir_name[] = "SYSDIR";
+    static const uint8_t eboot_name[] = "EBOOT.BIN;1";
+    uint8_t image[ISO_SECTORS * SECTOR_SIZE] = { 0 };
+    uint8_t *pvd = image + PVD_LBA * SECTOR_SIZE;
+    assert(executable && executable_size > 0 && executable_size <= SECTOR_SIZE);
+    pvd[0] = 1u;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1u;
+    test_write_iso_both_endian32(pvd + 158, ROOT_LBA);
+    test_write_iso_both_endian32(pvd + 166, SECTOR_SIZE);
+    test_write_iso_directory(image + ROOT_LBA * SECTOR_SIZE,
+                             ROOT_LBA, ROOT_LBA, game_name,
+                             sizeof(game_name) - 1u, GAME_LBA,
+                             SECTOR_SIZE, true);
+    test_write_iso_directory(image + GAME_LBA * SECTOR_SIZE,
+                             GAME_LBA, ROOT_LBA, sysdir_name,
+                             sizeof(sysdir_name) - 1u, SYSDIR_LBA,
+                             SECTOR_SIZE, true);
+    test_write_iso_directory(image + SYSDIR_LBA * SECTOR_SIZE,
+                             SYSDIR_LBA, GAME_LBA, eboot_name,
+                             sizeof(eboot_name) - 1u, EBOOT_LBA,
+                             (uint32_t)executable_size, false);
+    memcpy(image + EBOOT_LBA * SECTOR_SIZE, executable, executable_size);
+    write_bytes(path, image, sizeof(image));
+}
+
+static void test_sha256_hex(const uint8_t *bytes, size_t size, char out[65]) {
+    static const char hex[] = "0123456789abcdef";
+    NkSha256 ctx;
+    uint8_t digest[32];
+    nk_sha256_init(&ctx);
+    nk_sha256_update(&ctx, bytes, size);
+    nk_sha256_finish(&ctx, digest);
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        out[i * 2u] = hex[digest[i] >> 4];
+        out[i * 2u + 1u] = hex[digest[i] & 0x0fu];
+    }
+    out[64] = '\0';
+}
+
+static void test_build_identity_run_entry(const char *base, char sep) {
+    static const char title_id[] = "build-identity-entry-v1";
+    static const char game_name[] = "build-identity-entry";
+    static const char disc_id[] = "TEST00077";
+    static const uint32_t executable_entry = 0x08802000u;
+    static const uint32_t fallback_entry = 0x08803000u;
+    static const uint8_t listed_executable[] = "synthetic-listed-executable";
+    static const uint8_t unlisted_executable[] = "synthetic-unlisted-executable";
+    char manifest_path[1000];
+    char listed_iso[1000];
+    char unlisted_iso[1000];
+    char runtime_dir[1100];
+    char runtime_path[1200];
+    char image_path[1200];
+    char build_root[1000];
+    char data_path[1100];
+    char memory_stick_path[1100];
+    char digest[65];
+    char manifest_json[4096];
+    char error[512] = "";
+    NkTitleEntrySnapshot snapshot = { 0 };
+    NkBuildIdentity identity;
+    NkGameEntry game;
+    NkLaunchSession session;
+    int written;
+
+    printf("[LAUNCH_TEST] Build identity selects the executable entry only for an unlisted build\n");
+    snprintf(manifest_path, sizeof(manifest_path), "%s%cbuild-identity-entry.json", base, sep);
+    snprintf(listed_iso, sizeof(listed_iso), "%s%cbuild-identity-listed.iso", base, sep);
+    snprintf(unlisted_iso, sizeof(unlisted_iso), "%s%cbuild-identity-unlisted.iso", base, sep);
+    snprintf(build_root, sizeof(build_root), "%s%cbuild", base, sep);
+    snprintf(runtime_dir, sizeof(runtime_dir), "%s%c%s", build_root, sep, game_name);
+    snprintf(runtime_path, sizeof(runtime_path), "%s%c%s", runtime_dir, sep, game_name);
+    snprintf(image_path, sizeof(image_path), "%s%c%s_image.bin", runtime_dir, sep, game_name);
+    snprintf(data_path, sizeof(data_path), "%s%cbuild-identity-data", base, sep);
+    snprintf(memory_stick_path, sizeof(memory_stick_path), "%s%cbuild-identity-ms", base, sep);
+    assert(strlen(listed_iso) < NK_MAX_PATH && strlen(unlisted_iso) < NK_MAX_PATH);
+
+    test_write_build_identity_iso(listed_iso, listed_executable, sizeof(listed_executable));
+    test_write_build_identity_iso(unlisted_iso, unlisted_executable, sizeof(unlisted_executable));
+    test_sha256_hex(listed_executable, sizeof(listed_executable), digest);
+    written = snprintf(manifest_json, sizeof(manifest_json),
+        "{\"schema_version\":1,\"id\":\"%s\",\"game_name\":\"%s\","
+        "\"display_name\":\"Build Identity Entry Fixture\",\"kind\":\"retail\","
+        "\"disc\":{\"id\":\"%s\",\"region\":\"NA\","
+        "\"revision_policy\":\"exact-disc-id\",\"builds\":["
+        "{\"executable_sha256\":\"%s\",\"status\":\"supported\","
+        "\"label\":\"Recorded fixture build\"}]},"
+        "\"executable\":{\"base\":\"0x08800000\",\"entry\":\"0x%08x\","
+        "\"bss_metadata_source\":\"none\",\"extra_executable_spans\":[]},"
+        "\"modules\":[],\"filesystem\":{\"data_root\":\"build-identity-data\","
+        "\"memory_stick_root\":\"build-identity-ms\","
+        "\"device_prefixes\":[\"host0:\"]},\"hle_profile\":\"standard\","
+        "\"feature_requirements\":[\"allegrex\"],\"verification_profile\":\"smoke\","
+        "\"runtime_bindings\":{\"schema_version\":1,\"fallback_entry\":\"0x%08x\"}}",
+        title_id, game_name, disc_id, digest, executable_entry, fallback_entry);
+    assert(written > 0 && (size_t)written < sizeof(manifest_json));
+    write_file(manifest_path, manifest_json);
+    if (!nk_title_manifest_load_overlay_ext(manifest_path, false, error, sizeof(error))) {
+        printf("[LAUNCH_TEST] build-identity manifest rejected: %s\n", error);
+        assert(!"build-identity fixture manifest must validate");
+    }
+
+    assert(nk_platform_mkdir_p(runtime_dir));
+    write_file(runtime_path, "runtime");
+    write_file(image_path, "image");
+    make_catalog_data_root(base, title_id);
+    assert(nk_title_catalog_find_by_id(title_id, &snapshot));
+    assert(snapshot.entry.executable_entry == executable_entry);
+    assert(snapshot.entry.run_entry == fallback_entry);
+    nk_title_catalog_snapshot_release(&snapshot);
+
+    assert(nk_title_manifest_identify_build(disc_id, listed_iso, "EBOOT.BIN", &identity));
+    assert(identity.status == NK_BUILD_SUPPORTED);
+    make_game(&game, listed_iso);
+    snprintf(game.disc_id, sizeof(game.disc_id), "%s", disc_id);
+    snprintf(game.title_id, sizeof(game.title_id), "%s", title_id);
+    snprintf(game.selected_executable, sizeof(game.selected_executable), "EBOOT.BIN");
+    assert(nk_launch_prepare_session(&session, &game, base) == NK_OK);
+    assert(session.entry_point == fallback_entry);
+
+    assert(nk_title_manifest_identify_build(disc_id, unlisted_iso, "EBOOT.BIN", &identity));
+    assert(identity.status == NK_BUILD_UNLISTED);
+    make_game(&game, unlisted_iso);
+    snprintf(game.disc_id, sizeof(game.disc_id), "%s", disc_id);
+    snprintf(game.title_id, sizeof(game.title_id), "%s", title_id);
+    snprintf(game.selected_executable, sizeof(game.selected_executable), "EBOOT.BIN");
+    assert(nk_launch_prepare_session(&session, &game, base) == NK_OK);
+    assert(session.entry_point == executable_entry);
+
+    nk_title_catalog_clear_overlay();
+    remove(manifest_path);
+    remove(listed_iso);
+    remove(unlisted_iso);
+    remove(runtime_path);
+    remove(image_path);
+    test_rmdir(data_path);
+    test_rmdir(memory_stick_path);
+    test_rmdir(runtime_dir);
+    test_rmdir(build_root);
 }
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -2541,6 +2741,7 @@ int main(int argc, char **argv) {
     test_keep_run_log(base, sep);
 
     test_launcher_display_choice();
+    test_build_identity_run_entry(base, sep);
 
     printf("[LAUNCH_TEST] ALL LAUNCH RESOLUTION TESTS PASSED!\n");
     native_test_assert_real_config_untouched();

@@ -469,6 +469,59 @@ class NkCoreTests(unittest.TestCase):
         self.assertIn("INSPECTING_ISO", stages)
         self.assertIn("READY", stages)
 
+    def test_package_build_applies_the_executable_build_to_the_titles_bindings(self) -> None:
+        """A build the manifest marks known-bad stops the build, and an unlisted build is built
+        without the title's runtime_bindings (#2140)."""
+        import hashlib
+
+        from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
+
+        elf = build_plain_mips_elf()
+        iso_file = self.temp_dir / "bound.iso"
+        create_test_iso_with_executables(iso_file, elf, disc_id="UCUS98701")
+        manifest = title_manifest.validate_manifest(
+            json.loads(
+                (Path(__file__).resolve().parent.parent / "assets" / "titles" / "hst-ucus98701.json")
+                .read_text(encoding="utf-8")
+            )
+        )
+        self.assertIn("runtime_bindings", manifest)
+        digest = hashlib.sha256(elf).hexdigest()
+
+        def with_builds(*builds: dict) -> dict:
+            copy = json.loads(json.dumps(manifest))
+            copy["disc"]["builds"] = list(builds)
+            return dict(title_manifest.validate_manifest(copy))
+
+        class Reporter:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, str, str]] = []
+
+            def report(self, stage: str, status: str, message: str, *args, **kwargs) -> None:
+                self.events.append((stage, status, message))
+
+        listed = {"executable_sha256": digest, "status": "supported", "label": "DISC_VERSION 1.00"}
+        reporter = Reporter()
+        kept = nk_cli._apply_executable_build(iso_file, "EBOOT.BIN", with_builds(listed), reporter)
+        self.assertIn("runtime_bindings", kept)
+        self.assertEqual(reporter.events, [])
+
+        untracked = nk_cli._apply_executable_build(iso_file, "EBOOT.BIN", manifest, reporter)
+        self.assertIn("runtime_bindings", untracked)
+
+        other = {"executable_sha256": "1" * 64, "status": "supported", "label": "DISC_VERSION 1.01"}
+        unbound = nk_cli._apply_executable_build(iso_file, "EBOOT.BIN", with_builds(other), reporter)
+        self.assertNotIn("runtime_bindings", unbound)
+        self.assertEqual(unbound["disc"]["builds"][0]["label"], "DISC_VERSION 1.01")
+        self.assertEqual(reporter.events[0][:2], ("preflight", "WARN"))
+        self.assertIn("not applied", reporter.events[0][2])
+        self.assertIn("DISC_VERSION 1.01", reporter.events[0][2])
+
+        bad = dict(listed, status="known-bad", reason="A patched executable; its addresses differ.")
+        with self.assertRaises(nk_cli.PackageBuildError) as raised:
+            nk_cli._apply_executable_build(iso_file, "EBOOT.BIN", with_builds(bad), reporter)
+        self.assertIn("addresses differ", str(raised.exception))
+
     def test_preparation_names_a_pbp_package_boundary(self) -> None:
         """A PBP package reaches the caller as a named boundary, not PREPARATION_FAILED."""
         from test_iso_parity import build_pbp_package
@@ -498,6 +551,89 @@ class NkCoreTests(unittest.TestCase):
         with result.manifest_path.open("r", encoding="utf-8") as stream:
             manifest = json.load(stream)
         self.assertEqual(manifest["boot_executable"], "EBOOT.BIN")
+
+    def _registry_with_builds(self, elf: bytes, statuses: dict[str, str]) -> TitleRegistry:
+        """The synthetic title with a build list; ``statuses`` maps a label to a status for ``elf``'s digest."""
+        import dataclasses
+        import hashlib
+
+        registry = TitleRegistry(include_defaults=True)
+        base = registry.lookup_by_disc_id("TEST00001")
+        digest = hashlib.sha256(elf).hexdigest()
+        builds = []
+        for index, (label, status) in enumerate(statuses.items()):
+            entry = {
+                "executable_sha256": digest if index == 0 else f"{index:064x}",
+                "status": status,
+                "label": label,
+            }
+            if status == "known-bad":
+                entry["reason"] = "A patched executable; the recorded addresses differ."
+            builds.append(entry)
+        registry.register(dataclasses.replace(base, builds=tuple(builds)), allow_override=True)
+        return registry
+
+    def _prepare_with_elf(self, registry: TitleRegistry, elf: bytes):
+        from test_iso_parity import create_test_iso_with_executables
+
+        iso_file = self.temp_dir / "build-identity.iso"
+        create_test_iso_with_executables(iso_file, elf, disc_id="TEST00001")
+        events: list[ProgressEvent] = []
+        result = PreparationEngine(base_dir=self.temp_dir, registry=registry).prepare_game(
+            iso_file, on_progress=events.append, destination_root=self.temp_dir / "installed_games"
+        )
+        return result, events
+
+    def test_build_identity_records_a_listed_supported_build(self) -> None:
+        from test_iso_parity import build_plain_mips_elf
+
+        elf = build_plain_mips_elf()
+        registry = self._registry_with_builds(elf, {"DISC_VERSION 1.00": "supported"})
+        result, _events = self._prepare_with_elf(registry, elf)
+        self.assertTrue(result.success, result.error_message)
+        self.assertEqual(result.build["status"], "supported")
+        self.assertEqual(result.build["label"], "DISC_VERSION 1.00")
+        self.assertTrue(result.build["bindings_applied"])
+        record = json.loads((result.prepared_root / "build.json").read_text(encoding="utf-8"))
+        self.assertEqual(record, result.build)
+        self.assertEqual(record["executable"], "EBOOT.BIN")
+        self.assertRegex(record["executable_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_build_identity_imports_an_unlisted_build_as_experimental(self) -> None:
+        from test_iso_parity import build_plain_mips_elf
+
+        listed = build_plain_mips_elf()
+        registry = self._registry_with_builds(listed, {"DISC_VERSION 1.00": "supported"})
+        other = listed + b"\x00" * 16  # a different executable under the same disc ID
+        result, events = self._prepare_with_elf(registry, other)
+        self.assertTrue(result.success, result.error_message)
+        self.assertEqual(result.build["status"], "unlisted")
+        self.assertFalse(result.build["bindings_applied"])
+        self.assertEqual(result.build["supported_builds"], ["DISC_VERSION 1.00"])
+        warnings = [e.message for e in events if e.severity.value == "WARN"]
+        self.assertTrue(any("not applied" in m and "DISC_VERSION 1.00" in m for m in warnings), warnings)
+        record = json.loads((result.prepared_root / "build.json").read_text(encoding="utf-8"))
+        self.assertFalse(record["bindings_applied"])
+
+    def test_build_identity_refuses_a_known_bad_build_before_writing_anything(self) -> None:
+        from test_iso_parity import build_plain_mips_elf
+
+        elf = build_plain_mips_elf()
+        registry = self._registry_with_builds(elf, {"patched copy": "known-bad"})
+        result, _events = self._prepare_with_elf(registry, elf)
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "BUILD_KNOWN_BAD")
+        self.assertIn("patched copy", result.error_message)
+        self.assertIn("addresses differ", result.error_message)
+        self.assertFalse((self.temp_dir / "installed_games").exists())
+
+    def test_build_identity_leaves_a_title_without_builds_untracked(self) -> None:
+        from test_iso_parity import build_plain_mips_elf
+
+        result, _events = self._prepare_with_elf(TitleRegistry(include_defaults=True), build_plain_mips_elf())
+        self.assertTrue(result.success, result.error_message)
+        self.assertEqual(result.build["status"], "untracked")
+        self.assertTrue(result.build["bindings_applied"])
 
     def test_preparation_preserves_compatible_revision_identity(self) -> None:
         """A disc matched through a compatible revision keeps its own identity.

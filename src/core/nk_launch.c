@@ -1198,10 +1198,26 @@ NkResult nk_launch_prepare_session(
        launch at 0 0 as documented -- not an unknown-address guess, and the
        Python planner reads the same fields identically. */
     session->base_address = entry->executable_base;
-    /* The run entry, not the raw executable.entry: a title that declares a
-       fallback entry must start there (the manager and package planner do the
-       same through title_codegen_plan._resolve_run_entry). */
-    session->entry_point = entry->run_entry;
+    /* A title's runtime bindings name addresses inside one exact executable.
+       Reuse the catalog's build identity (the same on-disc SHA-256 used by the
+       card and package builder): a listed or untracked build uses its declared
+       run entry, while an unlisted build starts at its own executable entry. */
+    const char *build_disc_id = game->disc_id[0]
+        ? game->disc_id : entry->primary_disc_id;
+    /* identify_build fails only for a disc id that does not normalize; no build
+       row can name such an id, so the title records no builds for it (untracked)
+       and its run entry stands, as before builds were recorded. */
+    bool unlisted_build = false;
+    if (build_disc_id && build_disc_id[0]) {
+        NkBuildIdentity build_identity;
+        if (nk_title_manifest_identify_build(
+                build_disc_id, game->iso_path,
+                game->selected_executable[0] ? game->selected_executable : NULL,
+                &build_identity))
+            unlisted_build = build_identity.status == NK_BUILD_UNLISTED;
+    }
+    session->entry_point = unlisted_build
+        ? entry->executable_entry : entry->run_entry;
 
     /* A completed native staging transaction carries the source EBOOT under
      * prepared_root. Validate it before any launch environment is assembled;

@@ -67,6 +67,21 @@ typedef struct {
     void *owned_storage;
 } NkTitleEntrySnapshot;
 
+/* One recorded executable build of a built-in title (#2140): the SHA-256 of the
+ * executable as the disc image holds it, a status (supported, experimental or
+ * known-bad), a label and, for a known-bad build, the reason. */
+typedef struct {
+    const char *executable_digest;
+    const char *status;
+    const char *label;
+    const char *reason;
+} NkTitleBuild;
+
+/* The builds a built-in title records under a disc ID (its primary or a compatible
+ * revision): the count, with *out_builds set to a static array. 0 means the title
+ * records none or the ID is not a built-in title's. Overlay builds are separate. */
+int nk_title_catalog_builds(const char *disc_id, const NkTitleBuild **out_builds);
+
 /* Total public titles in static catalog */
 extern const int nk_title_catalog_count;
 extern const NkTitleEntry nk_title_catalog_entries[];
