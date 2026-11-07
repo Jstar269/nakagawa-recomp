@@ -496,6 +496,21 @@ class TestCaptureAndCompare(unittest.TestCase):
         # build/ is ignored, so a reference may sit there
         pr.load_scene_file(self.scene_file(out=str(pr.ROOT / "build" / "ppsspp-ref-test")))
 
+    def test_ini_names_refuse_line_breaks_controls_and_section_brackets(self):
+        bad_ini = (
+            {"General]\n[Injected": {"Enabled": "True"}},
+            {"General\x00": {"Enabled": "True"}},
+            {"General": {"Safe\nRemoteDebuggerOnStartup": "True"}},
+            {"General": {"Safe\x7f": "True"}},
+        )
+        for ini in bad_ini:
+            with self.subTest(ini=ini), self.assertRaises(pr.RefError):
+                pr.load_scene_file(self.scene_file(ini=ini))
+
+    def test_ini_values_refuse_control_characters(self):
+        with self.assertRaises(pr.RefError):
+            pr.load_scene_file(self.scene_file(ini={"General": {"Enabled": "before\x00after"}}))
+
     def test_a_diff_folder_inside_the_checkout_is_refused(self):
         sf = pr.load_scene_file(self.scene_file())
         with self.assertRaises(pr.RefError):
@@ -618,6 +633,27 @@ class TestWebSocket(unittest.TestCase):
             ws.recv_text(10)
         thread.join(10)
         client.close()
+
+    def test_a_silent_debugger_times_out_as_capture_failure(self):
+        client, peer = socket.socketpair()
+        try:
+            ws = pr.WebSocket(client)
+            with self.assertRaisesRegex(pr.CaptureFailed, "did not answer"):
+                ws.recv_text(0.01)
+        finally:
+            client.close()
+            peer.close()
+
+    def test_a_reset_debugger_connection_is_a_capture_failure(self):
+        class ResetSocket:
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def recv(self, _size):
+                raise ConnectionResetError("peer reset")
+
+        with self.assertRaisesRegex(pr.CaptureFailed, "lost"):
+            pr.WebSocket(ResetSocket()).recv_text(1)
 
     def test_the_client_only_dials_loopback(self):
         seen = []

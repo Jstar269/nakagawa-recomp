@@ -80,6 +80,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -371,6 +372,10 @@ def load_scene_file(path: Path) -> SceneFile:
             and all(isinstance(k, str) and isinstance(v, (str, int, float, bool)) for k, v in kv.items())
             for s, kv in ini.items()):
         raise RefError(f"{path.name}: 'ini' must map section names to {{key: value}} objects")
+    for section, values in ini.items():
+        _ini_name(section, "section")
+        for key in values:
+            _ini_name(key, "key")
     ini_norm = {s: {k: _ini_value(v) for k, v in kv.items()} for s, kv in ini.items()}
     raw_scenes = doc.get("scenes")
     if not isinstance(raw_scenes, list) or not raw_scenes:
@@ -407,12 +412,23 @@ def load_scene_file(path: Path) -> SceneFile:
                      ini_norm, tuple(scenes))
 
 
+def _has_ini_control(text: str) -> bool:
+    return any(unicodedata.category(char) == "Cc" for char in text)
+
+
+def _ini_name(name: str, kind: str) -> None:
+    if _has_ini_control(name):
+        raise RefError(f"an 'ini' {kind} name contains a control character")
+    if kind == "section" and "]" in name:
+        raise RefError("an 'ini' section name contains ']'")
+
+
 def _ini_value(value: object) -> str:
     if isinstance(value, bool):
         return "True" if value else "False"
     text = str(value)
-    if "\n" in text or "\r" in text:
-        raise RefError("an 'ini' value holds a line break")
+    if _has_ini_control(text):
+        raise RefError("an 'ini' value contains a control character")
     return text
 
 
@@ -608,7 +624,17 @@ class WebSocket:
         self._send_frame(0x1, text.encode("utf-8"))
 
     def recv_text(self, timeout: float) -> str:
-        self.sock.settimeout(timeout)
+        try:
+            self.sock.settimeout(timeout)
+            return self._recv_text()
+        except TimeoutError:
+            self.closed = True
+            raise CaptureFailed(f"the debugger did not answer within {timeout:g} s") from None
+        except OSError:
+            self.closed = True
+            raise CaptureFailed("the connection to the debugger was lost") from None
+
+    def _recv_text(self) -> str:
         parts: list[bytes] = []
         total = 0
         while True:

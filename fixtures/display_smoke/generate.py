@@ -224,32 +224,6 @@ def _require_exact_vram_frame(data: bytes, label: str) -> int:
     return frame
 
 
-def _require_selected_vram_capture(selection: list[int], output: str) -> int:
-    """Return the first vblank of `selection` that the capture run reports it dumped.
-
-    The selection starts at the baseline run's first present, and the capture run's first present
-    can land a vblank later (#2185), so any selected vblank may hold the capture. Fail closed: a
-    run that dumped none of them, reported a dump FAIL, or reported a dump it was not asked for
-    raises.
-    """
-    window = set(selection)
-    failed = re.findall(r"VRAMDUMP vblank=(\d+) FAIL[^\n]*", output)
-    if failed:
-        raise RuntimeError(f"VRAM capture failed at vblank {failed[0]}")
-    passed = [int(vblank) for vblank in re.findall(r"VRAMDUMP vblank=(\d+) PASS", output)]
-    unasked = [vblank for vblank in passed if vblank not in window]
-    if unasked:
-        raise RuntimeError(f"the capture run dumped vblank {unasked[0]}, which was not requested")
-    if not passed:
-        presents = re.findall(r"HOST_PRESENT_SUBMITTED f=(\d+)", output)
-        first = presents[0] if presents else "none"
-        raise RuntimeError(
-            f"requested vblanks {selection[0]}..{selection[-1]} produced no VRAM capture "
-            f"(the capture run first presented at vblank {first})"
-        )
-    return min(passed)
-
-
 def _require_exact_present_pixels(path: Path, frames: int, label: str) -> int:
     """Require every captured pixel to match one complete guest frame."""
     try:
@@ -1262,9 +1236,6 @@ def run_vramdump(build_dir: Path) -> int:
         captured_output = captured.stdout + captured.stderr
         if failure := vramdump_capture_failure(captured_output, window):
             raise RuntimeError(failure)
-        # Keep the selected-window guard from #2185 inside main's fixed capture window.
-        _require_selected_vram_capture(selection, captured_output)
-
         # PASS must mean a presented frame: with no presenter (no --gui) nothing is
         # presented, so the same selection must capture nothing and never say PASS.
         headless_dir = root / "headless-run"
