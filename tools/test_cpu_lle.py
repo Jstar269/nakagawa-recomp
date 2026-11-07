@@ -256,17 +256,13 @@ INTC_DELIVERY_SEQUENCES = (
 
 def _emit_intc_delivery_parity_fixture():
     """Emit the interrupt delivery sequences in the --lle-cpu lane for the native parity test."""
-    previous_lle_cpu = codegen.OPTIONS.lle_cpu
+    options = codegen.CodegenOptions(lle_cpu=True)
     generated = []
-    try:
-        codegen.OPTIONS.lle_cpu = True
-        for entry, words in INTC_DELIVERY_SEQUENCES:
-            image = {entry + 4 * i: word for i, word in enumerate(words)}
-            generated.extend(codegen.emit_function(
-                FakeElf(image), entry, [(entry, entry + 4 * len(words))], {entry},
-                lle_cpu=True))
-    finally:
-        codegen.OPTIONS.lle_cpu = previous_lle_cpu
+    for entry, words in INTC_DELIVERY_SEQUENCES:
+        image = {entry + 4 * i: word for i, word in enumerate(words)}
+        generated.extend(codegen.emit_function(
+            FakeElf(image), entry, [(entry, entry + 4 * len(words))], {entry},
+            options=options))
     return "\n".join(generated)
 
 
