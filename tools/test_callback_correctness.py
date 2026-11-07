@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import ClassVar
 import unittest
 from pathlib import Path
 
@@ -236,6 +237,8 @@ class CallbackDispatchBehaviourTests(unittest.TestCase):
     same way hle.c injects the real dispatch_from_host(), so the production helpers run
     without linking the runtime.
     """
+
+    exe: ClassVar[str]  # Compiled once by setUpClass and shared by the instance tests.
 
     # Self-contained probe: record the register file exactly as the PSP callback
     # ABI delivers it ($a0/$a1/$a2 arguments, inherited $gp, pinned $ra), return
