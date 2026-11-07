@@ -1623,11 +1623,15 @@ class TestPresenterContract(unittest.TestCase):
         # Only -1 from sdl3vk_present_image_ex is remapped; 0 (close) and 1 (shown) are returned
         # unchanged. The mapping is the last statement, after the present call. The image shown
         # is the target's own, or its host twin at the twin's scale while the twin is in step (#2050).
+        # With widescreen Fill on, it is the composed picture (left wing, that image, right wing) at
+        # the same scale; only a frame actually shown marks its wings shown (#1881).
         self.assertIn("VkImage shown = present_image(t);", present)
-        self.assertIn(
-            "int pr = sdl3vk_present_image_ex((void *)shown, DRAW_W * present_scale(t), FB_H * present_scale(t));",
-            present,
-        )
+        self.assertIn("int show_w = DRAW_W * present_scale(t), show_h = FB_H * present_scale(t);", present)
+        self.assertIn("VkImage wide = wide_compose(t, fbaddr, &show_w, &show_h);", present)
+        self.assertIn("int pr = sdl3vk_present_image_ex((void *)(wide ? wide : shown), show_w, show_h);", present)
+        self.assertIn("if (pr == GEGPU_PRESENT_SHOWN) ge_wide_shown(fbaddr);", present)
+        self.assertLess(present.index("wide_compose(t, fbaddr"), present.index("sdl3vk_present_image_ex("))
+        self.assertLess(present.index("sdl3vk_present_image_ex("), present.index("ge_wide_shown(fbaddr)"))
         self.assertIn("    if (pr == -1) return GEGPU_PRESENT_TARGET_FAILED;\n    return pr;\n}", present)
         # Only the two intended returns carry the code: the unprepared target and the failed present.
         self.assertEqual(present.count("GEGPU_PRESENT_TARGET_FAILED"), 2)
