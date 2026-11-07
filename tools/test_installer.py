@@ -191,6 +191,14 @@ class UninstallRuleTests(unittest.TestCase):
         # A second, defaulting-to-No confirmation precedes it.
         self.assertIn("MB_YESNO or MB_DEFBUTTON2", self.text)
 
+    def test_a_path_that_cannot_be_examined_counts_as_a_link(self):
+        body = self.text[self.text.index("function IsReparsePoint"):self.text.index("{ Two things this installer must not do")]
+        body = body[:body.index("\nend;")]
+        # The result starts True and only a successful look at the entry can make it False.
+        self.assertLess(body.index("Result := True;"), body.index("if FindFirst(Path, Found) then"))
+        self.assertNotIn("Result := False", body)
+        self.assertIn("Result := (Found.Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0;", body)
+
     def test_an_uninstall_while_the_player_runs_changes_nothing(self):
         # Inno's uninstaller does not close programs (measured: a silent uninstall left the locked player behind
         # after removing the shortcut and the uninstall entry), so the script stops it first.

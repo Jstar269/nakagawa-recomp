@@ -440,7 +440,11 @@ name, and refuses a file whose checksum changed after it first recorded it. The 
   `nakagawa-recomp-<version>-windows-x64-setup.exe` with its `.sha256` (and optional `.minisig`). It is not a name
   a filter drops, so the contract relies on how a launcher ranks files: Quiver Launcher ranks a ZIP ahead of an
   `.exe` (its `FORMATS` list) and keeps only the best rank, so the ZIP stays the one candidate; the installer is for
-  people on the release page. An installer without the same version's ZIP fails the check. A new platform is a new archive such as
+  people on the release page. An installer without the same version's ZIP fails the check.
+  This rests on that ranking, which has **not been verified against a running launcher**: nothing in the
+  `-setup.exe` name is a word a filter drops. It is an accepted, unverified risk. Before publishing a release
+  that carries both files, open it in a catalogue launcher that applies this contract (Quiver Launcher) and
+  confirm it offers the ZIP only; if it offers the installer, publish the ZIP alone. A new platform is a new archive such as
   `...-linux-x64.zip`, added to this list when it exists.
 - **Every other file carries a word a name filter drops**: `.sha256` (`...zip.sha256`), `.minisig`
   (`...zip.sha256.minisig`, a signature of the checksum file, optional), and `source`

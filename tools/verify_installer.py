@@ -14,6 +14,11 @@ The check a built installer has to pass before it is a release asset:
    ``bin/portable.txt``, a file the person added, and the per-user data (a sentinel file this tool
    plants in ``%LOCALAPPDATA%\\Nakagawa\\logs`` only when that folder already exists, and removes after).
 
+WARNING: it plants and removes marker files in the real ``%LOCALAPPDATA%\\Nakagawa`` folders (config, data,
+cache, logs, saves), because the installer reads that folder and not an environment variable. It only adds and
+removes its own marker files, but run it on a PC with no real saves or with them backed up: if an installer
+under test ever deleted that data on a silent uninstall, this check would be the one that lost it.
+
 It refuses to run when a shortcut of the name it tests already exists, so a PC that has the real
 shortcut keeps it: test an installer built with ``/DShortcutName=...`` (``build_installer.build_installer``'s
 ``extra_defines``) or on a PC without one. Windows only; nothing here uses the network.
@@ -298,7 +303,9 @@ def verify_installer(installer: Path, package_dir: Path, *, shortcut_name: str =
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0],
+                                     epilog="WARNING: writes marker files into the real %LOCALAPPDATA%\\Nakagawa "
+                                            "folders; run it on a PC with no real saves, or back them up first.")
     parser.add_argument("--installer", type=Path, required=True)
     parser.add_argument("--package-dir", type=Path, required=True)
     parser.add_argument("--shortcut-name", default="Nakagawa Recomp")

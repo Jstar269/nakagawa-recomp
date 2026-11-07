@@ -125,7 +125,8 @@ function IsReparsePoint(const Path: String): Boolean;
 var
   Found: TFindRec;
 begin
-  Result := False;
+  { Fails closed: a path that cannot be examined counts as a link, so it is neither entered nor deleted. }
+  Result := True;
   if FindFirst(Path, Found) then
   begin
     try
