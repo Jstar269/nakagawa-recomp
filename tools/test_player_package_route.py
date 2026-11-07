@@ -286,6 +286,25 @@ class TestPackageRuntimeDependencies(unittest.TestCase):
                 env = nk_cli._runtime_build_environment()
             self.assertEqual(env["PATH"].split(os.pathsep, 1)[0], str(toolchain_bin))
 
+    @unittest.skipUnless(os.name == "nt", "Windows UCRT path precedence")
+    def test_runtime_build_uses_explicit_msys_path_when_gcc_is_not_on_path(self):
+        with tempfile.TemporaryDirectory(prefix="nk-explicit-msys-path-") as temporary:
+            toolchain_bin = Path(temporary) / "custom-ucrt64" / "bin"
+            toolchain_bin.mkdir(parents=True)
+            gcc = toolchain_bin / "gcc.exe"
+            gcc.write_bytes(b"synthetic executable path marker")
+
+            def which(name: str, path: str | None = None) -> str | None:
+                if name == "gcc" and path == str(toolchain_bin):
+                    return str(gcc)
+                return None
+
+            with patch.dict(os.environ, {"PATH": "", "MSYS_PATH": str(toolchain_bin)}, clear=True), \
+                    patch("nk_cli.shutil.which", side_effect=which):
+                path = nk_cli._runtime_build_environment()["PATH"].split(os.pathsep)
+
+            self.assertEqual(path[0], str(toolchain_bin))
+
     @unittest.skipUnless(os.name == "nt", "Windows embedded Python path")
     def test_runtime_build_exposes_its_interpreter_after_the_downloaded_toolchain(self):
         with tempfile.TemporaryDirectory(prefix="nk-package-python-path-") as temporary:
