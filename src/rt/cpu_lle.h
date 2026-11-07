@@ -4,6 +4,7 @@
 // LLE Phase 1 (PR 2): COP0 register definitions, kernel/user mode checks,
 // exception entry, eret, and runtime transfer metadata (flow_kind/flow_target).
 // PR 5 (spec 6.1): synthetic INTC pending/enable state and Cause.IP mirroring.
+// PR 6 (spec 3.6, issue #325): interrupt delivery at guest safe points.
 //
 // This header deliberately uses only a forward-declared `struct CpuState` so
 // src/rt/recomp.h can include it after the full CpuState definition without
@@ -145,10 +146,18 @@ int sr_cpu_guard_access(
 
 int sr_cpu_eret(struct CpuState *s, uint32_t instr_pc);
 
-/* Safe-point poll. INTC pending state exists (below), but delivery does not:
- * this always reports no pending interrupt and changes nothing. Delivery is
- * PR 6, which adds the AOT safe points in the same change so both tiers poll
- * alike. Timer advancement is BLOCKED (spec 6.2/6.3). */
+/* Safe-point poll (spec 3.6; PR 6; issue #325). Returns 0 and changes nothing
+ * unless the LLE CPU is enabled, a controller is configured (below), Status.IE
+ * is set, Status.EXL and ERL are clear, and some Cause.IP bit (the INTC bit
+ * read live) has its Status.IM bit set. Then it takes the interrupt: EPC is
+ * resume_pc, Cause.BD clear, ExcCode 0, Status.EXL set, the interrupt vector,
+ * flow SR_FLOW_EXCEPTION, and returns -1 (-2 if the vector is not executable).
+ * The source stays pending until the device side clears it. sr_cp0_mtc0
+ * (Status, Cause) and sr_cpu_eret run the same check after their write, so
+ * guest-driven changes deliver at the same boundary in generated code and in
+ * the interpreter; an mtc0 in a delay slot that makes an interrupt
+ * deliverable fails closed (SR_FLOW_FATAL). Timer advancement is BLOCKED
+ * (spec 6.2/6.3). */
 int sr_cpu_poll(struct CpuState *s, uint32_t resume_pc);
 
 /* Interrupt controller (INTC) pending/enable state and Cause.IP mirroring
@@ -171,9 +180,11 @@ int sr_cpu_poll(struct CpuState *s, uint32_t resume_pc);
  *     can neither set nor clear. Guest COP0 reads and writes of Cause re-derive
  *     the bit from the controller, so a stale copy (for example one restored
  *     with a thread context) is never what the guest observes.
- * Not modeled: register offsets and write polarity (MMIO needs spec PR 4,
- * which has not landed), a software-force input, source priority, and
- * delivery (PR 6). No timer source exists: timer expiry is BLOCKED. */
+ * Delivery is sr_cpu_poll above (PR 6). Not modeled: register offsets and
+ * write polarity (MMIO needs spec PR 4, which has not landed), a
+ * software-force input, and source priority (the CPU sees one line, and which
+ * source the handler serves first is guest code's choice). No timer source
+ * exists: timer expiry is BLOCKED. */
 typedef struct SrIntcConfig {
     unsigned source_count;  /* 1..SR_INTC_MAX_SOURCES */
     unsigned cpu_ip_bit;    /* Cause.IP index the line drives: 2..7 */

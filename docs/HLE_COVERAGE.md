@@ -24,9 +24,9 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 26 |
-| `ppsspp-derived` | 123 | 89 |
+| `ppsspp-derived` | 125 | 89 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 358 | 226 |
+| `synthetic` | 356 | 226 |
 | `unverified` | 145 | 22 |
 | total | 690 | 363 |
 
@@ -267,7 +267,7 @@ a title that translates none has generated code unchanged.
 | `0x40f1469c` | `sceDisplayWaitVblankStartMulti` | display | `synthetic` | HLE selftest dispatch |
 | `0x40f8f435` | `sceNetAdhocMatchingGetPoolMaxAlloc` | network | `unverified` | no recorded evidence |
 | `0x42560f23` | `sceMpegRegistStream` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
-| `0x42778a9f` | `__sceSasInit` | audio | `synthetic` | HLE selftest dispatch |
+| `0x42778a9f` | `__sceSasInit` | audio | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x42842c77` | `sceRtcTickAddYears` | rtc | `synthetic` | HLE selftest dispatch |
 | `0x42ec03ac` | `sceIoWrite` | io | `hardware-measured` | PSP oracle PSP-IO-001 |
 | `0x43196845` | `sceAudioOutput2Release` | audio | `hardware-measured` | PSP oracle PSP-HLE-AUDIO-SRC-001 |
@@ -303,7 +303,7 @@ a title that translates none has generated code unchanged.
 | `0x4e3a1105` | `sceKernelWaitSema` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch; note |
 | `0x500f0429` | `sceMpegFlushStream` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x50647530` | `sceNetFreeThreadinfo` | network | `unverified` | no recorded evidence |
-| `0x50a14dfc` | `__sceSasCoreWithMix` | audio | `synthetic` | HLE selftest dispatch |
+| `0x50a14dfc` | `__sceSasCoreWithMix` | audio | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x50c4cd57` | `sceUtilitySavedataInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0x50f0c1ec` | `sceKernelStartModule` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0x50f61d8a` | `sceKernelFreeMemoryBlock` | kernel_memory | `synthetic` | HLE selftest dispatch |

@@ -603,6 +603,13 @@ void nk_input_profile_init_default(NkInputProfile *profile) {
         profile->stick_keys[d].primary = default_stick_key((NkPspStickDir)d);
     }
 
+    /* Mouse aiming (schema 5) is off; the other values are what turning it on starts from. */
+    profile->aim.mouse = false;
+    profile->aim.sensitivity = NK_AIM_SENSITIVITY_DEFAULT;
+    profile->aim.invert_x = false;
+    profile->aim.invert_y = false;
+    profile->aim.smoothing = 0;
+
     /* Navigation bindings matching player/main.c */
     profile->nav_bindings[NK_NAV_ACTION_CONFIRM].primary.type = NK_BINDING_HOST_BUTTON;
     profile->nav_bindings[NK_NAV_ACTION_CONFIRM].primary.index = NK_HOST_BUTTON_SOUTH;
@@ -928,6 +935,18 @@ NkResult nk_input_profile_validate(
                      nk_nav_action_name((NkNavAction)i));
             return NK_ERROR_GENERIC;
         }
+    }
+
+    if (profile->aim.sensitivity < NK_AIM_SENSITIVITY_MIN ||
+        profile->aim.sensitivity > NK_AIM_SENSITIVITY_MAX) {
+        diag_set(diag_buf, diag_buf_sz, "aim sensitivity %d out of range [%d, %d]",
+                 profile->aim.sensitivity, NK_AIM_SENSITIVITY_MIN, NK_AIM_SENSITIVITY_MAX);
+        return NK_ERROR_GENERIC;
+    }
+    if (profile->aim.smoothing > NK_AIM_SMOOTHING_MAX) {
+        diag_set(diag_buf, diag_buf_sz, "aim smoothing %d out of range [0, %d]",
+                 profile->aim.smoothing, NK_AIM_SMOOTHING_MAX);
+        return NK_ERROR_GENERIC;
     }
 
     /* Keyboard keys: each must be a bindable key, and one key drives at most one
@@ -1438,6 +1457,66 @@ static void migrate_stick_keys(NkInputProfile *profile) {
  * mapping is held to exactly the same rules as the global one. Any failure
  * leaves `out` at the safe default mapping.
  */
+/* The optional "aim" object. Every member is optional and keeps its default when
+ * absent; a member of the wrong type or outside its range refuses the mapping, and an
+ * unknown member is refused by name rather than ignored. */
+static bool parse_aim_bool(const JsonNode *aim, const char *key, bool *out,
+                           char *diag_buf, size_t diag_buf_sz) {
+    JsonNode *n = obj_get(aim, key);
+    if (!n) return true;
+    if (n->type != JSON_BOOL) {
+        diag_set(diag_buf, diag_buf_sz, "aim '%s' must be boolean", key);
+        return false;
+    }
+    *out = n->u.bool_val;
+    return true;
+}
+
+static bool parse_aim_whole(const JsonNode *aim, const char *key, int lo, int hi, int *out,
+                            char *diag_buf, size_t diag_buf_sz) {
+    JsonNode *n = obj_get(aim, key);
+    if (!n) return true;
+    if (n->type != JSON_NUMBER || n->u.num.num_val < lo || n->u.num.num_val > hi ||
+        !n->u.num.is_integer) {
+        diag_set(diag_buf, diag_buf_sz, "aim '%s' must be a whole number from %d to %d",
+                 key, lo, hi);
+        return false;
+    }
+    *out = (int)n->u.num.num_val;
+    return true;
+}
+
+static bool parse_aim_node(const JsonNode *aim, NkAimConfig *out,
+                           char *diag_buf, size_t diag_buf_sz) {
+    if (aim->type != JSON_OBJECT) {
+        diag_set(diag_buf, diag_buf_sz, "'aim' must be an object");
+        return false;
+    }
+    for (size_t i = 0; i < aim->u.obj.count; i++) {
+        const char *key = aim->u.obj.members[i].key;
+        if (strcmp(key, "mouse") != 0 && strcmp(key, "sensitivity") != 0 &&
+            strcmp(key, "invert_x") != 0 && strcmp(key, "invert_y") != 0 &&
+            strcmp(key, "smoothing") != 0) {
+            diag_set(diag_buf, diag_buf_sz, "unknown aim member '%s'", key);
+            return false;
+        }
+    }
+    int sensitivity = out->sensitivity;
+    int smoothing = out->smoothing;
+    if (!parse_aim_bool(aim, "mouse", &out->mouse, diag_buf, diag_buf_sz) ||
+        !parse_aim_bool(aim, "invert_x", &out->invert_x, diag_buf, diag_buf_sz) ||
+        !parse_aim_bool(aim, "invert_y", &out->invert_y, diag_buf, diag_buf_sz) ||
+        !parse_aim_whole(aim, "sensitivity", NK_AIM_SENSITIVITY_MIN, NK_AIM_SENSITIVITY_MAX,
+                         &sensitivity, diag_buf, diag_buf_sz) ||
+        !parse_aim_whole(aim, "smoothing", 0, NK_AIM_SMOOTHING_MAX, &smoothing,
+                         diag_buf, diag_buf_sz)) {
+        return false;
+    }
+    out->sensitivity = (int16_t)sensitivity;
+    out->smoothing = (uint8_t)smoothing;
+    return true;
+}
+
 static bool parse_mapping_node(
     const JsonNode *node,
     int doc_version,
@@ -1645,6 +1724,22 @@ static bool parse_mapping_node(
         }
         if (doc_version < NK_INPUT_PROFILE_STICK_KEYS_SCHEMA_VERSION) {
             migrate_stick_keys(out);
+        }
+    }
+
+    /* Mouse aiming (schema 5). Absent: aiming stays off. */
+    JsonNode *aim = obj_get(node, "aim");
+    if (aim) {
+        if (doc_version < NK_INPUT_PROFILE_AIM_SCHEMA_VERSION) {
+            diag_set(diag_buf, diag_buf_sz,
+                     "schema_version %d cannot carry aim (introduced in %d)",
+                     doc_version, NK_INPUT_PROFILE_AIM_SCHEMA_VERSION);
+            nk_input_profile_init_default(out);
+            return false;
+        }
+        if (!parse_aim_node(aim, &out->aim, diag_buf, diag_buf_sz)) {
+            nk_input_profile_init_default(out);
+            return false;
         }
     }
 
@@ -2083,7 +2178,16 @@ static void write_mapping_body(FILE *f, const NkInputProfile *profile, int inden
         }
         fprintf(f, "%s}%s\n", pad2, (i < NK_KEY_CONTROL_COUNT - 1) ? "," : "");
     }
-    fprintf(f, "%s]\n", pad);
+    fprintf(f, "%s],\n", pad);
+
+    /* Mouse aiming (schema 5). */
+    fprintf(f, "%s\"aim\": {\n", pad);
+    fprintf(f, "%s\"mouse\": %s,\n", pad2, profile->aim.mouse ? "true" : "false");
+    fprintf(f, "%s\"sensitivity\": %d,\n", pad2, profile->aim.sensitivity);
+    fprintf(f, "%s\"invert_x\": %s,\n", pad2, profile->aim.invert_x ? "true" : "false");
+    fprintf(f, "%s\"invert_y\": %s,\n", pad2, profile->aim.invert_y ? "true" : "false");
+    fprintf(f, "%s\"smoothing\": %d\n", pad2, profile->aim.smoothing);
+    fprintf(f, "%s}\n", pad);
 }
 
 /**
@@ -2587,4 +2691,44 @@ void nk_input_gate_apply(NkInputGate *gate, uint32_t *held, uint32_t *pressed,
         if (lx) *lx = NK_INPUT_GATE_STICK_CENTRE;
         if (ly) *ly = NK_INPUT_GATE_STICK_CENTRE;
     }
+}
+
+/* -----------------------------------------------------------------------------
+ * Mouse aiming (#1791)
+ * -------------------------------------------------------------------------- */
+
+void nk_aim_state_reset(NkAimState *state) {
+    if (state) memset(state, 0, sizeof(*state));
+}
+
+/* One axis: smooth the poll's counts, then scale to a deflection from the centre. */
+static int aim_axis_deflection(const NkAimConfig *cfg, int32_t *carry, int32_t counts,
+                               bool invert) {
+    const int64_t fresh = (int64_t)counts * 256;
+    const int64_t keep = cfg->smoothing;
+    int64_t smoothed = (fresh * (100 - keep) + (int64_t)*carry * keep) / 100;
+    if (smoothed > INT32_MAX) smoothed = INT32_MAX;
+    if (smoothed < INT32_MIN) smoothed = INT32_MIN;
+    *carry = (int32_t)smoothed;
+
+    int64_t d = smoothed * cfg->sensitivity * 127 / (256LL * 100 * NK_AIM_FULL_DEFLECTION_COUNTS);
+    if (d > 127) d = 127;
+    if (d < -127) d = -127;
+    return invert ? -(int)d : (int)d;
+}
+
+bool nk_aim_apply(const NkAimConfig *cfg, NkAimState *state, int32_t dx, int32_t dy,
+                  uint8_t *lx, uint8_t *ly) {
+    if (!state) return false;
+    if (!cfg || !cfg->mouse || cfg->sensitivity < NK_AIM_SENSITIVITY_MIN ||
+        cfg->sensitivity > NK_AIM_SENSITIVITY_MAX || cfg->smoothing > NK_AIM_SMOOTHING_MAX) {
+        nk_aim_state_reset(state);
+        return false;
+    }
+    const int x = aim_axis_deflection(cfg, &state->sx, dx, cfg->invert_x);
+    const int y = aim_axis_deflection(cfg, &state->sy, dy, cfg->invert_y);
+    bool moved = false;
+    if (x != 0 && lx) { *lx = (uint8_t)(128 + x); moved = true; }
+    if (y != 0 && ly) { *ly = (uint8_t)(128 + y); moved = true; }
+    return moved;
 }
