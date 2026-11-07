@@ -491,7 +491,15 @@ that edge pixel's 1x sample, with linear and nearest filtering and with repeat a
 while a sheared strip stays unclamped.
 Last, `gpu-coherence-selftest-snapbar-mutants` builds three broken variants of
 the destination-snapshot copy's barriers (`SR_GPU_SNAPBAR_MUTANT`), and the submit-batch case must
-fail each one with its own message. Then `ge-first-bad-draw-selftest` runs
+fail each one with its own message. `fsr3-pass-selftest` runs FSR 3's eight compute passes on
+lavapipe, headless, under the validation layer with synchronisation validation of shader accesses,
+and an exit 77 skip fails it, including one for synchronisation validation that is not active.
+`fsr3-fg-pass-selftest` runs frame generation's device refusal (G-R) there: lavapipe's subgroups
+are too small for optical flow, so the pass must refuse it with one reason and no Vulkan call; the
+frame cells need a GPU the pass accepts and run locally (`make fsr3-fg-pass-selftest`,
+`make fsr3-fg-pass-mutants`). A further step downloads the DirectXShaderCompiler release that `tools/shader_embed.py` pins, checks its SHA-256 before use, and
+recompiles every FSR 3 pass from the imported HLSL: any byte that differs from the embedded SPIR-V,
+or a compiler that is not the pinned one, fails it. Then `ge-first-bad-draw-selftest` runs
 `ge_replay --first-bad-draw` on a generated capture: the unchanged backend must report
 `NO_DIFFERENCE`, and two executed mutants that change one draw's Vulkan blend or depth state
 (`SR_GE_FBD_MUTANT`) must each be named as that draw, in linear and bisect mode. A second generated

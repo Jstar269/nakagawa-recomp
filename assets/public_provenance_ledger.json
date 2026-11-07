@@ -6320,6 +6320,100 @@
       }
     },
     {
+      "path": "src/rt/fsr3_fg_host.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-host-pass-translated-2081",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "src/rt/fsr3_fg_host.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-host-pass-translated-2081",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "src/rt/fsr3_fg_state.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/fsr3_fg_state.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/fsr3_host.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-host-pass-translated-2081",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "src/rt/fsr3_host.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-host-pass-translated-2081",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "src/rt/fsr3_jitter.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-host-pass-translated-2081",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "src/rt/fsr3_jitter.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-host-pass-translated-2081",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
       "path": "src/rt/funcdiff.c",
       "classification": "upstream_derived",
       "evidence": {
@@ -6638,6 +6732,371 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "fsr1-shaders-generated-1273",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_accumulate_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_fg_pass.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-host-pass-translated-2081",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_fg_pass.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_fg_pass_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_luma_instability_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_luma_pyramid_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_pass.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-host-pass-translated-2081",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_pass.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_pass_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_prepare_inputs_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_prepare_reactivity_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_rcas_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_shader_manifest.json",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_shading_change_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3_shading_change_pyramid_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_fi_compute_game_vector_field_inpainting_pyramid_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_fi_compute_inpainting_pyramid_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_fi_disocclusion_mask_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_fi_game_motion_vector_field_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_fi_inpainting_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_fi_interpolation_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_fi_optical_flow_vector_field_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_fi_reconstruct_and_dilate_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_fi_reconstruct_previous_depth_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_fi_setup_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_of_compute_luminance_pyramid_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_of_compute_optical_flow_advanced_v5_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_of_compute_scd_divergence_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_of_filter_optical_flow_v5_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_of_generate_scd_histogram_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_of_prepare_luma_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_of_scale_optical_flow_advanced_v5_comp.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/fsr3fg_shader_manifest.json",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-shaders-generated-2081",
         "evidence_tier": "S",
         "generator": "documented public-source data path",
         "source_family": "public source data"
@@ -11421,6 +11880,83 @@
       }
     },
     {
+      "path": "tests/native/fsr3_fg_host_oracle.md",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tests/native/fsr3_fg_host_oracle.txt",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-host-oracle-records-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "tests/native/fsr3_fg_host_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tests/native/fsr3_fg_state_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tests/native/fsr3_host_oracle.md",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tests/native/fsr3_host_oracle.txt",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-host-oracle-records-2081",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      }
+    },
+    {
+      "path": "tests/native/fsr3_host_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tests/native/ge_capture_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -12338,6 +12874,18 @@
       }
     },
     {
+      "path": "third_party/fidelityfx_sdk/LICENSE-AMD.md",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
       "path": "third_party/fidelityfx_sdk/LICENSE.txt",
       "classification": "upstream_derived",
       "evidence": {
@@ -12421,6 +12969,18 @@
       }
     },
     {
+      "path": "third_party/fidelityfx_sdk/api/internal/gpu/ffx_core_hlsl.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
       "path": "third_party/fidelityfx_sdk/api/internal/gpu/ffx_core_portability.h",
       "classification": "upstream_derived",
       "evidence": {
@@ -12433,11 +12993,779 @@
       }
     },
     {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_hlsl.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-local-delta",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_common.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_game_vector_field_inpainting_pyramid.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_compute_inpainting_pyramid.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_disocclusion_mask.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_game_motion_vector_field.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_inpainting.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_optical_flow_vector_field.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_reconstruct_dilated_velocity_and_previous_depth.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_reconstruct_previous_depth.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_resources.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/frameinterpolation/ffx_frameinterpolation_setup.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_callbacks_hlsl.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-local-delta",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_common.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_luminance_pyramid.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_optical_flow_v5.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_compute_scd_divergence.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_filter_optical_flow_v5.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_generate_scd_histogram.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_prepare_luma.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_resources.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/opticalflow/ffx_opticalflow_scale_optical_flow_advanced_v5.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/include/gpu/spd/ffx_spd.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_compute_game_vector_field_inpainting_pyramid_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_compute_inpainting_pyramid_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_disocclusion_mask_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_game_motion_vector_field_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_inpainting_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_optical_flow_vector_field_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_reconstruct_and_dilate_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_reconstruct_previous_depth_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_frameinterpolation_setup_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_luminance_pyramid_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_optical_flow_advanced_pass_v5.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_opticalflow_compute_scd_divergence_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_opticalflow_filter_optical_flow_pass_v5.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_opticalflow_generate_scd_histogram_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_opticalflow_prepare_luma_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/framegeneration/fsr3/internal/shaders/ffx_opticalflow_scale_optical_flow_advanced_pass_v5.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
       "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr1/ffx_fsr1.h",
       "classification": "upstream_derived",
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "fidelityfx-sdk-240-fsr1-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_accumulate.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_callbacks_hlsl.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-local-delta",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_common.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_luma_instability.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_luma_pyramid.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_prepare_inputs.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_prepare_reactivity.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_rcas.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_resources.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_sample.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_shading_change.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_shading_change_pyramid.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_upsample.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/include/gpu/spd/ffx_spd.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/internal/shaders/ffx_fsr3upscaler_accumulate_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/internal/shaders/ffx_fsr3upscaler_luma_instability_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/internal/shaders/ffx_fsr3upscaler_luma_pyramid_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/internal/shaders/ffx_fsr3upscaler_prepare_inputs_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/internal/shaders/ffx_fsr3upscaler_prepare_reactivity_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/internal/shaders/ffx_fsr3upscaler_rcas_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/internal/shaders/ffx_fsr3upscaler_shading_change_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "MIT",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "third_party/fidelityfx_sdk/upscalers/fsr3/internal/shaders/ffx_fsr3upscaler_shading_change_pyramid_pass.hlsl",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fidelityfx-sdk-240-fsr3-import",
         "evidence_tier": "S",
         "upstream": "documented upstream family",
         "license": "MIT",
@@ -14771,6 +16099,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "debug-and-analysis-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/fsr3_mutants.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -17112,6 +18451,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "debug-and-analysis-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_fsr3_port.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "fsr3-glue-2081",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
