@@ -1188,7 +1188,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         del pkg["update_boundary"]
         with self.assertRaises(EnhancementPackageError) as ctx:
             validate_package(pkg)
-        self.assertIn("gate_30hz_hold sites must declare update_boundary", str(ctx.exception))
+        self.assertIn("gate_30hz_hold or gate_30hz_alt sites must declare update_boundary", str(ctx.exception))
 
     def _even_and_hold_build(self, tmp: Path) -> str:
         # The resolver's static checks: the held call goes to an ease, a leaf that reads f12
@@ -2997,6 +2997,369 @@ class TestHoldAndEvenStaticChecks(unittest.TestCase):
         for name, body, why in cases:
             with self.subTest(name), self.assertRaisesRegex(EnhancementPackageError, why):
                 self._even(body)
+
+
+def _r(rs: int, rt: int, rd: int, sa: int, fn: int) -> int:
+    return (rs << 21) | (rt << 16) | (rd << 11) | (sa << 6) | fn
+
+
+def _beq(rs: int, rt: int, pc: int, to: int) -> int:
+    return _i(0x04, rs, rt, (to - pc - 4) >> 2)   # _i, _jal and _move are defined above
+
+
+ZERO, AT, V0, V1, A0, A1, T0, S0, S1, SP, RA = 0, 1, 2, 3, 4, 5, 8, 16, 17, 29, 31
+NOP, JR_RA = 0, 0x03E00008
+
+
+def _addiu(rt: int, rs: int, imm: int) -> int:
+    return _i(0x09, rs, rt, imm)
+
+
+def _lw(rt: int, off: int, base: int) -> int:
+    return _i(0x23, base, rt, off)
+
+
+def _sw(rt: int, off: int, base: int) -> int:
+    return _i(0x2B, base, rt, off)
+
+
+def _lwc1(ft: int, off: int, base: int) -> int:
+    return _i(0x31, base, ft, off)
+
+
+def _swc1(ft: int, off: int, base: int) -> int:
+    return _i(0x39, base, ft, off)
+
+
+def _add_s(fd: int, fs: int, ft: int) -> int:
+    return (0x11 << 26) | (0x10 << 21) | (ft << 16) | (fs << 11) | (fd << 6)
+
+
+class TestAltGateStaticChecks(unittest.TestCase):
+    """The resolver's static proof behind gate_30hz_alt (section 9.2), on a synthetic guest: a
+    caller makes the gated call to TARGET, a three-way table switch whose arms all reach a tail
+    that calls TICK1(a0) and TICK2(a0); TICK2 calls LEAF with f12 set."""
+
+    CALLER, TARGET, TABLE, TICK1, TICK2, LEAF, OTHER, END = (
+        0x1000, 0x2000, 0x3000, 0x4000, 0x4100, 0x4200, 0x4300, 0x4400)
+    SITE = 0x100C
+
+    def _caller(self) -> list[int]:
+        return [_addiu(SP, SP, -8), _sw(RA, 4, SP), _addiu(A0, ZERO, 0x40), _jal(self.TARGET), NOP,
+                _i(0x0F, 0, V0, 1), _jal(self.OTHER), NOP, _lw(RA, 4, SP), JR_RA, _addiu(SP, SP, 8)]
+
+    def _target(self, tail: list[int] | None = None, arm1: list[int] | None = None) -> list[int]:
+        t = self.TARGET
+        tail_at = t + 0x50
+        body = [_addiu(SP, SP, -16), _sw(RA, 12, SP), _sw(S1, 8, SP), _lw(V0, 0x1B0, A0),
+                _i(0x0B, V0, AT, 3), _beq(AT, ZERO, t + 0x14, tail_at), _move(S1, A0),
+                _i(0x0F, 0, V1, 0), _r(0, V0, V0, 2, 0x00), _addiu(V1, V1, self.TABLE),
+                _r(V0, V1, V0, 0, 0x21), _lw(V0, 0, V0), _r(V0, 0, 0, 0, 0x08), NOP,
+                # arm 0 at +0x38: branches to the tail
+                _addiu(V0, ZERO, 1), _beq(ZERO, ZERO, t + 0x3C, tail_at), _sw(V0, 0x1B4, S1)]
+        body += arm1 if arm1 is not None else [_addiu(V0, ZERO, 2), _sw(V0, 0x1B4, S1)]  # arm 1 at +0x44
+        body += [NOP]  # arm 2 at +0x4c falls into the tail
+        assert len(body) == 0x50 // 4, len(body)
+        body += tail if tail is not None else [
+            _move(A0, S1), _jal(self.TICK1), NOP, _jal(self.TICK2), _move(A0, S1),
+            _lw(S1, 8, SP), _lw(RA, 12, SP), JR_RA, _addiu(SP, SP, 16)]
+        return body
+
+    def _tick1(self) -> list[int]:
+        return [_lwc1(0, 0x108, A0), _lwc1(1, 0x10C, A0), _add_s(0, 0, 1), JR_RA, _swc1(0, 0x108, A0)]
+
+    def _tick2(self, call: int | None = None) -> list[int]:
+        return [_addiu(SP, SP, -8), _sw(RA, 4, SP), _sw(S0, 0, SP), _lwc1(12, 0xCC, A0),
+                call if call is not None else _jal(self.LEAF), _move(S0, A0), _swc1(0, 0xCC, S0),
+                _lw(S0, 0, SP), _lw(RA, 4, SP), JR_RA, _addiu(SP, SP, 8)]
+
+    def _leaf(self) -> list[int]:
+        return [_add_s(0, 12, 12), JR_RA, NOP]
+
+    def _words(self, **parts: list[int]) -> dict[int, int]:
+        layout = {"caller": self.CALLER, "target": self.TARGET, "tick1": self.TICK1, "tick2": self.TICK2,
+                  "leaf": self.LEAF, "other": self.OTHER}
+        words: dict[int, int] = {}
+        for name, base in layout.items():
+            code = parts.get(name) or getattr(self, f"_{name}", lambda: [JR_RA, NOP])()
+            words.update({base + 4 * i: w for i, w in enumerate(code)})
+        for addr in range(self.CALLER, self.END, 4):
+            words.setdefault(addr, NOP)  # alignment padding after each return
+        table = parts.get("table", [self.TARGET + 0x38, self.TARGET + 0x44, self.TARGET + 0x4C])
+        words.update({self.TABLE + 4 * i: w for i, w in enumerate(table)})
+        return words
+
+    def _other(self) -> list[int]:
+        return [JR_RA, NOP]
+
+    def _symbols(self) -> dict[str, int]:
+        return {"caller": self.CALLER, "target": self.TARGET, "tick1": self.TICK1, "tick2": self.TICK2,
+                "leaf": self.LEAF, "other": self.OTHER}
+
+    def _package(self, words: dict[int, int], sha256: str, *, alternates: list[str] | None = None,
+                 extra_sites: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        site = {"id": "ALT", "function": "caller", "insn_offset": self.SITE - self.CALLER,
+                "stock_digest": compute_stock_words_digest([words[self.SITE]]), "transform": "gate_30hz_alt",
+                "alternates": alternates if alternates is not None else ["tick1", "tick2"]}
+        return {
+            "schema_version": 1, "id": "synth.alt", "display_name": "Synthetic alternate gate",
+            "version": "1.0.0", "category": "timing_frame_presentation",
+            "target_title_id": "synthetic-allegrex-v1", "game_version": "1.00",
+            "executable_sha256": sha256, "capabilities": ["gate_30hz"],
+            "rng_policy": {"mode": "subtick_30hz", "reason": "No random rolls in this fixture."},
+            "update_boundary": {"function": "caller", "insn_offset": 0,
+                                "stock_digest": compute_stock_words_digest([words[self.CALLER]])},
+            "sites": [site] + (extra_sites or []),
+        }
+
+    def _resolve(self, words: dict[int, int], *, alternates: list[str] | None = None,
+                 extra_sites: list[dict[str, Any]] | None = None) -> dict[int, Any]:
+        pkg = self._package(words, "a" * 64, alternates=alternates, extra_sites=extra_sites)
+        symbols = self._symbols()
+        resolved: dict[int, Any] = verify_and_resolve_sites(
+            pkg, executable_sha256="a" * 64, symbol_to_addr=symbols,
+            read_words_fn=lambda a, n: ([words[a + 4 * i] for i in range(n)]
+                                        if all(a + 4 * i in words for i in range(n)) else None),
+            known_functions=[self.CALLER, self.TARGET, self.TABLE, self.TICK1, self.TICK2, self.LEAF,
+                             self.OTHER, self.END])
+        return resolved
+
+    def test_the_proof_accepts_the_switch_and_its_tail(self) -> None:
+        resolved = self._resolve(self._words())
+        self.assertEqual(resolved[self.SITE]["rewrite"], {"kind": "gate", "alternates": [self.TICK1, self.TICK2]})
+
+    def test_schema_refusals(self) -> None:
+        cases: tuple[tuple[str, list[str], str], ...] = (
+            ("none", [], "a list of 1 to 4 function symbols"),
+            ("too many", ["tick1", "tick2", "leaf", "other", "target"], "a list of 1 to 4"),
+            ("twice", ["tick1", "tick1"], "lists a function twice"),
+            ("unknown", ["tick1", "nowhere"], "'nowhere' is not in the symbol map"),
+            ("literal", ["0x00004000"], "alternate symbol"),
+        )
+        for name, alternates, why in cases:
+            with self.subTest(name), self.assertRaisesRegex(EnhancementPackageError, why):
+                self._resolve(self._words(), alternates=alternates)
+        bad = {"id": "G", "function": "caller", "insn_offset": 24, "transform": "gate_30hz",
+               "stock_digest": compute_stock_words_digest([_jal(self.OTHER)]), "alternates": ["tick1"]}
+        with self.assertRaisesRegex(EnhancementPackageError, "alternates belongs only to gate_30hz_alt"):
+            self._resolve(self._words(), extra_sites=[bad])
+        jalr = self._caller()
+        jalr[3] = _r(25, 0, RA, 0, 0x09)
+        with self.assertRaisesRegex(EnhancementPackageError, "gate_30hz_alt takes a jal"):
+            self._resolve(self._words(caller=jalr))
+
+    def test_target_refusals(self) -> None:
+        early_return = [JR_RA, _addiu(SP, SP, 16)]
+        cases = (
+            ("an arm returns early", {"target": self._target(arm1=early_return)},
+             "has a path that returns without calling alternate 0x00004000"),
+            ("a tick is called twice", {"target": self._target(tail=[
+                _move(A0, S1), _jal(self.TICK1), NOP, _jal(self.TICK1), _move(A0, S1), _jal(self.TICK2),
+                _move(A0, S1), _lw(S1, 8, SP), _lw(RA, 12, SP), JR_RA, _addiu(SP, SP, 16)])},
+             "calls alternate 0x00004000 directly 2 times"),
+            ("a0 not the entry a0", {"target": self._target(tail=[
+                _move(A0, S0), _jal(self.TICK1), NOP, _jal(self.TICK2), _move(A0, S1),
+                _lw(S1, 8, SP), _lw(RA, 12, SP), JR_RA, _addiu(SP, SP, 16)])},
+             "does not pass alternate 0x00004000 its own entry"),
+            ("s1 rewritten in an arm", {"target": self._target(arm1=[_addiu(S1, S1, 4), NOP])},
+             "does not pass alternate 0x00004000 its own entry"),
+            ("a0 lost across the first tick", {"target": self._target(tail=[
+                _move(A0, S1), _jal(self.TICK1), NOP, _jal(self.TICK2), NOP,
+                _lw(S1, 8, SP), _lw(RA, 12, SP), JR_RA, _addiu(SP, SP, 16)])},
+             "does not pass alternate 0x00004100 its own entry"),
+            ("a table arm in another function", {"table": [self.TARGET + 0x38, self.TARGET + 0x44, self.OTHER]},
+             "has a path that returns without calling alternate 0x00004000"),
+            ("a table entry in a delay slot", {"table": [self.TARGET + 0x38, self.TARGET + 0x40, self.TARGET + 0x4C]},
+             "branches into the delay slot at 0x00002040"),
+        )
+        for name, parts, why in cases:
+            with self.subTest(name), self.assertRaisesRegex(EnhancementPackageError, why):
+                self._resolve(self._words(**parts))
+        with self.subTest("order"), self.assertRaisesRegex(EnhancementPackageError, "in the order the target calls"):
+            self._resolve(self._words(), alternates=["tick2", "tick1"])
+        unbounded = self._target()
+        unbounded[4] = NOP  # no sltiu bound before the jr
+        with self.subTest("no bound"), self.assertRaisesRegex(EnhancementPackageError, "no bounded table switch"):
+            self._resolve(self._words(target=unbounded))
+        with self.subTest("the target itself"), self.assertRaisesRegex(EnhancementPackageError, "gated function itself"):
+            self._resolve(self._words(), alternates=["target"])
+
+    def test_caller_refusals(self) -> None:
+        reads_v0 = self._caller()
+        reads_v0[5] = _addiu(V1, V0, 1)
+        returns = [_addiu(SP, SP, -8), _sw(RA, 4, SP), _addiu(A0, ZERO, 0x40), _jal(self.TARGET), NOP,
+                   _lw(RA, 4, SP), JR_RA, _addiu(SP, SP, 8)]
+        branch_read = self._caller()
+        branch_read[5:5] = [_beq(V0, ZERO, self.SITE + 8, self.SITE + 0x14), NOP]
+        for name, caller, why in (("reads v0", reads_v0, r"reads \$v0 at 0x00001014"),
+                                  ("returns", returns, r"returns after the gated call without writing \$v0"),
+                                  ("branches on v0", branch_read, r"reads \$v0 at 0x00001014")):
+            with self.subTest(name), self.assertRaisesRegex(EnhancementPackageError, why):
+                self._resolve(self._words(caller=caller))
+
+    def test_a_register_call_below_the_alternate_follows_the_abi(self) -> None:
+        # The documented limit (section 9.2): below the alternate's own body, a call through a
+        # register is taken to read only the arguments its caller set.
+        leaf = [_addiu(SP, SP, -8), _sw(RA, 4, SP), _r(25, 0, RA, 0, 0x09), NOP, _lw(RA, 4, SP), JR_RA,
+                _addiu(SP, SP, 8)]
+        self.assertIn(self.SITE, self._resolve(self._words(leaf=leaf)))
+
+    def test_alternate_refusals(self) -> None:
+        cases = (
+            ("reads a1", {"tick1": [_lw(V0, 0, A1), JR_RA, NOP]}, r"may read \$a1 as its caller left them"),
+            ("its callee reads t0", {"leaf": [_add_s(0, 12, 12), _sw(T0, 0, A0), JR_RA, NOP]},
+             r"0x00004100 may read \$t0"),
+            ("its callee reads f13", {"leaf": [_add_s(0, 12, 13), JR_RA, NOP]}, "may read f13"),
+            ("two calls down", {"leaf": [_addiu(SP, SP, -8), _sw(RA, 4, SP), _jal(self.OTHER), NOP,
+                                         _lw(RA, 4, SP), JR_RA, _addiu(SP, SP, 8)],
+                                "other": [_sw(T0, 0, A0), JR_RA, NOP]}, r"0x00004100 may read \$t0"),
+            ("calls through a register", {"tick2": self._tick2(call=_r(25, 0, RA, 0, 0x09))},
+             "calls through a register at 0x00004110"),
+            ("re-enters the target", {"leaf": [_addiu(SP, SP, -8), _sw(RA, 4, SP), _jal(self.TARGET), NOP,
+                                               _lw(RA, 4, SP), JR_RA, _addiu(SP, SP, 8)]},
+             "reaches 0x00002000, the gated function"),
+        )
+        for name, parts, why in cases:
+            with self.subTest(name), self.assertRaisesRegex(EnhancementPackageError, why):
+                self._resolve(self._words(**parts))
+        gated = {"id": "G", "function": "tick1", "insn_offset": 0, "transform": "gate_30hz",
+                 "stock_digest": compute_stock_words_digest([_add_s(0, 0, 0)])}
+        with self.subTest("holds a gated site"), self.assertRaisesRegex(
+                EnhancementPackageError, "which holds gated site G"):
+            self._resolve(self._words(tick1=[_add_s(0, 0, 0)] + self._tick1()[1:]), extra_sites=[gated])
+
+    def _run_target(self) -> list[int]:
+        # A straight-line update: its own work (a count at a0+0x1b0), then tick1(a0) and tick2(a0).
+        t1, t2 = self.TICK1, self.TICK2
+        return [_addiu(SP, SP, -16), _sw(RA, 12, SP), _sw(S1, 8, SP), _move(S1, A0), _lw(V0, 0x1B0, A0),
+                _addiu(V0, V0, 1), _sw(V0, 0x1B0, S1), _move(A0, S1), _jal(t1), NOP, _jal(t2), _move(A0, S1),
+                _lw(S1, 8, SP), _lw(RA, 12, SP), JR_RA, _addiu(SP, SP, 16)]
+
+    def _site_statement(self, tmp: Path, name: str, with_package: bool) -> str:
+        """Generate the fixture with the package (or without, the Authentic build) and return the
+        site's statement: from the jal's trace hook to the end of its call."""
+        words = self._words(target=self._run_target(), table=[])
+        elf = _write_synthetic_mips_elf(tmp / "alt.elf", words, self.CALLER)
+        args = []
+        if with_package:
+            pkg_path = tmp / f"{name}.json"
+            pkg_path.write_text(json.dumps(self._package(words, hashlib.sha256(elf).hexdigest())), encoding="utf-8")
+            (tmp / f"{name}.symbols.json").write_text(
+                json.dumps({k: f"0x{v:08x}" for k, v in self._symbols().items()}), encoding="utf-8")
+            args = [f"--enhancement-package={pkg_path}"]
+        out_dir = tmp / name
+        out_dir.mkdir()
+        rc, output, files = TestEnhancementAotCodegenAndCache._run_codegen(tmp / "alt.elf", out_dir / "out.c", args)
+        self.assertEqual(rc, 0, output)
+        lines = b"\n".join(files.values()).decode("utf-8").splitlines()
+        at = next(i for i, line in enumerate(lines) if f"sr_begin(s, 0x{self.SITE:08x}u" in line)
+        if with_package:
+            end = next(i for i in range(at, len(lines)) if lines[i] == "    } }")
+        else:
+            end = next(i for i in range(at, len(lines)) if "sr_aot_return_boundary_end" in lines[i])
+        return "\n".join(lines[at:end + 1])
+
+    @unittest.skipUnless(GCC, "needs a host C compiler")
+    def test_gate_30hz_alt_runs_its_alternates_on_the_skipped_updates(self) -> None:
+        """Compile the site statement and run it over a schedule of logic updates.
+
+        Toggle on, the site makes the stock call in an update unless it made the stock call in the
+        update just before; then it calls tick1 and tick2 in its place, each with the site's $a0 and
+        $ra = site + 8, and a second visit in one update repeats that update's choice. Toggle off,
+        it prints what the Authentic statement prints, byte for byte.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            alt = self._site_statement(tmp, "alt", with_package=True)
+            stock = self._site_statement(tmp, "authentic", with_package=False)
+            # Toggle off, the site runs the Authentic call statement.
+            stock_call = stock.splitlines()[-1]
+            self.assertIn(stock_call, alt)
+            # Visits per update: a gap after an alternate update (4, 5), two visits in one
+            # update (7), and a gap after a stock update (9).
+            visits = [1, 1, 1, 1, 0, 0, 1, 2, 1, 0, 1, 1, 1, 1]
+
+            def program(name: str, statement: str) -> list[str]:
+                callees = re.findall(r"(\w+)\(s\); SR_TAIL_DRAIN", statement)
+                self.assertTrue(callees, statement)
+                tags = ["target", "tick1", "tick2"]
+                stubs = "".join(
+                    f"static void {fn}(CpuState *s) {{ printf(\"  {tags[k]} a0=%x ra=%x\\n\", "
+                    f"(unsigned)s->r[4], (unsigned)s->r[31]); s->r[4] = 0x{0xD0 + k:x}u; "
+                    f"s->r[31] = 0x{0xE0 + k:x}u; s->r[2] = {k}u; }}\n"
+                    for k, fn in enumerate(dict.fromkeys(callees)))
+                harness = tmp / f"{name}.c"
+                harness.write_text(
+                    "#include \"recomp.h\"\n"
+                    "/* The real CpuState and trace hooks; the callees are stubs that print what they\n"
+                    " * are given and clobber $a0 and $ra, and only the return boundary is stubbed. */\n"
+                    "#undef SR_TAIL_DRAIN\n#define SR_TAIL_DRAIN(s) ((void)0)\n"
+                    "#define sr_aot_return_boundary_begin(s, r, c, k) 0\n"
+                    "#define sr_aot_return_boundary_end(s) 0\n"
+                    "static int on;\nint nk_enhancement_on(void) { return on; }\n"
+                    "uint32_t nk_enhancement_updates;\n"
+                    f"{stubs}"
+                    f"static void site(CpuState *s) {{\n{statement}\n}}\n"
+                    f"static const int visits[] = {{{', '.join(map(str, visits))}}};\n"
+                    "int main(void) {\n"
+                    "    CpuState st; CpuState *s = &st; memset(&st, 0, sizeof st);\n"
+                    "    for (on = 0; on < 2; on++) {\n"
+                    "        nk_enhancement_updates = on ? 100u : 0u;\n"
+                    "        for (int u = 0; u < (int)(sizeof visits / sizeof visits[0]); u++) {\n"
+                    "            nk_enhancement_updates++;  /* also while off: the toggle alone keeps it stock */\n"
+                    "            for (int v = 0; v < visits[u]; v++) {\n"
+                    "                printf(\"%s %d %d\\n\", on ? \"on\" : \"off\", u, v);\n"
+                    "                s->r[4] = 0x40u + (uint32_t)u; s->r[31] = 0u; site(s);\n"
+                    "            }\n"
+                    "        }\n"
+                    "    }\n"
+                    "    return 0;\n"
+                    "}\n",
+                    encoding="utf-8",
+                )
+                exe = tmp / f"{name}.exe"
+                assert GCC is not None, "skipUnless(GCC) runs this test only with a compiler"
+                built = subprocess.run([GCC, "-std=gnu11", "-Wall", "-Werror", "-Wno-unused-function",
+                                        "-Wno-misleading-indentation", "-Wno-unused-variable",
+                                        f"-I{ROOT / 'src' / 'rt'}", "-o", str(exe), str(harness)],
+                                       capture_output=True, text=True)
+                self.assertEqual(built.returncode, 0, built.stderr)
+                run = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+                return run.stdout.splitlines()
+
+            out = program("alt", alt)
+            authentic = program("authentic", stock)
+            ra = f"{self.SITE + 8:x}"
+
+            def expect(mode: str, choices: str) -> list[str]:
+                lines: list[str] = []
+                k = 0
+                for u, n in enumerate(visits):
+                    for v in range(n):
+                        lines.append(f"{mode} {u} {v}")
+                        a0 = f"{0x40 + u:x}"
+                        if choices[k] == "S":
+                            lines.append(f"  target a0={a0} ra={ra}")
+                        else:
+                            lines += [f"  tick1 a0={a0} ra={ra}", f"  tick2 a0={a0} ra={ra}"]
+                        k += 1
+                return lines
+
+            def part(lines: list[str], mode: str) -> list[str]:
+                keep, kept = False, []
+                for line in lines:
+                    if not line.startswith("  "):
+                        keep = line.startswith(mode + " ")
+                    if keep:
+                        kept.append(line)
+                return kept
+
+            # Section 11.2, item 1: toggle off is the Authentic statement's output, byte for byte.
+            self.assertEqual(part(out, "off"), part(authentic, "off"))
+            self.assertEqual(part(out, "off"), expect("off", "S" * sum(visits)))
+            # Toggle on, per visit: updates 0-3 alternate; after the gap at 4-5 update 6 is stock;
+            # update 7's two visits both take the alternates; after the gap at 9, update 10 is stock.
+            self.assertEqual(part(out, "on"), expect("on", "SASA" "SAAS" "SASA"))
 
 
 if __name__ == "__main__":

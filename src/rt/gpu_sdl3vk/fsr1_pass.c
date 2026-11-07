@@ -255,7 +255,7 @@ VkImage fsr1_record(Fsr1Pass *p, VkCommandBuffer cmd, VkImage src, int w, int h,
             p->fail_ow = out_w;
             p->fail_oh = out_h;
             fprintf(stderr, "sdl3vk: FSR 1 cannot make its images for %dx%d to %dx%d (the device's "
-                            "limit is %u); the window scales as before at this size\n",
+                            "limit is %u); this picture is scaled as before at this size\n",
                     w, h, out_w, out_h, p->max_dim);
             return VK_NULL_HANDLE;
         }

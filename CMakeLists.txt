@@ -43,9 +43,11 @@ set(CORE_SOURCES
     src/core/nk_psp_amctrl.c
     src/core/nk_psp_lzrc.c
     src/core/nk_psp_npumdimg.c
+    src/core/nk_pbp_homebrew.c
     src/core/nk_disc_expand.c
     src/core/nk_disc_verify.c
     src/core/nk_zip.c
+    src/core/nk_steam_shortcuts.c
     src/core/generated/nk_title_catalog.c
 )
 
@@ -57,7 +59,7 @@ endif()
 
 add_library(nakagawa_core STATIC ${CORE_SOURCES})
 if(WIN32)
-    target_link_libraries(nakagawa_core PUBLIC shell32 ole32 uuid)
+    target_link_libraries(nakagawa_core PUBLIC shell32 ole32 uuid advapi32)
 endif()
 
 target_include_directories(nakagawa_core PUBLIC
@@ -180,6 +182,13 @@ add_executable(test_nk_zip
 )
 target_link_libraries(test_nk_zip PRIVATE nakagawa_core)
 add_test(NAME nk_zip_test COMMAND test_nk_zip)
+
+add_executable(test_steam_shortcuts
+    tests/native/test_steam_shortcuts.c
+    tests/native/native_test_isolation.c
+)
+target_link_libraries(test_steam_shortcuts PRIVATE nakagawa_core)
+add_test(NAME steam_shortcuts_test COMMAND test_steam_shortcuts)
 
 add_executable(test_xb_parser
     tests/native/test_xb_parser.c
@@ -793,6 +802,7 @@ set(NK_RUNTIME_SOURCES
     src/rt/fbcap_policy.c
     src/rt/fbcap.c
     src/rt/videorec.c
+    src/rt/replay_checkpoint.c
     src/rt/ge_capture.c
     src/rt/vfpu_interp.c
     src/rt/hle.c
@@ -848,6 +858,7 @@ set(NK_RUNTIME_SOURCES
     src/rt/gpu_sdl3vk/sdl3vk.c
     src/rt/gpu_sdl3vk/ge_gpu.c
     src/rt/gpu_sdl3vk/tex_scale.c
+    src/rt/texrepl.c
     third_party/xbrz/xbrz.c
     src/rt/gpu_sdl3vk/ace_ui.c
     src/rt/gpu_sdl3vk/ace_smooth.c

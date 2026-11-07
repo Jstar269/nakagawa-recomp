@@ -36,6 +36,7 @@ _SCRATCH = Path(_SCRATCH_ROOT.name).as_posix()
 _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/cpu_lle_selftest",
     "build/mygame/domain_mode_selftest",
+    "build/mygame/nkstate_selftest",
     "build/mygame/clay_layout_selftest",
     "build/test_nk_ui_core",
     "build/test_player_screens",
@@ -50,6 +51,9 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/osk_text_entry_selftest",
     "build/mygame/ace_selftest build/mygame",
     "build/mygame/motion_match_selftest",
+    "build/mygame/fsr3_host_selftest tests/native/fsr3_host_oracle.txt",
+    "build/mygame/fsr3_fg_host_selftest tests/native/fsr3_fg_host_oracle.txt",
+    "build/mygame/fsr3_fg_state_selftest",
     "build/mygame/osk_overlay_selftest",
     "build/mygame/ge_float24_selftest",
     "build/mygame/ge_cpu_profile_validate_selftest",
@@ -73,6 +77,8 @@ _RUNS_BEFORE_PROCESS_TEST = (
     # translation from tools/code_capture.py, the binding that takes the call (#1933).
     "build/mygame/code_capture_selftest_capture build/mygame/code-capture-selftest",
     "build/mygame/code_capture_selftest_bound build/mygame/code-capture-selftest",
+    # pipeline-cache-selftest: the Vulkan pipeline cache file's checks, no GPU (#2149).
+    "build/mygame/pipeline_cache_selftest build/mygame/pipeline_cache_scratch",
     "build/test_pgf_public",
     "build/test_core_catalog",
     "build/test_parsers_hostile",
@@ -86,12 +92,14 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/test_disc_expand",
     "build/test_disc_verify",
     "build/test_nk_zip",
+    "build/test_steam_shortcuts",
     "build/test_safe_math",
     "build/test_pcm_wav_dump",
     "build/test_fuzz_parsers --iters 100",
     "build/mygame/psmf_producer_selftest --fuzz-iters 100",
     "build/test_input_profile",
     "build/test_nk_sig",
+    "build/test_nk_achievements",
     "build/test_portable_mode",
 )
 _PROCESS_TEST = "build/test_win32_process" if os.name == "nt" else "build/test_posix_process"

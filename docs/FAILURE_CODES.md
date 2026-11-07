@@ -77,11 +77,13 @@ The **Where** column of each table names the places a code can appear:
 | `DISC_NOT_PSP` | disc, player | The disc image is not a PSP game: it has no `PSP_GAME` folder. |
 | `EXECUTABLE_UNSUPPORTED` | report | The disc's executable is missing, encrypted with no decrypted copy, or breaks a PSP layout rule. |
 | `INVALID_ISO` | report | The input is not a readable PSP disc image, or its title information is invalid. |
+| `HOMEBREW_KERNEL_MODE_UNSUPPORTED` | player | The package's homebrew is kernel-mode or a custom-firmware plugin, which needs the PSP's own kernel and firmware. |
 | `ISO_CORRUPT` | player | The picked file is not a PSP disc image. |
 | `MODIFIED_DUMP_CFW_LOADER` | report | The disc image was modified by a custom-firmware patch; its real executable needs a decrypted copy. |
+| `PBP_ENCRYPTED_EXECUTABLE_UNSUPPORTED` | player | The PBP holds an encrypted program; only unencrypted homebrew is imported from a package. |
 | `PBP_HEADER_TRUNCATED` | report, route, disc, player | The PlayStation Store package (PBP) ends inside its header. |
 | `PBP_OFFSETS_INVALID` | report, route, disc, player | The PBP's section offsets are out of order or outside the file. |
-| `PBP_PACKAGE_UNSUPPORTED` | report, route, disc, player | The PBP is not a PSN release of a UMD game, the only kind Nakagawa converts. |
+| `PBP_PACKAGE_UNSUPPORTED` | report, route, disc, player | The PBP is neither a PSN release of a UMD game nor unencrypted homebrew, the only kinds Nakagawa converts. |
 | `PBP_SFO_INVALID` | report, route, disc, player | The PBP's title information (`PARAM.SFO`) cannot be read. |
 | `SOURCE_NOT_FOUND` | player | The game's source file is no longer where the library recorded it. |
 
@@ -107,6 +109,7 @@ The **Where** column of each table names the places a code can appear:
 
 | Code | Where | Meaning |
 | --- | --- | --- |
+| `BUILD_KNOWN_BAD` | staging | The disc's executable is a build the title's manifest marks known-bad; the manifest's reason is in the message. |
 | `DISC_FILES_STAGE_FAILED` | report | The game's files on the disc could not be staged; the output says why. |
 | `EXECUTABLE_LOAD_BINDING_REQUIRED` | route | A relocatable executable has no load address bound to it. |
 | `EXPERIMENTAL_CODEGEN_PROFILE_MISSING` | route | An experimental title's profile has no `codegen_profile` setting and is not the player's untouched default profile. |
