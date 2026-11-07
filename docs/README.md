@@ -235,6 +235,7 @@ Every substantial document carries one status.
 | `ENHANCEMENT_CONTRACT.md` | CURRENT | Enhancement contract, package validator, and declarative 60 Hz frame-rate rescale AOT epoch |
 | `STATIC_VERIFY.md` | CURRENT | Oracle-free verification and blocked external-input gates |
 | `LLVM_BACKEND.md` | CURRENT | Opt-in LLVM IR backend (#330): design, first-stage scope, verification and the in-process stage |
+| `COMPILER_COMPARISON.md` | CURRENT | GCC/Clang and default/lld experiment results; correctness veto governs performance reporting (#317) |
 | `HARDWARE_ORACLE.md` | CURRENT | Bounded proposal + measured-cells index; trace oracle unbuilt |
 | `HARDWARE_RUNNER_AUTONOMY.md` | CURRENT | Runner autonomy design; simulated-transport conformance suite and the one-command matrix; PSP-side framed runner unbuilt |
 | `PROVENANCE_MERGE_GATE.md` | CURRENT | Merge-path provenance control (observation mode) |

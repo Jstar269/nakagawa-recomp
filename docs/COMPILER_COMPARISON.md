@@ -1,78 +1,94 @@
 # GCC and Clang comparison
 
-This snapshot records issue #317 on one Windows machine using MSYS2 UCRT64. The source
-revision was b55f6cd304a17ea06c414b1c462df7fbef26b1f2. The final, relative-path matrix was
-one locked invocation after three earlier attempts stopped before accepted measurements. It
-requested three measurement repetitions for each passing compiler/linker row.
+This snapshot records issue #317 on Windows 11 with MSYS2 UCRT64. The experiment used only
+public synthetic fixtures. No game, private input, hardware or title route was used.
+
+BASE_SHA: `0d2b9e72ad859e57ebbb5da2ef4aef7286b66b78`
+EXPERIMENT_SHA: `90c9bd2943695f22f039e59252d4fd2b804b1144`
 
 ## Command
 
-The harness was called through the machine RAM lock; its Make invocations use `-j1`.
+The matrix ran through the machine RAM lock. Make built serially at `-j1`. UCRT64's `bin`
+directory was first on `PATH`.
 
 ```powershell
-python tools/compiler_compare.py --make C:/msys64/ucrt64/bin/mingw32-make.exe --compilers gcc,clang --linkers default,lld --repeats 3 --output build/compiler-compare-317-run4-20261106
+python tools/compiler_compare.py --make C:/msys64/ucrt64/bin/mingw32-make.exe --compilers gcc,clang --linkers default,lld --repeats 3 --output build/c317-final
 ```
 
-## Toolchains
+## Toolchains and flags
 
 | Component | Version and target |
 | --- | --- |
 | Python | 3.14.8 |
 | GNU Make | 4.4.1, x86_64-w64-mingw32 |
-| GCC | gcc.exe (Rev6, Built by MSYS2 project) 16.2.0; x86_64-w64-mingw32 |
-| Clang | clang 23.1.3, MSYS2 MINGW-packages commit 067886dba977a6b4c97dfedfb25286b5eda55620; x86_64-w64-windows-gnu, posix |
-| Default linker | GNU ld (GNU Binutils) 2.47.20260726 |
-| lld | LLD 23.1.3, MSYS2 MINGW-packages commit 067886dba977a6b4c97dfedfb25286b5eda55620 |
+| GCC | 16.2.0, x86_64-w64-mingw32 |
+| Clang | 23.1.3, x86_64-w64-windows-gnu |
+| Default linker | GNU ld 2.47.20260726 |
+| lld | 23.1.3 |
 
-Both compilers and linkers resolved inside the same MSYS2 UCRT64 installation. The JSON
-report records their full version output, paths, effective flags, and compiler argument
-vectors.
+Each row used `-O0`, `-fno-fast-math`, `-fno-associative-math` and
+`-ffp-contract=off`. The lld rows added `-fuse-ld=lld`. GCC-only
+`-ftrack-macro-expansion=0` was omitted from both compiler rows. The default Makefile compiler
+remains GCC.
 
 ## Veto results
 
-| Compiler | Linker | Result | First failed gate |
-| --- | --- | --- | --- |
-| GCC | default | FAILED_VETO | cosim-mutants |
-| GCC | lld | FAILED_VETO | production-smoke |
-| Clang | default | FAILED_VETO | display-smoke |
-| Clang | lld | FAILED_VETO | production-smoke |
+| Compiler/linker | Result | First failure |
+| --- | --- | --- |
+| GCC/default | MEASURED | All veto gates and runtime workloads passed |
+| GCC/lld | FAILED_VETO | `cosim-mutants`: `ld.lld: error: too many errors emitted, stopping now (use --error-limit=0 to see all errors)` |
+| Clang/default | FAILED_VETO | `src/rt/videorec.c:708:14: error: variable 's_clock_deterministic' set but not used [-Werror,-Wunused-but-set-global]` |
+| Clang/lld | FAILED_VETO | `src/rt/videorec.c:708:14: error: variable 's_clock_deterministic' set but not used [-Werror,-Wunused-but-set-global]` |
 
-The Clang/default display-smoke veto stopped when the VRAM capture check failed:
+GCC/lld passed production-smoke after the verifier learned lld's `file.o:(section)` map entries.
+It stopped when the unmutated scheduler baseline could not link in mutation lane
+`25-scheduler`: `COSIM_MUTATION FAIL: AOT boundary baseline verdict=no-run`. Make reported the
+failed recipes at `mk/selftests.mk:499`, `mk/selftests.mk:513` and `mk/cosim_snapshot.mk:121`.
+The lld diagnostic did not include a source file and line.
 
-```text
-DISPLAY_SMOKE_VRAMDUMP status=FAIL: requested vblank 3 produced no VRAM capture
-```
+Both Clang rows passed the display-smoke VRAM capture check, then failed compiling
+`videorec.c` because Clang treats the unused-but-set global as an error. This is a project and
+toolchain incompatibility; no compiler-specific guest-semantics workaround was added.
 
-Both lld rows reached production-smoke verification, which rejected the link map because
-it omitted the expected generated and runtime objects. GCC/default reached cosim-mutants;
-five FP conversion mutants were reported no-run; the first linker diagnostic was
-`ld.exe: cannot find build/comp: No such file or directory`.
-Those are failed vetoes, not compiler passes.
-Each row stopped at its first failure; later gates, including native-core-tests and the
-VFPU/exception checks, are NOT_RUN for that row rather than passes.
+An earlier GCC/default attempt used a longer output root and the nested mutation linker could
+not resolve a split `build/comp` path. The final short-root invocation passed all veto gates.
+The earlier Clang display-capture failure was also superseded: the merged `origin/main` fix
+made the capture check pass before Clang reached the warning-as-error above.
 
 ## Measurements
 
-No performance measurement ran. Every row failed its veto, so the harness reported no
-compile time, peak memory, link time, object size, executable size, or semantic hash. The
-semantic-hash comparison is NOT_COMPARABLE. The configured repetition count was three;
-veto failures correctly prevented those repetitions from starting.
+Only GCC/default passed the correctness veto. The other rows have no performance measurements.
 
-| Compiler/linker | Veto | Generated-C compile (s), min/median | Peak working set (bytes), min/median | Link time (s), min/median | Object/executable size (bytes), min/median | Run-output SHA-256 |
-| --- | --- | --- | --- | --- | --- | --- |
-| GCC/default | FAILED_VETO | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN |
-| GCC/lld | FAILED_VETO | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN |
-| Clang/default | FAILED_VETO | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN |
-| Clang/lld | FAILED_VETO | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN |
+| GCC/default measurement | Minimum | Median | Maximum |
+| --- | ---: | ---: | ---: |
+| Generated-C compile wall time (s) | 11.842 | 12.052 | 13.519 |
+| Peak working set (bytes) | 53,600,256 | 54,853,632 | 55,615,488 |
+| Link wall time (s) | 5.859 | 6.053 | 6.132 |
+| Object bytes | 16,128,567 | 16,128,567 | 16,128,567 |
+| Executable bytes | 14,656,192 | 14,656,192 | 14,656,192 |
 
-The harness keeps the linker factor separate. The lld row adds `-fuse-ld=lld`
-and checks that every measured corpus link uses it. GCC-only
-`-ftrack-macro-expansion=0` is omitted from both comparison rows because it
-only changes macro tracking and would bias compile-time and memory measurements. Both rows
-use `-O0` and explicitly disable fast-math, reassociation, and FP contraction.
-The default Makefile compiler remains GCC; this experiment does not change it.
+The three GCC/default run-output hashes matched at
+`a227c65f31a424817b8ac6ab545773bbcaff57fd219afd62934fc159e6834925`. The semantic-hash
+comparison across all four rows is `INCOMPLETE`, because three rows were vetoed.
 
-This single-machine veto result does not establish a winner. Changing the default would
-require stable semantic output and passing source-owned gates for each supported toolchain,
-plus repeatable measurements across the supported build matrix showing a material gain
-without regressions. Hosted CI and maintainer review were NOT_RUN.
+All nine GCC/default runtime workloads passed. Their elapsed wall times and local `SR_PERF`
+summary paths are in `build/c317-final/compiler_compare.json`; the generated `perf.json` files
+are local build artifacts and are not committed. No cross-compiler runtime comparison is
+available because neither Clang row passed the veto.
+
+| Runtime workload | Status | Elapsed wall time (s) |
+| --- | --- | ---: |
+| production-smoke-gap | PASS | 171.755 |
+| cosim | PASS | 27.816 |
+| psmf-media | PASS | 59.989 |
+| audio | PASS | 8.045 |
+| audio-resampler | PASS | 7.516 |
+| atrac3p | PASS | 8.415 |
+| platform-ladder-gap | PASS | 76.221 |
+| platform-ladder-sched | PASS | 76.237 |
+| platform-ladder-fs | PASS | 75.729 |
+
+This one-row measurement does not establish a compiler winner or behavior equivalence. A
+default-toolchain change still needs repeatable results for both compilers and linkers, plus
+the runtime and residency evidence requested by #317. AOT/interpreter residency, sanitizer
+comparison, hosted CI, private-title acceptance and hardware acceptance are `NOT_RUN`.
