@@ -435,11 +435,11 @@ def verify_dxc(
             includes = []
         for inc in includes:
             try:
-                observed = sha256((root / inc["path"]).read_bytes())
+                include_sha256 = sha256((root / inc["path"]).read_bytes())
             except (OSError, KeyError, TypeError) as exc:
                 errors.append(f"{label}: include {exc}")
                 continue
-            checks.append((f"include {inc['path']} SHA-256", observed, inc.get("sha256")))
+            checks.append((f"include {inc['path']} SHA-256", include_sha256, inc.get("sha256")))
         for what, observed, recorded in checks:
             if observed != recorded:
                 errors.append(f"{label}: {what} mismatch ({observed} != {recorded})")

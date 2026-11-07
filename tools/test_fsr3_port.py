@@ -25,6 +25,7 @@ from pathlib import Path
 import re
 import struct
 import sys
+from typing import Any
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,7 +64,9 @@ def reflect(words: list[int]) -> dict:
     """Bindings, local size, cbuffer members and image formats of one compute module."""
     if words[0] != 0x07230203:
         raise ValueError("not SPIR-V")
-    names, binding, dset, types, pointers, variables = {}, {}, {}, {}, {}, {}
+    names, binding, dset, pointers, variables = {}, {}, {}, {}, {}
+    # Each type id's kind and its operands: ("image", sampled, format), ("sampler",), ("struct", members).
+    types: dict[int, tuple[Any, ...]] = {}
     member_names, offsets, loads, sampled, texel_pointers = {}, {}, {}, set(), set()
     buffer_blocks, read_only = set(), set()
     vectors, value_type, image_writes = {}, {}, []
@@ -115,10 +118,10 @@ def reflect(words: list[int]) -> dict:
             value_type[a[1]] = a[0]
         i += count
     # The components of each storage image's writes, by the image's name.
-    writes = {}
+    writes: dict[str, set[int]] = {}
     for image, texel in image_writes:
-        name = names.get(loads.get(image), "")
-        writes.setdefault(name, set()).add(vectors.get(value_type.get(texel), 1))
+        name = names.get(loads.get(image, -1), "")
+        writes.setdefault(name, set()).add(vectors.get(value_type.get(texel, -1), 1))
     rows, formats, cbuffers = [], {}, {}
     for var, number in binding.items():
         pointee = pointers[variables[var]]
@@ -287,7 +290,8 @@ class FrameGenerationShaderTests(unittest.TestCase):
         self.assertEqual(set(self.modules), {p.name for p in GPU_DIR.glob("fsr3fg_*_comp.inc")})
 
     def test_images_declare_r32ui_exactly_when_an_atomic_reaches_them_in_some_pass(self) -> None:
-        declared, atomic = {}, set()
+        declared: dict[str, set[int]] = {}
+        atomic = set()
         for module, facts in self.modules.items():
             for name, (image_format, is_atomic) in facts["formats"].items():
                 self.assertIn(image_format, (FORMAT_UNKNOWN, FORMAT_R32UI), (module, name))
