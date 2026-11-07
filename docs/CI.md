@@ -1250,6 +1250,10 @@ and each token's remaining budget.
 | `PR_NOT_OPEN`, `BASE_NOT_DEFAULT` | nothing to judge for a merge into `main` |
 | `DRAFT_LIGHT_CI` | the pull request is a Draft, or its draft state cannot be read: CI ran only the quick checks ([Draft pull requests](#draft-pull-requests)); mark it Ready for review |
 
+The `CI_DEFINITION_BEHIND` finding text in `tools/ci_trust_verdict.py` still ends "merge main".
+Pull request #2228 changes it to match the row above; until that lands, [`AGENTS.md` section
+10](../AGENTS.md#10-pr-and-integration-authorization) decides who merges `main` and when.
+
 The intended producers are `CI required` and `Hygiene and security` from `ci.yml`, `OSV
 Vulnerability Scan` from `osv-scanner.yml`, `dependency-review` from `dependency-review.yml`
 (all `pull_request`), and the provenance attestation from `provenance-attestation.yml`
