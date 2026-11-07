@@ -367,6 +367,19 @@ class TestPackageNotices(unittest.TestCase):
             with mock.patch.dict(package_notices.os.environ, {"MINGW_PREFIX": str(bare)}):
                 self.assertEqual(package_notices.resolve_toolchain_root(), bare.resolve())
 
+    def test_toolchain_root_uses_explicit_msys_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tc_dir:
+            root = Path(tc_dir) / "custom-ucrt64"
+            msys_bin = root / "bin"
+            msys_bin.mkdir(parents=True)
+            (msys_bin / "gcc.exe").write_bytes(b"synthetic executable path marker")
+            (root / "share" / "licenses").mkdir(parents=True)
+            with mock.patch.dict(
+                    package_notices.os.environ, {"MSYS_PATH": str(msys_bin)}, clear=True), \
+                    mock.patch.object(package_notices.shutil, "which", return_value=None), \
+                    mock.patch.object(package_notices, "_prerequisite_toolchain_root", return_value=None):
+                self.assertEqual(package_notices.resolve_toolchain_root(), root.resolve())
+
 
 
 

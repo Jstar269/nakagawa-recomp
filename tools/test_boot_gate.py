@@ -109,7 +109,7 @@ class BootGateTests(unittest.TestCase):
         # SR_PRESENT_UPSCALE=fsr1 (#1273) enhances the window; src/rt/gui.c stamps the run with
         # an ACE_MODE line and a phase=present_upscale boot event, so a clean boot still fails.
         clean_tail = [event("first_frame", source="cpu", nonzero_pixels=9)]
-        stamp = "ACE_MODE: present upscale fsr1 (the window only; captures hold the guest's frame)\n"
+        stamp = "ACE_MODE: present upscale fsr1 (the window and its recording; captures hold the guest's frame)\n"
         result = self.parse([stamp] + self.ordered_prefix() + clean_tail)
         self.assertFalse(result["ok"])
         self.assertFalse(result["aceMode"])

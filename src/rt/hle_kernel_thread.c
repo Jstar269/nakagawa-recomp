@@ -714,6 +714,18 @@ static int hle_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx) {
             for (uint32_t i = 0; i < FPL_MAX; i++)
                 if (s_fpls[i].used) visit(0x500u + i, ctx);
             return 1;
+        case 12:   /* PSPSDK SCE_KERNEL_TMID_Mutex: s_mutexes holds the live ones */
+            for (size_t i = 0; i < s_mutex_len; i++)
+                if (s_mutexes[i]) visit(s_mutexes[i]->uid, ctx);
+            return 1;
+        case 13:   /* PSPSDK SCE_KERNEL_TMID_LwMutex: a Sync of kind LWMUTEX */
+            for (int i = 0; i < 128; i++)
+                if (s_sync[i].used && s_sync[i].kind == SYNC_KIND_LWMUTEX) visit(s_sync[i].uid, ctx);
+            return 1;
+        case 14:   /* PSPSDK SCE_KERNEL_TMID_Tlspl */
+            for (int i = 0; i < TLSPL_MAX; i++)
+                if (s_tlspls[i].used) visit(s_tlspls[i].uid, ctx);
+            return 1;
         case SR_TMID_MPIPE:
             for (int i = 0; i < MSG_PIPE_MAX; i++)
                 if (s_msg_pipes[i].used) visit(s_msg_pipes[i].uid, ctx);
@@ -732,7 +744,10 @@ static int hle_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx) {
 }
 
 static int threadman_id_type_listed(int tmid) {
-    return (tmid >= SR_TMID_THREAD && tmid <= SR_TMID_VTIMER) ||
+    /* pspautotests tests/threads/threads/threadmanidlist.expected: types 1..14 (through Mutex 12,
+     * LwMutex 13 and Tlspl 14) and the four thread-state types are accepted; 15 and above are
+     * ILLEGAL_TYPE. */
+    return (tmid >= SR_TMID_THREAD && tmid <= 14) ||
            (tmid >= SR_TMID_SLEEP_THREAD && tmid <= SR_TMID_DORMANT_THREAD);
 }
 
@@ -747,7 +762,9 @@ static uint32_t h_GetThreadmanIdList(CpuState *s) {
                                    "type %d (ThreadEventHandler): thread event handlers are "
                                    "not modelled", tmid);
     }
-    if (readbufsize < 0) return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
+    /* pspautotests tests/threads/threads/threadmanidlist.expected "Size ffffffff/fffffffe":
+     * res=800200d3 (ILLEGAL_ADDR) with the count word unwritten. */
+    if (readbufsize < 0) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (readbufsize > 0) {
         const uint64_t bytes = (uint64_t)(uint32_t)readbufsize * 4u;
         if (!readbuf || bytes > UINT32_MAX || !sr_guest_span_writable(readbuf, (uint32_t)bytes))

@@ -29,7 +29,7 @@ the runtime HLE sources, `tools/hle_sources.py`). Regenerate with `python tools/
 
 Open-owner counts:
 
-- #341: 32
+- #341: 14
 
 ## Census
 
@@ -40,11 +40,11 @@ Open-owner counts:
 | `sceAudioSRCChReserve` | implemented | - | dedicated | partial | `h_AudioSRCChReserve` | `0x38553111` |
 | `sceAudioSRCOutputBlocking` | implemented | - | dedicated | partial | `h_AudioSRCOutputBlocking` | `0xe0727056` |
 | `sceCtrlReadBufferPositive` | implemented | - | dedicated | partial | `h_CtrlReadBuffer` | `0x1f803938` |
-| `sceDisplayIsVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayIsVblank` | `0x4d4e10ec` |
-| `sceDisplayWaitVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblank` | `0x36cdfade` |
-| `sceDisplayWaitVblankCB` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankCB` | `0x8eb9ec49` |
+| `sceDisplayIsVblank` | implemented | - | dedicated | partial | `h_DisplayIsVblank` | `0x4d4e10ec` |
+| `sceDisplayWaitVblank` | implemented | - | dedicated | partial | `h_DisplayWaitVblank` | `0x36cdfade` |
+| `sceDisplayWaitVblankCB` | implemented | - | dedicated | partial | `h_DisplayWaitVblankCB` | `0x8eb9ec49` |
 | `sceDisplayWaitVblankStart` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStart` | `0x984c27e7` |
-| `sceDisplayWaitVblankStartCB` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankStartCB` | `0x46f186c3` |
+| `sceDisplayWaitVblankStartCB` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStartCB` | `0x46f186c3` |
 | `sceDisplayWaitVblankStartMulti` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStartMulti` | `0x40f1469c` |
 | `sceDisplayWaitVblankStartMultiCB` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStartMultiCB` | `0x77ed8b3a` |
 | `sceGeDrawSync` | implemented | - | dedicated | partial | `h_GeDrawSync` | `0xb287bd61` |
@@ -59,20 +59,20 @@ Open-owner counts:
 | `sceKernelAllocateFpl` | implemented | - | dedicated | partial | `h_AllocateFpl` | `0xd979e9bf` |
 | `sceKernelAllocateFplCB` | implemented | #341 | dedicated | unreviewed | `h_AllocateFplCB` | `0xe7282cb6` |
 | `sceKernelAllocateVpl` | implemented | - | dedicated | partial | `h_AllocateVpl` | `0xbed27435` |
-| `sceKernelAllocateVplCB` | implemented | #341 | dedicated | unreviewed | `h_AllocateVplCB` | `0xec0a693f` |
+| `sceKernelAllocateVplCB` | implemented | - | dedicated | partial | `h_AllocateVplCB` | `0xec0a693f` |
 | `sceKernelCancelReceiveMbx` | implemented | - | dedicated | partial | `h_CancelReceiveMbx` | `0x87d4dd36` |
 | `sceKernelCpuResumeIntr` | implemented | - | dedicated | partial | `h_CpuResumeIntr` | `0x5f10d406` |
 | `sceKernelCpuSuspendIntr` | implemented | - | dedicated | partial | `h_CpuSuspendIntr` | `0x092968f4` |
 | `sceKernelCreateMbx` | implemented | - | dedicated | partial | `h_CreateMbx` | `0x8125221d` |
-| `sceKernelCreateTlspl` | implemented | #341 | dedicated | unreviewed | `h_CreateTlspl` | `0x8daff657` |
+| `sceKernelCreateTlspl` | implemented | - | dedicated | partial | `h_CreateTlspl` | `0x8daff657` |
 | `sceKernelDelaySysClockThread` | implemented | #341 | dedicated | unreviewed | `h_DelaySysClockThread` | `0xbd123d9e` |
 | `sceKernelDelaySysClockThreadCB` | implemented | #341 | dedicated | unreviewed | `h_DelaySysClockThreadCB` | `0x1181e963` |
 | `sceKernelDelayThread` | implemented | - | dedicated | partial | `h_DelayThread` | `0xceadeb47` |
 | `sceKernelDelayThreadCB` | implemented | - | dedicated | partial | `h_DelayThreadCB` | `0x68da9e36` |
 | `sceKernelDeleteMbx` | implemented | - | dedicated | partial | `h_DeleteMbx` | `0x86255ada` |
-| `sceKernelDeleteTlspl` | implemented | #341 | dedicated | unreviewed | `h_DeleteTlspl` | `0x32bf938e` |
-| `sceKernelEnableSubIntr` | implemented | #341 | dedicated | unreviewed | `h_EnableSubIntr` | `0xfb8e22ec` |
-| `sceKernelFreeTlspl` | implemented | #341 | dedicated | unreviewed | `h_FreeTlspl` | `0x4a719fb2` |
+| `sceKernelDeleteTlspl` | implemented | - | dedicated | partial | `h_DeleteTlspl` | `0x32bf938e` |
+| `sceKernelEnableSubIntr` | implemented | - | dedicated | partial | `h_EnableSubIntr` | `0xfb8e22ec` |
+| `sceKernelFreeTlspl` | implemented | - | dedicated | partial | `h_FreeTlspl` | `0x4a719fb2` |
 | `sceKernelGetTlsAddr` | implemented | #341 | dedicated | unreviewed | `h_GetTlsAddr` | `0xfa835cde` |
 | `sceKernelLockLwMutex` | implemented | - | dedicated | partial | `h_LockLwMutex` | `0xbea46419` |
 | `sceKernelLockLwMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutexCB` | `0x1fc64e09` |
@@ -84,9 +84,9 @@ Open-owner counts:
 | `sceKernelReceiveMsgPipe` | implemented | - | dedicated | partial | `h_ReceiveMsgPipe` | `0x74829b76` |
 | `sceKernelReceiveMsgPipeCB` | implemented | #341 | dedicated | unreviewed | `h_ReceiveMsgPipeCB` | `0xfbfa697d` |
 | `sceKernelReferMbxStatus` | implemented | - | dedicated | partial | `h_ReferMbxStatus` | `0xa8e8c846` |
-| `sceKernelReferTlsplStatus` | implemented | #341 | dedicated | unreviewed | `h_ReferTlsplStatus` | `0x721067f3` |
-| `sceKernelRegisterSubIntrHandler` | implemented | #341 | dedicated | unreviewed | `h_RegisterSubIntr` | `0xca04a2b9` |
-| `sceKernelResumeDispatchThread` | implemented | #341 | dedicated | unreviewed | `h_ResumeDispatchThread` | `0x27e22ec2` |
+| `sceKernelReferTlsplStatus` | implemented | - | dedicated | partial | `h_ReferTlsplStatus` | `0x721067f3` |
+| `sceKernelRegisterSubIntrHandler` | implemented | - | dedicated | partial | `h_RegisterSubIntr` | `0xca04a2b9` |
+| `sceKernelResumeDispatchThread` | implemented | - | dedicated | partial | `h_ResumeDispatchThread` | `0x27e22ec2` |
 | `sceKernelSendMbx` | implemented | - | dedicated | partial | `h_SendMbx` | `0xe9b3061e` |
 | `sceKernelSendMsgPipe` | implemented | - | dedicated | partial | `h_SendMsgPipe` | `0x876dbfad` |
 | `sceKernelSendMsgPipeCB` | implemented | #341 | dedicated | unreviewed | `h_SendMsgPipeCB` | `0x7c41f2c2` |
@@ -94,16 +94,16 @@ Open-owner counts:
 | `sceKernelSleepThreadCB` | implemented | #341 | dedicated | unreviewed | `h_SleepThreadCB` | `0x82826f70` |
 | `sceKernelStartModule` | implemented | #341 | dedicated | unreviewed | `h_StartModule` | `0x50f0c1ec` |
 | `sceKernelStopModule` | implemented | #341 | dedicated | unreviewed | `h_StopModule_Trace` | `0xd1ff982a` |
-| `sceKernelSuspendDispatchThread` | implemented | #341 | dedicated | unreviewed | `h_SuspendDispatchThread` | `0x3ad58b8c` |
-| `sceKernelTerminateThread` | implemented | #341 | dedicated | unreviewed | `h_TerminateThread` | `0x616403ba` |
+| `sceKernelSuspendDispatchThread` | implemented | - | dedicated | partial | `h_SuspendDispatchThread` | `0x3ad58b8c` |
+| `sceKernelTerminateThread` | implemented | - | dedicated | partial | `h_TerminateThread` | `0x616403ba` |
 | `sceKernelTryAllocateFpl` | implemented | - | dedicated | partial | `h_TryAllocateFpl` | `0x623ae665` |
-| `sceKernelVolatileMemLock` | implemented | #341 | dedicated | unreviewed | `h_VolatileMemLock` | `0x3e0271d3` |
+| `sceKernelVolatileMemLock` | implemented | - | dedicated | partial | `h_VolatileMemLock` | `0x3e0271d3` |
 | `sceKernelWaitEventFlag` | implemented | - | dedicated | partial | `h_WaitEventFlag` | `0x402fcf22` |
 | `sceKernelWaitEventFlagCB` | implemented | #341 | dedicated | unreviewed | `h_WaitEventFlagCB` | `0x328c546a` |
 | `sceKernelWaitSema` | implemented | - | dedicated | partial | `h_WaitSema` | `0x4e3a1105` |
 | `sceKernelWaitSemaCB` | implemented | #341 | dedicated | unreviewed | `h_WaitSemaCB` | `0x6d212bac` |
 | `sceKernelWaitThreadEnd` | implemented | - | dedicated | partial | `h_WaitThreadEnd` | `0x278c0df5` |
 | `sceKernelWaitThreadEndCB` | implemented | #341 | dedicated | unreviewed | `h_WaitThreadEndCB` | `0x840e8133` |
-| `sceUmdWaitDriveStat` | implemented | #341 | dedicated | unreviewed | `h_UmdWaitDriveStat` | `0x8ef08fce` |
-| `sceUmdWaitDriveStatCB` | implemented | #341 | dedicated | unreviewed | `h_UmdWaitDriveStatCB` | `0x4a9e5e29` |
-| `sceUmdWaitDriveStatWithTimer` | implemented | #341 | dedicated | unreviewed | `h_UmdWaitDriveStatWithTimer` | `0x56202973` |
+| `sceUmdWaitDriveStat` | implemented | - | dedicated | partial | `h_UmdWaitDriveStat` | `0x8ef08fce` |
+| `sceUmdWaitDriveStatCB` | implemented | - | dedicated | partial | `h_UmdWaitDriveStatCB` | `0x4a9e5e29` |
+| `sceUmdWaitDriveStatWithTimer` | implemented | - | dedicated | partial | `h_UmdWaitDriveStatWithTimer` | `0x56202973` |

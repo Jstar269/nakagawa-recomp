@@ -187,7 +187,8 @@
               "window_start_x2",
               "argument_x2",
               "count_x2_even",
-              "gate_30hz_hold"
+              "gate_30hz_hold",
+              "gate_30hz_alt"
             ],
             "description": "Declarative frame-rate rescale transform class."
           },
@@ -251,6 +252,17 @@
               "pattern": "^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$"
             },
             "description": "Ids of other sites that declare stock_values. This site runs its rewrite only after each has applied in the run; until then it runs its stock statement."
+          },
+          "alternates": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z_][a-zA-Z0-9_]{0,127}$"
+            },
+            "description": "gate_30hz_alt only: the functions called in place of the gated call on the updates it skips, in the order the gated function calls them (contract section 9.2)."
           }
         }
       }
