@@ -5,6 +5,12 @@ public synthetic fixtures. No game, private input, hardware or title route was u
 
 BASE_SHA: `0d2b9e72ad859e57ebbb5da2ef4aef7286b66b78`
 EXPERIMENT_SHA: `90c9bd2943695f22f039e59252d4fd2b804b1144`
+MERGED_MAIN_SHA: `a56a31e88ed6e3ce96c36de506524836239379af`
+
+After the experiment, the branch merged the newer `origin/main`. Its only change on the
+compiler-gate paths materialized the display-smoke vblank selection as a list. The focused
+display-smoke and link-map regressions passed after that merge; the measurements below remain
+qualified to `EXPERIMENT_SHA`.
 
 ## Command
 
