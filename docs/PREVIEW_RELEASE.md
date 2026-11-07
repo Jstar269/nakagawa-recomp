@@ -316,8 +316,7 @@ that already has the shortcut it tests, so run it on one without, or build a tes
 `tools/verify_installer.py`).
 
 Before publishing a release that carries the installer, the owner does these checks on a Windows PC with the
-release candidate's `Setup.exe` (they need the uninstall page, which a silent run never shows; the full list is in
-the installer design note):
+release candidate's `Setup.exe` (they need the uninstall page, which a silent run never shows):
 
 1. Start-menu shortcut: the icon shows, and the running player groups with it on the taskbar.
 2. Apps & features lists Nakagawa Recomp at the release version.
