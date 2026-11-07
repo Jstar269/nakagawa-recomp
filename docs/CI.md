@@ -1490,8 +1490,12 @@ push to `main`. Every other pull request's analysis stays on `ubuntu-26.04`.
 Every other run, a fork's pull request above all, gets the job's hosted image (`ubuntu-24.04`
 or `ubuntu-26.04`, whichever that job names when it is not on the pool). Two repository
 variables, which only the maintainer can set, gate it further: `NK_SELF_HOSTED_LINUX`
-must be `on` and `NK_SELF_HOSTED_HEARTBEAT` must be a Unix time less than ten minutes
-old. The pool's supervisor refreshes the heartbeat every two minutes while the pool is
+must be `on` or `landing` and `NK_SELF_HOSTED_HEARTBEAT` must be a Unix time less than ten minutes
+old. `on` sends every trusted run above to the pool. `landing` sends only the trusted runs that land
+work: a push to `main`, a merge group, a desk batch branch (`batch/`) and a Ready pull request; for
+Trusted CodeQL, a push to `main` and a wake of a merge group or a batch. A Draft pull request's CI then
+stays hosted, so a small pool is kept for landings. Either value only narrows the trusted runs above,
+never widens them, and any other value is off. The pool's supervisor refreshes the heartbeat every two minutes while the pool is
 healthy and turns the switch `off` when it stops or the pool fails, so a sleeping PC or
 a dead pool sends trusted runs back to hosted runners within minutes instead of leaving
 them queued. Only `runs-on` changes: every step, check name, `CI required` and the
