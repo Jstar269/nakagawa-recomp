@@ -113,6 +113,30 @@ class CiPathClassificationTests(unittest.TestCase):
         self.assertEqual(result["run_native"], "false")
         self.assertEqual(result["run_windows"], "false")
 
+    def test_installer_inputs_route_the_windows_installer_gate(self) -> None:
+        for path in (
+            "assets/installer/nakagawa.iss",
+            "assets/installer/fragments/setup.iss",
+            "assets/upstream/innosetup.lock.json",
+            "tools/build_installer.py",
+            "tools/verify_installer.py",
+            "tools/stage_install.py",
+            "tools/test_installer.py",
+            "tools/test_stage_install.py",
+        ):
+            with self.subTest(path=path):
+                result = classify([path])
+                self.assertEqual(result["run_installer"], "true")
+
+    def test_windows_runtime_inputs_also_route_the_installer_gate(self) -> None:
+        result = classify(["src/rt/sched.c"])
+        self.assertEqual(result["run_windows"], "true")
+        self.assertEqual(result["run_installer"], "true")
+
+    def test_unrelated_docs_and_python_tools_skip_the_installer_gate(self) -> None:
+        self.assertEqual(classify(["docs/CI.md"])["run_installer"], "false")
+        self.assertEqual(classify(["tools/test_progress_tracker.py"])["run_installer"], "false")
+
     def test_codegen_tool_is_native_relevant(self) -> None:
         result = classify(["tools/codegen.py"])
         self.assertEqual(result["run_python"], "true")
@@ -161,6 +185,7 @@ class CiPathClassificationTests(unittest.TestCase):
             "run_python",
             "run_native",
             "run_windows",
+            "run_installer",
             "run_markdown",
             "run_main_smoke",
             "allow_substantive",
@@ -169,13 +194,13 @@ class CiPathClassificationTests(unittest.TestCase):
 
     def test_history_failure_is_conservative(self) -> None:
         result = classify(["<history-unavailable>"])
-        for key in ("run_python", "run_native", "run_windows", "run_markdown",
+        for key in ("run_python", "run_native", "run_windows", "run_installer", "run_markdown",
                     "allow_substantive"):
             self.assertEqual(result[key], "true")
 
     def test_unknown_paths_fail_closed_to_full_validation(self) -> None:
         result = classify(["new-tool-input.dat"])
-        for key in ("run_python", "run_native", "run_windows", "run_markdown",
+        for key in ("run_python", "run_native", "run_windows", "run_installer", "run_markdown",
                     "allow_substantive"):
             self.assertEqual(result[key], "true")
 
@@ -332,6 +357,7 @@ class CiPathAdversarialTests(unittest.TestCase):
             "run_python",
             "run_native",
             "run_windows",
+            "run_installer",
             "run_markdown",
             "run_main_smoke",
             "allow_substantive",
@@ -344,6 +370,7 @@ class CiPathAdversarialTests(unittest.TestCase):
             "run_python",
             "run_native",
             "run_windows",
+            "run_installer",
             "run_markdown",
             "run_main_smoke",
             "allow_substantive",
@@ -676,6 +703,7 @@ class MergeGroupRoutingTests(unittest.TestCase):
         "run_python",
         "run_native",
         "run_windows",
+        "run_installer",
         "run_markdown",
         "run_main_smoke",
         "allow_substantive",

@@ -22,18 +22,19 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | --- | --- | --- |
 | Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and CI required | only jobs irrelevant to the changed paths |
 | Ready pull request, docs-only | classification, hygiene/security with its Markdown step, CI required | Python/native, Windows |
-| Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
-| Ready pull request, recipe-only edit of phony targets in `Makefile` | classification, hygiene/security, Python tooling on the Makefile-coupled modules over three shards, native/translation, Windows, CI required | the Python modules that cannot observe a Makefile recipe |
+| Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, Windows installer, CI required | none of the substantive public gates |
+| Ready pull request, recipe-only edit of phony targets in `Makefile` | classification, hygiene/security, Python tooling on the Makefile-coupled modules over three shards, native/translation, Windows, Windows installer, CI required | the Python modules that cannot observe a Makefile recipe |
 | Ready pull request, ordinary tools Python file | classification, hygiene/security, Python tooling, CI required | native/translation, Windows |
+| Ready pull request, installer inputs (`assets/installer/**`, the Inno lock, installer/stager tools and tests) | classification, hygiene/security, Windows runtime package build, Windows installer, CI required; Python tooling when a Python tool changes | native/translation unless another changed path routes it |
 | Ready pull request, only `tools/test_*.py` modules that no native or Windows gate runs | classification, hygiene/security, Python tooling, CI required | native/translation, Windows (see [Tests-only changes](#tests-only-changes)) |
 | Status-only transition (draft <-> ready) | no run: `.github/workflows/ci.yml` does not list `ready_for_review` or `converted_to_draft` | every gate, because the head did not change |
-| Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
+| Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, Windows installer, CI required | none of the substantive public gates |
 | Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, CI required | Python/native, Windows |
-| Mixed documentation/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the applicable product gates |
+| Mixed documentation/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, Windows installer, CI required | none of the applicable product gates |
 | Ordinary push to `main` after a validated merge | classification, hygiene/security with its Markdown step when needed and its compact main smoke steps, CI required | expensive platform matrix; the merged PR carried it |
 | Workflow push to `main` | the full applicable validation above plus the main smoke steps | none of the substantive public gates |
-| Manual `workflow_dispatch` | the full matrix and full Python tier, regardless of paths | none |
-| Nightly schedule (`17 3 * * *` UTC) | the full matrix and full Python tier | none |
+| Manual `workflow_dispatch` | the full matrix, Windows installer, and full Python tier, regardless of paths | none |
+| Nightly schedule (`17 3 * * *` UTC) | the full matrix, Windows installer, and full Python tier | none |
 | Merge-queue group (`merge_group`, `checks_requested`) | the full matrix, as for a manual dispatch, regardless of paths; every required check reports on the group commit | none |
 
 ### What else starts on a pull request push
@@ -53,9 +54,10 @@ of 2026-11-02, whole history, hosted runners):
 
 GitHub's free plan runs about 20 jobs at once for this repository. A full `CI` run (a workflow
 change, a manual run, the nightly schedule, a merge group) used to need 23 jobs, so a second
-pull request's run waited for runners while the first ran. The same checks now run in 14
-jobs. Nothing was dropped and no command changed; jobs were merged and their steps run one
-after another. Three things differ in when or how a step runs, and none of them skips a step
+pull request's run waited for runners while the first ran. The existing checks now run in 14
+jobs; installer and Windows-runtime changes add one path-gated Windows installer job.
+Nothing was dropped and no command changed; jobs were merged and their steps run one after
+another. Three things differ in when or how a step runs, and none of them skips a step
 where it ran before:
 
 - The main smoke steps no longer wait for the public-export job. The old `main_smoke` job
@@ -77,6 +79,7 @@ The jobs:
 | `native_tools` | 3 parts, 7.9-9.2 min | unchanged |
 | `python_tools` | 6 shards, 4.2-18.2 min | 3 shards, about 16.5 min each |
 | `windows_runtime` | 6 parts, 4.2-9.7 min (4.5-12.0 in run 42258417250) | 3 groups of parts, about 10-13 min each |
+| `windows_installer` | — | 1 `windows-2025` job on installer and Windows-runtime routes; reuses the Windows player package artifact |
 | `ci_required` | 1 job | unchanged |
 
 - **Hygiene.** The check keeps its name, which the ruleset and the
@@ -106,10 +109,16 @@ The jobs:
   (routes) and the player targets (smoke) share `build/` through selftest targets that have no
   output file, so their recipes compile and run every time. The compiler cache is keyed on
   the group, so the first runs after this change restore no entry until a run on `main` has
-  saved one per group.
+  saved one per group. When `run_installer` applies, the smoke group stages the already-built
+  player and its runtime closure into a package artifact. The separate `windows_installer`
+  job downloads that artifact, checks the locked Inno Setup SHA-256 before a silent
+  `/CURRENTUSER` install under the runner temp folder, builds and verifies `Setup.exe`, then
+  repeats the build and compares both SHA-256 values. The job requires
+  `allow_substantive == true`, so Draft-light runs skip this heavy gate.
 
 `CI required` needs `classify`, `hygiene`, `public_export`, `python_tools`, `native_tools`,
-`windows_runtime` and `android_build`. The Markdown lint, the main smoke and the fixture build reach it through the
+`windows_runtime`, `windows_installer` and `android_build`. The installer result is required
+only when `run_installer` is true. The Markdown lint, the main smoke and the fixture build reach it through the
 two always-required jobs they now belong to, so `tools/ci_required.py` no longer takes a result
 or run flag of their own. Each merged job's `timeout-minutes` covers its parts: hygiene 35
 (15 + 10 + 10), public export 30 (15 + 15), each Windows group 25 per part (50, 75 and

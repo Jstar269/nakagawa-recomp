@@ -20,6 +20,7 @@ _GATES = (
     # #360: the Android launcher build runs whenever the native gates do.
     ("android-build", "ANDROID_RESULT", "RUN_NATIVE"),
     ("windows-runtime", "WINDOWS_RESULT", "RUN_WINDOWS"),
+    ("windows-installer", "INSTALLER_RESULT", "RUN_INSTALLER"),
 )
 
 # The run flags of the steps folded into hygiene. Their results arrive through
@@ -29,7 +30,7 @@ _GATES = (
 _FOLDED_STEP_FLAGS = ("RUN_MARKDOWN", "RUN_MAIN_SMOKE")
 
 _SUBSTANTIVE_GATES = frozenset(
-    {"python-tools", "native-tools", "android-build", "windows-runtime"}
+    {"python-tools", "native-tools", "android-build", "windows-runtime", "windows-installer"}
 )
 
 

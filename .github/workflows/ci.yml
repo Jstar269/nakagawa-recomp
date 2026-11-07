@@ -71,6 +71,7 @@ jobs:
       python_shards: ${{ steps.paths.outputs.python_shards }}
       run_native: ${{ steps.paths.outputs.run_native }}
       run_windows: ${{ steps.paths.outputs.run_windows }}
+      run_installer: ${{ steps.paths.outputs.run_installer }}
       run_main_smoke: ${{ steps.paths.outputs.run_main_smoke }}
       save_compiler_cache: ${{ steps.paths.outputs.save_compiler_cache }}
       allow_substantive: ${{ steps.paths.outputs.allow_substantive }}
@@ -1581,7 +1582,8 @@ jobs:
       ${{ always() && needs.classify.result == 'success' &&
           needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
-          needs.classify.outputs.run_windows == 'true' }}
+          (needs.classify.outputs.run_windows == 'true' ||
+           needs.classify.outputs.run_installer == 'true') }}
     # The gates are split into parts (#694), measured on hosted runners: the serial
     # job took ~16 minutes, of which ~1.5 is shared setup. Each other step runs in
     # exactly one part, and steps that depend on one another (the staged smoke on the
@@ -1847,6 +1849,30 @@ jobs:
           command -v pwsh
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-tests
+
+      - name: Stage Windows installer package from the existing player build
+        if: contains(matrix.parts, 'smoke') && needs.classify.outputs.run_installer == 'true'
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          package="$(cygpath -m "$RUNNER_TEMP")/windows-installer-package"
+          mkdir -p "$package/bin"
+          cp build/nakagawa_player.exe "$package/bin/nakagawa_player.exe"
+          cp LICENSE "$package/LICENSE"
+          py="$(cygpath -u "$PYTHON")"
+          "$py" tools/stage_runtime_dlls.py --target "$package/bin" --include-ui-fonts --runtime-manifest
+          "$py" -c 'import sys; from pathlib import Path; sys.path.insert(0, "tools"); import stage_install; print(stage_install.write_sha256sums(Path(sys.argv[1])))' "$package"
+
+      - name: Upload Windows installer package
+        if: contains(matrix.parts, 'smoke') && needs.classify.outputs.run_installer == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-installer-package
+          path: ${{ runner.temp }}\windows-installer-package
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Run native player UI regressions headlessly on Windows
         if: contains(matrix.parts, 'smoke')
@@ -2171,6 +2197,92 @@ jobs:
           echo "compiles through the compiler cache: $compiles"
           test "$compiles" -gt 0
 
+  windows_installer:
+    name: Windows installer build and install check
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    needs: [classify, windows_runtime]
+    if: >-
+      ${{ always() && needs.classify.result == 'success' &&
+          needs.classify.outputs.allow_substantive == 'true' &&
+          needs.classify.outputs.run_installer == 'true' &&
+          needs.windows_runtime.result == 'success' }}
+    timeout-minutes: 25
+    env:
+      NK_INNO_SETUP_DIR: ${{ runner.temp }}\inno-setup
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Windows CPython 3.15.2
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.15.2"
+          architecture: x64
+
+      - name: Download the Windows installer package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-installer-package
+          path: ${{ runner.temp }}\windows-installer-package
+
+      - name: Download and install hash-pinned Inno Setup
+        shell: pwsh
+        run: |
+          $lock = Get-Content -LiteralPath 'assets/upstream/innosetup.lock.json' -Raw | ConvertFrom-Json
+          $download = Join-Path $env:RUNNER_TEMP $lock.installer.file
+          Invoke-WebRequest -Uri $lock.installer.url -OutFile $download
+          $actual = (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $lock.installer.sha256) {
+            throw "Inno Setup SHA-256 mismatch: expected $($lock.installer.sha256), got $actual"
+          }
+
+          $innoDir = $env:NK_INNO_SETUP_DIR
+          New-Item -ItemType Directory -Path $innoDir -Force | Out-Null
+          $arguments = @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', '/SP-',
+            "/DIR=`"$innoDir`""
+          )
+          $process = Start-Process -FilePath $download -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "The hash-verified Inno Setup installer exited $($process.ExitCode)."
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $innoDir 'ISCC.exe') -PathType Leaf)) {
+            throw 'Inno Setup completed without installing ISCC.exe into the temporary directory.'
+          }
+
+      - name: Build, verify, and compare the installer
+        shell: pwsh
+        run: |
+          $packageDir = Join-Path $env:RUNNER_TEMP 'windows-installer-package'
+          $firstOut = Join-Path $env:RUNNER_TEMP 'windows-installer-first'
+          $secondOut = Join-Path $env:RUNNER_TEMP 'windows-installer-second'
+          $epoch = (git show -s --format=%ct $env:GITHUB_SHA).Trim()
+          if ($LASTEXITCODE -ne 0 -or $epoch -notmatch '^\d+$') {
+            throw 'Could not resolve the checked-out commit time for SOURCE_DATE_EPOCH.'
+          }
+          $env:SOURCE_DATE_EPOCH = $epoch
+
+          python tools/build_installer.py --package-dir $packageDir --version 0.0.0-ci --out-dir $firstOut
+          if ($LASTEXITCODE -ne 0) { throw 'The first installer build failed.' }
+          $firstSetup = Join-Path $firstOut 'nakagawa-recomp-0.0.0-ci-windows-x64-setup.exe'
+          python tools/verify_installer.py --installer $firstSetup --package-dir $packageDir
+          if ($LASTEXITCODE -ne 0) { throw 'The installer verification failed.' }
+
+          python tools/build_installer.py --package-dir $packageDir --version 0.0.0-ci --out-dir $secondOut
+          if ($LASTEXITCODE -ne 0) { throw 'The second installer build failed.' }
+          $secondSetup = Join-Path $secondOut 'nakagawa-recomp-0.0.0-ci-windows-x64-setup.exe'
+          $firstHash = (Get-FileHash -LiteralPath $firstSetup -Algorithm SHA256).Hash.ToLowerInvariant()
+          $secondHash = (Get-FileHash -LiteralPath $secondSetup -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Output "first Setup.exe SHA-256:  $firstHash"
+          Write-Output "second Setup.exe SHA-256: $secondHash"
+          if ($firstHash -ne $secondHash) {
+            throw 'The two Setup.exe builds are not byte-identical.'
+          }
+
   ci_required:
     name: CI required
     # The classifier picks the runner (docs/CI.md, "Self-hosted Linux runners"):
@@ -2178,7 +2290,7 @@ jobs:
     runs-on: ${{ fromJSON(needs.classify.outputs.linux_runner_2604 || '"ubuntu-26.04"') }}
     # The Markdown lint and the main smoke are steps of hygiene, and the profile-zero
     # fixture build is a step of public_export, so those jobs' results carry them.
-    needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]
+    needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime, windows_installer]
     if: ${{ always() }}
     timeout-minutes: 5
     env:
@@ -2189,6 +2301,7 @@ jobs:
       NATIVE_RESULT: ${{ needs.native_tools.result }}
       ANDROID_RESULT: ${{ needs.android_build.result }}
       WINDOWS_RESULT: ${{ needs.windows_runtime.result }}
+      INSTALLER_RESULT: ${{ needs.windows_installer.result }}
       # The folded Markdown and main-smoke steps report through HYGIENE_RESULT; their
       # run flags are still checked to be explicit booleans (tools/ci_required.py).
       RUN_MARKDOWN: ${{ needs.classify.outputs.run_markdown }}
@@ -2196,6 +2309,7 @@ jobs:
       RUN_PYTHON: ${{ needs.classify.outputs.run_python }}
       RUN_NATIVE: ${{ needs.classify.outputs.run_native }}
       RUN_WINDOWS: ${{ needs.classify.outputs.run_windows }}
+      RUN_INSTALLER: ${{ needs.classify.outputs.run_installer }}
       ALLOW_SUBSTANTIVE: ${{ needs.classify.outputs.allow_substantive }}
       DRAFT: ${{ needs.classify.outputs.draft }}
     steps:

@@ -24,6 +24,7 @@ def _results(**overrides: str) -> dict[str, str]:
         "native-tools": "skipped",
         "android-build": "skipped",
         "windows-runtime": "skipped",
+        "windows-installer": "skipped",
     }
     values.update(overrides)
     return values
@@ -49,6 +50,14 @@ class CiRequiredTests(unittest.TestCase):
                 results = _results(**{"python-tools": outcome})
                 self.assertFalse(required_gate_passes(results, {"python-tools": True}, allow_substantive=True))
 
+    def test_applicable_windows_installer_failure_or_skip_fails(self) -> None:
+        for outcome in ("failure", "cancelled", "skipped"):
+            with self.subTest(outcome=outcome):
+                results = _results(**{"windows-installer": outcome})
+                self.assertFalse(
+                    required_gate_passes(results, {"windows-installer": True}, allow_substantive=True)
+                )
+
     def test_applicable_native_player_gate_failure_or_skip_fails(self) -> None:
         for outcome in ("failure", "cancelled", "skipped"):
             with self.subTest(outcome=outcome):
@@ -68,11 +77,13 @@ class CiRequiredTests(unittest.TestCase):
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "success",
             "WINDOWS_RESULT": "success",
+            "INSTALLER_RESULT": "success",
             "MAIN_SMOKE_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
             "RUN_PYTHON": "false",
             "RUN_NATIVE": "true",
             "RUN_WINDOWS": "true",
+            "RUN_INSTALLER": "false",
             "RUN_MAIN_SMOKE": "false",
             "ALLOW_SUBSTANTIVE": "true",
             "DRAFT": "false",
@@ -120,11 +131,13 @@ class CiRequiredTests(unittest.TestCase):
             "NATIVE_RESULT": "skipped",
             "ANDROID_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
+            "INSTALLER_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
             "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "true",
             "RUN_NATIVE": "true",
             "RUN_WINDOWS": "true",
+            "RUN_INSTALLER": "true",
             "ALLOW_SUBSTANTIVE": "false",
             "DRAFT": "true",
         }
@@ -137,6 +150,7 @@ class CiRequiredTests(unittest.TestCase):
                 "NATIVE_RESULT": "success",
                 "ANDROID_RESULT": "success",
                 "WINDOWS_RESULT": "success",
+                "INSTALLER_RESULT": "success",
                 "ALLOW_SUBSTANTIVE": "true",
                 "DRAFT": "false",
             }
@@ -207,11 +221,13 @@ class CiRequiredTests(unittest.TestCase):
             "NATIVE_RESULT": "skipped",
             "ANDROID_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
+            "INSTALLER_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
             "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "true",
             "RUN_NATIVE": "false",
             "RUN_WINDOWS": "false",
+            "RUN_INSTALLER": "false",
             "ALLOW_SUBSTANTIVE": "true",
             "DRAFT": "false",
         }
@@ -236,6 +252,7 @@ class AllowSubstantiveParsingTests(unittest.TestCase):
             "NATIVE_RESULT": "skipped",
             "ANDROID_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
+            "INSTALLER_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
             "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "false",
@@ -243,6 +260,7 @@ class AllowSubstantiveParsingTests(unittest.TestCase):
             # suppression was explicitly requested.
             "RUN_NATIVE": "true",
             "RUN_WINDOWS": "false",
+            "RUN_INSTALLER": "false",
             # This fixture models the intentional main-push suppression, not a
             # draft PR. Draft-specific suppression is tested separately below.
             "DRAFT": "false",
@@ -280,14 +298,25 @@ class ApplicabilityParsingTests(unittest.TestCase):
             "NATIVE_RESULT": "success",
             "ANDROID_RESULT": "success",
             "WINDOWS_RESULT": "success",
+            "INSTALLER_RESULT": "success",
             "RUN_MARKDOWN": "false",
             "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "false",
             "RUN_NATIVE": "false",
             "RUN_WINDOWS": "false",
+            "RUN_INSTALLER": "false",
             "ALLOW_SUBSTANTIVE": "true",
             "DRAFT": "false",
         }
+
+    def test_windows_installer_result_is_required_when_applicable(self) -> None:
+        env = self._env()
+        env.update(RUN_INSTALLER="true", INSTALLER_RESULT="success")
+        self.assertTrue(evaluate_environment(env))
+        for outcome in ("failure", "cancelled", "skipped", ""):
+            with self.subTest(outcome=outcome):
+                env["INSTALLER_RESULT"] = outcome
+                self.assertFalse(evaluate_environment(env))
 
     def test_every_run_variable_requires_a_boolean(self) -> None:
         for run_key in (
@@ -295,6 +324,7 @@ class ApplicabilityParsingTests(unittest.TestCase):
             "RUN_PYTHON",
             "RUN_NATIVE",
             "RUN_WINDOWS",
+            "RUN_INSTALLER",
             "RUN_MAIN_SMOKE",
         ):
             for value in (None, "", "   ", "garbage", "0", "no"):
@@ -312,6 +342,7 @@ class ApplicabilityParsingTests(unittest.TestCase):
             "RUN_PYTHON",
             "RUN_NATIVE",
             "RUN_WINDOWS",
+            "RUN_INSTALLER",
             "RUN_MAIN_SMOKE",
         ):
             with self.subTest(run_key=run_key):

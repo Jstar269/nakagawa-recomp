@@ -88,6 +88,22 @@ def _is_dependency_metadata(path: str) -> bool:
     } or path.startswith("requirements/")
 
 
+def _is_installer(path: str) -> bool:
+    """Inputs whose Windows Setup build or installation check must run."""
+
+    return (
+        path.startswith("assets/installer/")
+        or path == "assets/upstream/innosetup.lock.json"
+        or path in {
+            "tools/build_installer.py",
+            "tools/verify_installer.py",
+            "tools/stage_install.py",
+            "tools/test_installer.py",
+            "tools/test_stage_install.py",
+        }
+    )
+
+
 GENERATED_PUBLIC_METADATA = frozenset(
     {
         "PUBLIC_EXPORT.json",
@@ -1249,6 +1265,10 @@ def classify(
     python_scope = "all" if python_full or not makefile_recipe_only else "makefile"
     python_num_shards = PYTHON_SHARDS_FULL if python_scope == "all" else PYTHON_SHARDS_MAKEFILE
     run_windows = run_native
+    # The installer consumes a Windows player package. Every existing Windows
+    # runtime input therefore routes it too; installer-only changes also run the
+    # Windows runtime build so that job can publish the package artifact.
+    run_installer = run_windows or any(_is_installer(path) for path in files)
     # A normal main push is already covered by its PR. Workflow changes are
     # exceptional: validate the new workflow itself on the default branch too.
     # Draft pull requests are not a separate validation mode: they get the
@@ -1283,6 +1303,7 @@ def classify(
         "python_shards": json.dumps(list(range(python_num_shards)), separators=(",", ":")),
         "run_native": str(run_native).lower(),
         "run_windows": str(run_windows).lower(),
+        "run_installer": str(run_installer).lower(),
         "run_markdown": str(markdown).lower(),
         "run_main_smoke": str(run_main_smoke).lower(),
         "save_compiler_cache": str(save_compiler_cache).lower(),
