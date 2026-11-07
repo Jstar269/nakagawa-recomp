@@ -1764,6 +1764,17 @@ class EvidenceTierTests(unittest.TestCase):
                         "tests": [{"id": "PSP-UNKNOWN-001", "hardware_evidence": evidence}],
                     })
 
+    def test_dmac_note_does_not_call_measured_tier_b_cells_unrun_or_uncited(self) -> None:
+        document = json.loads(hle_manifest.PSP_ORACLE_MANIFEST.read_text(encoding="utf-8"))
+        row = next(test for test in document["tests"] if test["id"] == "PSP-DMAC-001")
+        note = row["measurement_note"]
+        self.assertNotIn("Tier B owned-overrun controls are built but hardware NOT_RUN", note)
+        self.assertNotIn("B1-B4 subcells remain uncited", note)
+        self.assertIn("sixteen Tier B cells", note)
+        self.assertIn("2026-11-06 PSP-3000 runs", note)
+        self.assertIn("Tier E", note)
+        self.assertIn("measured Tier B cells", row["invariant"])
+
     @staticmethod
     def _measured_row(**overrides) -> dict:
         """A MEASURED row citing a committed section that really names its case."""

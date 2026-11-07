@@ -2520,14 +2520,15 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(routes.get("vcodec-words"), "160")
 
     def test_mpeg_ycbcr_modes_2_and_3_cells_follow_the_mode_1_cells(self) -> None:
-        # #302: the mode 2 and 3 cells come after every mode 1 cell, keep a record for a refused
-        # call, and leave the teardown (free-es .. unload-avcodec) after them.
+        # #302: each mode starts from a fresh ringbuffer, MPEG context and registered stream after
+        # mode 1 is stopped and torn down; refused calls still keep their records.
         probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
         start = probe.index("static void run_mpeg_ycbcr(int emulated)")
         run = probe[start:probe.index("#endif\n", start)]
         order = [run.index(marker) for marker in (
             '"sub-h-odd"', '"decode-mode-f%d"', '"avc-decode%d"', 'mpy_rc(emulated, "decode-stop"',
-            "mpy_ycbcr_mode(emulated", "free_es:", "unregist:", "delete_mpeg:", "ring_destruct:",
+            "free_es:", "unregist:", "delete_mpeg:", "ring_destruct:",
+            "mpy_ycbcr_mode_fresh(emulated",
             "sceMpegFinish();", '"unload-avcodec"')]
         self.assertEqual(order, sorted(order))
         self.assertIn("ycbcr_mode = 2; ycbcr_mode <= 3", run)
@@ -2536,6 +2537,14 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                      "mpy_csc_buf(", "sceMpegAvcDecodeStopYCbCr(", '"m%d-qsize"', '"m%d-init"',
                      '"m%d-decode-end"', '"ycbcr-m%d-picture"', '"m%d-full"', '"m%d-decode-stop"'):
             self.assertIn(call, helper)
+        fresh = helper[helper.index("static void mpy_ycbcr_mode_fresh("):]
+        for call in ("sceMpegRingbufferConstruct(", "sceMpegCreate(", "sceMpegQueryStreamOffset(",
+                     "sceMpegRegistStream(", "sceMpegMallocAvcEsBuf(", "sceMpegInitAu(",
+                     "sceMpegAvcDecodeMode(", "mpy_ycbcr_mode(emulated"):
+            self.assertIn(call, fresh)
+        self.assertLess(fresh.index('"m%d-stream-info"'), fresh.index("sceMpegQueryStreamOffset("))
+        self.assertLess(fresh.index("s_mpy_cursor = (uint32_t)offset"), fresh.index("sceMpegRegistStream("))
+        self.assertIn('"m%d-stream-ring-construct"', fresh)
         # A refusal never drops a record: every skipped call is still written with the return value.
         self.assertGreaterEqual(helper.count("mpy_not_called("), 5)
 
@@ -2718,10 +2727,36 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(counts["vc-d464-a0-b7-c33"], 120)
         self.assertNotIn("vc-d464-a0-b7-c34", counts)
         self.assertEqual(counts["vc-csc-m3-d15"], 128)
+        self.assertEqual(counts["vc-csc-struct"], 15)
         self.assertNotIn("vc-csc-m0", [case for case in spec.semantic_cases if "d464" in case])
         self.assertEqual(counts["vc-ac-1000-p5c28"], 67)
         self.assertEqual(sum(1 for case in spec.semantic_cases if case.startswith("vc-csc-")), 71)
         self.assertEqual(counts["vcodec-words-done"], 1)
+        csc = section[section.index("static void vcw_csc_cells("):section.index("static void vcw_decode_cells(")]
+        self.assertIn("w_mbs > 0u && w_mbs <= VCW_RGB_STRIDE / 16u", csc)
+        self.assertIn("h_mbs > 0u && h_mbs <= VCW_H_MBS", csc)
+        self.assertIn('vcw_record_status(emulated, "vc-csc-struct", "FAIL", 0, 0u, out, 15u)', csc)
+        self.assertIn("if (!geometry_ok)", csc)
+        self.assertIn("out[13] = reported_w;", csc)
+        self.assertIn("out[14] = reported_h;", csc)
+        self.assertLess(csc.index("geometry_ok"), csc.index("VCW_OP_CSCAVC"))
+
+    def test_vcodec_csc_geometry_fail_record_keeps_raw_dimensions_without_a_return_value(self) -> None:
+        meta = META.format(source="psp", model="synthetic", firmware="test",
+                           binary="0" * 64, commit="0" * 40)
+        outputs = " ".join(
+            f"out{index}=0x{0x00001100 if index == 14 else 0x000001e0 if index == 13 else 0:08x}"
+            for index in range(15)
+        )
+        record = ("NAKAGAWA_PSP_TEST schema=1 test_id=PSP-VCODEC-001 case_id=vc-csc-struct "
+                  f"status=FAIL {outputs}\n")
+        parsed = parse_campaign_probe_output(meta + record, "vcodec-words", require_complete=False)
+        geometry = parsed.results["vc-csc-struct"]
+        values = dict(geometry.values)
+        self.assertEqual(geometry.status, "FAIL")
+        self.assertEqual(values["out13"], "0x000001e0")
+        self.assertEqual(values["out14"], "0x00001100")
+        self.assertNotIn("result", values)
 
     @staticmethod
     def _vcodec_nid(name: str) -> int:
@@ -12783,6 +12818,29 @@ class Record20261015Tests(unittest.TestCase):
                 row = by_case[case]
                 self.assertEqual(row[1], evidence_id)
                 self.assertTrue(all(term in row[2] for term in ("MEASURED", "2026-10-15", commit)))
+
+    def test_wave_case_indexes_keep_measured_and_not_run_cells_distinct(self) -> None:
+        expected = (
+            ("ge-clut-mip", "PSP-GE-MIP-002", "MEASURED"),
+            ("ge-weight", "PSP-GE-WEIGHT-001", "MEASURED"),
+            ("ge-rtt", "PSP-GE-RTT-001", "MEASURED"),
+            ("hle-std-handles", "PSP-HLE-STDIO-001", "MEASURED"),
+            ("hle-audio-rest", "PSP-HLE-AUDIO-REST-001", "MEASURED"),
+            ("sas-adsr", "PSP-SAS-002", "NOT_RUN"),
+            ("sas-mix", "PSP-SAS-003", "NOT_RUN"),
+            ("vcodec-words", "PSP-VCODEC-001", "NOT_RUN"),
+            ("hle-utility-dialogs", "PSP-HLE-UTILITY-DIALOG-001", "NOT_RUN"),
+            ("mpeg-ycbcr", "PSP-MPEG-YCBCR-001", "NOT_RUN"),
+        )
+        docs = {row[0]: row for row in self._table_rows(self.doc) if len(row) == 4}
+        readme = {row[0]: row for row in self._table_rows(self.readme) if len(row) == 3}
+        for case, test_id, status in expected:
+            with self.subTest(case=case):
+                self.assertEqual(docs[case][1], test_id)
+                self.assertIn(status, docs[case][2])
+                self.assertEqual(readme[case][1], test_id)
+                self.assertIn(status, readme[case][2])
+                self.assertEqual(self.rows[test_id]["hardware_evidence"], status)
 
     def test_the_audio_src_and_timer_comparisons_are_recorded_and_pinned(self) -> None:
         for name in ("test_audio_src_matches_the_measured_contract",

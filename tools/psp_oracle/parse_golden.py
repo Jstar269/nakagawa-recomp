@@ -117,6 +117,10 @@ def _validate_scalar_shape(sequence: SequenceReport,
     for case_id, record in sequence.results.items():
         values = dict(record.values)
         expected = {"result", *(f"out{i}" for i in range(out_counts[case_id]))}
+        if (sequence.spec.test_id == "PSP-VCODEC-001" and case_id == "vc-csc-struct"
+                and record.status == "FAIL"):
+            # Refused geometry did not call firmware, so the failure row has no return value.
+            expected.remove("result")
         if set(values) != expected:
             raise ProtocolError(
                 f"{sequence.spec.test_id}: {case_id} fields must be "
@@ -2453,7 +2457,7 @@ def _vcodec_decode_rows(tag: str, with_csc: bool) -> tuple[tuple[str, int], ...]
                 rows.extend((f"vc-{tag}-a0-b{band}-c{chunk:02d}", VCODEC_CHUNK_WORDS)
                             for chunk in range(chunks))
     if with_csc:
-        rows.extend((("vc-csc-init", 2), ("vc-csc-struct", 13)))
+        rows.extend((("vc-csc-init", 2), ("vc-csc-struct", 15)))
         for mode in range(4):
             rows.append((f"vc-csc-m{mode}", 10))
             rows.extend((f"vc-csc-m{mode}-d{chunk:02d}", VCODEC_CSC_CHUNK_WORDS)

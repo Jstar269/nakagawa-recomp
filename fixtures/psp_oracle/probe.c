@@ -11137,10 +11137,11 @@ static void run_at3_delay_sweep(int emulated) {
    of that picture, sceMpegAvcDecodeDetail's words, sceMpegAvcCsc of the buffer as decoded, with its plane
    bytes overwritten, and with its first 128 bytes cleared (whether CSC reads guest memory), CSC range and
    stride refusals, and one direct sceMpegAvcDecode for comparison. After those, for YCbCr modes 2 and 3
-   (mpy_ycbcr_mode): the size query, InitYCbCr, decode calls up to the first picture, that buffer from its
-   header through the queried size, one full-picture CSC of it and the stop. The picture bytes go to private
-   host0 files only. Every call is preceded by a durable step marker; loops are bounded. Ends in the normal
-   teardown with the AV modules unloaded. */
+   (each through mpy_ycbcr_mode_fresh): the size query, InitYCbCr, decode calls up to the first picture,
+   that buffer from its header through the queried size, one full-picture CSC of it and the stop. Each mode
+   recreates the ringbuffer, MPEG context and registered stream at the PSMF offset. The picture bytes go to
+   private host0 files only. Every call is preceded by a durable step marker; loops are bounded. Ends in the
+   normal teardown with the AV modules unloaded. */
 /* PSPSDK's libpspmpeg.a has no YCbCr, CSC or decode-detail stubs, so this case links one complete sceMpeg
    import block of its own instead (libpspmpeg.a is not linked: two blocks for one library leave the stubs out
    of order). Library name and version word match libpspmpeg.a; the NIDs are the ones src/rt/nid_names.h names.
@@ -11300,10 +11301,11 @@ static void mpy_not_called(int emulated, const char *step, int rc, const char *w
     mpy_rc(emulated, step, rc, extra);
 }
 
-/* One YCbCr mode beyond mode 1 (#302): size query at the stream's geometry, InitYCbCr, decode calls up to
-   the first picture (the decoder runs one unit behind, so the second call yields it), the buffer from its
-   header through the queried size plus 64 bytes (as mode 1's dump), one full-picture CSC of it into the 8888
-   destination, and the stop. A refusal keeps its own return value in every later record of the mode. */
+/* One YCbCr mode beyond mode 1 (#302), with the fresh ringbuffer and stream supplied by
+   mpy_ycbcr_mode_fresh: size query at the stream's geometry, InitYCbCr, decode calls up to the first picture
+   (the decoder runs one unit behind, so the second call yields it), the buffer from its header through the
+   queried size plus 64 bytes (as mode 1's dump), one full-picture CSC into the 8888 destination, and the stop.
+   A refusal keeps its own return value in every later record of the mode. */
 static void mpy_ycbcr_mode(int emulated, SceMpeg *mpeg, SceMpegStream *stream, SceInt32 mode, SceInt32 pic_w,
                            SceInt32 pic_h) {
     char step[48], name[32], extra[200];
@@ -11405,8 +11407,102 @@ static void mpy_ycbcr_mode(int emulated, SceMpeg *mpeg, SceMpegStream *stream, S
     }
 }
 
+/* Re-create the ringbuffer, MPEG context and registered stream for one mode. Each run starts at the
+   PSMF stream offset, so its first decoded picture does not depend on access units consumed by another mode. */
+static void mpy_ycbcr_mode_fresh(int emulated, SceInt32 mode, SceInt32 pic_w, SceInt32 pic_h,
+                                 SceInt32 ring_size, SceInt32 mpeg_size) {
+    char step[48], extra[200];
+    SceMpeg mpeg = NULL;
+    SceMpegStream *stream = NULL;
+    ScePVoid es = NULL;
+    int ring_ready = 0, mpeg_ready = 0;
+    SceInt32 offset = -1, stream_size = -1;
+    int rc = 0;
+
+    memset(s_mpy_mpeg, 0, sizeof(s_mpy_mpeg));
+    memset(s_mpy_ring, 0, sizeof(s_mpy_ring));
+    memset(&s_mpy_rb, 0, sizeof(s_mpy_rb));
+    memset(&s_mpy_au, 0, sizeof(s_mpy_au));
+    s_mpy_cursor = 0;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-ring-construct", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    rc = sceMpegRingbufferConstruct(&s_mpy_rb, MPY_PACKETS, s_mpy_ring, ring_size, mpy_ring_cb, NULL);
+    mpy_rc(emulated, step, rc, NULL);
+    if (rc != 0) goto cleanup;
+    ring_ready = 1;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-create", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    rc = sceMpegCreate(&mpeg, s_mpy_mpeg, mpeg_size, &s_mpy_rb, MPY_STRIDE, 0, 0);
+    mpy_rc(emulated, step, rc, NULL);
+    if (rc != 0) goto cleanup;
+    mpeg_ready = 1;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-info", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    const int rc_off = sceMpegQueryStreamOffset(&mpeg, s_mpy_file, &offset);
+    const int rc_size = sceMpegQueryStreamSize(s_mpy_file, &stream_size);
+    (void)snprintf(extra, sizeof(extra), "rc_off=0x%08x offset=%d rc_size=0x%08x size=%d",
+                   (unsigned int)rc_off, (int)offset, (unsigned int)rc_size, (int)stream_size);
+    mpy_rc(emulated, step, rc_off, extra);
+    if (rc_off != 0 || rc_size != 0 || offset <= 0 || (uint32_t)offset >= s_mpy_file_bytes) goto cleanup;
+    s_mpy_cursor = (uint32_t)offset;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-regist", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    stream = sceMpegRegistStream(&mpeg, 0, 0);
+    mpy_rc(emulated, step, stream ? 0 : -1, NULL);
+    if (!stream) goto cleanup;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-malloc-es", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    es = sceMpegMallocAvcEsBuf(&mpeg);
+    mpy_rc(emulated, step, es ? 0 : -1, NULL);
+    if (!es) goto cleanup;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-init-au", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    rc = sceMpegInitAu(&mpeg, es, &s_mpy_au);
+    mpy_rc(emulated, step, rc, NULL);
+    if (rc != 0) goto cleanup;
+
+    SceMpegAvcMode decode_mode = {-1, SCE_MPEG_AVC_FORMAT_8888};
+    (void)snprintf(step, sizeof(step), "m%d-stream-decode-mode", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    rc = sceMpegAvcDecodeMode(&mpeg, &decode_mode);
+    mpy_rc(emulated, step, rc, NULL);
+    if (rc != 0) goto cleanup;
+
+    mpy_ycbcr_mode(emulated, &mpeg, stream, mode, pic_w, pic_h);
+
+cleanup:
+    if (es) {
+        (void)snprintf(step, sizeof(step), "m%d-stream-free-es", (int)mode);
+        probe_step(emulated, "mpeg-ycbcr", step);
+        sceMpegFreeAvcEsBuf(&mpeg, es);
+    }
+    if (stream) {
+        (void)snprintf(step, sizeof(step), "m%d-stream-unregist", (int)mode);
+        probe_step(emulated, "mpeg-ycbcr", step);
+        sceMpegUnRegistStream((SceMpeg)&mpeg, stream);
+    }
+    if (mpeg_ready) {
+        (void)snprintf(step, sizeof(step), "m%d-stream-delete", (int)mode);
+        probe_step(emulated, "mpeg-ycbcr", step);
+        sceMpegDelete(&mpeg);
+    }
+    if (ring_ready) {
+        (void)snprintf(step, sizeof(step), "m%d-stream-ring-destruct", (int)mode);
+        probe_step(emulated, "mpeg-ycbcr", step);
+        sceMpegRingbufferDestruct(&s_mpy_rb);
+    }
+}
+
 static void run_mpeg_ycbcr(int emulated) {
     char extra[200];
+    SceInt32 fresh_ring_size = 0, fresh_mpeg_size = 0, fresh_pic_w = 0, fresh_pic_h = 0;
+    int fresh_sizes_ready = 0, fresh_mode_ready = 0;
     probe_step(emulated, "mpeg-ycbcr", "read-input");
     SceUID fd = sceIoOpen(MPY_INPUT_PATH, PSP_O_RDONLY, 0);
     if (fd >= 0) {
@@ -11444,6 +11540,9 @@ static void run_mpeg_ycbcr(int emulated) {
         if (ring_size <= 0 || (uint32_t)ring_size > MPY_RING_CAP || mpeg_size <= 0 ||
             (uint32_t)mpeg_size > MPY_MPEG_CAP)
             goto finish;
+        fresh_ring_size = ring_size;
+        fresh_mpeg_size = mpeg_size;
+        fresh_sizes_ready = 1;
         probe_step(emulated, "mpeg-ycbcr", "ring-construct");
         rc = sceMpegRingbufferConstruct(&s_mpy_rb, MPY_PACKETS, s_mpy_ring, ring_size, mpy_ring_cb, NULL);
         mpy_rc(emulated, "ring-construct", rc, NULL);
@@ -11536,6 +11635,9 @@ static void run_mpeg_ycbcr(int emulated) {
         /* The decoded size, as the buffer's first two words give it in macroblocks. */
         const SceInt32 pic_h = (SceInt32)(((const uint32_t *)s_mpy_ycbcr)[0] * 16u);
         const SceInt32 pic_w = (SceInt32)(((const uint32_t *)s_mpy_ycbcr)[1] * 16u);
+        fresh_pic_w = pic_w;
+        fresh_pic_h = pic_h;
+        fresh_mode_ready = 1;
         sceKernelDcacheWritebackInvalidateAll();
         mpy_dump(emulated, "ycbcr-picture", s_mpy_ycbcr, (uint32_t)ysize + 64u);
         memcpy(s_mpy_ycbcr_copy, s_mpy_ycbcr, (uint32_t)ysize);
@@ -11650,10 +11752,6 @@ static void run_mpeg_ycbcr(int emulated) {
         (void)snprintf(extra, sizeof(extra), "status=%d", (int)status);
         mpy_rc(emulated, "decode-stop", rc, extra);
 
-        /* YCbCr modes 2 and 3, after every mode 1 cell so their order and content are unchanged. The
-           stream, ringbuffer and AV modules are released below as before. */
-        for (SceInt32 ycbcr_mode = 2; ycbcr_mode <= 3; ycbcr_mode++)
-            mpy_ycbcr_mode(emulated, &mpeg, stream, ycbcr_mode, pic_w, pic_h);
 free_es:
         probe_step(emulated, "mpeg-ycbcr", "free-es");
         sceMpegFreeAvcEsBuf(&mpeg, es);
@@ -11668,6 +11766,12 @@ delete_mpeg:
 ring_destruct:
         probe_step(emulated, "mpeg-ycbcr", "ring-destruct");
         sceMpegRingbufferDestruct(&s_mpy_rb);
+    }
+    /* Each added mode uses a fresh ringbuffer and MPEG context, with its cursor reset to the PSMF offset. */
+    if (fresh_sizes_ready && fresh_mode_ready) {
+        for (SceInt32 ycbcr_mode = 2; ycbcr_mode <= 3; ycbcr_mode++)
+            mpy_ycbcr_mode_fresh(emulated, ycbcr_mode, fresh_pic_w, fresh_pic_h, fresh_ring_size,
+                                 fresh_mpeg_size);
     }
 finish:
     probe_step(emulated, "mpeg-ycbcr", "finish");
@@ -12561,7 +12665,8 @@ static void run_sas_mix(int emulated) {
    - Between the d480 AUs and its teardown (item 4): vc-csc-init (CscInit(512): the return and time;
      the coefficient registers are not readable from user mode, so their effect is read from the
      output instead), vc-csc-struct (the 12-word SceMp4AvcCscStruct handed to CscAvc, then which AU
-     it came from), and for pixel mode 0..3: vc-csc-mM (10 words: the pixel-mode return, whether CscAvc
+     it came from, then the raw reported picture width and height), and for pixel mode 0..3:
+     vc-csc-mM (10 words: the pixel-mode return, whether CscAvc
      ran, its return, time, bytes written and last byte written over the 512x272x4 destination
      which is first filled with 0x5a, and FNV-1a of each 2048-byte span of the first 8192 bytes), then
      vc-csc-mM-d00..d15, the first 8192 bytes (4 rows at 512 pixels of 8888) in 128-word records;
@@ -12836,18 +12941,29 @@ static uint32_t vcw_fnv(const volatile unsigned char *p, uint32_t n) {
 
 /* ---- records -------------------------------------------------------------------------------- */
 
-static void vcw_record(int emulated, const char *case_id, int ran, int rc, const uint32_t *out, uint32_t n) {
-    int used = snprintf(s_vcw_line, sizeof(s_vcw_line),
-                        "NAKAGAWA_PSP_TEST schema=1 test_id=" VCW_TEST_ID " case_id=%s status=%s result=0x%08x",
-                        case_id, ran ? "PASS" : "SKIP", (unsigned int)(ran ? rc : 0));
+static void vcw_record_status(int emulated, const char *case_id, const char *status, int has_result,
+                              uint32_t result, const uint32_t *out, uint32_t n) {
+    int used = has_result
+                   ? snprintf(s_vcw_line, sizeof(s_vcw_line),
+                              "NAKAGAWA_PSP_TEST schema=1 test_id=" VCW_TEST_ID
+                              " case_id=%s status=%s result=0x%08x",
+                              case_id, status, (unsigned int)result)
+                   : snprintf(s_vcw_line, sizeof(s_vcw_line),
+                              "NAKAGAWA_PSP_TEST schema=1 test_id=" VCW_TEST_ID " case_id=%s status=%s",
+                              case_id, status);
     for (uint32_t i = 0; i < n && n <= VCW_MAX_OUT && used > 0 && used < (int)sizeof(s_vcw_line) - 24; i++)
         used += snprintf(s_vcw_line + used, sizeof(s_vcw_line) - (size_t)used, " out%u=0x%08x", (unsigned int)i,
-                         (unsigned int)(ran && out ? out[i] : 0u));
+                         (unsigned int)(out ? out[i] : 0u));
     if (used <= 0 || used >= (int)sizeof(s_vcw_line) - 2) return;
     s_vcw_line[used++] = '\n';
     s_vcw_line[used] = '\0';
     s_vcw_records++;
     probe_emit_durable(emulated, s_vcw_line, (size_t)used);
+}
+
+static void vcw_record(int emulated, const char *case_id, int ran, int rc, const uint32_t *out, uint32_t n) {
+    vcw_record_status(emulated, case_id, ran ? "PASS" : "SKIP", 1, (uint32_t)(ran ? rc : 0),
+                      ran ? out : NULL, n);
 }
 
 /* A step record: the return, the time, and 32 words of a block. */
@@ -13090,9 +13206,13 @@ static void vcw_band_dump(int emulated, const char *tag, int ran, int rc) {
 }
 
 /* Item 4: CscInit, then CscAvc of the decoded bands in each pixel mode. `bands` holds the 8 band
-   addresses of a picture (all non-zero) when `have` is set; `from` names the AU they came from. */
+   addresses of a picture (all non-zero) when `have` is set; `from` names the AU they came from.
+   The last two struct-record words preserve the raw firmware-reported width and height. */
 static void vcw_csc_cells(int emulated, int have, const uint32_t *bands, unsigned from, uint32_t w_mbs,
-                          uint32_t h_mbs) {
+                          uint32_t h_mbs, uint32_t reported_w, uint32_t reported_h) {
+    const int geometry_ok = w_mbs > 0u && w_mbs <= VCW_RGB_STRIDE / 16u &&
+                            h_mbs > 0u && h_mbs <= VCW_H_MBS;
+    const int csc_ready = have && geometry_ok;
     int rc = 0;
     uint32_t us = 0;
     int ran = vcw_run(emulated, "csc-init", VCW_OP_CSCINIT, NULL, 512, NULL, NULL, &rc, &us);
@@ -13111,7 +13231,12 @@ static void vcw_csc_cells(int emulated, int have, const uint32_t *bands, unsigne
     }
     for (unsigned i = 0; i < 12u; i++) out[i] = s_vcw_csc[i];
     out[12] = from;
-    vcw_record(emulated, "vc-csc-struct", have, 0, out, 13u);
+    out[13] = reported_w;
+    out[14] = reported_h;
+    if (!geometry_ok)
+        vcw_record_status(emulated, "vc-csc-struct", "FAIL", 0, 0u, out, 15u);
+    else
+        vcw_record(emulated, "vc-csc-struct", have, 0, out, 15u);
 
     for (int mode = 0; mode < 4; mode++) {
         char id[96], step[64];
@@ -13121,7 +13246,7 @@ static void vcw_csc_cells(int emulated, int have, const uint32_t *bands, unsigne
         const int set_ran = vcw_run(emulated, step, VCW_OP_PIXMODE, NULL, mode, NULL, NULL, &set_rc, &set_us);
         int csc_ran = 0;
         uint32_t written = 0, extent = 0, spans[4] = {0, 0, 0, 0};
-        if (set_ran && have) {
+        if (set_ran && csc_ready) {
             memset(s_vcw_rgb, 0x5a, sizeof(s_vcw_rgb));
             sceKernelDcacheWritebackInvalidateAll();
             (void)snprintf(step, sizeof(step), "csc-m%d-avc", mode);
@@ -13245,9 +13370,12 @@ static void vcw_decode_cells(int emulated, uint32_t w_mbs, const char *tag, int 
 
     if (with_csc) {
         /* The picture size the decode reports at ctx+16 (+8 width, +12 height), else the stream's. */
-        const uint32_t pw = s_vcw_b2[2] >= 16u ? s_vcw_b2[2] >> 4 : w_mbs;
-        const uint32_t ph = s_vcw_b2[3] >= 16u ? s_vcw_b2[3] >> 4 : VCW_H_MBS;
-        vcw_csc_cells(emulated, ready && decoded && have && !s_vcw_wedged, last_bands, from, pw, ph);
+        const uint32_t reported_w = s_vcw_b2[2];
+        const uint32_t reported_h = s_vcw_b2[3];
+        const uint32_t pw = reported_w >= 16u ? reported_w >> 4 : w_mbs;
+        const uint32_t ph = reported_h >= 16u ? reported_h >> 4 : VCW_H_MBS;
+        vcw_csc_cells(emulated, ready && decoded && have && !s_vcw_wedged, last_bands, from, pw, ph,
+                      reported_w, reported_h);
     }
 
     (void)snprintf(prefix, sizeof(prefix), "vc-%s", tag);
