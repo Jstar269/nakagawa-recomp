@@ -2366,14 +2366,10 @@ _VFPU37_REG_FORMS = {0: _vfpu37_control_register, 1: _vfpu37_control_register,
                      2: _vfpu37_control_register, 3: _vfpu37_immediate_register}
 _VFPU37_CONTROL_MASKS = {0: 0xFFFFF, 1: 0xFFFFF, 2: 0xFFF}
 def _vfpu4_effect(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
-    vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
     n = vec_size(w)
-    sub = (w >> 23) & 7
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    # Preserve the decoder's fail-closed register-field validation before dispatch.
+    _ = vreg_indices(vd, n), vreg_indices(vs, n)
     jump = (w >> 21) & 0x1F
     rt_selector = (w >> 16) & 0x1F
     prefix_form = _VFPU4_PREFIX_FORMS.get((jump, rt_selector, vec_size(w)))
@@ -2385,9 +2381,6 @@ def _vfpu4_effect(addr, w, options, delay_branch_pc):
     routed = _VFPU7_INTERP_ROUTED.get(rt_selector) if jump == 0x01 else None
     if routed is not None and vec_size(w) in routed[1]:
         return _vfpu_interp_stmt(addr, w), None, 0
-    vd, vs = w & 0x7F, (w >> 8) & 0x7F
-    n = vec_size(w)
-    di = vreg_indices(vd, n)
     handler = _VFPU4_JUMP_FORMS.get(jump)
     if handler is None:
         raise Unsupported(f"VFPU4 jump 0x{jump:02x} at 0x{addr:08x}")
@@ -2402,16 +2395,11 @@ _VFPU4_PREFIX_FORMS = {(0x01, 0x01, 1): _vfpu4_vrndi_single}
 
 # vcmov
 def _vfpu4_vcmov(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
-    vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
     n = vec_size(w)
     di, si = vreg_indices(vd, n), vreg_indices(vs, n)
     tf = (w >> 19) & 1
     imm3 = (w >> 16) & 7
-    si = vreg_indices(vs, n)
     rd_st = (f"float _s[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
              f"sr_vread(_d,s,{_arr(di)},{n},s->vfpuCtrl[1]); ")
     handler = _VFPU4_VCMOV_IMM_FORMS.get(imm3)
@@ -2444,13 +2432,9 @@ _VFPU4_VCMOV_IMM_FORMS = {
 
 # vocp
 def _vfpu4_vocp(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
-    vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
     n = vec_size(w)
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
+    _ = vreg_indices(vd, n), vreg_indices(vs, n)
     op9 = (w >> 16) & 0x1F
     handler = _VFPU4_VOCP_OP9_FORMS.get(op9)
     if handler is not None:
@@ -2481,13 +2465,10 @@ _VFPU4_VOCP_OP9_FORMS = {4: _vfpu4_vocp_direct}
 
 # vcst
 def _vfpu4_vcst(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
-    vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
+    vd = w & 0x7F
     n = vec_size(w)
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    di = vreg_indices(vd, n)
+    _ = vreg_indices((w >> 8) & 0x7F, n)
     val = _flit(_VFPU_CST[(w >> 16) & 0x1F])
     body = (f"float _d[4]; for(int _i=0;_i<{n};_i++) _d[_i]={val}; "
             f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
@@ -2589,14 +2570,10 @@ _VFPU4_INTEGER_CONVERSION_FORMS = {
 
 # vf2i
 def _vfpu4_vf2i(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
     jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
-    vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
     n = vec_size(w)
     di, si = vreg_indices(vd, n), vreg_indices(vs, n)
-    si = vreg_indices(vs, n)
     imm = (w >> 16) & 0x1F
     lines = [
         f"float _s[4]; uint32_t _d[4]; const uint8_t _di[{n}]={{{','.join(str(x) for x in di)}}};",
@@ -2611,14 +2588,9 @@ def _vfpu4_vf2i(addr, w, options, delay_branch_pc):
 
 # vi2f
 def _vfpu4_vi2f(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
-    vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
     n = vec_size(w)
     di, si = vreg_indices(vd, n), vreg_indices(vs, n)
-    si = vreg_indices(vs, n)
     imm = (w >> 16) & 0x1F
     mult = 1.0 / float(1 << imm)
     mult_str = f"{mult:.9g}"
@@ -2732,14 +2704,10 @@ _VFPU4_JUMP_FORMS = {
 }
 
 def _vfpu_left_right_effect(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
     op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
-    vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
     n = vec_size(w)
-    sub = (w >> 23) & 7
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    _ = vreg_indices(vd, n), vreg_indices(vs, n)
     base = f"({R(rs(w))} + {simm(w & 0xFFFFFFFC)})"
     # Guest code pages are not guaranteed to remain mapped in the runtime image.
     # Pass the instruction captured from the ELF directly instead of asking dispatch
@@ -2874,11 +2842,11 @@ def _vfpu3_effect(addr, w, options, delay_branch_pc):
     return handler(addr, w, options, delay_branch_pc)
 
 def _vfpu3_vcmp(addr, w, options, delay_branch_pc):
-    op = w >> 26
-    vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
+    vd = w & 0x7F
+    vs, vt = (w >> 8) & 0x7F, (w >> 16) & 0x7F
     n = vec_size(w)
-    sub = (w >> 23) & 7
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    _ = vreg_indices(vd, n)
+    si = vreg_indices(vs, n)
     ti = vreg_indices(vt, n)
     cond = w & 0xF
     _C = {0: "0", 1: "_x==_y", 2: "_x<_y", 3: "_x<=_y", 4: "1", 5: "_x!=_y",
@@ -2893,7 +2861,6 @@ def _vfpu3_vcmp(addr, w, options, delay_branch_pc):
             f"s->vfpuCtrl[3]=(s->vfpuCtrl[3]&~_aff)|((_cc|(_or<<4)|(_and<<5))&_aff);{_EAT}")
     return "{ " + body + " }", None, 0
 def _vfpu3_minmax(addr, w, options, delay_branch_pc):
-    op = w >> 26
     vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
     n = vec_size(w)
     sub = (w >> 23) & 7
@@ -2912,7 +2879,6 @@ def _vfpu3_minmax(addr, w, options, delay_branch_pc):
             + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
     return "{ " + body + " }", None, 0
 def _vfpu3_sign_compare(addr, w, options, delay_branch_pc):
-    op = w >> 26
     vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
     n = vec_size(w)
     sub = (w >> 23) & 7
@@ -3058,14 +3024,9 @@ def _vfpu_vcrsp_triple(addr, w, options, delay_branch_pc):
 
 _VFPU_CROSS_SIZE_FORMS = {4: _vfpu_vqmul_quaternion, 3: _vfpu_vcrsp_triple}
 def _vfpu_rotation_effect(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
-    vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
     n = vec_size(w)
-    sub = (w >> 23) & 7
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    _ = vreg_indices(vd, n), vreg_indices(vs, n)
     di = vreg_indices(vd, n)
     ang = vreg_indices(vs, 1)[0]
     imm = (w >> 16) & 0x1F
@@ -3088,10 +3049,7 @@ def _vfpu_rotation_effect(addr, w, options, delay_branch_pc):
                  + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]&~0x{dmask:x}u);{_EAT}")
     return "{ " + " ".join(lines) + " }", None, 0
 def _vfpu_binary_arithmetic(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
     op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
     vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
     n = vec_size(w)
     sub = (w >> 23) & 7
@@ -3109,14 +3067,10 @@ def _vfpu_binary_arithmetic(addr, w, options, delay_branch_pc):
             + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
     return "{ " + body + " }", None, 0
 def _vfpu_dot_effect(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
     vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
     n = vec_size(w)
-    sub = (w >> 23) & 7
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    _ = vreg_indices(vd, n)
+    si = vreg_indices(vs, n)
     ti = vreg_indices(vt, n)
     dst = vreg_indices(vd, 1)[0]
     body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
@@ -3127,14 +3081,10 @@ def _vfpu_dot_effect(addr, w, options, delay_branch_pc):
             + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
     return "{ " + body + " }", None, 0
 def _vfpu_horizontal_dot_effect(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
     vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
     n = vec_size(w)
-    sub = (w >> 23) & 7
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    _ = vreg_indices(vd, n)
+    si = vreg_indices(vs, n)
     ti = vreg_indices(vt, n)
     dst = vreg_indices(vd, 1)[0]
     body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
@@ -3146,14 +3096,10 @@ def _vfpu_horizontal_dot_effect(addr, w, options, delay_branch_pc):
             + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
     return "{ " + body + " }", None, 0
 def _vfpu_cross_effect(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
     vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
     n = vec_size(w)
-    sub = (w >> 23) & 7
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    _ = vreg_indices(vd, n)
+    si = vreg_indices(vs, n)
     if n != 3:
         raise Unsupported(f"vcrs size {n} at 0x{addr:08x}")
     ti = vreg_indices(vt, n)
@@ -3166,14 +3112,9 @@ def _vfpu_cross_effect(addr, w, options, delay_branch_pc):
             + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
     return "{ " + body + " }", None, 0
 def _vfpu_matrix_multiply_effect(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
     vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
     n = vec_size(w)
-    sub = (w >> 23) & 7
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    _ = vreg_indices(vd, n), vreg_indices(vs, n)
     side = vec_size(w)
     lines = []
     for a in range(side):
@@ -3197,14 +3138,10 @@ def _vfpu_matrix_multiply_effect(addr, w, options, delay_branch_pc):
         options=options,
     ) + " " + writes + _EAT + " }", None, 0
 def _vfpu_matrix_transform_effect(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
     vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
     n = vec_size(w)
     sub = (w >> 23) & 7
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    _ = vreg_indices(vd, n), vreg_indices(vs, n)
     ins = sub
     side = ins + 1
     tn = min(n, ins + 1)
@@ -3227,13 +3164,8 @@ def _vfpu_matrix_transform_effect(addr, w, options, delay_branch_pc):
         [f"s->v[{ti[k]}]" for k in range(tn)], options=options,
     ) + " " + writes + _EAT + " }", None, 0
 def _vfpu_scale_effect(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
     vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
     n = vec_size(w)
-    sub = (w >> 23) & 7
     di, si = vreg_indices(vd, n), vreg_indices(vs, n)
     scalar = vreg_indices(vt, 1)[0]
     body = (f"float _s[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
@@ -3243,14 +3175,9 @@ def _vfpu_scale_effect(addr, w, options, delay_branch_pc):
             + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
     return "{ " + body + " }", None, 0
 def _vfpu_matrix_scale_effect(addr, w, options, delay_branch_pc):
-    lle_cpu = options.lle_cpu
-    op = w >> 26
-    jump = (w >> 21) & 0x1F
-    rt_selector = (w >> 16) & 0x1F
-    vd, vs, vt = w & 0x7F, (w >> 8) & 0x7F, (w >> 16) & 0x7F
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
     n = vec_size(w)
-    sub = (w >> 23) & 7
-    di, si = vreg_indices(vd, n), vreg_indices(vs, n)
+    _ = vreg_indices(vd, n), vreg_indices(vs, n)
     vt = (w >> 16) & 0x7F
     scalar_vidx = vreg_indices(vt, 1)[0]
     side = n
@@ -4507,7 +4434,7 @@ def _emit_hst_patch_site(hst_profile, addr, w, out, consumed):
 
 def _emit_non_control_word(ctx, out, addr, w, sv_points):
     """One word that is not a control transfer, with its static checks and continuation edge."""
-    continuations, lle_cpu = ctx.continuations, ctx.lle_cpu
+    continuations = ctx.continuations
     resumable = ctx.resumable
     line = normal_line(addr, w, options=ctx.options)
     out.append(_sp_load_check(line) if addr in ctx.sp_checks else line)
@@ -4541,7 +4468,7 @@ def _emit_slot_exit(ctx, out, addr, ran="slot already ran inline"):
 
 def _emit_unrelocated_jal(ctx, out, addr, w, ds, dsw):
     """``jal`` the loader leaves as linked."""
-    lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
+    resumable = ctx.resumable
     resume = G((addr + 8) & 0xFFFFFFFF)
     out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr, ctx.options)};")
     out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr), ctx.options)}); s->r[31] = {resume}; sr_end(s, 0u, 0);")
@@ -4631,7 +4558,7 @@ def _emit_jal(ctx, out, addr, w, ds, dsw):
 
 def _emit_jalr(ctx, out, addr, w, ds, dsw):
     """``jalr rd, rs``: the target is read at the transfer, before the slot."""
-    lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
+    resumable = ctx.resumable
     stack_census = ctx.stack_census
     guest_exits = ctx.guest_exits
     d, a = rd(w), rs(w)
@@ -4708,7 +4635,7 @@ def _emit_jr(ctx, out, addr, w, ds, dsw):
 
 def _emit_unrelocated_j(ctx, out, addr, w, ds, dsw):
     """``j`` the loader leaves as linked."""
-    lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
+    resumable = ctx.resumable
     stack_census = ctx.stack_census
     guest_exits = ctx.guest_exits
     out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr, ctx.options)};")
@@ -4721,7 +4648,7 @@ def _emit_unrelocated_j(ctx, out, addr, w, ds, dsw):
 def _emit_j(ctx, out, addr, w, ds, dsw):
     """``j``: a self-loop, a tail transfer or a jump inside the body."""
     known, resume_owners, labels = ctx.known, ctx.resume_owners, ctx.labels
-    lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
+    resumable = ctx.resumable
     stack_census = ctx.stack_census
     guest_exits = ctx.guest_exits
     target = jump_target(addr, w)
