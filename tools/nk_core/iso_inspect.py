@@ -2224,6 +2224,38 @@ def _classify_iso_executable(stream, file_size: int, path: str) -> dict[str, obj
 _BOOT_FALLBACK_EBOOT_KINDS = frozenset({"PSP_ENCRYPTED_CONTAINER", "EMPTY_OR_ZERO_FILLED"})
 
 
+def iso_executable_sha256(iso_path: Path | str, name: str) -> str | None:
+    """SHA-256 of ``PSP_GAME/SYSDIR/<name>`` as the disc image holds it, or None.
+
+    The file is hashed exactly as stored (an encrypted executable stays
+    encrypted), so the digest names the build on the disc and no key is
+    involved (#2140). None means the image has no such file, it is empty, or it
+    is beyond the supported size bound.
+    """
+    path = Path(iso_path)
+    try:
+        size_bytes = path.stat().st_size
+        with path.open("rb") as stream:
+            entry = _lookup_iso_file(stream, size_bytes, ("PSP_GAME", "SYSDIR", name))
+            if entry is None:
+                return None
+            lba, size = entry
+            if size <= 0 or size > MAX_EXECUTABLE_BYTES:
+                return None
+            digest = hashlib.sha256()
+            offset = 0
+            while offset < size:
+                count = min(64 * 1024, size - offset)
+                chunk = _read_iso_extent(stream, size_bytes, lba, size, offset, count)
+                if len(chunk) != count:
+                    return None
+                digest.update(chunk)
+                offset += count
+            return digest.hexdigest()
+    except (OSError, IsoInspectionError, struct.error):
+        return None
+
+
 def select_boot_executable_source(iso_path: Path | str) -> str | None:
     """Select an on-disc boot filename without resolving keys or decrypting files."""
     path = Path(iso_path)

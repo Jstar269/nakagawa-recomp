@@ -362,6 +362,12 @@
         "player"
       ]
     },
+    "BUILD_KNOWN_BAD": {
+      "stage": "import",
+      "in": [
+        "staging"
+      ]
+    },
     "DISC_FILES_STAGE_FAILED": {
       "stage": "import",
       "in": [
