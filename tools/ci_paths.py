@@ -926,10 +926,52 @@ def trusted_for_self_hosted(
     )
 
 
-def self_hosted_pool_available(switch: str, heartbeat: str, now: float) -> bool:
-    """Whether the pool's off switch is on and its supervisor reported in recently."""
+#: Values of ``NK_SELF_HOSTED_LINUX`` that open the pool. ``on`` takes every trusted run;
+#: ``landing`` takes only the runs that land work (``landing_run``), so a small pool on a
+#: busy PC is not swamped by every task branch's Draft CI. Anything else is off.
+SELF_HOSTED_SWITCH_ON = "on"
+SELF_HOSTED_SWITCH_LANDING = "landing"
+#: Head branches the landing desk opens for a batch of pull requests (``batch/desk-<UTC>``).
+SELF_HOSTED_LANDING_PREFIXES = ("batch/",)
 
-    if switch.strip().lower() != "on":
+
+def self_hosted_switch(switch: str) -> str:
+    """The pool's switch state: ``on``, ``landing``, or ``off`` for any other value."""
+
+    value = switch.strip().lower()
+    if value in (SELF_HOSTED_SWITCH_ON, SELF_HOSTED_SWITCH_LANDING):
+        return value
+    return "off"
+
+
+def landing_run(event_name: str, event: Mapping[str, object], *, ref: str) -> bool:
+    """Whether a run lands work: a push to ``main``, a merge group, a batch, or a Ready pull request.
+
+    The desk lands only Ready pull requests, and a batch is the desk's own branch, so a
+    Draft pull request's CI is not a landing run. This only narrows: callers check
+    ``trusted_for_self_hosted`` first.
+    """
+
+    if event_name == "push":
+        return ref == "refs/heads/main"
+    if event_name == "merge_group":
+        return ref.startswith("refs/heads/gh-readonly-queue/main/")
+    if event_name != "pull_request":
+        return False
+    pull_request = event.get("pull_request")
+    if not isinstance(pull_request, dict):
+        return False
+    head = pull_request.get("head")
+    head_ref = head.get("ref") if isinstance(head, dict) else None
+    if isinstance(head_ref, str) and head_ref.startswith(SELF_HOSTED_LANDING_PREFIXES):
+        return True
+    return pull_request.get("draft") is False
+
+
+def self_hosted_pool_available(switch: str, heartbeat: str, now: float) -> bool:
+    """Whether the pool's switch is open (``on`` or ``landing``) and its supervisor reported in recently."""
+
+    if self_hosted_switch(switch) == "off":
         return False
     try:
         beat = int(heartbeat.strip())
@@ -1002,11 +1044,34 @@ def codeql_runner(
 ) -> str:
     """The ``runs-on`` value, as JSON, for Trusted CodeQL's analyses."""
 
-    if codeql_trusted_target(event_name, event, repository=repository, ref=ref) and self_hosted_pool_available(
-        switch, heartbeat, now
+    if (
+        codeql_trusted_target(event_name, event, repository=repository, ref=ref)
+        and self_hosted_pool_available(switch, heartbeat, now)
+        and (self_hosted_switch(switch) == SELF_HOSTED_SWITCH_ON or codeql_landing_target(event_name, event, ref=ref))
     ):
         return json.dumps(list(SELF_HOSTED_LINUX_RUNNER), separators=(",", ":"))
     return json.dumps(HOSTED_CODEQL_RUNNER)
+
+
+def codeql_landing_target(event_name: str, event: Mapping[str, object], *, ref: str) -> bool:
+    """Whether a CodeQL target lands work: a push to ``main``, or a wake of a merge group or batch.
+
+    A "CodeQL wake" payload does not say whether its pull request is a Draft, so in
+    ``landing`` mode only the desk's batch branches and merge groups take the pool. This
+    only narrows: callers check ``codeql_trusted_target`` first.
+    """
+
+    if event_name == "push":
+        return ref == "refs/heads/main"
+    run = event.get("workflow_run") if event_name == "workflow_run" else None
+    if not isinstance(run, dict):
+        return False
+    head_branch = run.get("head_branch")
+    if not isinstance(head_branch, str):
+        return False
+    if run.get("event") == "merge_group":
+        return head_branch.startswith("gh-readonly-queue/main/")
+    return run.get("event") == "pull_request" and head_branch.startswith(SELF_HOSTED_LANDING_PREFIXES)
 
 
 def linux_runner(
@@ -1027,8 +1092,10 @@ def linux_runner(
     Ubuntu 24.04 for both.
     """
 
-    if trusted_for_self_hosted(event_name, event, repository=repository, ref=ref) and self_hosted_pool_available(
-        switch, heartbeat, now
+    if (
+        trusted_for_self_hosted(event_name, event, repository=repository, ref=ref)
+        and self_hosted_pool_available(switch, heartbeat, now)
+        and (self_hosted_switch(switch) == SELF_HOSTED_SWITCH_ON or landing_run(event_name, event, ref=ref))
     ):
         return json.dumps(list(SELF_HOSTED_LINUX_RUNNER), separators=(",", ":"))
     return json.dumps(hosted)
