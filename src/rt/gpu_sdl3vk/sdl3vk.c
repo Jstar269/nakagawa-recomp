@@ -939,7 +939,7 @@ int sdl3vk_init(const char *title) {
         INIT_VK(vkCreateSemaphore(s_dev,&sci2,NULL,&f->sem_acq));
 
         VkBufferCreateInfo bci={.sType=VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        bci.size=PSP_W*PSP_H*4;bci.usage=VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bci.size=SDL3VK_UPLOAD_MAX_W*PSP_H*4;bci.usage=VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         INIT_VK(vkCreateBuffer(s_dev,&bci,NULL,&f->staging));
         VkMemoryRequirements mr;vkGetBufferMemoryRequirements(s_dev,f->staging,&mr);
         VkMemoryAllocateInfo mai={.sType=VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
@@ -967,7 +967,7 @@ int sdl3vk_init(const char *title) {
 
         VkImageCreateInfo imi={.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         imi.imageType=VK_IMAGE_TYPE_2D;imi.format=VK_FORMAT_B8G8R8A8_UNORM;
-        imi.extent.width=PSP_W;imi.extent.height=PSP_H;imi.extent.depth=1;
+        imi.extent.width=SDL3VK_UPLOAD_MAX_W;imi.extent.height=PSP_H;imi.extent.depth=1;
         imi.mipLevels=1;imi.arrayLayers=1;imi.samples=VK_SAMPLE_COUNT_1_BIT;
         imi.tiling=VK_IMAGE_TILING_OPTIMAL;
         imi.usage=VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -1875,9 +1875,11 @@ int sdl3vk_parse_present_scaling(const char *value) {
 Sdl3VkPresentPlan sdl3vk_present_plan(int mode, int srcw, int srch, int dw, int dh, int max_dim) {
     Sdl3VkPresentPlan p = { 0, 0, 0, 0, 1, 0 };
     if (srcw <= 0 || srch <= 0 || dw <= 0 || dh <= 0) return p;
-    /* Aspect-correct fit of the PSP picture, letterboxed. */
-    int vw = dw, vh = dw * PSP_H / PSP_W;
-    if (vh > dh) { vh = dh; vw = dh * PSP_W / PSP_H; }
+    /* Aspect-correct fit of the source, letterboxed. Every 480k x 272k source fits as the PSP
+     * picture always did (the same ratio, so the same integer results); a widescreen Fill
+     * picture (480 + 2D) x 272 fits its own, wider shape. */
+    int vw = dw, vh = (int)((long long)dw * srch / srcw);
+    if (vh > dh) { vh = dh; vw = (int)((long long)dh * srcw / srch); }
     if (mode == SDL3VK_SCALING_INTEGER) {
         int k = dw / srcw < dh / srch ? dw / srcw : dh / srch;
         if (k >= 1) { vw = k * srcw; vh = k * srch; p.nearest = 1; }
@@ -2334,7 +2336,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
     /* A recorded picture still in this slot's readback goes to the recorder before reuse. */
     if (s_rec_pending == f) sr_videorec_resolve_pending();
     int rec_in_submit = 0;
-    if (upload) { memcpy(f->staging_map, upload, PSP_W * PSP_H * 4); src = f->fbimg; }
+    if (upload) { memcpy(f->staging_map, upload, (size_t)srcw * (size_t)srch * 4u); src = f->fbimg; }
     VkCommandBuffer cmd = f->cmd;
 
     for (int attempt = 0; attempt < 2; attempt++) {
@@ -2389,7 +2391,8 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             VkBufferImageCopy bic = {0};
             bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             bic.imageSubresource.layerCount = 1;
-            bic.imageExtent.width = PSP_W; bic.imageExtent.height = PSP_H; bic.imageExtent.depth = 1;
+            bic.imageExtent.width = (uint32_t)srcw; bic.imageExtent.height = (uint32_t)srch;
+            bic.imageExtent.depth = 1;
             vkCmdCopyBufferToImage(cmd, f->staging, f->fbimg,
                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
             barrier(cmd, f->fbimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -2717,6 +2720,30 @@ int sdl3vk_present_rgba(const uint32_t *px) {
     int result = present_common(VK_NULL_HANDLE, PSP_W, PSP_H, px);
     if (started) sr_perf_present_done(started, result);
     return result;
+}
+
+int sdl3vk_present_rgba_ex(const uint32_t *px, int w, int h) {
+    if (!px || w < PSP_W || w > SDL3VK_UPLOAD_MAX_W || h != PSP_H) {
+        sr_capture_fail("present_rgba_ex: unsupported picture size");
+        return -1;
+    }
+    uint64_t started = sr_perf_now_ns();
+    int result = present_common(VK_NULL_HANDLE, w, h, px);
+    if (started) sr_perf_present_done(started, result);
+    return result;
+}
+
+int sdl3vk_window_pixel_size(int *w, int *h) {
+    int pw = 0, ph = 0;
+    if (s_swap && s_swap_ext.width && s_swap_ext.height) {
+        pw = (int)s_swap_ext.width;
+        ph = (int)s_swap_ext.height;
+    } else if (s_win) {
+        (void)SDL_GetWindowSizeInPixels(s_win, &pw, &ph);
+    }
+    if (w) *w = pw;
+    if (h) *h = ph;
+    return pw > 0 && ph > 0;
 }
 
 int sdl3vk_present_image(void *vk_image) {

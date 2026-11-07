@@ -61,12 +61,12 @@ static bool text_was_cut(const char *shown, const char *text) {
 }
 
 /* The column a group of rows `width` px across shares: the design's 220 px, or
-   as wide as the widest label when that is wider, at every text size (a label
-   such as "Interface size: Automatic" outgrew 220 px in the real font and was
-   cut). The buttons line up, and when the column leaves a sentence too little
-   room beside its button, or would cut one short of its two lines, every
-   sentence goes under its button at the full width. */
-WizardColumn scr_wizard_column(NkUi *ui, const WizardRow *rows, size_t count, float width) {
+   as wide as the widest label when that is wider. The buttons line up. At text
+   sizes above design, or at design size when Enhanced opts in, a sentence with
+   too little room or clipped after two lines makes every sentence go under its
+   button at full width. */
+WizardColumn scr_wizard_column(NkUi *ui, const WizardRow *rows, size_t count, float width,
+                              bool stack_at_design_size) {
     NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, 0u);
     WizardColumn column = {WIZARD_VALUE_CELL, false};
     char label[48];
@@ -77,11 +77,7 @@ WizardColumn scr_wizard_column(NkUi *ui, const WizardRow *rows, size_t count, fl
         need = nk_ui_button_width(ui, label, 0u);
         if (need > column.cell) column.cell = need;
     }
-    /* At the design text size the sentences stay beside their buttons, as the
-       design lays the page out; only larger type stacks them. */
-    if (!(nk_ui_text_scale(ui) > 1.0f)) {
-        return column;
-    }
+    if (!stack_at_design_size && !(nk_ui_text_scale(ui) > 1.0f)) return column;
     room = width - column.cell - NK_UI_SPACE_4;
     column.stacked = room < WIZARD_VALUE_SENTENCE_MIN;
     for (size_t i = 0u; i < count && !column.stacked; ++i) {
@@ -115,7 +111,7 @@ bool scr_wizard_value_state(NkUi *ui, NkUiId id, NkUiId text_id, const char *nam
     bool pressed = false;
     if (column == NULL) {
         WizardRow self = {name, value, sentence};
-        own = scr_wizard_column(ui, &self, 1u, width);
+        own = scr_wizard_column(ui, &self, 1u, width, false);
         column = &own;
     }
     (void)snprintf(label, sizeof(label), "%s: %s", name, value);
@@ -158,6 +154,6 @@ WizardColumn scr_online_developer_column(NkUi *ui, bool online_on, bool develope
         {"Online mode", "On", SCR_ONLINE_STORED_ON_SENTENCE},
         {"Developer mode", developer ? "On" : "Off", WIZARD_DEVELOPER_SENTENCE}
     };
-    return online_on ? scr_wizard_column(ui, rows, 2u, width)
-                     : scr_wizard_column(ui, rows + 1, 1u, width);
+    return online_on ? scr_wizard_column(ui, rows, 2u, width, false)
+                     : scr_wizard_column(ui, rows + 1, 1u, width, false);
 }

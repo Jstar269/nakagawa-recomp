@@ -309,7 +309,7 @@ Code identifiers that say `ace` mean "Enhanced or Ace"; every name a player read
 The launcher always exports `SR_ACE`, so an inherited value cannot opt a launch in: `off` for Authentic, or
 `v1;tier=enhanced;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2;sas=off`. `tier` (`enhanced` or `ace`) only names the
 run, in the game badge, the pause menu and the stamps; a line without it is an Enhanced run. Every other key is
-required, in any order, each once; a value for a feature this build does not carry (`wide=fill`, `smooth=match`)
+required, in any order, each once; a value for a feature this build does not carry (`smooth=match`)
 refuses the line. So does anything else: the run is Authentic and one `ACE_MODE: refused (<reason>)` line says why.
 Unset is off. With Enhanced or Ace on, the launcher also exports `SR_ACE_REPORT`, the per-run report under
 `<user data>/ace/`. Ace's 60 FPS game logic is not on this line: it selects the title's enhanced package variant
@@ -387,9 +387,8 @@ Ace for that session, with its 60 FPS game logic and `tier=ace`; a title that re
 
 A part is one row of the player's part table (`src/player/player_state.c`): its key, its values (each part has an off
 value, 0) and the words a row shows. The settings file, the launch line and both settings pages walk that table, so a
-new part is one more row and no new switch. Ultrawide, the widescreen Fill mode (#1881), is not offered in this
-build: `SR_ACE` still refuses `wide=fill`, and the line always carries `wide=off`. Its renderer layer is in place and off
-by default (section 10.8).
+new part is one more row and no new switch. Widescreen (`wide=fill`, the Fill mode of section 10.8) is one such row,
+off by default.
 
 ### 10.6. Smooth Motion
 
@@ -455,8 +454,9 @@ Fill shows more of the 3D scene to the left and right of the PSP's 480x272 pictu
 view and pixel scale, and keeps 2D at its native shape in the centre. The GE has no x or y clip planes, so the
 transformed positions of geometry past the screen edges already exist; the guest's scissor is what drops them. Fill
 draws them again onto host-only images instead of widening any guest matrix. The code is in `src/rt/ge.c` (which
-primitives reach the wings, and the software rasterizer's wings), `src/rt/gpu_sdl3vk/ge_gpu.c` (the Vulkan wings) and
-`ge_wide_*` in `src/rt/ge_shared.h`.
+primitives reach the wings, and the software rasterizer's wings), `src/rt/gpu_sdl3vk/ge_gpu.c` (the Vulkan wings and
+the Vulkan picture), `src/rt/gui.c` (the setting, the wing width and the software picture), `src/rt/gpu_sdl3vk/sdl3vk.c`
+(the window fit) and `ge_wide_*` in `src/rt/ge_shared.h`.
 
 - **The picture itself never changes.** Guest VRAM, depth, readbacks, captures, the snapshot path and GE time are those
   of Fill off. Each display framebuffer has a host-only wing canvas holding both wings, which no guest-memory path
@@ -471,18 +471,28 @@ primitives reach the wings, and the software rasterizer's wings), `src/rt/gpu_sd
   writes (movies), block transfers, lines and points do not reach the wings. On Vulkan a primitive whose state the
   backend draws in software is dropped from the wings, counted, and named once on stderr (`gegpu: Fill dropped a wing
   primitive`).
-- **Never a stale wing.** The first wing draw after a canvas was shown (`ge_wide_shown`) clears it, so a canvas holds
-  the current frame's wings only, whatever the game clears with. `ge_wide_drawn` is true only when a wing primitive was
-  really drawn since then; the presenter shows black wings otherwise.
+- **Never a stale wing.** The first triangle or sprite drawn into a framebuffer after it was shown (`ge_wide_shown`)
+  begins a new frame there and clears its canvas, so a canvas holds only the wings of the frame in its framebuffer,
+  whatever the game clears with, and a frame presented again with no draw in between (a 30 FPS frame on a 60 Hz VBLANK)
+  keeps its wings. `ge_wide_drawn` is true only when a wing primitive was really drawn since that clear; the
+  presenter shows black wings otherwise.
+- **Presentation.** With `wide=fill` (Settings > Enhanced > Widescreen, off by default and never in Authentic), each
+  present sets the wing width from the window's shape and shows one (480 + 2D) x 272 picture: the left wing, the frame
+  and the right wing. The Vulkan renderer composes it on the GPU (`gegpu_present`), the software renderer in
+  `src/rt/gui.c`, and the window fits it by its own shape, so the upscaler and window captures see one picture. Only
+  the SDL3/Vulkan presenter shows wings; the headless sink shows the frame alone. In this build Fill and Smooth motion
+  (section 10.6) are exclusive: Smooth motion's HUD mask and depth are sized to the 480-wide frame, so with both on,
+  Fill reports itself unavailable (`ACE_MODE: wide unavailable (...)`) and the run has Smooth motion only.
 - **Any window aspect wider than the PSP's.** The wing width comes from the window's shape at the PSP's 272 lines,
   rounded down to a multiple of 4: 21:9 (about 635x272) has 76-pixel wings and 32:9 (about 967x272) has 240-pixel
   wings. The PSP's 480x272 is 30:17, about 16:9; a 16:9 window widens it by under 4 pixels, so 16:9 has none. One canvas
   holds both wings in a 512-column image, the GE's widest framebuffer, so the Vulkan canvas shares every target's size,
   viewport and readback. That caps a wing at 256 pixels, a picture of 992x272 (about 32.8:9); a wider window (three
   screens) gets the widest Fill and black beyond it.
-- **Off is the default.** With no wing width set, no canvas exists and no wing is drawn or submitted. What Off still
-  costs is a test per primitive in `src/rt/ge.c` (`s_wide_d`), plus tests of an always-NULL pointer in the software
-  rasterizer's pixel accessors (`s_wing`) and the Vulkan backend's batch path (`s_wing_dst`).
+- **Off is the default.** With no wing width set, no canvas exists and no wing is drawn or submitted, and the window
+  shows the frame alone, fitted as before. What Off still costs is a test per primitive in `src/rt/ge.c` (`s_wide_d`),
+  tests of an always-NULL pointer in the software rasterizer's pixel accessors (`s_wing`) and the Vulkan backend's
+  batch path (`s_wing_dst`), and a test of the wing width per present.
 - **Tests.** `gpu-coherence-selftest` (case `wide-fill`, also at render scales 2 and 4) and
   `ge-cpu-profile-validate-selftest` run one list at 16:9, 21:9 and 32:9. Shapes with sub-pixel corners in and across
   each edge (flat and gouraud triangles, transform-mode sprites) are drawn a second time wholly on screen, and each wing
@@ -491,23 +501,27 @@ primitives reach the wings, and the software rasterizer's wings), `src/rt/gpu_sd
   gouraud shape's rows, where each channel may differ by one step. The tests also check that all of guest VRAM is
   byte-identical with Fill on and off, that the GE clock is unchanged, that a narrower scissor reaches no wing, that a
   shown canvas holds only the next frame's wings, that a frame whose every wing primitive the Vulkan backend drops
-  leaves the canvas undrawn and black, and that the wing hooks receive the guest's vertices snapped and shifted.
+  leaves the canvas undrawn and black, and that the wing hooks receive the guest's vertices snapped and shifted. The
+  Vulkan present cells check the composed picture: its wings are the canvas's and its centre is the frame, a frame
+  presented twice keeps its wings, a new frame that draws no wing shows black ones, and Fill off makes no picture.
+  `gpu-capture-selftest` checks that the window fits every 480k x 272k source as before, to the pixel, and a Fill
+  picture by its own shape; `ace-selftest` and the player's tests check the `wide` key from the settings file to the
+  runtime's parser.
 
-**Next layers.** Presentation composes the left wing, the picture and the right wing into one image the window's
-shape, shows black wings for a frame that drew none, and turns on `wide=fill`. Then **layer 2**, per title: a game
-that skips objects it considers off screen never submits them, so they appear at the edges of the wings. A declared
-symbolic `guest_memory_code_hook` (section 2.3) that widens that title's culling extents, resolved through its title
-profile and never by a raw address in a package (section 5), fixes that title, and the title's HUD stays inside the
-PSP's picture at every aspect. That hook changes what the guest computes, so it is a section 11 item. The setting's
-help text says so.
+**Next layer.** Layer 2 is per title: a game that skips objects it considers off screen never submits them, so they
+are missing from the wings or pop in at their edges. A declared symbolic `guest_memory_code_hook` (section 2.3) that
+widens that title's culling extents together with the view, resolved through its title profile and never by a raw
+address in a package (section 5), fixes that title, and the title's HUD stays inside the PSP's picture at every
+aspect. That hook changes what the guest computes, so it is a section 11 item. The Widescreen row's help text says
+that objects can pop in at the edges.
 
 ### 10.9. Settings
 
 `settings.json` keeps the library's choice in `"enhanced"` and a sparse `"title_play"` map, every value by name:
 
 ```json
-"enhanced": {"default": "enhanced", "af": "16", "text": "on", "readout": "off", "notice": "on", "smooth": "off",
-            "sas": "off", "upscale": "off"},
+"enhanced": {"default": "enhanced", "af": "16", "text": "on", "readout": "off", "notice": "on", "wide": "off",
+            "smooth": "off", "sas": "off", "upscale": "off"},
 "title_play": {"ULUS10000": {"mode": "ace", "af": "8"}, "ULES00000": {"mode": "library", "logic_60": "off"}}
 ```
 
