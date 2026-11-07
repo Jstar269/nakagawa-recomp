@@ -27,6 +27,7 @@
 #include "nk_psp_container.h"
 #include "nk_psp_keystore.h"
 #include "nk_psp_npumdimg.h"
+#include "nk_pbp_homebrew.h"
 #include "iso_reader.h"
 #include "nk_title_manifest.h"
 #include "nk_user_data_schema.h"
@@ -1427,6 +1428,8 @@ static const char *const k_part_switch_labels[] = {"On", "Off"};
 static const char *const k_part_switch_words[] = {"on", "off"};
 static const char *const k_part_smooth_words[] = {"x2", "off"};
 static const char *const k_part_sas_words[] = {"sinc", "off"};
+static const char *const k_part_upscale_labels[] = {"FSR 1", "Off"};
+static const char *const k_part_upscale_words[] = {"fsr1", "off"};
 
 static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
     {"af", "Texture filtering",
@@ -1449,6 +1452,12 @@ static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
     {"sas", "Clean pitched sound",
      "Resamples pitched sound effects without aliasing. Changes the samples the game mixes.",
      2, k_part_switch_values, k_part_switch_labels, k_part_sas_words, 0},
+    /* Presentation only (contract section 2.2): the window and its recording, never the guest. */
+    {"upscale", "Sharper enlarging",
+     "AMD FSR 1 sharpens the picture when the window is larger than the game. Only what you see "
+     "changes, in the window and in recordings: the game, its memory and screenshots stay the "
+     "same.",
+     2, k_part_switch_values, k_part_upscale_labels, k_part_upscale_words, 0},
 };
 
 const PlayerEnhancedPartInfo *player_enhanced_part(int part) {
@@ -1510,6 +1519,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->fullscreen = false;
     settings->launcher_fullscreen = false;
     settings->vsync = true;
+    settings->graphics_preset = PLAYER_PRESET_CUSTOM;
     settings->fps_cap = -1;
     settings->master_volume = 80;
     settings->reduce_motion_choice = PLAYER_SYSTEM_CHOICE_AUTO;
@@ -1957,6 +1967,16 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         if (strcmp(scaling_name, kPresentScalingNames[i]) == 0) app->settings.present_scaling = i;
     }
 
+    NkJsonNode *preset_node = nk_json_obj_get(root, "graphics_preset");
+    const char *preset_name = preset_node ? nk_json_get_string(preset_node) : NULL;
+    /* A file without the key, or with a word this build does not know, is Custom. */
+    app->settings.graphics_preset = PLAYER_PRESET_CUSTOM;
+    for (int i = PLAYER_PRESET_LOW; preset_name && i < PLAYER_PRESET_COUNT; i++) {
+        if (strcmp(preset_name, player_graphics_preset_row(i)->word) == 0) {
+            app->settings.graphics_preset = i;
+        }
+    }
+
     NkJsonNode *fps_node = nk_json_obj_get(root, "fps_cap");
     int64_t fps_val = 0;
     if (fps_node && nk_json_get_int64(fps_node, &fps_val) && (fps_val == -1 || fps_val == 0)) {
@@ -2285,6 +2305,11 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"present_scaling\": \"%s\",\n",
             kPresentScalingNames[present_scaling_valid(app->settings.present_scaling)
                                  ? app->settings.present_scaling : NK_PRESENT_SCALING_SHARP]);
+    {
+        const PlayerGraphicsPresetRow *preset =
+            player_graphics_preset_row(player_app_graphics_preset(app));
+        fprintf(f, "  \"graphics_preset\": \"%s\",\n", preset ? preset->word : "custom");
+    }
     fprintf(f, "  \"fps_cap\": %d,\n", app->settings.fps_cap);
     fprintf(f, "  \"vsync\": %s,\n", app->settings.vsync ? "true" : "false");
     fprintf(f, "  \"fullscreen\": %s,\n", app->settings.fullscreen ? "true" : "false");
@@ -2377,9 +2402,12 @@ static void maybe_persist_settings(PlayerApp *app) {
     }
 }
 
+static void graphics_preset_row_edited(PlayerApp *app);
+
 void player_app_set_resolution_scale(PlayerApp *app, int scale) {
     if (!app || !resolution_scale_valid(scale)) return;
     app->settings.resolution_scale = scale;
+    graphics_preset_row_edited(app);
     maybe_persist_settings(app);
 }
 
@@ -2404,12 +2432,14 @@ void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
         at = (at + 1) % 3;
     }
     app->settings.resolution_scale = kOrder[at];
+    graphics_preset_row_edited(app);
     maybe_persist_settings(app);
 }
 
 void player_app_set_present_scaling(PlayerApp *app, int scaling) {
     if (!app || !present_scaling_valid(scaling)) return;
     app->settings.present_scaling = scaling;
+    graphics_preset_row_edited(app);
     maybe_persist_settings(app);
 }
 
@@ -2418,7 +2448,101 @@ void player_app_cycle_present_scaling(PlayerApp *app, int direction) {
     int current = present_scaling_valid(app->settings.present_scaling)
         ? app->settings.present_scaling : NK_PRESENT_SCALING_SHARP;
     app->settings.present_scaling = (current + (direction < 0 ? 2 : 1)) % 3;
+    graphics_preset_row_edited(app);
     maybe_persist_settings(app);
+}
+
+/* The graphics presets (#2150), one row each. Starting values, to be tuned by
+   measurement on real titles: Low draws at the PSP's own 480x272, Medium and Handheld
+   at 2x, High and Ultra at 4x (the GPU renderer's largest scale). Ultra adds the FSR 1
+   upscaler, which Settings cannot set until #2122, so its row and note say so. Handheld
+   keeps a battery-friendly 2x and starts games fullscreen. No row touches frame pacing,
+   the play mode or an Enhanced part, and only Enhanced and Ace sessions use a row
+   (player_session_apply_graphics_preset). docs/PLAYER_UI_DESIGN.md lists the same values. */
+static const PlayerGraphicsPresetRow k_graphics_presets[PLAYER_PRESET_COUNT] = {
+    [PLAYER_PRESET_LOW] = {"low", "Low", "Low", 1, NK_PRESENT_SCALING_SHARP, true, -1, false},
+    [PLAYER_PRESET_MEDIUM] = {"medium", "Medium", "Medium", 2, NK_PRESENT_SCALING_SHARP, true,
+                              -1, false},
+    [PLAYER_PRESET_HIGH] = {"high", "High", "High", 4, NK_PRESENT_SCALING_SHARP, true, -1,
+                            false},
+    [PLAYER_PRESET_ULTRA] = {"ultra", "Ultra", "Ultra (no upscaler)", 4,
+                             NK_PRESENT_SCALING_SHARP, true, -1, true},
+    [PLAYER_PRESET_HANDHELD] = {"handheld", "Handheld", "Handheld", 2,
+                                NK_PRESENT_SCALING_SHARP, true, 1, false},
+};
+
+const PlayerGraphicsPresetRow *player_graphics_preset_row(int preset) {
+    if (preset <= PLAYER_PRESET_CUSTOM || preset >= PLAYER_PRESET_COUNT) return NULL;
+    return &k_graphics_presets[preset];
+}
+
+int player_app_graphics_preset(const PlayerApp *app) {
+    if (!app || !player_graphics_preset_row(app->settings.graphics_preset)) {
+        return PLAYER_PRESET_CUSTOM;
+    }
+    return app->settings.graphics_preset;
+}
+
+const char *player_app_graphics_preset_label(const PlayerApp *app) {
+    const PlayerGraphicsPresetRow *row = player_graphics_preset_row(player_app_graphics_preset(app));
+    return row ? row->value : "Custom";
+}
+
+bool player_app_graphics_preset_note(const PlayerApp *app, char *out, size_t cap,
+                                     bool *warns) {
+    const PlayerGraphicsPresetRow *row = player_graphics_preset_row(player_app_graphics_preset(app));
+    if (warns) *warns = false;
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (!row) return false;
+    /* A value the preset asks for that Settings cannot set is named, never shown as set. One
+       line, so the page still fits 960 x 540 (test_player_screens.c). */
+    int n = snprintf(out, cap, "%s is used in Enhanced and Ace%s. Authentic uses your own display "
+                     "settings.", row->label,
+                     row->upscaler ? ", without its FSR 1 upscaler for now" : "");
+    if (n <= 0 || (size_t)n >= cap) {
+        out[0] = '\0';
+        return false;
+    }
+    if (warns) *warns = row->upscaler;
+    return true;
+}
+
+/* An edit to a row the chosen preset sets: the rows now apply everywhere, so the preset is
+   Custom. Each such setter calls this; nothing derives Custom from the values. */
+static void graphics_preset_row_edited(PlayerApp *app) {
+    app->settings.graphics_preset = PLAYER_PRESET_CUSTOM;
+}
+
+void player_app_apply_graphics_preset(PlayerApp *app, int preset) {
+    if (!app || !player_graphics_preset_row(preset)) return;
+    app->settings.graphics_preset = preset;
+    maybe_persist_settings(app);
+}
+
+void player_app_cycle_graphics_preset(PlayerApp *app, int direction) {
+    if (!app) return;
+    int current = player_app_graphics_preset(app);
+    int next;
+    if (current == PLAYER_PRESET_CUSTOM) {
+        next = direction < 0 ? PLAYER_PRESET_COUNT - 1 : PLAYER_PRESET_LOW;
+    } else if (direction < 0) {
+        next = current == PLAYER_PRESET_LOW ? PLAYER_PRESET_COUNT - 1 : current - 1;
+    } else {
+        next = current + 1 >= PLAYER_PRESET_COUNT ? PLAYER_PRESET_LOW : current + 1;
+    }
+    player_app_apply_graphics_preset(app, next);
+}
+
+void player_session_apply_graphics_preset(const PlayerSettings *settings, bool enhanced,
+                                          NkRuntimeConfig *config) {
+    const PlayerGraphicsPresetRow *row =
+        settings ? player_graphics_preset_row(settings->graphics_preset) : NULL;
+    if (!config || !enhanced || !row) return;
+    config->resolution_scale = row->resolution_scale;
+    config->present_scaling = row->present_scaling;
+    config->vsync = row->vsync;
+    if (row->fullscreen >= 0) config->fullscreen = row->fullscreen != 0;
 }
 
 const char *player_present_scaling_label(int scaling) {
@@ -2445,6 +2569,13 @@ void player_app_cycle_fps_cap(PlayerApp *app, int direction) {
 void player_app_toggle_fullscreen(PlayerApp *app) {
     if (!app) return;
     app->settings.fullscreen = !app->settings.fullscreen;
+    /* Only a preset that sets fullscreen (Handheld) turns Custom: under the others the row is
+       the user's own in every session, so the preset still holds. */
+    {
+        const PlayerGraphicsPresetRow *row =
+            player_graphics_preset_row(player_app_graphics_preset(app));
+        if (row && row->fullscreen >= 0) graphics_preset_row_edited(app);
+    }
     maybe_persist_settings(app);
 }
 
@@ -2744,6 +2875,7 @@ bool player_ui_canvas_fit(int pixel_width, int pixel_height,
 void player_app_toggle_vsync(PlayerApp *app) {
     if (!app) return;
     app->settings.vsync = !app->settings.vsync;
+    graphics_preset_row_edited(app);
     maybe_persist_settings(app);
 }
 
@@ -3066,6 +3198,9 @@ bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t c
     if (n <= 0 || (size_t)n >= cap) { out[0] = '\0'; return false; }
     used = (size_t)n;
     for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+        /* The upscaler travels as SR_PRESENT_UPSCALE (player_play_present_upscale), which the
+           launcher exports for every session; the runtime's SR_ACE line has no such key. */
+        if (p == PLAYER_PART_UPSCALE) continue;
         /* Ultrawide is not part of this build: the runtime refuses any value but off, and
            the key sits where the runtime's own format puts it. */
         if (p == PLAYER_PART_SMOOTH) {
@@ -3079,6 +3214,29 @@ bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t c
         used += (size_t)n;
     }
     return true;
+}
+
+int player_play_present_upscale(const PlayerPlayResolved *play) {
+    return play && play->on && play->part[PLAYER_PART_UPSCALE] == 1 ? NK_PRESENT_UPSCALE_FSR1
+                                                                     : NK_PRESENT_UPSCALE_OFF;
+}
+
+void player_play_config_session(const PlayerSettings *settings, const char *disc_id,
+                                bool logic_60_package, bool acceptance, NkRuntimeConfig *config,
+                                PlayerPlayResolved *out) {
+    PlayerPlayResolved play;
+    player_play_resolve(settings, disc_id, &play);
+    /* This build interpolates only a 30 Hz source, so the enhanced 60 FPS build runs
+       without smooth motion (contract section 10.5). */
+    player_play_apply_logic_60(&play, logic_60_package);
+    if (acceptance) play.on = false;
+    if (!player_play_launch_line(&play, config->ace_spec, sizeof(config->ace_spec))) {
+        snprintf(config->ace_spec, sizeof(config->ace_spec), "off");
+        play.on = false;
+    }
+    /* Sharper enlarging (#2122): nk_launch exports it as SR_PRESENT_UPSCALE. */
+    config->present_upscale = player_play_present_upscale(&play);
+    if (out) *out = play;
 }
 
 bool player_ace_report_path(const char *user_root, const char *disc_id, char *out, size_t cap) {
@@ -5133,16 +5291,14 @@ void player_launch_work_run(PlayerLaunchWork *work) {
        authentic. */
     {
         PlayerPlayResolved ace;
-        player_play_resolve(&work->settings, game->disc_id, &ace);
-        /* This build interpolates only a 30 Hz source, so the enhanced 60 FPS build runs
-           without smooth motion (contract section 10.5). */
-        player_play_apply_logic_60(&ace, game->enhancement_package_id[0] != '\0');
-        if (work->headless_accept_presented_frames > 0u) ace.on = false;
-        if (!player_play_launch_line(&ace, session->config.ace_spec,
-                                     sizeof(session->config.ace_spec))) {
-            snprintf(session->config.ace_spec, sizeof(session->config.ace_spec), "off");
-            ace.on = false;
-        }
+        player_play_config_session(&work->settings, game->disc_id,
+                                   game->enhancement_package_id[0] != '\0',
+                                   work->headless_accept_presented_frames > 0u, &session->config,
+                                   &ace);
+        /* The graphics preset (#2150) overlays the display rows for Enhanced and Ace only:
+           an Authentic run keeps the user's own rows, since a render scale above 1x reaches
+           guest VRAM (docs/ENHANCEMENT_CONTRACT.md 10.3). */
+        player_session_apply_graphics_preset(&work->settings, ace.on, &session->config);
         session->config.ace_report_path[0] = '\0';
         if (ace.on && player_ace_report_path(session->user_data_root, game->disc_id,
                                              session->config.ace_report_path,
@@ -7657,7 +7813,7 @@ const char *player_preflight_label(const PlayerPreflightCheck *check) {
     static const struct { const char *code; const char *label; } labels[] = {
         {"EXPERIMENTAL", "Compatibility"}, {"DISC_SFO", "Disc"},
         {"EXECUTABLE", "Game program"}, {"GUEST_MODULES", "Game modules"},
-        {"TITLE_PROFILE", "Title settings"},
+        {"TITLE_PROFILE", "Title settings"}, {"GAME_BUILD", "Program version"},
         {"RUNTIME_PACKAGE", "Game build"}, {"DATA_ROOT", "Game data"},
         {"SYSTEM_FONTS", "Fonts"}, {"AUDIO_OUTPUT", "Sound"},
     };
@@ -7696,7 +7852,8 @@ static void player_input_note_file(PlayerInputReport *input, const char *name,
 bool player_preflight_check_blocks(const PlayerPreflightCheck *check) {
     return check && check->status == PREFLIGHT_UNSUPPORTED &&
            (strcmp(check->code, "EXECUTABLE") == 0 ||
-            strcmp(check->code, "DISC_SFO") == 0);
+            strcmp(check->code, "DISC_SFO") == 0 ||
+            strcmp(check->code, "GAME_BUILD") == 0);
 }
 
 const char *player_preflight_status_word(const PlayerPreflightCheck *check) {
@@ -7710,6 +7867,9 @@ const char *player_preflight_status_word(const PlayerPreflightCheck *check) {
             case PREFLIGHT_INCOMPATIBLE: return "Build again";
             default: return "Not yet";
         }
+    }
+    if (strcmp(check->code, "GAME_BUILD") == 0) {
+        return "Not recorded"; /* a known-bad build blocks, so it reads "Can't use" above */
     }
     if (strcmp(check->code, "DATA_ROOT") == 0) return "Checked later";
     if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
@@ -8163,6 +8323,83 @@ static void player_psn_result(char *code, size_t code_size, const char *name,
     }
 }
 
+/* A package of unencrypted homebrew (#2143): the package is not refused but turned into a
+   private disc image holding its program, under the library key that image will have. */
+static bool player_homebrew_iso_ready(const char *iso_path, const char *key) {
+    NkIsoMetadata *meta;
+    bool ready;
+    if (nk_platform_path_missing(iso_path)) return false;
+    meta = (NkIsoMetadata *)calloc(1, sizeof(*meta));
+    if (meta == NULL) return false;
+    ready = nk_iso_inspect(iso_path, meta) == NK_OK && meta->non_retail &&
+            strcmp(meta->disc_id, key) == 0;
+    free(meta);
+    return ready;
+}
+
+static bool player_homebrew_package_inspect(const char *pbp_path, const NkPbpInfo *info,
+                                            PlayerPsnPackage *package,
+                                            char *code, size_t code_size,
+                                            char *message, size_t message_size) {
+    NkPspCtx ctx;
+    NkPbpHomebrew program;
+    char label[160];
+    char data_root[NK_MAX_PATH];
+    char sep = nk_platform_path_separator();
+    int rc;
+    int written;
+    snprintf(label, sizeof(label), "%.120s", info->title[0] ? info->title : "This package");
+    nk_psp_ctx_init(&ctx, NULL);
+    rc = nk_pbp_homebrew_inspect_file(&ctx, pbp_path, info, &program);
+    if (rc == NK_PSP_ERR_UNSUPPORTED && program.kind == NK_PBP_HB_ENCRYPTED) {
+        player_psn_result(code, code_size, "PBP_ENCRYPTED_EXECUTABLE_UNSUPPORTED", message,
+                          message_size,
+                          "%s holds an encrypted program. Only unencrypted homebrew is imported "
+                          "from a package; add a disc image (.iso) of a game instead.", label);
+        return false;
+    }
+    if (rc == NK_PSP_ERR_UNSUPPORTED && program.kind == NK_PBP_HB_KERNEL_MODE) {
+        player_psn_result(code, code_size, "HOMEBREW_KERNEL_MODE_UNSUPPORTED", message,
+                          message_size,
+                          "%s is kernel-mode homebrew or a custom-firmware plugin. It needs the "
+                          "PSP's kernel and firmware, which Nakagawa deliberately doesn't "
+                          "emulate or carry.", label);
+        return false;
+    }
+    if (rc == NK_PSP_ERR_INPUT) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "The package could not be read. Check that the file is complete "
+                          "and try again.");
+        return false;
+    }
+    if (rc != NK_PSP_OK) {
+        player_psn_result(code, code_size, "PBP_PACKAGE_UNSUPPORTED", message, message_size,
+                          "%s is a PSP package Nakagawa can't open. Only unencrypted homebrew "
+                          "and PSN releases of UMD games are added from a package.", label);
+        return false;
+    }
+    if (!nk_platform_get_app_data_dir(data_root, sizeof(data_root))) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "Nakagawa's data folder could not be found.");
+        return false;
+    }
+    written = snprintf(package->iso_path, sizeof(package->iso_path), "%s%cdiscs%c%s%c%s.iso",
+                       data_root, sep, sep, program.key, sep, program.key);
+    if (written < 0 || (size_t)written >= sizeof(package->iso_path) ||
+        strlen(pbp_path) >= sizeof(package->pbp_path)) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "The path to Nakagawa's data folder is too long.");
+        return false;
+    }
+    snprintf(package->pbp_path, sizeof(package->pbp_path), "%s", pbp_path);
+    snprintf(package->disc_id, sizeof(package->disc_id), "%s", program.key);
+    snprintf(package->title, sizeof(package->title), "%s",
+             info->title[0] ? info->title : "Homebrew");
+    package->homebrew = true;
+    package->iso_ready = player_homebrew_iso_ready(package->iso_path, program.key);
+    return true;
+}
+
 bool player_psn_package_inspect(const char *pbp_path, PlayerPsnPackage *package,
                                 char *code, size_t code_size,
                                 char *message, size_t message_size) {
@@ -8195,6 +8432,10 @@ bool player_psn_package_inspect(const char *pbp_path, PlayerPsnPackage *package,
                           "Nakagawa never decrypts firmware.");
         return false;
     case NK_PSP_ERR_UNSUPPORTED:
+        if (info.payload == NK_PBP_PAYLOAD_OTHER) {
+            return player_homebrew_package_inspect(pbp_path, &info, package, code, code_size,
+                                                   message, message_size);
+        }
         player_psn_result(code, code_size, "PBP_PACKAGE_UNSUPPORTED", message, message_size,
                           "%s is a PSP package Nakagawa can't open yet. Only PSN releases "
                           "of UMD games are converted; add a disc image (.iso) of the game "
@@ -8266,6 +8507,52 @@ static void player_disc_bridge_progress(uint64_t done, uint64_t total, void *use
     player_psn_bridge_progress(user, done, total);
 }
 
+/* The homebrew half of the conversion (#2143): the package is read again, so a file changed
+   since it was inspected is refused rather than converted under the wrong key. */
+static bool player_homebrew_package_convert(const PlayerPsnPackage *package,
+                                            const PlayerPsnConvertCallbacks *callbacks,
+                                            char *code, size_t code_size,
+                                            char *message, size_t message_size) {
+    NkPspCtx ctx;
+    NkPbpInfo info;
+    NkPbpHomebrew program;
+    PlayerPsnBridge bridge;
+    NkNpumdimgCallbacks hooks;
+    int rc;
+    bridge.callbacks = callbacks;
+    hooks.on_progress = player_psn_bridge_progress;
+    hooks.is_cancelled = player_psn_bridge_cancelled;
+    hooks.user = &bridge;
+    nk_psp_ctx_init(&ctx, NULL);
+    rc = nk_pbp_identify_file(&ctx, package->pbp_path, &info);
+    if (rc != NK_PSP_ERR_UNSUPPORTED || info.payload != NK_PBP_PAYLOAD_OTHER) {
+        player_psn_result(code, code_size, "PBP_PACKAGE_UNSUPPORTED", message, message_size,
+                          "The package changed after it was checked. Add it again.");
+        return false;
+    }
+    rc = nk_pbp_homebrew_convert_file(&ctx, package->pbp_path, &info, package->iso_path, &hooks,
+                                      &program);
+    if (rc == NK_PSP_OK && strcmp(program.key, package->disc_id) != 0) {
+        (void)nk_remove_utf8(package->iso_path);
+        player_psn_result(code, code_size, "PBP_PACKAGE_UNSUPPORTED", message, message_size,
+                          "The package changed after it was checked. Add it again.");
+        return false;
+    }
+    if (rc == NK_PSP_OK) return true;
+    if (rc == NK_PSP_ERR_CANCELLED) {
+        player_psn_result(code, code_size, nk_psp_status_name(rc), message, message_size,
+                          "The conversion was cancelled, and the partial disc image was "
+                          "removed.");
+        return false;
+    }
+    fprintf(stderr, "[PLAYER] homebrew package conversion stopped: %s: %s\n",
+            nk_psp_status_name(rc), ctx.message);
+    player_psn_result(code, code_size, nk_psp_status_name(rc), message, message_size,
+                      "The package could not be turned into a disc image: %.200s. Nothing was "
+                      "kept.", ctx.message);
+    return false;
+}
+
 bool player_psn_package_convert(const PlayerPsnPackage *package,
                                 const PlayerPsnConvertCallbacks *callbacks,
                                 char *code, size_t code_size,
@@ -8303,6 +8590,10 @@ bool player_psn_package_convert(const PlayerPsnPackage *package,
                           "The disc image's folder could not be made in Nakagawa's data "
                           "folder.");
         return false;
+    }
+    if (package->homebrew) {
+        return player_homebrew_package_convert(package, callbacks, code, code_size, message,
+                                               message_size);
     }
     keys = nk_keystore_create();
     if (keys == NULL ||
@@ -8448,6 +8739,12 @@ void player_app_psn_conversion_begin(PlayerApp *app, const PlayerPsnPackage *pac
         snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
                  "Expanding %.100s into a plain disc image on this PC. This happens once, "
                  "and needs as much free space as the game's .iso.", name);
+    } else if (package->homebrew) {
+        snprintf(app->wizard.extraction_current_file,
+                 sizeof(app->wizard.extraction_current_file), "%s.iso", package->disc_id);
+        snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                 "Adding %.120s from its package as a disc image on this PC…",
+                 package->title[0] ? package->title : "the homebrew");
     } else {
         snprintf(app->wizard.extraction_current_file,
                  sizeof(app->wizard.extraction_current_file), "%s.iso", package->disc_id);
@@ -9553,6 +9850,30 @@ static void player_build_compatibility_preflight_for_game(
         if (!profile_valid) {
             player_preflight_set_plain(preflight,
                 "The title settings for this disc are missing or out of date. Add the disc again.");
+        }
+    }
+
+    /* Which build of the executable this disc holds, against the builds the title's manifest
+       records (#2140). A title that records none gets no row, so its card is unchanged. */
+    if (disc_readable && game->title_id[0] && game->iso_path[0]) {
+        NkBuildIdentity build;
+        const char *build_executable =
+            executables && executables->selected == NK_ISO_EXEC_SELECTION_BOOT ? "BOOT.BIN"
+                                                                                : "EBOOT.BIN";
+        char build_text[512];
+        if (nk_title_manifest_identify_build(game->disc_id, game->iso_path, build_executable,
+                                             &build) &&
+            build.status != NK_BUILD_UNTRACKED) {
+            static const unsigned int issues[] = { 2140 };
+            PlayerPreflightStatus build_status =
+                build.status == NK_BUILD_KNOWN_BAD ? PREFLIGHT_UNSUPPORTED
+                : build.status == NK_BUILD_UNLISTED ? PREFLIGHT_IN_PROGRESS
+                                                    : PREFLIGHT_OK;
+            nk_title_manifest_describe_build(&build, build_text, sizeof(build_text));
+            player_preflight_add(preflight, "GAME_BUILD", build_status, build_text,
+                                 build_status == PREFLIGHT_OK ? NULL : issues,
+                                 build_status == PREFLIGHT_OK ? 0u : 1u);
+            player_preflight_set_plain(preflight, "%s", build_text);
         }
     }
 

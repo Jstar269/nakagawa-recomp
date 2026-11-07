@@ -120,6 +120,7 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `tools/decompme_export.py` | SHA-1 | PSP NID derivation (`sha1(name)[0:4]`, little-endian) | Keep: the PSP defines it |
 | `tools/gen_nidnames.py` | SHA-1 | PSP NID derivation | Keep: the PSP defines it |
 | `tools/nid_name_proof.py` | SHA-1 | PSP NID derivation | Keep: the PSP defines it |
+| `tools/ppsspp_ref.py` | SHA-1 | WebSocket handshake check of `Sec-WebSocket-Accept` (RFC 6455 section 4.2.2) | Keep: the protocol defines it |
 | `tools/provenance_attest_verify.py` | SHA-1 | Git blob ID of a file a `PROVENANCE.md` row declares imported byte-identical, compared with the row's recorded blob ID (a SHA-256 column, where present, is checked too) | Keep: Git object identity |
 | `tools/verify_vfpu_provenance.py` | SHA-1 | Git blob ID of a VFPU table against the pinned upstream tree | Keep: Git object identity |
 | `tools/validate_assets.py` | MD5 | Reads legacy, unversioned local asset references; new ones are versioned SHA-256 | Keep: legacy compatibility only, not a security check |
@@ -127,8 +128,10 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `tools/make_app_icon.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `tools/nk_cli.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `tools/ppm2png.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
+| `tools/ppsspp_ref.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `src/core/nk_psp_inflate.c` | CRC-32 | gzip member trailer of a decrypted PSP payload (RFC 1952) | Keep: the format requires it |
 | `src/core/nk_zip.c` | CRC-32 | ZIP entry checksum of save backups (store-only archives, APPNOTE 4.4.7), checked for every entry before a restore writes anything | Keep: the format requires it |
+| `src/core/nk_steam_shortcuts.c` | CRC-32 | The app ID Steam derives for a non-Steam shortcut (the CRC-32 of the quoted executable path and name, top bit set); an identifier in the user's own Steam library, not a security check | Keep: Steam defines it |
 | `src/core/nk_disc_verify.c` | CRC-32 | Disc verification: a whole disc image's CRC-32 and SHA-1 (the file's own FIPS 180-4 SHA-1, which the scan above does not detect), compared with the user's Redump list | Keep: Redump lists both; they identify a dump and are not a security check |
 | `src/core/nk_disc_verify.h` | CRC-32 | The disc-verification CRC-32 interface (`nk_crc32_update`) | Keep: Redump lists it; it identifies a dump and is not a security check |
 | `tools/nk_core/disc_verify.py` | SHA-1 | Disc verification: a whole disc image's SHA-1, the key into the user's Redump list | Keep: Redump lists it; it identifies a dump and is not a security check |
@@ -143,6 +146,7 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `src/rt/savedata.c` | FNV-64 | Content identity in a SAVE's transaction record: crash recovery deletes or restores a save file only when its size and FNV-1a 64 match the recorded previous or new content, and the record's own hash finds a torn record | Keep: matches a save's own files after a crash, not a security check |
 | `src/rt/ge.c` | FNV-32 | GE transition trace draw identity and watched-buffer hash | Keep: trace key, not integrity |
 | `src/rt/gpu_sdl3vk/ge_gpu.c` | FNV-64 | Texture cache key | Keep: cache key, not integrity |
+| `src/rt/gpu_sdl3vk/pipeline_cache.h` | FNV-64 | Damage check of the on-disk Vulkan pipeline cache's driver data (`nk_pcache_fnv1a64`), and the name of the embedded shader set it was made for; `ge_gpu.c` also uses it to tell whether the driver's data changed before saving | Keep: catches a truncated or damaged cache file in the user's own folder, not a security check; the driver validates the data it is given |
 | `src/rt/motion_match.c` | FNV-64 | Sort and lookup key of a PRIM's signature and key in the draw matcher (`sig_hash`, `key_hash`); every hash match is confirmed by comparing the fields themselves | Keep: hash-table key, not integrity |
 | `src/core/nk_xb.c` | FNV-32 | In-memory path table that finds duplicate paths while writing an XB archive | Keep: hash-table key |
 | `src/core/nk_platform_win32.c` | FNV-64 | Non-cryptographic hash of the data-folder path (`single_instance_hash`), used only to name the launcher's single-instance mutex and its owner page | Keep: a name, not integrity; a collision only makes two data folders share one launcher |

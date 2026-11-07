@@ -156,6 +156,10 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_MPEG_YCBCR 151
 /* #1296: the SimpleADSR envelope, its height read once per grain; see run_sas_adsr. */
 #define PSP_ORACLE_CASE_SAS_ADSR 152
+/* #2135, #2054: SAS voice and WithMix volumes, pitch over VAG block ends and in PCM; see run_sas_mix. */
+#define PSP_ORACLE_CASE_SAS_MIX 155
+/* #286: the Media Engine boundary words (sceVideocodec, sceMpegbase, sceAudiocodec); see run_vcodec_words. */
+#define PSP_ORACLE_CASE_VCODEC_WORDS 160
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -399,6 +403,10 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/sas_init_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_ADSR
 #define PROBE_HOST0_LOG "host0:/sas_adsr_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_MIX
+#define PROBE_HOST0_LOG "host0:/sas_mix_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VCODEC_WORDS
+#define PROBE_HOST0_LOG "host0:/vcodec_words_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -11128,9 +11136,12 @@ static void run_at3_delay_sweep(int emulated) {
    bytes InitYCbCr writes, the sceMpegAvcDecodeYCbCr results up to the first picture, the raw YCbCr buffer
    of that picture, sceMpegAvcDecodeDetail's words, sceMpegAvcCsc of the buffer as decoded, with its plane
    bytes overwritten, and with its first 128 bytes cleared (whether CSC reads guest memory), CSC range and
-   stride refusals, and one direct sceMpegAvcDecode for comparison. The picture bytes go to private host0
-   files only. Every call is preceded by a durable step marker; loops are bounded. Ends in the normal
-   teardown with the AV modules unloaded. */
+   stride refusals, and one direct sceMpegAvcDecode for comparison. After those, for YCbCr modes 2 and 3
+   (each through mpy_ycbcr_mode_fresh): the size query, InitYCbCr, decode calls up to the first picture,
+   that buffer from its header through the queried size, one full-picture CSC of it and the stop. Each mode
+   recreates the ringbuffer, MPEG context and registered stream at the PSMF offset. The picture bytes go to
+   private host0 files only. Every call is preceded by a durable step marker; loops are bounded. Ends in the
+   normal teardown with the AV modules unloaded. */
 /* PSPSDK's libpspmpeg.a has no YCbCr, CSC or decode-detail stubs, so this case links one complete sceMpeg
    import block of its own instead (libpspmpeg.a is not linked: two blocks for one library leave the stubs out
    of order). Library name and version word match libpspmpeg.a; the NIDs are the ones src/rt/nid_names.h names.
@@ -11202,6 +11213,9 @@ SceInt32 sceMpegAvcCsc(SceMpeg *mpeg, void *ycbcr, SceInt32 *range, SceInt32 fra
 #define MPY_RING_CAP (640u << 10)
 #define MPY_MPEG_CAP (256u << 10)
 #define MPY_YCBCR_CAP (256u << 10)
+/* Modes 2 and 3 have no measured size yet: their buffer is larger than mode 1's. */
+#define MPY_YCBCR_X_CAP (1024u << 10)
+#define MPY_MODE_MAX_CALLS 8
 #define MPY_W 480
 #define MPY_H 272
 #define MPY_STRIDE 512
@@ -11214,6 +11228,7 @@ static unsigned char s_mpy_ring[MPY_RING_CAP] __attribute__((aligned(64)));
 static unsigned char s_mpy_mpeg[MPY_MPEG_CAP] __attribute__((aligned(64)));
 static unsigned char s_mpy_ycbcr[MPY_YCBCR_CAP] __attribute__((aligned(64)));
 static unsigned char s_mpy_ycbcr_copy[MPY_YCBCR_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_ycbcr_x[MPY_YCBCR_X_CAP] __attribute__((aligned(64)));
 static unsigned char s_mpy_dest[MPY_DEST_BYTES] __attribute__((aligned(64)));
 static uint32_t s_mpy_detail[32] __attribute__((aligned(64)));
 static uint32_t s_mpy_file_bytes;
@@ -11256,15 +11271,15 @@ static SceInt32 mpy_ring_cb(ScePVoid data, SceInt32 packets, ScePVoid param) {
     return done;
 }
 
-static void mpy_csc(int emulated, SceMpeg *mpeg, const char *name, SceInt32 x, SceInt32 y, SceInt32 w, SceInt32 h,
-                    SceInt32 frame_width, int dump) {
+static void mpy_csc_buf(int emulated, SceMpeg *mpeg, void *ycbcr, const char *name, SceInt32 x, SceInt32 y,
+                        SceInt32 w, SceInt32 h, SceInt32 frame_width, int dump) {
     SceInt32 range[4] __attribute__((aligned(16))) = {x, y, w, h};
     char step[48], extra[96];
     memset(s_mpy_dest, 0x5a, sizeof(s_mpy_dest));
     sceKernelDcacheWritebackInvalidateAll();
     (void)snprintf(step, sizeof(step), "csc-%s", name);
     probe_step(emulated, "mpeg-ycbcr", step);
-    const int rc = sceMpegAvcCsc(mpeg, s_mpy_ycbcr, range, frame_width, s_mpy_dest);
+    const int rc = sceMpegAvcCsc(mpeg, ycbcr, range, frame_width, s_mpy_dest);
     sceKernelDcacheWritebackInvalidateAll();
     (void)snprintf(extra, sizeof(extra), "x=%d y=%d w=%d h=%d fw=%d", (int)x, (int)y, (int)w, (int)h,
                    (int)frame_width);
@@ -11272,8 +11287,222 @@ static void mpy_csc(int emulated, SceMpeg *mpeg, const char *name, SceInt32 x, S
     if (dump && rc == 0) mpy_dump(emulated, name, s_mpy_dest, MPY_DEST_BYTES);
 }
 
+static void mpy_csc(int emulated, SceMpeg *mpeg, const char *name, SceInt32 x, SceInt32 y, SceInt32 w, SceInt32 h,
+                    SceInt32 frame_width, int dump) {
+    mpy_csc_buf(emulated, mpeg, s_mpy_ycbcr, name, x, y, w, h, frame_width, dump);
+}
+
+/* A call that was not made because an earlier call of the same mode was refused or its result unusable. The
+   record still exists and carries that earlier call's return value (-1 when the probe itself held the call
+   back, which no PSP return value is). */
+static void mpy_not_called(int emulated, const char *step, int rc, const char *why) {
+    char extra[64];
+    (void)snprintf(extra, sizeof(extra), "not-called=%s", why);
+    mpy_rc(emulated, step, rc, extra);
+}
+
+/* One YCbCr mode beyond mode 1 (#302), with the fresh ringbuffer and stream supplied by
+   mpy_ycbcr_mode_fresh: size query at the stream's geometry, InitYCbCr, decode calls up to the first picture
+   (the decoder runs one unit behind, so the second call yields it), the buffer from its header through the
+   queried size plus 64 bytes (as mode 1's dump), one full-picture CSC into the 8888 destination, and the stop.
+   A refusal keeps its own return value in every later record of the mode. */
+static void mpy_ycbcr_mode(int emulated, SceMpeg *mpeg, SceMpegStream *stream, SceInt32 mode, SceInt32 pic_w,
+                           SceInt32 pic_h) {
+    char step[48], name[32], extra[200];
+    unsigned char *const buf = s_mpy_ycbcr_x;
+    SceInt32 size = -1;
+    (void)snprintf(step, sizeof(step), "m%d-qsize", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    int rc = sceMpegAvcQueryYCbCrSize(mpeg, mode, MPY_W, MPY_H, &size);
+    (void)snprintf(extra, sizeof(extra), "size=%d w=%d h=%d", (int)size, MPY_W, MPY_H);
+    mpy_rc(emulated, step, rc, extra);
+    const int size_ok = rc == 0 && size > 0 && (uint32_t)size + 64u <= MPY_YCBCR_X_CAP;
+    int carried = rc != 0 ? rc : -1; /* the return value the records of calls not made carry */
+    const char *why = rc != 0 ? "query-refused" : "size-unusable";
+    int inited = 0;
+
+    (void)snprintf(step, sizeof(step), "m%d-init", (int)mode);
+    if (size_ok) {
+        memset(buf, 0xa5, MPY_YCBCR_X_CAP);
+        sceKernelDcacheWritebackInvalidateAll();
+        probe_step(emulated, "mpeg-ycbcr", step);
+        rc = sceMpegAvcInitYCbCr(mpeg, mode, MPY_W, MPY_H, buf);
+        sceKernelDcacheWritebackInvalidateAll();
+        (void)snprintf(extra, sizeof(extra), "size=%d", (int)size);
+        mpy_rc(emulated, step, rc, extra);
+        inited = 1;
+        if (rc != 0) {
+            carried = rc;
+            why = "init-refused";
+        }
+    } else {
+        mpy_not_called(emulated, step, carried, why);
+    }
+    const int init_ok = inited && rc == 0;
+
+    SceInt32 init = 0;
+    void *ptr = buf;
+    int calls = 0, last_rc = -1;
+    if (init_ok) {
+        for (int iter = 0; iter < 8 * MPY_MODE_MAX_CALLS && calls < MPY_MODE_MAX_CALLS && init == 0; iter++) {
+            const SceInt32 avail = sceMpegRingbufferAvailableSize(&s_mpy_rb);
+            if (avail > 0) (void)sceMpegRingbufferPut(&s_mpy_rb, avail, avail);
+            SceInt32 attr = -1;
+            if (sceMpegGetAvcAu(mpeg, stream, &s_mpy_au, &attr) != 0) {
+                if (s_mpy_cursor + 2048u > s_mpy_file_bytes && avail <= 0) break;
+                continue;
+            }
+            (void)snprintf(step, sizeof(step), "m%d-decode%d", (int)mode, calls);
+            probe_step(emulated, "mpeg-ycbcr", step);
+            last_rc = sceMpegAvcDecodeYCbCr(mpeg, &s_mpy_au, &ptr, &init);
+            (void)snprintf(extra, sizeof(extra), "init=%d pts=0x%08x%08x au_size=%u", (int)init,
+                           (unsigned int)s_mpy_au.iPtsMSB, (unsigned int)s_mpy_au.iPts,
+                           (unsigned int)s_mpy_au.iAuSize);
+            mpy_rc(emulated, step, last_rc, extra);
+            calls++;
+            if (last_rc != 0) break;
+        }
+        sceKernelDcacheWritebackInvalidateAll();
+        if (last_rc != 0) {
+            carried = last_rc;
+            why = calls ? "decode-refused" : "no-access-unit";
+        } else if (init == 0) {
+            carried = -1;
+            why = "no-picture";
+        }
+        (void)snprintf(step, sizeof(step), "m%d-decode-end", (int)mode);
+        (void)snprintf(extra, sizeof(extra), "init=%d calls=%d", (int)init, calls);
+        mpy_rc(emulated, step, calls ? last_rc : -1, extra);
+    } else {
+        (void)snprintf(step, sizeof(step), "m%d-decode-end", (int)mode);
+        mpy_not_called(emulated, step, carried, why);
+    }
+    const int picture = init_ok && last_rc == 0 && init != 0;
+
+    (void)snprintf(name, sizeof(name), "ycbcr-m%d-picture", (int)mode);
+    if (inited) {
+        mpy_dump(emulated, name, buf, (uint32_t)size + 64u);
+    } else {
+        (void)snprintf(step, sizeof(step), "dump-%s", name);
+        mpy_not_called(emulated, step, carried, why);
+    }
+
+    (void)snprintf(name, sizeof(name), "m%d-full", (int)mode);
+    if (picture) {
+        mpy_csc_buf(emulated, mpeg, buf, name, 0, 0, pic_w, pic_h, MPY_STRIDE, 1);
+    } else {
+        (void)snprintf(step, sizeof(step), "csc-%s", name);
+        mpy_not_called(emulated, step, carried, why);
+    }
+
+    (void)snprintf(step, sizeof(step), "m%d-decode-stop", (int)mode);
+    if (init_ok) {
+        SceInt32 status = -1;
+        probe_step(emulated, "mpeg-ycbcr", step);
+        rc = sceMpegAvcDecodeStopYCbCr(mpeg, &ptr, &status);
+        (void)snprintf(extra, sizeof(extra), "status=%d", (int)status);
+        mpy_rc(emulated, step, rc, extra);
+    } else {
+        mpy_not_called(emulated, step, carried, why);
+    }
+}
+
+/* Re-create the ringbuffer, MPEG context and registered stream for one mode. Each run starts at the
+   PSMF stream offset, so its first decoded picture does not depend on access units consumed by another mode. */
+static void mpy_ycbcr_mode_fresh(int emulated, SceInt32 mode, SceInt32 pic_w, SceInt32 pic_h,
+                                 SceInt32 ring_size, SceInt32 mpeg_size) {
+    char step[48], extra[200];
+    SceMpeg mpeg = NULL;
+    SceMpegStream *stream = NULL;
+    ScePVoid es = NULL;
+    int ring_ready = 0, mpeg_ready = 0;
+    SceInt32 offset = -1, stream_size = -1;
+    int rc = 0;
+
+    memset(s_mpy_mpeg, 0, sizeof(s_mpy_mpeg));
+    memset(s_mpy_ring, 0, sizeof(s_mpy_ring));
+    memset(&s_mpy_rb, 0, sizeof(s_mpy_rb));
+    memset(&s_mpy_au, 0, sizeof(s_mpy_au));
+    s_mpy_cursor = 0;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-ring-construct", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    rc = sceMpegRingbufferConstruct(&s_mpy_rb, MPY_PACKETS, s_mpy_ring, ring_size, mpy_ring_cb, NULL);
+    mpy_rc(emulated, step, rc, NULL);
+    if (rc != 0) goto cleanup;
+    ring_ready = 1;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-create", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    rc = sceMpegCreate(&mpeg, s_mpy_mpeg, mpeg_size, &s_mpy_rb, MPY_STRIDE, 0, 0);
+    mpy_rc(emulated, step, rc, NULL);
+    if (rc != 0) goto cleanup;
+    mpeg_ready = 1;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-info", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    const int rc_off = sceMpegQueryStreamOffset(&mpeg, s_mpy_file, &offset);
+    const int rc_size = sceMpegQueryStreamSize(s_mpy_file, &stream_size);
+    (void)snprintf(extra, sizeof(extra), "rc_off=0x%08x offset=%d rc_size=0x%08x size=%d",
+                   (unsigned int)rc_off, (int)offset, (unsigned int)rc_size, (int)stream_size);
+    mpy_rc(emulated, step, rc_off, extra);
+    if (rc_off != 0 || rc_size != 0 || offset <= 0 || (uint32_t)offset >= s_mpy_file_bytes) goto cleanup;
+    s_mpy_cursor = (uint32_t)offset;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-regist", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    stream = sceMpegRegistStream(&mpeg, 0, 0);
+    mpy_rc(emulated, step, stream ? 0 : -1, NULL);
+    if (!stream) goto cleanup;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-malloc-es", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    es = sceMpegMallocAvcEsBuf(&mpeg);
+    mpy_rc(emulated, step, es ? 0 : -1, NULL);
+    if (!es) goto cleanup;
+
+    (void)snprintf(step, sizeof(step), "m%d-stream-init-au", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    rc = sceMpegInitAu(&mpeg, es, &s_mpy_au);
+    mpy_rc(emulated, step, rc, NULL);
+    if (rc != 0) goto cleanup;
+
+    SceMpegAvcMode decode_mode = {-1, SCE_MPEG_AVC_FORMAT_8888};
+    (void)snprintf(step, sizeof(step), "m%d-stream-decode-mode", (int)mode);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    rc = sceMpegAvcDecodeMode(&mpeg, &decode_mode);
+    mpy_rc(emulated, step, rc, NULL);
+    if (rc != 0) goto cleanup;
+
+    mpy_ycbcr_mode(emulated, &mpeg, stream, mode, pic_w, pic_h);
+
+cleanup:
+    if (es) {
+        (void)snprintf(step, sizeof(step), "m%d-stream-free-es", (int)mode);
+        probe_step(emulated, "mpeg-ycbcr", step);
+        sceMpegFreeAvcEsBuf(&mpeg, es);
+    }
+    if (stream) {
+        (void)snprintf(step, sizeof(step), "m%d-stream-unregist", (int)mode);
+        probe_step(emulated, "mpeg-ycbcr", step);
+        sceMpegUnRegistStream((SceMpeg)&mpeg, stream);
+    }
+    if (mpeg_ready) {
+        (void)snprintf(step, sizeof(step), "m%d-stream-delete", (int)mode);
+        probe_step(emulated, "mpeg-ycbcr", step);
+        sceMpegDelete(&mpeg);
+    }
+    if (ring_ready) {
+        (void)snprintf(step, sizeof(step), "m%d-stream-ring-destruct", (int)mode);
+        probe_step(emulated, "mpeg-ycbcr", step);
+        sceMpegRingbufferDestruct(&s_mpy_rb);
+    }
+}
+
 static void run_mpeg_ycbcr(int emulated) {
     char extra[200];
+    SceInt32 fresh_ring_size = 0, fresh_mpeg_size = 0, fresh_pic_w = 0, fresh_pic_h = 0;
+    int fresh_sizes_ready = 0, fresh_mode_ready = 0;
     probe_step(emulated, "mpeg-ycbcr", "read-input");
     SceUID fd = sceIoOpen(MPY_INPUT_PATH, PSP_O_RDONLY, 0);
     if (fd >= 0) {
@@ -11311,6 +11540,9 @@ static void run_mpeg_ycbcr(int emulated) {
         if (ring_size <= 0 || (uint32_t)ring_size > MPY_RING_CAP || mpeg_size <= 0 ||
             (uint32_t)mpeg_size > MPY_MPEG_CAP)
             goto finish;
+        fresh_ring_size = ring_size;
+        fresh_mpeg_size = mpeg_size;
+        fresh_sizes_ready = 1;
         probe_step(emulated, "mpeg-ycbcr", "ring-construct");
         rc = sceMpegRingbufferConstruct(&s_mpy_rb, MPY_PACKETS, s_mpy_ring, ring_size, mpy_ring_cb, NULL);
         mpy_rc(emulated, "ring-construct", rc, NULL);
@@ -11403,6 +11635,9 @@ static void run_mpeg_ycbcr(int emulated) {
         /* The decoded size, as the buffer's first two words give it in macroblocks. */
         const SceInt32 pic_h = (SceInt32)(((const uint32_t *)s_mpy_ycbcr)[0] * 16u);
         const SceInt32 pic_w = (SceInt32)(((const uint32_t *)s_mpy_ycbcr)[1] * 16u);
+        fresh_pic_w = pic_w;
+        fresh_pic_h = pic_h;
+        fresh_mode_ready = 1;
         sceKernelDcacheWritebackInvalidateAll();
         mpy_dump(emulated, "ycbcr-picture", s_mpy_ycbcr, (uint32_t)ysize + 64u);
         memcpy(s_mpy_ycbcr_copy, s_mpy_ycbcr, (uint32_t)ysize);
@@ -11516,6 +11751,7 @@ static void run_mpeg_ycbcr(int emulated) {
         rc = sceMpegAvcDecodeStop(&mpeg, MPY_STRIDE, &dest_ptr, &status);
         (void)snprintf(extra, sizeof(extra), "status=%d", (int)status);
         mpy_rc(emulated, "decode-stop", rc, extra);
+
 free_es:
         probe_step(emulated, "mpeg-ycbcr", "free-es");
         sceMpegFreeAvcEsBuf(&mpeg, es);
@@ -11530,6 +11766,12 @@ delete_mpeg:
 ring_destruct:
         probe_step(emulated, "mpeg-ycbcr", "ring-destruct");
         sceMpegRingbufferDestruct(&s_mpy_rb);
+    }
+    /* Each added mode uses a fresh ringbuffer and MPEG context, with its cursor reset to the PSMF offset. */
+    if (fresh_sizes_ready && fresh_mode_ready) {
+        for (SceInt32 ycbcr_mode = 2; ycbcr_mode <= 3; ycbcr_mode++)
+            mpy_ycbcr_mode_fresh(emulated, ycbcr_mode, fresh_pic_w, fresh_pic_h, fresh_ring_size,
+                                 fresh_mpeg_size);
     }
 finish:
     probe_step(emulated, "mpeg-ycbcr", "finish");
@@ -11644,8 +11886,9 @@ static void run_sas_init(int emulated) {
    31). The field layout is PPSSPP's (Core/HW/SasAudio.cpp, a behaviour reference); the PSP's
    answer is what this case records.
 
-   Records (test_id PSP-SAS-002, status RC, or SKIP with the same shape when SASCORE does not
-   load). Every status is RC ("the calls ran; here are their answers"), never a verdict:
+   Records (test_id PSP-SAS-002, status PASS, or SKIP with the same shape when SASCORE does not
+   load). PASS means the calls ran and their answers are recorded; nothing is compared on the
+   console. The runner's protocol has no RC status, and parse_golden registers this stream:
    - sas-adsr-load (4 words: AVCODEC load, SASCORE load, init, grain).
    - Per SimpleADSR pair N: sas-adsr-pN-calls (11 words: env1, env2, init, SetVoice, SetVolume,
      SetSimpleADSR, KeyOn, the height before the first __sceSasCore, KeyOff, the end flag after
@@ -11662,7 +11905,7 @@ static void run_sas_init(int emulated) {
      (16 words: grain, init, SetVoice, SetVolume, SetSimpleADSR or SetADSRmode, SetADSR, SetSL,
      KeyOn, the height after KeyOn, KeyOff, the end flag, the height before KeyOn, the grains on
      and off, 0, 0), then sas-adsr-<name>-hKK, 16 heights each.
-   - sas-adsr-done (out0: the record count before it), status RC: the run completed.
+   - sas-adsr-done (out0: the record count before it), status PASS: the run completed.
    Heights are buffered and written after each run's last grain, so the host0 writes never fall
    between two grains. Synthetic VAG data only. Ends in the normal teardown. */
 #define SAS_ADSR_GRAIN 256
@@ -11840,7 +12083,7 @@ static void sas_adsr_pair(int emulated, uint32_t pair, int sascore_ok) {
         }
         calls[9] = (uint32_t)__sceSasGetEndFlag(&s_sas_adsr_core);
     }
-    const char *status = sascore_ok ? "RC" : "SKIP";
+    const char *status = sascore_ok ? "PASS" : "SKIP";
     (void)snprintf(case_id, sizeof(case_id), "sas-adsr-p%u-calls", (unsigned int)pair);
     sas_adsr_record(emulated, case_id, status, calls, SAS_ADSR_CALL_WORDS);
     for (uint32_t row = 0; row < SAS_ADSR_ROWS; row++) {
@@ -11895,7 +12138,7 @@ static void sas_adsr_mode_row(int emulated, uint32_t idx, int sascore_ok) {
             heights[g] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_adsr_core, 0);
         }
     }
-    const char *status = sascore_ok ? "RC" : "SKIP";
+    const char *status = sascore_ok ? "PASS" : "SKIP";
     (void)snprintf(case_id, sizeof(case_id), "sas-adsr-m%02u-calls", (unsigned int)idx);
     sas_adsr_record(emulated, case_id, status, calls, SAS_ADSR_WIDE_WORDS);
     (void)snprintf(case_id, sizeof(case_id), "sas-adsr-m%02u-h", (unsigned int)idx);
@@ -11911,7 +12154,7 @@ static void sas_adsr_curve_run(int emulated, uint32_t idx, int sascore_ok) {
         /* A table entry outside the height buffer: say so instead of skipping it silently. */
         const uint32_t bad[2] = {run->on, run->off};
         (void)snprintf(case_id, sizeof(case_id), "sas-adsr-%s-calls", run->name);
-        sas_adsr_record(emulated, case_id, "BAD", bad, 2u);
+        sas_adsr_record(emulated, case_id, "ERROR", bad, 2u);
         return;
     }
     for (uint32_t i = 0; i < SAS_ADSR_WIDE_WORDS; i++) calls[i] = 0u;
@@ -11949,7 +12192,7 @@ static void sas_adsr_curve_run(int emulated, uint32_t idx, int sascore_ok) {
         }
         calls[10] = (uint32_t)__sceSasGetEndFlag(&s_sas_adsr_core);
     }
-    const char *status = sascore_ok ? "RC" : "SKIP";
+    const char *status = sascore_ok ? "PASS" : "SKIP";
     (void)snprintf(case_id, sizeof(case_id), "sas-adsr-%s-calls", run->name);
     sas_adsr_record(emulated, case_id, status, calls, SAS_ADSR_WIDE_WORDS);
     for (uint32_t row = 0; row < grains / SAS_ADSR_ROW_WORDS; row++) {
@@ -11980,7 +12223,7 @@ static void run_sas_adsr(int emulated) {
         load[2] = (uint32_t)sas_adsr_init();
         load[3] = (uint32_t)__sceSasGetGrain(&s_sas_adsr_core);
     }
-    sas_adsr_record(emulated, "sas-adsr-load", "RC", load, 4u);
+    sas_adsr_record(emulated, "sas-adsr-load", "PASS", load, 4u);
     for (uint32_t pair = 0; pair < SAS_ADSR_PAIRS; pair++) {
         sas_adsr_pair(emulated, pair, sascore_ok);
     }
@@ -11991,10 +12234,1233 @@ static void run_sas_adsr(int emulated) {
         sas_adsr_curve_run(emulated, run, sascore_ok);
     }
     const uint32_t done[1] = {s_sas_adsr_records};
-    /* RC: the run completed. It is not a correctness verdict; nothing here is compared. */
-    sas_adsr_record(emulated, "sas-adsr-done", sascore_ok ? "RC" : "SKIP", done, 1u);
+    /* PASS: the run completed. It is not a correctness verdict; nothing here is compared. */
+    sas_adsr_record(emulated, "sas-adsr-done", sascore_ok ? "PASS" : "SKIP", done, 1u);
     probe_step(emulated, "sas-adsr", "park");
     /* Normal teardown: parks until PSPLink modstop. The AV modules stay loaded, as in sas-init. */
+    probe_teardown(emulated);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_MIX
+#include <pspsascore.h>
+#include <psputility_avmodules.h>
+/* #2135 and #2054: SAS voice volumes, __sceSasCoreWithMix volumes, and pitch stepping over VAG
+   block ends and in a PCM voice. One core (grain 256, 32 voices) initialised fresh for each cell,
+   output mode 0 (interleaved stereo) unless a cell says raw (mode 1: four planar buffers, dry L,
+   dry R, send L, send R). The envelope is held at its top: every curve linear, attack 0x40000000
+   (the top in one sample), the sustain level 0x40000000, sustain rate 0. Voice 0 plays one of
+   three synthetic sources: a looping VAG whose every sample is 0x0700 (filter 0, shift 4, nibble
+   7), a looping VAG whose block b holds the one value ((b % 15) - 7) << 8 in all 28 samples, or a
+   16-bit PCM ramp, sample i = 8 i. Cells ask what the PSP answers; status PASS means the cell's
+   calls ran and were recorded (nothing is compared on the console), SKIP the same shape when
+   SASCORE does not load. The stream is the fixed sequence parse_golden registers for sas-mix.
+
+   Records (test_id PSP-SAS-003):
+   - sas-mix-load (4 words: AVCODEC load, SASCORE load, init, grain).
+   - Volume cells sas-mix-v-<name>-calls (16 words, the call answers in the order the cell makes
+     them, then zeros) and sas-mix-v-<name>-out: the summary of the grain after SAS_MIX_WARM warm-up
+     grains. In mode 0: peak |L|, peak |R|, the sums of L and of R (low 32 bits), then frames 64..75
+     as (L & 0xffff) | (R << 16). In raw mode: the peak of each of the four planes, sample 64 of
+     each, the highest short index the call changed from the sentinel, then zeros.
+   - WithMix cells sas-mix-w-<name>-calls and three window records sas-mix-w-<name>-sN (shorts
+     0..31, 240..271 and 480..511 of the caller buffer after the call, two shorts per word, low
+     half first). The buffer holds the ramp (short)((i - 256) * 97) for i < 512 before the call.
+   - Pitch cells sas-mix-p-<name>-calls and the left channel of the first grains after KeyOn,
+     sas-mix-p-<name>-gGG, 16 words (32 left samples, two per word) each.
+   - sas-mix-done (out0: the record count before it), status PASS.
+   Every output is buffered and written after the cell's last __sceSasCore, so the host0 writes
+   never fall between two grains. Synthetic data only. Ends in the normal teardown. */
+#define SAS_MIX_GRAIN 256
+#define SAS_MIX_VAG_BLOCKS 64u
+#define SAS_MIX_PCM_SAMPLES 2048u
+#define SAS_MIX_WARM 4u
+#define SAS_MIX_WORDS 16u
+#define SAS_MIX_SENTINEL 0x5a5a
+#define SAS_MIX_OUT_SHORTS (SAS_MIX_GRAIN * 8)
+#define SAS_MIX_MAX_GRAINS 4u
+#define SAS_MIX_TEST_ID "PSP-SAS-003"
+#define SAS_MIX_LINE_MAX 640
+_Static_assert(sizeof("NAKAGAWA_PSP_TEST schema=1 test_id=" SAS_MIX_TEST_ID " case_id= status=SKIP "
+                      "result=0x00000000") + 40u + SAS_MIX_WORDS * sizeof(" out15=0x00000000") + 2u
+                   <= SAS_MIX_LINE_MAX, "a sas-mix record fits its line buffer");
+
+static SceSasCore s_sas_mix_core __attribute__((aligned(64)));
+static unsigned char s_sas_mix_flat[SAS_MIX_VAG_BLOCKS * 16u] __attribute__((aligned(64)));
+static unsigned char s_sas_mix_steps[SAS_MIX_VAG_BLOCKS * 16u] __attribute__((aligned(64)));
+static short s_sas_mix_pcm[SAS_MIX_PCM_SAMPLES] __attribute__((aligned(64)));
+static short s_sas_mix_out[SAS_MIX_OUT_SHORTS] __attribute__((aligned(64)));
+static short s_sas_mix_left[SAS_MIX_MAX_GRAINS * SAS_MIX_GRAIN];
+static uint32_t s_sas_mix_records;
+
+static void sas_mix_record(int emulated, const char *case_id, const char *status,
+                           const uint32_t *out, uint32_t count) {
+    char line[SAS_MIX_LINE_MAX];
+    int used = snprintf(line, sizeof(line),
+                        "NAKAGAWA_PSP_TEST schema=1 test_id=" SAS_MIX_TEST_ID " case_id=%s "
+                        "status=%s result=0x00000000",
+                        case_id, status);
+    for (uint32_t i = 0; i < count && used > 0 && used < (int)sizeof(line) - 24; i++) {
+        used += snprintf(line + used, sizeof(line) - (size_t)used, " out%u=0x%08x",
+                         (unsigned int)i, (unsigned int)out[i]);
+    }
+    if (used <= 0 || used >= (int)sizeof(line) - 2) return;
+    line[used++] = '\n';
+    line[used] = '\0';
+    s_sas_mix_records++;
+    probe_emit_durable(emulated, line, (size_t)used);
+}
+
+static uint32_t sas_mix_abs(int v) {
+    return (uint32_t)(v < 0 ? -v : v);
+}
+
+static void sas_mix_fill(short value) {
+    for (uint32_t i = 0; i < SAS_MIX_OUT_SHORTS; i++) s_sas_mix_out[i] = value;
+}
+
+/* The envelope held at its top (see the block comment). Returns the first failing answer, or 0. */
+static int sas_mix_envelope(void) {
+    int rc = __sceSasSetADSRmode(&s_sas_mix_core, 0, PSP_SAS_ADSR_EVERYTHING,
+                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_INCREASE,
+                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_DECREASE,
+                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_DECREASE,
+                                 PSP_SAS_ADSR_CURVE_MODE_LINEAR_DECREASE);
+    if (rc == 0) {
+        rc = __sceSasSetADSR(&s_sas_mix_core, 0, PSP_SAS_ADSR_EVERYTHING, 0x40000000, 0x00100000, 0,
+                             0x00040000);
+    }
+    if (rc == 0) rc = __sceSasSetSL(&s_sas_mix_core, 0, 0x40000000);
+    return rc;
+}
+
+/* The mode-0 or raw summary of s_sas_mix_out (see the block comment). */
+static void sas_mix_summary(int raw, uint32_t *out) {
+    for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) out[i] = 0u;
+    if (!raw) {
+        uint32_t peak_l = 0u, peak_r = 0u, sum_l = 0u, sum_r = 0u;
+        for (uint32_t f = 0; f < (uint32_t)SAS_MIX_GRAIN; f++) {
+            const int l = s_sas_mix_out[2u * f], r = s_sas_mix_out[2u * f + 1u];
+            if (sas_mix_abs(l) > peak_l) peak_l = sas_mix_abs(l);
+            if (sas_mix_abs(r) > peak_r) peak_r = sas_mix_abs(r);
+            sum_l += (uint32_t)l;
+            sum_r += (uint32_t)r;
+        }
+        out[0] = peak_l;
+        out[1] = peak_r;
+        out[2] = sum_l;
+        out[3] = sum_r;
+        for (uint32_t i = 0; i < 12u; i++) {
+            out[4u + i] = ((uint32_t)(uint16_t)s_sas_mix_out[2u * (64u + i)]) |
+                          ((uint32_t)(uint16_t)s_sas_mix_out[2u * (64u + i) + 1u] << 16);
+        }
+        return;
+    }
+    for (uint32_t p = 0; p < 4u; p++) {
+        uint32_t peak = 0u;
+        for (uint32_t s = 0; s < (uint32_t)SAS_MIX_GRAIN; s++) {
+            const int v = s_sas_mix_out[p * SAS_MIX_GRAIN + s];
+            if (sas_mix_abs(v) > peak) peak = sas_mix_abs(v);
+        }
+        out[p] = peak;
+        out[4u + p] = (uint32_t)(uint16_t)s_sas_mix_out[p * SAS_MIX_GRAIN + 64u];
+    }
+    uint32_t extent = 0u;
+    for (uint32_t i = 0; i < SAS_MIX_OUT_SHORTS; i++) {
+        if (s_sas_mix_out[i] != (short)SAS_MIX_SENTINEL) extent = i + 1u;
+    }
+    out[8] = extent;
+}
+
+/* Volume cells (#2135 R2-1). vol_set: 0 none, 1 SetVolume(vol), 2 SetVolume(0x800 x4) then the edge
+   call SetVolume(edge), 3 SetVolume(0x800 x4), __sceSasInit again, SetVoice, no SetVolume. */
+typedef struct {
+    const char *name;
+    uint32_t raw, vol_set;
+    int l, r, sl, sr;
+} SasMixVolumeCell;
+static const SasMixVolumeCell k_sas_mix_volume[] = {
+    {"def-m0", 0u, 0u, 0, 0, 0, 0},
+    {"def-m1", 1u, 0u, 0, 0, 0, 0},
+    {"zero", 0u, 1u, 0, 0, 0, 0},
+    {"half", 0u, 1u, 0x800, 0x800, 0x800, 0x800},
+    {"full-m1", 1u, 1u, 0x1000, 0x1000, 0x1000, 0x1000},
+    {"send-only-m1", 1u, 1u, 0, 0, 0x1000, 0x1000},
+    {"e-l-m1000", 0u, 2u, -0x1000, 0x800, 0x800, 0x800},
+    {"e-r-m1000", 0u, 2u, 0x800, -0x1000, 0x800, 0x800},
+    {"e-sl-m1000", 1u, 2u, 0x800, 0x800, -0x1000, 0x800},
+    {"e-sr-m1000", 1u, 2u, 0x800, 0x800, 0x800, -0x1000},
+    {"e-l-1001", 0u, 2u, 0x1001, 0x800, 0x800, 0x800},
+    {"e-r-1001", 0u, 2u, 0x800, 0x1001, 0x800, 0x800},
+    {"e-sl-1001", 1u, 2u, 0x800, 0x800, 0x1001, 0x800},
+    {"e-sr-1001", 1u, 2u, 0x800, 0x800, 0x800, 0x1001},
+    {"e-l-m1001", 0u, 2u, -0x1001, 0x800, 0x800, 0x800},
+    {"e-r-m1001", 0u, 2u, 0x800, -0x1001, 0x800, 0x800},
+    {"e-sl-m1001", 1u, 2u, 0x800, 0x800, -0x1001, 0x800},
+    {"e-sr-m1001", 1u, 2u, 0x800, 0x800, 0x800, -0x1001},
+    {"reinit", 0u, 3u, 0, 0, 0, 0},
+};
+#define SAS_MIX_VOLUME_CELLS (sizeof(k_sas_mix_volume) / sizeof(k_sas_mix_volume[0]))
+
+static void sas_mix_volume_cell(int emulated, uint32_t idx, int sascore_ok) {
+    const SasMixVolumeCell *c = &k_sas_mix_volume[idx];
+    char case_id[48];
+    uint32_t calls[SAS_MIX_WORDS];
+    uint32_t summary[SAS_MIX_WORDS];
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) calls[i] = 0u;
+    for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) summary[i] = 0u;
+    if (sascore_ok) {
+        probe_step(emulated, "sas-mix", c->name);
+        const PspSasOutputModes mode = c->raw ? PSP_SAS_OUTPUTMODE_MULTICHANNEL : PSP_SAS_OUTPUTMODE_STEREO;
+        calls[n++] = (uint32_t)__sceSasInit(&s_sas_mix_core, SAS_MIX_GRAIN, 32, mode, PSP_SAS_SAMPLE_RATE);
+        calls[n++] = (uint32_t)__sceSasSetVoice(&s_sas_mix_core, 0, s_sas_mix_flat,
+                                                (int)sizeof(s_sas_mix_flat), 1);
+        if (c->vol_set == 1u) {
+            calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, c->l, c->r, c->sl, c->sr);
+        } else if (c->vol_set == 2u) {
+            calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, 0x800, 0x800, 0x800, 0x800);
+            calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, c->l, c->r, c->sl, c->sr);
+        } else if (c->vol_set == 3u) {
+            calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, 0x800, 0x800, 0x800, 0x800);
+            calls[n++] = (uint32_t)__sceSasInit(&s_sas_mix_core, SAS_MIX_GRAIN, 32, mode, PSP_SAS_SAMPLE_RATE);
+            calls[n++] = (uint32_t)__sceSasSetVoice(&s_sas_mix_core, 0, s_sas_mix_flat,
+                                                    (int)sizeof(s_sas_mix_flat), 1);
+        }
+        calls[n++] = (uint32_t)sas_mix_envelope();
+        calls[n++] = (uint32_t)__sceSasSetKeyOn(&s_sas_mix_core, 0);
+        for (uint32_t g = 0; g < SAS_MIX_WARM; g++) {
+            (void)__sceSasCore(&s_sas_mix_core, s_sas_mix_out);
+        }
+        sas_mix_fill((short)SAS_MIX_SENTINEL);
+        calls[n++] = (uint32_t)__sceSasCore(&s_sas_mix_core, s_sas_mix_out);
+        calls[n++] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_mix_core, 0);
+        sas_mix_summary((int)c->raw, summary);
+    }
+    const char *status = sascore_ok ? "PASS" : "SKIP";
+    (void)snprintf(case_id, sizeof(case_id), "sas-mix-v-%s-calls", c->name);
+    sas_mix_record(emulated, case_id, status, calls, SAS_MIX_WORDS);
+    (void)snprintf(case_id, sizeof(case_id), "sas-mix-v-%s-out", c->name);
+    sas_mix_record(emulated, case_id, status, summary, SAS_MIX_WORDS);
+}
+
+/* WithMix cells (#2135 R2-1 items 5 and 6). keyed: voice 0 plays the flat VAG at volume 0x1000 and
+   is keyed on first. raw: output mode 1 (then the windows read the four planes' first shorts). */
+typedef struct {
+    const char *name;
+    uint32_t raw, keyed;
+    int l, r;
+} SasMixWithMixCell;
+static const SasMixWithMixCell k_sas_mix_withmix[] = {
+    {"unity", 0u, 0u, 0x1000, 0x1000},
+    {"half", 0u, 0u, 0x800, 0x800},
+    {"zero-neg", 0u, 0u, 0, -0x1000},
+    {"over", 0u, 0u, 0x2000, 0x3000},
+    {"extreme", 0u, 0u, 0x7fffffff, (int)0x80000000u},
+    {"keyed-zero", 0u, 1u, 0, 0},
+    {"keyed-unity", 0u, 1u, 0x1000, 0x1000},
+    {"raw-unity", 1u, 0u, 0x1000, 0x1000},
+};
+#define SAS_MIX_WITHMIX_CELLS (sizeof(k_sas_mix_withmix) / sizeof(k_sas_mix_withmix[0]))
+static const uint32_t k_sas_mix_windows[3] = {0u, 240u, 480u};
+
+static void sas_mix_withmix_cell(int emulated, uint32_t idx, int sascore_ok) {
+    const SasMixWithMixCell *c = &k_sas_mix_withmix[idx];
+    char case_id[48];
+    uint32_t calls[SAS_MIX_WORDS];
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) calls[i] = 0u;
+    calls[n++] = (uint32_t)c->l;
+    calls[n++] = (uint32_t)c->r;
+    if (sascore_ok) {
+        probe_step(emulated, "sas-mix", c->name);
+        const PspSasOutputModes mode = c->raw ? PSP_SAS_OUTPUTMODE_MULTICHANNEL : PSP_SAS_OUTPUTMODE_STEREO;
+        calls[n++] = (uint32_t)__sceSasInit(&s_sas_mix_core, SAS_MIX_GRAIN, 32, mode, PSP_SAS_SAMPLE_RATE);
+        if (c->keyed) {
+            calls[n++] = (uint32_t)__sceSasSetVoice(&s_sas_mix_core, 0, s_sas_mix_flat,
+                                                    (int)sizeof(s_sas_mix_flat), 1);
+            calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, 0x1000, 0x1000, 0, 0);
+            calls[n++] = (uint32_t)sas_mix_envelope();
+            calls[n++] = (uint32_t)__sceSasSetKeyOn(&s_sas_mix_core, 0);
+            for (uint32_t g = 0; g < SAS_MIX_WARM; g++) {
+                (void)__sceSasCore(&s_sas_mix_core, s_sas_mix_out);
+            }
+        }
+        sas_mix_fill((short)SAS_MIX_SENTINEL);
+        for (uint32_t i = 0; i < 2u * (uint32_t)SAS_MIX_GRAIN; i++) {
+            s_sas_mix_out[i] = (short)(((int)i - 256) * 97);
+        }
+        calls[n++] = (uint32_t)__sceSasCoreWithMix(&s_sas_mix_core, s_sas_mix_out, c->l, c->r);
+    }
+    const char *status = sascore_ok ? "PASS" : "SKIP";
+    (void)snprintf(case_id, sizeof(case_id), "sas-mix-w-%s-calls", c->name);
+    sas_mix_record(emulated, case_id, status, calls, SAS_MIX_WORDS);
+    for (uint32_t w = 0; w < 3u; w++) {
+        uint32_t words[SAS_MIX_WORDS];
+        for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) {
+            const uint32_t s = k_sas_mix_windows[w] + 2u * i;
+            words[i] = sascore_ok ? (((uint32_t)(uint16_t)s_sas_mix_out[s]) |
+                                     ((uint32_t)(uint16_t)s_sas_mix_out[s + 1u] << 16))
+                                  : 0u;
+        }
+        (void)snprintf(case_id, sizeof(case_id), "sas-mix-w-%s-s%u", c->name, (unsigned int)w);
+        sas_mix_record(emulated, case_id, status, words, SAS_MIX_WORDS);
+    }
+}
+
+/* Pitch cells (#2054 R2-2): the stepped VAG (pcm 0) or the PCM ramp (pcm 1) at one pitch, the left
+   channel of the first `grains` grains after KeyOn. */
+typedef struct {
+    const char *name;
+    uint32_t pcm;
+    int pitch;
+    uint32_t grains;
+} SasMixPitchCell;
+static const SasMixPitchCell k_sas_mix_pitch[] = {
+    {"vag-1000", 0u, 0x1000, 4u},
+    {"vag-1800", 0u, 0x1800, 4u},
+    {"vag-2a00", 0u, 0x2a00, 4u},
+    {"pcm-2000", 1u, 0x2000, 2u},
+    {"pcm-0800", 1u, 0x0800, 2u},
+};
+#define SAS_MIX_PITCH_CELLS (sizeof(k_sas_mix_pitch) / sizeof(k_sas_mix_pitch[0]))
+_Static_assert((SAS_MIX_GRAIN % 32) == 0, "whole 32-sample left-channel records per grain");
+
+static void sas_mix_pitch_cell(int emulated, uint32_t idx, int sascore_ok) {
+    const SasMixPitchCell *c = &k_sas_mix_pitch[idx];
+    char case_id[48];
+    uint32_t calls[SAS_MIX_WORDS];
+    uint32_t n = 0;
+    const uint32_t grains = c->grains <= SAS_MIX_MAX_GRAINS ? c->grains : SAS_MIX_MAX_GRAINS;
+    for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) calls[i] = 0u;
+    for (uint32_t i = 0; i < SAS_MIX_MAX_GRAINS * (uint32_t)SAS_MIX_GRAIN; i++) s_sas_mix_left[i] = 0;
+    calls[n++] = (uint32_t)c->pitch;
+    calls[n++] = grains;
+    if (sascore_ok) {
+        probe_step(emulated, "sas-mix", c->name);
+        calls[n++] = (uint32_t)__sceSasInit(&s_sas_mix_core, SAS_MIX_GRAIN, 32, PSP_SAS_OUTPUTMODE_STEREO,
+                                            PSP_SAS_SAMPLE_RATE);
+        if (c->pcm) {
+            calls[n++] = (uint32_t)__sceSasSetVoicePCM(&s_sas_mix_core, 0, s_sas_mix_pcm,
+                                                       (int)SAS_MIX_PCM_SAMPLES, -1);
+        } else {
+            calls[n++] = (uint32_t)__sceSasSetVoice(&s_sas_mix_core, 0, s_sas_mix_steps,
+                                                    (int)sizeof(s_sas_mix_steps), 1);
+        }
+        calls[n++] = (uint32_t)__sceSasSetVolume(&s_sas_mix_core, 0, 0x1000, 0x1000, 0, 0);
+        calls[n++] = (uint32_t)__sceSasSetPitch(&s_sas_mix_core, 0, c->pitch);
+        calls[n++] = (uint32_t)sas_mix_envelope();
+        calls[n++] = (uint32_t)__sceSasSetKeyOn(&s_sas_mix_core, 0);
+        for (uint32_t g = 0; g < grains; g++) {
+            calls[n] = (uint32_t)__sceSasCore(&s_sas_mix_core, s_sas_mix_out);
+            if (calls[n] != 0u && calls[n + 1u] == 0u) calls[n + 1u] = g + 1u;   /* first failing grain */
+            for (uint32_t f = 0; f < (uint32_t)SAS_MIX_GRAIN; f++) {
+                s_sas_mix_left[g * (uint32_t)SAS_MIX_GRAIN + f] = s_sas_mix_out[2u * f];
+            }
+        }
+        n += 2u;
+        calls[n++] = (uint32_t)__sceSasGetEnvelopeHeight(&s_sas_mix_core, 0);
+        calls[n++] = (uint32_t)__sceSasGetEndFlag(&s_sas_mix_core);
+    }
+    const char *status = sascore_ok ? "PASS" : "SKIP";
+    (void)snprintf(case_id, sizeof(case_id), "sas-mix-p-%s-calls", c->name);
+    sas_mix_record(emulated, case_id, status, calls, SAS_MIX_WORDS);
+    for (uint32_t r = 0; r < grains * (uint32_t)SAS_MIX_GRAIN / 32u; r++) {
+        uint32_t words[SAS_MIX_WORDS];
+        for (uint32_t i = 0; i < SAS_MIX_WORDS; i++) {
+            const uint32_t s = 32u * r + 2u * i;
+            words[i] = ((uint32_t)(uint16_t)s_sas_mix_left[s]) |
+                       ((uint32_t)(uint16_t)s_sas_mix_left[s + 1u] << 16);
+        }
+        (void)snprintf(case_id, sizeof(case_id), "sas-mix-p-%s-g%02x", c->name, (unsigned int)r);
+        sas_mix_record(emulated, case_id, status, words, SAS_MIX_WORDS);
+    }
+}
+
+static void run_sas_mix(int emulated) {
+    /* The flat VAG: filter 0, shift 4, every nibble 7, so every sample is 7 << 12 >> 4 = 0x0700. The
+       stepped VAG: block b holds ((b % 15) - 7) << 8 in all 28 samples, so a sample names its block.
+       Both loop: the first block starts the loop (flag 0x06), the last ends and repeats it (0x03). */
+    for (uint32_t b = 0; b < SAS_MIX_VAG_BLOCKS; b++) {
+        unsigned char *flat = s_sas_mix_flat + b * 16u;
+        unsigned char *step = s_sas_mix_steps + b * 16u;
+        const unsigned char flag = b == 0u ? 0x06 : (b + 1u == SAS_MIX_VAG_BLOCKS ? 0x03 : 0x00);
+        const unsigned nibble = (unsigned)(((int)(b % 15u) - 7) & 0xf);
+        flat[0] = 0x04;
+        step[0] = 0x04;
+        flat[1] = flag;
+        step[1] = flag;
+        for (int i = 2; i < 16; i++) {
+            flat[i] = 0x77;
+            step[i] = (unsigned char)(nibble | (nibble << 4));
+        }
+    }
+    for (uint32_t i = 0; i < SAS_MIX_PCM_SAMPLES; i++) s_sas_mix_pcm[i] = (short)(8u * i);
+    uint32_t load[4] = {0u, 0u, 0u, 0u};
+    probe_step(emulated, "sas-mix", "load-avcodec");
+    load[0] = (uint32_t)sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+    probe_step(emulated, "sas-mix", "load-sascore");
+    load[1] = (uint32_t)sceUtilityLoadAvModule(PSP_AV_MODULE_SASCORE);
+    const int sascore_ok = load[1] == 0u;
+    if (sascore_ok) {
+        probe_step(emulated, "sas-mix", "init");
+        load[2] = (uint32_t)__sceSasInit(&s_sas_mix_core, SAS_MIX_GRAIN, 32, PSP_SAS_OUTPUTMODE_STEREO,
+                                         PSP_SAS_SAMPLE_RATE);
+        load[3] = (uint32_t)__sceSasGetGrain(&s_sas_mix_core);
+    }
+    sas_mix_record(emulated, "sas-mix-load", "PASS", load, 4u);
+    for (uint32_t i = 0; i < SAS_MIX_VOLUME_CELLS; i++) sas_mix_volume_cell(emulated, i, sascore_ok);
+    for (uint32_t i = 0; i < SAS_MIX_WITHMIX_CELLS; i++) sas_mix_withmix_cell(emulated, i, sascore_ok);
+    for (uint32_t i = 0; i < SAS_MIX_PITCH_CELLS; i++) sas_mix_pitch_cell(emulated, i, sascore_ok);
+    const uint32_t done[1] = {s_sas_mix_records};
+    /* PASS: the run completed. It is not a correctness verdict; nothing here is compared. */
+    sas_mix_record(emulated, "sas-mix-done", sascore_ok ? "PASS" : "SKIP", done, 1u);
+    probe_step(emulated, "sas-mix", "park");
+    probe_teardown(emulated);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VCODEC_WORDS
+#include <psputility_avmodules.h>
+/* #286 (W-LLE-1): the words the firmware's own Media Engine boundary writes, so hle_videocodec.c can
+   turn JPCSP's values into measured ones. A disc mpeg.prx calls sceVideocodec, sceMpegbase and
+   sceAudiocodec; this case calls the same exports after sceUtilityLoadAvModule(AVCODEC, MPEGBASE),
+   the way run_mpeg_ycbcr does, and unloads both at the end. Every input is synthetic and held in
+   memory: a baseline H.264 stream of three IDR access units whose every macroblock is I_PCM (the
+   fixture tests/native/psmf_media_selftest.c builds, here with textured samples so a band byte names
+   its source sample). Nothing is written but the case's host0 log; no PSMF, no Memory Stick file.
+
+   The context is the one sceMpegCreate hands the library: a zeroed block whose word at +16 points at
+   a zeroed output struct (Open writes through it), plus at +44, +48 and +80 the zeroed structs the
+   decode fills (+60 holds 4). A wholly zero context, +16 included, would be a null write in the
+   firmware, so the zero-fill cells point +16 at a zeroed struct and nothing else.
+
+   One bounded wait per call: each firmware call runs on a helper thread and the main thread waits at
+   most VCW_CALL_TIMEOUT_US for it. A call that does not return wedges the case: the helper is
+   terminated, every later call is skipped (its records keep their shape, status SKIP) and the modules
+   stay loaded, which the vc-unload record states. That is the only path that does not release what
+   it acquired. A step marker is written before every call.
+
+   Records (test_id PSP-VCODEC-001; status PASS: the call ran and was recorded, whatever it returned;
+   SKIP: it was not made and every word is zero; result= is the call's return value). A step record
+   is 34 words: out0 the return, out1 the call-to-return time in microseconds
+   (sceKernelGetSystemTimeLow, taken around the call on the helper thread), out2..out33 32 context
+   words. The stream is the fixed sequence parse_golden registers for vcodec-words.
+   - vc-load (5 words): LoadAvModule(AVCODEC), LoadAvModule(MPEGBASE), both loaded, the semaphore.
+   - vc-t0-<step>-c0..c2 and vc-t1-... for step open, edram, init, setmem (item 1): a zeroed 96-word
+     context, then Open, GetEDRAM, Init and SetMemory in turn, the whole 96 words after each call in
+     three 32-word chunks, for codec type 0 and type 1; then vc-tT-stop, -release and -delete (a step
+     record of words 0..31 each).
+   - vc-dW-input (9 words: macroblock width and height, the three AU sizes and FNV-1a hashes, the ES
+     physical address), then the context of sceMpegCreate for W = d480 (480x272) and d464 (464x272,
+     width bit 0x10 set): vc-dW-open, -edram, -init and -setmem (step records, words 0..31); words
+     +64, +68, +72, +76 are the picture size, 2 and 0 before SetMemory. Then for AU a0, a1, a2 of
+     the stream (items 2 and 3): the AU is copied to the ES buffer, ctx+36 is its physical address and
+     ctx+40 its size, sceVideocodecDecode(ctx, 0) runs, and vc-dW-aK-ctx (step record), -b2 (32 words
+     at ctx+16), -yuv (48 words at ctx+44), -b3 (32 words at ctx+48), -sei (48 words at ctx+80) and
+     -bands (the 8 band addresses, then per band: readable, FNV-1a of its bytes, non-zero byte
+     count) follow. A band is read through the uncached mirror and only when it lies in user RAM or
+     VRAM; luma bands 0..3 are 32640 bytes and chroma bands 4..7 16320 bytes, the 480x272 geometry
+     (JPCSP's rule), and for AU a0 the bytes follow as vc-dW-a0-bB-cNN records of 120 words each.
+   - Between the d480 AUs and its teardown (item 4): vc-csc-init (CscInit(512): the return and time;
+     the coefficient registers are not readable from user mode, so their effect is read from the
+     output instead), vc-csc-struct (the 12-word SceMp4AvcCscStruct handed to CscAvc, then which AU
+     it came from, then the raw reported picture width and height), and for pixel mode 0..3:
+     vc-csc-mM (10 words: the pixel-mode return, whether CscAvc
+     ran, its return, time, bytes written and last byte written over the 512x272x4 destination
+     which is first filled with 0x5a, and FNV-1a of each 2048-byte span of the first 8192 bytes), then
+     vc-csc-mM-d00..d15, the first 8192 bytes (4 rows at 512 pixels of 8888) in 128-word records;
+     then vc-csc-modes (the return of pixel mode 4 and of setting mode 3 again).
+   - vc-dW-stop, -release and -delete: the teardown, each a step record.
+   - vc-ac-1000, -1001, -1002, -1000-p5c5c and -1000-p5c28 (item 5): sceAudiocodecCheckNeedMem on a
+     zeroed 65-word context for codec 0x1000, 0x1001 and 0x1002, then for 0x1000 with the 16-bit
+     value 0x5c5c or 0x5c28 at byte 40 as sceMpegCreate leaves it: 67 words, out0 the return, out1
+     the time, out2..out66 the 65 context words.
+   - vc-unload (5 words: the two unload returns, wedged, helper-thread failures, loaded), vcodec-words-done
+     (out0: the number of records before it). */
+#define VCW_TEST_ID "PSP-VCODEC-001"
+#define VCW_STEP "vcodec-words"
+#define VCW_CTX_WORDS 96u
+#define VCW_CTX_ALLOC 128u
+#define VCW_CHUNK 32u
+#define VCW_AUS 3u
+#define VCW_AU_CAP (224u * 1024u)
+#define VCW_ES_CAP (256u * 1024u)
+#define VCW_H_MBS 17u
+#define VCW_CALL_TIMEOUT_US 8000000u
+#define VCW_END_TIMEOUT_US 2000000u
+#define VCW_TIMEOUT_RC 0x80ff0001
+#define VCW_Y_BAND_BYTES 32640u
+#define VCW_C_BAND_BYTES 16320u
+#define VCW_BAND_CHUNK_WORDS 120u
+#define VCW_RGB_STRIDE 512u
+#define VCW_RGB_BYTES (VCW_RGB_STRIDE * 272u * 4u)
+#define VCW_RGB_DUMP_BYTES 8192u
+#define VCW_RGB_CHUNK_WORDS 128u
+#define VCW_AC_WORDS 65u
+#define VCW_MAX_OUT 128u
+#define VCW_LINE_MAX 2800u
+/* A word index in the context for a byte offset. */
+#define VCW_W(off) ((off) / 4u)
+
+/* PSPSDK's libpspvideocodec.a, libpspmpegbase.a and libpspaudiocodec.a are not linked: this case
+   carries one complete import block per library instead, only the calls it makes, as run_mpeg_ycbcr
+   does for sceMpeg. Library names and version words match the PSPSDK stubs (src/video/sceVideocodec.S,
+   src/mpeg/sceMpegbase.S, src/audio/sceAudiocodec.S); each NID is the first four bytes, little-endian,
+   of SHA-1 of the export name, which src/rt/nid_names.h also names (sceMpegbase_0530BE4E has no
+   public name; its NID is not derived from one). Same layout as PSPSDK's pspimport.s. */
+#define VCW_LIB(lib, flags)                                                   \
+    ".set push\n\t"                                                           \
+    ".section .rodata.sceResident, \"a\"\n\t"                                \
+    ".word 0\n"                                                               \
+    "__stub_modulestr_vcw_" #lib ":\n\t"                                     \
+    ".asciz \"" #lib "\"\n\t"                                                \
+    ".align 2\n\t"                                                            \
+    ".section .lib.stub, \"a\", @progbits\n\t"                               \
+    ".global __stub_module_vcw_" #lib "\n"                                   \
+    "__stub_module_vcw_" #lib ":\n\t"                                        \
+    ".word __stub_modulestr_vcw_" #lib "\n\t"                                \
+    ".word " #flags "\n\t"                                                   \
+    ".word 0x5\n\t"                                                           \
+    ".word __executable_start\n\t"                                           \
+    ".word __executable_start\n\t"                                           \
+    ".set pop\n\t"
+#define VCW_FUNC(lib, nid, name)                                              \
+    ".set push\n\t.set noreorder\n\t"                                         \
+    ".section .sceStub.text, \"ax\", @progbits\n\t"                          \
+    ".globl " #name "\n\t.type " #name ", @function\n\t"                     \
+    ".ent " #name ", 0\n" #name ":\n\t"                                      \
+    ".word __stub_module_vcw_" #lib "\n\t.word " #nid "\n\t"                \
+    ".end " #name "\n\t.size " #name ", .-" #name "\n\t"                     \
+    ".section .rodata.sceNid, \"a\"\n\t"                                     \
+    ".word " #nid "\n\t.set pop\n\t"
+__asm__(
+    VCW_LIB(sceVideocodec, 0x40090000)
+    VCW_FUNC(sceVideocodec, 0xC01EC829, sceVideocodecOpen)
+    VCW_FUNC(sceVideocodec, 0x2D31F5B1, sceVideocodecGetEDRAM)
+    VCW_FUNC(sceVideocodec, 0x17099F0A, sceVideocodecInit)
+    VCW_FUNC(sceVideocodec, 0x745A7B7A, sceVideocodecSetMemory)
+    VCW_FUNC(sceVideocodec, 0xDBA273FA, sceVideocodecDecode)
+    VCW_FUNC(sceVideocodec, 0xA2F0564E, sceVideocodecStop)
+    VCW_FUNC(sceVideocodec, 0x4F160BF4, sceVideocodecReleaseEDRAM)
+    VCW_FUNC(sceVideocodec, 0x307E6E1C, sceVideocodecDelete)
+    VCW_LIB(sceMpegbase, 0x00090000)
+    VCW_FUNC(sceMpegbase, 0x492B5E4B, sceMpegBaseCscInit)
+    VCW_FUNC(sceMpegbase, 0x91929A21, sceMpegBaseCscAvc)
+    VCW_FUNC(sceMpegbase, 0x0530BE4E, sceMpegbase_0530BE4E)
+    VCW_LIB(sceAudiocodec, 0x40090000)
+    VCW_FUNC(sceAudiocodec, 0x9D3F790C, sceAudiocodecCheckNeedMem)
+    ".text\n");
+int sceVideocodecOpen(uint32_t *ctx, int type);
+int sceVideocodecGetEDRAM(uint32_t *ctx, int type);
+int sceVideocodecInit(uint32_t *ctx, int type);
+int sceVideocodecSetMemory(uint32_t *ctx, int type);
+int sceVideocodecDecode(uint32_t *ctx, int type);
+int sceVideocodecStop(uint32_t *ctx, int type);
+int sceVideocodecReleaseEDRAM(uint32_t *ctx);
+int sceVideocodecDelete(uint32_t *ctx, int type);
+int sceMpegBaseCscInit(int width);
+int sceMpegBaseCscAvc(void *rgb, void *unknown, int width, void *csc);
+int sceMpegbase_0530BE4E(int mode);
+int sceAudiocodecCheckNeedMem(uint32_t *ctx, int codec);
+
+static uint32_t s_vcw_ctx[VCW_CTX_ALLOC] __attribute__((aligned(64)));
+static uint32_t s_vcw_b2[64] __attribute__((aligned(64)));
+static uint32_t s_vcw_yuv[64] __attribute__((aligned(64)));
+static uint32_t s_vcw_b3[64] __attribute__((aligned(64)));
+static uint32_t s_vcw_sei[64] __attribute__((aligned(64)));
+static uint32_t s_vcw_csc[16] __attribute__((aligned(64)));
+static uint32_t s_vcw_ac[80] __attribute__((aligned(64)));
+static unsigned char s_vcw_au[VCW_AUS][VCW_AU_CAP] __attribute__((aligned(64)));
+static unsigned char s_vcw_rbsp[VCW_AU_CAP] __attribute__((aligned(64)));
+static unsigned char s_vcw_es[VCW_ES_CAP] __attribute__((aligned(64)));
+static unsigned char s_vcw_rgb[VCW_RGB_BYTES] __attribute__((aligned(64)));
+static uint32_t s_vcw_au_size[VCW_AUS];
+static uint32_t s_vcw_au_fnv[VCW_AUS];
+static char s_vcw_line[VCW_LINE_MAX];
+static uint32_t s_vcw_records;
+static int s_vcw_enabled;
+static int s_vcw_wedged;
+static int s_vcw_thread_failures;
+static SceUID s_vcw_sema = -1;
+
+/* ---- the synthetic stream: baseline H.264, every macroblock I_PCM ---------------------------- */
+
+typedef struct {
+    unsigned char *d;
+    uint32_t cap, n, acc;
+    int bits, over;
+} VcwBits;
+typedef struct {
+    unsigned char *d;
+    uint32_t cap, n;
+    int over;
+} VcwOut;
+
+static void vcw_bit(VcwBits *w, int b) {
+    w->acc = (w->acc << 1) | (uint32_t)(b & 1);
+    if (++w->bits == 8) {
+        if (w->n < w->cap) w->d[w->n++] = (unsigned char)w->acc;
+        else w->over = 1;
+        w->acc = 0;
+        w->bits = 0;
+    }
+}
+
+static void vcw_u(VcwBits *w, uint32_t v, int n) {
+    for (int i = n - 1; i >= 0; i--) vcw_bit(w, (int)((v >> (unsigned)i) & 1u));
+}
+
+static void vcw_ue(VcwBits *w, uint32_t v) {
+    const uint32_t x = v + 1u;
+    int n = 0;
+    for (uint32_t t = x; t; t >>= 1) n++;
+    for (int i = 0; i < n - 1; i++) vcw_bit(w, 0);
+    vcw_u(w, x, n);
+}
+
+static void vcw_pad(VcwBits *w) {
+    while (w->bits) vcw_bit(w, 0);
+}
+
+static void vcw_trailing(VcwBits *w) {
+    vcw_bit(w, 1);
+    vcw_pad(w);
+}
+
+static void vcw_raw(VcwBits *w, const unsigned char *p, uint32_t n) {
+    vcw_pad(w);
+    if (w->n + n > w->cap) {
+        w->over = 1;
+        return;
+    }
+    memcpy(w->d + w->n, p, n);
+    w->n += n;
+}
+
+static void vcw_byte_out(VcwOut *o, unsigned char b) {
+    if (o->n < o->cap) o->d[o->n++] = b;
+    else o->over = 1;
+}
+
+/* An Annex-B NAL unit: start code, header, the RBSP with emulation prevention. */
+static void vcw_nal(VcwOut *o, unsigned char hdr, const VcwBits *rbsp) {
+    vcw_byte_out(o, 0);
+    vcw_byte_out(o, 0);
+    vcw_byte_out(o, 1);
+    vcw_byte_out(o, hdr);
+    int zeros = 0;
+    for (uint32_t i = 0; i < rbsp->n; i++) {
+        const unsigned char b = rbsp->d[i];
+        if (zeros >= 2 && b <= 3u) {
+            vcw_byte_out(o, 3u);
+            zeros = 0;
+        }
+        vcw_byte_out(o, b);
+        zeros = b == 0 ? zeros + 1 : 0;
+    }
+}
+
+/* One access unit: an access-unit delimiter, on picture 0 the SPS and PPS, then one IDR slice whose
+   every macroblock is I_PCM (frame_num 0 and an alternating idr_pic_id, as consecutive IDR pictures
+   need). Samples run 1..254 and depend on the macroblock index, so no two macroblocks match.
+   Returns the byte count, or 0 when the stream does not fit. */
+static uint32_t vcw_build_au(unsigned char *dst, uint32_t cap, int picture, uint32_t w_mbs, uint32_t h_mbs,
+                             unsigned seed) {
+    static const unsigned char aud[5] = {0, 0, 1, 0x09, 0x10};
+    VcwOut out = {dst, cap, 0, 0};
+    for (unsigned i = 0; i < sizeof(aud); i++) vcw_byte_out(&out, aud[i]);
+    unsigned char small[64];
+    VcwBits w = {small, sizeof(small), 0, 0, 0, 0};
+    if (picture == 0) {
+        vcw_u(&w, 66u, 8);          /* profile_idc: baseline */
+        vcw_u(&w, 0u, 8);           /* constraint flags */
+        vcw_u(&w, 30u, 8);          /* level_idc 3.0 */
+        vcw_ue(&w, 0u);             /* seq_parameter_set_id */
+        vcw_ue(&w, 0u);             /* log2_max_frame_num_minus4 */
+        vcw_ue(&w, 0u);             /* pic_order_cnt_type */
+        vcw_ue(&w, 0u);             /* log2_max_pic_order_cnt_lsb_minus4 */
+        vcw_ue(&w, 1u);             /* max_num_ref_frames */
+        vcw_bit(&w, 0);             /* gaps_in_frame_num_value_allowed_flag */
+        vcw_ue(&w, w_mbs - 1u);     /* pic_width_in_mbs_minus1 */
+        vcw_ue(&w, h_mbs - 1u);     /* pic_height_in_map_units_minus1 */
+        vcw_bit(&w, 1);             /* frame_mbs_only_flag */
+        vcw_bit(&w, 1);             /* direct_8x8_inference_flag */
+        vcw_bit(&w, 0);             /* frame_cropping_flag */
+        vcw_bit(&w, 0);             /* vui_parameters_present_flag */
+        vcw_trailing(&w);
+        vcw_nal(&out, 0x67, &w);
+        w.n = 0;
+        w.acc = 0;
+        w.bits = 0;
+        vcw_ue(&w, 0u);             /* pic_parameter_set_id */
+        vcw_ue(&w, 0u);             /* seq_parameter_set_id */
+        vcw_bit(&w, 0);             /* entropy_coding_mode_flag: CAVLC */
+        vcw_bit(&w, 0);             /* bottom_field_pic_order_in_frame_present_flag */
+        vcw_ue(&w, 0u);             /* num_slice_groups_minus1 */
+        vcw_ue(&w, 0u);             /* num_ref_idx_l0_default_active_minus1 */
+        vcw_ue(&w, 0u);             /* num_ref_idx_l1_default_active_minus1 */
+        vcw_bit(&w, 0);             /* weighted_pred_flag */
+        vcw_u(&w, 0u, 2);           /* weighted_bipred_idc */
+        vcw_ue(&w, 0u);             /* pic_init_qp_minus26 */
+        vcw_ue(&w, 0u);             /* pic_init_qs_minus26 */
+        vcw_ue(&w, 0u);             /* chroma_qp_index_offset */
+        vcw_bit(&w, 0);             /* deblocking_filter_control_present_flag */
+        vcw_bit(&w, 0);             /* constrained_intra_pred_flag */
+        vcw_bit(&w, 0);             /* redundant_pic_cnt_present_flag */
+        vcw_trailing(&w);
+        vcw_nal(&out, 0x68, &w);
+    }
+    VcwBits s = {s_vcw_rbsp, sizeof(s_vcw_rbsp), 0, 0, 0, 0};
+    unsigned char pcm[256 + 64 + 64];
+    vcw_ue(&s, 0u);                       /* first_mb_in_slice */
+    vcw_ue(&s, 2u);                       /* slice_type: I */
+    vcw_ue(&s, 0u);                       /* pic_parameter_set_id */
+    vcw_u(&s, 0u, 4);                     /* frame_num */
+    vcw_ue(&s, (uint32_t)(picture % 2));  /* idr_pic_id */
+    vcw_u(&s, 0u, 4);                     /* pic_order_cnt_lsb */
+    vcw_bit(&s, 0);                       /* no_output_of_prior_pics_flag */
+    vcw_bit(&s, 0);                       /* long_term_reference_flag */
+    vcw_ue(&s, 0u);                       /* slice_qp_delta */
+    for (uint32_t mb = 0; mb < w_mbs * h_mbs; mb++) {
+        for (uint32_t i = 0; i < (uint32_t)sizeof(pcm); i++)
+            pcm[i] = (unsigned char)(1u + (seed + i * 7u + mb * 29u) % 254u);
+        vcw_ue(&s, 25u);                  /* mb_type: I_PCM */
+        vcw_raw(&s, pcm, (uint32_t)sizeof(pcm));
+    }
+    vcw_trailing(&s);
+    vcw_nal(&out, 0x65, &s);
+    return (out.over || w.over || s.over) ? 0u : out.n;
+}
+
+static uint32_t vcw_fnv(const volatile unsigned char *p, uint32_t n) {
+    uint32_t hash = 2166136261u;
+    for (uint32_t i = 0; i < n; i++) hash = (hash ^ p[i]) * 16777619u;
+    return hash;
+}
+
+/* ---- records -------------------------------------------------------------------------------- */
+
+static void vcw_record_status(int emulated, const char *case_id, const char *status, int has_result,
+                              uint32_t result, const uint32_t *out, uint32_t n) {
+    int used = has_result
+                   ? snprintf(s_vcw_line, sizeof(s_vcw_line),
+                              "NAKAGAWA_PSP_TEST schema=1 test_id=" VCW_TEST_ID
+                              " case_id=%s status=%s result=0x%08x",
+                              case_id, status, (unsigned int)result)
+                   : snprintf(s_vcw_line, sizeof(s_vcw_line),
+                              "NAKAGAWA_PSP_TEST schema=1 test_id=" VCW_TEST_ID " case_id=%s status=%s",
+                              case_id, status);
+    for (uint32_t i = 0; i < n && n <= VCW_MAX_OUT && used > 0 && used < (int)sizeof(s_vcw_line) - 24; i++)
+        used += snprintf(s_vcw_line + used, sizeof(s_vcw_line) - (size_t)used, " out%u=0x%08x", (unsigned int)i,
+                         (unsigned int)(out ? out[i] : 0u));
+    if (used <= 0 || used >= (int)sizeof(s_vcw_line) - 2) return;
+    s_vcw_line[used++] = '\n';
+    s_vcw_line[used] = '\0';
+    s_vcw_records++;
+    probe_emit_durable(emulated, s_vcw_line, (size_t)used);
+}
+
+static void vcw_record(int emulated, const char *case_id, int ran, int rc, const uint32_t *out, uint32_t n) {
+    vcw_record_status(emulated, case_id, ran ? "PASS" : "SKIP", 1, (uint32_t)(ran ? rc : 0),
+                      ran ? out : NULL, n);
+}
+
+/* A step record: the return, the time, and 32 words of a block. */
+static void vcw_step_record(int emulated, const char *case_id, int ran, int rc, uint32_t us,
+                            const uint32_t *words) {
+    uint32_t out[2u + VCW_CHUNK];
+    out[0] = (uint32_t)rc;
+    out[1] = us;
+    for (uint32_t i = 0; i < VCW_CHUNK; i++) out[2u + i] = words ? words[i] : 0u;
+    vcw_record(emulated, case_id, ran, rc, out, 2u + VCW_CHUNK);
+}
+
+/* ---- the bounded call ------------------------------------------------------------------------ */
+
+enum {
+    VCW_OP_OPEN = 1, VCW_OP_EDRAM, VCW_OP_INIT, VCW_OP_SETMEM, VCW_OP_DECODE, VCW_OP_STOP, VCW_OP_RELEASE,
+    VCW_OP_DELETE, VCW_OP_CSCINIT, VCW_OP_CSCAVC, VCW_OP_PIXMODE, VCW_OP_NEEDMEM
+};
+
+typedef struct {
+    int op;
+    uint32_t *ctx;
+    int arg;
+    void *dest;
+    void *csc;
+    volatile int rc;
+    volatile uint32_t t0, t1;
+} VcwCall;
+static VcwCall s_vcw_call;
+
+static int vcw_do(void) {
+    switch (s_vcw_call.op) {
+    case VCW_OP_OPEN: return sceVideocodecOpen(s_vcw_call.ctx, s_vcw_call.arg);
+    case VCW_OP_EDRAM: return sceVideocodecGetEDRAM(s_vcw_call.ctx, s_vcw_call.arg);
+    case VCW_OP_INIT: return sceVideocodecInit(s_vcw_call.ctx, s_vcw_call.arg);
+    case VCW_OP_SETMEM: return sceVideocodecSetMemory(s_vcw_call.ctx, s_vcw_call.arg);
+    case VCW_OP_DECODE: return sceVideocodecDecode(s_vcw_call.ctx, s_vcw_call.arg);
+    case VCW_OP_STOP: return sceVideocodecStop(s_vcw_call.ctx, s_vcw_call.arg);
+    case VCW_OP_RELEASE: return sceVideocodecReleaseEDRAM(s_vcw_call.ctx);
+    case VCW_OP_DELETE: return sceVideocodecDelete(s_vcw_call.ctx, s_vcw_call.arg);
+    case VCW_OP_CSCINIT: return sceMpegBaseCscInit(s_vcw_call.arg);
+    case VCW_OP_CSCAVC: return sceMpegBaseCscAvc(s_vcw_call.dest, NULL, s_vcw_call.arg, s_vcw_call.csc);
+    case VCW_OP_PIXMODE: return sceMpegbase_0530BE4E(s_vcw_call.arg);
+    case VCW_OP_NEEDMEM: return sceAudiocodecCheckNeedMem(s_vcw_call.ctx, s_vcw_call.arg);
+    default: return -1;
+    }
+}
+
+static int vcw_thread(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    s_vcw_call.t0 = sceKernelGetSystemTimeLow();
+    s_vcw_call.rc = vcw_do();
+    s_vcw_call.t1 = sceKernelGetSystemTimeLow();
+    sceKernelSignalSema(s_vcw_sema, 1);
+    return 0;
+}
+
+/* Run one firmware call under a step marker with a bounded wait. Returns 1 when the call was made (its
+   return and time are stored), 0 when it was skipped. */
+static int vcw_run(int emulated, const char *step, int op, uint32_t *ctx, int arg, void *dest, void *csc,
+                   int *rc, uint32_t *us) {
+    *rc = 0;
+    *us = 0;
+    if (!s_vcw_enabled || s_vcw_wedged) return 0;
+    s_vcw_call.op = op;
+    s_vcw_call.ctx = ctx;
+    s_vcw_call.arg = arg;
+    s_vcw_call.dest = dest;
+    s_vcw_call.csc = csc;
+    s_vcw_call.rc = VCW_TIMEOUT_RC;
+    s_vcw_call.t0 = 0;
+    s_vcw_call.t1 = 0;
+    const int teardown = op == VCW_OP_STOP || op == VCW_OP_RELEASE || op == VCW_OP_DELETE;
+    probe_step(emulated, VCW_STEP, step);
+    sceKernelDcacheWritebackInvalidateAll();
+    const SceUID thid = sceKernelCreateThread("vcw-call", vcw_thread, sceKernelGetThreadCurrentPriority(),
+                                              0x8000, PSP_THREAD_ATTR_USER, NULL);
+    if (thid < 0) {
+        s_vcw_thread_failures++;
+        if (!teardown) return 0;
+        /* A release must still happen: with no helper, make it on this thread. */
+        s_vcw_call.t0 = sceKernelGetSystemTimeLow();
+        s_vcw_call.rc = vcw_do();
+        s_vcw_call.t1 = sceKernelGetSystemTimeLow();
+    } else {
+        SceUInt wait_us = VCW_CALL_TIMEOUT_US;
+        int w = sceKernelStartThread(thid, 0, NULL);
+        if (w == 0) w = sceKernelWaitSema(s_vcw_sema, 1, &wait_us);
+        if (w != 0) {
+            /* The call did not return in time (or the helper never started): wedge. */
+            (void)sceKernelTerminateDeleteThread(thid);
+            s_vcw_wedged = 1;
+            *rc = VCW_TIMEOUT_RC;
+            *us = VCW_CALL_TIMEOUT_US;
+            return 1;
+        }
+        SceUInt end_us = VCW_END_TIMEOUT_US;
+        if (sceKernelWaitThreadEnd(thid, &end_us) != 0) {
+            (void)sceKernelTerminateDeleteThread(thid);
+            s_vcw_wedged = 1;
+        } else {
+            (void)sceKernelDeleteThread(thid);
+        }
+    }
+    sceKernelDcacheWritebackInvalidateAll();
+    *rc = s_vcw_call.rc;
+    *us = s_vcw_call.t1 - s_vcw_call.t0;
+    return 1;
+}
+
+/* The teardown of one context: Stop, ReleaseEDRAM, Delete, each only when the call that acquired it
+   succeeded. */
+static void vcw_teardown(int emulated, const char *prefix, int type, int stop_ok, int edram_ok, int open_ok) {
+    static const struct {
+        const char *name;
+        int op;
+    } steps[3] = {{"stop", VCW_OP_STOP}, {"release", VCW_OP_RELEASE}, {"delete", VCW_OP_DELETE}};
+    const int wanted[3] = {stop_ok, edram_ok, open_ok};
+    for (int i = 0; i < 3; i++) {
+        char id[96], step[64];
+        int rc = 0, ran = 0;
+        uint32_t us = 0;
+        (void)snprintf(id, sizeof(id), "%s-%s", prefix, steps[i].name);
+        (void)snprintf(step, sizeof(step), "%s-%s", prefix, steps[i].name);
+        if (wanted[i]) ran = vcw_run(emulated, step, steps[i].op, s_vcw_ctx, type, NULL, NULL, &rc, &us);
+        vcw_step_record(emulated, id, ran, rc, us, s_vcw_ctx);
+    }
+}
+
+/* ---- item 1: a zeroed context through Open, GetEDRAM, Init and SetMemory ------------------------ */
+
+static void vcw_ctx_reset(void) {
+    memset(s_vcw_ctx, 0, sizeof(s_vcw_ctx));
+    memset(s_vcw_b2, 0, sizeof(s_vcw_b2));
+    memset(s_vcw_yuv, 0, sizeof(s_vcw_yuv));
+    memset(s_vcw_b3, 0, sizeof(s_vcw_b3));
+    memset(s_vcw_sei, 0, sizeof(s_vcw_sei));
+    s_vcw_ctx[VCW_W(16)] = (uint32_t)(uintptr_t)s_vcw_b2;
+}
+
+static void vcw_type_cells(int emulated, int type) {
+    static const char *const names[4] = {"open", "edram", "init", "setmem"};
+    static const int ops[4] = {VCW_OP_OPEN, VCW_OP_EDRAM, VCW_OP_INIT, VCW_OP_SETMEM};
+    int ok[4] = {0, 0, 0, 0};
+    vcw_ctx_reset();
+    for (unsigned s = 0; s < 4u; s++) {
+        char step[64];
+        int rc = 0;
+        uint32_t us = 0;
+        (void)snprintf(step, sizeof(step), "t%d-%s", type, names[s]);
+        const int ran = vcw_run(emulated, step, ops[s], s_vcw_ctx, type, NULL, NULL, &rc, &us);
+        ok[s] = ran && rc == 0;
+        for (unsigned chunk = 0; chunk < VCW_CTX_WORDS / VCW_CHUNK; chunk++) {
+            char id[96];
+            (void)snprintf(id, sizeof(id), "vc-t%d-%s-c%u", type, names[s], chunk);
+            vcw_step_record(emulated, id, ran, rc, us, s_vcw_ctx + chunk * VCW_CHUNK);
+        }
+    }
+    char prefix[16];
+    (void)snprintf(prefix, sizeof(prefix), "vc-t%d", type);
+    vcw_teardown(emulated, prefix, type, ok[2], ok[1], ok[0]);
+}
+
+/* ---- items 2 to 4: decode three access units, then convert --------------------------------------- */
+
+/* Whether `len` bytes at a band address can be read from user mode: they lie in user RAM or VRAM. */
+static int vcw_readable(uint32_t addr, uint32_t len) {
+    const uint32_t phys = addr & 0x0fffffffu;
+    if (len == 0) return 0;
+    if (phys >= 0x08800000u && phys < 0x0a000000u && len <= 0x0a000000u - phys) return 1;
+    if (phys >= 0x04000000u && phys < 0x04200000u && len <= 0x04200000u - phys) return 1;
+    return 0;
+}
+
+static const volatile unsigned char *vcw_band_ptr(uint32_t addr) {
+    return (const volatile unsigned char *)(uintptr_t)(0x40000000u | (addr & 0x0fffffffu));
+}
+
+static uint32_t vcw_band_bytes(unsigned band) {
+    return band < 4u ? VCW_Y_BAND_BYTES : VCW_C_BAND_BYTES;
+}
+
+/* Every AU's records: the context, the four output structs and the band summary. */
+static void vcw_au_records(int emulated, const char *tag, unsigned k, int ran, int rc, uint32_t us) {
+    char id[96];
+    uint32_t out[VCW_MAX_OUT];
+    (void)snprintf(id, sizeof(id), "vc-%s-a%u-ctx", tag, k);
+    vcw_step_record(emulated, id, ran, rc, us, s_vcw_ctx);
+    (void)snprintf(id, sizeof(id), "vc-%s-a%u-b2", tag, k);
+    vcw_record(emulated, id, ran, rc, s_vcw_b2, 32u);
+    (void)snprintf(id, sizeof(id), "vc-%s-a%u-yuv", tag, k);
+    vcw_record(emulated, id, ran, rc, s_vcw_yuv, 48u);
+    (void)snprintf(id, sizeof(id), "vc-%s-a%u-b3", tag, k);
+    vcw_record(emulated, id, ran, rc, s_vcw_b3, 32u);
+    (void)snprintf(id, sizeof(id), "vc-%s-a%u-sei", tag, k);
+    vcw_record(emulated, id, ran, rc, s_vcw_sei, 48u);
+    memset(out, 0, sizeof(out));
+    for (unsigned b = 0; b < 8u; b++) {
+        const uint32_t addr = s_vcw_yuv[b];
+        const uint32_t len = vcw_band_bytes(b);
+        out[b] = addr;
+        if (ran && vcw_readable(addr, len)) {
+            const volatile unsigned char *p = vcw_band_ptr(addr);
+            uint32_t nonzero = 0;
+            for (uint32_t i = 0; i < len; i++)
+                if (p[i] != 0) nonzero++;
+            out[8u + 3u * b] = 1u;
+            out[9u + 3u * b] = vcw_fnv(p, len);
+            out[10u + 3u * b] = nonzero;
+        }
+    }
+    (void)snprintf(id, sizeof(id), "vc-%s-a%u-bands", tag, k);
+    vcw_record(emulated, id, ran, rc, out, 32u);
+}
+
+/* The bytes of the 8 bands of AU a0 in 120-word records. */
+static void vcw_band_dump(int emulated, const char *tag, int ran, int rc) {
+    for (unsigned b = 0; b < 8u; b++) {
+        const uint32_t len = vcw_band_bytes(b);
+        const uint32_t addr = s_vcw_yuv[b];
+        const int readable = ran && vcw_readable(addr, len);
+        const uint32_t words = len / 4u;
+        for (uint32_t base = 0, c = 0; base < words; base += VCW_BAND_CHUNK_WORDS, c++) {
+            uint32_t out[VCW_BAND_CHUNK_WORDS];
+            char id[96];
+            memset(out, 0, sizeof(out));
+            if (readable) {
+                const volatile unsigned char *p = vcw_band_ptr(addr);
+                for (uint32_t i = 0; i < VCW_BAND_CHUNK_WORDS && base + i < words; i++) {
+                    const uint32_t o = (base + i) * 4u;
+                    out[i] = (uint32_t)p[o] | ((uint32_t)p[o + 1u] << 8) | ((uint32_t)p[o + 2u] << 16) |
+                             ((uint32_t)p[o + 3u] << 24);
+                }
+            }
+            (void)snprintf(id, sizeof(id), "vc-%s-a0-b%u-c%02u", tag, b, (unsigned int)c);
+            vcw_record(emulated, id, readable, rc, out, VCW_BAND_CHUNK_WORDS);
+        }
+    }
+}
+
+/* Item 4: CscInit, then CscAvc of the decoded bands in each pixel mode. `bands` holds the 8 band
+   addresses of a picture (all non-zero) when `have` is set; `from` names the AU they came from.
+   The last two struct-record words preserve the raw firmware-reported width and height. */
+static void vcw_csc_cells(int emulated, int have, const uint32_t *bands, unsigned from, uint32_t w_mbs,
+                          uint32_t h_mbs, uint32_t reported_w, uint32_t reported_h) {
+    const int geometry_ok = w_mbs > 0u && w_mbs <= VCW_RGB_STRIDE / 16u &&
+                            h_mbs > 0u && h_mbs <= VCW_H_MBS;
+    const int csc_ready = have && geometry_ok;
+    int rc = 0;
+    uint32_t us = 0;
+    int ran = vcw_run(emulated, "csc-init", VCW_OP_CSCINIT, NULL, 512, NULL, NULL, &rc, &us);
+    uint32_t out[VCW_MAX_OUT];
+    memset(out, 0, sizeof(out));
+    out[0] = (uint32_t)rc;
+    out[1] = us;
+    vcw_record(emulated, "vc-csc-init", ran, rc, out, 2u);
+
+    memset(s_vcw_csc, 0, sizeof(s_vcw_csc));
+    memset(out, 0, sizeof(out));
+    if (have) {
+        s_vcw_csc[0] = h_mbs;
+        s_vcw_csc[1] = w_mbs;
+        for (unsigned b = 0; b < 8u; b++) s_vcw_csc[4u + b] = bands[b];
+    }
+    for (unsigned i = 0; i < 12u; i++) out[i] = s_vcw_csc[i];
+    out[12] = from;
+    out[13] = reported_w;
+    out[14] = reported_h;
+    if (!geometry_ok)
+        vcw_record_status(emulated, "vc-csc-struct", "FAIL", 0, 0u, out, 15u);
+    else
+        vcw_record(emulated, "vc-csc-struct", have, 0, out, 15u);
+
+    for (int mode = 0; mode < 4; mode++) {
+        char id[96], step[64];
+        int set_rc = 0, csc_rc = 0;
+        uint32_t set_us = 0, csc_us = 0;
+        (void)snprintf(step, sizeof(step), "csc-m%d-set", mode);
+        const int set_ran = vcw_run(emulated, step, VCW_OP_PIXMODE, NULL, mode, NULL, NULL, &set_rc, &set_us);
+        int csc_ran = 0;
+        uint32_t written = 0, extent = 0, spans[4] = {0, 0, 0, 0};
+        if (set_ran && csc_ready) {
+            memset(s_vcw_rgb, 0x5a, sizeof(s_vcw_rgb));
+            sceKernelDcacheWritebackInvalidateAll();
+            (void)snprintf(step, sizeof(step), "csc-m%d-avc", mode);
+            csc_ran = vcw_run(emulated, step, VCW_OP_CSCAVC, NULL, (int)VCW_RGB_STRIDE, s_vcw_rgb, s_vcw_csc,
+                              &csc_rc, &csc_us);
+            if (csc_ran) {
+                for (uint32_t i = 0; i < VCW_RGB_BYTES; i++) {
+                    if (s_vcw_rgb[i] != 0x5a) {
+                        written++;
+                        extent = i + 1u;
+                    }
+                }
+                for (unsigned s = 0; s < 4u; s++) spans[s] = vcw_fnv(s_vcw_rgb + s * 2048u, 2048u);
+            }
+        }
+        memset(out, 0, sizeof(out));
+        out[0] = (uint32_t)set_rc;
+        out[1] = (uint32_t)csc_ran;
+        out[2] = (uint32_t)csc_rc;
+        out[3] = csc_us;
+        out[4] = written;
+        out[5] = extent;
+        for (unsigned s = 0; s < 4u; s++) out[6u + s] = spans[s];
+        (void)snprintf(id, sizeof(id), "vc-csc-m%d", mode);
+        vcw_record(emulated, id, set_ran, set_rc, out, 10u);
+        for (unsigned c = 0; c < VCW_RGB_DUMP_BYTES / (VCW_RGB_CHUNK_WORDS * 4u); c++) {
+            (void)snprintf(id, sizeof(id), "vc-csc-m%d-d%02u", mode, c);
+            uint32_t chunk[VCW_RGB_CHUNK_WORDS];
+            memcpy(chunk, s_vcw_rgb + c * VCW_RGB_CHUNK_WORDS * 4u, sizeof(chunk));
+            vcw_record(emulated, id, csc_ran, csc_rc, chunk, VCW_RGB_CHUNK_WORDS);
+        }
+    }
+
+    int rc4 = 0, rc3 = 0;
+    uint32_t us4 = 0, us3 = 0;
+    const int ran4 = vcw_run(emulated, "csc-mode4", VCW_OP_PIXMODE, NULL, 4, NULL, NULL, &rc4, &us4);
+    const int ran3 = vcw_run(emulated, "csc-mode3-again", VCW_OP_PIXMODE, NULL, 3, NULL, NULL, &rc3, &us3);
+    memset(out, 0, sizeof(out));
+    out[0] = (uint32_t)rc4;
+    out[1] = (uint32_t)rc3;
+    vcw_record(emulated, "vc-csc-modes", ran4 && ran3, rc4, out, 2u);
+}
+
+/* The sceMpegCreate context for one picture size, three decodes, the conversion (d480 only) and the
+   teardown. */
+static void vcw_decode_cells(int emulated, uint32_t w_mbs, const char *tag, int with_csc) {
+    static const char *const names[4] = {"open", "edram", "init", "setmem"};
+    static const int ops[4] = {VCW_OP_OPEN, VCW_OP_EDRAM, VCW_OP_INIT, VCW_OP_SETMEM};
+    char id[96], step[64], prefix[16];
+    uint32_t out[VCW_MAX_OUT];
+    int ok[4] = {0, 0, 0, 0};
+    uint32_t last_bands[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    int have = 0;
+    unsigned from = 0;
+
+    /* The input: three IDR access units, each one picture of its own sample seed. */
+    memset(out, 0, sizeof(out));
+    for (unsigned k = 0; k < VCW_AUS; k++) {
+        s_vcw_au_size[k] = vcw_build_au(s_vcw_au[k], VCW_AU_CAP, (int)k, w_mbs, VCW_H_MBS, 200u - 80u * k);
+        s_vcw_au_fnv[k] = s_vcw_au_size[k] ? vcw_fnv(s_vcw_au[k], s_vcw_au_size[k]) : 0u;
+    }
+    const int built = s_vcw_au_size[0] && s_vcw_au_size[1] && s_vcw_au_size[2];
+    out[0] = w_mbs;
+    out[1] = VCW_H_MBS;
+    for (unsigned k = 0; k < VCW_AUS; k++) {
+        out[2u + k] = s_vcw_au_size[k];
+        out[5u + k] = s_vcw_au_fnv[k];
+    }
+    out[8] = (uint32_t)(uintptr_t)s_vcw_es & 0x0fffffffu;
+    (void)snprintf(id, sizeof(id), "vc-%s-input", tag);
+    vcw_record(emulated, id, 1, built ? 0 : -1, out, 9u);
+
+    vcw_ctx_reset();
+    s_vcw_ctx[VCW_W(44)] = (uint32_t)(uintptr_t)s_vcw_yuv;
+    s_vcw_ctx[VCW_W(48)] = (uint32_t)(uintptr_t)s_vcw_b3;
+    s_vcw_ctx[VCW_W(60)] = 4u;
+    s_vcw_ctx[VCW_W(80)] = (uint32_t)(uintptr_t)s_vcw_sei;
+    for (unsigned s = 0; s < 4u; s++) {
+        int rc = 0;
+        uint32_t us = 0;
+        if (s == 3u) {
+            s_vcw_ctx[VCW_W(64)] = w_mbs * 16u;
+            s_vcw_ctx[VCW_W(68)] = VCW_H_MBS * 16u;
+            s_vcw_ctx[VCW_W(72)] = 2u;
+            s_vcw_ctx[VCW_W(76)] = 0u;
+        }
+        (void)snprintf(step, sizeof(step), "%s-%s", tag, names[s]);
+        const int ran = vcw_run(emulated, step, ops[s], s_vcw_ctx, 0, NULL, NULL, &rc, &us);
+        ok[s] = ran && rc == 0;
+        (void)snprintf(id, sizeof(id), "vc-%s-%s", tag, names[s]);
+        vcw_step_record(emulated, id, ran, rc, us, s_vcw_ctx);
+    }
+    const int ready = built && ok[0] && ok[1] && ok[2] && ok[3];
+
+    int decoded = 0;
+    for (unsigned k = 0; k < VCW_AUS; k++) {
+        int rc = 0, ran = 0;
+        uint32_t us = 0;
+        if (ready) {
+            memset(s_vcw_es, 0, sizeof(s_vcw_es));
+            memcpy(s_vcw_es, s_vcw_au[k], s_vcw_au_size[k]);
+            s_vcw_ctx[VCW_W(36)] = (uint32_t)(uintptr_t)s_vcw_es & 0x0fffffffu;
+            s_vcw_ctx[VCW_W(40)] = s_vcw_au_size[k];
+            (void)snprintf(step, sizeof(step), "%s-a%u-decode", tag, k);
+            ran = vcw_run(emulated, step, VCW_OP_DECODE, s_vcw_ctx, 0, NULL, NULL, &rc, &us);
+            if (ran) decoded = 1;
+        }
+        vcw_au_records(emulated, tag, k, ran, rc, us);
+        if (k == 0u) vcw_band_dump(emulated, tag, ran, rc);
+        if (ran) {
+            int all = 1;
+            for (unsigned b = 0; b < 8u; b++)
+                if (s_vcw_yuv[b] == 0u) all = 0;
+            if (all) {
+                for (unsigned b = 0; b < 8u; b++) last_bands[b] = s_vcw_yuv[b];
+                have = 1;
+                from = k;
+            }
+        }
+    }
+
+    if (with_csc) {
+        /* The picture size the decode reports at ctx+16 (+8 width, +12 height), else the stream's. */
+        const uint32_t reported_w = s_vcw_b2[2];
+        const uint32_t reported_h = s_vcw_b2[3];
+        const uint32_t pw = reported_w >= 16u ? reported_w >> 4 : w_mbs;
+        const uint32_t ph = reported_h >= 16u ? reported_h >> 4 : VCW_H_MBS;
+        vcw_csc_cells(emulated, ready && decoded && have && !s_vcw_wedged, last_bands, from, pw, ph,
+                      reported_w, reported_h);
+    }
+
+    (void)snprintf(prefix, sizeof(prefix), "vc-%s", tag);
+    vcw_teardown(emulated, prefix, 0, decoded && ok[2], ok[1], ok[0]);
+}
+
+/* ---- item 5: sceAudiocodecCheckNeedMem -------------------------------------------------------------- */
+
+static void vcw_audio_cells(int emulated) {
+    static const struct {
+        const char *name;
+        int codec;
+        unsigned fill;
+    } cells[5] = {
+        {"1000", 0x1000, 0}, {"1001", 0x1001, 0}, {"1002", 0x1002, 0},
+        {"1000-p5c5c", 0x1000, 0x5c5c}, {"1000-p5c28", 0x1000, 0x5c28},
+    };
+    for (unsigned i = 0; i < 5u; i++) {
+        char id[96], step[64];
+        int rc = 0;
+        uint32_t us = 0, out[VCW_MAX_OUT];
+        memset(s_vcw_ac, 0, sizeof(s_vcw_ac));
+        if (cells[i].fill) {
+            const uint16_t fill = (uint16_t)cells[i].fill;
+            memcpy((unsigned char *)s_vcw_ac + 40, &fill, sizeof(fill)); /* byte offset 40 */
+        }
+        (void)snprintf(step, sizeof(step), "ac-%s", cells[i].name);
+        const int ran = vcw_run(emulated, step, VCW_OP_NEEDMEM, s_vcw_ac, cells[i].codec, NULL, NULL, &rc, &us);
+        out[0] = (uint32_t)rc;
+        out[1] = us;
+        for (unsigned w = 0; w < VCW_AC_WORDS; w++) out[2u + w] = s_vcw_ac[w];
+        (void)snprintf(id, sizeof(id), "vc-ac-%s", cells[i].name);
+        vcw_record(emulated, id, ran, rc, out, 2u + VCW_AC_WORDS);
+    }
+}
+
+static void run_vcodec_words(int emulated) {
+    uint32_t load[5] = {0, 0, 0, 0, 0};
+    int rc_unload_mb = 0, rc_unload_av = 0;
+    s_vcw_sema = sceKernelCreateSema("vcw-done", 0, 0, 1, NULL);
+    probe_step(emulated, VCW_STEP, "load-avcodec");
+    const int rc_av = sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+    int rc_mb = 0;
+    if (rc_av == 0) {
+        probe_step(emulated, VCW_STEP, "load-mpegbase");
+        rc_mb = sceUtilityLoadAvModule(PSP_AV_MODULE_MPEGBASE);
+    }
+    load[0] = (uint32_t)rc_av;
+    load[1] = (uint32_t)rc_mb;
+    load[2] = rc_av == 0;
+    load[3] = rc_av == 0 && rc_mb == 0;
+    load[4] = s_vcw_sema >= 0;
+    vcw_record(emulated, "vc-load", 1, rc_av, load, 5u);
+    s_vcw_enabled = load[3] && load[4];
+
+    vcw_type_cells(emulated, 0);
+    vcw_type_cells(emulated, 1);
+    vcw_decode_cells(emulated, 30u, "d480", 1);
+    vcw_decode_cells(emulated, 29u, "d464", 0);
+    vcw_audio_cells(emulated);
+
+    /* A wedged call leaves its helper terminated mid-call: the modules stay loaded then. */
+    if (!s_vcw_wedged) {
+        if (rc_av == 0 && rc_mb == 0) {
+            probe_step(emulated, VCW_STEP, "unload-mpegbase");
+            rc_unload_mb = sceUtilityUnloadAvModule(PSP_AV_MODULE_MPEGBASE);
+        }
+        if (rc_av == 0) {
+            probe_step(emulated, VCW_STEP, "unload-avcodec");
+            rc_unload_av = sceUtilityUnloadAvModule(PSP_AV_MODULE_AVCODEC);
+        }
+    }
+    uint32_t unload[5];
+    unload[0] = (uint32_t)rc_unload_mb;
+    unload[1] = (uint32_t)rc_unload_av;
+    unload[2] = (uint32_t)s_vcw_wedged;
+    unload[3] = (uint32_t)s_vcw_thread_failures;
+    unload[4] = load[3];
+    vcw_record(emulated, "vc-unload", 1, rc_unload_av, unload, 5u);
+
+    const uint32_t done[1] = {s_vcw_records};
+    /* PASS: the run completed. Nothing here is compared; the values are the measurement. */
+    vcw_record(emulated, "vcodec-words-done", 1, 0, done, 1u);
+    probe_step(emulated, VCW_STEP, "park");
+    /* Normal teardown: parks until PSPLink modstop. Returning from main would drop PSPLink to the XMB. */
     probe_teardown(emulated);
 }
 #endif
@@ -13216,6 +14682,10 @@ int main(int argc, char *argv[]) {
     run_mpeg_ycbcr(emulated); /* ends in probe_teardown, which parks until modstop */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_ADSR
     run_sas_adsr(emulated); /* ends in probe_teardown, which parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_MIX
+    run_sas_mix(emulated); /* ends in probe_teardown, which parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VCODEC_WORDS
+    run_vcodec_words(emulated); /* ends in probe_teardown, which parks until modstop */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

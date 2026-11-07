@@ -25,7 +25,8 @@
 //    address for one NID fails closed and keeps the original. Generated code
 //    registers nothing in this PR; tests register directly.
 //  - COSIM routing executes the HLE lane and records that a cosim comparison
-//    was requested (a counter the selftest asserts). Dual execution is PR 8.
+//    was requested (a counter the selftest asserts). Dual execution is PR 8:
+//    see "COSIM dual run" below (#2148).
 //  - Configuration is C API only: sr_domain_mode_set/get (with the
 //    sr_domain_set/get_mode spelling as an alias), sr_domain_bind_nid(), and
 //    sr_domain_reset_defaults(). No environment variable or CLI option.
@@ -124,5 +125,93 @@ uint32_t sr_domain_fallback_count(void);
 uint32_t sr_domain_cosim_request_count(void);
 uint32_t sr_domain_last_fallback_nid(void);
 uint32_t sr_domain_last_cosim_nid(void);
+
+/* COSIM dual run (LLE Phase 1 PR 8, #2148).
+ *
+ * A NID bound to a domain in SR_MODE_COSIM whose guest export is registered
+ * (sr_import_register_export: the registry is the pair table) runs twice from
+ * the same input state:
+ *   1. The guest lane runs the export through dispatch_call_try. Any import
+ *      it reaches through the seam is refused and unwinds the lane, so no
+ *      host-side effect (kernel objects, files, devices) can happen twice.
+ *   2. Guest memory and CpuState go back to the input state, and the HLE lane
+ *      runs exactly as SR_MODE_HLE does. Its result is what the guest keeps:
+ *      a difference never changes what the guest sees.
+ * The two results are compared: v0 and the callee-saved GPRs (s0-s7, gp, sp,
+ * fp), then every byte of scratchpad, eDRAM and RAM, except the stack
+ * below the caller's $sp (dead after either lane returns; its size is
+ * sr_domain_cosim_set_dead_stack). v1, caller-saved registers and FPU results
+ * are not compared: the HLE lane leaves v1 as the caller had it and poisons
+ * the caller-saved set. A float-returning pair is therefore not compared by
+ * this slice. The eDRAM window is VRAM: the snapshot first reads back what the
+ * renderer holds, and each rolled-back VRAM page is committed to it.
+ *
+ * Every call ends as MATCH, DIFF or NOT_COMPARED (never a silent match):
+ *   SR_COSIM_DIFF: nid, stub PC, a0-a3, both v0 values, the first differing
+ *     register or byte (address, guest value, HLE value) and the count of
+ *     differing bytes;
+ *   SR_COSIM_NOT_COMPARED: nid and reason (no guest export, the guest lane
+ *     reached an import, dispatch rejected the export, a cosim call nested in
+ *     another, no guest arena, no snapshot memory, the HLE lane did not end
+ *     normally).
+ * MATCH is logged once per NID; DIFF and NOT_COMPARED every time. A match
+ * proves only the compared call with those inputs. The snapshot is taken
+ * only in COSIM mode, which nothing enables by default. */
+typedef enum SrCosimOutcome {
+    SR_COSIM_OUTCOME_NONE = 0,
+    SR_COSIM_OUTCOME_MATCH = 1,
+    SR_COSIM_OUTCOME_DIFF = 2,
+    SR_COSIM_OUTCOME_NOT_COMPARED = 3
+} SrCosimOutcome;
+
+typedef enum SrCosimReason {
+    SR_COSIM_REASON_NONE = 0,
+    SR_COSIM_REASON_UNPAIRED = 1,        /* no registered guest export */
+    SR_COSIM_REASON_NESTED_IMPORT = 2,   /* guest lane reached an import */
+    SR_COSIM_REASON_GUEST_REJECTED = 3,  /* dispatch refused the export */
+    SR_COSIM_REASON_REENTRY = 4,         /* cosim call inside another's lane */
+    SR_COSIM_REASON_NO_ARENA = 5,        /* guest memory not initialised */
+    SR_COSIM_REASON_NO_MEMORY = 6,       /* snapshot allocation failed */
+    SR_COSIM_REASON_HLE_FLOW = 7         /* HLE lane left a pending flow */
+} SrCosimReason;
+
+/* Where the first difference was found. */
+typedef enum SrCosimDiffKind {
+    SR_COSIM_DIFF_NONE = 0,
+    SR_COSIM_DIFF_V0 = 1,
+    SR_COSIM_DIFF_REGISTER = 2,  /* a callee-saved GPR: diff_reg names it */
+    SR_COSIM_DIFF_MEMORY = 3
+} SrCosimDiffKind;
+
+typedef struct SrCosimResult {
+    SrCosimOutcome outcome;
+    SrCosimReason reason;
+    uint32_t nid;
+    uint32_t stub_pc;
+    uint32_t args[4];
+    uint32_t guest_v0;
+    uint32_t hle_v0;
+    SrCosimDiffKind first_kind;
+    uint32_t diff_reg;           /* GPR number for SR_COSIM_DIFF_REGISTER */
+    uint32_t guest_reg;
+    uint32_t hle_reg;
+    uint32_t first_addr;         /* guest physical address of the first byte */
+    uint8_t guest_byte;
+    uint8_t hle_byte;
+    uint32_t diff_bytes;         /* differing bytes outside the dead stack */
+    uint32_t nested_nid;         /* SR_COSIM_REASON_NESTED_IMPORT only */
+} SrCosimResult;
+
+uint32_t sr_domain_cosim_match_count(void);
+uint32_t sr_domain_cosim_diff_count(void);
+uint32_t sr_domain_cosim_not_compared_count(void);
+/* The last completed cosim call (outcome NONE before the first one). A cosim
+ * call refused as REENTRY is counted and logged but does not replace it. */
+void sr_domain_cosim_last_result(SrCosimResult *out);
+/* Bytes below the caller's $sp left out of the comparison (default 64 KiB).
+ * Both lanes may leave dead frames there; nothing above $sp is excluded. */
+void sr_domain_cosim_set_dead_stack(uint32_t bytes);
+/* Free the snapshot buffers (they are kept between calls once allocated). */
+void sr_domain_cosim_release(void);
 
 #endif

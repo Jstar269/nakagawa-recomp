@@ -49,6 +49,18 @@ int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t 
                            uint32_t input_type);
 void sr_osk_text_entry_abandon(void);
 
+/* Implemented in replay_checkpoint.c (SR_RECORD / SR_REPLAY, described there). Both entry
+ * points above pass through these:
+ *   sr_replay_osk_poll records the live answer under SR_RECORD, serves the recorded one
+ *     under SR_REPLAY (live is not called), and otherwise calls live;
+ *   sr_replay_osk_abandon records the abandon, or checks it against the recording;
+ *     live_abandon runs except while a recording is being served. */
+typedef int (*SrReplayOskLive)(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
+                               uint32_t input_type);
+int sr_replay_osk_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
+                       uint32_t input_type, SrReplayOskLive live);
+void sr_replay_osk_abandon(void (*live_abandon)(void));
+
 /* The native input box (src/rt/osk_win.c): blocks the calling thread until the person
  * confirms (1, text in out) or cancels (0). On Windows only the text-entry worker may call
  * it; hosts without a native box answer cancelled at once, so they call it directly. */

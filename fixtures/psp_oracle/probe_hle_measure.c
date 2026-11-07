@@ -15,7 +15,9 @@
 // hle-audio-src (PSP-HLE-AUDIO-SRC-001), hle-timer-order
 // (PSP-HLE-TIMER-ORDER-001) and hle-savedata-getsize
 // (PSP-HLE-SAVEDATA-GETSIZE-001), plus hle-utility-none (PSP-HLE-UTILITY-NONE-001), which
-// imports no InitStart call. Cases 97-101 have recorded PSP-3000 runs from
+// imports no InitStart call, and hle-utility-dialogs (PSP-HLE-UTILITY-DIALOG-001), which opens
+// the savedata, gamedata install, netconf and game sharing dialogs in game context and never
+// answers them. Cases 97-101 have recorded PSP-3000 runs from
 // 2026-10-15: the VTimer and power cases were measured; pool-bounds was captured
 // only in its earlier revision, and the revised form has not run; null-out was
 // captured incomplete. Case 104 was measured on 2026-11-02 (docs/HARDWARE_ORACLE.md).
@@ -50,6 +52,7 @@
 #include <pspge.h>
 #include <pspdisplay.h>
 #include <pspsuspend.h>
+#include <pspstdio.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -78,6 +81,9 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_TIMER_ORDER 103
 #define HLE_CASE_SAVEDATA_GETSIZE 104
 #define HLE_CASE_UTILITY_NONE 140
+#define HLE_CASE_STD_HANDLES 156
+#define HLE_CASE_AUDIO_REST 159
+#define HLE_CASE_UTILITY_DIALOGS 161
 
 #if PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS
 #define HLE_CAMPAIGN_ID "hle-kernel-status"
@@ -143,6 +149,18 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "hle-utility-none"
 #define HLE_TEST_ID "PSP-HLE-UTILITY-NONE-001"
 #define HLE_LOG "host0:/hle_utility_none_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_STD_HANDLES
+#define HLE_CAMPAIGN_ID "hle-std-handles"
+#define HLE_TEST_ID "PSP-HLE-STDIO-001"
+#define HLE_LOG "host0:/hle_std_handles_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_AUDIO_REST
+#define HLE_CAMPAIGN_ID "hle-audio-rest"
+#define HLE_TEST_ID "PSP-HLE-AUDIO-REST-001"
+#define HLE_LOG "host0:/hle_audio_rest_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_UTILITY_DIALOGS
+#define HLE_CAMPAIGN_ID "hle-utility-dialogs"
+#define HLE_TEST_ID "PSP-HLE-UTILITY-DIALOG-001"
+#define HLE_LOG "host0:/hle_utility_dialogs_log.txt"
 #else
 #error probe_hle_measure.c has no family for this PSP_ORACLE_CASE
 #endif
@@ -2221,6 +2239,1191 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_UTILITY_NONE */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_STD_HANDLES
+
+/* #341 (W-HLE-2, part 1): the three standard handles in the probe's launch context, a
+   one-byte write to Stdout and to Stderr, and a write to Stdout after closing it. The runtime
+   answers 1 for all three handles today (h_StdFd); this case measures what the console does.
+
+   Cells, in order:
+   - stdio-handles (3 words): sceKernelStdin, sceKernelStdout, sceKernelStderr. result: Stdout.
+   - stdio-write-stdout, stdio-write-stderr (2 words): the handle written to and, again, the
+     handle read after the write. result: what sceIoWrite(handle, "x", 1) returned.
+   - stdio-close-stdout (3 words): the write to the closed handle, sceKernelStdout read after
+     the close, and the handle that was closed. result: what sceIoClose returned.
+
+   The family log goes to host0 only, so closing Stdout cannot cut a record short, and the
+   close comes last so every earlier cell runs on an open handle. Under PSPLink the handles are
+   its tty; the close lasts until the next boot, and every launch here gets a fresh one.
+
+   Not run: sceIoRead on Stdin. On PSPLink's tty a one-byte read waits for input that nothing
+   sends, and a thread blocked in a device read when the runner stops the module risks a hang
+   that needs a power cycle. That cell needs a design that cannot block (#341). */
+
+static const char s_hle_std_byte[1] = {'x'};
+
+static int hle_run(void)
+{
+    uint32_t handles[3];
+    hle_step("stdio-handles");
+    handles[0] = (uint32_t)sceKernelStdin();
+    handles[1] = (uint32_t)sceKernelStdout();
+    handles[2] = (uint32_t)sceKernelStderr();
+    hle_record("stdio-handles", "PASS", handles[1], handles, 3);
+
+    uint32_t out_wrote[2];
+    hle_step("stdio-write-stdout");
+    const int out_rc = sceIoWrite((SceUID)handles[1], s_hle_std_byte, 1);
+    out_wrote[0] = handles[1];
+    hle_step("stdio-stdout-reread");
+    out_wrote[1] = (uint32_t)sceKernelStdout();
+    hle_record("stdio-write-stdout", "PASS", (uint32_t)out_rc, out_wrote, 2);
+
+    uint32_t err_wrote[2];
+    hle_step("stdio-write-stderr");
+    const int err_rc = sceIoWrite((SceUID)handles[2], s_hle_std_byte, 1);
+    err_wrote[0] = handles[2];
+    hle_step("stdio-stderr-reread");
+    err_wrote[1] = (uint32_t)sceKernelStderr();
+    hle_record("stdio-write-stderr", "PASS", (uint32_t)err_rc, err_wrote, 2);
+
+    uint32_t closed[3];
+    hle_step("stdio-close-stdout");
+    const int close_rc = sceIoClose((SceUID)handles[1]);
+    hle_step("stdio-write-closed");
+    closed[0] = (uint32_t)sceIoWrite((SceUID)handles[1], s_hle_std_byte, 1);
+    hle_step("stdio-handle-after-close");
+    closed[1] = (uint32_t)sceKernelStdout();
+    closed[2] = handles[1];
+    hle_record("stdio-close-stdout", "PASS", (uint32_t)close_rc, closed, 3);
+    return 1;
+}
+
+#endif /* HLE_CASE_STD_HANDLES */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_AUDIO_REST
+
+/* #279 (W-MEDIA-2): how much a regular audio channel still holds when sceAudioOutputBlocking
+   returns, in steady state. The runtime's release of a blocking output (#67) lets a caller run
+   two blocks ahead; this case measures what the console does.
+
+   For each channel size F of 1024, 2048 and 4096 frames, one stereo channel is reserved with
+   sceAudioChReserve, given channel -1, F frames and PSP_AUDIO_FORMAT_STEREO, and fed HLE_AREST_BLOCKS
+   blocking outputs of the same F-frame buffer at volume 0x8000. Right after each return the probe reads
+   sceAudioGetChannelRestLen and sceAudioGetChannelRestLength and the system time. Nothing is
+   written to host0 between the outputs (a host0 write can take longer than a block and would
+   starve the channel): the values are kept in arrays and the records follow the run. After the
+   last output the probe polls sceAudioGetChannelRestLen every 1 ms, at most HLE_AREST_DRAIN_POLLS
+   times, until it reads 0, then releases the channel.
+
+   The buffer is a project-written ramp of amplitude 64 (of 32767), quiet on the speaker; no
+   game data.
+
+   Cells, per F (`audio-rest-<F>-...`):
+   - `-reserve` (3 words): the channel, F, the format. result: the channel.
+   - `-bNN`, NN = 00..31 (5 words): the time the call took (us), the time since the previous
+     return (us; for b00 the time since the reserve), RestLen and RestLength after the return,
+     the channel. result: what sceAudioOutputBlocking returned.
+   - `-drain` (4 words): the polls taken, RestLen at the last poll, the time from the last return
+     to that poll (us), what sceAudioChRelease returned. result: the release's return.
+   A reserve that fails gives SKIP for that F's other cells; nothing else is called. */
+
+#define HLE_AREST_BLOCKS 32u
+#define HLE_AREST_MAX_FRAMES 4096u
+#define HLE_AREST_AMPLITUDE 64
+#define HLE_AREST_DRAIN_POLLS 500u
+#define HLE_AREST_DRAIN_POLL_US 1000u
+
+/* Every record name, literal, in record order: per F, the reserve, b00..b31 and the drain. */
+static const char *const k_hle_arest_names[3][HLE_AREST_BLOCKS + 2u] = {
+    {"audio-rest-1024-reserve", "audio-rest-1024-b00", "audio-rest-1024-b01",
+     "audio-rest-1024-b02", "audio-rest-1024-b03", "audio-rest-1024-b04", "audio-rest-1024-b05",
+     "audio-rest-1024-b06", "audio-rest-1024-b07", "audio-rest-1024-b08", "audio-rest-1024-b09",
+     "audio-rest-1024-b10", "audio-rest-1024-b11", "audio-rest-1024-b12", "audio-rest-1024-b13",
+     "audio-rest-1024-b14", "audio-rest-1024-b15", "audio-rest-1024-b16", "audio-rest-1024-b17",
+     "audio-rest-1024-b18", "audio-rest-1024-b19", "audio-rest-1024-b20", "audio-rest-1024-b21",
+     "audio-rest-1024-b22", "audio-rest-1024-b23", "audio-rest-1024-b24", "audio-rest-1024-b25",
+     "audio-rest-1024-b26", "audio-rest-1024-b27", "audio-rest-1024-b28", "audio-rest-1024-b29",
+     "audio-rest-1024-b30", "audio-rest-1024-b31", "audio-rest-1024-drain"},
+    {"audio-rest-2048-reserve", "audio-rest-2048-b00", "audio-rest-2048-b01",
+     "audio-rest-2048-b02", "audio-rest-2048-b03", "audio-rest-2048-b04", "audio-rest-2048-b05",
+     "audio-rest-2048-b06", "audio-rest-2048-b07", "audio-rest-2048-b08", "audio-rest-2048-b09",
+     "audio-rest-2048-b10", "audio-rest-2048-b11", "audio-rest-2048-b12", "audio-rest-2048-b13",
+     "audio-rest-2048-b14", "audio-rest-2048-b15", "audio-rest-2048-b16", "audio-rest-2048-b17",
+     "audio-rest-2048-b18", "audio-rest-2048-b19", "audio-rest-2048-b20", "audio-rest-2048-b21",
+     "audio-rest-2048-b22", "audio-rest-2048-b23", "audio-rest-2048-b24", "audio-rest-2048-b25",
+     "audio-rest-2048-b26", "audio-rest-2048-b27", "audio-rest-2048-b28", "audio-rest-2048-b29",
+     "audio-rest-2048-b30", "audio-rest-2048-b31", "audio-rest-2048-drain"},
+    {"audio-rest-4096-reserve", "audio-rest-4096-b00", "audio-rest-4096-b01",
+     "audio-rest-4096-b02", "audio-rest-4096-b03", "audio-rest-4096-b04", "audio-rest-4096-b05",
+     "audio-rest-4096-b06", "audio-rest-4096-b07", "audio-rest-4096-b08", "audio-rest-4096-b09",
+     "audio-rest-4096-b10", "audio-rest-4096-b11", "audio-rest-4096-b12", "audio-rest-4096-b13",
+     "audio-rest-4096-b14", "audio-rest-4096-b15", "audio-rest-4096-b16", "audio-rest-4096-b17",
+     "audio-rest-4096-b18", "audio-rest-4096-b19", "audio-rest-4096-b20", "audio-rest-4096-b21",
+     "audio-rest-4096-b22", "audio-rest-4096-b23", "audio-rest-4096-b24", "audio-rest-4096-b25",
+     "audio-rest-4096-b26", "audio-rest-4096-b27", "audio-rest-4096-b28", "audio-rest-4096-b29",
+     "audio-rest-4096-b30", "audio-rest-4096-b31", "audio-rest-4096-drain"},
+};
+
+static int16_t s_hle_arest_ramp[HLE_AREST_MAX_FRAMES * 2u] __attribute__((aligned(64)));
+static uint32_t s_hle_arest_rc[HLE_AREST_BLOCKS];
+static uint32_t s_hle_arest_call_us[HLE_AREST_BLOCKS];
+static uint32_t s_hle_arest_gap_us[HLE_AREST_BLOCKS];
+static uint32_t s_hle_arest_len[HLE_AREST_BLOCKS];
+static uint32_t s_hle_arest_length[HLE_AREST_BLOCKS];
+
+/* Written through the uncached mirror (address | 0x40000000), so the audio DMA reads it
+   without a cache write-back. */
+static void hle_arest_fill(void)
+{
+    volatile int16_t *ramp =
+        (volatile int16_t *)((uintptr_t)s_hle_arest_ramp | 0x40000000u);
+    for (uint32_t i = 0; i < HLE_AREST_MAX_FRAMES; i++) {
+        const int16_t v = (int16_t)((int)(i % 128u) - HLE_AREST_AMPLITUDE);
+        ramp[2u * i] = v;
+        ramp[2u * i + 1u] = v;
+    }
+}
+
+static void hle_arest_size(uint32_t idx, uint32_t frames)
+{
+    const char *const *names = k_hle_arest_names[idx];
+    static char step[48];
+    snprintf(step, sizeof(step), "audio-rest-%u-run", (unsigned int)frames);
+    hle_step(step);
+    const int ch = sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, (int)frames, PSP_AUDIO_FORMAT_STEREO);
+    uint32_t prev = sceKernelGetSystemTimeLow();
+    const uint32_t reserve[3] = {(uint32_t)ch, frames, (uint32_t)PSP_AUDIO_FORMAT_STEREO};
+    if (ch >= 0) {
+        for (uint32_t b = 0; b < HLE_AREST_BLOCKS; b++) {
+            const uint32_t start = sceKernelGetSystemTimeLow();
+            const int rc = sceAudioOutputBlocking(ch, PSP_AUDIO_VOLUME_MAX, s_hle_arest_ramp);
+            const uint32_t end = sceKernelGetSystemTimeLow();
+            s_hle_arest_len[b] = (uint32_t)sceAudioGetChannelRestLen(ch);
+            s_hle_arest_length[b] = (uint32_t)sceAudioGetChannelRestLength(ch);
+            s_hle_arest_rc[b] = (uint32_t)rc;
+            s_hle_arest_call_us[b] = end - start;
+            s_hle_arest_gap_us[b] = end - prev;
+            prev = end;
+        }
+    }
+    uint32_t polls = 0;
+    int rest = 0;
+    uint32_t drain_us = 0;
+    int release_rc = 0;
+    if (ch >= 0) {
+        rest = sceAudioGetChannelRestLen(ch);
+        for (; rest > 0 && polls < HLE_AREST_DRAIN_POLLS; polls++) {
+            sceKernelDelayThread(HLE_AREST_DRAIN_POLL_US);
+            rest = sceAudioGetChannelRestLen(ch);
+        }
+        drain_us = sceKernelGetSystemTimeLow() - prev;
+        release_rc = sceAudioChRelease(ch);
+    }
+
+    hle_record(names[0], ch < 0 ? "FAIL" : "PASS", (uint32_t)ch, reserve, 3);
+    for (uint32_t b = 0; b < HLE_AREST_BLOCKS; b++) {
+        if (ch < 0) {
+            hle_skip(names[1u + b], 5);
+            continue;
+        }
+        const uint32_t out[5] = {s_hle_arest_call_us[b], s_hle_arest_gap_us[b], s_hle_arest_len[b],
+                                 s_hle_arest_length[b], (uint32_t)ch};
+        hle_record(names[1u + b], "PASS", s_hle_arest_rc[b], out, 5);
+    }
+    if (ch < 0) {
+        hle_skip(names[1u + HLE_AREST_BLOCKS], 4);
+        return;
+    }
+    const uint32_t drain[4] = {polls, (uint32_t)rest, drain_us, (uint32_t)release_rc};
+    hle_record(names[1u + HLE_AREST_BLOCKS], "PASS", (uint32_t)release_rc, drain, 4);
+}
+
+static int hle_run(void)
+{
+    hle_arest_fill();
+    hle_arest_size(0u, 1024u);
+    hle_arest_size(1u, 2048u);
+    hle_arest_size(2u, 4096u);
+    return 1;
+}
+
+#endif /* HLE_CASE_AUDIO_REST */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_UTILITY_DIALOGS
+
+/* #1386 (W-HLE-1): utility dialog status timing after an InitStart, the wrong-state answers of
+   netconf, the gamedata install dialog and game sharing, and the common result word a cancel
+   leaves. The runtime model is utility_slot_settle_locked and the dialog state machine in
+   src/rt/hle_utility.c: start-up and shutdown complete on the first vblank after the call, and
+   netconf, gamedata and sharing take INVALID_STATUS (0x80110001) at NONE and during SHUTDOWN.
+   This case measures what the console does. It must run in game context (standalone PSPLink
+   after a soft reset): under the XMB a dialog stays at INIT (PSP-HLE-UTILITY-NONE-001 note).
+
+   Safety rules, all kept in the code below:
+   - Order: savedata (mode 22 GETSIZE, which writes nothing), the gamedata install dialog, then
+     netconf, then game sharing last, so a hang in a radio dialog cannot lose an earlier record.
+     Every record is written as soon as its cell ends.
+   - Nothing presses a button. A dialog only ever gets GetStatus, Update(1) and ShutdownStart,
+     and the matrix calls below. A run still RUNNING after HLE_UD_CANCEL_POLLS polls is
+     cancelled with ShutdownStart; one still at INIT after HLE_UD_INIT_CANCEL_POLLS polls gets one
+     ShutdownStart too. Every wait is a vblank-counted bound.
+   - No network is joined, created or scanned for, and no setting or profile is written: netconf
+     runs action 0 (connect to an access point) with hotspot 0 and wifisp 0 and is never answered,
+     so it can only be cancelled. The only net calls are the module load/unload pair and each net
+     library's Init and Term (the Makefile pins every net library to exactly that pair). No apctl
+     connect, ad hoc connect, create or join, scan or registry call is made or linked.
+   - Game sharing shares HLE_UD_GS_DATA_BYTES of project-written pattern bytes in memory mode
+     (no file, no game data) under a synthetic ad hoc product code, and is cancelled like netconf.
+   - The gamedata install dialog (mode 0, no prompt) reads disc0:/PSP_GAME/INSDIR and writes under
+     HLE_UD_GD_DIR. Its cells run only when sceUmdCheckMedium reports no disc (so nothing on a
+     disc can be copied) and the directory is absent (Dopen fails and Getstat answers
+     0x80010002), so the directory cannot be anyone else's. After the gamedata cells the probe
+     removes each regular file in that directory, removes the directory, and checks that a Dopen
+     of it fails; nothing else on ms0: is touched. The savedata runs use the GETSIZE block of case
+     104 (save NKPROBE01GETSIZE, which no game owns): the utility reads the Memory Stick's free
+     space and finds no save; it writes nothing.
+   - A durable step marker precedes each call that could hang, except inside the per-vblank poll
+     loops (a host0 write there would hide vblanks) and inside the INIT and SHUTDOWN bursts (the
+     state would move on while the marker is written); those are named by the marker before the
+     loop or burst. A ShutdownStart issued by a poll loop gets its own marker first, and its
+     vblank is read after the marker, so the marker cannot lengthen a measured shutdown.
+   - Each dialog is back at NONE before the next starts. A run that is not back at NONE by its
+     bound is recorded as stuck, makes COMPLETE report FAIL, and every later dialog cell (and net
+     setup) is SKIP with reason HLE_UD_SKIP_STUCK; teardown and cleanup still run.
+
+   Left out: every message dialog run. The message dialog refuses ShutdownStart during INIT and
+   RUNNING (pspautotests utility/dialog/status.expected, as hle_utility.c cites it), so once open it
+   leaves RUNNING only through a button press or its Abort call, neither of which this case may
+   make; an opened message dialog would hold the slot and stop every later cell. The message
+   dialog's three INIT/SHUTDOWN timing runs and its wrong-state row are therefore not measured.
+   The only message dialog call is the "InitStart while another dialog is active" cell, made with
+   a block whose size word is 0, so no message dialog can open: the busy check comes before the
+   size check (status.expected), so a busy slot still answers INVALID_STATUS, while a size check
+   that came first would answer 0x80110004. An accepted one is recorded as stuck.
+
+   Records, in order (a SKIP record keeps its word count, all words 0, and carries the reason in
+   result: 1 a UMD is present, 2 the gamedata directory exists, 3 sceUmdCheckMedium failed, 4 the
+   directory's Getstat did not answer 0x80010002, 5 an earlier dialog is stuck, 6 the net setup
+   failed, 7 the gamedata cells did not run):
+   - savedata-timing-r1..r3, then <t>-timing for t = gamedata, netconf, sharing (24 words; result
+     InitStart's return). One run: InitStart, then each poll one vblank apart (GetStatus;
+     Update(1) while RUNNING; ShutdownStart once at FINISHED or at a cancel bound) until NONE.
+       out0 InitStart's return
+       out1 outcome: 0 NONE after an accepted ShutdownStart, 1 stuck at the bound, 2 InitStart
+            refused (one GetStatus sample), 3 at NONE with no accepted ShutdownStart (after the
+            dialog was active, or for HLE_UD_CANCEL_POLLS polls), 4 GetStatus answered a negative value (the loop stops there)
+       out2 polls, out3 Update(1) calls
+       out4 the first poll-loop ShutdownStart's return, out5 its vblank, out6 the status it was
+            issued in (all three HLE_SENTINEL when none was issued), out7 ShutdownStart calls
+       out8 the common result word (block + 0x1c, preset HLE_SENTINEL) after the run
+       out9 the type's own output word, preset HLE_SENTINEL except netconf's: savedata bind
+            (+0x34), gamedata progress (+0x55c), netconf hotspot_connected (+0x3c, preset 0 as an
+            output a caller clears), sharing result (+0x4c)
+       out10 the last GetStatus value, out11 the last poll's vblank, out12 status changes
+       out13-out23 the first 11 changes, each (vblank << 8) | status (0-4, 0xFF for any other
+            value), unused slots HLE_SENTINEL. A vblank is sceDisplayGetVcount() minus its value
+            just before InitStart; the first poll follows InitStart without a wait.
+   - <t>-state-<s> for t = gamedata, netconf, sharing and s = init, running, finished, shutdown
+     (21 words; result the entry InitStart's return). Each state uses a fresh dialog. init: the
+     calls follow InitStart at once. running: polls (no Update) until RUNNING. finished: polls,
+     Update(1) while RUNNING, until FINISHED or HLE_UD_CANCEL_POLLS RUNNING polls (then not
+     reached). shutdown: polls until RUNNING (or FINISHED), then the entry ShutdownStart. When
+     the status read just before the calls is the state, the calls run back to back: Update(1),
+     a second InitStart of the same type (its own block), a message dialog InitStart (size-0
+     block), ShutdownStart, ShutdownStart again, each followed by GetStatus. Then the dialog is
+     driven to NONE as in a timing run.
+       out0 the entry InitStart's return
+       out1 1 the state was reached and the calls ran, 0 not reached (out4-out13 HLE_SENTINEL),
+            2 InitStart refused
+       out2 the vblank of the poll that found the state (for shutdown, the poll that found
+            RUNNING or FINISHED before the entry ShutdownStart; HLE_SENTINEL when not reached)
+       out3 GetStatus just before the calls
+       out4 Update(1), out5 GetStatus
+       out6 the second InitStart, out7 GetStatus
+       out8 the message dialog InitStart, out9 GetStatus (of this type)
+       out10 ShutdownStart, out11 GetStatus
+       out12 ShutdownStart again, out13 GetStatus
+       out14 the entry ShutdownStart (shutdown only; HLE_SENTINEL otherwise)
+       out15 the drive-out outcome (as a timing run's out1), out16 its ShutdownStart calls
+       out17 the last poll's vblank, out18 the last GetStatus value
+       out19 the common result word of the entry block, out20 that of the second block (both
+             preset HLE_SENTINEL), after the drive-out
+     The common result word after a cancel during RUNNING (#1386 item 4) is a timing run's out8
+     when its out6 is 2, and the running cell's out19 when its ShutdownStart was accepted.
+   - gamedata-precheck (5 words; result the reason, 0 to run): sceUmdCheckMedium, the Dopen of
+     HLE_UD_GD_DIR, its Dclose (HLE_SENTINEL when not opened), the directory's Getstat, the reason.
+   - gamedata-cleanup (23 words; result the final Dopen's return; FAIL when that Dopen
+     succeeds): the Dopen, the entries read (not . and ..), the regular files kept for removal
+     (at most HLE_UD_CLEAN_FILES), the entries not removed, the Dclose, the Rmdir, the final Dopen,
+     then the HLE_UD_CLEAN_FILES remove returns and HLE_UD_CLEAN_FILES file sizes (low word),
+     HLE_SENTINEL where unused. SKIP with reason 7 when the gamedata cells did not run.
+   - netconf-setup and sharing-setup (5 words; result 0, or the failing call's return): the
+     returns of LoadNetModule of COMMON, LoadNetModule of INET (netconf) or ADHOC (sharing),
+     NetInit, then for netconf InetInit and ApctlInit, for sharing AdhocInit and AdhocctlInit
+     (with the synthetic product code HLE_UD_PRODUCT). A failure stops the setup (later words HLE_SENTINEL) and the dialog cells are
+     SKIP with reason 6.
+   - netconf-teardown and sharing-teardown (5 words; result the number of setup calls undone):
+     the Term calls and unloads in reverse order (ApctlTerm, InetTerm, NetTerm, unload INET,
+     unload COMMON; AdhocctlTerm, AdhocTerm, NetTerm, unload ADHOC, unload COMMON), each made
+     only when its setup call succeeded (HLE_SENTINEL otherwise). They run on every path that
+     ran a setup. */
+
+#include <pspumd.h>
+#include <pspnet.h>
+#include <pspnet_inet.h>
+#include <pspnet_apctl.h>
+#include <pspnet_adhoc.h>
+#include <pspnet_adhocctl.h>
+
+#define HLE_UD_STATUS_NONE 0
+#define HLE_UD_STATUS_INIT 1
+#define HLE_UD_STATUS_RUNNING 2
+#define HLE_UD_STATUS_FINISHED 3
+#define HLE_UD_STATUS_SHUTDOWN 4
+#define HLE_UD_POLL_LIMIT 600u
+#define HLE_UD_REACH_POLLS 300u
+#define HLE_UD_CANCEL_POLLS 60u
+#define HLE_UD_INIT_CANCEL_POLLS 300u
+#define HLE_UD_RUN_SHUTDOWNS 2u
+#define HLE_UD_TIMING_WORDS 24u
+#define HLE_UD_TIMING_HEAD 13u
+#define HLE_UD_CHANGE_SLOTS 11u
+#define HLE_UD_STATE_WORDS 21u
+#define HLE_UD_PRECHECK_WORDS 5u
+#define HLE_UD_CLEANUP_WORDS 23u
+#define HLE_UD_CLEAN_FILES 8u
+#define HLE_UD_CLEAN_HEAD 7u
+#define HLE_UD_NAME_BYTES 64u
+#define HLE_UD_DIR_READS 40u
+#define HLE_UD_NET_WORDS 5u
+#define HLE_UD_NET_STEPS 5u
+#define HLE_UD_OUT_NONE 0u
+#define HLE_UD_OUT_STUCK 1u
+#define HLE_UD_OUT_REFUSED 2u
+#define HLE_UD_OUT_SELF_NONE 3u
+#define HLE_UD_OUT_STATUS_ERROR 4u
+#define HLE_UD_SKIP_UMD_PRESENT 1u
+#define HLE_UD_SKIP_DIR_EXISTS 2u
+#define HLE_UD_SKIP_UMD_UNKNOWN 3u
+#define HLE_UD_SKIP_DIR_UNCLEAR 4u
+#define HLE_UD_SKIP_STUCK 5u
+#define HLE_UD_SKIP_NET_SETUP 6u
+#define HLE_UD_SKIP_NOT_RUN 7u
+#define HLE_UD_PATH_ABSENT 0x80010002u /* sceIoGetstat: no such file or directory */
+/* Block sizes the runtime accepts (utility_param_size_ok lists in hle_utility.c) and the PSPSDK
+   and PPSSPP layouts give: savedata 0x600, netconf 0x44 (pspUtilityNetconfData), the gamedata
+   install block 0x598 (PPSSPP SceUtilityGamedataInstallParam), sharing 0x64
+   (pspUtilityGameSharingParams). The message dialog block is the 0x2c4-byte V3 size, all zero. */
+#define HLE_UD_SD_BYTES 0x600u
+#define HLE_UD_NC_BYTES 0x44u
+#define HLE_UD_GD_BYTES 0x598u
+#define HLE_UD_GS_BYTES 0x64u
+#define HLE_UD_MSG_BYTES 0x2c4u
+#define HLE_UD_SD_SIZE_INFO_WORDS 15u
+#define HLE_UD_GS_DATA_BYTES 256u
+#define HLE_UD_SD_GAME_NAME "NKPROBE01"
+#define HLE_UD_SD_SAVE_NAME "GETSIZE"
+#define HLE_UD_GD_GAME_NAME "NKORACLE0"
+#define HLE_UD_GD_DATA_NAME "GDI1"
+#define HLE_UD_GD_DIR "ms0:/PSP/SAVEDATA/" HLE_UD_GD_GAME_NAME HLE_UD_GD_DATA_NAME
+#define HLE_UD_GS_NAME "NKORACL"
+#define HLE_UD_PRODUCT "NKOR00000"
+_Static_assert(HLE_UD_TIMING_HEAD + HLE_UD_CHANGE_SLOTS == HLE_UD_TIMING_WORDS,
+               "a timing record is its head and its change slots");
+_Static_assert(HLE_UD_CLEAN_HEAD + 2u * HLE_UD_CLEAN_FILES == HLE_UD_CLEANUP_WORDS,
+               "a cleanup record is its head, the removes and the sizes");
+_Static_assert(HLE_UD_TIMING_WORDS <= HLE_MAX_WORDS, "a timing record fits the writer");
+
+int nkUtilSavedataInitStart(void *param);
+int nkUtilSavedataGetStatus(void);
+int nkUtilSavedataUpdate(int speed);
+int nkUtilSavedataShutdownStart(void);
+int nkUtilMsgDialogInitStart(void *param);
+int nkUtilNetconfInitStart(void *param);
+int nkUtilNetconfGetStatus(void);
+int nkUtilNetconfUpdate(int speed);
+int nkUtilNetconfShutdownStart(void);
+int nkUtilGamedataInstallInitStart(void *param);
+int nkUtilGamedataInstallGetStatus(void);
+int nkUtilGamedataInstallUpdate(int speed);
+int nkUtilGamedataInstallShutdownStart(void);
+int nkUtilGameSharingInitStart(void *param);
+int nkUtilGameSharingGetStatus(void);
+int nkUtilGameSharingUpdate(int speed);
+int nkUtilGameSharingShutdownStart(void);
+
+typedef struct HleUdType {
+    const char *tag;
+    int (*init)(void *param);
+    int (*get_status)(void);
+    int (*update)(int speed);
+    int (*shutdown)(void);
+    void (*fill)(uint8_t *block);
+    uint8_t *first;
+    uint8_t *second;
+    uint32_t output_offset;
+} HleUdType;
+
+typedef struct HleUdRun {
+    const HleUdType *t;
+    uint32_t v0;
+    int init_rc;
+    int last;
+    uint32_t polls;
+    uint32_t updates;
+    uint32_t changes;
+    uint32_t change[HLE_UD_CHANGE_SLOTS];
+    uint32_t sd_rc;
+    uint32_t sd_at;
+    uint32_t sd_status;
+    uint32_t sd_calls;
+    uint32_t end_at;
+    uint32_t outcome;
+    int accepted;
+    int active;
+    int finish_called;
+    int init_cancel_called;
+} HleUdRun;
+
+static uint8_t s_ud_sd[HLE_UD_SD_BYTES] __attribute__((aligned(64)));
+static uint32_t s_ud_sd_size_info[HLE_UD_SD_SIZE_INFO_WORDS] __attribute__((aligned(64)));
+static uint8_t s_ud_nc[2][HLE_UD_NC_BYTES] __attribute__((aligned(64)));
+static uint8_t s_ud_nc_adhoc[16] __attribute__((aligned(64)));
+static uint8_t s_ud_gd[2][HLE_UD_GD_BYTES] __attribute__((aligned(64)));
+static uint8_t s_ud_gs[2][HLE_UD_GS_BYTES] __attribute__((aligned(64)));
+static uint8_t s_ud_gs_data[HLE_UD_GS_DATA_BYTES] __attribute__((aligned(64)));
+static uint8_t s_ud_msg[HLE_UD_MSG_BYTES] __attribute__((aligned(64)));
+static struct productStruct s_ud_product;
+static SceIoDirent s_ud_dirent;
+static char s_ud_names[HLE_UD_CLEAN_FILES][HLE_UD_NAME_BYTES];
+static char s_ud_path[sizeof(HLE_UD_GD_DIR) + 1u + HLE_UD_NAME_BYTES];
+_Static_assert(sizeof(s_ud_path) >= sizeof(HLE_UD_GD_DIR) + HLE_UD_NAME_BYTES,
+               "a file path is the directory, a slash, a name of at most 63 bytes and a NUL");
+static uint32_t s_ud_stuck;
+static uint32_t s_ud_fail;
+
+static void hle_ud_put32(uint8_t *block, uint32_t offset, uint32_t value)
+{
+    memcpy(block + offset, &value, sizeof(value));
+}
+
+static uint32_t hle_ud_get32(const uint8_t *block, uint32_t offset)
+{
+    uint32_t value;
+    memcpy(&value, block + offset, sizeof(value));
+    return value;
+}
+
+/* A NUL-terminated text into a zeroed field; every text here is shorter than its field. */
+static void hle_ud_put_text(uint8_t *block, uint32_t offset, const char *text)
+{
+    memcpy(block + offset, text, strlen(text) + 1u);
+}
+
+/* The common header (pspUtilityDialogCommon), filled as case 104 fills it. */
+static void hle_ud_common(uint8_t *block, uint32_t bytes)
+{
+    memset(block, 0, bytes);
+    hle_ud_put32(block, 0x00u, bytes);        /* size */
+    hle_ud_put32(block, 0x04u, 1u);           /* language: English */
+    hle_ud_put32(block, 0x08u, 1u);           /* buttonSwap: cross accepts */
+    hle_ud_put32(block, 0x0cu, 17u);          /* graphics thread priority */
+    hle_ud_put32(block, 0x10u, 19u);          /* access thread priority */
+    hle_ud_put32(block, 0x14u, 18u);          /* font thread priority */
+    hle_ud_put32(block, 0x18u, 16u);          /* sound thread priority */
+    hle_ud_put32(block, 0x1cu, HLE_SENTINEL); /* common result: an unwritten word shows */
+}
+
+/* Savedata GETSIZE for a save no game owns, with an empty sizeInfo (no files listed). */
+static void hle_ud_fill_savedata(uint8_t *block)
+{
+    hle_ud_common(block, HLE_UD_SD_BYTES);
+    hle_ud_put32(block, 0x30u, 22u);          /* mode 22: GETSIZE */
+    hle_ud_put32(block, 0x34u, HLE_SENTINEL); /* bind */
+    hle_ud_put_text(block, 0x3cu, HLE_UD_SD_GAME_NAME);
+    hle_ud_put_text(block, 0x4cu, HLE_UD_SD_SAVE_NAME);
+    for (uint32_t i = 0; i < HLE_UD_SD_SIZE_INFO_WORDS; i++) {
+        s_ud_sd_size_info[i] = i < 4u ? 0u : HLE_SENTINEL;
+    }
+    hle_ud_put32(block, 0x5fcu, (uint32_t)(uintptr_t)s_ud_sd_size_info);
+}
+
+/* Netconf action 0 (connect to an access point), no ad hoc group, hotspot 0, wifisp 0. */
+static void hle_ud_fill_netconf(uint8_t *block)
+{
+    hle_ud_common(block, HLE_UD_NC_BYTES);
+    memset(s_ud_nc_adhoc, 0, sizeof(s_ud_nc_adhoc));
+    hle_ud_put32(block, 0x30u, (uint32_t)PSP_NETCONF_ACTION_CONNECTAP);
+    hle_ud_put32(block, 0x34u, (uint32_t)(uintptr_t)s_ud_nc_adhoc);
+    hle_ud_put32(block, 0x38u, 0u);           /* hotspot: off */
+    hle_ud_put32(block, 0x3cu, 0u);           /* hotspot_connected: an output */
+    hle_ud_put32(block, 0x40u, 0u);           /* wifisp: off */
+}
+
+/* The gamedata install block, mode 0 (no prompt), into the probe-owned directory. */
+static void hle_ud_fill_gamedata(uint8_t *block)
+{
+    hle_ud_common(block, HLE_UD_GD_BYTES);
+    hle_ud_put32(block, 0x30u, 0u);
+    hle_ud_put_text(block, 0x34u, HLE_UD_GD_GAME_NAME);
+    hle_ud_put_text(block, 0x44u, HLE_UD_GD_DATA_NAME);
+    hle_ud_put_text(block, 0x58u, "Nakagawa oracle probe");
+    hle_ud_put_text(block, 0xd8u, "Probe data");
+    hle_ud_put_text(block, 0x158u, "Synthetic probe install");
+    block[0x558u] = 1u;                       /* parental level */
+    hle_ud_put32(block, 0x55cu, HLE_SENTINEL); /* progress */
+    hle_ud_put32(block, 0x560u, HLE_SENTINEL);
+    hle_ud_put32(block, 0x564u, HLE_SENTINEL);
+}
+
+/* Game sharing, single send, the probe's pattern bytes in memory. */
+static void hle_ud_fill_sharing(uint8_t *block)
+{
+    hle_ud_common(block, HLE_UD_GS_BYTES);
+    for (uint32_t i = 0; i < HLE_UD_GS_DATA_BYTES; i++) {
+        s_ud_gs_data[i] = (uint8_t)(i * 0x3Bu + 0x11u);
+    }
+    hle_ud_put_text(block, 0x38u, HLE_UD_GS_NAME);
+    hle_ud_put32(block, 0x4cu, HLE_SENTINEL); /* result */
+    hle_ud_put32(block, 0x54u, (uint32_t)PSP_UTILITY_GAMESHARING_MODE_SINGLE);
+    hle_ud_put32(block, 0x58u, (uint32_t)PSP_UTILITY_GAMESHARING_DATA_TYPE_MEMORY);
+    hle_ud_put32(block, 0x5cu, (uint32_t)(uintptr_t)s_ud_gs_data);
+    hle_ud_put32(block, 0x60u, HLE_UD_GS_DATA_BYTES);
+}
+
+static const HleUdType k_ud_savedata = {
+    "savedata", nkUtilSavedataInitStart, nkUtilSavedataGetStatus, nkUtilSavedataUpdate,
+    nkUtilSavedataShutdownStart, hle_ud_fill_savedata, s_ud_sd, s_ud_sd, 0x34u,
+};
+static const HleUdType k_ud_gamedata = {
+    "gamedata", nkUtilGamedataInstallInitStart, nkUtilGamedataInstallGetStatus,
+    nkUtilGamedataInstallUpdate, nkUtilGamedataInstallShutdownStart, hle_ud_fill_gamedata,
+    s_ud_gd[0], s_ud_gd[1], 0x55cu,
+};
+static const HleUdType k_ud_netconf = {
+    "netconf", nkUtilNetconfInitStart, nkUtilNetconfGetStatus, nkUtilNetconfUpdate,
+    nkUtilNetconfShutdownStart, hle_ud_fill_netconf, s_ud_nc[0], s_ud_nc[1], 0x3cu,
+};
+static const HleUdType k_ud_sharing = {
+    "sharing", nkUtilGameSharingInitStart, nkUtilGameSharingGetStatus, nkUtilGameSharingUpdate,
+    nkUtilGameSharingShutdownStart, hle_ud_fill_sharing, s_ud_gs[0], s_ud_gs[1], 0x4cu,
+};
+
+static void hle_ud_skip(const char *case_id, uint32_t reason, uint32_t count)
+{
+    uint32_t zeros[HLE_MAX_WORDS];
+    memset(zeros, 0, sizeof(zeros));
+    hle_record(case_id, "SKIP", reason, zeros, count);
+}
+
+/* A step marker named for the dialog type, "<type>-<what>". */
+static void hle_ud_step(const HleUdType *t, const char *what)
+{
+    static char step[48];
+    snprintf(step, sizeof(step), "%s-%s", t->tag, what);
+    hle_step(step);
+}
+
+static uint32_t hle_ud_code(int status)
+{
+    return (status >= HLE_UD_STATUS_NONE && status <= HLE_UD_STATUS_SHUTDOWN) ? (uint32_t)status
+                                                                               : 0xFFu;
+}
+
+static void hle_ud_begin(HleUdRun *r, const HleUdType *t)
+{
+    memset(r, 0, sizeof(*r));
+    r->t = t;
+    r->sd_rc = HLE_SENTINEL;
+    r->sd_at = HLE_SENTINEL;
+    r->sd_status = HLE_SENTINEL;
+    r->outcome = HLE_UD_OUT_STUCK;
+    for (uint32_t i = 0; i < HLE_UD_CHANGE_SLOTS; i++) {
+        r->change[i] = HLE_SENTINEL;
+    }
+}
+
+/* One poll: the vblank and GetStatus, kept in memory (nothing is written to host0 here). */
+static int hle_ud_poll(HleUdRun *r)
+{
+    const uint32_t at = sceDisplayGetVcount() - r->v0;
+    const int status = r->t->get_status();
+    if (r->polls == 0u || status != r->last) {
+        if (r->changes < HLE_UD_CHANGE_SLOTS) {
+            r->change[r->changes] = (at << 8) | hle_ud_code(status);
+        }
+        r->changes++;
+    }
+    r->polls++;
+    r->last = status;
+    r->end_at = at;
+    if (status >= HLE_UD_STATUS_INIT && status <= HLE_UD_STATUS_SHUTDOWN) {
+        r->active = 1;
+    }
+    return status;
+}
+
+/* A ShutdownStart from a poll loop: its marker, then the vblank, then the call. */
+static void hle_ud_shutdown(HleUdRun *r, int status)
+{
+    hle_ud_step(r->t, "shutdown");
+    const uint32_t at = sceDisplayGetVcount() - r->v0;
+    const int rc = r->t->shutdown();
+    if (r->sd_calls == 0u) {
+        r->sd_rc = (uint32_t)rc;
+        r->sd_at = at;
+        r->sd_status = (uint32_t)status;
+    }
+    r->sd_calls++;
+    if (rc >= 0) {
+        r->accepted = 1;
+    }
+}
+
+/* Drive the dialog to NONE, at most HLE_UD_POLL_LIMIT polls one vblank apart. */
+static void hle_ud_drive(HleUdRun *r)
+{
+    uint32_t running = 0;
+    uint32_t initial = 0;
+    uint32_t idle = 0;
+    r->outcome = HLE_UD_OUT_STUCK;
+    for (uint32_t i = 0; i < HLE_UD_POLL_LIMIT; i++) {
+        const int status = hle_ud_poll(r);
+        if (status < 0) {
+            r->outcome = HLE_UD_OUT_STATUS_ERROR;
+            return;
+        }
+        if (status == HLE_UD_STATUS_NONE) {
+            idle++;
+            if (r->accepted) {
+                r->outcome = HLE_UD_OUT_NONE;
+                return;
+            }
+            if (r->active || idle >= HLE_UD_CANCEL_POLLS) {
+                r->outcome = HLE_UD_OUT_SELF_NONE;
+                return;
+            }
+        } else if (status == HLE_UD_STATUS_RUNNING) {
+            running++;
+            if (!r->accepted && r->sd_calls < HLE_UD_RUN_SHUTDOWNS &&
+                running >= HLE_UD_CANCEL_POLLS * (r->sd_calls + 1u)) {
+                hle_ud_shutdown(r, status);
+            } else {
+                (void)r->t->update(1);
+                r->updates++;
+            }
+        } else if (status == HLE_UD_STATUS_FINISHED) {
+            if (!r->accepted && !r->finish_called) {
+                r->finish_called = 1;
+                hle_ud_shutdown(r, status);
+            }
+        } else if (status == HLE_UD_STATUS_INIT) {
+            initial++;
+            if (!r->accepted && !r->init_cancel_called && initial >= HLE_UD_INIT_CANCEL_POLLS) {
+                r->init_cancel_called = 1;
+                hle_ud_shutdown(r, status);
+            }
+        }
+        (void)sceDisplayWaitVblankStart();
+    }
+}
+
+/* Poll until the dialog is in `want`, at most HLE_UD_REACH_POLLS polls; returns the status the
+   last poll read. Update(1) is called only on the way to FINISHED, and a dialog still RUNNING
+   after HLE_UD_CANCEL_POLLS polls has not reached FINISHED. A status past `want` ends the
+   search. */
+static int hle_ud_reach(HleUdRun *r, int want)
+{
+    uint32_t running = 0;
+    int status = -1;
+    for (uint32_t i = 0; i < HLE_UD_REACH_POLLS; i++) {
+        status = hle_ud_poll(r);
+        if (status == want || status < 0) {
+            return status;
+        }
+        if (status == HLE_UD_STATUS_NONE) {
+            if (r->active) {
+                return status;
+            }
+        } else if (status > want) {
+            return status;
+        } else if (status == HLE_UD_STATUS_RUNNING) {
+            running++;
+            if (running >= HLE_UD_CANCEL_POLLS) {
+                return status;
+            }
+            (void)r->t->update(1);
+            r->updates++;
+        }
+        (void)sceDisplayWaitVblankStart();
+    }
+    return status;
+}
+
+static uint32_t hle_ud_stuck_reason(uint32_t reason)
+{
+    return reason ? reason : (s_ud_stuck ? HLE_UD_SKIP_STUCK : 0u);
+}
+
+static void hle_ud_settle(const HleUdRun *r)
+{
+    if (r->outcome == HLE_UD_OUT_STUCK || r->outcome == HLE_UD_OUT_STATUS_ERROR) {
+        s_ud_stuck++;
+        s_ud_fail++;
+    }
+}
+
+/* Item 1 and 3: one dialog from InitStart back to NONE, with each status change's vblank. */
+static void hle_ud_timing(const char *case_id, const HleUdType *t, uint32_t reason)
+{
+    reason = hle_ud_stuck_reason(reason);
+    if (reason) {
+        hle_ud_skip(case_id, reason, HLE_UD_TIMING_WORDS);
+        return;
+    }
+    HleUdRun r;
+    uint32_t out[HLE_UD_TIMING_WORDS];
+    hle_ud_begin(&r, t);
+    t->fill(t->first);
+    hle_step(case_id);
+    r.v0 = sceDisplayGetVcount();
+    r.init_rc = t->init(t->first);
+    if (r.init_rc < 0) {
+        (void)hle_ud_poll(&r);
+        r.outcome = HLE_UD_OUT_REFUSED;
+    } else {
+        hle_ud_drive(&r);
+    }
+    hle_ud_settle(&r);
+    out[0] = (uint32_t)r.init_rc;
+    out[1] = r.outcome;
+    out[2] = r.polls;
+    out[3] = r.updates;
+    out[4] = r.sd_rc;
+    out[5] = r.sd_at;
+    out[6] = r.sd_status;
+    out[7] = r.sd_calls;
+    out[8] = hle_ud_get32(t->first, 0x1cu);
+    out[9] = hle_ud_get32(t->first, t->output_offset);
+    out[10] = (uint32_t)r.last;
+    out[11] = r.end_at;
+    out[12] = r.changes;
+    for (uint32_t i = 0; i < HLE_UD_CHANGE_SLOTS; i++) {
+        out[HLE_UD_TIMING_HEAD + i] = r.change[i];
+    }
+    hle_record(case_id, "PASS", (uint32_t)r.init_rc, out, HLE_UD_TIMING_WORDS);
+}
+
+/* Item 2: the wrong-state calls in one state, on a fresh dialog, then the drive back to NONE. */
+static void hle_ud_state(const char *case_id, const HleUdType *t, int state, uint32_t reason)
+{
+    reason = hle_ud_stuck_reason(reason);
+    if (reason) {
+        hle_ud_skip(case_id, reason, HLE_UD_STATE_WORDS);
+        return;
+    }
+    HleUdRun r;
+    uint32_t out[HLE_UD_STATE_WORDS];
+    for (uint32_t i = 0; i < HLE_UD_STATE_WORDS; i++) {
+        out[i] = HLE_SENTINEL;
+    }
+    hle_ud_begin(&r, t);
+    t->fill(t->first);
+    t->fill(t->second);
+    memset(s_ud_msg, 0, sizeof(s_ud_msg));
+    hle_step(case_id);
+    r.v0 = sceDisplayGetVcount();
+    r.init_rc = t->init(t->first);
+    out[0] = (uint32_t)r.init_rc;
+    if (r.init_rc < 0) {
+        out[1] = 2u;
+        (void)hle_ud_poll(&r);
+        r.outcome = HLE_UD_OUT_REFUSED;
+    } else {
+        const int want = state == HLE_UD_STATUS_SHUTDOWN ? HLE_UD_STATUS_RUNNING : state;
+        int status = hle_ud_reach(&r, want);
+        int entry_accepted = 0;
+        if (state == HLE_UD_STATUS_SHUTDOWN &&
+            (status == HLE_UD_STATUS_RUNNING || status == HLE_UD_STATUS_FINISHED)) {
+            hle_ud_step(t, "entry-shutdown");
+            const int entry = t->shutdown();
+            out[14] = (uint32_t)entry;
+            entry_accepted = entry >= 0;
+            status = t->get_status();
+        } else if ((state == HLE_UD_STATUS_RUNNING || state == HLE_UD_STATUS_FINISHED) &&
+                   status == state) {
+            /* Both states wait for the caller, so the marker cannot move them on. */
+            hle_ud_step(t, "calls");
+            status = t->get_status();
+        }
+        out[3] = (uint32_t)status;
+        r.accepted = entry_accepted;
+        if (status == state) {
+            out[1] = 1u;
+            out[2] = r.end_at;
+            out[4] = (uint32_t)t->update(1);
+            out[5] = (uint32_t)t->get_status();
+            out[6] = (uint32_t)t->init(t->second);
+            out[7] = (uint32_t)t->get_status();
+            out[8] = (uint32_t)nkUtilMsgDialogInitStart(s_ud_msg);
+            out[9] = (uint32_t)t->get_status();
+            out[10] = (uint32_t)t->shutdown();
+            out[11] = (uint32_t)t->get_status();
+            out[12] = (uint32_t)t->shutdown();
+            out[13] = (uint32_t)t->get_status();
+            if ((int)out[6] >= 0) {
+                r.accepted = 0;
+            }
+            if ((int)out[10] >= 0 || (int)out[12] >= 0) {
+                r.accepted = 1;
+            }
+            if ((int)out[8] >= 0) {
+                s_ud_stuck++;
+                s_ud_fail++;
+            }
+        } else {
+            out[1] = 0u;
+        }
+        hle_ud_step(t, "drive");
+        hle_ud_drive(&r);
+    }
+    hle_ud_settle(&r);
+    out[15] = r.outcome;
+    out[16] = r.sd_calls;
+    out[17] = r.end_at;
+    out[18] = (uint32_t)r.last;
+    out[19] = hle_ud_get32(t->first, 0x1cu);
+    out[20] = hle_ud_get32(t->second, 0x1cu);
+    hle_record(case_id, "PASS", (uint32_t)r.init_rc, out, HLE_UD_STATE_WORDS);
+}
+
+static void hle_ud_states(const char *init_id, const char *running_id, const char *finished_id,
+                          const char *shutdown_id, const HleUdType *t, uint32_t reason)
+{
+    hle_ud_state(init_id, t, HLE_UD_STATUS_INIT, reason);
+    hle_ud_state(running_id, t, HLE_UD_STATUS_RUNNING, reason);
+    hle_ud_state(finished_id, t, HLE_UD_STATUS_FINISHED, reason);
+    hle_ud_state(shutdown_id, t, HLE_UD_STATUS_SHUTDOWN, reason);
+}
+
+/* The gamedata cells run only with no disc in the drive and no directory of that name. */
+static uint32_t hle_ud_gamedata_precheck(void)
+{
+    SceIoStat st;
+    uint32_t out[HLE_UD_PRECHECK_WORDS];
+    memset(&st, 0, sizeof(st));
+    hle_step("gamedata-precheck-umd");
+    const int umd = sceUmdCheckMedium();
+    hle_step("gamedata-precheck-dopen");
+    const SceUID dfd = sceIoDopen(HLE_UD_GD_DIR);
+    out[2] = HLE_SENTINEL;
+    if (dfd >= 0) {
+        hle_step("gamedata-precheck-dclose");
+        out[2] = (uint32_t)sceIoDclose(dfd);
+    }
+    hle_step("gamedata-precheck-stat");
+    const int stat = sceIoGetstat(HLE_UD_GD_DIR, &st);
+    uint32_t reason = 0u;
+    if (s_ud_stuck) {
+        reason = HLE_UD_SKIP_STUCK;
+    } else if (umd < 0) {
+        reason = HLE_UD_SKIP_UMD_UNKNOWN;
+    } else if (umd != 0) {
+        reason = HLE_UD_SKIP_UMD_PRESENT;
+    } else if (dfd >= 0) {
+        reason = HLE_UD_SKIP_DIR_EXISTS;
+    } else if ((uint32_t)stat != HLE_UD_PATH_ABSENT) {
+        reason = HLE_UD_SKIP_DIR_UNCLEAR;
+    }
+    out[0] = (uint32_t)umd;
+    out[1] = (uint32_t)dfd;
+    out[3] = (uint32_t)stat;
+    out[4] = reason;
+    hle_record("gamedata-precheck", "PASS", reason, out, HLE_UD_PRECHECK_WORDS);
+    return reason;
+}
+
+/* s_ud_path = HLE_UD_GD_DIR "/" name. A kept name is shorter than HLE_UD_NAME_BYTES (the
+   collection checks it), and the copy stops at HLE_UD_NAME_BYTES - 1 bytes in any case, so the
+   path always fits: sizeof(HLE_UD_GD_DIR) - 1 + 1 + 63 + 1 <= sizeof(s_ud_path). Built with
+   memcpy rather than snprintf, so nothing can be cut short. */
+static void hle_ud_file_path(const char *name)
+{
+    const uint32_t dir = (uint32_t)sizeof(HLE_UD_GD_DIR) - 1u;
+    uint32_t len = 0;
+    for (; len + 1u < HLE_UD_NAME_BYTES && name[len] != '\0'; len++) {
+    }
+    memcpy(s_ud_path, HLE_UD_GD_DIR, dir);
+    s_ud_path[dir] = '/';
+    memcpy(s_ud_path + dir + 1u, name, len);
+    s_ud_path[dir + 1u + len] = '\0';
+}
+
+/* Remove what the dialog left in the probe-owned directory, then the directory itself. */
+static void hle_ud_gamedata_cleanup(uint32_t reason)
+{
+    if (reason) {
+        hle_ud_skip("gamedata-cleanup", HLE_UD_SKIP_NOT_RUN, HLE_UD_CLEANUP_WORDS);
+        return;
+    }
+    uint32_t out[HLE_UD_CLEANUP_WORDS];
+    uint32_t sizes[HLE_UD_CLEAN_FILES];
+    uint32_t seen = 0;
+    uint32_t files = 0;
+    uint32_t left = 0;
+    memset(sizes, 0, sizeof(sizes));
+    for (uint32_t i = 0; i < HLE_UD_CLEANUP_WORDS; i++) {
+        out[i] = HLE_SENTINEL;
+    }
+    hle_step("gamedata-cleanup-dopen");
+    const SceUID dfd = sceIoDopen(HLE_UD_GD_DIR);
+    out[0] = (uint32_t)dfd;
+    if (dfd >= 0) {
+        for (uint32_t i = 0; i < HLE_UD_DIR_READS; i++) {
+            memset(&s_ud_dirent, 0, sizeof(s_ud_dirent));
+            hle_step("gamedata-cleanup-dread");
+            if (sceIoDread(dfd, &s_ud_dirent) <= 0) {
+                break;
+            }
+            const char *name = s_ud_dirent.d_name;
+            if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+                continue;
+            }
+            seen++;
+            uint32_t len = 0;
+            for (; len < HLE_UD_NAME_BYTES && name[len] != '\0'; len++) {
+            }
+            if (FIO_S_ISREG(s_ud_dirent.d_stat.st_mode) && files < HLE_UD_CLEAN_FILES &&
+                len > 0u && len < HLE_UD_NAME_BYTES) {
+                memcpy(s_ud_names[files], name, len + 1u);
+                sizes[files] = (uint32_t)s_ud_dirent.d_stat.st_size;
+                files++;
+            } else {
+                left++;
+            }
+        }
+        hle_step("gamedata-cleanup-dclose");
+        out[4] = (uint32_t)sceIoDclose(dfd);
+        for (uint32_t f = 0; f < files; f++) {
+            hle_ud_file_path(s_ud_names[f]);
+            hle_step("gamedata-cleanup-remove");
+            out[HLE_UD_CLEAN_HEAD + f] = (uint32_t)sceIoRemove(s_ud_path);
+            out[HLE_UD_CLEAN_HEAD + HLE_UD_CLEAN_FILES + f] = sizes[f];
+        }
+        hle_step("gamedata-cleanup-rmdir");
+        out[5] = (uint32_t)sceIoRmdir(HLE_UD_GD_DIR);
+    }
+    hle_step("gamedata-cleanup-verify");
+    const SceUID again = sceIoDopen(HLE_UD_GD_DIR);
+    out[6] = (uint32_t)again;
+    if (again >= 0) {
+        hle_step("gamedata-cleanup-verify-dclose");
+        (void)sceIoDclose(again);
+        s_ud_fail++;
+    }
+    out[1] = seen;
+    out[2] = files;
+    out[3] = left;
+    hle_record("gamedata-cleanup", again < 0 ? "PASS" : "FAIL", (uint32_t)again, out,
+               HLE_UD_CLEANUP_WORDS);
+}
+
+static void hle_ud_gamedata(void)
+{
+    const uint32_t reason = hle_ud_gamedata_precheck();
+    hle_ud_timing("gamedata-timing", &k_ud_gamedata, reason);
+    hle_ud_states("gamedata-state-init", "gamedata-state-running", "gamedata-state-finished",
+                  "gamedata-state-shutdown", &k_ud_gamedata, reason);
+    hle_ud_gamedata_cleanup(reason);
+}
+
+/* Netconf's net setup; *stage counts the calls that succeeded, in order. */
+static uint32_t hle_ud_netconf_setup(uint32_t *stage)
+{
+    uint32_t out[HLE_UD_NET_WORDS];
+    if (s_ud_stuck) {
+        hle_ud_skip("netconf-setup", HLE_UD_SKIP_STUCK, HLE_UD_NET_WORDS);
+        return HLE_UD_SKIP_STUCK;
+    }
+    for (uint32_t i = 0; i < HLE_UD_NET_WORDS; i++) {
+        out[i] = HLE_SENTINEL;
+    }
+    hle_step("netconf-load-common");
+    out[0] = (uint32_t)sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON);
+    if ((int)out[0] >= 0) {
+        *stage = 1u;
+        hle_step("netconf-load-inet");
+        out[1] = (uint32_t)sceUtilityLoadNetModule(PSP_NET_MODULE_INET);
+    }
+    if (*stage == 1u && (int)out[1] >= 0) {
+        *stage = 2u;
+        hle_step("netconf-net-init");
+        out[2] = (uint32_t)sceNetInit(128 * 1024, 42, 4 * 1024, 42, 4 * 1024);
+    }
+    if (*stage == 2u && (int)out[2] >= 0) {
+        *stage = 3u;
+        hle_step("netconf-inet-init");
+        out[3] = (uint32_t)sceNetInetInit();
+    }
+    if (*stage == 3u && (int)out[3] >= 0) {
+        *stage = 4u;
+        hle_step("netconf-apctl-init");
+        out[4] = (uint32_t)sceNetApctlInit(0x8000, 48);
+    }
+    if (*stage == 4u && (int)out[4] >= 0) {
+        *stage = HLE_UD_NET_STEPS;
+    }
+    const uint32_t result = *stage == HLE_UD_NET_STEPS ? 0u : out[*stage];
+    hle_record("netconf-setup", "PASS", result, out, HLE_UD_NET_WORDS);
+    return *stage == HLE_UD_NET_STEPS ? 0u : HLE_UD_SKIP_NET_SETUP;
+}
+
+static void hle_ud_netconf_teardown(uint32_t stage, uint32_t skipped)
+{
+    uint32_t out[HLE_UD_NET_WORDS];
+    if (skipped) {
+        hle_ud_skip("netconf-teardown", skipped, HLE_UD_NET_WORDS);
+        return;
+    }
+    for (uint32_t i = 0; i < HLE_UD_NET_WORDS; i++) {
+        out[i] = HLE_SENTINEL;
+    }
+    if (stage >= 5u) {
+        hle_step("netconf-apctl-term");
+        out[0] = (uint32_t)sceNetApctlTerm();
+    }
+    if (stage >= 4u) {
+        hle_step("netconf-inet-term");
+        out[1] = (uint32_t)sceNetInetTerm();
+    }
+    if (stage >= 3u) {
+        hle_step("netconf-net-term");
+        out[2] = (uint32_t)sceNetTerm();
+    }
+    if (stage >= 2u) {
+        hle_step("netconf-unload-inet");
+        out[3] = (uint32_t)sceUtilityUnloadNetModule(PSP_NET_MODULE_INET);
+    }
+    if (stage >= 1u) {
+        hle_step("netconf-unload-common");
+        out[4] = (uint32_t)sceUtilityUnloadNetModule(PSP_NET_MODULE_COMMON);
+    }
+    hle_record("netconf-teardown", "PASS", stage, out, HLE_UD_NET_WORDS);
+}
+
+static void hle_ud_netconf(void)
+{
+    uint32_t stage = 0;
+    const uint32_t reason = hle_ud_netconf_setup(&stage);
+    hle_ud_timing("netconf-timing", &k_ud_netconf, reason);
+    hle_ud_states("netconf-state-init", "netconf-state-running", "netconf-state-finished",
+                  "netconf-state-shutdown", &k_ud_netconf, reason);
+    hle_ud_netconf_teardown(stage, reason == HLE_UD_SKIP_STUCK ? reason : 0u);
+}
+
+/* Game sharing's ad hoc setup: init calls only, no group is created or joined here. */
+static uint32_t hle_ud_sharing_setup(uint32_t *stage)
+{
+    uint32_t out[HLE_UD_NET_WORDS];
+    if (s_ud_stuck) {
+        hle_ud_skip("sharing-setup", HLE_UD_SKIP_STUCK, HLE_UD_NET_WORDS);
+        return HLE_UD_SKIP_STUCK;
+    }
+    for (uint32_t i = 0; i < HLE_UD_NET_WORDS; i++) {
+        out[i] = HLE_SENTINEL;
+    }
+    memset(&s_ud_product, 0, sizeof(s_ud_product));
+    memcpy(s_ud_product.product, HLE_UD_PRODUCT, sizeof(s_ud_product.product));
+    hle_step("sharing-load-common");
+    out[0] = (uint32_t)sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON);
+    if ((int)out[0] >= 0) {
+        *stage = 1u;
+        hle_step("sharing-load-adhoc");
+        out[1] = (uint32_t)sceUtilityLoadNetModule(PSP_NET_MODULE_ADHOC);
+    }
+    if (*stage == 1u && (int)out[1] >= 0) {
+        *stage = 2u;
+        hle_step("sharing-net-init");
+        out[2] = (uint32_t)sceNetInit(128 * 1024, 42, 4 * 1024, 42, 4 * 1024);
+    }
+    if (*stage == 2u && (int)out[2] >= 0) {
+        *stage = 3u;
+        hle_step("sharing-adhoc-init");
+        out[3] = (uint32_t)sceNetAdhocInit();
+    }
+    if (*stage == 3u && (int)out[3] >= 0) {
+        *stage = 4u;
+        hle_step("sharing-adhocctl-init");
+        out[4] = (uint32_t)sceNetAdhocctlInit(0x2000, 0x20, &s_ud_product);
+    }
+    if (*stage == 4u && (int)out[4] >= 0) {
+        *stage = HLE_UD_NET_STEPS;
+    }
+    const uint32_t result = *stage == HLE_UD_NET_STEPS ? 0u : out[*stage];
+    hle_record("sharing-setup", "PASS", result, out, HLE_UD_NET_WORDS);
+    return *stage == HLE_UD_NET_STEPS ? 0u : HLE_UD_SKIP_NET_SETUP;
+}
+
+static void hle_ud_sharing_teardown(uint32_t stage, uint32_t skipped)
+{
+    uint32_t out[HLE_UD_NET_WORDS];
+    if (skipped) {
+        hle_ud_skip("sharing-teardown", skipped, HLE_UD_NET_WORDS);
+        return;
+    }
+    for (uint32_t i = 0; i < HLE_UD_NET_WORDS; i++) {
+        out[i] = HLE_SENTINEL;
+    }
+    if (stage >= 5u) {
+        hle_step("sharing-adhocctl-term");
+        out[0] = (uint32_t)sceNetAdhocctlTerm();
+    }
+    if (stage >= 4u) {
+        hle_step("sharing-adhoc-term");
+        out[1] = (uint32_t)sceNetAdhocTerm();
+    }
+    if (stage >= 3u) {
+        hle_step("sharing-net-term");
+        out[2] = (uint32_t)sceNetTerm();
+    }
+    if (stage >= 2u) {
+        hle_step("sharing-unload-adhoc");
+        out[3] = (uint32_t)sceUtilityUnloadNetModule(PSP_NET_MODULE_ADHOC);
+    }
+    if (stage >= 1u) {
+        hle_step("sharing-unload-common");
+        out[4] = (uint32_t)sceUtilityUnloadNetModule(PSP_NET_MODULE_COMMON);
+    }
+    hle_record("sharing-teardown", "PASS", stage, out, HLE_UD_NET_WORDS);
+}
+
+static void hle_ud_sharing(void)
+{
+    uint32_t stage = 0;
+    const uint32_t reason = hle_ud_sharing_setup(&stage);
+    hle_ud_timing("sharing-timing", &k_ud_sharing, reason);
+    hle_ud_states("sharing-state-init", "sharing-state-running", "sharing-state-finished",
+                  "sharing-state-shutdown", &k_ud_sharing, reason);
+    hle_ud_sharing_teardown(stage, reason == HLE_UD_SKIP_STUCK ? reason : 0u);
+}
+
+static int hle_run(void)
+{
+    hle_ud_timing("savedata-timing-r1", &k_ud_savedata, 0u);
+    hle_ud_timing("savedata-timing-r2", &k_ud_savedata, 0u);
+    hle_ud_timing("savedata-timing-r3", &k_ud_savedata, 0u);
+    hle_ud_gamedata();
+    hle_ud_netconf();
+    hle_ud_sharing();
+    return s_ud_fail == 0u;
+}
+
+#endif /* HLE_CASE_UTILITY_DIALOGS */
 
 /* ------------------------------------------------------------------------- */
 

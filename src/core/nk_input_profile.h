@@ -24,13 +24,17 @@ extern "C" {
  * Schema 4 adds the analog stick's four directions to keyboard_bindings
  * (controls stick_up, stick_down, stick_left, stick_right). A schema 3 file still
  * loads, with the default stick keys (a default a button key of the file already
- * uses is left unbound), and cannot carry stick entries. */
-#define NK_INPUT_PROFILE_SCHEMA_VERSION 4
+ * uses is left unbound), and cannot carry stick entries.
+ * Schema 5 adds the optional "aim" member to every mapping: mouse movement as an
+ * analog-stick source (#1791). A schema 1 to 4 file still loads with aiming off, and
+ * cannot carry an "aim" member: an older build would ignore it silently. */
+#define NK_INPUT_PROFILE_SCHEMA_VERSION 5
 #define NK_INPUT_PROFILE_MIN_SCHEMA_VERSION 1
 /* The schema that introduced each optional member. */
 #define NK_INPUT_PROFILE_PER_TITLE_SCHEMA_VERSION 2
 #define NK_INPUT_PROFILE_KEYBOARD_SCHEMA_VERSION 3
 #define NK_INPUT_PROFILE_STICK_KEYS_SCHEMA_VERSION 4 /* first version with stick keys */
+#define NK_INPUT_PROFILE_AIM_SCHEMA_VERSION 5 /* first version with the aim member */
 /* The largest profile file the loader reads. A newer schema_version than this
  * build's is refused with NK_ERROR_NEWER_SCHEMA and the save path will not
  * replace it; an older file is kept as <file>.v<n>.bak by the first save. */
@@ -237,6 +241,42 @@ typedef enum {
 } NkNavAction;
 
 /**
+ * Mouse aiming (#1791, layer 1): mouse movement drives the PSP analog nub, so a game
+ * built around one stick can be aimed with a mouse. It only translates host input into
+ * ordinary PSP input, so the game stays authentic, and it is off unless the person
+ * turns it on.
+ *
+ * Each input poll, the mouse movement since the last poll (host counts, raw, with no
+ * acceleration) is turned into a nub deflection: NK_AIM_FULL_DEFLECTION_COUNTS counts in
+ * one reference poll (1/60 s) at 100% sensitivity push the nub to its edge, and the nub
+ * returns to centre when the mouse stops. The host polls once per presented frame, so it
+ * scales the movement by the time since the last poll before it calls nk_aim_apply: the
+ * same hand speed gives the same nub at any frame rate. There is no deadzone: one count at
+ * 100% is already about 7 of the nub's 127 units. A moving mouse replaces the controller's
+ * or keyboard's value on that axis; a still one leaves it alone. Aiming is off under
+ * SR_PADSCRIPT, where a script drives the pad.
+ */
+#define NK_AIM_SENSITIVITY_MIN 1
+#define NK_AIM_SENSITIVITY_MAX 1000
+#define NK_AIM_SENSITIVITY_DEFAULT 100 /* percent */
+#define NK_AIM_SMOOTHING_MAX 95        /* percent of the last poll's movement kept */
+#define NK_AIM_FULL_DEFLECTION_COUNTS 16
+
+typedef struct {
+    bool mouse;            /* mouse movement drives the nub (default off) */
+    int16_t sensitivity;   /* percent, NK_AIM_SENSITIVITY_MIN..MAX (default 100) */
+    bool invert_x;
+    bool invert_y;         /* mouse up pushes the nub up unless inverted */
+    uint8_t smoothing;     /* 0 = raw, up to NK_AIM_SMOOTHING_MAX: share of the last poll kept */
+} NkAimConfig;
+
+/* The smoothing carried from one poll to the next, in 1/256 mouse counts. */
+typedef struct {
+    int32_t sx;
+    int32_t sy;
+} NkAimState;
+
+/**
  * Versioned host input profile.
  */
 typedef struct {
@@ -253,6 +293,7 @@ typedef struct {
     NkDigitalBinding nav_bindings[NK_NAV_ACTION_COUNT];
     NkKeyBinding psp_keys[NK_PSP_BTN_COUNT]; /* host keyboard keys per PSP button (schema 3) */
     NkKeyBinding stick_keys[NK_PSP_STICK_DIR_COUNT]; /* host keys that push the analog stick (schema 4) */
+    NkAimConfig aim; /* mouse aiming (schema 5) */
 } NkInputProfile;
 
 /**
@@ -597,6 +638,31 @@ bool nk_input_profile_eval_key_analog(
     const NkInputProfile *profile,
     const bool *key_down,
     int key_count,
+    uint8_t *lx,
+    uint8_t *ly
+);
+
+/**
+ * @brief Clear the smoothing state, for a new run, a focus change or an overlay claim.
+ */
+void nk_aim_state_reset(NkAimState *state);
+
+/**
+ * @brief Turn one poll's mouse movement into the nub position.
+ *
+ * `dx` and `dy` are the host mouse counts since the last poll (right and down are
+ * positive). With mouse aiming off, or with a NULL `cfg` or `state`, nothing changes and
+ * the state is cleared. Otherwise each axis the mouse is moving takes the deflection
+ * (centre 128, so 1..255) and the other keeps the value passed in. A NULL `lx` or `ly`
+ * is skipped.
+ *
+ * @return true when the mouse moved an axis.
+ */
+bool nk_aim_apply(
+    const NkAimConfig *cfg,
+    NkAimState *state,
+    int32_t dx,
+    int32_t dy,
     uint8_t *lx,
     uint8_t *ly
 );

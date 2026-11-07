@@ -63,6 +63,9 @@ ALLOWLIST: Mapping[str, tuple[int, str]] = {
         2, "the random source (BCrypt or getrandom); PR #1666 changes the glibc test for bionic"),
     "src/core/nk_psp_npumdimg.c": (
         7, "linked into the decrypt tool; its remove/replace calls remain local"),
+    "src/core/nk_steam_shortcuts.c": (
+        3, "Add to Steam (#2152): Steam's Windows registry key and process probe; elsewhere the "
+           "caller names the Steam folder, and the process probe answers UNSUPPORTED"),
     "src/core/nk_title_manifest.c": (
         7, "durable manifest replacement still uses direct Win32 file operations"),
     "src/core/nk_xb.c": (
