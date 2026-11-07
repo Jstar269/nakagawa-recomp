@@ -49,8 +49,8 @@ remains GCC.
 GCC/lld passed production-smoke after the verifier learned lld's `file.o:(section)` map entries.
 It stopped when the unmutated scheduler baseline could not link in mutation lane
 `25-scheduler`: `COSIM_MUTATION FAIL: AOT boundary baseline verdict=no-run`. Make reported the
-failed recipes at `mk/selftests.mk:499`, `mk/selftests.mk:513` and `mk/cosim_snapshot.mk:121`.
-The lld diagnostic did not include a source file and line.
+failed recipes at `mk/selftests.mk:499`, `mk/selftests.mk:513` and `mk/cosim_snapshot.mk:121`
+in `EXPERIMENT_SHA`. The lld diagnostic itself did not include a source file and line.
 
 Both Clang rows passed the display-smoke VRAM capture check, then failed compiling
 `videorec.c` because Clang treats the unused-but-set global as an error. This is a project and
