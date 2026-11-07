@@ -286,6 +286,12 @@ static const NkLooseContentRoot s_loose_roots_title_1[] = {
     { ".", "", 0U, true, NULL, 0 },
 };
 
+int nk_title_catalog_builds(const char *disc_id, const NkTitleBuild **out_builds) {
+    if (out_builds) *out_builds = NULL;
+    if (!disc_id || !*disc_id) return 0;
+    return 0;
+}
+
 const int nk_title_catalog_count = 7;
 const NkTitleEntry nk_title_catalog_entries[] = {
     {

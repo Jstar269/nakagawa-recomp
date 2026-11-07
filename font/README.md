@@ -10,7 +10,7 @@ fonts, with the project's converter `tools/ttf2pgf.py`:
 
 | File | Stands in for | Made from | Licence |
 | --- | --- | --- | --- |
-| `nkjpn.pgf` | `jpn0`, Japanese text | M PLUS 1p Regular | SIL Open Font License 1.1 |
+| `nkjpn.pgf` | `jpn0`, Japanese text | Noto Sans JP Regular, and M PLUS 1p Regular for its one missing character (`≒`) | SIL Open Font License 1.1 |
 | `nkltn.pgf`, `nkltn1.pgf` to `nkltn7.pgf` | `ltn0` to `ltn7`, Latin text at the PSP's larger size | Liberation Sans and Liberation Serif, Regular, Italic, Bold and Bold Italic | SIL Open Font License 1.1 |
 | `nkltns.pgf`, `nkltn9.pgf` to `nkltn15.pgf` | `ltn8` to `ltn15`, Latin text at the PSP's smaller size | The same eight faces | SIL Open Font License 1.1 |
 | `nkkr.pgf` | `kr0`, Korean text | Gowun Dodum Regular | SIL Open Font License 1.1 |
@@ -25,9 +25,9 @@ its exact source file and the converter settings. The source fonts are pinned in
 fonts are never committed.
 
 These fonts are stand-ins. They let a game draw its text when you have not imported your PSP's fonts, but they look
-different from the PSP's. The Latin fonts are sized and spaced to come close: their nominal sizes are the PSP's, and
-their x-height, cap height, stem width and spacing are set from aggregate measurements of the PSP fonts they stand in
-for. No letter shape comes from those fonts.
+different from the PSP's. They are sized and spaced to come close: their nominal sizes are the PSP's (10.125 points
+for Japanese and Korean, and the PSP's two Latin sizes), and their x-height, cap height, stem width and spacing are set
+from aggregate measurements of the PSP fonts they stand in for. No letter shape comes from those fonts.
 
 ## Without your PSP's fonts: what changes
 
@@ -37,27 +37,31 @@ stand-ins, and the player's checks before a game starts say the same.
 
 What stays the same:
 
-- **Latin characters.** Every character of the PSP's Latin fonts is in the Latin stand-ins: ASCII, Latin-1, Latin
-  Extended-A, the Windows-1252 punctuation and symbols, and the Cyrillic alphabet.
-- **Latin sizes and line lengths.** Each Latin stand-in has its PSP font's family, style and nominal size, and a
-  sentence or a menu line in any of the 16 Latin faces comes out within 3 % of its width on a PSP. Digits in the
-  sans-serif faces all have the PSP's width.
+- **Characters.** Every character of the PSP's Latin fonts is in the Latin stand-ins: ASCII, Latin-1, Latin
+  Extended-A, the Windows-1252 punctuation and symbols, and the Cyrillic alphabet. The Japanese stand-in has every
+  character of Shift JIS as PSP games write it (Microsoft's code page 932), including all 6,355 kanji of JIS X 0208
+  levels 1 and 2. The Korean stand-in has all 11,172 Hangul syllables.
+- **Sizes and line lengths.** Each Latin stand-in has its PSP font's family, style and nominal size, and a sentence
+  or a menu line in any of the 16 Latin faces comes out within 3 % of its width on a PSP. Digits in the sans-serif
+  faces all have the PSP's width. Japanese kana and kanji are 18 pixels wide, as on a PSP, and Hangul syllables
+  18.3 pixels on average against the PSP's 18.4.
 
 What changes:
 
-- **Letter shapes.** The text looks like Liberation Sans and Liberation Serif (Latin), M PLUS 1p (Japanese) or Gowun
-  Dodum (Korean), not the PSP's fonts.
+- **Letter shapes.** The text looks like Liberation Sans and Liberation Serif (Latin), Noto Sans JP (Japanese) or
+  Gowun Dodum (Korean), not the PSP's fonts.
 - **Capitals against small letters.** In Liberation's faces capitals are wider, compared with small letters, than in
   the PSP's. The spacing splits the difference, so in the regular sans-serif faces capitals average about 2 % wider
   than the PSP's and small letters about 2 % narrower. A line in capitals, such as a menu, runs up to 3 % longer and
   a sentence up to 2 % shorter.
-- **Japanese and Korean size.** Both stand-ins are drawn at 12 pixels per em; the PSP's Japanese and Korean fonts
-  are larger, so Japanese and Korean text is smaller than on a PSP and lines are shorter.
+- **Japanese weight and Latin letters in Japanese text.** The Japanese stand-in is Noto Sans JP's regular weight;
+  its stroke weight has not been compared with the PSP font's. Latin letters drawn with the Japanese font come from
+  Noto Sans JP and are about 18 % narrower than the PSP's (9.7 pixels on average against 11.8).
 - **Missing characters.** A character the stand-in lacks is drawn as the font library's replacement character: an
   underscore, unless the game chooses another. Where the stand-in lacks that one too, nothing is drawn. The Japanese
-  stand-in has only the 2,965 level-1 kanji of JIS X 0208 and lacks 6,128 of the PSP Japanese font's 9,773
-  characters. The Korean stand-in lacks 512 of the PSP Korean font's 11,836, all in U+1200 to U+12FF and U+1400 to
-  U+14FF; Gowun Dodum has none of them.
+  stand-in lacks about 2,200 of the PSP Japanese font's 9,773 characters, the ones outside code page 932. The Korean
+  stand-in lacks 512 of the PSP Korean font's 11,836, all in U+1200 to U+12FF and U+1400 to U+14FF; Gowun Dodum has
+  none of them.
 
 ### Measured differences
 
@@ -72,8 +76,8 @@ measurement of the earlier stand-ins.
 | --- | --- | --- | --- | --- |
 | `ltn0` to `ltn7` (larger Latin size) | 111 of 322: 95 Cyrillic letters; the symbols `№ ∆ ∙ √ ∞ ≈ ≠ ≤ ≥`; `ƒ ˆ ˜` and four combining accents (U+0301, U+0306, U+0308, U+0338) | One face for all eight. Sans-serif regular (`ltn0`): sentence −2.0 %, menu line −7.3 %. Serif faces (odd numbers): sentence +6.0 % to +13.8 %. Sans-serif bold (`ltn4`, `ltn6`): sentence −6.2 %, menu line −9.3 %. Capitals average 1.05 px narrower and digits 1.91 px narrower. | None | A face per font. Every sentence and menu line within 3 %: sans-serif regular and italic −1.7 % and +2.9 %, serif −2.1 % to +2.8 %, sans-serif bold and bold italic +0.4 % and −0.3 %. In `ltn0`, small letters average 0.27 px narrower and capitals 0.28 px wider; digits have the PSP's width. |
 | `ltn8` to `ltn15` (smaller Latin size) | The same 111 of 322 | Sans-serif regular (`ltn8`): sentence −0.2 %, menu line −5.5 %. Serif faces: sentence +7.9 % to +15.9 %. Sans-serif bold (`ltn12`, `ltn14`): sentence −4.5 %, menu line −7.5 %. | None | Every sentence and menu line within 3 %: sans-serif regular and italic −1.1 % and +2.8 %, serif −2.0 % to +2.8 %, sans-serif bold and bold italic +0.2 % and −0.2 %. In `ltn8`, small letters average 0.14 px narrower and capitals 0.17 px wider; digits have the PSP's width. |
-| `jpn0` | 6,128 of 9,773: 4,953 of the 7,919 kanji (the stand-in had the 2,965 level-1 kanji of JIS X 0208 and none of level 2), 263 enclosed and squared characters, 365 symbols, 84 Latin-1 and 71 other Latin and Greek letters, and smaller groups | Kana and kanji 6.00 px narrower each on average. Nominal size 12 points where the PSP font gives 10.125. | Unchanged | Unchanged |
-| `kr0` | 512 of 11,836, all in U+1200 to U+12FF and U+1400 to U+14FF | Hangul syllables 7.44 px narrower each on average. Nominal size 12 points where the PSP font gives 10.125. | Unchanged | Unchanged |
+| `jpn0` | 6,128 of 9,773: 4,953 of the 7,919 kanji (the stand-in had the 2,965 level-1 kanji of JIS X 0208 and none of level 2), 263 enclosed and squared characters, 365 symbols, 84 Latin-1 and 71 other Latin and Greek letters, and smaller groups | Kana and kanji 6.00 px narrower each on average. Nominal size 12 points where the PSP font gives 10.125. | 2,202 of 9,773, all outside code page 932 | Kana and kanji the PSP's 18 px. Nominal size 10.125 points, as on the PSP. |
+| `kr0` | 512 of 11,836, all in U+1200 to U+12FF and U+1400 to U+14FF | Hangul syllables 7.44 px narrower each on average. Nominal size 12 points where the PSP font gives 10.125. | The same 512 | Hangul syllables 0.04 px narrower on average. Nominal size 10.125 points, as on the PSP. |
 
 ## Your PSP's own fonts
 

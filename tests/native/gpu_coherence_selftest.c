@@ -11,6 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <vulkan/vulkan.h>
 
 /* Standalone support required by recomp.h and the production GE object. The test owns a
@@ -94,6 +97,17 @@ static int host_mem_type_selection_ok(void) {
     return ok;
 }
 
+/* `path` made absolute against the current folder (the folder need not exist yet). */
+static int absolute_path(const char *path, char *out, size_t n) {
+#ifdef _WIN32
+    return _fullpath(out, path, n) != NULL;
+#else
+    if (path[0] == '/') return snprintf(out, n, "%s", path) < (int)n;
+    char cwd[3072];
+    return getcwd(cwd, sizeof cwd) && snprintf(out, n, "%s/%s", cwd, path) < (int)n;
+#endif
+}
+
 /* `value` "unset" removes the variable. */
 static int set_env(const char *name, const char *value) {
     const int unset = strcmp(value, "unset") == 0;
@@ -110,14 +124,26 @@ static int set_env(const char *name, const char *value) {
  * SR_GPU_TWIN_REF (a file the twin cases write in a twin-off run and compare against in a
  * twin-on run). The twin is an Ace Mode feature, so `--twin` also turns Ace Mode on (with no
  * Ace item of its own), unless `--authentic` keeps it off to show that an authentic run
- * ignores the switch. Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does
- * not accept. */
+ * ignores the switch. `--pipeline-cache DIR` turns the pipeline cache (#2149) on and makes DIR,
+ * as an absolute path, the data root (SR_USER_DATA_ROOT), so the cache lives in DIR/cache/gegpu
+ * as it would under a launcher's root; without it the harness turns the cache off, so a
+ * selftest never reads or writes the user's cache folder.
+ * Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does not accept. */
 int main(int argc, char **argv) {
-    int twin_arg = 0, authentic = 0, repl_only = 0;
+    int twin_arg = 0, authentic = 0, repl_only = 0, pcache_arg = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--authentic") == 0) { authentic = 1; continue; }
         if (strcmp(argv[i], "--repl-only") == 0) { repl_only = 1; continue; }
         if (strcmp(argv[i], "--twin") == 0) twin_arg = 1;
+        if (strcmp(argv[i], "--pipeline-cache") == 0) {
+            char root[4096];
+            if (i + 1 >= argc || !absolute_path(argv[++i], root, sizeof root) || !set_env("SR_USER_DATA_ROOT", root)) {
+                fprintf(stderr, "gpu coherence selftest: --pipeline-cache needs a folder it can name absolutely\n");
+                return 2;
+            }
+            pcache_arg = 1;
+            continue;
+        }
         const char *name = strcmp(argv[i], "--scale") == 0 ? "SR_GPU_SCALE"
                          : strcmp(argv[i], "--case") == 0  ? "SR_GPU_COHERENCE_CASE"
                          : strcmp(argv[i], "--readback-full") == 0 ? "SR_GPU_READBACK_FULL"
@@ -130,6 +156,7 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
+    if (!set_env("SR_GPU_PIPELINE_CACHE", pcache_arg ? "on" : "off")) return 2;
     (void)repl_only;   /* read only in the texture scaling build */
     if (!host_mem_type_selection_ok()) return 1;
     uint8_t *arena = (uint8_t *)calloc(0x0c000000u, 1);

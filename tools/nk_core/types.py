@@ -108,6 +108,11 @@ class TitleProfile:
     game_name: str = ""
     require_local_compatibility_record: bool = False
     loose_content_roots: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+    # The executable builds the manifest records (#2140): dicts with
+    # executable_sha256, status ("supported", "experimental" or "known-bad"),
+    # label and, for a known-bad build, reason. Empty means the title does not
+    # track builds, so a copy is neither confirmed nor questioned.
+    builds: Sequence[Mapping[str, str]] = field(default_factory=tuple)
 
     def matches_disc_id(self, disc_id: str) -> bool:
         wanted = _comparable_disc_id(disc_id)
@@ -151,3 +156,7 @@ class PreparationResult:
     error_code: Optional[str] = None
     error_message: Optional[str] = None
     elapsed_ms: int = 0
+    # Which build of the executable the copy holds and what that means for it
+    # (#2140): the dict prep_engine.identify_build returns, or None when the
+    # image holds no executable to hash.
+    build: Optional[Dict[str, Any]] = None

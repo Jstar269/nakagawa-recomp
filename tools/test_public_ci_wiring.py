@@ -205,6 +205,56 @@ class PublicCiWiringTests(unittest.TestCase):
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
         self.assertIn("`gpu-coherence-selftest`", docs)
 
+    def test_fsr3_pass_selftest_runs_on_lavapipe_and_a_skip_fails(self) -> None:
+        """The FSR 3 passes run under the validation layer on lavapipe; a skip must not pass."""
+        native_tools = _ci_job_blocks()["native_tools"]
+        step = _ci_step(native_tools, "Run the FSR 3 pass selftest on lavapipe")
+        self.assertIsNotNone(step, "native_tools must run fsr3-pass-selftest")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertIn("set -euo pipefail", text)
+        self.assertIn('export VK_ICD_FILENAMES="$lvp_icd"', text)
+        self.assertRegex(text, r"(?m)^\s+NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-pass-selftest$")
+        self.assertNotIn("continue-on-error", text)
+
+    def test_fsr3_fg_refusal_runs_on_lavapipe_and_a_skip_fails(self) -> None:
+        """Frame generation's device refusal (G-R) runs on lavapipe, which it refuses; a skip must not pass."""
+        native_tools = _ci_job_blocks()["native_tools"]
+        step = _ci_step(native_tools, "Run the FSR 3 frame generation refusal on lavapipe")
+        self.assertIsNotNone(step, "native_tools must run fsr3-fg-pass-selftest's G-R")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertIn("set -euo pipefail", text)
+        self.assertIn('export VK_ICD_FILENAMES="$lvp_icd"', text)
+        self.assertRegex(
+            text, r'(?m)^\s+NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-fg-pass-selftest FSR3FG_PASS_ARGS="--cell G-R"$')
+        self.assertNotIn("continue-on-error", text)
+        self.assertEqual([line.strip() for line in step if line.strip().startswith("if:")],
+                         ["if: matrix.part == 'translation'"])
+
+    def test_fsr3_shaders_are_reproduced_with_the_pinned_linux_dxc(self) -> None:
+        """The hosted job downloads the DXC release shader_embed.py pins, checks its SHA-256, and
+        runs the tool itself, so a SKIP (exit 77, any other DXC) fails the step."""
+        sys.path.insert(0, str(ROOT / "tools"))
+        import shader_embed
+        release = shader_embed.DXC_RELEASE
+        native_tools = _ci_job_blocks()["native_tools"]
+        step = _ci_step(native_tools, "Reproduce the FSR 3 shaders with the pinned DXC")
+        self.assertIsNotNone(step, "native_tools must reproduce the FSR 3 shaders")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertIn("set -euo pipefail", text)
+        url = ("https://github.com/microsoft/DirectXShaderCompiler/releases/download/"
+               f"{release['tag']}/{release['linux_archive']}")
+        self.assertIn(url, text)
+        self.assertIn(f"printf '%s  %s\\n' {release['linux_sha256']} \"$archive\"", text)
+        self.assertIn("sha256sum --check --strict", text)
+        self.assertLess(text.index("sha256sum --check --strict"), text.index("tar -xzf"))
+        self.assertNotIn("make ", text, "make maps exit 77 to a SKIP line; the step must see it")
+        self.assertNotIn("continue-on-error", text)
+        self.assertEqual([line.strip() for line in step if line.strip().startswith("if:")],
+                         ["if: matrix.part == 'translation'"])
+
     def test_ffmpeg_h264_media_selftest_is_wired_in_linux_ci(self) -> None:
         """The vendored H.264 subset must build and execute its real media fixture in CI.
 
@@ -345,7 +395,7 @@ class PublicCiWiringTests(unittest.TestCase):
 
         required_start = ci.index("  ci_required:\n")
         required_job = ci[required_start:]
-        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, windows_runtime]", required_job)
+        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]", required_job)
         self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required_job)
         self.assertIn("NATIVE_RESULT: ${{ needs.native_tools.result }}", required_job)
         self.assertIn("RUN_NATIVE: ${{ needs.classify.outputs.run_native }}", required_job)
@@ -858,6 +908,11 @@ _NATIVE_SERIAL_GATES = {
     "Verify lavapipe and run GPU capture selftest": "make CC=gcc gpu-capture-selftest",
     "Run GPU coherence selftest on lavapipe": "make CC=gcc gpu-coherence-selftest vram-view-identity-selftest",
     "Run GPU texture scaling selftest on lavapipe": "make CC=gcc gpu-texscale-selftest gpu-texscale-mutant",
+    "Run the FSR 3 pass selftest on lavapipe": "NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-pass-selftest",
+    "Run the FSR 3 frame generation refusal on lavapipe":
+        'NK_UI_VK_REQUIRE=1 make CC=gcc fsr3-fg-pass-selftest FSR3FG_PASS_ARGS="--cell G-R"',
+    "Reproduce the FSR 3 shaders with the pinned DXC":
+        'python tools/shader_embed.py verify --shader-set fsr3 --recompile --dxc "$dxc_dir/bin/dxc"',
     "Configure, build, and test CMake Linux player": 'ctest --test-dir "$player_build" --output-on-failure',
     "Build and run the Linux showcase headlessly": "make CC=gcc showcase-linux",
     "Build and run the profile-zero production route on Linux":
@@ -1018,6 +1073,96 @@ class NativeToolsPartitionTests(unittest.TestCase):
         required = "\n".join(_ci_job_blocks()["ci_required"])
         self.assertRegex(required, r"needs: \[[^\]]*\bnative_tools\b[^\]]*\]")
         self.assertIn("NATIVE_RESULT: ${{ needs.native_tools.result }}", required)
+
+
+class AndroidBuildWiringTests(unittest.TestCase):
+    """#360: hosted CI builds the Android launcher APK with the toolchain the Gradle files pin."""
+
+    ci: str
+    job: str
+    gradle: str
+    wrapper: str
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        cls.job = "\n".join(_ci_job_blocks()["android_build"])
+        cls.gradle = (ROOT / "android" / "app" / "build.gradle.kts").read_text(encoding="utf-8")
+        cls.wrapper = (
+            ROOT / "android" / "gradle" / "wrapper" / "gradle-wrapper.properties"
+        ).read_text(encoding="utf-8")
+
+    def _pinned(self) -> dict[str, str]:
+        compile_sdk = re.search(r"release\((\d+)\)\s*\{\s*minorApiLevel\s*=\s*(\d+)\s*\}", self.gradle)
+        ndk = re.search(r'ndkVersion\s*=\s*"([^"]+)"', self.gradle)
+        build_tools = re.search(r'buildToolsVersion\s*=\s*"([^"]+)"', self.gradle)
+        cmake = re.search(r'cmake\s*\{\s*path\s*=\s*file\("CMakeLists.txt"\)\s*version\s*=\s*"([^"]+)"',
+                          self.gradle)
+        gradle = re.search(r"gradle-([0-9.]+)-bin\.zip", self.wrapper)
+        for name, match in (("compileSdk", compile_sdk), ("ndkVersion", ndk),
+                            ("buildToolsVersion", build_tools), ("cmake version", cmake),
+                            ("Gradle distribution", gradle)):
+            self.assertIsNotNone(match, f"android Gradle files no longer declare {name}")
+        return {
+            "platform": f"android-{_matched(compile_sdk).group(1)}.{_matched(compile_sdk).group(2)}",
+            "ndk": _matched(ndk).group(1),
+            "build_tools": _matched(build_tools).group(1),
+            "cmake": _matched(cmake).group(1),
+            "gradle": _matched(gradle).group(1),
+        }
+
+    def test_job_installs_exactly_the_pinned_toolchain(self) -> None:
+        pinned = self._pinned()
+        self.assertIn(f'"platforms;{pinned["platform"]}"', self.job)
+        self.assertIn(f'"build-tools;{pinned["build_tools"]}"', self.job)
+        self.assertIn(f'"ndk;{pinned["ndk"]}"', self.job)
+        self.assertIn(f'"cmake;{pinned["cmake"]}"', self.job)
+        self.assertIn(f'test -d "$ANDROID_HOME/ndk/{pinned["ndk"]}"', self.job)
+        # Gradle comes from the wrapper properties and is checked against their digest.
+        self.assertIn("distributionSha256Sum", self.wrapper)
+        self.assertIn("properties=android/gradle/wrapper/gradle-wrapper.properties", self.job)
+        self.assertIn("sha256sum --check --strict", self.job)
+
+    def test_docs_name_the_same_toolchain(self) -> None:
+        pinned = self._pinned()
+        docs = (ROOT / "docs" / "ANDROID_DEVELOPMENT.md").read_text(encoding="utf-8")
+        for text in (f"`{pinned['platform']}`", f"build-tools {pinned['build_tools']}",
+                     f"CMake {pinned['cmake']}", f"NDK {pinned['ndk']}",
+                     f"Gradle {pinned['gradle']}"):
+            self.assertIn(text, docs)
+        self.assertIn("Android launcher build", docs)
+
+    def test_job_builds_and_checks_the_arm64_launcher(self) -> None:
+        self.assertIn("gradle --no-daemon -p android assembleDebug -Pnk.abis=arm64-v8a", self.job)
+        for library in ("libmain.so", "libSDL3.so", "libSDL3_ttf.so"):
+            self.assertIn(library, self.job)
+        self.assertIn("lib/arm64-v8a/$library", self.job)
+        self.assertIn("persist-credentials: false", self.job)
+        self.assertIn("contents: read", self.job)
+        self.assertIn("needs.classify.outputs.run_native == 'true'", self.job)
+
+    def test_job_keeps_the_apk_for_a_phone(self) -> None:
+        """The debug APK is kept as an artifact, so it can be installed on a phone without a PC
+        build (docs/ANDROID_DEVELOPMENT.md, "Test on a phone")."""
+        step = _ci_step(_ci_job_blocks()["android_build"],
+                        "Keep the debug APK for installing on a phone")
+        self.assertIsNotNone(step, "android_build must upload the debug APK")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertRegex(text, r"uses: actions/upload-artifact@[0-9a-f]{40} # v\d")
+        self.assertIn("name: nakagawa-android-arm64-debug", text)
+        self.assertIn("path: android/app/build/outputs/apk/debug/app-debug.apk", text)
+        self.assertIn("if-no-files-found: error", text)
+        docs = (ROOT / "docs" / "ANDROID_DEVELOPMENT.md").read_text(encoding="utf-8")
+        self.assertIn("## Test on a phone", docs)
+        self.assertIn("`nakagawa-android-arm64-debug`", docs)
+
+    def test_ci_required_reads_the_android_build(self) -> None:
+        required_job = "\n".join(_ci_job_blocks()["ci_required"])
+        self.assertRegex(required_job, r"needs: \[[^\]]*\bandroid_build\b[^\]]*\]")
+        self.assertIn("ANDROID_RESULT: ${{ needs.android_build.result }}", required_job)
+        required = (ROOT / "tools" / "ci_required.py").read_text(encoding="utf-8")
+        self.assertIn('("android-build", "ANDROID_RESULT", "RUN_NATIVE")', required)
 
 
 class WindowsCompilerCacheTests(unittest.TestCase):
@@ -1357,7 +1502,7 @@ class VfpuFuzzShardTests(unittest.TestCase):
 
     def test_ci_required_aggregates_every_windows_part(self) -> None:
         required = "\n".join(_ci_job_blocks()["ci_required"])
-        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, windows_runtime]", required)
+        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]", required)
         self.assertIn("WINDOWS_RESULT: ${{ needs.windows_runtime.result }}", required)
         self.assertIn("RUN_WINDOWS: ${{ needs.classify.outputs.run_windows }}", required)
 
@@ -1711,7 +1856,7 @@ class PublicExportJobTests(unittest.TestCase):
 
     def test_ci_required_still_requires_hygiene_and_export(self) -> None:
         required = "\n".join(self.blocks["ci_required"])
-        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, windows_runtime]", required)
+        self.assertIn("needs: [classify, hygiene, public_export, python_tools, native_tools, android_build, windows_runtime]", required)
         self.assertIn("HYGIENE_RESULT: ${{ needs.hygiene.result }}", required)
         self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required)
 
@@ -2085,6 +2230,8 @@ def _actions_eval(expression: str, context: Mapping[str, object]) -> bool:
             take(")")
             if token == "always" and not arguments:
                 return True
+            if token == "cancelled" and not arguments:
+                return truthy(context.get("cancelled"))
             if token == "startsWith" and len(arguments) == 2:
                 text, prefix = (str(value or "").casefold() for value in arguments)
                 return text.startswith(prefix)
@@ -2244,6 +2391,19 @@ class BatchOnlyCodeqlGuardTests(unittest.TestCase):
         for job in ("analyze", "upload"):
             with self.subTest(job=job):
                 self.assertFalse(_actions_eval(_job_if(self.blocks[job]), context))
+
+    def test_a_docs_only_head_still_uploads_and_a_cancelled_run_does_not(self) -> None:
+        # prepare decided there is nothing to analyse, so analyze is skipped. The upload job must
+        # still run (its explicit !cancelled() replaces the implicit success() that would skip a
+        # job needing a skipped job), and must not run once the workflow is cancelled.
+        context = self._wake("pull_request", "docs/x", {"full_name": THIS_REPOSITORY})
+        context["needs"] = {"prepare": {"result": "success", "outputs": {"scan": "false"}},
+                            "analyze": {"result": "skipped"}}
+        upload_if = _job_if(self.blocks["upload"])
+        self.assertTrue(upload_if.lstrip().startswith("!cancelled() &&"), upload_if)
+        self.assertTrue(_actions_eval(upload_if, context))
+        context["cancelled"] = True
+        self.assertFalse(_actions_eval(upload_if, context))
 
 
 class BatchOnlyCodeqlWakeTests(unittest.TestCase):
@@ -2753,6 +2913,9 @@ class MergeQueueCodeqlWiringTests(unittest.TestCase):
     def test_skipped_analysis_still_uploads_one_result_per_category_for_the_exact_head(self) -> None:
         upload_block = _workflow_job_blocks("codeql.yml")["upload"]
         upload = "\n".join(upload_block)
+        # A job that needs a skipped job is skipped under the implicit success(), so the skipped
+        # route needs an explicit status function, or no docs-only head ever gets a CodeQL result.
+        self.assertIn("${{ !cancelled() && needs.prepare.result == 'success' &&", upload)
         self.assertIn(
             "(needs.analyze.result == 'skipped' && needs.prepare.outputs.scan == 'false')",
             upload,

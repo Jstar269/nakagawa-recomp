@@ -28,6 +28,7 @@ Contract rules enforced:
 from __future__ import annotations
 
 import argparse
+import bisect
 from collections.abc import Mapping, Sequence
 import hashlib
 import json
@@ -74,6 +75,7 @@ SITE_TRANSFORMS = frozenset({
     "argument_x2",
     "count_x2_even",
     "gate_30hz_hold",
+    "gate_30hz_alt",
 })
 
 # What a site's instruction builds, when its encoding alone cannot say: the upper
@@ -221,6 +223,7 @@ SITE_KEYS = frozenset({
     "low_stock_digest",
     "stock_values",
     "requires",
+    "alternates",
 })
 
 # The instruction where one logic update of the title begins: it runs exactly once per update.
@@ -631,10 +634,11 @@ def validate_package(data: Any) -> dict[str, Any]:
             _check_instruction_location(boundary, "update_boundary", "update_boundary")
             if (boundary["function"], boundary["insn_offset"]) in seen_positions:
                 fail("update_boundary", "update_boundary must not be a rewritten site")
-        elif any(site["transform"] in ("gate_30hz", "gate_30hz_hold") for site in sites):
+        elif any(site["transform"] in GATE_TRANSFORMS for site in sites):
             fail(
                 "update_boundary",
-                "A package with gate_30hz or gate_30hz_hold sites must declare update_boundary: gated sites run on "
+                "A package with gate_30hz, gate_30hz_hold or gate_30hz_alt sites must declare update_boundary: "
+                "gated sites run on "
                 "alternate logic updates, counted where each update begins",
             )
 
@@ -695,6 +699,22 @@ def _validate_site_extras(site: Mapping[str, Any], path: str) -> None:
         required = site["requires"]
         if not isinstance(required, list) or not required or not all(isinstance(r, str) for r in required):
             fail(f"{path}.requires", "requires must be a non-empty list of site ids")
+    if transform == "gate_30hz_alt":
+        alternates = site.get("alternates")
+        if (not isinstance(alternates, list) or not 1 <= len(alternates) <= ALT_GATE_MAX_ALTERNATES
+                or not all(isinstance(name, str) for name in alternates)):
+            fail(f"{path}.alternates",
+                 f"gate_30hz_alt needs alternates, a list of 1 to {ALT_GATE_MAX_ALTERNATES} function symbols")
+        for name in alternates:
+            check_not_address_literal(name, f"{path}.alternates", "alternate symbol")
+            if not SYMBOL_RE.match(name):
+                fail(f"{path}.alternates", f"alternate {name!r} does not match required pattern {SYMBOL_RE.pattern}")
+        if len(set(alternates)) != len(alternates):
+            fail(f"{path}.alternates", "alternates lists a function twice (duplicate)")
+        if site["word_count"] != 1:
+            fail(f"{path}.word_count", "gate_30hz_alt names one jal (word_count 1)")
+    elif "alternates" in site:
+        fail(f"{path}.alternates", "alternates belongs only to gate_30hz_alt")
 
 
 def _validate_requires(sites: Sequence[Mapping[str, Any]]) -> None:
@@ -1109,6 +1129,631 @@ def _check_even_counter(site_path: str, fn_addr: int, site_addr: int, word: int,
                     f"before the compare (fail-closed refusal)")
 
 
+# --- gate_30hz_alt: the static proof that the alternates stand for the skipped update ----------
+#
+# Registers are numbered in one space here: general registers 0-31, FPU registers 64-95, HI 96,
+# LO 97 and the FPU condition flag 98. VFPU registers are not tracked.
+ALT_GATE_MAX_ALTERNATES = 4
+GATE_TRANSFORMS = frozenset(("gate_30hz", "gate_30hz_hold", "gate_30hz_alt"))
+ALT_GATE_MAX_FUNCTION_WORDS = 8192
+ALT_GATE_MAX_TREE_FUNCTIONS = 64
+ALT_GATE_MAX_TABLE_ENTRIES = 256
+ALT_GATE_MAX_CALL_TREE = 2048
+ALT_GATE_INPUT_DEPTH = 3
+_F = 64
+_HI, _LO, _FCC = 96, 97, 98
+_CALL_CLOBBERED = frozenset(range(1, 16)) | frozenset((24, 25, 31))
+#: Inputs an alternate must not read: it is passed only a0 (EABI arguments 2-8, f12-f15, the flag).
+_ALT_INPUTS = frozenset((5, 6, 7, 8, 9, 10, 11)) | frozenset(_F + n for n in (12, 13, 14, 15)) | {_FCC}
+#: What a skipped call leaves behind: the caller must not read these before writing them.
+_CALL_RESULTS = frozenset((2, 3, _F, _F + 1, _F + 2, _F + 3, _HI, _LO))
+_RETURN_READS = frozenset((2, 3, _F))
+_EXIT = -1
+
+
+def _reg_name(r: int) -> str:
+    names = ("zero at v0 v1 a0 a1 a2 a3 t0 t1 t2 t3 t4 t5 t6 t7 "
+             "s0 s1 s2 s3 s4 s5 s6 s7 t8 t9 k0 k1 gp sp fp ra").split()
+    if r < 32:
+        return f"${names[r]}"
+    return {_HI: "HI", _LO: "LO", _FCC: "the FPU condition flag"}.get(r, f"f{r - _F}")
+
+
+def _uses(w: int) -> tuple[frozenset[int], frozenset[int]] | None:
+    """(registers read, registers written) by ``w`` in the numbering above; None when unknown."""
+    op, rs, rt, rd, fn = w >> 26, (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31, w & 0x3F
+
+    def g(*regs: int) -> frozenset[int]:
+        return frozenset(r for r in regs if r != 0)
+
+    if op == 0x00:
+        if fn in (0x00, 0x02, 0x03):
+            return g(rt), g(rd)
+        if fn in (0x04, 0x06, 0x07) or 0x20 <= fn <= 0x27 or fn in (0x2A, 0x2B, 0x2C, 0x2D):
+            return g(rs, rt), g(rd)
+        if fn == 0x08:
+            return g(rs), frozenset()
+        if fn == 0x09:
+            return g(rs), g(rd)
+        if fn in (0x0A, 0x0B):
+            return g(rs, rt, rd), g(rd)
+        if fn in (0x0C, 0x0D, 0x0F):
+            return frozenset(), frozenset()
+        if fn in (0x10, 0x12):
+            return frozenset((_HI if fn == 0x10 else _LO,)), g(rd)
+        if fn in (0x11, 0x13):
+            return g(rs), frozenset((_HI if fn == 0x11 else _LO,))
+        if fn in (0x16, 0x17):
+            return g(rs), g(rd)
+        if 0x18 <= fn <= 0x1B:
+            return g(rs, rt), frozenset((_HI, _LO))
+        if fn in (0x1C, 0x1D, 0x2E, 0x2F):
+            return g(rs, rt) | {_HI, _LO}, frozenset((_HI, _LO))
+        return None
+    if op == 0x01:
+        if rt in (0x00, 0x01, 0x02, 0x03):
+            return g(rs), frozenset()
+        if rt in (0x10, 0x11, 0x12, 0x13):
+            return g(rs), frozenset((31,))
+        return None
+    if op == 0x02:
+        return frozenset(), frozenset()
+    if op == 0x03:
+        return frozenset(), frozenset((31,))
+    if op in (0x04, 0x05, 0x14, 0x15):
+        return g(rs, rt), frozenset()
+    if op in (0x06, 0x07, 0x16, 0x17):
+        return g(rs), frozenset()
+    if 0x08 <= op <= 0x0E:
+        return g(rs), g(rt)
+    if op == 0x0F:
+        return frozenset(), g(rt)
+    if op == 0x11:
+        fs, fd = rd, (w >> 6) & 31
+        if rs == 0x00:
+            return frozenset((_F + fs,)), g(rt)
+        if rs == 0x02:
+            return (frozenset((_FCC,)) if fs == 31 else frozenset()), g(rt)
+        if rs == 0x04:
+            return g(rt), frozenset((_F + fs,))
+        if rs == 0x06:
+            return g(rt), (frozenset((_FCC,)) if fs == 31 else frozenset())
+        if rs == 0x08:
+            return frozenset((_FCC,)), frozenset()
+        if rs in (0x10, 0x14):
+            if fn >= 0x30:
+                return frozenset((_F + fs, _F + rt)), frozenset((_FCC,))
+            if fn <= 0x03:
+                return frozenset((_F + fs, _F + rt)), frozenset((_F + fd,))
+            return frozenset((_F + fs,)), frozenset((_F + fd,))
+        return None
+    if op == 0x12:
+        if rs == 0x03:
+            return frozenset(), g(rt)
+        if rs == 0x07:
+            return g(rt), frozenset()
+        if rs == 0x08:
+            return frozenset(), frozenset()
+        return None
+    if op == 0x1F:
+        if fn == 0x00:
+            return g(rs), g(rt)
+        if fn == 0x04:
+            return g(rs, rt), g(rt)
+        if fn == 0x20:
+            return g(rt), g(rd)
+        return None
+    if op in (0x20, 0x21, 0x23, 0x24, 0x25, 0x30):
+        return g(rs), g(rt)
+    if op in (0x22, 0x26):
+        return g(rs, rt), g(rt)
+    if op in (0x28, 0x29, 0x2A, 0x2B, 0x2E):
+        return g(rs, rt), frozenset()
+    if op == 0x2F:
+        return g(rs), frozenset()
+    if op == 0x38:
+        return g(rs, rt), g(rt)
+    if op == 0x31:
+        return g(rs), frozenset((_F + rt,))
+    if op == 0x39:
+        return g(rs) | {_F + rt}, frozenset()
+    if op in (0x32, 0x35, 0x36, 0x3A, 0x3D, 0x3E):
+        return g(rs), frozenset()
+    if op in (0x18, 0x19, 0x1B, 0x34, 0x37, 0x3C, 0x3F):
+        return frozenset(), frozenset()
+    return None
+
+
+def _function_end(fn_addr: int, known_sorted: Sequence[int], where: str, site_path: str) -> int:
+    """The end of the window a function's code is read in: ALT_GATE_MAX_FUNCTION_WORDS from its entry.
+
+    A body is the code reachable from its entry, not the run up to the next known start: codegen's
+    known starts include entries inside a function (the arms of its table switches), and its own
+    bodies run through them."""
+    if fn_addr not in known_sorted:
+        fail(site_path, f"{where} is not a known function start (fail-closed refusal)")
+    return fn_addr + 4 * ALT_GATE_MAX_FUNCTION_WORDS
+
+
+class _LazyWords(dict):  # type: ignore[type-arg]
+    """Guest words read on demand, one at a time; ``get`` gives None for an unreadable word."""
+
+    def __init__(self, read_words_fn: Any) -> None:
+        super().__init__()
+        self._read = read_words_fn
+
+    def __missing__(self, addr: int) -> int:
+        got = self._read(addr, 1)
+        if not got:
+            raise KeyError(addr)
+        value = int(got[0]) & 0xFFFFFFFF
+        self[addr] = value
+        return value
+
+    def get(self, addr: int, default: Any = None) -> Any:  # type: ignore[override]
+        try:
+            return self[addr]
+        except KeyError:
+            return default
+
+
+def _jump_table(pc: int, w: int, fn_addr: int, words: Mapping[int, int], read_words_fn: Any,
+                where: str, site_path: str) -> list[int]:
+    """The targets of ``jr rX`` at ``pc``: a bounded table switch, or a refusal.
+
+    The recognised form is ``sltiu rB, rI, N`` then ``beq``/``beql rB, $zero`` (the out-of-range branch), and
+    in the straight-line code up to the ``jr`` a table address built from ``lui``/``addiu`` constants
+    plus ``rI << 2``, loaded with ``lw``. Any other write to a register the form uses refuses it.
+    """
+    reg = (w >> 21) & 31
+    start = None
+    p = pc - 4
+    while p >= max(fn_addr, pc - 4 * 16):
+        b = words.get(p)
+        prev = words.get(p - 4)
+        if (b is not None and prev is not None and (b >> 26) in (0x04, 0x14) and (b >> 16) & 31 == 0
+                and (prev >> 26) == 0x0B and (prev >> 16) & 31 == (b >> 21) & 31):
+            start = p - 4
+            break
+        p -= 4
+    if start is None:
+        fail(site_path, f"{where} jumps through ${reg} at 0x{pc:08x} with no bounded table switch before it "
+                        f"(fail-closed refusal)")
+    sltiu = words[start]
+    index, count = (sltiu >> 21) & 31, sltiu & 0xFFFF
+    if not 0 < count <= ALT_GATE_MAX_TABLE_ENTRIES:
+        fail(site_path, f"{where} has a table switch of {count} entries at 0x{pc:08x} (fail-closed refusal)")
+    val: dict[int, tuple[str, int]] = {index: ("index", 0)}
+    # A beql's slot runs only on the out-of-range path; a beq's slot runs on the path to the table too.
+    first = start + 12 if (words[start + 4] >> 26) == 0x14 else start + 8
+    for q in range(first, pc, 4):
+        x = words[q]
+        op, rs, rt, rd, fn = x >> 26, (x >> 21) & 31, (x >> 16) & 31, (x >> 11) & 31, x & 0x3F
+        simm = (x & 0xFFFF) - 0x10000 if x & 0x8000 else x & 0xFFFF
+        dest, new = None, None
+        if op == 0x0F:
+            dest, new = rt, ("const", (x & 0xFFFF) << 16)
+        elif op == 0x09 and val.get(rs, ("", 0))[0] in ("const", "addr"):
+            dest, new = rt, (val[rs][0], (val[rs][1] + simm) & 0xFFFFFFFF)
+        elif op == 0x00 and fn == 0x00 and (x >> 6) & 31 == 2 and val.get(rt) == ("index", 0):
+            dest, new = rd, ("index4", 0)
+        elif op == 0x00 and fn == 0x21:
+            kinds = sorted((val.get(rs, ("", 0)), val.get(rt, ("", 0))))
+            if kinds[0][0] == "const" and kinds[1][0] == "index4":
+                dest, new = rd, ("addr", kinds[0][1])
+        elif op == 0x23 and val.get(rs, ("", 0))[0] == "addr":
+            dest, new = rt, ("entry", (val[rs][1] + simm) & 0xFFFFFFFF)
+        uses = _uses(x)
+        if new is None and uses is not None:
+            for r in uses[1]:
+                val.pop(r, None)
+        elif new is None:
+            val.clear()
+        if dest is not None and dest != 0:
+            val[dest] = new  # type: ignore[assignment]
+    kind, base = val.get(reg, ("", 0))
+    if kind != "entry":
+        fail(site_path, f"{where} jumps through ${reg} at 0x{pc:08x}, which this check cannot read as a "
+                        f"table switch (fail-closed refusal)")
+    table = read_words_fn(base, count)
+    if not table or len(table) != count:
+        fail(site_path, f"{where} has a switch table at 0x{base:08x} this check cannot read (fail-closed refusal)")
+    return [int(t) & 0xFFFFFFFF for t in table]
+
+
+class _Graph:
+    """The instruction graph of one function: each node is an address; a transfer's delay slot is
+    its own node, whose successors are the transfer's destinations. ``_EXIT`` follows a return."""
+
+    def __init__(self, fn_addr: int, end: int, read_words_fn: Any, where: str, site_path: str,
+                 known_sorted: Sequence[int] = ()) -> None:
+        self.fn, self.end, self.where = fn_addr, end, where
+        starts = frozenset(known_sorted)
+        self.words = _LazyWords(read_words_fn)
+        if self.words.get(fn_addr) is None:
+            fail(site_path, f"{where} cannot be read (fail-closed refusal)")
+        self.succ: dict[int, list[int]] = {}
+        self.calls: dict[int, int | None] = {}  # delay-slot node -> callee (None through a register)
+        self.slots: set[int] = set()
+        # Only instructions reachable from the entry are decoded, so alignment padding or data
+        # after the last return cannot refuse a function.
+        todo = [fn_addr]
+        while todo:
+            pc = todo.pop()
+            if pc in self.slots:
+                fail(site_path, f"{where} branches into the delay slot at 0x{pc:08x} (fail-closed refusal)")
+            if pc == _EXIT or pc in self.succ:
+                continue
+            if not fn_addr <= pc < end:
+                fail(site_path, f"{where} runs or transfers to 0x{pc:08x}, more than "
+                                f"{ALT_GATE_MAX_FUNCTION_WORDS} instructions from its entry (fail-closed refusal)")
+            if len(self.succ) >= ALT_GATE_MAX_FUNCTION_WORDS:
+                fail(site_path, f"{where} has more than {ALT_GATE_MAX_FUNCTION_WORDS} reachable instructions "
+                                f"(fail-closed refusal)")
+            w = self.words.get(pc)
+            if w is None:
+                fail(site_path, f"{where} cannot be read at 0x{pc:08x} (fail-closed refusal)")
+            op, rs, rt, fn = w >> 26, (w >> 21) & 31, (w >> 16) & 31, w & 0x3F
+            slot = pc + 4
+            branch = _branch_target(w, pc)
+            if branch is None and not _is_jump(w):
+                self.succ[pc] = [] if op == 0x00 and fn == 0x0D else [pc + 4]  # break never returns
+                todo.extend(self.succ[pc])
+                continue
+            if slot >= end:
+                fail(site_path, f"{where} ends inside the delay slot of 0x{pc:08x} (fail-closed refusal)")
+            if slot in self.succ:
+                fail(site_path, f"{where} branches into the delay slot at 0x{slot:08x} (fail-closed refusal)")
+            s = self.words.get(slot)
+            if s is None:
+                fail(site_path, f"{where} cannot be read at 0x{slot:08x} (fail-closed refusal)")
+            if _branch_target(s, slot) is not None or _is_jump(s):
+                fail(site_path, f"{where} has a transfer in a delay slot at 0x{slot:08x} (fail-closed refusal)")
+            self.slots.add(slot)
+            likely = _is_likely_branch(w)
+            if branch is not None:
+                always = (op == 0x04 and rs == 0 and rt == 0) or (op == 0x01 and rt == 0x01 and rs == 0)
+                self.succ[pc] = [slot] + ([pc + 8] if likely else [])
+                self.succ[slot] = [branch] + ([] if always or likely else [pc + 8])
+            elif op == 0x02:
+                dest = ((pc + 4) & 0xF0000000) | ((w & 0x03FFFFFF) << 2)
+                self.succ[pc] = [slot]
+                if not fn_addr <= dest < end and dest in starts:
+                    self.calls[slot] = dest  # a tail call: the callee returns for this function
+                    self.succ[slot] = [_EXIT]
+                else:
+                    self.succ[slot] = [dest]
+            elif op == 0x03 or (op == 0x00 and fn == 0x09):
+                self.succ[pc], self.succ[slot] = [slot], [pc + 8]
+                self.calls[slot] = ((((pc + 4) & 0xF0000000) | ((w & 0x03FFFFFF) << 2)) if op == 0x03
+                                    else None)
+            elif op == 0x00 and fn == 0x08 and rs == 31:
+                self.succ[pc], self.succ[slot] = [slot], [_EXIT]
+            elif op == 0x00 and fn == 0x08:
+                dests = _jump_table(pc, w, fn_addr, self.words, read_words_fn, where, site_path)
+                self.succ[pc], self.succ[slot] = [slot], sorted(set(dests))
+            else:
+                fail(site_path, f"{where} has a linking branch at 0x{pc:08x} (fail-closed refusal)")
+            todo.extend(n for n in self.succ[pc] if n != slot)
+            todo.extend(self.succ[slot])
+
+    def reach(self, starts: Sequence[int], *, avoid: frozenset[int] = frozenset(),
+              within: set[int] | None = None) -> set[int]:
+        seen: set[int] = set()
+        todo = [s for s in starts if s not in avoid and (within is None or s in within)]
+        while todo:
+            n = todo.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            for m in self.succ.get(n, ()):
+                if m not in avoid and m not in seen and (within is None or m in within):
+                    todo.append(m)
+        return seen
+
+    def returning(self) -> set[int]:
+        """Nodes from which a path reaches the return."""
+        preds: dict[int, list[int]] = {}
+        for n, nxt in self.succ.items():
+            for m in nxt:
+                preds.setdefault(m, []).append(n)
+        seen = {_EXIT}
+        todo = [_EXIT]
+        while todo:
+            for p in preds.get(todo.pop(), ()):
+                if p not in seen:
+                    seen.add(p)
+                    todo.append(p)
+        return seen
+
+
+def _move_source(w: int) -> int | None:
+    """The source register of a register move (``addu``/``or``/``addiu 0``), else None."""
+    op, rs, rt, fn = w >> 26, (w >> 21) & 31, (w >> 16) & 31, w & 0x3F
+    if op == 0x00 and fn in (0x21, 0x25, 0x20):
+        if rt == 0:
+            return rs
+        if rs == 0:
+            return rt
+    if op in (0x08, 0x09) and w & 0xFFFF == 0:
+        return rs
+    return None
+
+
+def _entry_a0_at_calls(graph: _Graph, site_path: str) -> dict[int, bool]:
+    """For each call slot: whether $a0 holds the function's entry $a0 there on every path."""
+    every = frozenset(range(1, 32))
+    state: dict[int, frozenset[int]] = {graph.fn: frozenset((4,))}
+    at_call: dict[int, bool] = {}
+    todo = [graph.fn]
+    while todo:
+        n = todo.pop()
+        cur = state[n]
+        w = graph.words[n]
+        uses = _uses(w)
+        src = _move_source(w)
+        out: frozenset[int]
+        if uses is None:
+            out = frozenset()  # an unreadable word: nothing is known to hold the entry $a0 after it
+        else:
+            dest = uses[1]
+            out = cur - dest
+            if src is not None and src in cur:
+                out = out | (dest & every)
+        if n in graph.calls:
+            at_call[n] = at_call.get(n, True) and 4 in out
+            out = out - _CALL_CLOBBERED
+        for m in graph.succ.get(n, ()):
+            if m == _EXIT:
+                continue
+            old = state.get(m)
+            new = out if old is None else old & out
+            if old is None or new != old:
+                state[m] = new
+                todo.append(m)
+    return at_call
+
+
+def _check_alt_gate_target(site_path: str, target: int, alternates: Sequence[int], read_words_fn: Any,
+                           known_sorted: Sequence[int]) -> None:
+    """The gated function calls each alternate exactly once on every path that returns, in list
+    order, and passes it the function's own entry $a0."""
+    where = f"gate_30hz_alt target 0x{target:08x}"
+    graph = _Graph(target, _function_end(target, known_sorted, where, site_path), read_words_fn, where, site_path,
+                   known_sorted)
+    returning = graph.returning()
+    if graph.fn not in returning:
+        fail(site_path, f"{where} has no path that returns (fail-closed refusal)")
+    a0_ok = _entry_a0_at_calls(graph, site_path)
+    nodes: list[int] = []
+    for alt in alternates:
+        slots = [slot for slot, callee in graph.calls.items() if callee == alt]
+        if len(slots) != 1:
+            fail(site_path, f"{where} calls alternate 0x{alt:08x} directly {len(slots)} times; it must call it "
+                            f"exactly once, so the alternate is part of the update the gate skips "
+                            f"(fail-closed refusal)")
+        node = slots[0]
+        if _EXIT in graph.reach([graph.fn], avoid=frozenset((node,)), within=returning):
+            fail(site_path, f"{where} has a path that returns without calling alternate 0x{alt:08x} "
+                            f"(fail-closed refusal)")
+        if node in graph.reach(graph.succ[node], within=returning):
+            fail(site_path, f"{where} can call alternate 0x{alt:08x} more than once on a path that returns "
+                            f"(fail-closed refusal)")
+        if not a0_ok.get(node, False):
+            fail(site_path, f"{where} does not pass alternate 0x{alt:08x} its own entry $a0 on every path "
+                            f"(fail-closed refusal)")
+        nodes.append(node)
+    for i, first in enumerate(nodes):
+        for later in nodes[i + 1:]:
+            if later in graph.reach([graph.fn], avoid=frozenset((first,)), within=returning):
+                fail(site_path, f"{where} can reach a later alternate before 0x{alternates[i]:08x}: the "
+                                f"alternates must run in the order the target calls them (fail-closed refusal)")
+
+
+def _check_caller_ignores_results(site_path: str, fn_addr: int, site_addr: int, read_words_fn: Any,
+                                  known_sorted: Sequence[int]) -> None:
+    """After a gated call, no path of the caller reads $v0, $v1, f0-f3, HI or LO before writing it,
+    up to its next call; a return counts as reading $v0, $v1 and f0."""
+    where = f"gate_30hz_alt caller 0x{fn_addr:08x}"
+    graph = _Graph(fn_addr, _function_end(fn_addr, known_sorted, where, site_path), read_words_fn, where,
+                   site_path, known_sorted)
+    seen: set[tuple[int, frozenset[int]]] = set()
+    todo: list[tuple[int, frozenset[int]]] = [(site_addr + 8, frozenset())]
+    while todo:
+        n, written = todo.pop()
+        if (n, written) in seen:
+            continue
+        seen.add((n, written))
+        if n == _EXIT:
+            read = _RETURN_READS - written
+            if read:
+                fail(site_path, f"{where} returns after the gated call without writing "
+                                f"{_reg_name(min(read))}: a skipped call leaves it stale (fail-closed refusal)")
+            continue
+        if n not in graph.words:
+            fail(site_path, f"{where} ends before 0x{n:08x}, after the gated call (fail-closed refusal)")
+        uses = _uses(graph.words[n])
+        if uses is None:
+            fail(site_path, f"{where} has a word this check cannot read at 0x{n:08x} after the gated call "
+                            f"(fail-closed refusal)")
+        read = (uses[0] & _CALL_RESULTS) - written
+        if read:
+            fail(site_path, f"{where} reads {_reg_name(min(read))} at 0x{n:08x} after the gated call: a "
+                            f"skipped call leaves it stale (fail-closed refusal)")
+        if n in graph.calls:
+            continue
+        nxt_written = written | (uses[1] & _CALL_RESULTS)
+        for m in graph.succ.get(n, ()):
+            todo.append((m, nxt_written))
+
+
+def _alt_inputs(site_path: str, fn: int, entry: frozenset[int], read_words_fn: Any, known_sorted: Sequence[int],
+                summaries: dict[tuple[int, frozenset[int]], frozenset[int] | None],
+                depth: int = 0) -> frozenset[int]:
+    """Which of ``entry`` (registers still holding the alternate's entry values) function ``fn``
+    may read. A call is followed only while some of them are still unwritten, and only to
+    ``ALT_GATE_INPUT_DEPTH`` calls below the alternate: past that, and through a register below
+    it, a callee is taken to read only the arguments its caller set (the PSP ABI)."""
+    key = (fn, entry)
+    if key in summaries:
+        got = summaries[key]
+        return entry if got is None else got  # None: still being analysed (a cycle)
+    if len(summaries) >= ALT_GATE_MAX_TREE_FUNCTIONS:
+        fail(site_path, f"gate_30hz_alt alternates pass their unset inputs through more than "
+                        f"{ALT_GATE_MAX_TREE_FUNCTIONS} calls (fail-closed refusal)")
+    summaries[key] = None
+    where = f"gate_30hz_alt alternate call 0x{fn:08x}"
+    graph = _Graph(fn, _function_end(fn, known_sorted, where, site_path), read_words_fn, where, site_path,
+                   known_sorted)
+    state: dict[int, frozenset[int]] = {graph.fn: entry}
+    reads: set[int] = set()
+    todo = [graph.fn]
+    while todo:
+        n = todo.pop()
+        cur = state[n]
+        uses = _uses(graph.words[n])
+        if uses is None:
+            reads |= cur
+            out = cur
+        else:
+            reads |= uses[0] & cur
+            out = cur - uses[1]
+        if n in graph.calls and out and depth < ALT_GATE_INPUT_DEPTH:
+            callee = graph.calls[n]
+            if callee is None and depth == 0:
+                names = ", ".join(_reg_name(r) for r in sorted(out))
+                fail(site_path, f"{where} calls through a register at 0x{n - 4:08x} while {names} may still hold "
+                                f"the alternate's entry values (fail-closed refusal)")
+            if callee is not None:
+                reads |= _alt_inputs(site_path, callee, out, read_words_fn, known_sorted, summaries, depth + 1)
+        for m in graph.succ.get(n, ()):
+            if m == _EXIT:
+                continue
+            old = state.get(m)
+            new = out if old is None else old | out
+            if old is None or new != old:
+                state[m] = new
+                todo.append(m)
+    summaries[key] = frozenset(reads)
+    return summaries[key]  # type: ignore[return-value]
+
+
+def _direct_call_tree(site_path: str, root: int, read_words_fn: Any, known_sorted: Sequence[int]) -> set[int]:
+    """Every function reachable from ``root`` through direct calls (``jal``) and tail jumps (``j`` to a
+    known start more than the read window away). Each body is the code reachable from its entry
+    through branches, jumps and fall-through; after a ``jr`` through a register that is not a table
+    switch this check can read, every word up to the next known start is taken as reachable, and
+    calls through a register are not followed."""
+    starts = sorted(set(known_sorted))
+    tree: set[int] = set()
+    todo = [root]
+    while todo:
+        fn = todo.pop()
+        if fn in tree:
+            continue
+        if len(tree) >= ALT_GATE_MAX_CALL_TREE:
+            fail(site_path, f"gate_30hz_alt alternate 0x{root:08x} reaches more than {ALT_GATE_MAX_CALL_TREE} "
+                            f"functions (fail-closed refusal)")
+        tree.add(fn)
+        where = f"gate_30hz_alt alternate call tree function 0x{fn:08x}"
+        end = _function_end(fn, known_sorted, where, site_path)
+        words = _LazyWords(read_words_fn)
+        seen: set[int] = set()
+        pcs = [fn]
+        while pcs:
+            pc = pcs.pop()
+            if pc in seen:
+                continue
+            if not fn <= pc < end or len(seen) >= ALT_GATE_MAX_FUNCTION_WORDS:
+                fail(site_path, f"{where} runs more than {ALT_GATE_MAX_FUNCTION_WORDS} instructions from its "
+                                f"entry (fail-closed refusal)")
+            w = words.get(pc)
+            if w is None:
+                fail(site_path, f"{where} cannot be read at 0x{pc:08x} (fail-closed refusal)")
+            seen.add(pc)
+            op, rs, fnc = w >> 26, (w >> 21) & 31, w & 0x3F
+            dest = ((pc + 4) & 0xF0000000) | ((w & 0x03FFFFFF) << 2)
+            branch = _branch_target(w, pc)
+            transfer = op in (0x02, 0x03) or branch is not None or (op == 0x00 and fnc in (0x08, 0x09))
+            if transfer:
+                seen.add(pc + 4)  # the delay slot runs with the transfer; it has no successor of its own
+            if op == 0x03:
+                todo.append(dest)
+                pcs.append(pc + 8)
+            elif op == 0x02:
+                if dest in starts and not fn <= dest < end:
+                    todo.append(dest)
+                else:
+                    pcs.append(dest)
+            elif branch is not None:
+                pcs += [pc + 8, branch]
+            elif op == 0x00 and fnc == 0x09:
+                pcs.append(pc + 8)
+            elif op == 0x00 and fnc == 0x08:
+                if rs != 31:
+                    try:
+                        pcs += _jump_table(pc, w, fn, words, read_words_fn, where, site_path)
+                    except EnhancementPackageError:
+                        nxt = bisect.bisect_right(starts, pc)
+                        stop = starts[nxt] if nxt < len(starts) else end
+                        pcs += range(pc + 8, min(stop, end), 4)
+            elif not (op == 0x00 and fnc == 0x0D):
+                pcs.append(pc + 4)
+    return tree
+
+
+def _check_alt_gate(site_path: str, fn_addr: int, site_addr: int, word: int, alternates: Sequence[int],
+                    read_words_fn: Any, known_sorted: Sequence[int], gated_functions: Mapping[int, str]) -> None:
+    """Every static condition of a gate_30hz_alt site (contract section 9.2)."""
+    target = ((site_addr + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
+    for alt in alternates:
+        if alt == target:
+            fail(site_path, "an alternate cannot be the gated function itself (fail-closed refusal)")
+    _check_alt_gate_target(site_path, target, alternates, read_words_fn, known_sorted)
+    _check_caller_ignores_results(site_path, fn_addr, site_addr, read_words_fn, known_sorted)
+    summaries: dict[tuple[int, frozenset[int]], frozenset[int] | None] = {}
+    for alt in alternates:
+        inputs = _alt_inputs(site_path, alt, _ALT_INPUTS, read_words_fn, known_sorted, summaries)
+        if inputs:
+            names = ", ".join(_reg_name(r) for r in sorted(inputs))
+            fail(site_path, f"gate_30hz_alt alternate 0x{alt:08x} may read {names} as its caller left them; "
+                            f"an alternate is passed only $a0 (fail-closed refusal)")
+        for f in sorted(_direct_call_tree(site_path, alt, read_words_fn, known_sorted)):
+            if f in (target, fn_addr):
+                fail(site_path, f"gate_30hz_alt alternate 0x{alt:08x} reaches 0x{f:08x}, the "
+                                f"{'gated function' if f == target else 'caller'}: an alternate must not "
+                                f"re-enter the update it stands for (fail-closed refusal)")
+            if f in gated_functions:
+                fail(site_path, f"gate_30hz_alt alternate 0x{alt:08x} reaches 0x{f:08x}, which holds gated "
+                                f"site {gated_functions[f]}: an alternate runs only on the updates its gate "
+                                f"skips, so a gate inside it would never run (fail-closed refusal)")
+
+
+def _resolve_alternates(pending: Sequence[tuple[Mapping[str, Any], str, int, int, list[int]]],
+                        resolved_by_addr: dict[int, dict[str, Any]], symbol_to_addr: Mapping[str, int],
+                        read_words_fn: Any, known_functions: Sequence[int]) -> None:
+    """Resolve and check each gate_30hz_alt site's alternates, once every site is resolved."""
+    alt_sites = [p for p in pending if p[0]["transform"] == "gate_30hz_alt"]
+    if not alt_sites:
+        return
+    known_sorted = sorted(set(int(a) for a in known_functions))
+    gated_functions: dict[int, str] = {}
+    for entry in resolved_by_addr.values():
+        if entry["rewrite"]["kind"] == "gate":
+            gated_functions.setdefault(entry["fn_addr"], entry["id"])
+    for site, site_path, fn_addr, site_addr, stock_words in alt_sites:
+        addrs: list[int] = []
+        for name in site["alternates"]:
+            if name not in symbol_to_addr:
+                fail(f"{site_path}.alternates", f"alternate {name!r} is not in the symbol map (fail-closed refusal)")
+            addrs.append(int(symbol_to_addr[name]) & 0xFFFFFFFF)
+        if len(set(addrs)) != len(addrs):
+            fail(f"{site_path}.alternates", "two alternates name the same function (fail-closed refusal)")
+        others = {f: sid for f, sid in gated_functions.items() if sid != site["id"]}
+        _check_alt_gate(site_path, fn_addr, site_addr, stock_words[0], addrs, read_words_fn, known_sorted, others)
+        resolved_by_addr[site_addr]["rewrite"]["alternates"] = addrs
+
+
 def verify_and_resolve_sites(
     pkg_data: Mapping[str, Any],
     *,
@@ -1229,6 +1874,8 @@ def verify_and_resolve_sites(
                 rewrite = dict(rewrite, requires=list(site["requires"]))
             resolved_entry["rewrite"] = rewrite
             resolved_by_addr[word_addr] = resolved_entry
+
+    _resolve_alternates(pending, resolved_by_addr, symbol_to_addr, read_words_fn, known_functions)
 
     if "update_boundary" not in validated:
         gated = sorted(e["id"] for e in resolved_by_addr.values() if e["rewrite"]["kind"] == "gate")
@@ -1795,6 +2442,13 @@ def _plan_word_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
         if is_jal:
             return {"kind": "gate", "hold_f": 12}
         _refuse(site, w, "gate_30hz_hold takes a jal")
+
+    if tf == "gate_30hz_alt":
+        # A call skipped on odd updates, with the calls named by ``alternates`` made in its
+        # place; the resolver adds their addresses after checking them (section 9.2).
+        if is_jal:
+            return {"kind": "gate", "alternates": []}
+        _refuse(site, w, "gate_30hz_alt takes a jal")
 
     if tf == "count_x2_even":
         # slti/sltiu rt, rs, n where rs counts logic updates: true while rs < 2n and rs is

@@ -174,12 +174,13 @@ class TestProjectFontBuildWiring(unittest.TestCase):
     def test_makefile_uses_one_rule_family_for_all_project_slots(self):
         makefile = read_makefile(ROOT)
         self.assertIn("define PROJECT_FONT_RULE", makefile)
-        for target in ("japanese", "korean"):
-            self.assertIn(f"PROJECT_FONT_RULE,{target},", makefile)
+        self.assertIn("PROJECT_FONT_RULE,korean,", makefile)
         # #2005: one Latin face per console Latin index, through the same rule family.
         self.assertIn("$(call PROJECT_FONT_RULE,", makefile)
         self.assertIn("PROJECT_LATIN_FACE_RULE,0,latin,nkltn.pgf,", makefile)
         self.assertIn("PROJECT_LATIN_FACE_RULE,8,latin-small,nkltns.pgf,", makefile)
+        # #2005: the Japanese font has its own rule, because it reads a second (fallback) font.
+        self.assertIn("$(PROJECT_FONT_GENERATED_DIR)/nkjpn.pgf:", makefile)
         styles = tuple(f"latin-{i}" for i in (1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15))
         for target in ("japanese", "latin", "latin-small", "korean", *styles):
             self.assertIn(f"project-{target}-font", makefile)
@@ -210,13 +211,18 @@ class TestProjectFontAssetCopy(unittest.TestCase):
         "nkkr.pgf", "nkkr.json", "nkkr-OFL.txt",
     )
 
-    def _run_copy(self, build_dir: Path) -> subprocess.CompletedProcess[str]:
+    def _run_copy(
+        self,
+        build_dir: Path,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         assert POWERSHELL is not None
         return subprocess.run(
             [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
              str(ROOT / "tools" / "copy_build_assets.ps1"), "-BuildDir", str(build_dir),
              "-ExcludeOptionalFonts"],
             cwd=build_dir.parent,
+            env=env,
             capture_output=True,
             text=True,
             check=False,
@@ -239,6 +245,51 @@ class TestProjectFontAssetCopy(unittest.TestCase):
                 {name: (runtime / name).read_bytes() for name in self.OUTPUTS},
                 expected,
             )
+
+    def test_explicit_msys_path_supplies_sdl3_when_gcc_is_not_on_path(self):
+        with tempfile.TemporaryDirectory(prefix="project-font-msys-path-") as tmp:
+            root = Path(tmp)
+            build = root / "build"
+            generated = build / "project-font"
+            generated.mkdir(parents=True)
+            for name in self.OUTPUTS:
+                (generated / name).write_bytes(f"synthetic project asset: {name}\n".encode("ascii"))
+
+            msys_bin = root / "custom-ucrt64" / "bin"
+            msys_bin.mkdir(parents=True)
+            sdl = msys_bin / "SDL3.dll"
+            sdl.write_bytes(b"synthetic SDL3 runtime")
+            env = os.environ.copy()
+            env["MSYS_PATH"] = str(msys_bin)
+            env["PATH"] = os.pathsep.join([str(root / "empty-path"), str(Path(sys.executable).parent)])
+
+            result = self._run_copy(build, env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((build / "SDL3.dll").read_bytes(), sdl.read_bytes())
+
+    @unittest.skipUnless(os.name == "nt", "the Windows staging route copies DLLs")
+    def test_gcc_on_path_wins_over_a_stale_msys_path(self):
+        with tempfile.TemporaryDirectory(prefix="project-font-gcc-first-") as tmp:
+            root = Path(tmp)
+            build = root / "build"
+            generated = build / "project-font"
+            generated.mkdir(parents=True)
+            for name in self.OUTPUTS:
+                (generated / name).write_bytes(f"synthetic project asset: {name}\n".encode("ascii"))
+            gcc_bin = root / "gcc-bin"
+            gcc_bin.mkdir()
+            (gcc_bin / "gcc.exe").write_bytes(b"synthetic executable path marker")
+            sdl = gcc_bin / "SDL3.dll"
+            sdl.write_bytes(b"synthetic SDL3 runtime")
+            stale = root / "stale-msys" / "bin"
+            stale.mkdir(parents=True)
+            env = os.environ.copy()
+            env["MSYS_PATH"] = str(stale)
+            env["PATH"] = os.pathsep.join([str(gcc_bin), str(Path(sys.executable).parent)])
+
+            result = self._run_copy(build, env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((build / "SDL3.dll").read_bytes(), sdl.read_bytes())
 
     def test_missing_project_slot_output_fails_by_name(self):
         with tempfile.TemporaryDirectory(prefix="project-font-missing-") as tmp:

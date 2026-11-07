@@ -605,7 +605,10 @@ enclosing drain.
 
 A callable body's entry-SP restore travels with its transfer, and each drain applies the first
 one recorded in its chain: the value the nested returns used to leave. A computed target still
-runs at the live SP.
+runs at the live SP. An interpreted body entered by a computed step leaves the same way
+(`sr_guest_interp_run_tail_step`): its handoff to native code is a recorded transfer, with the
+entry-SP restore a native body entered there would record, so both tiers give the chain the same
+restore (#1935).
 
 The slot is never live across a yield, syscall, dispatch entry or unwind; each of those refuses a
 live transfer with a named `TAIL_TRANSFER_FAULT`.
