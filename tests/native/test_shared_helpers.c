@@ -11,7 +11,7 @@
 #include <string.h>
 
 #ifndef SR_SELFTEST_BUILD_ROOT
-#error "SR_SELFTEST_BUILD_ROOT must name this test's scratch directory"
+#define SR_SELFTEST_BUILD_ROOT "build"
 #endif
 
 #if defined(_WIN32) || defined(_WIN64)
