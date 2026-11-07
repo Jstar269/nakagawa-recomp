@@ -82,6 +82,63 @@ Measured on a Windows 11 x64 PC building and running Hot Shots Tennis with the p
   release. An update unpacks into a new folder and leaves the data folder alone, so deleting an old release
   folder deletes no games or saves.
 
+## Install, update and uninstall (Windows)
+
+Nakagawa is a portable ZIP today ([#324](https://github.com/Jstar269/nakagawa-recomp/issues/324)); there is no
+installer yet. The unpacked folder is the program and holds nothing you create, so installing and removing it
+never touches your games or saves.
+
+**Install.** Unpack `nakagawa-recomp-<version>-windows-x64.zip` into a folder of your choice (a read-only folder
+works) and start `bin\nakagawa_player.exe`. For a Start-menu or Desktop entry, right-click the executable and
+choose **Pin to Start**, or send a shortcut to the Desktop. From a source checkout,
+`python tools/stage_install.py --dest "<folder>" --start-menu-shortcut --desktop-shortcut` stages the same layout and writes
+both shortcuts with the player's taskbar identity, so the launcher and the games it starts share one taskbar
+button. The ZIP itself writes no shortcut.
+
+**Add to Steam** ([#2152](https://github.com/Jstar269/nakagawa-recomp/issues/2152)). The code that adds Nakagawa to a
+Steam library as a non-Steam game is in `src/core/nk_steam_shortcuts.c`; the player button that calls it is not
+wired yet, so until then add the executable in Steam by hand. It works on your PC only and makes no network call or
+download. It edits the binary `shortcuts.vdf` in the `userdata\<account>\config` folder of the Steam account you pick
+(Steam's folder comes from the current user's own registry setting on Windows). It adds one entry with the app name,
+the executable and its start-in folder, and no launch options, and it only adds: entries it did not write are copied
+byte for byte, an entry for the same executable is reported and nothing is written, and a file it cannot read is left
+untouched. Before it writes, it copies the file to `shortcuts.vdf.nakagawa-backup-<date>-<time>` and reads the copy
+back; if that fails it writes nothing. It writes a temporary file and renames it over the original. Steam rewrites
+this file when it exits, so while Steam runs nothing is written: close Steam first (Nakagawa never closes it). In
+portable mode the entry points at the executable's current folder, so moving the folder breaks the shortcut.
+Other platforms are unsupported for now and say so.
+
+**Update.** Check for updates unpacks the new version into a new folder next to the running one and leaves the old
+one. Your data is in the per-user folders below, so the new version finds it. Delete the old folder when you
+are done with it.
+
+**Uninstall the program.**
+
+- A ZIP you unpacked: close the player and delete its folder. Nothing was written anywhere else, except any
+  shortcut you made yourself.
+- A folder made by `tools/stage_install.py --dest`: run
+  `python tools/stage_install.py --uninstall --dest "<folder>"` (add `--dry-run` to see the list first). It removes
+  `bin\`, `source\`, the icon, the install marker and the shortcuts and desktop entries it recorded, and it
+  skips any recorded path it would not have written itself. It never reads or deletes the per-user folders,
+  and a file you added to the install folder stays.
+- Portable mode ([below](#portable-mode-portabletxt)): the `data` folder beside the executable is your data. The
+  uninstall keeps `bin\data` and `bin\portable.txt`; delete the folder yourself when you want it gone.
+
+**What stays after an uninstall, and how to remove it.** Everything the player writes is under
+`%LOCALAPPDATA%\Nakagawa` (or the `data` folder in portable mode, or the folder given with `--user-data-root`):
+
+| Folder | Holds | To remove it |
+| --- | --- | --- |
+| `data/` | the library, built games and their build cache, imported discs and decrypted files (`titles\<DISC_ID>`, `discs\<DISC_ID>`), imported fonts, downloaded build tools | **Remove from library** on a game removes what Nakagawa built for it; its disc copy and decrypted files go only when you tick them, and the size is shown first. **Settings > Factory reset** moves the folders aside instead of deleting them. |
+| `cache/` | the platform cache folder | **Settings > Build tools and cache** deletes the shared library cache; or delete the folder |
+| `saves/` | each game's Memory Stick folder | **Remove from library** keeps it unless you tick the saves (it backs them up first); otherwise delete the folder by hand |
+| `config/` | `settings.json` | **Factory reset**, or delete the folder |
+| `logs/` | the player's, the games' and the builds' logs, in one folder | **Settings** opens it; delete what you like |
+
+Your disc images on your own drives are never touched. To remove everything Nakagawa ever wrote, uninstall the
+program as above and then delete `%LOCALAPPDATA%\Nakagawa`. Factory reset leaves a `-backup-<time>` copy of each
+folder it moved, and those are yours to delete.
+
 ## Wine and Proton
 
 The Windows ZIP is the only player build; there is no Linux build yet ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)).
@@ -761,12 +818,17 @@ long-run present rate never exceeds the cap (`gui-present-selftest`).
 
 ### Presentation upscaler (`SR_PRESENT_UPSCALE`)
 
+In the player this is **Sharper enlarging** on Settings > Enhanced and on each game's page, off by
+default; the launcher sets `SR_PRESENT_UPSCALE` from it for an Enhanced or Ace run.
+
 `SR_PRESENT_UPSCALE=fsr1` makes the Vulkan presenter enlarge the picture to its place in the
 window with AMD FidelityFX Super Resolution 1: EASU, an edge-adaptive upscaler, then RCAS
 sharpening. `off`, the default, keeps the `SR_PRESENT_SCALING` filter. It runs only when the
 picture is enlarged on both axes, on whatever frame the presenter shows. It is presentation only:
 the guest's frame, guest VRAM and captures are byte for byte what they are with it off
-(`gpu-capture-selftest` and, with a Vulkan device and a display, `display-smoke-fsr1`). The pause
+(`gpu-capture-selftest` and, with a Vulkan device and a display, `display-smoke-fsr1`). A run
+recording (`SR_VIDEOREC_DIR`) is enlarged by FSR 1 too, at the recording's size, and its
+`record.json` names the filter ([DEBUGGING.md](DEBUGGING.md)). The pause
 overlay is drawn at the window's size on the CPU, so the paused picture is not upscaled and looks
 softer than the running one. Its cost is small: from 1920x1088 to 3840x2160, EASU and RCAS took
 0.40 ms per present on an RTX 3080 (`fsr1-selftest`). An unknown value, or a device without

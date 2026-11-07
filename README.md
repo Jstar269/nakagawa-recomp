@@ -74,12 +74,7 @@ which has the full detail for every game and every part of the PSP. To report ho
 ## How it works
 
 Nakagawa translates the game's MIPS code into C ahead of time and compiles it together with a runtime that stands in
-for the PSP's system software, graphics and sound. The player is written in C with SDL3 and Vulkan. Other projects
-use the same approach: [Unleashed Recompiled](https://github.com/hedge-dev/UnleashedRecomp), a PC port of the Xbox
-360 version of Sonic Unleashed built with [XenonRecomp](https://github.com/hedge-dev/XenonRecomp);
-[PS2Recomp](https://github.com/ran-j/PS2Recomp), which recompiles PlayStation 2 programs into C++; and
-[LASRecomp](https://github.com/peiikai/LASRecomp), a native port of the Nintendo Switch version of *The Legend of
-Zelda: Link's Awakening*.
+for the PSP's system software, graphics and sound. The player is written in C with SDL3 and Vulkan.
 
 - When a game needs something that isn't supported yet, the player stops and names the missing piece.
 - No games, firmware or Sony system fonts ship here, and no game data is ever downloaded. Open replacement fonts
