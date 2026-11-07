@@ -356,6 +356,41 @@ int nk_tex_scale_submit(uint64_t serial, uint64_t hash, const uint32_t *rgba, in
     return 1;
 }
 
+int nk_tex_scale_submit_ready(uint64_t serial, uint64_t hash, const uint32_t *rgba, int w, int h,
+                              int factor) {
+    if (factor < 2 || factor > NK_TEX_SCALE_MAX || w <= 0 || h <= 0 || !rgba) return 0;
+    if (!ensure_started()) return 0;
+    const size_t n = (size_t)w * (size_t)h * (size_t)factor * (size_t)factor;
+    SDL_LockMutex(s_mx);
+    /* The same figure a scaling job accounts (nk_tex_scale_take gives it back), a little above
+     * what this one holds, which is its result alone. */
+    const uint64_t host = job_host_bytes(w, h, factor);
+    Job *j = room_for(host);
+    if (!j) {
+        s_stats.refused_full++;
+        SDL_UnlockMutex(s_mx);
+        return 0;
+    }
+    j->dst = (uint32_t *)malloc(n * sizeof(uint32_t));
+    if (!j->dst) {
+        SDL_UnlockMutex(s_mx);
+        return 0;
+    }
+    memcpy(j->dst, rgba, n * sizeof(uint32_t));
+    j->src = NULL;
+    j->serial = serial;
+    j->hash = hash;
+    j->w = w; j->h = h; j->factor = factor;
+    j->clamp_u = j->clamp_v = 0;
+    j->failed = 0;
+    j->seq = ++s_seq;
+    j->state = JOB_DONE;
+    s_host_bytes += host;
+    s_stats.submitted++;
+    SDL_UnlockMutex(s_mx);
+    return 1;
+}
+
 int nk_tex_scale_take(NkTexScaleResult *out) {
     memset(out, 0, sizeof(*out));
     if (!s_started) return 0;
