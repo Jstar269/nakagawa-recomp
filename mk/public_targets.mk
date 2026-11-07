@@ -151,10 +151,12 @@ PUBLIC_TARGETS := \
 	atrac3p-title-accept \
 	gpu-coherence-selftest \
 	gpu-coherence-selftest-snapbar-mutants \
+	gpu-coherence-pcache-mutant \
 	vram-view-identity-selftest \
 	gpu-snapsync-selftest \
 	gpu-ace-selftest \
 	tex-scale-selftest \
+	pipeline-cache-selftest \
 	tex-scale-gate-mutant \
 	texrepl-selftest \
 	texrepl-mutant \
@@ -332,10 +334,12 @@ HELP_DESCRIPTION_audio-resampler-bench := run the synthetic-input audio resample
 HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
 HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
 HELP_DESCRIPTION_gpu-coherence-selftest-snapbar-mutants := prove the GPU coherence selftest kills three broken snapshot-copy barrier variants
+HELP_DESCRIPTION_gpu-coherence-pcache-mutant := prove pipeline-cache-cold fails when pipelines bypass the Vulkan pipeline cache
 HELP_DESCRIPTION_vram-view-identity-selftest := check that the GE decoders the pause menu's VRAM viewer calls leave later frames, guest memory and the GE state unchanged (#314; needs a Vulkan device and fails without one)
 HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
 HELP_DESCRIPTION_gpu-ace-selftest := run Ace Mode's texture filtering selftest on a real Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_tex-scale-selftest := run the xBRZ texture scaling selftest against the pinned upstream goldens (no GPU)
+HELP_DESCRIPTION_pipeline-cache-selftest := run the GPU pipeline cache file checks and their atomic write (no GPU)
 HELP_DESCRIPTION_tex-scale-gate-mutant := prove the texture scaling selftest kills a build without the Ace gate
 HELP_DESCRIPTION_texrepl-selftest := run the texture replacement pack selftest (PPSSPP hashes, pack layout, lookup order, budget; no GPU)
 HELP_DESCRIPTION_texrepl-mutant := prove the texture replacement selftest kills a palette identity without the CLUTFORMAT word
