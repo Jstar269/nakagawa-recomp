@@ -1490,7 +1490,7 @@ deterministic replay: the run is replayed from boot under `SR_DETERMINISTIC_CLOC
 checkpoints are compared on the way. Today the container, its refusals, the checkpoints and
 `SR_RECORD`/`SR_REPLAY`, pad input included, exist; the player's save and load keys are still to
 come. Direct states and fast rewind need the runtime to resume a thread at a guest PC with no host
-frames, which is tracked as its own issue.
+frames, which is tracked in #2172.
 
 #### Running on a disposable Memory Stick
 
