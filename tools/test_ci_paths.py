@@ -322,6 +322,48 @@ class CiPathAdversarialTests(unittest.TestCase):
         self.assertEqual(result["allow_substantive"], "true")
         self.assertEqual(result["run_main_smoke"], "true")
 
+    def test_unrecognised_path_on_main_push_keeps_the_compact_run(self) -> None:
+        """An unknown path forced the full matrix on the PR or batch that carried it.
+
+        The push lands that validated tree, so it no longer repeats the matrix: 32 of 79
+        main pushes did (2026-11-02 to 2026-11-07). Markdown and the export exercise
+        still follow force_full, and the substantive flags still describe the change.
+        """
+        with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main"}):
+            for paths in (["new-tool-input.dat"],
+                          ["tests/native/test_player_ui.py", "src/rt/hle.c"],
+                          ["fixtures/psp_oracle/Makefile", "docs/CI.md"]):
+                with self.subTest(paths=paths):
+                    result = classify(paths, event_name="push")
+                    self.assertEqual(result["allow_substantive"], "false")
+                    self.assertEqual(result["run_main_smoke"], "true")
+                    self.assertEqual(result["run_python"], "true")
+                    self.assertEqual(result["run_markdown"], "true")
+                    self.assertEqual(result["security_publication"], "true")
+
+    def test_ci_definition_change_on_main_push_still_runs_the_matrix(self) -> None:
+        with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main"}):
+            for path in (".github/workflows/ci.yml", ".github/actions/x/action.yml",
+                         "tools/ci_paths.py", "tools/ci_test_shards.py", "tools/test_ci_required.py"):
+                with self.subTest(path=path):
+                    result = classify([path, "new-tool-input.dat"], event_name="push")
+                    self.assertEqual(result["allow_substantive"], "true")
+
+    def test_unreadable_main_push_still_runs_the_matrix(self) -> None:
+        with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main"}):
+            for paths in ([], ["<history-unavailable>"], ["<history-unavailable>", "docs/CI.md"]):
+                with self.subTest(paths=paths):
+                    self.assertEqual(classify(paths, event_name="push")["allow_substantive"], "true")
+
+    def test_unrecognised_path_stays_full_everywhere_but_a_main_push(self) -> None:
+        for event in ("pull_request", "merge_group", "schedule", "workflow_dispatch"):
+            with self.subTest(event=event):
+                result = classify(["new-tool-input.dat"], event_name=event)
+                self.assertEqual(result["allow_substantive"], "true")
+                self.assertEqual(result["run_windows"], "true")
+        with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/feature"}):
+            self.assertEqual(classify(["new-tool-input.dat"], event_name="push")["allow_substantive"], "true")
+
     def test_non_main_push_is_not_treated_as_main_smoke(self) -> None:
         with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/feature"}):
             result = classify(["src/rt/hle.c"], event_name="push")
@@ -1462,12 +1504,15 @@ NOW = 1_800_000_000
 
 def _pull_request(head_ref: str = "batch/desk-20261030T185810Z", *, head_repo: str = REPO,
                   fork: object = False, author: str = OWNER, base_repo: str = REPO,
-                  sender: str | None = OWNER) -> dict[str, object]:
-    event: dict[str, object] = {"pull_request": {
+                  sender: str | None = OWNER, draft: object = None) -> dict[str, object]:
+    pull_request: dict[str, object] = {
         "head": {"ref": head_ref, "repo": {"full_name": head_repo, "fork": fork}},
         "base": {"ref": "main", "repo": {"full_name": base_repo}},
         "user": {"login": author},
-    }}
+    }
+    if draft is not None:
+        pull_request["draft"] = draft
+    event: dict[str, object] = {"pull_request": pull_request}
     if sender is not None:
         event["sender"] = {"login": sender}
     return event
@@ -1562,6 +1607,71 @@ class CodeqlRunnerRoutingTests(unittest.TestCase):
         self.assertEqual(self.route("push", switch="off"), self.HOSTED)
         self.assertEqual(self.route("push", heartbeat=str(NOW - 601)), self.HOSTED)
         self.assertEqual(self.route("push", heartbeat=""), self.HOSTED)
+
+
+class LandingOnlyPoolRoutingTests(unittest.TestCase):
+    """``NK_SELF_HOSTED_LINUX=landing`` gives the pool only to runs that land work."""
+
+    def route(self, event_name: str, event: dict[str, object] | None = None, *, ref: str = "refs/pull/1/merge",
+              switch: str = "landing", heartbeat: str = str(NOW - 30)) -> str:
+        return ci_paths_module.linux_runner(
+            event_name, event or {}, repository=REPO, ref=ref, switch=switch, heartbeat=heartbeat, now=NOW)
+
+    def codeql(self, event_name: str, event: dict[str, object] | None = None, *, ref: str = "refs/heads/main",
+               switch: str = "landing") -> str:
+        return ci_paths_module.codeql_runner(
+            event_name, event or {}, repository=REPO, ref=ref, switch=switch, heartbeat=str(NOW - 30), now=NOW)
+
+    def test_landing_runs_use_the_pool(self) -> None:
+        self.assertEqual(self.route("push", ref="refs/heads/main"), SELF_HOSTED)
+        self.assertEqual(self.route("merge_group", ref="refs/heads/gh-readonly-queue/main/pr-7-" + "a" * 40),
+                         SELF_HOSTED)
+        self.assertEqual(self.route("pull_request", _pull_request()), SELF_HOSTED)
+        self.assertEqual(self.route("pull_request", _pull_request(draft=True)), SELF_HOSTED)
+        self.assertEqual(self.route("pull_request", _pull_request("fix/thing", draft=False)), SELF_HOSTED)
+        self.assertEqual(self.route("pull_request", _pull_request("fix/thing", draft=False), switch=" LANDING "),
+                         SELF_HOSTED)
+
+    def test_draft_and_unknown_draft_task_branches_stay_hosted(self) -> None:
+        for label, draft in (("draft", True), ("draft missing", None), ("draft a string", "false"), ("draft 0", 0)):
+            with self.subTest(label):
+                self.assertEqual(self.route("pull_request", _pull_request("fix/thing", draft=draft)), HOSTED)
+        self.assertEqual(self.route("push", ref="refs/heads/fix/thing"), HOSTED)
+
+    def test_landing_mode_never_widens_trust(self) -> None:
+        cases = {
+            "fork batch": _pull_request(head_repo="someone/nakagawa-recomp", fork=True, author="someone"),
+            "fork ready": _pull_request("fix/thing", head_repo="someone/nakagawa-recomp", fork=True, draft=False),
+            "carry ready": _pull_request("carry/pr-1757", draft=False),
+            "desk ready": _pull_request("desk/pr1757", draft=False),
+            "batch by someone else": _pull_request(author="contributor", sender="contributor"),
+            "ready sent by someone else": _pull_request("fix/thing", sender="contributor", draft=False),
+        }
+        for label, event in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.route("pull_request", event), HOSTED)
+        self.assertEqual(self.route("push", ref="refs/heads/main", heartbeat=str(NOW - 601)), HOSTED)
+
+    def test_off_and_unknown_switch_values_stay_hosted(self) -> None:
+        for switch in ("off", "", "landings", "on-landing", "true"):
+            with self.subTest(switch=switch):
+                self.assertEqual(self.route("push", ref="refs/heads/main", switch=switch), HOSTED)
+
+    def test_on_still_takes_every_trusted_run(self) -> None:
+        self.assertEqual(self.route("pull_request", _pull_request("fix/thing", draft=True), switch="on"), SELF_HOSTED)
+
+    def test_codeql_landing_mode_takes_only_main_merge_groups_and_batches(self) -> None:
+        hosted = json.dumps("ubuntu-26.04")
+        self.assertEqual(self.codeql("push"), SELF_HOSTED)
+        self.assertEqual(self.codeql("workflow_run", _wake("pull_request", "batch/desk-20261030T193657Z")),
+                         SELF_HOSTED)
+        self.assertEqual(self.codeql("workflow_run", _wake("merge_group", "gh-readonly-queue/main/pr-7-abc")),
+                         SELF_HOSTED)
+        self.assertEqual(self.codeql("workflow_run", _wake("pull_request", "fix/thing")), hosted)
+        self.assertEqual(self.codeql("workflow_run", _wake("pull_request", "batch/desk-1", actor="contributor")),
+                         hosted)
+        self.assertEqual(self.codeql("workflow_run", _wake("pull_request", "fix/thing"), switch="on"), SELF_HOSTED)
+        self.assertEqual(self.codeql("push", switch="off"), hosted)
 
 
 class SelfHostedRunnerRoutingTests(unittest.TestCase):

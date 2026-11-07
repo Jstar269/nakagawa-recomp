@@ -16699,6 +16699,17 @@
       }
     },
     {
+      "path": "tools/merge_append.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "merge-append-driver",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/microtest_gate.py",
       "classification": "upstream_derived",
       "evidence": {
@@ -19120,6 +19131,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "mem-debug-tooling",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_merge_append.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "merge-append-driver",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null

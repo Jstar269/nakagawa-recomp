@@ -30,8 +30,8 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
 | Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, CI required | Python/native, Windows |
 | Mixed documentation/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the applicable product gates |
-| Ordinary push to `main` after a validated merge | classification, hygiene/security with its Markdown step when needed and its compact main smoke steps, CI required | expensive platform matrix; the merged PR carried it |
-| Workflow push to `main` | the full applicable validation above plus the main smoke steps | none of the substantive public gates |
+| Ordinary push to `main` after a validated merge, including one with a path the classifier does not recognise | classification, hygiene/security with its Markdown step when needed and its compact main smoke steps, CI required | expensive platform matrix; the merged PR (or batch) carried it, and an unrecognised path already forced the full matrix there |
+| Workflow push to `main` (a changed workflow, action, CI classifier, aggregate or shard planner), or a push whose change set cannot be read | the full applicable validation above plus the main smoke steps | none of the substantive public gates |
 | Manual `workflow_dispatch` | the full matrix and full Python tier, regardless of paths | none |
 | Nightly schedule (`17 3 * * *` UTC) | the full matrix and full Python tier | none |
 | Merge-queue group (`merge_group`, `checks_requested`) | the full matrix, as for a manual dispatch, regardless of paths; every required check reports on the group commit | none |
@@ -991,7 +991,19 @@ tooling and therefore skipping a native or Windows gate. These invariants exist
 to prevent that, and `tools/test_ci_paths.py` asserts each one:
 
 - **Unknown paths fail closed.** Any path matching no predicate forces the full
-  matrix. Adding a new kind of file makes CI more expensive, never less.
+  matrix. Adding a new kind of file makes CI more expensive, never less. The one
+  exception is a push to `main`: it lands a tree whose pull request (or batch) already
+  ran that full matrix because of the same path, so the push keeps its compact run.
+  Only a changed CI definition (`_is_workflow_ci`) or a change set that cannot be read
+  (no paths, or `<history-unavailable>`) re-runs the matrix on a main push. Here a CI definition
+  means exactly these paths: anything under `.github/workflows/` or `.github/actions/`, and
+  `tools/ci_paths.py`, `tools/ci_required.py`, `tools/ci_test_shards.py` and their
+  `tools/test_` modules (`test_ci_paths.py`, `test_ci_required.py`, `test_ci_test_shards.py`).
+  Other files that configure CI, such as `tools/requirements-lock.txt`, are not in that set. Unknown paths
+  made 32 of 79 main pushes repeat the matrix from 2026-11-02 to 2026-11-07 (and 28 of 77
+  from 2026-10-31 to 2026-11-05, when three of those 28 failed: two on a tree that had
+  passed on its batch head, the third with no same-tree pull request run in the sampled
+  window). The nightly schedule still runs the full matrix on `main`.
 - **Every change type counts.** The changed-file query uses name-status without
   a narrowing diff filter, and retains both sides of a rename. Filtering to
   `ACMR` or keeping only a rename's new name can drop a build-affecting source,
@@ -1082,8 +1094,11 @@ once per smoke). Between runs it is persisted with the Actions cache:
   compile, and Make still decides what to build.
 - Only a run of `main` on `main` saves it: a push, the nightly schedule or a manual
   dispatch (`save_compiler_cache` from `tools/ci_paths.py`). Pull requests and merge
-  groups restore it and never write it. Before a save, entries the run did not
-  use are evicted, so the saved cache holds exactly that run's compiles.
+  groups restore it and never write it. A push runs the Windows gates only when it
+  changes a CI definition (see [Classifier invariants](#classifier-invariants)), so most
+  saves come from the nightly run; in ladder parts sampled on 2026-11-05, hit rates from
+  92% to 100% made no measurable difference to the step time. Before a save, entries
+  the run did not use are evicted, so the saved cache holds exactly that run's compiles.
 
 `gcc` is a native symlink to the UCRT64 toolchain's `ccache.exe`, so `CC` stays
 `gcc`, and SDL3 discovery and the toolchain check (`tools/nk_doctor_checks.py`)
@@ -1206,6 +1221,82 @@ default branch, because a group's parent may be an earlier group that never land
 is observation only and not a required check; the hosted `Trusted provenance
 attestation` remains the pull-request gate.
 
+## Merging parallel additions
+
+Some files get a new item from almost every pull request: a self-test block in `mk/selftests.mk`, a
+target in `mk/public_targets.mk`, a source in `mk/runtime_sources.mk` or `CMakeLists.txt`, a row in a
+`docs/DEBUGGING.md` table. Two pull requests that add at the same place conflict in Git although
+neither touches the other's lines. `.gitattributes` marks those five files `merge=nk-append`, and
+`tools/merge_append.py` is the merge driver behind that name. It runs the ordinary three-way merge and
+reads each conflict. It keeps ours and then theirs only when all of these hold:
+
+- The common ancestor has nothing there: both sides only inserted lines. If one side changed or
+  removed a line, the ordinary conflict markers stay.
+- The two insertions share no non-blank line. Git's diff3 output does not factor out lines both sides
+  inserted, so a union would repeat them (ours `X` against theirs `X`, `Y` would give `X X Y`).
+- No tab-indented line of either insertion belongs to a rule header outside that insertion. The driver
+  finds each such line's owner by walking up the merged text and skipping blank lines and `#` comments
+  (make ignores both inside a recipe); the first other non-tab line is the owner. The order of recipe
+  lines matters (`rm -f x` before `gen x`), and the union order would depend on which side is "ours", so a
+  person decides, also when the insertion starts with a comment or blank line. Inserts between targets,
+  new target blocks that bring their own header and tab-indented items of a variable such as
+  `PUBLIC_TARGETS` still merge by themselves.
+
+Git's own `merge=union` is not used because it keeps both versions of a line that both sides edited and
+leaves no marker.
+
+The driver only acts on the five paths named in `ALLOWED_PATHS` inside `tools/merge_append.py` itself.
+`.gitattributes` is read from the tree being merged, so a pull request that edits it could otherwise attach
+the driver to a code file. For any other path the driver exits 1 and leaves the ordinary conflict.
+
+The driver runs Git by an absolute path that it finds itself on `PATH`, skipping empty, `.` and relative
+entries and any entry in or equal to the working directory (the root of the tree being merged), so a
+`git.exe` at that root cannot run on Windows. If it finds no Git it writes nothing and exits 1. For its
+own analysis it asks Git for conflict markers longer than any run of `<`, `|`, `=` or `>` that starts a
+line in the three files, so a content line such as `=======` cannot pass for a marker. The conflict
+written for a person keeps the marker size Git asked for.
+
+`docs/ENHANCEMENT_CONTRACT.md` conflicts often too, but it stays out. Its additions are not independent
+items: 18 of the 22 commits that changed it from 2026-11-01 to 2026-11-07 edited existing lines (49 of their
+74 hunks), so most of its conflicts are edits the driver would leave anyway. The rest add numbered sections
+(`10.12`, `11.3.4`), and two pull requests that each add the next number would merge into two sections with
+one number and no marker.
+
+Turn it on once per clone (worktrees of a clone share the setting). In a contributor's own clone:
+
+```bash
+git config merge.nk-append.name "append-only list merge"
+git config merge.nk-append.driver "python tools/merge_append.py %O %A %B %L %P"
+```
+
+**The landing desk must not use that relative form.** `tools/merge_append.py` would then be the file in the
+tree being merged, and an earlier pull request in the batch that edits it would run its own code on the
+desk's machine. The desk sets the driver in its own clone's config to an absolute path to a reviewed copy
+outside every worktree, and runs it with `-I` so the current directory and the user site are ignored:
+
+```bash
+git config merge.nk-append.driver "python -I /path/to/reviewed/merge_append.py %O %A %B %L %P"
+```
+
+That copy is refreshed only from a reviewed `origin/main` commit (never from a worktree during a batch), and
+the desk compares it with `origin/main:tools/merge_append.py` at the start of each batch.
+
+Without the setting, Git ignores the attribute and merges as usual. The driver runs wherever Git
+merges on that machine (`git merge`, `git merge --squash`, `git cherry-pick`, `git rebase`). GitHub's
+own mergeability check and its **Update branch** button do not run it, so a pull request can still show
+a conflict on GitHub that a local merge resolves. The rest of the conflict-prone files stay out on
+purpose, and `tools/test_merge_append.py` keeps the list honest:
+
+- `docs/ENHANCEMENT_CONTRACT.md`, `docs/CI.md` and `docs/COMPATIBILITY.md` are prose. Parallel edits
+  there rewrite the same paragraph or renumber a section, and the driver would only leave them as
+  conflicts. Keep a change to a shared paragraph small, and put a new item in its own bullet or row.
+- `src/rt/gpu_sdl3vk/ge_gpu_selftest.inc`, `src/player/player_state.c`, `tools/codegen.py` and every other
+  C or Python file are code. Two insertions at one spot there can need an order or a shared brace.
+- The root `Makefile` only includes the `mk/` files, so it is no longer an append point.
+
+Add a file to the list only when every conflict it can have is two independent items, and add it to
+`ALLOWED_PATHS`, `.gitattributes` and the test together.
+
 ## Trusted CI verdict
 
 `.github/workflows/ci-trust-verdict.yml` and `tools/ci_trust_verdict.py` (#373, which also
@@ -1241,7 +1332,7 @@ and each token's remaining budget.
 | Code | Fails when |
 | --- | --- |
 | `CI_CHANGE_UNAPPROVED` | the head changes `.github/workflows/**`, `.github/actions/**`, `.pre-commit-config.yaml`, a CI tool (`tools/ci_paths.py`, `tools/ci_required.py`, `tools/ci_test_shards.py`, `tools/ci_test_weights.json`, `tools/requirements-lock.txt`, `tools/ci_trust_verdict.py`) or any `tools/` file a default-branch workflow runs, without a current `ci-change-approved` label |
-| `CI_DEFINITION_BEHIND` | `main` changed one of those files after the branch point; merge `main` (no label waives it) |
+| `CI_DEFINITION_BEHIND` | `main` changed one of those files after the branch point; the integrator merges `main` when it lands the pull request; the author merges it only for a real conflict in content that is not generated, or when asked (`AGENTS.md` section 10). No label waives it |
 | `CI_CONTEXT_COLLISION` | another workflow names `Trusted CI verdict`, or a check run uses that name |
 | `FOREIGN_PRODUCER` | a check run or status under an intended context is not from the intended workflow path and event at this head |
 | `JOB_MISSING`, `JOB_FAILED`, `JOB_CANCELLED`, `DUPLICATE_CONTEXT` | the latest non-cancelled intended run lacks the job, the job did not succeed, every run was cancelled, or two jobs share the name |
@@ -1427,15 +1518,21 @@ reads the candidate tree as data (`build-mode: none`), and it takes the pool onl
 it was woken by one of the owner's own pull requests above or a merge group, or for a
 push to `main`. Every other pull request's analysis stays on `ubuntu-26.04`.
 
-Every other run, a fork's pull request above all, gets the job's hosted image (`ubuntu-24.04`
-or `ubuntu-26.04`, whichever that job names when it is not on the pool). Two repository
-variables, which only the maintainer can set, gate it further: `NK_SELF_HOSTED_LINUX`
-must be `on` and `NK_SELF_HOSTED_HEARTBEAT` must be a Unix time less than ten minutes
-old. The pool's supervisor refreshes the heartbeat every two minutes while the pool is
-healthy and turns the switch `off` when it stops or the pool fails, so a sleeping PC or
-a dead pool sends trusted runs back to hosted runners within minutes instead of leaving
-them queued. Only `runs-on` changes: every step, check name, `CI required` and the
-Trusted CI verdict are the same on either runner.
+Every other run, a fork's pull request above all, gets the job's hosted image
+(`ubuntu-24.04` or `ubuntu-26.04`, whichever that job names when it is not on the pool). Two
+repository variables, which only the maintainer can set, gate it further:
+`NK_SELF_HOSTED_LINUX` must be `on` or `landing` and `NK_SELF_HOSTED_HEARTBEAT` must be a
+Unix time less than ten minutes old. `on` sends every trusted run above to the pool.
+`landing` sends only the trusted runs that land work: a push to `main`, a merge group, a
+desk batch branch (`batch/`) and a Ready pull request; for Trusted CodeQL, a push to `main`
+and a wake of a merge group or a batch. A Draft pull request's CI then stays hosted, so a
+small pool is kept for landings. Either value only narrows the trusted runs above, never
+widens them, and any other value is off. The pool's supervisor refreshes the heartbeat every
+two minutes while the pool is healthy, sets the switch to the mode it was started with (`on`
+or `landing`), and turns it `off` when it stops or the pool fails, so a sleeping PC or a
+dead pool sends trusted runs back to hosted runners within minutes instead of leaving them
+queued. Only `runs-on` changes: every step, check name, `CI required` and the Trusted CI
+verdict are the same on either runner.
 
 **The routing is not the security boundary.** On a `pull_request` event, `ci.yml` and
 `tools/ci_paths.py` both come from the candidate's own tree, so a fork could edit either

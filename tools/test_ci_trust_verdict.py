@@ -323,7 +323,11 @@ class StaleHeadCanaryTests(VerdictAssertions):
         scenario = Scenario()
         scenario.change(CI, "behind")
         scenario.label()
-        self.assertVerdict(scenario, "failure", "CI_DEFINITION_BEHIND")
+        verdict = self.assertVerdict(scenario, "failure", "CI_DEFINITION_BEHIND")
+        # The integrator merges main at landing (AGENTS.md section 10); the author is not asked to.
+        (message,) = [item.message for item in verdict.findings if item.code == "CI_DEFINITION_BEHIND"]
+        self.assertIn("the integrator merges main when it lands the pull request, not the author", message)
+        self.assertNotRegex(message, r";\s*merge main$")
 
     def test_pull_request_into_another_branch_gets_no_pass(self) -> None:
         scenario = Scenario()
