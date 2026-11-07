@@ -2018,15 +2018,15 @@ def _export_staleness_findings(
     changed since the export was produced, the export describes a decision nobody
     made and must not be trusted.
 
-    The committed control no longer carries ``policy_sha256``: it is the digest
-    of the policy blob itself, recomputed here as ``policy.digest``, and
-    committing it made every two profile-changing pull requests conflict.  What
-    the control does carry is every field the policy decides -- the profile, its
-    version and both exclusion lists -- and each is compared with the policy
-    below, so a control that a policy change would rewrite is still stale.  The
-    policy bytes themselves are bound to the externally trusted policy by
-    ``POLICY_SOURCE_MISMATCH``.  A control that still declares a digest (one
-    written before the change) is held to it exactly as before.
+    Two committed shapes are accepted.  A control that declares
+    ``policy_sha256`` is held to it exactly as before.  A control may instead
+    omit it: the digest is that of the policy blob itself, recomputed here as
+    ``policy.digest``, and committing it makes every two profile-changing pull
+    requests conflict.  Such a control still carries every field the policy
+    decides -- the profile, its version and both exclusion lists -- and each is
+    compared with the policy below, so a control that a policy change would
+    rewrite is still stale.  The policy bytes themselves are bound to the
+    externally trusted policy by ``POLICY_SOURCE_MISMATCH``.
     """
     resolved = export_path or (repo_root / "PUBLIC_EXPORT.json")
     if document is None:

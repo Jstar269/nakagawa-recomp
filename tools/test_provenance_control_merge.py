@@ -24,7 +24,8 @@ generators:
   new normal shape, but declaring one that disagrees, dropping a field the
   recomputation requires, reclassifying a field as tree-derived, shipping a
   control generated against a different policy, or editing a ledger hash all
-  still fail closed.
+  still fail closed -- whether the control declares ``policy_sha256`` or
+  leaves it to be recomputed.
 """
 
 from __future__ import annotations
@@ -361,23 +362,63 @@ class TamperStillFailsTests(unittest.TestCase):
             self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(forged), field)
 
     def test_reclassifying_a_required_field_as_tree_derived_is_refused(self) -> None:
-        forged = dict(
-            self.declared,
-            tree_derived_fields=sorted(public_export.EXPORT_TREE_DERIVED_FIELDS + ("policy_version",)),
-        )
-        self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(forged))
+        for listed in (
+            public_export.EXPORT_TREE_DERIVED_FIELDS_WITHOUT_POLICY_DIGEST + ("policy_version",),
+            public_export.EXPORT_TREE_DERIVED_FIELDS_WITH_POLICY_DIGEST + ("policy_version",),
+        ):
+            forged = dict(self.declared, tree_derived_fields=sorted(listed))
+            del forged["policy_version"]
+            self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(forged), listed)
+
+    # -- the two committed shapes of the policy digest ------------------------
+
+    def _with_declared_digest(self) -> dict:
+        """The control shape whose list does not name the digest: it declares it."""
+        control = {
+            key: value for key, value in self.generated.items()
+            if key not in public_export.EXPORT_CONTROL_OMITTED_FIELDS or key == "policy_sha256"
+        }
+        control["policy_sha256"] = self.generated["policy_sha256"]
+        control["tree_derived_fields"] = list(public_export.EXPORT_TREE_DERIVED_FIELDS_WITHOUT_POLICY_DIGEST)
+        return control
+
+    def _with_recomputed_digest(self) -> dict:
+        """The control shape whose list names the digest: it omits it."""
+        control = {
+            key: value for key, value in self.generated.items()
+            if key not in public_export.EXPORT_CONTROL_OMITTED_FIELDS and key != "policy_sha256"
+        }
+        control["tree_derived_fields"] = list(public_export.EXPORT_TREE_DERIVED_FIELDS_WITH_POLICY_DIGEST)
+        return control
 
     def test_the_committed_control_omits_the_policy_digest(self) -> None:
         self.assertNotIn("policy_sha256", self.declared)
         self.assertIn("policy_sha256", self.declared["tree_derived_fields"])
         self.assertEqual(self.generated["policy_sha256"], self.policy.digest)
 
-    def test_a_declared_but_stale_policy_digest_is_refused(self) -> None:
-        forged = dict(self.declared, policy_sha256="0" * 64)
-        self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(forged))
+    def test_both_policy_digest_shapes_verify(self) -> None:
+        self.assertEqual(self.generated["policy_sha256"], self.policy.digest)
+        self.assertEqual(self._codes(self._with_declared_digest()), [])
+        self.assertEqual(self._codes(self._with_recomputed_digest()), [])
+        self.assertEqual(self._codes(dict(self._with_recomputed_digest(), policy_sha256=self.policy.digest)), [])
 
-    def test_a_control_generated_against_a_different_policy_is_refused(self) -> None:
-        """The digest is gone from the control; the policy's decisions are not."""
+    def test_a_stale_policy_digest_is_refused_in_either_shape(self) -> None:
+        for control in (self._with_declared_digest(), self._with_recomputed_digest()):
+            forged = dict(control, policy_sha256="0" * 64)
+            self.assertEqual(self._codes(forged), ["EXPORT_FIELD_MISMATCH"])
+
+    def test_omitting_the_digest_without_naming_it_is_refused_with_the_refresh(self) -> None:
+        forged = self._with_declared_digest()
+        del forged["policy_sha256"]
+        findings = verifier._export_field_findings(forged, self.generated, label="export")
+        self.assertTrue(findings)
+        self.assertEqual({f.code for f in findings}, {"EXPORT_FIELD_MISMATCH"})
+        for finding in findings:
+            self.assertIn("contrib-refresh", finding.detail)
+            self.assertIn("regen_all.py", finding.detail)
+
+    def test_a_control_generated_against_a_different_policy_is_refused_in_either_shape(self) -> None:
+        """Without the digest, the policy's decisions still bind the control."""
         for change in (
             {"name": "another-synthetic-profile"},
             {"exclude_globs": ["docs/*.tmp"]},
@@ -388,40 +429,18 @@ class TamperStillFailsTests(unittest.TestCase):
             other.write_bytes(_canonical(document))
             other_policy = load_policy(other)
             self.assertNotEqual(other_policy.digest, self.policy.digest)
-            stale = public_export.build_control_document(public_export.build_document(
+            stale = public_export.build_document(
                 other_policy, self.files, provenance_ledger=(self.repo.root / LEDGER).read_bytes(),
-            ))
-            self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(stale), change)
-
-    def _legacy_control(self) -> dict:
-        """The control the generator wrote before ``policy_sha256`` joined the list."""
-        legacy = {
-            key: value for key, value in self.generated.items()
-            if key not in public_export.LEGACY_EXPORT_TREE_DERIVED_FIELDS + ("candidate_tree", "source_tree")
-        }
-        legacy["tree_derived_fields"] = list(public_export.LEGACY_EXPORT_TREE_DERIVED_FIELDS)
-        return legacy
-
-    def test_a_control_written_before_the_digest_moved_still_verifies(self) -> None:
-        """Old-format compatibility: open pull requests keep verifying unchanged."""
-        legacy = self._legacy_control()
-        self.assertEqual(legacy["policy_sha256"], self.policy.digest)
-        self.assertEqual(self._codes(legacy), [])
-
-    def test_an_old_format_control_with_a_stale_digest_is_refused(self) -> None:
-        """Its digest is still checked, so an old control cannot carry a stale one."""
-        stale = dict(self._legacy_control(), policy_sha256="0" * 64)
-        self.assertEqual(self._codes(stale), ["EXPORT_FIELD_MISMATCH"])
-
-    def test_the_older_list_without_its_digest_is_refused_with_the_refresh(self) -> None:
-        """Neither generator writes this shape; the refusal names the fix, which verifies."""
-        forged = self._legacy_control()
-        del forged["policy_sha256"]
-        findings = verifier._export_field_findings(forged, self.generated, label="export")
-        self.assertEqual([f.code for f in findings], ["EXPORT_FIELD_MISMATCH"])
-        self.assertIn("contrib-refresh", findings[0].detail)
-        self.assertIn("regen_all.py", findings[0].detail)
-        self.assertEqual(self._codes(public_export.build_control_document(self.generated)), [])
+            )
+            declared = {
+                key: value for key, value in stale.items()
+                if key not in public_export.EXPORT_CONTROL_OMITTED_FIELDS
+            }
+            declared["policy_sha256"] = stale["policy_sha256"]
+            recomputed = {key: value for key, value in declared.items() if key != "policy_sha256"}
+            recomputed["tree_derived_fields"] = list(public_export.EXPORT_TREE_DERIVED_FIELDS_WITH_POLICY_DIGEST)
+            for control in (declared, recomputed):
+                self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(control), change)
 
     def test_an_invented_field_is_refused(self) -> None:
         self.assertIn("EXPORT_FIELD_MISMATCH", self._codes(dict(self.declared, smuggled="hello")))

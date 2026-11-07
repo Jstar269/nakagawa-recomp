@@ -68,10 +68,23 @@ EXPORT_TREE_DERIVED_FIELDS = (
     "tracked_file_count",
 )
 
-#: The list a control generated before ``policy_sha256`` joined it records.  Such a
-#: control still carries the digest; the verifiers name the refresh that rewrites it.
-LEGACY_EXPORT_TREE_DERIVED_FIELDS = tuple(
-    field for field in EXPORT_TREE_DERIVED_FIELDS if field != "policy_sha256"
+
+
+#: The policy digest.  It is the digest of the candidate tree's own policy blob,
+#: so the verifiers can recompute it, and a committed copy changes with every
+#: admitted path.  A committed control may therefore omit it, provided its
+#: ``tree_derived_fields`` names it.
+POLICY_DIGEST_FIELD = "policy_sha256"
+
+#: The two ``tree_derived_fields`` lists a committed control may record: one that
+#: names the policy digest (the control omits it, and it is recomputed), and one
+#: that does not (the control declares it, and it is compared).  The verifiers
+#: accept both, so the writer can move between them without a flag day.
+EXPORT_TREE_DERIVED_FIELDS_WITH_POLICY_DIGEST = tuple(
+    sorted(set(EXPORT_TREE_DERIVED_FIELDS) | {POLICY_DIGEST_FIELD})
+)
+EXPORT_TREE_DERIVED_FIELDS_WITHOUT_POLICY_DIGEST = tuple(
+    field for field in EXPORT_TREE_DERIVED_FIELDS if field != POLICY_DIGEST_FIELD
 )
 
 

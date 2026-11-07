@@ -2609,11 +2609,10 @@ class AndroidTreeMetadataTests(unittest.TestCase):
 
 
 class ExportPolicyDigestTests(unittest.TestCase):
-    """The committed export control no longer records ``policy_sha256``.
+    """A committed export control may declare ``policy_sha256`` or omit it.
 
-    The publication audit holds the control to the policy through the fields the
-    policy decides instead, and still holds an older control that declares a
-    digest to that digest.
+    Without it, the publication audit holds the control to the policy through
+    the fields the policy decides; with it, the digest is compared as before.
     """
 
     def setUp(self) -> None:
@@ -2658,10 +2657,10 @@ class ExportPolicyDigestTests(unittest.TestCase):
             self.assertEqual(self._codes(control), ["POLICY_EXPORT_STALE"], field)
         self.assertEqual(self._codes({}), ["POLICY_EXPORT_STALE"] * 3)
 
-    def test_an_older_control_that_declares_the_current_digest_still_verifies(self) -> None:
+    def test_a_control_that_declares_the_current_digest_verifies(self) -> None:
         self.assertEqual(self._codes(dict(self.control, policy_sha256=self.policy.digest)), [])
 
-    def test_an_older_control_that_declares_a_stale_digest_is_stale(self) -> None:
+    def test_a_control_that_declares_a_stale_digest_is_stale(self) -> None:
         codes = self._codes(dict(self.control, policy_sha256="0" * 64))
         self.assertEqual(codes, ["POLICY_EXPORT_STALE"])
         self.assertIn("POLICY_EXPORT_STALE", publish_audit.STALE_CONTROL_CODES)
