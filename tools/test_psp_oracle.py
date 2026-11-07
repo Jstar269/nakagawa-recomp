@@ -2655,7 +2655,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                                   ("sceAudiocodec", "0x40090000")])
         funcs = re.findall(r"VCW_FUNC\((\w+), (0x[0-9A-F]{8}), (\w+)\)", section)
         self.assertEqual(len(funcs), 12)
-        names = {library: set() for library, _ in blocks}
+        names: dict[str, set[int]] = {library: set() for library, _ in blocks}
         for library, nid, name in funcs:
             names[library].add(int(nid, 16))
             # Every NID is the first four bytes, little-endian, of SHA-1 of the export name, except
