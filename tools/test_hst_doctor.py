@@ -1211,6 +1211,66 @@ class LongPathDiagnosticTests(unittest.TestCase):
                 nk_doctor_checks.DEEPEST_EXPECTED_BUILD_PATH.as_posix(),
             )
 
+    def test_inputs_scope_reports_the_configured_asset_root_path(self) -> None:
+        """Input roots participate in the path advisory without scanning their contents."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "checkout"
+            root.mkdir()
+            input_root = Path(tmpdir) / ("asset-input-" + "x" * 260)
+            output: list[str] = []
+            with (
+                mock.patch.object(nk_doctor, "check_data_directory"),
+                mock.patch.object(nk_doctor, "check_private_inputs"),
+                mock.patch.object(nk_doctor, "check_save_root"),
+                mock.patch.object(nk_doctor_checks, "longest_tracked_relative_path", return_value=None),
+                mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=False),
+                mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"),
+                mock.patch.dict(os.environ, {"SR_DATAROOT": str(input_root)}, clear=True),
+                mock.patch("builtins.print", side_effect=lambda value: output.append(value)),
+            ):
+                returned = nk_doctor.main(["--root", str(root), "--scope", "inputs", "--json"])
+
+            payload = json.loads(output[-1])
+            long_paths = [result for result in payload["results"] if result["code"] == "LONG_PATHS"]
+            self.assertEqual(returned, 0)
+            self.assertEqual(len(long_paths), 1)
+            self.assertEqual(long_paths[0]["status"], "WARN")
+            self.assertEqual(long_paths[0]["path"], str(input_root))
+            self.assertEqual(
+                long_paths[0]["metadata"]["deepest_source"], "configured asset input root"
+            )
+            self.assertIn(str(input_root), long_paths[0]["remediation"])
+
+    def test_products_scope_reports_the_configured_user_data_output_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "checkout"
+            root.mkdir()
+            user_data_root = Path(tmpdir) / ("package-output-" + "x" * 260)
+            output: list[str] = []
+            with (
+                mock.patch.object(nk_doctor, "check_data_directory"),
+                mock.patch.object(nk_doctor, "check_build_products"),
+                mock.patch.object(nk_doctor, "check_build_profile"),
+                mock.patch.object(nk_doctor_checks, "longest_tracked_relative_path", return_value=None),
+                mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=False),
+                mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"),
+                mock.patch("builtins.print", side_effect=lambda value: output.append(value)),
+            ):
+                returned = nk_doctor.main([
+                    "--root", str(root), "--scope", "products", "--user-data-root",
+                    str(user_data_root), "--json",
+                ])
+
+            payload = json.loads(output[-1])
+            long_paths = [result for result in payload["results"] if result["code"] == "LONG_PATHS"]
+            self.assertEqual(returned, 0)
+            self.assertEqual(len(long_paths), 1)
+            self.assertEqual(long_paths[0]["status"], "WARN")
+            self.assertEqual(long_paths[0]["path"], str(user_data_root))
+            self.assertEqual(
+                long_paths[0]["metadata"]["deepest_source"], "per-user package output root"
+            )
+
 
 class TypographyRuntimeCheckTests(unittest.TestCase):
     """The player's SDL3_ttf runtime is a reported workspace fact, never silent."""

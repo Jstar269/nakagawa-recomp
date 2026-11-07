@@ -194,6 +194,21 @@ in its dialog. Other PSN downloads
 (PSP minis and games tied to the PSP that bought them), PSOne Classics and
 PGD-protected data aren't supported yet.
 
+### Homebrew
+
+PSP homebrew (programs the community wrote, with no game from a shop in them) is added the same way: pick its
+`EBOOT.PBP`. A homebrew program is not encrypted, so it needs no keys. The player writes a small disc image
+from the package once, on this PC, in `<user data>/discs/<key>/<key>.iso`, holding the program and its icon, and
+adds that image as if you had picked it. The key is made from the program and its title, so the same homebrew is
+the same game wherever you add it from, and the library shows it as **Beta / unofficial**. Homebrew is
+**Experimental**: nobody has checked a program unless [`COMPATIBILITY.md`](COMPATIBILITY.md#homebrew-limits)
+says so. Your `EBOOT.PBP` is only read, never changed.
+
+Some homebrew can't run, and the player says which kind when you pick it: an encrypted program, kernel-mode
+homebrew and custom-firmware plugins (they need the PSP's own kernel), and anything that is not a PSP program.
+A program that writes its own machine code while it runs, such as an emulator with a JIT, starts and then stops
+at the first jump into that code. [Homebrew limits](COMPATIBILITY.md#homebrew-limits) lists each kind.
+
 ### Supplying title manifests
 
 If your game needs a title manifest of its own (a file that describes the game to Nakagawa), put the `.json` file in:

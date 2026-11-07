@@ -699,6 +699,9 @@ def compute_effective_timeout(
       - WAIT_MS=<duration_ms>: waits for explicit millisecond duration.
       - WAIT_VIEW=<view_mask>,<timeout_ms>: waits up to timeout_ms for view match.
       - WAIT_PACKAGE_STATUS=<status>,<timeout_ms>: waits for package validation.
+      - WAIT_UPDATE=<phase>,<timeout_ms>: waits until the update phase is <phase>, by its
+        "update=" name (available, downloaded, installed, failed, idle, ...); the run fails,
+        naming the phase it last saw, when timeout_ms passes first.
       - WAIT_REPORT=<phase>,<timeout_ms>: waits for the Problem report phase number.
 
     When explicit_timeout is None, sums all wait event bounds and adds
@@ -719,7 +722,7 @@ def compute_effective_timeout(
                 effective += int(ev.split(",", 1)[1]) / 1000.0
             except ValueError:
                 pass
-        elif ev.startswith("WAIT_PACKAGE_STATUS=") and "," in ev:
+        elif ev.startswith(("WAIT_PACKAGE_STATUS=", "WAIT_UPDATE=")) and "," in ev:
             try:
                 effective += int(ev.rsplit(",", 1)[1]) / 1000.0
             except ValueError:
@@ -903,6 +906,9 @@ class LegacyRendererSourceTests(unittest.TestCase):
 
 UPDATE_RELEASES_URL = "https://api.github.com/repos/Jstar269/nakagawa-recomp/releases?per_page=10"
 UPDATE_DOWNLOAD_PREFIX = "https://github.com/Jstar269/nakagawa-recomp/releases/download/"
+# The most one update step (check, download, install) may take in a WAIT_UPDATE step. A
+# ceiling, not a sleep: the script moves on as soon as the phase is reached.
+UPDATE_STEP_TIMEOUT_MS = 60000
 
 # A TEST-ONLY minisign signer for the synthetic releases: Ed25519 (RFC 8032) in plain
 # Python, so no package is needed. Its key pair is derived from a fixed label at run
@@ -1146,6 +1152,7 @@ class NativePlayerUiTests(unittest.TestCase):
         package_built_by: str | None = None,
         disc_list: str | None = None,
         enhancement_packages: dict[str, str] | None = None,
+        expect_failure: bool = False,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -1454,6 +1461,12 @@ class NativePlayerUiTests(unittest.TestCase):
             wall_seconds = time.perf_counter() - started
             if os.environ.get(PLAYER_UI_ECHO_ENV) == "1":
                 sys.stderr.write(completed.stdout)
+            if expect_failure:
+                # A script the harness must stop: only the exit code and output count.
+                self.assertNotEqual(completed.returncode, 0,
+                                    completed.stdout + completed.stderr)
+                return {"stdout": completed.stdout, "stderr": completed.stderr,
+                        "returncode": completed.returncode}
             if completed.returncode != 0:
                 self.fail(
                     f"player returned {completed.returncode}\n"
@@ -2828,6 +2841,11 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[3]["focus"], "1")
         self.assertEqual(frames[4]["picker"], "1")
 
+    # CHECK FOR UPDATES, wait for the newer release, then Enter on its focused action
+    # (Download, or the release page when Download is not offered).
+    UPDATE_TO_DOWNLOAD = ("WAIT_MS=200", "KEY_RETURN",
+                          f"WAIT_UPDATE=available,{UPDATE_STEP_TIMEOUT_MS}", "KEY_RETURN")
+
     def update_run(self, view: str, events: tuple[str, ...], fixture: dict[str, bool] | None,
                    **kwargs: object) -> tuple[dict[str, object], list[dict[str, str]], list[str]]:
         """A next-UI run whose update answers come from a synthetic fixture (None:
@@ -2852,13 +2870,18 @@ class NativePlayerUiTests(unittest.TestCase):
         """Owner request 2026-10-28: CHECK FOR UPDATES asks GitHub once; Download and
         Install each need their own click; the checksum file's signature is checked,
         then the ZIP against that signed SHA-256, before Install is offered, and
-        Install unpacks into a new folder."""
+        Install unpacks into a new folder. Each step is waited for by its phase: a
+        fixed wait once ended before the install did on a busy runner (CI run
+        42312214991). The slow link (600 ms per download request, so the download
+        outlasts the 1.5 s the old script gave it) keeps the script honest."""
+        events = self.UPDATE_TO_DOWNLOAD
+        if sys.platform == "win32":
+            events += (f"WAIT_UPDATE=downloaded,{UPDATE_STEP_TIMEOUT_MS}", "KEY_RETURN",
+                       f"WAIT_UPDATE=installed,{UPDATE_STEP_TIMEOUT_MS}")
+        else:
+            events += ("WAIT_MS=500",)
         run, steps, requests = self.update_run(
-            "updates",
-            ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500",
-             "KEY_RETURN", "WAIT_MS=5000"),
-            {},
-        )
+            "updates", events, {}, env_extra={"NK_UI_TEST_UPDATE_REQUEST_DELAY_MS": "600"})
         names = [step["update"] for step in steps]
         self.assertEqual(steps[0]["newest"], "v0.0.3")
         self.assertIn("available", names)
@@ -2949,7 +2972,8 @@ class NativePlayerUiTests(unittest.TestCase):
 
     def test_update_check_offline_shows_one_plain_card_and_no_retries(self) -> None:
         run, steps, requests = self.update_run(
-            "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=1500"), None)
+            "updates",
+            ("WAIT_MS=200", "KEY_RETURN", f"WAIT_UPDATE=failed,{UPDATE_STEP_TIMEOUT_MS}"), None)
         self.assertEqual([step["update"] for step in steps], ["failed"], steps)
         self.assertEqual(steps[0]["error"], "UPDATE_OFFLINE")
         self.assertEqual(requests, [UPDATE_RELEASES_URL], "one request, no retry")
@@ -2961,7 +2985,7 @@ class NativePlayerUiTests(unittest.TestCase):
         if sys.platform != "win32":
             self.skipTest("the update download runs on Windows only")
         _, steps, _ = self.update_run(
-            "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500"),
+            "updates", self.UPDATE_TO_DOWNLOAD + (f"WAIT_UPDATE=failed,{UPDATE_STEP_TIMEOUT_MS}",),
             {"wrong_checksum": True})
         self.assertEqual(steps[-1]["update"], "failed", steps)
         self.assertEqual(steps[-1]["error"], "UPDATE_HASH_MISMATCH")
@@ -2973,7 +2997,7 @@ class NativePlayerUiTests(unittest.TestCase):
         if sys.platform != "win32":
             self.skipTest("the update download runs on Windows only")
         _, steps, requests = self.update_run(
-            "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500"),
+            "updates", self.UPDATE_TO_DOWNLOAD + (f"WAIT_UPDATE=failed,{UPDATE_STEP_TIMEOUT_MS}",),
             {"bad_signature": True})
         self.assertEqual(steps[-1]["update"], "failed", steps)
         self.assertEqual(steps[-1]["error"], "UPDATE_SIGNATURE_INVALID")
@@ -2991,8 +3015,7 @@ class NativePlayerUiTests(unittest.TestCase):
         for fixture in ({"player_key": False}, {"signed": False}):
             with self.subTest(fixture=fixture):
                 run, steps, requests = self.update_run(
-                    "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN",
-                                "WAIT_MS=500"), fixture)
+                    "updates", self.UPDATE_TO_DOWNLOAD + ("WAIT_MS=500",), fixture)
                 self.assertEqual([step["update"] for step in steps], ["available"], steps)
                 self.assertEqual(requests, [UPDATE_RELEASES_URL])
                 self.assertIn(
@@ -3004,12 +3027,29 @@ class NativePlayerUiTests(unittest.TestCase):
             self.skipTest("the update install runs on Windows only")
         _, steps, _ = self.update_run(
             "updates",
-            ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500",
-             "KEY_RETURN", "WAIT_MS=5000"),
+            self.UPDATE_TO_DOWNLOAD + (f"WAIT_UPDATE=downloaded,{UPDATE_STEP_TIMEOUT_MS}",
+                                       "KEY_RETURN", f"WAIT_UPDATE=failed,{UPDATE_STEP_TIMEOUT_MS}"),
             {"missing_file": True})
         self.assertEqual(steps[-1]["update"], "failed", steps)
         self.assertEqual(steps[-1]["error"], "UPDATE_INSTALL_INCOMPLETE")
         self.assertEqual(steps[-1]["install"], "none")
+
+    def test_wait_update_fails_on_timeout_and_refuses_bad_steps(self) -> None:
+        """WAIT_UPDATE is a ceiling, never a pass: a phase that never comes fails the run
+        and names the phase it last saw, and a malformed step stops the script before
+        any wait starts."""
+        run = self.next_ui_run("library", ("WAIT_UPDATE=installed,300",),
+                               expect_failure=True, timeout=60)
+        self.assertIn("[PLAYER_UI_TEST] wait_update result=FAIL target=installed actual=idle",
+                      run["stderr"], run["stdout"])
+        self.assertNotIn("result=PASS", run["stdout"])
+        for step in ("WAIT_UPDATE=nonsense,1000", "WAIT_UPDATE=installed",
+                     "WAIT_UPDATE=,1000", "WAIT_UPDATE=installed,0",
+                     "WAIT_UPDATE=installed,-5", "WAIT_UPDATE=installed,4294967296"):
+            with self.subTest(step=step):
+                run = self.next_ui_run("library", (step,), expect_failure=True, timeout=60)
+                self.assertIn("Invalid synthetic event script", run["stderr"], run["stdout"])
+                self.assertNotIn("wait_update target=", run["stdout"])
 
     def test_update_check_at_start_is_off_by_default_and_quiet_when_offline(self) -> None:
         """No setting, no request: the player is offline by default (AGENTS.md section 5)."""
@@ -3020,16 +3060,19 @@ class NativePlayerUiTests(unittest.TestCase):
             self.assertIs(settings.get("check_updates_at_start"), False)
         # Turned on: one request at start, and a newer version is one quiet button.
         run, steps, requests = self.update_run(
-            "library", ("WAIT_MS=800",), {}, env_extra={"NK_UI_TEST_CHECK_AT_START": "1"})
+            "library", (f"WAIT_UPDATE=available,{UPDATE_STEP_TIMEOUT_MS}",), {},
+            env_extra={"NK_UI_TEST_CHECK_AT_START": "1"})
         self.assertEqual(requests, [UPDATE_RELEASES_URL])
         self.assertEqual([(step["update"], step["notice"]) for step in steps],
                          [("available", "1")], steps)
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["view"], "library", "the check never takes the screen")
-        # Offline at start: one request, and nothing on screen.
+        # Offline at start: one request, and nothing on screen. The check starts before
+        # the first frame, so the phase is checking until the failed check returns it to idle.
         run, steps, requests = self.update_run(
-            "library", ("WAIT_MS=1500",), None, env_extra={"NK_UI_TEST_CHECK_AT_START": "1"})
+            "library", (f"WAIT_UPDATE=idle,{UPDATE_STEP_TIMEOUT_MS}",), None,
+            env_extra={"NK_UI_TEST_CHECK_AT_START": "1"})
         self.assertEqual(requests, [UPDATE_RELEASES_URL])
         self.assertEqual(steps, [], "a failed check at start stays in the developer log")
 
@@ -4872,11 +4915,15 @@ class NativePlayerUiTests(unittest.TestCase):
         check, standing in for a retail package whose check hashes several
         hundred MB. Failing-before: the launch ran on the UI thread, so the
         frames stopped for the whole start and PLAY showed nothing until it
-        ended (about 20 s for the owner's Hot Shots Tennis package)."""
+        ended (about 20 s for the owner's Hot Shots Tennis package).
+
+        The test checks that frames keep coming through the whole start, not how
+        many come: a loaded runner draws fewer frames per second (#2155)."""
+        slow_start_ms = 1500
         run = self.run_player(
             "ready", (*self.PLAY_READY_TITLE, "KEY_RETURN", "WAIT_MS=2500"),
             post_build_ready=True, wait_background=True, ui_mode="next",
-            env_extra={"NK_UI_TEST_SLOW_START_MS": "1500"},
+            env_extra={"NK_UI_TEST_SLOW_START_MS": str(slow_start_ms)},
         )
         if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
             self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
@@ -4899,10 +4946,21 @@ class NativePlayerUiTests(unittest.TestCase):
         first = frames.index(pending[0])
         last = frames.index(pending[-1])
         ticks = [int(frame["ticks_ms"]) for frame in frames[first:last + 2]]
-        self.assertGreaterEqual(ticks[-1] - ticks[0], 1400, "the start took its 1.5 s")
-        self.assertGreaterEqual(len(pending), 10, "the launcher drew through the start")
+        start, end = ticks[0], ticks[-1]
+        self.assertGreaterEqual(end - start, slow_start_ms - 100, "the start took its 1.5 s")
+        # A launcher that stops drawing leaves one gap as long as the start; one
+        # that keeps drawing, however slowly, leaves none longer than half of it.
         gaps = [later - earlier for earlier, later in zip(ticks, ticks[1:], strict=False)]
-        self.assertLess(max(gaps), 500, f"a frame took {max(gaps)} ms during the start")
+        self.assertLess(max(gaps), slow_start_ms // 2,
+                        f"no frame for {max(gaps)} ms during the start; frame ticks {ticks}")
+        # And it drew in every third of the start, not only at its two ends.
+        pending_ticks = [int(frame["ticks_ms"]) for frame in pending]
+        third = (end - start) / 3
+        for part, name in enumerate(("first", "middle", "last")):
+            low, high = start + part * third, start + (part + 1) * third
+            self.assertTrue(any(low <= tick < high for tick in pending_ticks),
+                            f"no frame drawn in the {name} third of the start; "
+                            f"frame ticks {ticks}")
         # The synthetic package has no staged disc and no real program, so the
         # start ends with the launch's own card, as a synchronous launch did.
         outcome = frames[-1]

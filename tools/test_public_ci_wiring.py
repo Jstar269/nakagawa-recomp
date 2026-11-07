@@ -189,7 +189,9 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("-name 'lvp_icd*.json'", text)
         self.assertIn('export VK_ICD_FILENAMES="$lvp_icd"', text)
         self.assertIn('xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11', text)
-        self.assertRegex(text, r"(?m)^\s+make CC=gcc gpu-coherence-selftest$")
+        # The VRAM viewer identity test (#314) needs the same device and window, so it runs in
+        # this step, after the coherence selftest.
+        self.assertRegex(text, r"(?m)^\s+make CC=gcc gpu-coherence-selftest vram-view-identity-selftest$")
         self.assertNotIn("continue-on-error", text)
         # Its only condition is the native_tools part that runs it; nothing can skip it there.
         self.assertEqual([line.strip() for line in step if line.strip().startswith("if:")],
@@ -854,7 +856,7 @@ _NATIVE_SERIAL_GATES = {
     "Run Linux native player UI tests headlessly":
         "run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make CC=gcc player-ui-tests",
     "Verify lavapipe and run GPU capture selftest": "make CC=gcc gpu-capture-selftest",
-    "Run GPU coherence selftest on lavapipe": "make CC=gcc gpu-coherence-selftest",
+    "Run GPU coherence selftest on lavapipe": "make CC=gcc gpu-coherence-selftest vram-view-identity-selftest",
     "Run GPU texture scaling selftest on lavapipe": "make CC=gcc gpu-texscale-selftest gpu-texscale-mutant",
     "Configure, build, and test CMake Linux player": 'ctest --test-dir "$player_build" --output-on-failure',
     "Build and run the Linux showcase headlessly": "make CC=gcc showcase-linux",
@@ -2083,6 +2085,8 @@ def _actions_eval(expression: str, context: Mapping[str, object]) -> bool:
             take(")")
             if token == "always" and not arguments:
                 return True
+            if token == "cancelled" and not arguments:
+                return truthy(context.get("cancelled"))
             if token == "startsWith" and len(arguments) == 2:
                 text, prefix = (str(value or "").casefold() for value in arguments)
                 return text.startswith(prefix)
@@ -2242,6 +2246,19 @@ class BatchOnlyCodeqlGuardTests(unittest.TestCase):
         for job in ("analyze", "upload"):
             with self.subTest(job=job):
                 self.assertFalse(_actions_eval(_job_if(self.blocks[job]), context))
+
+    def test_a_docs_only_head_still_uploads_and_a_cancelled_run_does_not(self) -> None:
+        # prepare decided there is nothing to analyse, so analyze is skipped. The upload job must
+        # still run (its explicit !cancelled() replaces the implicit success() that would skip a
+        # job needing a skipped job), and must not run once the workflow is cancelled.
+        context = self._wake("pull_request", "docs/x", {"full_name": THIS_REPOSITORY})
+        context["needs"] = {"prepare": {"result": "success", "outputs": {"scan": "false"}},
+                            "analyze": {"result": "skipped"}}
+        upload_if = _job_if(self.blocks["upload"])
+        self.assertTrue(upload_if.lstrip().startswith("!cancelled() &&"), upload_if)
+        self.assertTrue(_actions_eval(upload_if, context))
+        context["cancelled"] = True
+        self.assertFalse(_actions_eval(upload_if, context))
 
 
 class BatchOnlyCodeqlWakeTests(unittest.TestCase):
@@ -2860,6 +2877,9 @@ class MergeQueueCodeqlWiringTests(unittest.TestCase):
     def test_skipped_analysis_still_uploads_one_result_per_category_for_the_exact_head(self) -> None:
         upload_block = _workflow_job_blocks("codeql.yml")["upload"]
         upload = "\n".join(upload_block)
+        # A job that needs a skipped job is skipped under the implicit success(), so the skipped
+        # route needs an explicit status function, or no docs-only head ever gets a CodeQL result.
+        self.assertIn("${{ !cancelled() && needs.prepare.result == 'success' &&", upload)
         self.assertIn(
             "(needs.analyze.result == 'skipped' && needs.prepare.outputs.scan == 'false')",
             upload,

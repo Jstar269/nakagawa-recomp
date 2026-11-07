@@ -736,7 +736,10 @@ asset-index-selftest:
 # same scale check (guest VRAM always, the shown images for the native twin), `--twin native`
 # runs the whole suite with every twin checked against its image after each case, twin-gate
 # checks the switch's values and its Ace gate (`--authentic`), and twin-alloc-fail injects a
-# failed twin allocation, and gpu-timestamps runs once more with the twin shown.
+# failed twin allocation, and gpu-timestamps runs once more with the twin shown. The pipeline
+# cache (#2149) runs last, as three processes over one empty data root: a cold run saves the
+# cache, a warm run must start from it and draw the same frames, and a reject run re-opens it
+# over damaged, foreign and other-driver files and with the switch off or refused.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
@@ -786,9 +789,33 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --twin yes --case twin-gate
 	$(GPU_COHERENCE_BIN) --twin 1 --scale 4 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s4.txt
 	$(GPU_COHERENCE_BIN) --twin native --scale 2 --case twin-alloc-fail --twin-ref $(BUILD_DIR)/twin_ref_s2.txt
-	@rc=0; $(GPU_COHERENCE_BIN) --twin 1 --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest twin gpu-timestamps (exit 77; the reason is printed above)"; 	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest twin gpu-timestamps (exit $$rc)"; exit $$rc; fi
+	@rc=0; $(GPU_COHERENCE_BIN) --twin 1 --gpu-timestamps 1 --case gpu-timestamps || rc=$$?; \
+	if [ $$rc -eq 77 ]; then echo "SKIP gpu-coherence-selftest twin gpu-timestamps (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-coherence-selftest twin gpu-timestamps (exit $$rc)"; exit $$rc; fi
+	@"$(PYTHON)" -c "import shutil; shutil.rmtree('$(BUILD_DIR)/pipeline_cache_test', ignore_errors=True)"
+	$(GPU_COHERENCE_BIN) --pipeline-cache $(BUILD_DIR)/pipeline_cache_test --case pipeline-cache-cold
+	$(GPU_COHERENCE_BIN) --pipeline-cache $(BUILD_DIR)/pipeline_cache_test --case pipeline-cache-warm
+	$(GPU_COHERENCE_BIN) --pipeline-cache $(BUILD_DIR)/pipeline_cache_test --case pipeline-cache-reject
 	@$(MAKE) --no-print-directory gpu-coherence-selftest-snapbar-mutants
+	@$(MAKE) --no-print-directory gpu-coherence-pcache-mutant
 	@$(MAKE) --no-print-directory ge-first-bad-draw-selftest GE_FBD_SKIP_STATUS=0
+
+# gpu-coherence-pcache-mutant - pipeline-cache-cold must kill SR_PCACHE_SELFTEST_NULL_MUTANT, a
+# build whose pipe_create passes VK_NULL_HANDLE instead of the pipeline cache (#2149): no create
+# then takes the cache's handle, on any driver (lavapipe keeps no pipeline data, so the cache's
+# size cannot tell). Exit 77 (no Vulkan device) is a SKIP.
+gpu-coherence-pcache-mutant: shader-verify $(RT_GE_O)
+	@"$(PYTHON)" -c "import shutil; shutil.rmtree('$(BUILD_DIR)/pipeline_cache_mutant', ignore_errors=True)"
+	@bin=$(BUILD_DIR)/gpu_coherence_pcache_mutant.exe; kill="the pipelines did not go through it"; \
+	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_PCACHE_SELFTEST_NULL_MUTANT -ffunction-sections -fdata-sections \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(LDFLAGS) -Wl,--gc-sections -o $$bin \
+		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS) || exit 1; \
+	$$bin --pipeline-cache $(BUILD_DIR)/pipeline_cache_mutant --case pipeline-cache-cold > $$bin.log 2>&1; result=$$?; \
+	if test $$result -eq 77; then echo "pcache mutant: SKIP (no Vulkan device)"; exit 77; fi; \
+	if test $$result -eq 0; then cat $$bin.log; echo "pcache mutant unexpectedly passed" >&2; exit 1; fi; \
+	if ! grep -Fq "$$kill" $$bin.log; then cat $$bin.log; echo "pcache mutant failed for another reason" >&2; exit 1; fi; \
+	echo "gpu-coherence-pcache-mutant: mutant killed ($$kill)"
 
 # gpu-coherence-selftest-snapbar-mutants — the submit-batch case must kill each
 # SR_GPU_SNAPBAR_MUTANT in ge_gpu.c: 1 records one barrier command per image (the stream before
@@ -813,6 +840,40 @@ gpu-coherence-selftest-snapbar-mutants: shader-verify $(RT_GE_O)
 		if ! grep -Fq "$$kill" $$bin.log; then cat $$bin.log; echo "snapbar mutant $$m failed for another reason" >&2; exit 1; fi; \
 		echo "gpu-coherence-selftest-snapbar-mutants: mutant $$m killed ($$kill)"; \
 	done
+
+# vram-view-identity-selftest — the GE decoders the pause menu's VRAM viewer calls leave later
+# frames, guest memory and the GE state unchanged (#314; the gui.c layer and timing are not covered). ge.c's lists run on ge_gpu.c's real targets: each frame draws a target, stores into it
+# from the CPU, draws it as a texture into the shown target and presents that with a capture
+# armed. A run without the viewer writes the digest (every presented frame, the lists' return
+# codes, then guest VRAM and RAM as a guest read sees them and the GE state); runs with the
+# viewer's decodes at one frame's VBLANK must match it, and the decodes must show the scene and
+# move bytes into guest VRAM, so the match is not trivial. Again at render scale 2. Last, a
+# mutant whose viewer stores one byte into guest VRAM must fail on the next presented frame.
+# Exit 77 (no Vulkan device) fails the recipe, as gpu-coherence-selftest's does on hosted CI.
+VRAM_VIEW_BIN := $(BUILD_DIR)/vram_view_identity_selftest.exe
+
+$(VRAM_VIEW_BIN): shader-verify $(RT_GE_O)
+	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections -o $(VRAM_VIEW_BIN) \
+		tests/native/vram_view_identity_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
+
+vram-view-identity-selftest: $(VRAM_VIEW_BIN)
+	$(VRAM_VIEW_BIN) --write $(BUILD_DIR)/vram_view_ref_s1.txt
+	$(VRAM_VIEW_BIN) --check $(BUILD_DIR)/vram_view_ref_s1.txt
+	$(VRAM_VIEW_BIN) --check $(BUILD_DIR)/vram_view_ref_s1.txt --view-at 1
+	$(VRAM_VIEW_BIN) --check $(BUILD_DIR)/vram_view_ref_s1.txt --view-at 4
+	$(VRAM_VIEW_BIN) --scale 2 --write $(BUILD_DIR)/vram_view_ref_s2.txt
+	$(VRAM_VIEW_BIN) --scale 2 --check $(BUILD_DIR)/vram_view_ref_s2.txt --view-at 2
+	$(CC) $(CFLAGS) -DNK_VRAM_VIEW_MUTANT -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+		-o $(BUILD_DIR)/vram_view_identity_mutant.exe \
+		tests/native/vram_view_identity_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
+	@log=$(BUILD_DIR)/vram_view_identity_mutant.log; \
+	if $(BUILD_DIR)/vram_view_identity_mutant.exe --check $(BUILD_DIR)/vram_view_ref_s1.txt --view-at 1 > $$log 2>&1; then \
+		cat $$log; echo "vram-view-identity-selftest: the writing-viewer mutant passed" >&2; exit 1; fi; \
+	if ! grep -Fq 'FAIL want "present 2 ' $$log; then \
+		cat $$log; echo "vram-view-identity-selftest: the mutant failed for another reason" >&2; exit 1; fi; \
+	echo "vram-view-identity-selftest: the writing-viewer mutant is caught at the next presented frame"
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
@@ -848,6 +909,18 @@ tex-scale-selftest:
 
 native-core-tests: tex-scale-selftest
 
+# pipeline-cache-selftest - the checks a Vulkan pipeline cache file passes before its data reaches
+# the driver (src/rt/gpu_sdl3vk/pipeline_cache.h, #2149), with no GPU: another device, driver,
+# cache UUID, shader set or schema, foreign, short, truncated, oversized and corrupt files, and the
+# driver's own header, each refused with its reason; then the write-through-rename round trip.
+pipeline-cache-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/rt -Isrc/core \
+		-o $(BUILD_DIR)/pipeline_cache_selftest$(EXE_EXT) \
+		src/rt/gpu_sdl3vk/pipeline_cache_selftest.c $(PLAYER_PLATFORM_SRC) $(PLAYER_PLATFORM_LIBS)
+	$(BUILD_DIR)/pipeline_cache_selftest$(EXE_EXT) $(BUILD_DIR)/pipeline_cache_scratch
+
+native-core-tests: pipeline-cache-selftest
 # texrepl-selftest - texture replacement packs (src/rt/texrepl.h, #1880): PPSSPP's texture hashes
 # against reference values, the pack's ini and file-name rules, the wildcard lookup order, the
 # palette identity, malformed packs refused whole, and the decoded-image budget. A synthetic pack
@@ -960,11 +1033,13 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 # gpu-capture-selftest — deterministic present-source capture regression (issue #57): the
 # production present path is armed and driven with synthetic pixels; the published P6 PPMs
 # are byte-checked (header, channel order, row pitch, no trailing bytes). Exit 77 = SKIP
-# when Vulkan or the validation layer is unavailable.
+# when Vulkan or the validation layer is unavailable. SR_VIDEOREC_SELFTEST opens the recorder's
+# test seams for the cell that records through the FSR 1 upscaler (#2138).
 GPU_CAPTURE_BIN := $(BUILD_DIR)/gpu_capture_selftest.exe
 
 $(GPU_CAPTURE_BIN): shader-verify
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		-DSR_VIDEOREC_SELFTEST \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_CAPTURE_BIN) \
 		tests/native/gpu_capture_selftest.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(LIBS)

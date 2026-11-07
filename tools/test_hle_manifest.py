@@ -308,6 +308,7 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
         0xB4432BC8, 0x8EFB3FA2, 0x843FBF43,                                      # charging status, battery life time, CPU clock setter (PSP-3000 6.61, 2026-10-24)
         0xB8D7B3FB,                                                              # scePowerSetBusClockFrequency (pspautotests power/freq.expected)
         0x469989AD, 0xA85880D0,                                                  # scePowerSetClockFrequency630 (PPSSPP c9e2afb6), WLAN coexistence clock (#307)
+        0x23C31FFE, 0xFA97A599, 0xB3EDD801,                                      # scePowerVolatileMem Lock/TryLock/Unlock aliases (pspautotests power/volatile, #341)
     })
 
     def test_power_registrations_are_owned_by_hle_power_c(self) -> None:
@@ -741,7 +742,10 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(registration["handler"], handler)
                 self.assertEqual(registration["classification"], "dedicated")
                 self.assertEqual(registration["status"], "partial")
-        self.assertIn("project choice", meta.HANDLER_LIMITATIONS["h_UmdUnRegisterUMDCallBack"])
+        # #341: the unregister codes now follow pspautotests tests/umd/register.expected.
+        self.assertTrue(any(
+            "tests/umd/register.expected" in item for item in meta.HANDLER_EVIDENCE["h_UmdUnRegisterUMDCallBack"]
+        ))
 
     def test_findings_and_waivers_are_in_exact_balance(self) -> None:
         findings = [{**f, "nid": int(f["nid"], 16)} for f in self.manifest["findings"]]
@@ -774,9 +778,13 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(registration["classification"], "dedicated")
                 self.assertEqual(registration["status"], "partial")
                 self.assertTrue(meta.HANDLER_EVIDENCE[handler])
-                self.assertTrue(
-                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
-                )
+                evidence = meta.HANDLER_EVIDENCE[handler]
+                self.assertTrue(any("HARDWARE_ORACLE.md" in item for item in evidence))
+                # A later #341 batch may add the PSPAutotests cell and the selftest that pins it.
+                self.assertTrue(all(
+                    "HARDWARE_ORACLE.md" in item or item.startswith(("PSPAutotests ", "tests/native/"))
+                    for item in evidence
+                ))
                 self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
 
     def test_route_a_kernel_object_batch_three_has_evidence_and_named_limits(self) -> None:
@@ -828,9 +836,13 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(registration["classification"], "dedicated")
                 self.assertEqual(registration["status"], "partial")
                 self.assertTrue(meta.HANDLER_EVIDENCE[handler])
-                self.assertTrue(
-                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
-                )
+                evidence = meta.HANDLER_EVIDENCE[handler]
+                self.assertTrue(any("HARDWARE_ORACLE.md" in item for item in evidence))
+                # A later #341 batch may add the PSPAutotests cell and the selftest that pins it.
+                self.assertTrue(all(
+                    "HARDWARE_ORACLE.md" in item or item.startswith(("PSPAutotests ", "tests/native/"))
+                    for item in evidence
+                ))
                 self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
                 if handler == "h_ExitDeleteThread":
                     self.assertIn("PSP-TEARDOWN-001", meta.HANDLER_LIMITATIONS[handler])
@@ -2532,9 +2544,9 @@ class CensusTests(unittest.TestCase):
             self.assertIn("has no named limitation", str(ctx.exception))
 
     def test_new_partial_without_evidence_is_rejected(self) -> None:
-        self.assertNotIn("h_DisplayGetFrameBuf", meta.HANDLER_EVIDENCE)
-        with mock.patch.dict(meta.HANDLER_STATUS, {"h_DisplayGetFrameBuf": "partial"}), \
-                mock.patch.dict(meta.HANDLER_LIMITATIONS, {"h_DisplayGetFrameBuf": "a limit (#341)"}):
+        self.assertNotIn("h_AllocateFplCB", meta.HANDLER_EVIDENCE)
+        with mock.patch.dict(meta.HANDLER_STATUS, {"h_AllocateFplCB": "partial"}), \
+                mock.patch.dict(meta.HANDLER_LIMITATIONS, {"h_AllocateFplCB": "a limit (#341)"}):
             with self.assertRaises(ManifestError) as ctx:
                 hle_manifest.validate_meta(self.raw_regs)
         self.assertIn("cites no evidence", str(ctx.exception))

@@ -120,8 +120,19 @@ $(eval $(call PROJECT_LATIN_FACE_RULE,13,latin-13,nkltn13.pgf,5,$(PROJECT_LATIN_
 $(eval $(call PROJECT_LATIN_FACE_RULE,14,latin-14,nkltn14.pgf,6,$(PROJECT_LATIN_SMALL_STRIKE_ARGS)))
 $(eval $(call PROJECT_LATIN_FACE_RULE,15,latin-15,nkltn15.pgf,7,$(PROJECT_LATIN_SMALL_STRIKE_ARGS)))
 
-$(eval $(call PROJECT_FONT_RULE,japanese,nkjpn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--jis-x-0208-japanese,Nakagawa Open Japanese,--ppem 12,Regular))
-$(eval $(call PROJECT_FONT_RULE,korean,nkkr.pgf,fixtures/fonts/gowundodum/GowunDodum-Regular.ttf,fixtures/fonts/gowundodum/PIN.json,fixtures/fonts/gowundodum/OFL.txt,--ks-x-1001-korean,Nakagawa Open Korean,--ppem 12,Regular))
+# Japanese and Korean at the console's 10.125 points (18 pixels per em at 128 dpi). The Japanese
+# font draws CP932 and both JIS kanji levels from Noto Sans JP (the UI font's pinned instance); the
+# one character of that set Noto Sans JP lacks comes from M PLUS 1p. Its licence file carries both
+# licences. The header ascender and descender are the console fonts'.
+PROJECT_JAPANESE_FONT_ARGS := --ppem 18 --nominal-size 648 --resolution 8192 --header-ascender 1013 --header-descender -139 --baseline-ellipsis
+PROJECT_KOREAN_FONT_ARGS := --ppem 20 --tracking 1 --nominal-size 648 --resolution 8192 --header-ascender 1000 --header-descender -250
+NOTO_SANS_JP := assets/fonts/ui/noto-sans-jp
+project-japanese-font: $(PROJECT_FONT_GENERATED_DIR)/nkjpn.pgf
+$(PROJECT_FONT_GENERATED_DIR)/nkjpn.pgf: $(NOTO_SANS_JP)/NotoSansJP-Regular.ttf fixtures/fonts/notosansjp/PIN.json $(NOTO_SANS_JP)/OFL.txt fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf fixtures/fonts/mplus1p/PIN.json fixtures/fonts/mplus1p/OFL.txt tools/ttf2pgf.py tools/pgf_writer.py docs/cleanroom/PGF_CONVERTER_SPEC.md
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(PROJECT_FONT_GENERATED_DIR_PY)').mkdir(parents=True, exist_ok=True)"
+	"$(PYTHON)" tools/ttf2pgf.py "$@" "$(NOTO_SANS_JP)/NotoSansJP-Regular.ttf" --pin fixtures/fonts/notosansjp/PIN.json --fallback fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf --fallback-pin fixtures/fonts/mplus1p/PIN.json --japanese-text $(PROJECT_JAPANESE_FONT_ARGS) --font-name "Nakagawa Open Japanese" --font-type "Regular" --manifest "$(PROJECT_FONT_GENERATED_DIR_PY)/nkjpn.json"
+	"$(PYTHON)" -c "from pathlib import Path; parts = [Path(p).read_text(encoding='utf-8') for p in ('$(NOTO_SANS_JP)/OFL.txt', 'fixtures/fonts/mplus1p/OFL.txt')]; Path('$(PROJECT_FONT_GENERATED_DIR_PY)/nkjpn-OFL.txt').write_text('Noto Sans JP:\n\n' + parts[0] + '\n\nM PLUS 1p (U+2252 only):\n\n' + parts[1], encoding='utf-8')"
+$(eval $(call PROJECT_FONT_RULE,korean,nkkr.pgf,fixtures/fonts/gowundodum/GowunDodum-Regular.ttf,fixtures/fonts/gowundodum/PIN.json,fixtures/fonts/gowundodum/OFL.txt,--ks-x-1001-korean,Nakagawa Open Korean,$(PROJECT_KOREAN_FONT_ARGS),Regular))
 
 project-fonts: $(PROJECT_FONT_SLOT_TARGETS)
 

@@ -2263,9 +2263,21 @@ The deterministic clock changes the run itself, not only the recording:
 
 On the Vulkan presenter the recorded picture is the one the window shows (Ace Mode's smooth motion
 included), scaled with the window's own scaling mode (`SR_PRESENT_SCALING`) into a fixed-size
-target. The presentation upscaler is not applied to it: with `SR_PRESENT_UPSCALE=fsr1` the window
-shows FSR 1's output, but the recording still uses `SR_PRESENT_SCALING`'s filter
-([#2138](https://github.com/Jstar269/nakagawa-recomp/issues/2138)). It is a clean capture:
+target. With `SR_PRESENT_UPSCALE=fsr1` the recording is enlarged by FSR 1 as the window is, at the
+recording's own size and through its own pass, so `SR_VIDEOREC_SIZE` never makes the window's pass
+rebuild its images ([#2138](https://github.com/Jstar269/nakagawa-recomp/issues/2138);
+`gpu-capture-selftest` checks a 960x544 recording against a separate FSR 1 pass's output, byte for
+byte). As in the window, FSR 1 only enlarges: a recording no larger than the picture uses the
+scaling mode. `record.json` names the scaling that made each picture, not the setting that asked
+for it: `"filter"` is `fsr1`; `sharp` (a nearest prescale to a whole multiple, then a linear
+shrink); `nearest` (one nearest-neighbour blit, which is what any mode draws at an exact multiple
+such as 960x544, and what `integer` draws when a multiple fits); `linear` (one linear blit, as
+`bilinear` draws at other sizes and every mode draws when the recording is smaller than the
+picture); `none` (a picture at its own size, as the CPU presenters record); or `mixed` when the
+written frames were made in more than one way. `"filter_frames"` counts the written frames by
+filter. When the recording's FSR 1 pass cannot be made, the log says so once and each frame is
+named by the scaling mode's blits. `gpu-capture-selftest` checks the name at 960x544, at a
+letterboxed 1000x600 and at a shrinking 320x180, in each mode. It is a clean capture:
 no host overlay reaches it, neither the HUD and its frame-rate readout nor the player's notices nor
 the pause overlay. `SR_VIDEOREC_SIZE=3840x2160` records 4K whatever the window's size. The CPU
 presenters (GDI, offscreen) record their 480x272 frame.
