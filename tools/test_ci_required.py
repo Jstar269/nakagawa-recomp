@@ -20,12 +20,10 @@ def _results(**overrides: str) -> dict[str, str]:
         "classify": "success",
         "hygiene": "success",
         "public-export": "success",
-        "markdown": "skipped",
         "python-tools": "skipped",
         "native-tools": "skipped",
         "android-build": "skipped",
         "windows-runtime": "skipped",
-        "main-smoke": "skipped",
     }
     values.update(overrides)
     return values
@@ -118,17 +116,15 @@ class CiRequiredTests(unittest.TestCase):
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
             "PUBLIC_EXPORT_RESULT": "success",
-            "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
             "ANDROID_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
-            "MAIN_SMOKE_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
+            "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "true",
             "RUN_NATIVE": "true",
             "RUN_WINDOWS": "true",
-            "RUN_MAIN_SMOKE": "false",
             "ALLOW_SUBSTANTIVE": "false",
             "DRAFT": "true",
         }
@@ -173,31 +169,49 @@ class CiRequiredTests(unittest.TestCase):
         self.assertIn("DRAFT: ${{ needs.classify.outputs.draft }}", workflow)
 
     def test_main_smoke_remains_required_when_substantive_jobs_are_suppressed(self) -> None:
-        results = _results(**{"main-smoke": "failure"})
+        # The main smoke is a step of the hygiene job, so its failure is hygiene's.
+        results = _results(hygiene="failure")
         self.assertFalse(
             required_gate_passes(
                 results,
-                {"python-tools": True, "main-smoke": True},
+                {"python-tools": True},
                 allow_substantive=False,
             )
         )
+
+    def test_folded_jobs_are_no_separate_inputs(self) -> None:
+        """Markdown, main smoke and the profile-zero fixture are steps of required jobs.
+
+        They reach the aggregate through hygiene and public-export, which must succeed on
+        every event; the workflow no longer passes a result or run flag of their own.
+        """
+        workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        for variable in ("MARKDOWN_RESULT", "MAIN_SMOKE_RESULT"):
+            with self.subTest(variable=variable):
+                self.assertNotIn(variable, workflow)
+        # Their run flags are still passed, so a missing classifier output fails closed.
+        self.assertIn("RUN_MARKDOWN: ${{ needs.classify.outputs.run_markdown }}", workflow)
+        self.assertIn("RUN_MAIN_SMOKE: ${{ needs.classify.outputs.run_main_smoke }}", workflow)
+        for name in ("markdown", "main-smoke"):
+            with self.subTest(name=name):
+                self.assertFalse(required_gate_passes(_results(hygiene="failure", **{name: "success"}), {}))
 
     def test_environment_mapping_matches_workflow_contract(self) -> None:
         env = {
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
             "PUBLIC_EXPORT_RESULT": "success",
-            "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "skipped",
             "ANDROID_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
-            "MAIN_SMOKE_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
+            "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "true",
             "RUN_NATIVE": "false",
             "RUN_WINDOWS": "false",
-            "RUN_MAIN_SMOKE": "false",
             "ALLOW_SUBSTANTIVE": "true",
             "DRAFT": "false",
         }
@@ -218,19 +232,17 @@ class AllowSubstantiveParsingTests(unittest.TestCase):
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
             "PUBLIC_EXPORT_RESULT": "success",
-            "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
             "ANDROID_RESULT": "skipped",
             "WINDOWS_RESULT": "skipped",
-            "MAIN_SMOKE_RESULT": "skipped",
             "RUN_MARKDOWN": "false",
+            "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "false",
             # Applicable, but the job was skipped -- this must fail unless
             # suppression was explicitly requested.
             "RUN_NATIVE": "true",
             "RUN_WINDOWS": "false",
-            "RUN_MAIN_SMOKE": "false",
             # This fixture models the intentional main-push suppression, not a
             # draft PR. Draft-specific suppression is tested separately below.
             "DRAFT": "false",
@@ -264,17 +276,15 @@ class ApplicabilityParsingTests(unittest.TestCase):
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
             "PUBLIC_EXPORT_RESULT": "success",
-            "MARKDOWN_RESULT": "success",
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "success",
             "ANDROID_RESULT": "success",
             "WINDOWS_RESULT": "success",
-            "MAIN_SMOKE_RESULT": "success",
             "RUN_MARKDOWN": "false",
+            "RUN_MAIN_SMOKE": "false",
             "RUN_PYTHON": "false",
             "RUN_NATIVE": "false",
             "RUN_WINDOWS": "false",
-            "RUN_MAIN_SMOKE": "false",
             "ALLOW_SUBSTANTIVE": "true",
             "DRAFT": "false",
         }
@@ -310,6 +320,20 @@ class ApplicabilityParsingTests(unittest.TestCase):
                 self.assertTrue(evaluate_environment(env))
                 env[run_key] = " FaLsE "
                 self.assertTrue(evaluate_environment(env))
+
+    def test_missing_folded_step_flag_fails_closed(self) -> None:
+        """Markdown and main smoke run as hygiene steps gated on these flags.
+
+        A dropped or misnamed classifier output would skip the step and leave hygiene
+        green, so the aggregate must fail when either flag is absent, even with every
+        job successful.
+        """
+        for run_key in ("RUN_MARKDOWN", "RUN_MAIN_SMOKE"):
+            with self.subTest(run_key=run_key):
+                env = self._env()
+                self.assertTrue(evaluate_environment(env))
+                del env[run_key]
+                self.assertFalse(evaluate_environment(env))
 
     def test_malformed_applicability_cannot_be_masked_by_successful_jobs(self) -> None:
         env = self._env()

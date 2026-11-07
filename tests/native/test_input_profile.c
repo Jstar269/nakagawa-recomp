@@ -768,7 +768,7 @@ static void test_schema_one_migration(void) {
     size_t rb = fread(readback, 1, sizeof(readback) - 1, f);
     fclose(f);
     readback[rb] = '\0';
-    assert(strstr(readback, "\"schema_version\": 4") != NULL);
+    assert(strstr(readback, "\"schema_version\": 5") != NULL);
     assert(strstr(readback, "\"per_title\"") != NULL);
 
     NkInputProfileFile reloaded;
@@ -2405,7 +2405,7 @@ static void test_keyboard_bindings(void) {
     size_t rb = fread(readback, 1, sizeof(readback) - 1, f);
     fclose(f);
     readback[rb] = '\0';
-    assert(strstr(readback, "\"schema_version\": 4") != NULL);
+    assert(strstr(readback, "\"schema_version\": 5") != NULL);
     assert(strstr(readback, "\"keyboard_bindings\"") != NULL);
     assert(strstr(readback, "\"kp_2\"") != NULL);
 
@@ -2572,9 +2572,9 @@ static void test_stick_keys(void) {
     nk_input_profile_init_default(&def);
 
     /* The schema this adds, and the version it first appears in. */
-    assert(NK_INPUT_PROFILE_SCHEMA_VERSION == 4);
+    assert(NK_INPUT_PROFILE_SCHEMA_VERSION == 5);
     assert(NK_INPUT_PROFILE_STICK_KEYS_SCHEMA_VERSION == 4);
-    assert(def.schema_version == 4);
+    assert(def.schema_version == 5);
 
     /* Names: stable, case-insensitive, distinct from the button names. */
     static const char *const kDirNames[NK_PSP_STICK_DIR_COUNT] = {
@@ -2633,7 +2633,7 @@ static void test_stick_keys(void) {
     size_t rb = fread(readback, 1, sizeof(readback) - 1, f);
     fclose(f);
     readback[rb] = '\0';
-    assert(strstr(readback, "\"schema_version\": 4") != NULL);
+    assert(strstr(readback, "\"schema_version\": 5") != NULL);
     {
         /* psp_bindings also names "hold", so look from the keyboard list on. */
         const char *kb = strstr(readback, "\"keyboard_bindings\"");
@@ -3049,7 +3049,7 @@ static void versioned_profile_case(const char *fixture, int version, int title_c
         assert(none == NULL);
     }
     char *saved = versioned_read(path);
-    assert(strstr(saved, "\"schema_version\": 4,") != NULL);
+    assert(strstr(saved, "\"schema_version\": 5,") != NULL);
     free(saved);
     assert(nk_input_profile_file_load(&reloaded, path, diag, sizeof(diag)) == NK_OK);
     assert(memcmp(&reloaded.global, &doc.global, sizeof(doc.global)) == 0);
@@ -3119,6 +3119,190 @@ static void test_source_thresholds(void) {
     printf("[INPUT_PROFILE_TEST] Subtest 17 PASSED!\n");
 }
 
+/* #1791 layer 1: mouse aiming. The "aim" member (schema 5) round-trips, older files
+ * load with aiming off and cannot carry it, a bad member refuses the mapping, and
+ * nk_aim_apply turns mouse counts into a nub deflection. */
+static void test_mouse_aim(void) {
+    printf("[INPUT_PROFILE_TEST] Subtest 18: mouse aiming (schema 5, #1791)...\n");
+    char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+    static char saved[65536];
+    static char text[65536];
+    NkInputProfile def;
+    NkInputProfile profile;
+    NkInputProfile parsed;
+    nk_input_profile_init_default(&def);
+
+    /* Off by default, with the values turning it on starts from. */
+    assert(NK_INPUT_PROFILE_AIM_SCHEMA_VERSION == 5);
+    assert(!def.aim.mouse && def.aim.sensitivity == NK_AIM_SENSITIVITY_DEFAULT);
+    assert(!def.aim.invert_x && !def.aim.invert_y && def.aim.smoothing == 0);
+
+    /* Round trip through the file. */
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_mouse_aim.json";
+    profile = def;
+    profile.aim.mouse = true;
+    profile.aim.sensitivity = 250;
+    profile.aim.invert_y = true;
+    profile.aim.smoothing = 40;
+    assert(nk_input_profile_save(&profile, path, diag, sizeof(diag)) == NK_OK);
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    size_t size = fread(saved, 1, sizeof(saved) - 1, file);
+    fclose(file);
+    saved[size] = '\0';
+    assert(strstr(saved, "\"aim\": {") != NULL && strstr(saved, "\"sensitivity\": 250") != NULL);
+    assert(nk_input_profile_load(&parsed, path, diag, sizeof(diag)) == NK_OK);
+    assert(memcmp(&parsed.aim, &profile.aim, sizeof(profile.aim)) == 0);
+    remove(path);
+
+    /* Refused: out of range, wrong type, unknown member. Each leaves the default. */
+    int refused = 0;
+    static const char *const kFrom[] = {
+        "\"sensitivity\": 250", "\"sensitivity\": 250", "\"sensitivity\": 250", "\"sensitivity\": 250",
+        "\"smoothing\": 40", "\"smoothing\": 40", "\"mouse\": true", "\"invert_y\": true",
+        "\"invert_y\": true", "\"smoothing\": 40",
+    };
+    static const char *const kTo[] = {
+        "\"sensitivity\": 0", "\"sensitivity\": 1001", "\"sensitivity\": 2.5",
+        "\"sensitivity\": \"fast\"", "\"smoothing\": 96", "\"smoothing\": -1", "\"mouse\": 1",
+        "\"invert_y\": \"yes\"", "\"invert_y\": null", "\"nonsense\": 1,\n \"smoothing\": 40",
+    };
+    static const char *const kWhy[] = {
+        "sensitivity", "sensitivity", "sensitivity", "sensitivity", "smoothing", "smoothing",
+        "mouse", "invert_y", "invert_y", "nonsense",
+    };
+    for (size_t i = 0; i < sizeof(kFrom) / sizeof(kFrom[0]); i++) {
+        const char *at = strstr(saved, kFrom[i]);
+        assert(at != NULL);
+        snprintf(text, sizeof(text), "%.*s%s%s", (int)(at - saved), saved, kTo[i],
+                 at + strlen(kFrom[i]));
+        assert(nk_input_profile_parse_json(&parsed, text, strlen(text), diag, sizeof(diag)) !=
+               NK_OK);
+        assert(strstr(diag, kWhy[i]) != NULL);
+        assert(!parsed.aim.mouse && parsed.aim.sensitivity == NK_AIM_SENSITIVITY_DEFAULT);
+        refused++;
+    }
+    assert(refused == 10);
+
+    /* A schema 4 file cannot carry aim (an older build would ignore it), and one with no
+     * aim loads with aiming off. */
+    {
+        const char *at = strstr(saved, "\"schema_version\": 5");
+        assert(at != NULL);
+        snprintf(text, sizeof(text), "%.*s\"schema_version\": 4%s", (int)(at - saved), saved,
+                 at + strlen("\"schema_version\": 5"));
+        assert(nk_input_profile_parse_json(&parsed, text, strlen(text), diag, sizeof(diag)) !=
+               NK_OK);
+        assert(strstr(diag, "aim") != NULL);
+        const char *aim_at = strstr(text, "\"aim\": {");
+        assert(aim_at != NULL);
+        char without[65536];
+        const char *aim_end = strchr(aim_at, '}');
+        assert(aim_end != NULL);
+        /* Drop the aim object and the comma before it. */
+        const char *comma = aim_at;
+        while (*comma != ',') comma--;
+        snprintf(without, sizeof(without), "%.*s%s", (int)(comma - text), text, aim_end + 1);
+        assert(nk_input_profile_parse_json(&parsed, without, strlen(without), diag,
+                                           sizeof(diag)) == NK_OK);
+        assert(!parsed.aim.mouse && parsed.aim.sensitivity == NK_AIM_SENSITIVITY_DEFAULT);
+    }
+
+    /* Aiming off: nothing moves and the smoothing is cleared. */
+    NkAimState state = { 123, -456 };
+    uint8_t lx = 40, ly = 200;
+    assert(!nk_aim_apply(&def.aim, &state, 50, 50, &lx, &ly));
+    assert(lx == 40 && ly == 200 && state.sx == 0 && state.sy == 0);
+    assert(!nk_aim_apply(NULL, &state, 50, 50, &lx, &ly));
+    assert(!nk_aim_apply(&profile.aim, NULL, 50, 50, &lx, &ly));
+
+    /* On: no movement leaves the other source's values; movement replaces them. */
+    NkAimConfig cfg = def.aim;
+    cfg.mouse = true;
+    nk_aim_state_reset(&state);
+    lx = 10; ly = 240;
+    assert(!nk_aim_apply(&cfg, &state, 0, 0, &lx, &ly));
+    assert(lx == 10 && ly == 240);
+    /* One count at 100% is 127/16 = 7 units: right and down are positive, as on the PSP. */
+    assert(nk_aim_apply(&cfg, &state, 1, 0, &lx, &ly) && lx == 128 + 7 && ly == 240);
+    assert(nk_aim_apply(&cfg, &state, 0, -2, &lx, &ly) && ly == 128 - 15);
+    /* Full deflection at NK_AIM_FULL_DEFLECTION_COUNTS, clamped past it, centre at 1..255. */
+    assert(nk_aim_apply(&cfg, &state, NK_AIM_FULL_DEFLECTION_COUNTS, -9999, &lx, &ly));
+    assert(lx == 255 && ly == 1);
+    assert(nk_aim_apply(&cfg, &state, -9999, 9999, &lx, &ly) && lx == 1 && ly == 255);
+    assert(nk_aim_apply(&cfg, &state, INT32_MAX, INT32_MIN, &lx, &ly) && lx == 255 && ly == 1);
+    /* Sensitivity scales it, invert flips it. */
+    cfg.sensitivity = 200;
+    assert(nk_aim_apply(&cfg, &state, 1, 0, &lx, &ly) && lx == 128 + 15);
+    cfg.sensitivity = 50;
+    assert(nk_aim_apply(&cfg, &state, 4, 0, &lx, &ly) && lx == 128 + 15);
+    cfg.sensitivity = 100;
+    cfg.invert_x = true;
+    cfg.invert_y = true;
+    assert(nk_aim_apply(&cfg, &state, 1, 1, &lx, &ly) && lx == 128 - 7 && ly == 128 - 7);
+    cfg.invert_x = cfg.invert_y = false;
+    /* Return to centre: the poll after the mouse stops leaves the stick alone, unsmoothed. */
+    lx = 128; ly = 128;
+    assert(!nk_aim_apply(&cfg, &state, 0, 0, &lx, &ly) && lx == 128 && ly == 128);
+    /* Smoothing keeps a share of the last poll and decays to rest by itself. */
+    cfg.smoothing = 50;
+    nk_aim_state_reset(&state);
+    assert(nk_aim_apply(&cfg, &state, 16, 0, &lx, &ly) && lx == 128 + 63);
+    int polls = 0;
+    lx = 128;
+    while (nk_aim_apply(&cfg, &state, 0, 0, &lx, &ly)) {
+        assert(lx > 128 && lx < 128 + 63);
+        lx = 128;
+        assert(++polls < 64);
+    }
+    assert(polls >= 4);
+    /* A NULL output is skipped, not written through. */
+    cfg.smoothing = 0;
+    nk_aim_state_reset(&state);
+    assert(nk_aim_apply(&cfg, &state, 3, 3, NULL, &ly) && ly == 128 + 23);
+    assert(!nk_aim_apply(&cfg, &state, 3, 3, NULL, NULL));
+
+    /* The state reset a focus loss or an overlay claim does: smoothing carried from before
+     * is gone, so the next poll starts from rest. */
+    cfg.smoothing = 50;
+    nk_aim_state_reset(&state);
+    assert(nk_aim_apply(&cfg, &state, 16, 0, &lx, &ly));
+    assert(state.sx != 0);
+    nk_aim_state_reset(&state);
+    assert(state.sx == 0 && state.sy == 0);
+    lx = 128; ly = 128;
+    assert(!nk_aim_apply(&cfg, &state, 0, 0, &lx, &ly) && lx == 128 && ly == 128);
+
+    /* Aiming is per title: a disc's own mapping carries its own aim settings, another disc
+     * and the global mapping keep theirs, and the settings survive a save and reload. */
+    {
+        char pt_diag[256];
+        NkInputProfileFile doc;
+        nk_input_profile_file_init_default(&doc);
+        NkInputProfile shooter;
+        nk_input_profile_init_default(&shooter);
+        shooter.aim.mouse = true;
+        shooter.aim.sensitivity = 300;
+        shooter.aim.invert_y = true;
+        assert(nk_input_profile_file_set_title(&doc, "UCUS98701", &shooter, pt_diag,
+                                               sizeof(pt_diag)) == NK_OK);
+        const char *pt_path = SR_SELFTEST_BUILD_ROOT "/test_per_title_aim.json";
+        assert(nk_input_profile_file_save(&doc, pt_path, pt_diag, sizeof(pt_diag)) == NK_OK);
+        NkInputProfileFile back;
+        assert(nk_input_profile_file_load(&back, pt_path, pt_diag, sizeof(pt_diag)) == NK_OK);
+        const NkInputProfile *mine = nk_input_profile_file_resolve(&back, "UCUS98701", pt_diag,
+                                                                   sizeof(pt_diag));
+        assert(mine == &back.title[0] && mine->aim.mouse && mine->aim.sensitivity == 300 &&
+               mine->aim.invert_y && !mine->aim.invert_x);
+        const NkInputProfile *other = nk_input_profile_file_resolve(&back, "ULES99999", pt_diag,
+                                                                    sizeof(pt_diag));
+        assert(other == &back.global && !other->aim.mouse &&
+               other->aim.sensitivity == NK_AIM_SENSITIVITY_DEFAULT);
+        remove(pt_path);
+    }
+    printf("[INPUT_PROFILE_TEST] Subtest 18 PASSED!\n");
+}
+
 static void test_versioned_profile_files(void) {
     printf("[INPUT_PROFILE_TEST] Versioned files: earlier players' profiles load, migrate "
            "and keep a backup; a newer one is kept...\n");
@@ -3177,6 +3361,7 @@ int main(void) {
     test_keyboard_bindings();
     test_stick_keys();
     test_source_thresholds();
+    test_mouse_aim();
     test_versioned_profile_files();
 
     printf("=================================================================\n");

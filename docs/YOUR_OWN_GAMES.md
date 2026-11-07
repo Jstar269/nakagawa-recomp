@@ -194,6 +194,21 @@ in its dialog. Other PSN downloads
 (PSP minis and games tied to the PSP that bought them), PSOne Classics and
 PGD-protected data aren't supported yet.
 
+### Homebrew
+
+PSP homebrew (programs the community wrote, with no game from a shop in them) is added the same way: pick its
+`EBOOT.PBP`. A homebrew program is not encrypted, so it needs no keys. The player writes a small disc image
+from the package once, on this PC, in `<user data>/discs/<key>/<key>.iso`, holding the program and its icon, and
+adds that image as if you had picked it. The key is made from the program and its title, so the same homebrew is
+the same game wherever you add it from, and the library shows it as **Beta / unofficial**. Homebrew is
+**Experimental**: nobody has checked a program unless [`COMPATIBILITY.md`](COMPATIBILITY.md#homebrew-limits)
+says so. Your `EBOOT.PBP` is only read, never changed.
+
+Some homebrew can't run, and the player says which kind when you pick it: an encrypted program, kernel-mode
+homebrew and custom-firmware plugins (they need the PSP's own kernel), and anything that is not a PSP program.
+A program that writes its own machine code while it runs, such as an emulator with a JIT, starts and then stops
+at the first jump into that code. [Homebrew limits](COMPATIBILITY.md#homebrew-limits) lists each kind.
+
 ### Supplying title manifests
 
 If your game needs a title manifest of its own (a file that describes the game to Nakagawa), put the `.json` file in:
@@ -207,6 +222,25 @@ The player loads every `.json` manifest in this folder when it starts (in
 alphabetical order, up to 8 manifests). The command-line tool `tools/nk_cli.py
 build-package` also looks in this folder, after the titles in the repository, and
 finds the same title the player does.
+
+## Graphics presets
+
+**Settings > Graphics preset** picks a set of display settings in one choice. A preset is used only when a game
+plays in Enhanced or Ace. In Authentic, a game always runs with your own **Resolution**, **Scaling**, **VSync** and
+**Game fullscreen** settings, whatever the preset, because a larger render scale also changes what the game can
+copy from its own screen, such as a save picture. Choosing a preset doesn't change those settings. Changing one of
+them yourself sets the preset back to **Custom**, which uses your settings everywhere.
+
+| Preset | Resolution | Scaling | VSync | Game fullscreen |
+| --- | --- | --- | --- | --- |
+| Low | 1x (480x272) | Sharp | On | your setting |
+| Medium | 2x | Sharp | On | your setting |
+| High | 4x | Sharp | On | your setting |
+| Ultra | 4x | Sharp | On | your setting |
+| Handheld | 2x | Sharp | On | On |
+
+Ultra is also meant to turn on the FSR 1 upscaler, which Settings can't set yet
+([#2122](https://github.com/Jstar269/nakagawa-recomp/issues/2122)), so its row reads **Ultra (no upscaler)**.
 
 ## Keep it to your own games
 

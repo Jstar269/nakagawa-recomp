@@ -380,5 +380,51 @@ class TestGeCaptureWiring(unittest.TestCase):
         self.assertIn("return ge_cpu_failed ? 4 : 0;", replay)
 
 
+class TestGeFirstBadDrawWiring(unittest.TestCase):
+    """#2141: the first-bad-draw comparison runs in hosted CI with executed mutants.
+
+    These are checks of the source text (the recipe and the hooks are wired). The behaviour is
+    tested by `make ge-first-bad-draw-selftest`, which runs the tool and its mutants."""
+
+    def setUp(self):
+        self.makefile = read_makefile(ROOT)
+        self.rule = self.makefile.split("ge-first-bad-draw-selftest: ge-replay", 1)[1].split(
+            "# selftest", 1)[0]
+
+    def test_selftest_runs_after_the_coherence_selftest(self):
+        coherence = self.makefile.split("gpu-coherence-selftest: $(GPU_COHERENCE_BIN)", 1)[1]
+        coherence = coherence.split("# gpu-coherence-selftest-snapbar-mutants", 1)[0]
+        # Inside gpu-coherence-selftest a skip is a SKIP line, as for its other skipped cases.
+        self.assertIn("$(MAKE) --no-print-directory ge-first-bad-draw-selftest GE_FBD_SKIP_STATUS=0",
+                      coherence)
+
+    def test_each_mutant_is_built_and_must_name_its_draw(self):
+        self.assertIn("for m in 1 2; do", self.rule)
+        self.assertIn("-DSR_GE_FBD_MUTANT=$$m", self.rule)
+        self.assertIn("for mode in linear bisect; do", self.rule)
+        self.assertIn('"result=FIRST_BAD_DRAW index=3 "', self.rule)
+        self.assertIn('"result=NO_DIFFERENCE draws=6 "', self.rule)
+        # A skip is reported as a skip (exit 77 run alone), never as a pass.
+        self.assertIn("GE_FBD_SKIP_STATUS ?= 77", self.makefile)
+        self.assertNotIn("exit 77; fi", self.rule)
+        self.assertEqual(self.rule.count("exit $(GE_FBD_SKIP_STATUS); fi"), 4)
+        self.assertIn("--fbd-self-check", self.rule)
+
+    def test_known_overlap_difference_is_pinned(self):
+        # #2109: the generated overlap capture must be found at draw 1, the overlap only.
+        self.assertIn("--write-synthetic $(GE_FBD_DIR)/overlap.ngef overlap", self.rule)
+        self.assertIn('"result=FIRST_BAD_DRAW index=1 draws=2 "', self.rule)
+        self.assertIn('"bbox=140,100,239,199"', self.rule)
+
+    def test_replay_stops_before_a_draw_and_restores_no_observer(self):
+        ge = (RT / "ge.c").read_text(encoding="utf-8")
+        self.assertIn("if (s_draw_observer && ge_draw_observed(op, addr, list_addr)) return addr;", ge)
+        replay = (RT / "ge_replay.c").read_text(encoding="utf-8")
+        self.assertIn("ge_set_draw_observer(fbd_observer, run);", replay)
+        self.assertIn("ge_set_draw_observer(NULL, NULL);", replay)
+        # The mutants exist only in the test build.
+        self.assertIn("#ifdef SR_GE_FBD_MUTANT", replay)
+
+
 if __name__ == "__main__":
     unittest.main()

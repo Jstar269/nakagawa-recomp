@@ -10,15 +10,23 @@ import sys
 from typing import Mapping
 
 
+# The path-gated jobs. The Markdown lint and the main smoke are steps of the
+# always-required hygiene job, and the profile-zero fixture build is a step of the
+# always-required public-export job (.github/workflows/ci.yml), so their results
+# reach this aggregate through those two jobs.
 _GATES = (
-    ("markdown", "MARKDOWN_RESULT", "RUN_MARKDOWN"),
     ("python-tools", "PYTHON_RESULT", "RUN_PYTHON"),
     ("native-tools", "NATIVE_RESULT", "RUN_NATIVE"),
     # #360: the Android launcher build runs whenever the native gates do.
     ("android-build", "ANDROID_RESULT", "RUN_NATIVE"),
     ("windows-runtime", "WINDOWS_RESULT", "RUN_WINDOWS"),
-    ("main-smoke", "MAIN_SMOKE_RESULT", "RUN_MAIN_SMOKE"),
 )
+
+# The run flags of the steps folded into hygiene. Their results arrive through
+# HYGIENE_RESULT, but each flag must still be an explicit boolean: a missing or
+# misnamed classifier output would otherwise skip the Markdown lint or the main
+# smoke step silently while hygiene stays green.
+_FOLDED_STEP_FLAGS = ("RUN_MARKDOWN", "RUN_MAIN_SMOKE")
 
 _SUBSTANTIVE_GATES = frozenset(
     {"python-tools", "native-tools", "android-build", "windows-runtime"}
@@ -86,6 +94,9 @@ def evaluate_environment(environment: Mapping[str, str]) -> bool:
         "hygiene": environment.get("HYGIENE_RESULT", ""),
         "public-export": environment.get("PUBLIC_EXPORT_RESULT", ""),
     }
+    for run_key in _FOLDED_STEP_FLAGS:
+        if _parse_boolean(environment.get(run_key)) is None:
+            return False
     applicable: dict[str, bool] = {}
     for name, result_key, run_key in _GATES:
         results[name] = environment.get(result_key, "")
