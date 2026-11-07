@@ -6606,7 +6606,7 @@ static void test_homebrew_package_becomes_a_private_disc(void) {
     char data_root[NATIVE_TEST_PATH_MAX + 96];
     char pbp_path[NATIVE_TEST_PATH_MAX + 96];
     char other_path[NATIVE_TEST_PATH_MAX + 96];
-    char expected_iso[NATIVE_TEST_PATH_MAX + 160];
+    char expected_iso[NATIVE_TEST_PATH_MAX + 192];
     char partial[NATIVE_TEST_PATH_MAX + 192];
     char code[64];
     char message[512];

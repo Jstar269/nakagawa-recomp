@@ -1050,7 +1050,8 @@ pipeline-cache-selftest:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/rt -Isrc/core \
 		-o $(BUILD_DIR)/pipeline_cache_selftest$(EXE_EXT) \
-		src/rt/gpu_sdl3vk/pipeline_cache_selftest.c $(PLAYER_PLATFORM_SRC) $(PLAYER_PLATFORM_LIBS)
+		src/rt/gpu_sdl3vk/pipeline_cache_selftest.c src/core/nk_shared_helpers.c \
+		$(PLAYER_PLATFORM_SRC) $(PLAYER_PLATFORM_LIBS)
 	$(BUILD_DIR)/pipeline_cache_selftest$(EXE_EXT) $(BUILD_DIR)/pipeline_cache_scratch
 
 native-core-tests: pipeline-cache-selftest
@@ -1061,7 +1062,8 @@ native-core-tests: pipeline-cache-selftest
 texrepl-selftest:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/core -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
-		tests/native/texrepl_selftest.c src/rt/texrepl.c $(PLAYER_PLATFORM_SRC) $(PLAYER_PLATFORM_LIBS) \
+		tests/native/texrepl_selftest.c src/rt/texrepl.c src/core/nk_shared_helpers.c \
+		$(PLAYER_PLATFORM_SRC) $(PLAYER_PLATFORM_LIBS) \
 		-o $(BUILD_DIR)/texrepl_selftest$(EXE_EXT) && $(BUILD_DIR)/texrepl_selftest$(EXE_EXT)
 
 native-core-tests: texrepl-selftest
@@ -1072,7 +1074,8 @@ native-core-tests: texrepl-selftest
 texrepl-mutant:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
 	@$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/core -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
-		-DNK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR tests/native/texrepl_selftest.c src/rt/texrepl.c $(PLAYER_PLATFORM_SRC) \
+		-DNK_TEXREPL_MUTANT_NO_CLUTFORMAT_XOR tests/native/texrepl_selftest.c src/rt/texrepl.c \
+		src/core/nk_shared_helpers.c $(PLAYER_PLATFORM_SRC) \
 		$(PLAYER_PLATFORM_LIBS) -o $(BUILD_DIR)/texrepl_mutant$(EXE_EXT)
 	@rc=0; $(BUILD_DIR)/texrepl_mutant$(EXE_EXT) > $(BUILD_DIR)/texrepl_mutant.log 2>&1 || rc=$$?; \
 	cat $(BUILD_DIR)/texrepl_mutant.log; \
