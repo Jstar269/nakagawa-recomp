@@ -512,6 +512,28 @@ bool input_settings_set_trigger_threshold(InputSettingsState *state, int32_t val
 bool input_settings_toggle_axis_inversion(InputSettingsState *state, int axis_idx);
 
 /**
+ * @brief Mouse aiming (#1791): turn mouse movement into the analog nub on or off.
+ */
+bool input_settings_set_aim_mouse(InputSettingsState *state, bool enabled);
+
+/**
+ * @brief Change the aim sensitivity (percent), clamped to
+ * [NK_AIM_SENSITIVITY_MIN, NK_AIM_SENSITIVITY_MAX]; `delta` may be negative.
+ */
+bool input_settings_adjust_aim_sensitivity(InputSettingsState *state, int32_t delta);
+
+/**
+ * @brief Flip the aim's horizontal or vertical direction (axis NK_PSP_AXIS_ANALOG_X or _Y).
+ */
+bool input_settings_toggle_aim_invert(InputSettingsState *state, int axis_idx);
+
+/**
+ * @brief Change the aim smoothing (percent of the last poll's movement kept), clamped to
+ * [0, NK_AIM_SMOOTHING_MAX]; `delta` may be negative.
+ */
+bool input_settings_adjust_aim_smoothing(InputSettingsState *state, int32_t delta);
+
+/**
  * @brief Start guided calibration workflow for analog stick and triggers (#357).
  */
 bool input_settings_start_calibration(InputSettingsState *state);

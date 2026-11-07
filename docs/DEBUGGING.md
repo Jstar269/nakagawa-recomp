@@ -1499,7 +1499,7 @@ committed.
 | ---------- | ------------- |
 | `SR_FONTLOG=1` | Log font operations: each slot's source, and the guest's reads of the generated `/DATA/FONT` registry subtree (the keys it asks for, the categories it opens, and each font index served) |
 | `SR_MPEGLOG=1` | Log mpeg operations. The PSMF media producer also logs one bounded counter line per reporting interval: bytes read, packs, PES packets, per-track PES and access-unit counts, access units that carried no presentation time, resync bytes, both compressed-queue depths, EOF state and failure offset, the disposition census of both tracks (submitted, decoded, delivered, warm-up-held, eos-drained, rejected — plus audio format rejects `arejf` and mono upmixes `aupm`), decoder-error counts, the pipeline presentation clocks (`vpts`/`apts`), the guest-facing presentation points at the getters (`vts`/`ats`), the A/V separation between those comparable points (`avgap`, `vts-ats`), submitted-minus-delivered (`vlead`, the pipeline distance inside the output ring), displaced ring times (`vlost`), the last `displaypts`, and the drain flags — enough to classify every decoded picture and locate the first boundary that stops a movie without attaching a debugger |
-| `SR_MPEGAV=1` | Measure the A/V offset where a viewer perceives it, not at the getters (issue #279); `SR_MPEGLOG` also turns it on. Diagnostics only: nothing in the guest changes. Each decoded picture the guest receives (`scePsmfPlayerGetVideoData`, or `sceMpegAvcCsc` writing a `sceMpegAvcDecodeYCbCr` picture) and each audio block (`scePsmfPlayerGetAudioData`) is remembered in a 32-entry ring per stream with its guest byte range, 90 kHz pts and delivery time. The first later `sceDisplaySetFrameBuf` flip (immediate, or applied at VBLANK) whose frame overlaps a picture's range is its presentation, at that guest time; the first `sceAudioOutput*` submit overlapping a block is its play time, taken as the guest time of the submit plus the host queue lead ahead of it (`sr_audio_queued` before the push, 44.1 kHz frames), and `-1` (no host queue) is reported as not measured, never as a lead of zero. A stream's offset is play time minus pts in microseconds; the A/V offset is the video offset minus the audio offset, averaged per 5 s window of guest time. A `PSMF_AV_PRESENT:` line is printed per window (`win`, `end_us`, sample counts `vn`/`an`, `voff_us`, `aoff_us`, `av_us`; `na` where a stream had no measured sample), and `PSMF_AV_PRESENT_FINAL:` at `scePsmfPlayerDelete` and at process exit with the totals: `vdel`/`adel` delivered, `vmatch`/`amatch` matched, `vunmeas`/`aunmeas` matched without a measurable time, `vsuper`/`asuper` overwritten before they were presented or played, `vevict`/`aevict` pushed out of the ring, `vnospan`/`anospan` with no usable byte range, `vpend`/`apend` still waiting at the report (delivered = the sum of those six), `vbnd`/`abnd` presents or submits seen and `vhit`/`ahit` those that matched something, delivery-to-present latency (`vlat_mean_us`, `vlat_max_us`, and `alat_*`), and `av_min_us`, `av_max_us`, `av_mean_us` over the windows with both streams, `av_first_us`, `av_last_us` and `drift_us` (last window minus first, needs two). Reading a run: a flat `av_us` across windows is no drift; a falling or rising `av_us` is one stream running slow against the other. `vmatch=0` with many `vsuper` means the title copies or composites the movie before presenting it, so the picture cannot be matched by address and the video side is not measured, not in sync. `sceMpegAtracDecode` writes no PCM, so no audio is delivered through it |
+| `SR_MPEGAV=1` | Measure the A/V offset where a viewer perceives it, not at the getters (issue #279); `SR_MPEGLOG` also turns it on. Diagnostics only: nothing in the guest changes. Each decoded picture the guest receives (`scePsmfPlayerGetVideoData`, or `sceMpegAvcCsc` writing a `sceMpegAvcDecodeYCbCr` picture) and each audio block (`scePsmfPlayerGetAudioData`) is remembered in a 32-entry ring per stream with its guest byte range, 90 kHz pts and delivery time. The first later `sceDisplaySetFrameBuf` flip (immediate, or applied at VBLANK) whose frame overlaps a picture's range is its presentation, at that guest time; the first `sceAudioOutput*` submit overlapping a block is its play time, taken as the guest time of the submit plus the host queue lead ahead of it (`sr_audio_queued` before the push, 44.1 kHz frames), and `-1` (no host queue) is reported as not measured, never as a lead of zero. A stream's offset is play time minus pts in microseconds; the A/V offset is the video offset minus the audio offset, averaged per 5 s window of guest time. A `PSMF_AV_PRESENT:` line is printed per window (`win`, `end_us`, sample counts `vn`/`an`, `voff_us`, `aoff_us`, `av_us`; `na` where a stream had no measured sample), and `PSMF_AV_PRESENT_FINAL:` at `scePsmfPlayerDelete` and at process exit with the totals: `vdel`/`adel` delivered, `vmatch`/`amatch` matched, `vunmeas`/`aunmeas` matched without a measurable time, `vsuper`/`asuper` overwritten before they were presented or played, `vevict`/`aevict` pushed out of the ring, `vnospan`/`anospan` with no usable byte range, `vpend`/`apend` still waiting at the report (delivered = the sum of those six), `vbnd`/`abnd` presents or submits seen and `vhit`/`ahit` those that matched something, delivery-to-present latency (`vlat_mean_us`, `vlat_max_us`, and `alat_*`), and `av_min_us`, `av_max_us`, `av_mean_us` over the windows with both streams, `av_first_us`, `av_last_us` and `drift_us` (last window minus first, needs two). Each window line also gives `alead_us`, the mean host queue lead its matched audio blocks met, and `av_submit_us`, the A/V offset with that lead left out: video at the flip against audio at the guest's `sceAudioOutput*` submit, two boundaries a PSP has too. The summary gives `alead_mean_us`, `alead_max_us` and `av_submit_mean_us`. `av_us` is `av_submit_us` minus the lead, so an `av_us` that is all lead comes from our output stage, not from the guest's timing. Reading a run: a flat `av_us` across windows is no drift; a falling or rising `av_us` is one stream running slow against the other. `vmatch=0` with many `vsuper` means the title copies or composites the movie before presenting it, so the picture cannot be matched by address and the video side is not measured, not in sync. `sceMpegAtracDecode` writes no PCM, so no audio is delivered through it |
 | `SR_DLGLOG=1` | Log dialog operations |
 | `SR_CBLOG=1` | Log callback operations |
 | `SR_SYSLOG=1` | Log system calls |
@@ -2204,6 +2204,28 @@ player and game behave as they do for everyone ([#314](https://github.com/Jstar2
   `SR_VIDEOREC_SIZE=3840x2160`, a route
   (`SR_PADSCRIPT`) and `SR_EXIT_AT_VBLANK`; `record.json` says `PASS` and `recording.mkv` holds picture
   and sound ([Recording a video of a run](#recording-a-video-of-a-run)).
+- **Find the first GE draw where Vulkan departs from the software GE.** Build with
+  `mingw32-make ge-replay`, then run `build/ge_replay.exe <capture.ngef> --first-bad-draw` on a GE
+  capture. It replays draw prefixes through both renderers in one process and compares every colour
+  target, depth buffer and block-transfer destination the prefix used. It prints
+  `GE_FIRST_BAD_DRAW result=NO_DIFFERENCE`, or `result=FIRST_BAD_DRAW index=N` followed by a
+  `GE_FBD_DRAW` line with that draw's command-list address and GE state, one `GE_FBD_REGION` line
+  per buffer that differs, with the pixel count, the largest difference and the bounding box, and
+  three crops (`<capture>.first-bad-draw.software.ppm`, `.vulkan.ppm` and `.diff.ppm`; `--report
+  PREFIX` moves them). `--mode linear` checks every prefix. `--mode bisect` halves the prefix and
+  assumes a difference persists to the end of the frame. The default, `auto`, runs linear up to
+  256 draws. A difference `src/rt/gpu_sdl3vk/README.md` allows (fixed-function blends within 2 LSB)
+  is counted under its rule name (`rule=blend-2lsb`), and a frame with only those reports
+  `result=RULE_ONLY`. Each buffer is compared over everything a draw can write there (the scissor,
+  or a transfer's rectangle). When a buffer cannot be compared in full (more than 32 buffers, a
+  stride past 1024, a scissor past the 480x272 that ge.c rasterizes, depth past ge.c's 272 rows),
+  the tool prints `result=INCOMPLETE` with a
+  `GE_FBD_UNCOMPARED` line per buffer and exits 5, and a capture with no draw is `result=NO_DRAWS`
+  (exit 6): neither is ever `NO_DIFFERENCE`. A capture of a title is private, and so are its report
+  and crops.
+  `mingw32-make ge-first-bad-draw-selftest` checks the tool on generated captures against two
+  executed Vulkan mutants and the known overlapping-blend difference (#2109).
+  `ge_replay --write-synthetic <path> [basic|overlap|wide|empty|many|deep]` writes those captures.
 - **Capture frames unattended.** Set `SR_NOINPUT=1` so the automatic START pulse does not reach the game, bound the run
   with `SR_EXIT_AT_VBLANK` ([where it stops](#where-sr_exit_at_vblank-actually-stops)), and capture with
   `SR_FBSNAP_WINDOWS` ([both ends of a transition](#capturing-both-ends-of-a-transition--snapwindows)).
@@ -2241,9 +2263,21 @@ The deterministic clock changes the run itself, not only the recording:
 
 On the Vulkan presenter the recorded picture is the one the window shows (Ace Mode's smooth motion
 included), scaled with the window's own scaling mode (`SR_PRESENT_SCALING`) into a fixed-size
-target. The presentation upscaler is not applied to it: with `SR_PRESENT_UPSCALE=fsr1` the window
-shows FSR 1's output, but the recording still uses `SR_PRESENT_SCALING`'s filter
-([#2138](https://github.com/Jstar269/nakagawa-recomp/issues/2138)). It is a clean capture:
+target. With `SR_PRESENT_UPSCALE=fsr1` the recording is enlarged by FSR 1 as the window is, at the
+recording's own size and through its own pass, so `SR_VIDEOREC_SIZE` never makes the window's pass
+rebuild its images ([#2138](https://github.com/Jstar269/nakagawa-recomp/issues/2138);
+`gpu-capture-selftest` checks a 960x544 recording against a separate FSR 1 pass's output, byte for
+byte). As in the window, FSR 1 only enlarges: a recording no larger than the picture uses the
+scaling mode. `record.json` names the scaling that made each picture, not the setting that asked
+for it: `"filter"` is `fsr1`; `sharp` (a nearest prescale to a whole multiple, then a linear
+shrink); `nearest` (one nearest-neighbour blit, which is what any mode draws at an exact multiple
+such as 960x544, and what `integer` draws when a multiple fits); `linear` (one linear blit, as
+`bilinear` draws at other sizes and every mode draws when the recording is smaller than the
+picture); `none` (a picture at its own size, as the CPU presenters record); or `mixed` when the
+written frames were made in more than one way. `"filter_frames"` counts the written frames by
+filter. When the recording's FSR 1 pass cannot be made, the log says so once and each frame is
+named by the scaling mode's blits. `gpu-capture-selftest` checks the name at 960x544, at a
+letterboxed 1000x600 and at a shrinking 320x180, in each mode. It is a clean capture:
 no host overlay reaches it, neither the HUD and its frame-rate readout nor the player's notices nor
 the pause overlay. `SR_VIDEOREC_SIZE=3840x2160` records 4K whatever the window's size. The CPU
 presenters (GDI, offscreen) record their 480x272 frame.
