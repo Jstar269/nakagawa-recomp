@@ -2211,6 +2211,40 @@ static const NkUiDrawList *flow_case_layout(FlowCase which, int width, int heigh
     return draw;
 }
 
+/* These rows keep their original side-by-side layout at the design text size.
+   Only Settings > Enhanced opts into stacking there. */
+static bool flow_row_sentence_is_beside_button(FlowCase which, NkUiId button_id,
+                                               const char *sentence_prefix) {
+    int saved_text_size_pct = g_flow_text_size_pct;
+    NkUi *ui = NULL;
+    const NkUiDrawList *draw;
+    const NkUiDrawCmd *button = NULL;
+    const NkUiDrawCmd *sentence = NULL;
+    size_t prefix_length = strlen(sentence_prefix);
+    bool beside = false;
+    g_flow_text_size_pct = 100;
+    draw = flow_case_layout(which, 1280, 800, &ui);
+    for (uint32_t i = 0u; draw != NULL && i < draw->ncmd; ++i) {
+        const NkUiDrawCmd *cmd = &draw->cmd[i];
+        if (cmd->element_id == button_id && cmd->kind == NK_UI_DRAW_RECTANGLE) {
+            button = cmd;
+        }
+        if (cmd->kind == NK_UI_DRAW_TEXT && cmd->custom != NULL) {
+            const NkUiTextRun *run = (const NkUiTextRun *)cmd->custom;
+            for (size_t at = 0u; run->text != NULL && at + prefix_length <= run->length; ++at) {
+                if (memcmp(run->text + at, sentence_prefix, prefix_length) == 0) {
+                    sentence = cmd;
+                    break;
+                }
+            }
+        }
+    }
+    if (button != NULL && sentence != NULL) beside = sentence->bounds[0] >= button->bounds[2];
+    if (ui != NULL) nk_ui_destroy(ui);
+    g_flow_text_size_pct = saved_text_size_pct;
+    return beside;
+}
+
 static bool flow_case_has_scroll(FlowCase which, int width, int height) {
     NkUi *ui = NULL;
     NkUiScrollState state;
@@ -2918,11 +2952,18 @@ static void test_settings_pages(void) {
                                                   FLOW_SETTINGS_ONLINE_ON),
                              PLAYER_UI_SETTINGS_TOGGLE_ONLINE),
           "Online and developer offers the switch while the stored online mode is On");
+    CHECK(flow_row_sentence_is_beside_button(FLOW_SETTINGS_ONLINE_ON,
+                                             PLAYER_UI_ID_SETTINGS_ONLINE_MODE,
+                                             "Online mode is on in your settings"),
+          "Settings > Online keeps the stored Online mode sentence beside its button at design size");
     CHECK(flow_case_fits(FLOW_WIZ_OPTIONS_ON, 960, 540, dump, sizeof(dump)) &&
               strstr(dump, "Online mode is on in your settings") != NULL &&
               wizard_op_is(activate_flow_button(PLAYER_UI_ID_WIZARD_ONLINE, FLOW_WIZ_OPTIONS_ON),
                            PLAYER_UI_WIZARD_TOGGLE_ONLINE),
           "the options step offers the switch while the stored online mode is On");
+    CHECK(flow_row_sentence_is_beside_button(FLOW_WIZ_OPTIONS_ON, PLAYER_UI_ID_WIZARD_ONLINE,
+                                             "Online mode is on in your settings"),
+          "wizard Options keeps the stored Online mode sentence beside its button at design size");
     CHECK(dump_flow_case(FLOW_WIZ_OPTIONS, dump, sizeof(dump)) &&
               strstr(dump, "Online features aren't built yet") != NULL &&
               strstr(dump, "ONLINE MODE") == NULL &&
@@ -2960,6 +3001,10 @@ static void test_settings_pages(void) {
               strstr(dump, "\"REMOVE BUILD TOOLS\"") != NULL &&
               strstr(dump, "Shared library cache cleared.") != NULL,
           "build tools and cache shows the switch, tool removal and the clear notice");
+    CHECK(flow_row_sentence_is_beside_button(FLOW_SETTINGS_BUILD_CACHE,
+                                             PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES,
+                                             "Builds keep each compiled library"),
+          "Settings > Build cache keeps the Share libraries sentence beside its button at design size");
     CHECK(flow_case_fits(FLOW_SETTINGS, 960, 540, dump, sizeof(dump)) &&
               strstr(dump, "\"CHECK FOR UPDATES\"") != NULL,
           "Settings has CHECK FOR UPDATES at 960 x 540");

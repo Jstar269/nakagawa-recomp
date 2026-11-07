@@ -351,6 +351,8 @@ add_executable(test_player_screens
     ${NK_UI_PLAYER_TITLE_SOURCES}
 )
 target_include_directories(test_player_screens PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/player
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/src/player/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
