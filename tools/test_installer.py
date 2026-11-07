@@ -114,6 +114,25 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertIn(stage_install.MARKER, self.text)
         self.assertIn("function PrepareToInstall", self.text)
 
+    def test_another_copys_shortcut_is_refused_not_taken_over(self):
+        # tools/stage_install.py writes the same shortcut name and taskbar identity, so installing or removing
+        # either copy would replace or remove the other's shortcut.
+        prepare = self.text[self.text.index("function PrepareToInstall"):self.text.index("{ Deletes Dir")]
+        self.assertIn("{userprograms}\\{#ShortcutName}.lnk", prepare)
+        self.assertIn("{userdesktop}\\{#ShortcutName}.lnk", prepare)
+        self.assertIn("WizardIsTaskSelected('desktopicon')", prepare)  # the desktop one only when it will be written
+        other = self.text[self.text.index("function OtherCopyShortcutTarget"):self.text.index("function PrepareToInstall")]
+        self.assertIn("CompareText(ExpandFileName(Target), ExpandFileName(Ours)) <> 0", other)
+        self.assertIn("FileExists(Target)", other)  # a stale shortcut (its target is gone) is replaced
+        self.assertIn("Ours := ExpandConstant('{app}') + '\\bin\\{#AppExe}'", other)
+        self.assertIn("Uninstall or delete that copy", prepare)
+
+    def test_the_only_com_object_is_the_local_scripting_shell(self):
+        self.assertEqual(re.findall(r"CreateOleObject\(([^)]*)\)", self.text), ["'WScript.Shell'"])
+        self.assertEqual(verify_installer.egress_findings("x := CreateOleObject('WScript.Shell');"), [])
+        self.assertEqual(verify_installer.egress_findings("x := CreateOleObject('MSXML2.XMLHTTP');"),
+                         ["INSTALLER_NETWORK_CALL: createoleobject('msxml2.xmlhttp')"])
+
 
 class UninstallRuleTests(unittest.TestCase):
     """The uninstall keeps user data unless the person ticks one box; a silent uninstall never deletes it."""
@@ -128,18 +147,27 @@ class UninstallRuleTests(unittest.TestCase):
         self.assertNotIn("GetCmdTail", code)
         self.assertNotIn("CmdLineParamExists", code)
 
-    def test_the_data_folders_are_the_five_the_docs_list(self):
+    def test_the_data_folders_are_the_five_the_player_resolves_and_the_docs_list(self):
         names = dict(re.findall(r"^\s+(\d): Result := '(\w+)';", self.text, re.MULTILINE))
         self.assertEqual([names[str(index)] for index in range(5)], ["config", "data", "cache", "logs", "saves"])
         self.assertIn("USER_DATA_FOLDER_COUNT = 5", self.text)
+        # The folders the player itself resolves under %LOCALAPPDATA%\\Nakagawa on Windows: a layout change
+        # there (the data-folder work, #324) must change this script with it.
+        platform = (ROOT / "src" / "core" / "nk_platform_win32.c").read_text(encoding="utf-8")
+        resolve = platform[platform.index("static bool resolve_windows_path"):]
+        resolve = resolve[:resolve.index("\n}\n")]
+        resolved = re.findall(r'case NK_PATH_\w+:\s+subdir = "(\w+)";', resolve)
+        self.assertEqual(sorted(names.values()), sorted(set(resolved)))
+        self.assertIn('"%s\\\\Nakagawa\\\\%s"', resolve)
+        # The docs table, once #2164 lands it, lists the same five.
         setup_doc = (ROOT / "docs" / "SETUP.md").read_text(encoding="utf-8")
         rows = re.findall(r"^\| `(\w+)/` \|", setup_doc, re.MULTILINE)
-        if not rows:
-            self.skipTest("docs/SETUP.md has no data-folder table yet (#2164); this check starts then")
-        self.assertEqual(sorted(names.values()), sorted(rows))
+        if rows:
+            self.assertEqual(sorted(names.values()), sorted(rows))
 
     def test_the_delete_is_reached_only_from_the_unchecked_box_and_never_when_silent(self):
-        self.assertEqual(self.text.count("RemoveUserData"), 2)  # the procedure and its one call
+        self.assertEqual(len(re.findall(r"\bRemoveUserData\b", self.text)), 2)  # the procedure and its one call
+        self.assertEqual(len(re.findall(r"\bRemoveUserDataIn\b", self.text)), 2)  # its body and the one caller
         self.assertIn("Box.Checked := False;", self.text)
         call = re.search(r"CurUninstallStepChanged.*?end;\s*\Z", self.text, re.DOTALL)
         self.assertIsNotNone(call)
@@ -150,13 +178,29 @@ class UninstallRuleTests(unittest.TestCase):
         self.assertLess(init.index("DeleteUserData := False;"), init.index("if UninstallSilent then"))
 
     def test_the_delete_follows_no_link_and_names_only_the_per_user_root(self):
-        body = self.text[self.text.index("procedure RemoveUserData"):self.text.index("{ The uninstall page")]
+        body = self.text[self.text.index("function DeleteTreeNoLinks"):self.text.index("{ True while the player")]
+        # Every entry is classified before it is entered or deleted; a link is removed as a link.
+        self.assertIn("(Found.Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0", body)
+        self.assertLess(body.index("if IsLink then"), body.index("else if IsDir then"))
+        self.assertIn("RemoveDir(Path)", body)
         self.assertIn("IsReparsePoint(Root)", body)
         self.assertIn("IsReparsePoint(Folder)", body)
-        self.assertEqual(self.text.count("DelTree("), 1)
+        # DelTree (which could follow a link) is used only on one named file, never on a folder.
+        self.assertEqual(re.findall(r"DelTree\(([^)]*)\)", self.text), ["Path, False, True, False"])
         self.assertIn("ExpandConstant('{localappdata}') + '\\Nakagawa'", self.text)
         # A second, defaulting-to-No confirmation precedes it.
         self.assertIn("MB_YESNO or MB_DEFBUTTON2", self.text)
+
+    def test_an_uninstall_while_the_player_runs_changes_nothing(self):
+        # Inno's uninstaller does not close programs (measured: a silent uninstall left the locked player behind
+        # after removing the shortcut and the uninstall entry), so the script stops it first.
+        init = self.text[self.text.index("function InitializeUninstall"):]
+        self.assertLess(init.index("while PlayerIsRunning do"), init.index("if UninstallSilent then\n    Exit;"))
+        loop = init[init.index("while PlayerIsRunning do"):init.index("if UninstallSilent then\n    Exit;")]
+        self.assertIn("Result := False;", loop)
+        self.assertIn("MB_RETRYCANCEL", loop)
+        probe = self.text[self.text.index("function PlayerIsRunning"):self.text.index("{ The uninstall page")]
+        self.assertIn("not SaveStringToFile(Exe, '', True)", probe)  # open for write, nothing written
 
 
 def _lock() -> dict[str, Any]:
@@ -343,6 +387,39 @@ class VerifierPureTests(unittest.TestCase):
         stage_install.write_sha256sums(self.package)
         self.installed = self.root / "installed"
         shutil.copytree(self.package, self.installed)
+
+    def test_sentinels_are_planted_in_every_data_folder_and_only_what_was_made_is_removed(self):
+        base = self.root / "local" / "Nakagawa"
+        (base / "data").mkdir(parents=True)
+        (base / "data" / "library.json").write_text("mine", encoding="utf-8")
+        sentinels = verify_installer.Sentinels(base)
+        sentinels.plant()
+        for name in verify_installer.USER_DATA_FOLDERS:
+            self.assertTrue((base / name / verify_installer.SENTINEL_NAME).is_file(), name)
+        self.assertTrue((base / "saves" / verify_installer.SENTINEL_FOLDER_NAME / verify_installer.SENTINEL_NAME).is_file())
+        self.assertEqual(len(sentinels.files), 7)
+        self.assertEqual(sentinels.missing(), [])
+        (base / "logs" / verify_installer.SENTINEL_NAME).unlink()
+        self.assertEqual(sentinels.missing(), [str(base / "logs" / verify_installer.SENTINEL_NAME)])
+        sentinels.remove()
+        self.assertEqual(sorted(path.name for path in base.iterdir()), ["data"])  # made folders gone, mine kept
+        self.assertEqual((base / "data" / "library.json").read_text(encoding="utf-8"), "mine")
+        self.assertEqual(sorted(path.name for path in (base / "data").iterdir()), ["library.json"])
+
+    def test_a_check_with_no_sentinel_planted_fails_instead_of_passing_vacuously(self):
+        self.assertEqual(verify_installer.Sentinels(self.root / "never").missing(), ["no sentinel was planted"])
+
+    def test_a_linked_root_is_not_written_through(self):
+        target = self.root / "elsewhere"
+        target.mkdir()
+        link = self.root / "Nakagawa"
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("this host cannot make a symbolic link")
+        with self.assertRaises(build_installer.InstallerError):
+            verify_installer.Sentinels(link).plant()
+        self.assertEqual(list(target.iterdir()), [])
 
     def test_an_install_equal_to_its_package_matches_even_with_the_uninstaller_beside_it(self):
         (self.installed / "unins000.exe").write_bytes(b"u")

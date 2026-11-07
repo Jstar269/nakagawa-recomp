@@ -485,6 +485,26 @@ On start-up, `nakagawa_player.exe` automatically scans `<user data>/manifests` a
 
 Similarly, `python tools/nk_cli.py build-package` searches `assets/titles` first and then `<user data>/manifests`, resolving title manifests identically to the native player so user-configured titles build without command-line overlay arguments.
 
+### Windows installer (`Setup.exe`)
+
+A release can also carry `nakagawa-recomp-<version>-windows-x64-setup.exe`
+([#2208](https://github.com/Jstar269/nakagawa-recomp/issues/2208)), a per-user installer with the same files as the
+ZIP. It needs no administrator and installs to `%LOCALAPPDATA%\Programs\Nakagawa Recomp` (you can choose another
+folder). It adds a Start-menu entry and, if you tick it, a Desktop one, both with the player's taskbar identity, and
+an entry under Apps & features. It makes no network call.
+
+- **Update:** run the next release's Setup. It updates the copy in place and keeps your games, saves and settings;
+  the player's Settings page offers the release page for a copy Setup installed, not a ZIP download.
+- **Uninstall:** Apps & features, or `unins000.exe` in the install folder. It removes the program and keeps
+  `%LOCALAPPDATA%\Nakagawa` (the `config`, `data`, `cache`, `logs` and `saves` folders) unless you tick "Also delete my
+  games, saves and settings" on the uninstall page and confirm a second time; a silent uninstall never deletes them. A
+  junction or symbolic link inside those folders is removed as a link and what it points to is left alone. Close the
+  player first: the uninstaller does not close it, and stops without changing anything while it runs.
+- **One copy per shortcut name:** the installer and `tools/stage_install.py` write the same Start-menu shortcut, so
+  Setup refuses to install while a shortcut of that name starts another copy (for example one made by
+  `stage_install.py`). Uninstall or delete that copy and its shortcut first. Setup also refuses a folder that
+  `stage_install.py` set up.
+
 ### Portable mode (`portable.txt`)
 
 Portable mode is in builds after v0.0.1. By default every per-user folder lives under the per-user data root (on Windows,

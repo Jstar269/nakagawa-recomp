@@ -100,8 +100,9 @@ const
 var
   DeleteUserData: Boolean;
 
-{ The five folders of the per-user data layout (docs/SETUP.md, "What stays after an uninstall"): the only
-  folders the uninstall opt-in may delete. }
+{ The five folders of the per-user data layout: the only folders the uninstall opt-in may delete. They are the
+  folders the player resolves under %LOCALAPPDATA%\Nakagawa (nk_platform_win32.c, resolve_windows_path), and
+  docs/SETUP.md lists them. Anything the player keeps inside "data" (the library, saves, downloads) goes with it. }
 function UserDataFolder(Index: Integer): String;
 begin
   case Index of
@@ -135,32 +136,146 @@ begin
   end;
 end;
 
-{ A folder this installer must not install into: the developer install tool's own (it has its own
-  uninstall, and two uninstallers must never share a folder). }
+{ The target of a shortcut file, or '' when it cannot be read. Windows' own scripting shell reads it
+  locally; nothing here touches the network. }
+function ShortcutTarget(const Link: String): String;
+var
+  Shell, Shortcut: Variant;
+begin
+  Result := '';
+  try
+    Shell := CreateOleObject('WScript.Shell');
+    Shortcut := Shell.CreateShortcut(Link);
+    Result := Shortcut.TargetPath;
+  except
+    Result := '';
+  end;
+end;
+
+{ The target of an existing shortcut that points at another copy of the player, or '' when there is no
+  shortcut, it is ours, or its target is gone (a stale shortcut is replaced). }
+function OtherCopyShortcutTarget(const Link: String): String;
+var
+  Target, Ours: String;
+begin
+  Result := '';
+  if not FileExists(Link) then
+    Exit;
+  Target := ShortcutTarget(Link);
+  if Target = '' then
+    Exit;
+  Ours := ExpandConstant('{app}') + '\bin\{#AppExe}';
+  if (CompareText(ExpandFileName(Target), ExpandFileName(Ours)) <> 0) and FileExists(Target) then
+    Result := Target;
+end;
+
+{ Two things this installer must not do: install into a folder the developer install tool set up (it has
+  its own uninstall, and two uninstallers must never share a folder), and take over the shortcut of another
+  copy (tools/stage_install.py writes the same shortcut name with the same taskbar identity, so installing or
+  removing either copy would replace or remove the other's shortcut). }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Target: String;
 begin
   Result := '';
   if FileExists(ExpandConstant('{app}') + '\.nakagawa-install.json') then
+  begin
     Result := 'This folder was set up by the developer install tool (tools/stage_install.py), which has its own uninstall. Choose another folder.';
+    Exit;
+  end;
+  Target := OtherCopyShortcutTarget(ExpandConstant('{userprograms}\{#ShortcutName}.lnk'));
+  if (Target = '') and WizardIsTaskSelected('desktopicon') then
+    Target := OtherCopyShortcutTarget(ExpandConstant('{userdesktop}\{#ShortcutName}.lnk'));
+  if Target <> '' then
+    Result := 'A shortcut named {#ShortcutName} already starts another copy of Nakagawa (' + Target + '). Installing here would replace it, and removing either copy later would remove the shortcut of the other. Uninstall or delete that copy and its shortcut, then run Setup again.';
+end;
+
+{ Deletes Dir and what is in it without ever following a junction or symbolic link: a link inside the tree is
+  removed as a link (its target is left alone), and a folder is entered only when it is a real folder. }
+function DeleteTreeNoLinks(const Dir: String; Depth: Integer): Boolean;
+var
+  Found: TFindRec;
+  Path: String;
+  IsDir, IsLink: Boolean;
+begin
+  Result := True;
+  if Depth > 64 then
+  begin
+    Result := False;
+    Exit;
+  end;
+  if FindFirst(Dir + '\*', Found) then
+  begin
+    try
+      repeat
+        if (Found.Name <> '.') and (Found.Name <> '..') then
+        begin
+          Path := Dir + '\' + Found.Name;
+          IsDir := (Found.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0;
+          IsLink := (Found.Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0;
+          if IsLink then
+          begin
+            if IsDir then
+            begin
+              if not RemoveDir(Path) then
+                Result := False;
+            end
+            else if not DeleteFile(Path) then
+              Result := False;
+          end
+          else if IsDir then
+          begin
+            if not DeleteTreeNoLinks(Path, Depth + 1) then
+              Result := False;
+          end
+          else if not DeleteFile(Path) then
+          begin
+            { A read-only file: DelTree on a single file clears the attribute first. }
+            if not DelTree(Path, False, True, False) then
+              Result := False;
+          end;
+        end;
+      until not FindNext(Found);
+    finally
+      FindClose(Found);
+    end;
+  end;
+  if not RemoveDir(Dir) then
+    Result := False;
 end;
 
 { Deletes exactly the five data folders under %LOCALAPPDATA%\Nakagawa, and that folder if it is then empty.
-  Nothing is deleted through a junction or symbolic link. }
-procedure RemoveUserData;
+  Nothing is deleted through a junction or symbolic link, at the top or anywhere inside. }
+procedure RemoveUserDataIn(const Root: String);
 var
   Index: Integer;
-  Root, Folder: String;
+  Folder: String;
 begin
-  Root := UserDataRoot;
   if (not DirExists(Root)) or IsReparsePoint(Root) then
     Exit;
   for Index := 0 to USER_DATA_FOLDER_COUNT - 1 do
   begin
     Folder := Root + '\' + UserDataFolder(Index);
     if DirExists(Folder) and (not IsReparsePoint(Folder)) then
-      DelTree(Folder, True, True, True);
+      DeleteTreeNoLinks(Folder, 0);
   end;
   RemoveDir(Root);
+end;
+
+procedure RemoveUserData;
+begin
+  RemoveUserDataIn(UserDataRoot);
+end;
+
+{ True while the player (or one of its DLLs) is running from this install: a running program's file cannot
+  be opened for writing. Inno's uninstaller does not close programs the way Setup does, so it would remove the
+  shortcut and the uninstall entry and leave the locked files behind. }
+function PlayerIsRunning: Boolean;
+var
+  Exe: String;
+begin
+  Exe := ExpandConstant('{app}') + '\bin\{#AppExe}';
+  Result := FileExists(Exe) and (not SaveStringToFile(Exe, '', True));
 end;
 
 { The uninstall page: one box, unchecked. A silent uninstall skips it and keeps the data. }
@@ -173,6 +288,20 @@ var
 begin
   Result := True;
   DeleteUserData := False;
+  { Nothing is changed while the player runs: a silent uninstall stops, an interactive one asks to close it. }
+  while PlayerIsRunning do
+  begin
+    if UninstallSilent then
+    begin
+      Result := False;
+      Exit;
+    end;
+    if MsgBox('Nakagawa Recomp is running. Close it, then choose Retry.', mbError, MB_RETRYCANCEL) <> IDRETRY then
+    begin
+      Result := False;
+      Exit;
+    end;
+  end;
   if UninstallSilent then
     Exit;
   Form := CreateCustomForm(ScaleX(440), ScaleY(210), False, True);

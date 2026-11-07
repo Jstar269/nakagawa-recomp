@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -63,11 +64,18 @@ def compare_installed(package_dir: Path, installed_dir: Path) -> list[str]:
 
 
 def egress_findings(script_text: str) -> list[str]:
-    """Names in an Inno script that reach the network. A deterministic text test, like the repo's other egress tests."""
+    """Names in an Inno script that reach the network. A deterministic text test, like the repo's other egress tests.
+
+    The one COM object the script may create is Windows' local scripting shell (it reads the shortcut a
+    previous install left); any other ``CreateOleObject`` could be an HTTP client and is a finding."""
     lowered = script_text.lower()
-    names = ("downloadtemporaryfile", "itdownload", "itd_", "createoleobject", "winhttp", "urlmon", "wininet",
+    names = ("downloadtemporaryfile", "itdownload", "itd_", "winhttp", "urlmon", "wininet",
              "shellexec('open', 'http", 'shellexec("open", "http')
-    return [f"INSTALLER_NETWORK_CALL: {name}" for name in names if name in lowered]
+    findings = [f"INSTALLER_NETWORK_CALL: {name}" for name in names if name in lowered]
+    for match in re.finditer(r"createoleobject\s*\(([^)]*)\)", lowered):
+        if match.group(1).strip() != "'wscript.shell'":
+            findings.append(f"INSTALLER_NETWORK_CALL: createoleobject({match.group(1).strip()})")
+    return findings
 
 
 def _hkcu_key_exists() -> bool:
@@ -103,6 +111,78 @@ def _wait_for(condition: Callable[[], bool], seconds: float = 90.0) -> bool:
     return condition()
 
 
+#: The per-user folders the uninstall opt-in may delete (assets/installer/nakagawa.iss, UserDataFolder).
+USER_DATA_FOLDERS = ("config", "data", "cache", "logs", "saves")
+NESTED_SENTINEL_FOLDERS = ("data", "saves")
+SENTINEL_FOLDER_NAME = "installer-verify-nested"
+
+
+class Sentinels:
+    """Marker files planted in every per-user data folder, to prove an uninstall that was not asked to delete
+    them kept them. Creates what is missing and removes only what it made."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.files: list[Path] = []
+        self._created: list[Path] = []
+
+    def _make_dir(self, path: Path) -> None:
+        if not path.exists():
+            path.mkdir()
+            self._created.append(path)
+
+    def plant(self) -> None:
+        if self.root.is_symlink() or self.root.is_junction() or (self.root.exists() and not self.root.is_dir()):
+            raise build_installer.InstallerError(f"INSTALLER_VERIFY_REFUSED: {self.root} is not a plain folder")
+        self.root.parent.mkdir(parents=True, exist_ok=True)
+        self._make_dir(self.root)
+        for name in USER_DATA_FOLDERS:
+            folder = self.root / name
+            self._make_dir(folder)
+            places = [folder]
+            if name in NESTED_SENTINEL_FOLDERS:
+                nested = folder / SENTINEL_FOLDER_NAME
+                self._make_dir(nested)
+                places.append(nested)
+            for place in places:
+                marker = place / SENTINEL_NAME
+                marker.write_text("planted by tools/verify_installer.py; safe to delete\n", encoding="utf-8")
+                self.files.append(marker)
+
+    def missing(self) -> list[str]:
+        """Planted markers that are gone; an empty list with nothing planted is itself a failure."""
+        if not self.files:
+            return ["no sentinel was planted"]
+        return [str(path) for path in self.files if not path.is_file()]
+
+    def remove(self) -> None:
+        for path in self.files:
+            path.unlink(missing_ok=True)
+        for path in reversed(self._created):
+            try:
+                path.rmdir()
+            except OSError:
+                pass  # something else is in it: leave it
+
+
+def _hold_open(path: Path):
+    """Open ``path`` the way a running program's image is open: others may read it, none may write or delete it.
+    Returns a callable that releases it. Windows only."""
+    if sys.platform != "win32":
+        raise build_installer.InstallerError("INSTALLER_VERIFY_UNSUPPORTED: the installer runs on Windows only")
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                     wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    generic_read, share_read, open_existing = 0x80000000, 0x1, 3
+    handle = kernel32.CreateFileW(str(path), generic_read, share_read, None, open_existing, 0, None)
+    if handle in (None, wintypes.HANDLE(-1).value):
+        raise build_installer.InstallerError(f"INSTALLER_VERIFY_FAILED: cannot hold {path} open")
+    return lambda: kernel32.CloseHandle(handle)
+
+
 def verify_installer(installer: Path, package_dir: Path, *, shortcut_name: str = "Nakagawa Recomp") -> dict:
     """Run the whole check; raise ``InstallerError`` on the first failure. Windows only."""
     if os.name != "nt":
@@ -116,22 +196,41 @@ def verify_installer(installer: Path, package_dir: Path, *, shortcut_name: str =
             f"INSTALLER_VERIFY_REFUSED: {shortcut} or the installer's uninstall entry already exists on this "
             "PC; the check would replace and then remove it. Use an installer built with a different "
             "/DShortcutName on a PC with no installer-made install")
-    sentinel = None
-    logs = Path(os.environ.get("LOCALAPPDATA", "")) / "Nakagawa" / "logs"
-    if logs.is_dir():
-        sentinel = logs / SENTINEL_NAME
-        sentinel.write_text("planted by tools/verify_installer.py; safe to delete\n", encoding="utf-8")
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        raise build_installer.InstallerError("INSTALLER_VERIFY_REFUSED: LOCALAPPDATA is not set")
+    # Marker files in every per-user data folder (made if missing, removed after): a silent uninstall must keep
+    # them all. With none planted the check would prove nothing, so that is a failure of its own.
+    sentinels = Sentinels(Path(local) / "Nakagawa")
+    sentinels.plant()
 
     def fail(code: str, why: str):
         raise build_installer.InstallerError(f"{code}: {why}")
 
+    silent_install = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/SP-", "/NOCANCEL"]
+    silent_uninstall = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
     result: dict = {"installer": str(installer), "shortcut": str(shortcut)}
     with tempfile.TemporaryDirectory(prefix="nk-installer-verify-") as temp:
         dest = Path(temp) / "Nakagawa Recomp"
         try:
-            done = subprocess.run(
-                [str(installer), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/SP-",
-                 "/NOCANCEL", f"/DIR={dest}"], capture_output=True, text=True, timeout=600, check=False)
+            # 1. A shortcut that starts another copy (what tools/stage_install.py writes) is never taken over.
+            other = Path(temp) / "other-copy"
+            (other / "bin").mkdir(parents=True)
+            shutil.copy2(package_dir / "bin" / "nakagawa_player.exe", other / "bin" / "nakagawa_player.exe")
+            stage_install.write_shortcut(shortcut, other)
+            foreign = shortcut.read_bytes()
+            refused = subprocess.run([str(installer), *silent_install, f"/DIR={dest}"], capture_output=True,
+                                     text=True, timeout=600, check=False)
+            if (refused.returncode == 0 or _hkcu_key_exists() or (dest.exists() and any(dest.rglob("*")))):
+                fail("INSTALLER_TOOK_OVER_SHORTCUT",
+                     f"Setup exited {refused.returncode} and installed over another copy's shortcut")
+            if not shortcut.is_file() or shortcut.read_bytes() != foreign:
+                fail("INSTALLER_TOOK_OVER_SHORTCUT", f"{shortcut} was changed or removed by the refused install")
+            shortcut.unlink()
+
+            # 2. The install itself.
+            done = subprocess.run([str(installer), *silent_install, f"/DIR={dest}"], capture_output=True,
+                                  text=True, timeout=600, check=False)
             if done.returncode != 0:
                 fail("INSTALLER_INSTALL_FAILED", f"Setup exited {done.returncode}: {done.stdout}{done.stderr}")
             problems = compare_installed(package_dir, dest)
@@ -149,13 +248,30 @@ def verify_installer(installer: Path, package_dir: Path, *, shortcut_name: str =
             if _hklm_key_exists():
                 fail("INSTALLER_WROTE_HKLM", "an uninstall entry exists under HKLM: the install was not per user")
             result["installed_files"] = len(build_installer.files_under(dest))
+
             # What the person owns beside the program survives the uninstall.
             (dest / "bin" / "data").mkdir()
             (dest / "bin" / "data" / "save.bin").write_bytes(b"save")
             (dest / "bin" / "portable.txt").write_text("", encoding="utf-8")
             (dest / "notes.txt").write_text("mine", encoding="utf-8")
-            subprocess.run([str(dest / "unins000.exe"), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
-                           capture_output=True, text=True, timeout=600, check=False)
+
+            # 3. While the player runs (its program file is open and cannot be written), a silent uninstall stops
+            #    and changes nothing: Inno's uninstaller does not close programs the way Setup does.
+            player = dest / "bin" / "nakagawa_player.exe"
+            release = _hold_open(player)
+            try:
+                blocked = subprocess.run([str(dest / "unins000.exe"), *silent_uninstall], capture_output=True,
+                                         text=True, timeout=600, check=False)
+            finally:
+                release()
+            if (blocked.returncode == 0 or not _hkcu_key_exists() or not shortcut.is_file()
+                    or not player.is_file() or not (dest / "unins000.exe").is_file()):
+                fail("INSTALLER_UNINSTALL_WHILE_RUNNING",
+                     f"the uninstaller exited {blocked.returncode} with the player running and left a partial uninstall")
+
+            # 4. The uninstall.
+            subprocess.run([str(dest / "unins000.exe"), *silent_uninstall], capture_output=True, text=True,
+                           timeout=600, check=False)
             if not _wait_for(lambda: not _hkcu_key_exists() and not shortcut.exists()):
                 fail("INSTALLER_UNINSTALL_INCOMPLETE", "the uninstall entry or the shortcut is still there after 90 s")
             _wait_for(lambda: not (dest / "unins000.exe").exists(), 30.0)
@@ -163,17 +279,20 @@ def verify_installer(installer: Path, package_dir: Path, *, shortcut_name: str =
             expected = ["bin/data/save.bin", "bin/portable.txt", "notes.txt"]
             if left != expected:
                 fail("INSTALLER_UNINSTALL_LEFTOVER", f"left {left}, expected {expected}")
-            if sentinel is not None and not sentinel.is_file():
-                fail("INSTALLER_UNINSTALL_TOUCHED_USER_DATA", f"{sentinel} was deleted by a silent uninstall")
+            gone = sentinels.missing()
+            if gone:
+                fail("INSTALLER_UNINSTALL_TOUCHED_USER_DATA", f"a silent uninstall removed {gone}")
             result["left_after_uninstall"] = left
+            result["user_data_sentinels_kept"] = len(sentinels.files)
             result["status"] = "PASS"
         finally:
             if _hkcu_key_exists() and (dest / "unins000.exe").is_file():
-                subprocess.run([str(dest / "unins000.exe"), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
-                               capture_output=True, text=True, timeout=600, check=False)
+                subprocess.run([str(dest / "unins000.exe"), *silent_uninstall], capture_output=True, text=True,
+                               timeout=600, check=False)
                 _wait_for(lambda: not _hkcu_key_exists(), 60.0)
-            if sentinel is not None:
-                sentinel.unlink(missing_ok=True)
+            if shortcut.is_file() and stage_install.read_shortcut_app_id(shortcut) == stage_install.APP_USER_MODEL_ID:
+                shortcut.unlink()  # the one this check made (the check refused to start with one present)
+            sentinels.remove()
             shutil.rmtree(dest, ignore_errors=True)
     return result
 
