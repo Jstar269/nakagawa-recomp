@@ -147,6 +147,8 @@ typedef struct {
 
 /* Frame and box helpers (scr_flow.c). */
 float scr_flow_begin(NkUi *ui, float width, float height, float card_width);
+float scr_flow_begin_with_scroll(NkUi *ui, float width, float height, float card_width,
+                                 bool scroll_at_design_size);
 void scr_flow_end(NkUi *ui, const char *hint, const NkUiPromptItem *prompts, size_t count);
 void scr_flow_eyebrow(NkUi *ui, const char *marker, const char *text, uint32_t rgba);
 NkUiStyle scr_flow_box_style(const NkUiTheme *theme, uint32_t fill);

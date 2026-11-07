@@ -61,11 +61,9 @@ static bool text_was_cut(const char *shown, const char *text) {
 }
 
 /* The column a group of rows `width` px across shares: the design's 220 px, or
-   as wide as the widest label when that is wider, at every text size (a label
-   such as "Interface size: Automatic" outgrew 220 px in the real font and was
-   cut). The buttons line up, and when the column leaves a sentence too little
-   room beside its button, or would cut one short of its two lines, every
-   sentence goes under its button at the full width. */
+   as wide as the widest label when that is wider. The buttons line up; when a
+   sentence has too little room beside a button or would be cut after two lines,
+   every sentence goes under its button at the full width. */
 WizardColumn scr_wizard_column(NkUi *ui, const WizardRow *rows, size_t count, float width) {
     NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, 0u);
     WizardColumn column = {WIZARD_VALUE_CELL, false};
@@ -76,11 +74,6 @@ WizardColumn scr_wizard_column(NkUi *ui, const WizardRow *rows, size_t count, fl
         (void)snprintf(label, sizeof(label), "%s: %s", rows[i].name, rows[i].value);
         need = nk_ui_button_width(ui, label, 0u);
         if (need > column.cell) column.cell = need;
-    }
-    /* At the design text size the sentences stay beside their buttons, as the
-       design lays the page out; only larger type stacks them. */
-    if (!(nk_ui_text_scale(ui) > 1.0f)) {
-        return column;
     }
     room = width - column.cell - NK_UI_SPACE_4;
     column.stacked = room < WIZARD_VALUE_SENTENCE_MIN;

@@ -618,9 +618,11 @@ static void gui_ace_smooth_init(void) {
 static int s_wide_on;
 
 static void gui_wide_init(void) {
+    const AceConfig *effective = ace_effective();
     s_wide_on = 0;
-    if (!g_ace_on || ace_effective()->wide != ACE_WIDE_FILL) return;
-    if (ace_effective()->smooth) {
+    if (!g_ace_on || effective->wide != ACE_WIDE_FILL) return;
+    if (ace_wide_fill_blocked_by_smooth(effective->wide == ACE_WIDE_FILL,
+                                        effective->smooth != ACE_SMOOTH_OFF)) {
         ace_feature_unavailable(ACE_FEATURE_WIDE, "smooth motion is on, and its HUD mask and depth are "
                                                   "sized to the 480-wide frame");
         return;

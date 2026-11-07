@@ -7978,6 +7978,17 @@ static void test_play_mode_smooth_motion(void) {
     player_play_apply_logic_60(&r, true);
     assert(r.part[PLAYER_PART_WIDE] == 1 && player_play_launch_line(&r, line, sizeof(line)) &&
            strstr(line, "tier=ace;") != NULL && strstr(line, ";wide=fill;") != NULL);
+    /* The saved choices can both be on, but Widescreen's effective UI state follows the same
+       Smooth-motion rule as the runtime presenter. */
+    settings.enhanced.part[PLAYER_PART_SMOOTH] = 1;
+    player_play_resolve(&settings, "TEST90001", &r);
+    assert(r.on && r.part[PLAYER_PART_WIDE] == 1 && r.part[PLAYER_PART_SMOOTH] == 1);
+    const char *unavailable = player_enhanced_part_unavailable_label(
+        PLAYER_PART_WIDE, r.part[PLAYER_PART_WIDE], r.part[PLAYER_PART_SMOOTH]);
+    assert(unavailable && strcmp(unavailable, "Off (Smooth motion is on)") == 0);
+    assert(player_enhanced_part_unavailable_label(PLAYER_PART_WIDE, 1, 0) == NULL);
+    assert(player_enhanced_part_unavailable_label(PLAYER_PART_WIDE, 0, 1) == NULL);
+    assert(player_enhanced_part_unavailable_label(PLAYER_PART_SMOOTH, 1, 1) == NULL);
     /* An Authentic resolution stays off, whatever the 60 FPS game logic says. */
     settings.enhanced.library = PLAYER_PLAY_AUTHENTIC;
     player_play_resolve(&settings, "TEST90001", &r);
@@ -8067,11 +8078,10 @@ static void test_play_mode_upscale_settings(void) {
     assert(info && strcmp(info->key, "upscale") == 0 && info->fresh == 0 && info->value_count == 2);
     assert(strcmp(player_enhanced_part_label(PLAYER_PART_UPSCALE, 1), "FSR 1") == 0 &&
            strcmp(player_enhanced_part_label(PLAYER_PART_UPSCALE, 0), "Off") == 0);
-    /* The row says it is presentation only and when it applies (#2122). */
-    assert(strstr(info->sentence, "larger than the game") != NULL &&
-           strstr(info->sentence, "Only what you see changes") != NULL &&
-           strstr(info->sentence, "in recordings") != NULL &&
-           strstr(info->sentence, "screenshots stay the same") != NULL);
+    /* The row says which outputs FSR 1 changes, and which stay untouched (#2122). */
+    assert(strstr(info->sentence, "AMD FSR 1 sharpens display and recordings") != NULL &&
+           strstr(info->sentence, "game memory") != NULL &&
+           strstr(info->sentence, "screenshots do not change") != NULL);
 
     PlayerSettings fresh;
     player_app_settings_init_default(&fresh);

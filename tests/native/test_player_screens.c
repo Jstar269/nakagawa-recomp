@@ -2,10 +2,12 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "player_ui_nk.h"
+#include "player_state.h"
 #include "nk_ui_text.h"
 #include "nk_ui_theme.h"
 #include "nk_ui_waves.h"
 #include "nk_ui_widgets.h"
+#include "scr_shared.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +23,35 @@
 
 static int failures;
 static const uint8_t k_test_glyph_pixel = 0xFFu;
+
+typedef char player_screens_enhanced_rows_fit[
+    PLAYER_PART_COUNT <= PLAYER_UI_ENHANCED_ROWS ? 1 : -1];
+
+typedef struct {
+    const char *name;
+    const char *value;
+    const char *sentence;
+} EnhancedPartFixture;
+
+/* The screen-only target omits the player model builder; mirror its real parts and pin the
+   fixture's size to PLAYER_PART_COUNT so a new part cannot silently disappear from the layout. */
+static const EnhancedPartFixture k_enhanced_parts[] = {
+    {"Texture filtering", "16x",
+     "Keeps slanted surfaces sharp. Save pictures keep the filtering."},
+    {"Crisp system text", "On",
+     "Draws the on-screen keyboard at your screen's resolution."},
+    {"Speed readout", "Off", "The game's speed and frame rate in a corner, over its HUD."},
+    {"Game badge", "On", "Names the mode for a few seconds when a game starts."},
+    {"Widescreen", "Off", "Shows more 3D space; HUD stays shaped. Some objects pop in. Smooth "
+                            "motion disables it."},
+    {"Smooth motion", "Off", "Shows 30 FPS games at 60. Adds about 17 ms of delay."},
+    {"Clean pitched sound", "Off",
+     "Resamples pitched effects without aliasing. The game receives changed samples."},
+    {"Sharper enlarging", "Off", "AMD FSR 1 sharpens display and recordings; game memory and "
+                                  "screenshots do not change."},
+};
+typedef char player_screens_enhanced_fixture_matches_parts[
+    sizeof(k_enhanced_parts) / sizeof(k_enhanced_parts[0]) == PLAYER_PART_COUNT ? 1 : -1];
 
 #define CHECK(condition, message) do { \
     if (!(condition)) { \
@@ -364,17 +395,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     /* Settings > Enhanced (#2055): the library's default Enhanced (Authentic for its off
        case) with the fresh parts; the title case is one game's page, following it. */
     {
-        static const char *const names[] = {"Texture filtering", "Crisp system text",
-                                            "Speed readout", "Game badge", "Smooth motion"};
-        static const char *const values[] = {"16x", "On", "Off", "On", "Off"};
-        static const char *const followed[] = {
-            "Library (16x)", "Library (On)", "Library (Off)", "Library (On)", "Library (Off)"};
-        static const char *const sentences[] = {
-            "Keeps slanted surfaces sharp. Save pictures keep the filtering.",
-            "Draws the on-screen keyboard at your screen's resolution.",
-            "The game's speed and frame rate in a corner, over its HUD.",
-            "Names the mode for a few seconds when a game starts.",
-            "Shows 30 FPS games at 60. Adds about 17 ms of delay."};
+        char followed[PLAYER_PART_COUNT][48];
         bool title = which == FLOW_SETTINGS_ACE_TITLE;
         settings.enhanced_library_on = which != FLOW_SETTINGS_ACE_OFF;
         settings.enhanced_on = settings.enhanced_library_on;
@@ -384,12 +405,13 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         settings.enhanced_mode_sentence =
             title ? "Enhanced adds the parts below. Ace needs a package made for this game."
                   : "The default for every game; each game's page can choose its own.";
-        settings.enhanced_row_count = 5;
-        for (int i = 0; i < 5; i++) {
-            settings.enhanced_rows[i].name = names[i];
-            settings.enhanced_rows[i].value = title ? followed[i] : values[i];
-            settings.enhanced_rows[i].sentence = sentences[i];
-            settings.enhanced_rows[i].on = strcmp(values[i], "Off") != 0;
+        settings.enhanced_row_count = PLAYER_PART_COUNT;
+        for (int i = 0; i < PLAYER_PART_COUNT; i++) {
+            snprintf(followed[i], sizeof(followed[i]), "Library (%s)", k_enhanced_parts[i].value);
+            settings.enhanced_rows[i].name = k_enhanced_parts[i].name;
+            settings.enhanced_rows[i].value = title ? followed[i] : k_enhanced_parts[i].value;
+            settings.enhanced_rows[i].sentence = k_enhanced_parts[i].sentence;
+            settings.enhanced_rows[i].on = strcmp(k_enhanced_parts[i].value, "Off") != 0;
         }
     }
     settings.pacing = "PSP timing";
@@ -2189,6 +2211,24 @@ static const NkUiDrawList *flow_case_layout(FlowCase which, int width, int heigh
     return draw;
 }
 
+static bool flow_case_has_scroll(FlowCase which, int width, int height) {
+    NkUi *ui = NULL;
+    NkUiScrollState state;
+    const NkUiDrawList *draw = flow_case_layout(which, width, height, &ui);
+    bool scrolls = draw != NULL && ui != NULL &&
+                   nk_ui_scroll_state(ui, FLOW_ID_CARD, &state) && state.max_offset > 0.0f;
+    if (ui != NULL) nk_ui_destroy(ui);
+    return scrolls;
+}
+
+static bool dump_flow_case_sized(FlowCase which, int width, int height, char *dump, size_t cap) {
+    NkUi *ui = NULL;
+    const NkUiDrawList *draw = flow_case_layout(which, width, height, &ui);
+    size_t used = draw != NULL && ui != NULL ? nk_ui_dump(ui, dump, cap) : 0u;
+    if (ui != NULL) nk_ui_destroy(ui);
+    return used > 0u;
+}
+
 /* Whether a command shows anything: not a scissor, and its clip (its bounds
    inside every scissor around it) is not empty. */
 static bool command_shows(const NkUiDrawCmd *cmd) {
@@ -2798,20 +2838,29 @@ static void test_settings_pages(void) {
        it does and costs; with the library Authentic the part rows cannot be changed or focused,
        and their values are kept. */
     CHECK(flow_case_fits(FLOW_SETTINGS_ACE, 960, 540, dump, sizeof(dump)) &&
+              flow_case_has_scroll(FLOW_SETTINGS_ACE, 960, 540),
+          "Settings > Enhanced scrolls inside the 960 x 540 window");
+    CHECK(dump_flow_case_sized(FLOW_SETTINGS_ACE, 1600, 1000, dump, sizeof(dump)) &&
               strstr(dump, "\"PLAY MODE: ENHANCED\"") != NULL &&
               strstr(dump, "\"TEXTURE FILTERING: 16X\"") != NULL &&
               strstr(dump, "\"CRISP SYSTEM TEXT: ON\"") != NULL &&
               strstr(dump, "\"SPEED READOUT: OFF\"") != NULL &&
               strstr(dump, "\"GAME BADGE: ON\"") != NULL &&
+              strstr(dump, "\"WIDESCREEN: OFF\"") != NULL &&
               strstr(dump, "\"SMOOTH MOTION: OFF\"") != NULL &&
+              strstr(dump, "\"CLEAN PITCHED SOUND: OFF\"") != NULL &&
+              strstr(dump, "\"SHARPER ENLARGING: OFF\"") != NULL &&
               /* The sentences wrap; their lines are dumped one by one. */
               strstr(dump, "Adds about 17 ms of") != NULL && strstr(dump, "delay.\"") != NULL &&
+              strstr(dump, "Smooth motion disables it.") != NULL &&
+              strstr(dump, "game receives changed samples.") != NULL &&
+              strstr(dump, "screenshots do not change.") != NULL &&
               strstr(dump, "keep the filtering.\"") != NULL &&
               strstr(dump, "Ace Mode") == NULL && strstr(dump, "Boost") == NULL &&
               strstr(dump, "\xE2\x80\xA6\"") == NULL,
-          "Settings > Enhanced shows each part, what it does and what it costs, uncut");
+          "Settings > Enhanced shows all player parts and their complete descriptions");
     /* Each part's row is one table row: it names its part, so a new part needs no new op. */
-    for (unsigned i = 0u; i < 5u; ++i) {
+    for (unsigned i = 0u; i < PLAYER_PART_COUNT; ++i) {
         PlayerUiAction part =
             activate_flow_button(PLAYER_UI_ID_SETTINGS_ENHANCED_PART + i, FLOW_SETTINGS_ACE);
         CHECK(settings_op_is(part, PLAYER_UI_SETTINGS_CYCLE_ENHANCED_PART) &&
@@ -2843,7 +2892,9 @@ static void test_settings_pages(void) {
           "Settings > Enhanced says what Enhanced is");
     /* A game's own page: whose it is, and each part following the library until it has its
        own value. */
-    CHECK(flow_case_fits(FLOW_SETTINGS_ACE_TITLE, 960, 540, dump, sizeof(dump)) &&
+    CHECK(flow_case_fits(FLOW_SETTINGS_ACE_TITLE, 960, 540, dump, sizeof(dump)),
+          "a game's Enhanced page fits through scrolling at 960 x 540");
+    CHECK(dump_flow_case_sized(FLOW_SETTINGS_ACE_TITLE, 1600, 1000, dump, sizeof(dump)) &&
               strstr(dump, "For Test Game alone.") != NULL &&
               strstr(dump, "\"PLAY MODE: LIBRARY (ENHANCED)\"") != NULL &&
               strstr(dump, "\"TEXTURE FILTERING: LIBRARY (16X)\"") != NULL &&

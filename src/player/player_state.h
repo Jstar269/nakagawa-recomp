@@ -1656,6 +1656,9 @@ const PlayerEnhancedPartInfo *player_enhanced_part(int part);
 /* The row's word for a part's value ("16x", "On", "Off"); "Off" for a value the part does not
  * have. */
 const char *player_enhanced_part_label(int part, int value);
+/* If a selected part will be dropped for the resolved Smooth value, its effective row label;
+ * NULL when the selected value is available. Uses the runtime's shared compatibility rule. */
+const char *player_enhanced_part_unavailable_label(int part, int value, int smooth);
 /* "Authentic", "Enhanced", "Ace" or "Library default". */
 const char *player_play_mode_name(PlayerPlayMode mode);
 /* The title's saved choice for a disc, or NULL when it follows the library everywhere. */

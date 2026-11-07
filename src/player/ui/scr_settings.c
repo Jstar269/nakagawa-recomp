@@ -864,7 +864,8 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         {NK_UI_PROMPT_ACT_BACK, "Back to settings"}
     };
     const NkUiTheme *theme = nk_ui_theme(ui);
-    float inner = scr_flow_begin(ui, width, height, 760.0f);
+    float inner = scr_flow_begin_with_scroll(
+        ui, width, height, 760.0f, model->page == PLAYER_UI_SETTINGS_PAGE_ACE);
     if (inner <= 0.0f) return;
     switch (model->page) {
     case PLAYER_UI_SETTINGS_PAGE_ONLINE:

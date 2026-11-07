@@ -44,6 +44,11 @@
 
 typedef enum { ACE_WIDE_OFF = 0, ACE_WIDE_FILL = 1 } AceWide;
 typedef enum { ACE_SMOOTH_OFF = 0, ACE_SMOOTH_MATCH = 1, ACE_SMOOTH_X2 = 2 } AceSmooth;
+/* Widescreen Fill has no effective output while Smooth motion owns the HUD mask and depth.
+ * Keep this rule shared by the presenter and the player's effective-settings row. */
+static inline int ace_wide_fill_blocked_by_smooth(int wide_requested, int smooth_requested) {
+    return wide_requested != 0 && smooth_requested != 0;
+}
 /* The play mode a run is: Enhanced, or Ace (Enhanced plus the game's own package). */
 typedef enum { ACE_TIER_ENHANCED = 0, ACE_TIER_ACE = 1 } AceTier;
 typedef enum { ACE_SAS_OFF = 0, ACE_SAS_SINC = 1 } AceSas;
