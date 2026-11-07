@@ -83,6 +83,10 @@ void sr_hle_test_hprm_set_microphone(int attached) { s_hprm_microphone_attached 
 /* sceCtrlGetIdleCancelThreshold(int *idlereset, int *idleback): report the
  * stored thresholds (power-on default: both "disabled", -1). */
 static uint32_t h_CtrlGetIdleCancelThreshold(CpuState *s) {
+    /* pspautotests tests/ctrl/idle/idle.expected: a non-NULL unusable pointer answers 0x80000023
+     * before anything is written; NULL pointers are skipped. */
+    if ((A0 && !sr_guest_span_writable(A0, 4u)) || (A1 && !sr_guest_span_writable(A1, 4u)))
+        return 0x80000023u;
     if (A0) MEM_W32(A0, s_ctrl_idle_reset);
     if (A1) MEM_W32(A1, s_ctrl_idle_back);
     return 0;
@@ -114,6 +118,10 @@ static uint32_t h_CtrlSetSamplingCycle(CpuState *s) {
  * sceCtrlGetIdleCancelThreshold, which is the round-trip the regression pins
  * (whether firmware returns a previous value here is UNMEASURED). */
 static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
+    /* pspautotests tests/ctrl/idle/idle.expected: either value outside -1..128 (signed) answers
+     * 0x800001FE and stores nothing; (0,0), (128,128) and (0,-1) answer 0. */
+    int32_t reset_v = (int32_t)A0, back_v = (int32_t)A1;
+    if (reset_v < -1 || reset_v > 128 || back_v < -1 || back_v > 128) return 0x800001FEu;
     s_ctrl_idle_reset = A0;
     s_ctrl_idle_back = A1;
     return 0;
