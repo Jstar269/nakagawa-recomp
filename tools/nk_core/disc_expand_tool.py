@@ -32,6 +32,7 @@ MAGICS = {b"CISO": "cso", b"ZISO": "zso", b"MComprHD": "chd"}
 
 CORE_SOURCES = (
     "src/core/nk_disc_expand_main.c",
+    "src/core/nk_shared_helpers.c",
     "src/core/nk_disc_expand.c",
     "src/core/nk_disc_chd.c",
     "src/core/nk_iso.c",
@@ -41,6 +42,7 @@ CORE_SOURCES = (
 )
 CORE_HEADERS = (
     "src/core/nk_disc_expand.h",
+    "src/core/nk_shared_helpers.h",
     "src/core/nk_disc_chd.h",
     "src/core/nk_iso.h",
     "src/core/nk_platform.h",

@@ -18,6 +18,7 @@ PUBLIC_TARGETS := \
 	contrib-refresh \
 	test \
 	native-core-tests \
+	shared-helpers-selftest \
 	player-ui-tests \
 	player-ui-regressions \
 	fuzz-parsers \
@@ -190,6 +191,7 @@ HELP_DESCRIPTION_contrib-check := run only the local gates that apply to your ch
 HELP_DESCRIPTION_contrib-refresh := reproduce the public provenance controls for your changed paths
 HELP_DESCRIPTION_test := run the complete Python tooling test suite
 HELP_DESCRIPTION_native-core-tests := build and run host-side native core tests
+HELP_DESCRIPTION_shared-helpers-selftest := build and run the shared core helper tests
 HELP_DESCRIPTION_fuzz-parsers := run bounded native parser mutation fuzzing
 HELP_DESCRIPTION_readiness := run the strict pre-PR gate with external authority
 HELP_DESCRIPTION_provenance-refresh := refresh controls through hosted generation and stage them

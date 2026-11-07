@@ -8,6 +8,7 @@
 #include "player_ui_sound.h"
 #include "iso_reader.h"
 #include "nk_platform.h"
+#include "nk_shared_helpers.h"
 #include "nk_portable.h"
 #include "nk_ui_input.h"
 #include "nk_ui_theme.h"
@@ -284,19 +285,14 @@ static bool player_ui_file_exists(const char *path) {
 
 static bool player_ui_join_path(const char *root, const char *relative,
                                 char *out, size_t out_size) {
-    size_t root_length;
-    int written;
     if (root == NULL || relative == NULL || out == NULL || out_size == 0u) {
         return false;
     }
-    root_length = strlen(root);
-    written = snprintf(out, out_size, "%s%s%s", root,
-                       root_length != 0u &&
-                           (root[root_length - 1u] == '/' ||
-                            root[root_length - 1u] == '\\') ? "" :
-                           (nk_platform_path_separator() == '\\' ? "\\" : "/"),
-                       relative);
-    return written > 0 && (size_t)written < out_size;
+    char separator = nk_platform_path_separator();
+    return nk_shared_path_join(out, out_size, root, relative,
+                               separator == '\\' ? '\\' : '/',
+                               NK_SHARED_PATH_JOIN_IF_LEFT_NEEDS_SEPARATOR,
+                               NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH);
 }
 
 static bool player_ui_add_font(NkUiTtf *ttf, int font, const char *base_path,
@@ -517,13 +513,7 @@ uint32_t player_ui_nk_wait_ms(const PlayerUiNk *player, uint32_t idle_ms) {
 }
 
 static void player_ui_format_size(char *out, size_t out_size, uint64_t bytes) {
-    if (bytes >= 1024ULL * 1024ULL * 1024ULL) {
-        snprintf(out, out_size, "%.2f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
-    } else if (bytes >= 1024ULL * 1024ULL) {
-        snprintf(out, out_size, "%.2f MB", (double)bytes / (1024.0 * 1024.0));
-    } else {
-        snprintf(out, out_size, "%llu bytes", (unsigned long long)bytes);
-    }
+    nk_shared_format_size(out, out_size, bytes);
 }
 
 static const char *player_ui_resolution_word(int scale) {

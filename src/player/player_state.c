@@ -23,6 +23,7 @@
 #include "nk_font.h"
 #include "nk_json.h"
 #include "nk_platform.h"
+#include "nk_shared_helpers.h"
 #include "nk_psp_container.h"
 #include "nk_psp_keystore.h"
 #include "nk_psp_npumdimg.h"
@@ -154,11 +155,10 @@ NkLaunchDataRootStatus player_app_game_data_root_status(
 
 static bool player_join_path(char *out, size_t out_size, const char *root,
                              const char *relative) {
-    char sep = nk_platform_path_separator();
-    int written;
     if (!out || !out_size || !root || !root[0] || !relative || !relative[0]) return false;
-    written = snprintf(out, out_size, "%s%c%s", root, sep, relative);
-    return written > 0 && (size_t)written < out_size;
+    return nk_shared_path_join(out, out_size, root, relative,
+                               nk_platform_path_separator(), NK_SHARED_PATH_JOIN_ALWAYS,
+                               NK_SHARED_PATH_REQUIRE_POSITIVE_LENGTH);
 }
 
 void player_app_note_library_load(PlayerApp *app, NkResult load_result) {
@@ -4914,14 +4914,9 @@ static int player_format_boot_event_path(char *out, size_t out_size,
     }
 
     unsigned long process_id = nk_platform_process_id();
-    int written = snprintf(out, out_size, "%s%cplayer-boot-%lu-%u.events",
-                           cache_dir, nk_platform_path_separator(),
-                           process_id, sequence);
-    if (written <= 0 || (size_t)written >= out_size) {
-        out[0] = '\0';
-        return 0;
-    }
-    return written;
+    return nk_shared_boot_event_format_path(out, out_size, cache_dir,
+                                            nk_platform_path_separator(),
+                                            process_id, sequence);
 }
 
 /* Per-process launch sequence for the boot-event marker pathname. Single
@@ -5311,11 +5306,8 @@ void player_app_request_launch(PlayerApp *app, int game_index) {
 
 static bool player_copy_bounded_text(char *destination, size_t destination_size,
                                      const char *source) {
-    if (!destination || destination_size == 0 || !source) return false;
-    size_t length = strlen(source);
-    if (length >= destination_size) return false;
-    memcpy(destination, source, length + 1);
-    return true;
+    return nk_shared_text_copy(destination, destination_size, source,
+                               NK_SHARED_TEXT_COPY_REQUIRE_FIT);
 }
 
 static bool player_plan_take_entry(PlayerStagePlan *plan, const NkTitleEntry *entry) {

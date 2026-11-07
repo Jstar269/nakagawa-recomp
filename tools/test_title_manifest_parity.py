@@ -54,6 +54,7 @@ class TitleManifestParityTests(unittest.TestCase):
         cmd = [
             "gcc", "-std=c99", "-Wall", "-Wextra",
             "-Isrc/core", "-Isrc/core/generated",
+            "src/core/nk_shared_helpers.c",
             "src/core/nk_iso.c", "src/core/nk_library.c", "src/core/nk_launch.c",
             "src/core/nk_title_manifest.c", "src/core/nk_json.c", "src/core/generated/nk_title_catalog.c",
             PLATFORM_SRC,

@@ -44,6 +44,7 @@ ISOLATION_SRC = "tests/native/native_test_isolation.c"
 EXE_EXT = ".exe" if _WINDOWS else ""
 
 CORE_SOURCES = [
+    "src/core/nk_shared_helpers.c",
     "src/core/nk_iso.c",
     "src/core/nk_library.c",
     "src/core/nk_launch.c",

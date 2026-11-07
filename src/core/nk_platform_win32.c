@@ -52,15 +52,6 @@ static bool wide_to_utf8(const WCHAR *wide, char *out_utf8, size_t max_utf8_byte
     return true;
 }
 
-FILE *nk_fopen_utf8(const char *path, const char *mode) {
-    if (!path || !mode) return NULL;
-    WCHAR wpath[32768];
-    WCHAR wmode[32];
-    if (!utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(wpath[0])) ||
-        !utf8_to_wide(mode, wmode, sizeof(wmode) / sizeof(wmode[0]))) return NULL;
-    return _wfopen(wpath, wmode);
-}
-
 int nk_remove_utf8(const char *path) {
     if (!path || !*path) return -1;
     WCHAR wpath[32768];

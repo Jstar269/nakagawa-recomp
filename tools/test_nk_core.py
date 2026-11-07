@@ -1516,6 +1516,7 @@ int main(int argc, char **argv) {
         harness_c.write_text(cls.HARNESS_C, encoding="utf-8", newline="\n")
         out = class_temp / ("parity_harness.exe" if sys.platform == "win32" else "parity_harness")
         core_srcs = [
+            REPO_ROOT / "src" / "core" / "nk_shared_helpers.c",
             REPO_ROOT / "src" / "core" / "nk_iso.c",
             REPO_ROOT / "src" / "core" / "nk_library.c",
             REPO_ROOT / "src" / "core" / "nk_launch.c",
@@ -1813,6 +1814,7 @@ int main(int argc, char **argv) {
                 "-I", str(REPO_ROOT / "src" / "core"),
                 "-I", str(REPO_ROOT / "src" / "core" / "generated"),
                 str(harness_c),
+                str(REPO_ROOT / "src" / "core" / "nk_shared_helpers.c"),
                 str(REPO_ROOT / "src" / "core" / "nk_iso.c"),
                 str(REPO_ROOT / "src" / "core" / "nk_library.c"),
                 str(src_dir / "nk_launch.c"),
@@ -2029,6 +2031,7 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
         )
         out = self.temp_dir / ("mutant.exe" if sys.platform == "win32" else "mutant")
         core_srcs = [
+            REPO_ROOT / "src" / "core" / "nk_shared_helpers.c",
             REPO_ROOT / "src" / "core" / "nk_iso.c",
             REPO_ROOT / "src" / "core" / "nk_library.c",
             mutant_c,
@@ -2531,7 +2534,8 @@ int main(int argc, char **argv) {
         platform_src = core / ("nk_platform_win32.c" if sys.platform == "win32" else "nk_platform_posix.c")
         build = subprocess.run(
             [gcc, "-std=c99", "-Wall", "-Wextra", "-I", str(core), str(harness_c),
-             str(core / "nk_library.c"), str(core / "nk_json.c"), str(platform_src),
+             str(core / "nk_shared_helpers.c"), str(core / "nk_library.c"),
+             str(core / "nk_json.c"), str(platform_src),
              *(["-lshell32", "-lole32", "-luuid"] if sys.platform == "win32" else []),
              "-o", str(exe)],
             capture_output=True, text=True,

@@ -61,8 +61,6 @@ typedef struct {
     uint8_t symbol;
 } XbHuffmanSymbol;
 
-static FILE *xb_fopen(const char *path, const char *mode);
-
 /* Opens the archive for the cached member-read handle. On Windows the handle shares
  * delete as well as read and write, so a mounted archive can still be deleted or
  * replaced, as on POSIX; the next read then fails its size check. */
@@ -1139,21 +1137,6 @@ NkResult nk_xb_open_memory(const void *data, size_t data_size,
     return result;
 }
 
-static FILE *xb_fopen(const char *path, const char *mode) {
-#if defined(_WIN32) || defined(_WIN64)
-    WCHAR wpath[32768];
-    WCHAR wmode[32];
-    if (!path || !mode ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1, wmode, (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0) {
-        return NULL;
-    }
-    return _wfopen(wpath, wmode);
-#else
-    return fopen(path, mode);
-#endif
-}
-
 /* Archive member identifiers are stored as Shift-JIS bytes. On POSIX those
  * bytes remain the filesystem name, matching the format-native VFS view. The
  * Win32 path backend is UTF-8, so transcode the validated identifier before
@@ -1223,7 +1206,7 @@ NkResult nk_xb_open_file(const char *path, bool big_endian,
     size_t size = (size_t)file_size;
     uint8_t *data = (uint8_t *)malloc(size);
     if (!data) return NK_ERROR_OUT_OF_MEMORY;
-    FILE *file = xb_fopen(path, "rb");
+    FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) {
         free(data);
         return xb_fail(error_message, error_message_size,
@@ -1278,7 +1261,7 @@ NkResult nk_xb_open_file_lazy(const char *path, bool big_endian,
     size_t size = (size_t)file_size;
     uint8_t *data = (uint8_t *)malloc(size);
     if (!data) return NK_ERROR_OUT_OF_MEMORY;
-    FILE *file = xb_fopen(path, "rb");
+    FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) {
         free(data);
         return xb_fail(error_message, error_message_size,

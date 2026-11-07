@@ -4,6 +4,7 @@
 #include "nk_font.h"
 #include "nk_types.h"
 #include "nk_platform.h"
+#include "nk_shared_helpers.h"
 #include "nk_json.h"
 
 #include <ctype.h>
@@ -345,7 +346,8 @@ bool nk_font_get_cache_dir(const char *user_data_root, char *out_dir, size_t max
 }
 
 static void font_join(char *out, size_t out_len, const char *dir, const char *name) {
-    snprintf(out, out_len, "%s%c%s", dir, nk_platform_path_separator(), name);
+    (void)nk_shared_path_join(out, out_len, dir, name, nk_platform_path_separator(),
+                              NK_SHARED_PATH_JOIN_ALWAYS, 0u);
 }
 
 /* The staging name for a target path: the target with ".tmp" appended. */
