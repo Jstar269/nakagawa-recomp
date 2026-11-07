@@ -27,6 +27,11 @@ extern "C" {
 #define NK_MANIFEST_MAX_BYTES (256 * 1024)
 /* Keep equal to tools/nk_core/package_cache.py:MAX_BUILD_REPORT_JSON_BYTES. */
 #define NK_BUILD_REPORT_MAX_BYTES (4 * 1024 * 1024)
+/* Upper bound on an on-disc executable hashed for build identity (#2140).
+ * Matches tools/nk_core/iso_inspect.py:MAX_EXECUTABLE_BYTES (512 MiB). */
+#ifndef NK_TITLE_MANIFEST_MAX_EXECUTABLE_BYTES
+#define NK_TITLE_MANIFEST_MAX_EXECUTABLE_BYTES (512u * 1024u * 1024u)
+#endif
 #define NK_MANIFEST_LIMIT_CLASS "PRODUCT_SECURITY_POLICY"
 #define NK_MANIFEST_MAX_JSON_DEPTH 16
 #define NK_AOT_PACKAGE_SCHEMA_VERSION 2

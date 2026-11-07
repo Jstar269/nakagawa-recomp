@@ -5005,6 +5005,10 @@ static bool iso_executable_sha256_hex(const char *iso_path, const char *name, ch
     reader = nk_iso_reader_open(iso_path);
     if (!reader) return false;
     if (nk_iso_reader_lookup(reader, path, &lba, &size, &is_dir) == 0 && !is_dir && size > 0) {
+        if (size > NK_TITLE_MANIFEST_MAX_EXECUTABLE_BYTES) {
+            nk_iso_reader_close(reader);
+            return false;
+        }
         uint64_t offset = 0;
         nk_sha256_init(&sha);
         ok = true;
