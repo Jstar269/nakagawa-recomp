@@ -108,7 +108,9 @@ available because neither Clang row passed the veto.
 
 The three platform-ladder workloads use fixed trees under `build/platform-ladder` and do not
 honor the row's `BUILD_ROOT`. `run_perf_benchmarks.py` runs all workload rows sequentially, so
-these fixed trees are shared across toolchain rows but are not built concurrently.
+these fixed trees are shared across toolchain rows but are not built concurrently. Make does not
+track `LDFLAGS`, so a later row's platform-ladder timings may come from an earlier row's binaries;
+they are not per-toolchain evidence until those trees are isolated.
 
 This one-row measurement does not establish a compiler winner or behavior equivalence. A
 default-toolchain change still needs repeatable results for both compilers and linkers, plus
