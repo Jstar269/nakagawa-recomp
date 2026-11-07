@@ -177,7 +177,7 @@ The project builds sixteen open Latin fallbacks, one for each console Latin
 index: `nkltn.pgf` and `nkltn1.pgf`-`nkltn7.pgf` for the larger size, and
 `nkltns.pgf` and `nkltn9.pgf`-`nkltn15.pgf` for the smaller one (section 6.5).
 Sections 6.1-6.4 record the first selections; section 6.5 the current Latin
-inputs (#2005). It does not bundle
+and Japanese inputs and the 10.125-point CJK sizes (#2005). It does not bundle
 firmware Latin files: `ltn0.pgf` through `ltn15.pgf` stay in the user's local
 font cache when imported. The runtime's per-index source and fallback order is
 documented in [`SETUP.md`](../SETUP.md#system-fonts).
@@ -328,15 +328,14 @@ RULE (licence-text hygiene): the OFL text stays alongside the generated build
 payload. It is not added under `THIRD_PARTY_LICENSES/` unless a corresponding
 payload is admitted to the public source tree.
 
-### 6.5 Per-style Latin faces (#2005)
+### 6.5 Per-style Latin faces, wider Japanese coverage and CJK sizes (#2005)
 
 Issue #2005 measured five gaps between the first stand-ins and the console
 fonts they serve (`font/README.md`, "Measured differences"): one face for all
 eight Latin styles, capitals and digits narrower than the console's, 111 of
 the console Latin fonts' 322 non-ASCII characters missing, Japanese coverage
 limited to JIS level 1, and Japanese and Korean fonts set at 12 px where the
-console uses 10.125 points. This section records the Latin inputs, which
-close the first three; the Japanese and Korean gaps are still open.
+console uses 10.125 points. This section records the inputs that close them.
 No console font file is read by the build or the tests: the targets are the
 aggregate line widths, class averages and ink edges already recorded, and they
 are written into `tools/test_ttf2pgf.py`.
@@ -399,9 +398,35 @@ larger size is 20 ppem (nominal 648, 10.125 points at 128 dpi) and the smaller
 the console's digit width). Every index's sentence and menu line then comes
 within 3 % of the console's.
 
+**Japanese: Noto Sans JP, with M PLUS 1p for one point.** The Japanese input is
+the project UI font `assets/fonts/ui/noto-sans-jp/NotoSansJP-Regular.ttf`
+(section 8; 5,766,828 bytes, SHA-256
+`a66655d7b24ac6f793f73914c60ad44522b9fbd9e5f9b3706220b66c44fdaad2`), pinned for
+the converter by `fixtures/fonts/notosansjp/PIN.json`, which points at that
+file and its `OFL.txt` instead of carrying a second copy. Its Reserved Font
+Name `Source` is not used; the PGF is named `Nakagawa Open Japanese`. The
+built-in `--japanese-text` set is the first set (section 6.1) widened to all of
+JIS X 0208 (the 6,355 kanji of levels 1 and 2), every character of code page
+932 outside its user-defined area (Python's standard `cp932` table, with its
+NEC and IBM extensions) and the Latin-1 Supplement: 7,575 points, canonical
+SHA-256 `7c737cfedb45385d553dbfeecce9949135f185b5ca31ce486428cd4082904497`.
+Noto Sans JP draws 7,574 of them. The converter's `--fallback` option draws
+the remaining U+2252 from the pinned M PLUS 1p (section 6.1), and the
+conversion manifest lists that one point under `fallback.codes` with M PLUS
+1p's digest and licence. `nkjpn-OFL.txt` carries both licence texts.
+
+**Sizes.** Both CJK fonts carry the console's nominal 10.125 points (648 in
+26.6) at 128 dpi. Japanese is drawn at 18 ppem, so kana and kanji advance
+18 px as on the console. Korean is drawn at 20 ppem with one sub-sample of
+tracking, so Hangul syllables average 18.32 px against the console's 18.36.
+The header ascender and descender are the console fonts' recorded values.
+
 **Converter.** Version 0.4.0 of `tools/ttf2pgf.py` adds `--tracking`,
-`--digit-advance` and the Latin repertoire above
-(`docs/cleanroom/PGF_CONVERTER_SPEC.md`).
+`--digit-advance`, `--fallback` and `--fallback-pin` and the two repertoires
+above (`docs/cleanroom/PGF_CONVERTER_SPEC.md`). It also accepts a `STAT`
+table, which the static Noto Sans JP instance carries, as static family
+members do; the variable-font tables `fvar`, `gvar`, `cvar`, `avar`, `HVAR`,
+`MVAR` and `VVAR` stay refused.
 
 ## 7. Residual unknowns (all marked; none block the chosen route)
 

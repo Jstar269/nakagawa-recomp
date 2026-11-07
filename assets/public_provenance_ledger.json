@@ -2545,6 +2545,14 @@
       }
     },
     {
+      "path": "fixtures/fonts/notosansjp/PIN.json",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      }
+    },
+    {
       "path": "fixtures/mp3_tone/generate.py",
       "classification": "project_authored_attested",
       "evidence": {
