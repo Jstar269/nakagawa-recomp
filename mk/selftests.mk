@@ -814,6 +814,40 @@ gpu-coherence-selftest-snapbar-mutants: shader-verify $(RT_GE_O)
 		echo "gpu-coherence-selftest-snapbar-mutants: mutant $$m killed ($$kill)"; \
 	done
 
+# vram-view-identity-selftest — the GE decoders the pause menu's VRAM viewer calls leave later
+# frames, guest memory and the GE state unchanged (#314; the gui.c layer and timing are not covered). ge.c's lists run on ge_gpu.c's real targets: each frame draws a target, stores into it
+# from the CPU, draws it as a texture into the shown target and presents that with a capture
+# armed. A run without the viewer writes the digest (every presented frame, the lists' return
+# codes, then guest VRAM and RAM as a guest read sees them and the GE state); runs with the
+# viewer's decodes at one frame's VBLANK must match it, and the decodes must show the scene and
+# move bytes into guest VRAM, so the match is not trivial. Again at render scale 2. Last, a
+# mutant whose viewer stores one byte into guest VRAM must fail on the next presented frame.
+# Exit 77 (no Vulkan device) fails the recipe, as gpu-coherence-selftest's does on hosted CI.
+VRAM_VIEW_BIN := $(BUILD_DIR)/vram_view_identity_selftest.exe
+
+$(VRAM_VIEW_BIN): shader-verify $(RT_GE_O)
+	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections -o $(VRAM_VIEW_BIN) \
+		tests/native/vram_view_identity_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
+
+vram-view-identity-selftest: $(VRAM_VIEW_BIN)
+	$(VRAM_VIEW_BIN) --write $(BUILD_DIR)/vram_view_ref_s1.txt
+	$(VRAM_VIEW_BIN) --check $(BUILD_DIR)/vram_view_ref_s1.txt
+	$(VRAM_VIEW_BIN) --check $(BUILD_DIR)/vram_view_ref_s1.txt --view-at 1
+	$(VRAM_VIEW_BIN) --check $(BUILD_DIR)/vram_view_ref_s1.txt --view-at 4
+	$(VRAM_VIEW_BIN) --scale 2 --write $(BUILD_DIR)/vram_view_ref_s2.txt
+	$(VRAM_VIEW_BIN) --scale 2 --check $(BUILD_DIR)/vram_view_ref_s2.txt --view-at 2
+	$(CC) $(CFLAGS) -DNK_VRAM_VIEW_MUTANT -ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+		-o $(BUILD_DIR)/vram_view_identity_mutant.exe \
+		tests/native/vram_view_identity_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) $(GEGPU_SRCS) $(LIBS)
+	@log=$(BUILD_DIR)/vram_view_identity_mutant.log; \
+	if $(BUILD_DIR)/vram_view_identity_mutant.exe --check $(BUILD_DIR)/vram_view_ref_s1.txt --view-at 1 > $$log 2>&1; then \
+		cat $$log; echo "vram-view-identity-selftest: the writing-viewer mutant passed" >&2; exit 1; fi; \
+	if ! grep -Fq 'FAIL want "present 2 ' $$log; then \
+		cat $$log; echo "vram-view-identity-selftest: the mutant failed for another reason" >&2; exit 1; fi; \
+	echo "vram-view-identity-selftest: the writing-viewer mutant is caught at the next presented frame"
+
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
 # target-scoped synchronization closes the generation gap and rejects unsafe geometry. It runs

@@ -481,7 +481,10 @@ capture holds one PRIM of two overlapping translucent sprites on a 16-bit target
 find exactly its overlap as the first bad draw: the known shader-blend batch-order difference
 (#2109), which that fix turns into `NO_DIFFERENCE`. Four more generated captures check that the
 tool fails closed: a 512-wide scissor (ge.c rasterizes inside 480x272), 33 targets or a stride of
-1088 are `INCOMPLETE`, and a capture with no draw is `NO_DRAWS`. The job also runs
+1088 are `INCOMPLETE`, and a capture with no draw is `NO_DRAWS`. The same step then runs
+`vram-view-identity-selftest` (#314): the GE decoders the pause menu's VRAM viewer calls, run at
+a paused VBLANK, must leave later presented frames, guest memory and the GE state as a run
+without them does, and a mutant viewer that stores one byte must fail. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by
