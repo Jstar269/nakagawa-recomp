@@ -11,7 +11,7 @@
  * Extracted from hle.c on 2026-10-31 (#307). */
 
 #include "hle_internal.h"
-#include "nk_shared_helpers.h"
+#include "../core/nk_shared_helpers.h"
 
 typedef struct HleDevctlRefusal {
     struct HleDevctlRefusal *next;

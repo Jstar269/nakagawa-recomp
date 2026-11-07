@@ -474,6 +474,7 @@ class TestPublicIsoVfsC(unittest.TestCase):
             cls.exe,
             str(cls.test_c),
             str(ROOT / "src" / "rt" / "iso_public.c"),
+            str(ROOT / "src" / "core" / "nk_shared_helpers.c"),
             str(ROOT / "src" / "rt" / "perf.c"),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)

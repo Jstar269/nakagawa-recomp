@@ -23,7 +23,7 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
-#include "nk_shared_helpers.h"
+#include "../core/nk_shared_helpers.h"
 #include "debug.h"
 #include "title_config.h"
 #include "flight_recorder.h"

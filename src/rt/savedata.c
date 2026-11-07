@@ -27,7 +27,7 @@
 #include "vfs_contained.h"
 #include "recomp.h"
 #include "vfs_path.h"
-#include "nk_shared_helpers.h"
+#include "../core/nk_shared_helpers.h"
 #include <dirent.h>
 #include <errno.h>
 #include <limits.h>

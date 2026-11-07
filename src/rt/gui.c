@@ -27,7 +27,7 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
-#include "nk_shared_helpers.h"
+#include "../core/nk_shared_helpers.h"
 #include "gpu_sdl3vk/sdl3vk.h"
 #include "fbcap.h"
 #include "videorec.h"         /* video recording: the CPU presenters hand over their frame */
