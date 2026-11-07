@@ -14,6 +14,10 @@
 extern "C" {
 #endif
 
+/* The time a still picture is drawn at: Reduce motion holds the waves here, and a
+   --screenshot capture draws the whole launcher at it (#2124). */
+#define NK_UI_STILL_TIME_S 37.0
+
 typedef struct NkUi NkUi;
 typedef struct NkUiTheme NkUiTheme;
 typedef struct NkUiDrawList NkUiDrawList;

@@ -118,6 +118,7 @@
     X("SR_GPU_GE", "flag-nonzero", "off (software GE)", "gui.c", "Enables the GPU GE renderer when set to a non-empty value other than 0.") \
     X("SR_GPU_LOG", "flag-nonzero", "off", "gpu_sdl3vk/ge_gpu.c", "Enables verbose logging in the Vulkan GE backend and also turns on its statistics.") \
     X("SR_GPU_NORTT", "flag-nonzero", "off", "gpu_sdl3vk/ge_gpu.c", "When nonzero, changes how a texture sourced from a render target is bound in the GPU path.") \
+    X("SR_GPU_PIPELINE_CACHE", "string", "on", "gpu_sdl3vk/ge_gpu.c", "Vulkan GE pipeline cache in <data root>/cache/gegpu: unset, empty, 1 or on keeps it; 0 or off turns it off; another value is refused (no cache).") \
     X("SR_GPU_PRESENT_DBG", "flag-presence", "off (first 3 early exits still logged)", "gpu_sdl3vk/ge_gpu.c", "Logs every GPU present call and every early-exit decline to stderr.") \
     X("SR_GPU_READBACK_FULL", "flag-nonzero", "off (only the rows guest memory keeps are copied)", "gpu_sdl3vk/ge_gpu.c", "When enabled, a readback to guest memory copies the whole scaled target, the reference path for the narrowed copy.") \
     X("SR_GPU_SCALE", "number", "1 (falls back to SR_RESOLUTION_SCALE)", "gpu_sdl3vk/ge_gpu.c", "Internal render scale multiplier for the GPU GE renderer.") \
@@ -217,6 +218,8 @@
     X("SR_TEST_GUEST_MODULE_LOAD", "string", "unset: the test returns immediately", "hle_thread_selftest.c", "Selects the mode of the guest-module-load binding self-test.") \
     X("SR_TEXDUMP", "flag-presence", "off", "ge.c", "When set, enables texture dumping.") \
     X("SR_TEXDUMP_AFTER", "number", "0", "ge.c", "First GE frame from which textures are dumped when SR_TEXDUMP is set.") \
+    X("SR_TEX_REPLACE", "path", "unset", "gpu_sdl3vk/ge_gpu.c", "Folder of a PPSSPP-layout texture replacement pack (textures.ini, hash-named PNGs) the Vulkan GE draws guest textures from; Ace only.") \
+    X("SR_TEX_REPLACE_BUDGET_MB", "number", "256", "gpu_sdl3vk/ge_gpu.c", "Host memory, in MiB, for the replacement pack's decoded images; past it the least recently used is dropped.") \
     X("SR_TEX_SCALE", "string", "off", "gpu_sdl3vk/tex_scale.c", "off or 2-6: the xBRZ factor host copies of guest textures are scaled by in the Vulkan GE texture cache; Ace Mode only.") \
     X("SR_TEX_SCALE_BUDGET_MB", "number", "512", "gpu_sdl3vk/tex_scale.c", "GPU memory, in MiB, the scaled texture copies may use; past it a texture is drawn unscaled.") \
     X("SR_THLOG", "flag-presence", "off", "debug.h,sched.c", "Enables scheduler and thread logging, including the sched debug class.") \
@@ -227,7 +230,7 @@
     X("SR_TRACE_V", "list", "unset: no vblank indices", "flight_recorder.c", "Comma-separated vblank indices (below 128) in which the PC trace window records.") \
     X("SR_TRACK_LAST_WRITER", "flag-nonzero", "off", "debug.c", "When set and not 0, enables tracking of the last writer of memory words.") \
     X("SR_UI_ROOT", "path", "unset (overlay default)", "gui.c", "Root directory of the overlay UI pages and fonts.") \
-    X("SR_USER_DATA_ROOT", "path", "platform data directory", "hle_host.c", "Absolute directory used as the user data root; an invalid value is refused.") \
+    X("SR_USER_DATA_ROOT", "path", "platform data directory", "hle_host.c,gpu_sdl3vk/pipeline_cache.h", "Absolute directory used as the user data root; an invalid value is refused.") \
     X("SR_VALUE_WATCH_N", "string", "unset", "debug.c", "Value watch slot N (0..15), formatted 0xVALUE,label; reports when the watched value is seen.") \
     X("SR_VBLANK_Q_US", "number", "16000", "sched.c", "Vblank pacing quantum in microseconds.") \
     X("SR_VBLOG", "flag-presence", "off", "debug.h,sched.c", "Enables per-VBLANK scheduler logging.") \

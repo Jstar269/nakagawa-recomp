@@ -259,6 +259,8 @@ void gegpu_wide_counts(unsigned long *drawn, unsigned long *dropped);
 int gegpu_snapshot_sync_selftest(void);
 int gegpu_ace_af_selftest(void);   /* 1 pass, 0 fail, 77 no anisotropic filtering */
 int gegpu_texscale_selftest(void); /* texture scaling and the smart 2D filter (tex_scale.h) */
+int gegpu_texrepl_only_prepare(const char *build_root); /* --repl-only: write the pack, set SR_TEX_REPLACE, before gegpu_init */
+int gegpu_texrepl_only_selftest(void); /* --repl-only: SR_TEX_REPLACE with no texture scaling */
 
 void gegpu_shutdown(void);
 
