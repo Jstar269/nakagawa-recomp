@@ -1427,6 +1427,8 @@ static const char *const k_part_switch_labels[] = {"On", "Off"};
 static const char *const k_part_switch_words[] = {"on", "off"};
 static const char *const k_part_smooth_words[] = {"x2", "off"};
 static const char *const k_part_sas_words[] = {"sinc", "off"};
+static const char *const k_part_upscale_labels[] = {"FSR 1", "Off"};
+static const char *const k_part_upscale_words[] = {"fsr1", "off"};
 
 static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
     {"af", "Texture filtering",
@@ -1449,6 +1451,12 @@ static const PlayerEnhancedPartInfo k_enhanced_parts[PLAYER_PART_COUNT] = {
     {"sas", "Clean pitched sound",
      "Resamples pitched sound effects without aliasing. Changes the samples the game mixes.",
      2, k_part_switch_values, k_part_switch_labels, k_part_sas_words, 0},
+    /* Presentation only (contract section 2.2): the window and its recording, never the guest. */
+    {"upscale", "Sharper enlarging",
+     "AMD FSR 1 sharpens the picture when the window is larger than the game. Only what you see "
+     "changes, in the window and in recordings: the game, its memory and screenshots stay the "
+     "same.",
+     2, k_part_switch_values, k_part_upscale_labels, k_part_upscale_words, 0},
 };
 
 const PlayerEnhancedPartInfo *player_enhanced_part(int part) {
@@ -3189,6 +3197,9 @@ bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t c
     if (n <= 0 || (size_t)n >= cap) { out[0] = '\0'; return false; }
     used = (size_t)n;
     for (int p = 0; p < PLAYER_PART_COUNT; p++) {
+        /* The upscaler travels as SR_PRESENT_UPSCALE (player_play_present_upscale), which the
+           launcher exports for every session; the runtime's SR_ACE line has no such key. */
+        if (p == PLAYER_PART_UPSCALE) continue;
         /* Ultrawide is not part of this build: the runtime refuses any value but off, and
            the key sits where the runtime's own format puts it. */
         if (p == PLAYER_PART_SMOOTH) {
@@ -3202,6 +3213,29 @@ bool player_play_launch_line(const PlayerPlayResolved *play, char *out, size_t c
         used += (size_t)n;
     }
     return true;
+}
+
+int player_play_present_upscale(const PlayerPlayResolved *play) {
+    return play && play->on && play->part[PLAYER_PART_UPSCALE] == 1 ? NK_PRESENT_UPSCALE_FSR1
+                                                                     : NK_PRESENT_UPSCALE_OFF;
+}
+
+void player_play_config_session(const PlayerSettings *settings, const char *disc_id,
+                                bool logic_60_package, bool acceptance, NkRuntimeConfig *config,
+                                PlayerPlayResolved *out) {
+    PlayerPlayResolved play;
+    player_play_resolve(settings, disc_id, &play);
+    /* This build interpolates only a 30 Hz source, so the enhanced 60 FPS build runs
+       without smooth motion (contract section 10.5). */
+    player_play_apply_logic_60(&play, logic_60_package);
+    if (acceptance) play.on = false;
+    if (!player_play_launch_line(&play, config->ace_spec, sizeof(config->ace_spec))) {
+        snprintf(config->ace_spec, sizeof(config->ace_spec), "off");
+        play.on = false;
+    }
+    /* Sharper enlarging (#2122): nk_launch exports it as SR_PRESENT_UPSCALE. */
+    config->present_upscale = player_play_present_upscale(&play);
+    if (out) *out = play;
 }
 
 bool player_ace_report_path(const char *user_root, const char *disc_id, char *out, size_t cap) {
@@ -5261,16 +5295,10 @@ void player_launch_work_run(PlayerLaunchWork *work) {
        authentic. */
     {
         PlayerPlayResolved ace;
-        player_play_resolve(&work->settings, game->disc_id, &ace);
-        /* This build interpolates only a 30 Hz source, so the enhanced 60 FPS build runs
-           without smooth motion (contract section 10.5). */
-        player_play_apply_logic_60(&ace, game->enhancement_package_id[0] != '\0');
-        if (work->headless_accept_presented_frames > 0u) ace.on = false;
-        if (!player_play_launch_line(&ace, session->config.ace_spec,
-                                     sizeof(session->config.ace_spec))) {
-            snprintf(session->config.ace_spec, sizeof(session->config.ace_spec), "off");
-            ace.on = false;
-        }
+        player_play_config_session(&work->settings, game->disc_id,
+                                   game->enhancement_package_id[0] != '\0',
+                                   work->headless_accept_presented_frames > 0u, &session->config,
+                                   &ace);
         /* The graphics preset (#2150) overlays the display rows for Enhanced and Ace only:
            an Authentic run keeps the user's own rows, since a render scale above 1x reaches
            guest VRAM (docs/ENHANCEMENT_CONTRACT.md 10.3). */

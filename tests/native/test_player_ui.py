@@ -4872,11 +4872,15 @@ class NativePlayerUiTests(unittest.TestCase):
         check, standing in for a retail package whose check hashes several
         hundred MB. Failing-before: the launch ran on the UI thread, so the
         frames stopped for the whole start and PLAY showed nothing until it
-        ended (about 20 s for the owner's Hot Shots Tennis package)."""
+        ended (about 20 s for the owner's Hot Shots Tennis package).
+
+        The test checks that frames keep coming through the whole start, not how
+        many come: a loaded runner draws fewer frames per second (#2155)."""
+        slow_start_ms = 1500
         run = self.run_player(
             "ready", (*self.PLAY_READY_TITLE, "KEY_RETURN", "WAIT_MS=2500"),
             post_build_ready=True, wait_background=True, ui_mode="next",
-            env_extra={"NK_UI_TEST_SLOW_START_MS": "1500"},
+            env_extra={"NK_UI_TEST_SLOW_START_MS": str(slow_start_ms)},
         )
         if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
             self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
@@ -4899,10 +4903,21 @@ class NativePlayerUiTests(unittest.TestCase):
         first = frames.index(pending[0])
         last = frames.index(pending[-1])
         ticks = [int(frame["ticks_ms"]) for frame in frames[first:last + 2]]
-        self.assertGreaterEqual(ticks[-1] - ticks[0], 1400, "the start took its 1.5 s")
-        self.assertGreaterEqual(len(pending), 10, "the launcher drew through the start")
+        start, end = ticks[0], ticks[-1]
+        self.assertGreaterEqual(end - start, slow_start_ms - 100, "the start took its 1.5 s")
+        # A launcher that stops drawing leaves one gap as long as the start; one
+        # that keeps drawing, however slowly, leaves none longer than half of it.
         gaps = [later - earlier for earlier, later in zip(ticks, ticks[1:], strict=False)]
-        self.assertLess(max(gaps), 500, f"a frame took {max(gaps)} ms during the start")
+        self.assertLess(max(gaps), slow_start_ms // 2,
+                        f"no frame for {max(gaps)} ms during the start; frame ticks {ticks}")
+        # And it drew in every third of the start, not only at its two ends.
+        pending_ticks = [int(frame["ticks_ms"]) for frame in pending]
+        third = (end - start) / 3
+        for part, name in enumerate(("first", "middle", "last")):
+            low, high = start + part * third, start + (part + 1) * third
+            self.assertTrue(any(low <= tick < high for tick in pending_ticks),
+                            f"no frame drawn in the {name} third of the start; "
+                            f"frame ticks {ticks}")
         # The synthetic package has no staged disc and no real program, so the
         # start ends with the launch's own card, as a synchronous launch did.
         outcome = frames[-1]

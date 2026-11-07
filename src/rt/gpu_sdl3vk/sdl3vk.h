@@ -161,6 +161,12 @@ int sdl3vk_present_held(void);
  * it; NULL removes it. Handles are Vulkan's, passed as void pointers. */
 typedef void *(*Sdl3VkUpscalePass)(void *cmd, void *src, int w, int h, int out_w, int out_h);
 void sdl3vk_set_upscale_pass(Sdl3VkUpscalePass pass);
+/* The same for the recording (SR_VIDEOREC_DIR, #2138): called with the recording's place for a
+ * recorded present whose shown image is smaller than it, so a recording made with the upscaler
+ * on is enlarged by it as the window is. A separate pass, so its images keep the recording's
+ * size while the window's keep the window's. NULL scales the recording as SR_PRESENT_SCALING
+ * says; record.json names the filter each frame was made with. */
+void sdl3vk_set_record_upscale_pass(Sdl3VkUpscalePass pass);
 
 /* Pumps the SDL event loop without presenting a frame. Returns 0 on quit, 1 otherwise. */
 int  sdl3vk_poll(void);
