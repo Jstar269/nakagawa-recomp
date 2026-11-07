@@ -6636,6 +6636,28 @@
       }
     },
     {
+      "path": "src/rt/gpu_sdl3vk/pipeline_cache.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "gegpu-pipeline-cache-2149",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/pipeline_cache_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "gegpu-pipeline-cache-2149",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "src/rt/gpu_sdl3vk/psp_frag.inc",
       "classification": "upstream_derived",
       "evidence": {

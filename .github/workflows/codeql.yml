@@ -452,9 +452,11 @@ jobs:
     name: Upload complete CodeQL analysis
     needs: [prepare, analyze]
     # A skipped analysis (no analysed file changed) is complete only when prepare decided to
-    # skip it; a skipped analysis for any other reason leaves no upload, as before.
+    # skip it; a skipped analysis for any other reason leaves no upload, as before. The explicit
+    # !cancelled() replaces the implicit success(), which skips a job whose needs include a
+    # skipped job and so never ran the skipped route.
     if: >-
-      ${{ needs.prepare.result == 'success' &&
+      ${{ !cancelled() && needs.prepare.result == 'success' &&
           (needs.analyze.result == 'success' ||
            (needs.analyze.result == 'skipped' && needs.prepare.outputs.scan == 'false')) }}
     runs-on: ubuntu-26.04

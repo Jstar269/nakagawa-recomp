@@ -110,6 +110,15 @@ SrGuestInterpResult sr_guest_interp_run(
     uint32_t entry,
     SrGuestInterpFault *fault);
 
+/* TAIL form: a computed step of a tail-chain drain (dispatch_tail_step). As above, except
+ * that a handoff to a registered body records the transfer for the enclosing drain
+ * (sr_tail_record) with the entry $sp the run owes, as a native body entered at `entry`
+ * records it, instead of dispatching it nested (#1935). */
+SrGuestInterpResult sr_guest_interp_run_tail_step(
+    CpuState *s,
+    uint32_t entry,
+    SrGuestInterpFault *fault);
+
 /* CALL form: execute the interpreted callee, including its return instruction and
  * delay slot, then stop before executing boundary->resume_pc. */
 SrGuestInterpResult sr_guest_interp_run_with_boundary(
